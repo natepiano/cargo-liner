@@ -579,7 +579,7 @@ fn non_json_arguments_preserve_both_quiet_spellings() {
 }
 
 #[test]
-fn live_log_handshake_rejects_capture_buffered_until_cargo_exits() {
+fn capture_ignores_tee_on_path_and_writes_the_live_log_while_cargo_runs() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
     fixture.observe_live_log();
     executable(
@@ -596,19 +596,10 @@ sys.stdout.buffer.write(data)
 ",
     );
     let output = fixture.run(&["check", "probe-mismatch", "--quiet"]);
-    assert_eq!(output.status.code(), Some(98));
+    assert_eq!(output.status.code(), Some(37));
     assert_eq!(output.stdout, b"cargo stdout\n");
-    assert_eq!(
-        output.stderr,
-        b"registration log marker\ncapture never wrote the cargo stderr marker\n"
-    );
-    let registration = fixture.registration();
-    let fields = registration.fields();
-    let log = std::str::from_utf8(fields[4]).expect("UTF-8 log name");
-    assert!(
-        !fixture.path("observations").join(log).exists(),
-        "cargo cannot observe a marker buffered until its exit"
-    );
+    assert_eq!(output.stderr, b"registration log marker\n");
+    fixture.assert_live_log("observations");
 }
 
 #[test]

@@ -3,15 +3,86 @@
     reason = "tests should panic on unexpected values"
 )]
 
-//! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
+//! Behavior tests for liveness.
 
-#[path = "support/linked_checkout.rs"]
-mod linked_checkout;
+#[path = "support/liveness_fixtures.rs"]
+mod liveness_fixtures;
+use liveness_fixtures::AbandonAndRetireDispositionsRemainDistinctAfterReplayState;
+use liveness_fixtures::AssertCheckSessionRejectionsHistory;
+use liveness_fixtures::AssertMarkerClaimRevalidationHistory;
+use liveness_fixtures::AssertStaleMarkerCheckAndNewClaimHistory;
+use liveness_fixtures::BEFORE_ABANDON_AND_RETIRE_DISPOSITIONS_REMAIN_DISTINCT_AFTER_REPLAY;
+use liveness_fixtures::BEFORE_ORPHAN_ALERT_AND_MANUAL_RECOVERY_USE_THE_RESERVATION_TARGET;
+use liveness_fixtures::BEFORE_RELEASE_RECOGNIZES_A_CHECKPOINT_ON_THE_RESERVATION_TARGET;
+use liveness_fixtures::BEFORE_RELEASED_INTEGRATION_TARGET_WITNESS_CAN_BE_REPLACED;
+use liveness_fixtures::BEFORE_REWRITTEN_INTEGRATION_REPLACEMENT_VALIDATES_EVIDENCE;
+use liveness_fixtures::BEFORE_UNRESOLVED_TRUNK_ALERT_SURVIVES_AND_DEFERS_INTEGRATED_AS_RECOVERY;
+use liveness_fixtures::BERTH_EXECUTABLE;
+use liveness_fixtures::DirectReleaseWaitsForACoverAtAPresentIntegrationTargetHistory;
+use liveness_fixtures::FIRST_RUN;
+use liveness_fixtures::GIT;
+use liveness_fixtures::HISTORY_ASSERT_CHECK_SESSION_REJECTIONS_PREPARED;
+use liveness_fixtures::HISTORY_ASSERT_MARKER_CLAIM_REVALIDATION_PREPARED;
+use liveness_fixtures::HISTORY_ASSERT_STALE_MARKER_CHECK_AND_NEW_CLAIM_PREPARED;
+use liveness_fixtures::HISTORY_DIRECT_RELEASE_WAITS_FOR_A_COVER_AT_A_PRESENT_INTEGRATION_TARGET_CHECKPOINT;
+use liveness_fixtures::INITIAL_INTEGRATION_PAIR;
+use liveness_fixtures::IntegrationRepository;
+use liveness_fixtures::MARKER_PATH;
+use liveness_fixtures::OrphanAlertAndManualRecoveryUseTheReservationTargetState;
+use liveness_fixtures::Output;
+use liveness_fixtures::Path;
+use liveness_fixtures::PathBuf;
+use liveness_fixtures::PrunableAndPrunedWorktreesKeepBlockingAndPrunedWorkReportsRecoveryHistory;
+use liveness_fixtures::ROUND_THREE_PRUNABLE_AND_PRUNED_WORKTREES_KEEP_BLOCKING_AND_PRUNED_WORK_REPORTS_RECOVERY;
+use liveness_fixtures::ROUND_THREE_RELEASE_USES_TRUNK_AFTER_THE_RESERVATION_TARGET_DISAPPEARS;
+use liveness_fixtures::ROUND_THREE_RETARGET_REFUSES_RELEASED_RESERVATION;
+use liveness_fixtures::ROUND_THREE_RETIRE_ORPHAN_REPLACES_LOST_INTEGRATION_EVIDENCE_AND_SURVIVES_REPLAY;
+use liveness_fixtures::RUN_ENVIRONMENT;
+use liveness_fixtures::ReleaseRecognizesACheckpointOnTheReservationTargetState;
+use liveness_fixtures::ReleaseUsesTrunkAfterTheReservationTargetDisappearsHistory;
+use liveness_fixtures::ReleasedIntegrationTargetWitnessCanBeReplacedState;
+use liveness_fixtures::RetargetRefusesReleasedReservationHistory;
+use liveness_fixtures::RetireOrphanReplacesLostIntegrationEvidenceAndSurvivesReplayHistory;
+use liveness_fixtures::RewrittenIntegrationReplacementValidatesEvidenceState;
+use liveness_fixtures::SECOND_RUN;
+use liveness_fixtures::SESSION_ENVIRONMENT;
+use liveness_fixtures::TempDir;
+use liveness_fixtures::UnresolvedTrunkAlertSurvivesAndDefersIntegratedAsRecoveryState;
+use liveness_fixtures::assert_integrated_as_lacks_the_work;
+use liveness_fixtures::assert_retire_orphan_is_already_resolved;
+use liveness_fixtures::assert_success;
+use liveness_fixtures::berth_command;
+use liveness_fixtures::commit_file;
+use liveness_fixtures::commit_rewritten_trunk_without_hooks;
+use liveness_fixtures::fs;
+use liveness_fixtures::git;
+use liveness_fixtures::git_stdout;
+use liveness_fixtures::initialized_repository;
+use liveness_fixtures::json;
+use liveness_fixtures::json_output;
+use liveness_fixtures::lose_the_integration_witness;
+use liveness_fixtures::lost_evidence_alert;
+use liveness_fixtures::replace_the_integration_evidence;
+use liveness_fixtures::reservation_id;
+use liveness_fixtures::run_berth;
+use liveness_fixtures::run_berth_with_session;
+
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
+
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
+#[path = "support/history_restore.rs"]
+mod history_restore;
+
+// Shared fixture operations and recorded histories for liveness.
+
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
 
 #[path = "support/lock_contention.rs"]
 mod lock_contention;
@@ -19,76 +90,443 @@ mod lock_contention;
 #[path = "support/timing.rs"]
 mod timing;
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::symlink;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Child;
-use std::process::Output;
-use std::process::Stdio;
-use std::thread;
-use std::time::Duration;
-use std::time::Instant;
+pub use std::os::unix::fs::PermissionsExt;
+pub use std::os::unix::fs::symlink;
+pub use std::process::Child;
+pub use std::process::Stdio;
+pub use std::thread;
+pub use std::time::Duration;
+pub use std::time::Instant;
 
-use cargo_berth_test_support::FixtureCommand as Command;
-use cargo_berth_test_support::GitDriver;
-use cargo_berth_test_support::IntegrationRepository;
-use cargo_berth_test_support::LedgerFixture;
-use cargo_berth_test_support::LedgerTemplate;
-use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
-use cargo_berth_test_support::TemplateBuildTiming;
-use cargo_berth_test_support::assert_success;
-use cargo_berth_test_support::berth_command;
-use cargo_berth_test_support::json;
-use cargo_berth_test_support::reservation_row;
+pub use cargo_berth_test_support::FixtureCommand as Command;
+pub use cargo_berth_test_support::reservation_row;
 use lock_contention::LOCK_CONTENTION_TOLERANCE;
-use tempfile::TempDir;
-use tempfile::tempdir;
+pub use tempfile::tempdir;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
 
-/// The `cargo-berth` a managed hook must run, in place of any installed copy.
-const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-
-/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
-const GIT: GitDriver = GitDriver {
-    executable:          BERTH_EXECUTABLE,
-    optional_locks:      OptionalLocks::Taken,
-    cleared_environment: &[],
-};
-
-/// The repository most tests here start from: a README committed on `main`, then
-/// `cargo-berth init` and its configuration committed.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
-    build:            build_initialized_repository,
-};
-
-/// The integration pair prepared by `recorded_templates` before tests start.
-const INITIAL_INTEGRATION_PAIR: LedgerTemplate = LedgerTemplate {
-    repository:   RepositoryTemplate {
-        name: "initial-integration-pair",
-        build: |root| IntegrationRepository::build_initial_integration_pair(root, BERTH_EXECUTABLE),
-        ..INITIALIZED_REPOSITORY
-    },
-    ledger:       LedgerFixture::Recorded,
-    build_timing: TemplateBuildTiming::BeforeRun,
-};
-
-/// Unclaimed terminal work and a separate rewritten source, before any recovery answer.
-const RECOVERY_SOURCES: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "recovery-sources",
-    build:            build_recovery_sources,
-};
-
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
+const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+
+const PAUSE_MODE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_PAUSE";
+
+const PAUSE_MODE_HEAD: &str = "head";
+
+const PAUSE_MODE_MERGE_BASE: &str = "merge-base";
+
+const PAUSED_GIT_WRAPPER: &str = r#"#!/bin/sh
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
+    : > "$CARGO_BERTH_TEST_GIT_READY"
+    IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
+fi
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "cat-file" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
+    while IFS= read -r expression; do
+        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
+            : > "$CARGO_BERTH_TEST_GIT_READY"
+            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
+        fi
+        printf '%s\n' "$expression"
+    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    exit $?
+fi
+exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+"#;
+
+const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
+
+const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
+
+struct PausedBerthProcess {
+    child:             cargo_berth_test_support::TestProcessGroup,
+    continue_path:     PathBuf,
+    ready_path:        PathBuf,
+    wrapper_directory: TempDir,
+}
+
+impl PausedBerthProcess {
+    fn spawn(repository_root: &Path, arguments: &[&str], pause_mode: &str) -> Self {
+        let wrapper_directory = tempdir().expect("git wrapper directory should exist");
+        let wrapper_path = wrapper_directory.path().join("git");
+        fs::write(&wrapper_path, PAUSED_GIT_WRAPPER).expect("git wrapper should write");
+        let mut permissions = fs::metadata(&wrapper_path)
+            .expect("git wrapper metadata should read")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+        let ready_path = wrapper_directory.path().join("ready");
+        let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo")
+            .arg(&continue_path)
+            .output()
+            .expect("continuation FIFO command should run");
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
+        let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+        let wrapped_path = std::env::join_paths(
+            std::iter::once(wrapper_directory.path().to_path_buf())
+                .chain(std::env::split_paths(&original_path)),
+        )
+        .expect("wrapped PATH should join");
+        let child = cargo_berth_test_support::TestProcessGroup::spawn(
+            cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+                "CARGO_BIN_EXE_cargo-berth"
+            )))
+            .args(arguments)
+            .current_dir(repository_root)
+            .env("PATH", wrapped_path)
+            .env(PAUSE_MODE_ENVIRONMENT, pause_mode)
+            .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
+            .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
+            .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
+            .env_remove(RUN_ENVIRONMENT)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+        )
+        .expect("cargo-berth should start with paused git");
+        Self {
+            child,
+            continue_path,
+            ready_path,
+            wrapper_directory,
+        }
+    }
+
+    fn wait_until_paused(&mut self) { wait_for_path(&self.ready_path, self.child.child_mut()); }
+
+    fn continue_and_wait(self) -> Output {
+        let Self {
+            child,
+            continue_path,
+            ready_path: _,
+            wrapper_directory,
+        } = self;
+        fs::write(continue_path, b"continue\n").expect("paused git should continue");
+        let output = child
+            .wait_with_output()
+            .expect("cargo-berth should finish after git continues");
+        std::mem::drop(wrapper_directory);
+        output
+    }
+}
+
+/// Orphan recovery remains a separate fact from an unavailable merge derivation.
+fn orphan_alert(envelope: &serde_json::Value) -> &serde_json::Value {
+    envelope["payload"]["alerts"]
+        .as_array()
+        .expect("alerts should be a list")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding")
+        .expect("the missing holder must still report orphan recovery")
+}
+
+fn assert_orphan_recovery_evidence(repository: &Path, reservation_id: &str, protected_tip: &str) {
+    let orphaned = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
+    let orphaned_json = json_output(&orphaned);
+    assert_eq!(orphaned.status.code(), Some(1));
+    assert_eq!(orphan_alert(&orphaned_json)["kind"], "orphaned_outstanding");
+    assert_eq!(
+        orphan_alert(&orphaned_json)["data"]["recoverability"],
+        "recoverable_from_branch"
+    );
+
+    git(
+        repository,
+        &["update-ref", "refs/heads/phase", "refs/heads/main"],
+    );
+    let protected = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
+    assert_eq!(
+        orphan_alert(&json_output(&protected))["data"]["branch_ref_status"]["status"],
+        "present"
+    );
+    assert_eq!(
+        orphan_alert(&json_output(&protected))["data"]["recoverability"],
+        "recoverable_from_protected_tip"
+    );
+
+    remove_protected_tip_recovery_sources(repository, reservation_id, protected_tip);
+    let unavailable = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
+    assert_eq!(
+        orphan_alert(&json_output(&unavailable))["data"]["branch_ref_status"]["status"],
+        "present"
+    );
+    assert_eq!(
+        orphan_alert(&json_output(&unavailable))["data"]["recoverability"],
+        "commit_unavailable"
+    );
+}
+
+fn remove_protected_tip_recovery_sources(
+    repository: &Path,
+    reservation_id: &str,
+    protected_tip: &str,
+) {
+    git(
+        repository,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/cargo-berth/reservations/{reservation_id}"),
+        ],
+    );
+    let (object_directory, object_file) = protected_tip.split_at(2);
+    fs::remove_file(
+        repository
+            .join(".git/objects")
+            .join(object_directory)
+            .join(object_file),
+    )
+    .expect("protected commit object should delete");
+}
+
+fn assert_marker_claim_revalidation(repository: &TempDir) {
+    let template = HISTORY_ASSERT_MARKER_CLAIM_REVALIDATION_PREPARED;
+    history_restore::restore(template, repository.path());
+    let AssertMarkerClaimRevalidationHistory {
+        raced_reservation_id,
+    } = recorded_history::read(repository.path());
+    let mut pending_claim = PausedBerthProcess::spawn(
+        repository.path(),
+        &["claim", "file:second", "--json"],
+        PAUSE_MODE_HEAD,
+    );
+    pending_claim.wait_until_paused();
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &raced_reservation_id, "--json"]
+        )
+        .status
+        .success()
+    );
+
+    let rejected_claim = pending_claim.continue_and_wait();
+
+    assert_eq!(rejected_claim.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&rejected_claim),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read after rejected claim");
+    assert_eq!(journal.matches("\"op\":\"claim\"").count(), 1);
+}
+
+fn assert_stale_marker_check_and_new_claim(repository: &TempDir) {
+    let template = HISTORY_ASSERT_STALE_MARKER_CHECK_AND_NEW_CLAIM_PREPARED;
+    history_restore::restore(template, repository.path());
+    let AssertStaleMarkerCheckAndNewClaimHistory {} = recorded_history::read(repository.path());
+    let blocked = run_berth(repository.path(), &["check", "file:a", "--json"]);
+    assert_eq!(blocked.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&blocked),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+
+    fs::write(
+        repository.path().join(MARKER_PATH),
+        format!("{FIRST_RUN}\n"),
+    )
+    .expect("stale marker should rewrite");
+    let second_claim = run_berth(repository.path(), &["claim", "file:b", "--json"]);
+    assert!(second_claim.status.success());
+    assert_ne!(
+        json_output(&second_claim)["payload"]["data"]["coordination_run_id"],
+        FIRST_RUN
+    );
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &reservation_id(&second_claim), "--json"]
+        )
+        .status
+        .success()
+    );
+}
+
+fn assert_check_session_rejections(repository: &TempDir) {
+    let template = HISTORY_ASSERT_CHECK_SESSION_REJECTIONS_PREPARED;
+    history_restore::restore(template, repository.path());
+    let AssertCheckSessionRejectionsHistory {} = recorded_history::read(repository.path());
+    let stale_session = "stale-check-session";
+    let stale_rejection = run_berth_with_session(
+        repository.path(),
+        &["check", "file:stale-mapped", "--json"],
+        stale_session,
+    );
+    assert_eq!(stale_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&stale_rejection),
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+
+    let worktree_parent = tempdir().expect("worktree parent should exist");
+    let second_root = worktree_parent.path().join("check-second");
+    GIT.add_worktree_without_hooks(repository.path(), &second_root, "check-second", "HEAD");
+    let mismatch_session = "foreign-check-session";
+    let live_claim = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:live-mapped", "--run", SECOND_RUN, "--json"],
+        mismatch_session,
+    );
+    assert!(live_claim.status.success());
+    let mismatch_rejection = run_berth_with_session(
+        &second_root,
+        &["check", "file:live-mapped", "--json"],
+        mismatch_session,
+    );
+    assert_eq!(mismatch_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&mismatch_rejection),
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+}
+
+fn create_active_orphan(
+    repository: &Path,
+    worktree_parent: &Path,
+    branch: &str,
+    scope: &str,
+    run: &str,
+) -> String {
+    let worktree = worktree_parent.join(branch);
+    GIT.add_worktree_without_hooks(repository, &worktree, branch, "HEAD");
+    let claim = run_berth(&worktree, &["claim", scope, "--run", run, "--json"]);
+    assert!(claim.status.success());
+    let reservation_id = reservation_id(&claim);
+    fs::remove_dir_all(&worktree).expect("active orphan worktree should be removed");
+    git(repository, &["worktree", "prune", "--expire", "now"]);
+    reservation_id
+}
+
+fn board_reservation_snapshot<'board>(
+    data: &'board serde_json::Value,
+    reservation_id: &str,
+) -> &'board serde_json::Value {
+    ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
+        .expect("reservation should have a board snapshot")
+}
+
+fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
+    linked_checkout::administrative_directory(worktree_root)
+}
+
+fn run_contended_berth(command: &mut Command) -> Output {
+    let ready_directory = tempdir().expect("lock readiness directory should exist");
+    let ready_path = ready_directory.path().join("ready");
+    // Include startup: observing readiness happens after the child's deadline starts.
+    let started_at = Instant::now();
+    let mut child = command
+        .env(
+            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+        )
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("contending cargo-berth should start");
+    wait_for_path(&ready_path, &mut child);
+    let output = child
+        .wait_with_output()
+        .expect("contending cargo-berth should finish");
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        "contention returned too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        "contention took too long: {elapsed:?}"
+    );
+    output
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
+}
+
+/// Commit on trunk without hooks before the claim, so `--integrated-as` the previous trunk commit
+/// names a strict ancestor of trunk and its `merge-base --is-ancestor` query starts git; the same
+/// commit on both sides answers without git.
+fn advance_trunk_past(repository_root: &Path) {
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "advance trunk",
+        ],
+    );
+}
+
+fn git_binary() -> String {
+    let output = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("git lookup should run");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("git path should be UTF-8")
+        .trim()
+        .to_owned()
+}
+
+fn wait_for_path(path: &Path, child: &mut Child) {
+    let deadline = Instant::now() + PAUSED_GIT_WRAPPER_TIMEOUT;
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(POLL_INTERVAL);
+    }
+    if !path.exists() {
+        assert!(child.kill().is_ok(), "timed-out command should stop");
+        assert!(child.wait().is_ok(), "stopped command should be reaped");
+    }
+    assert!(path.exists(), "git wrapper did not reach its pause point");
+}
 
 #[test]
 fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
@@ -141,28 +579,11 @@ fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
 #[test]
 fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
     for covered in [false, true] {
-        let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-        let lane = repo.lane("cover-release-lane", "integration");
-        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let _ = repo.board();
-        let id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane ID")
-            .to_owned();
-        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
-        let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-        assert_success(&checkpoint);
-        let waiting = json(&checkpoint);
-        assert_eq!(waiting["status"], "outstanding", "{waiting}");
-        assert_eq!(waiting["payload"]["data"]["status"], "checkpointed");
-        assert!(
-            !waiting["message"]
-                .as_str()
-                .expect("release message")
-                .contains("uncovered"),
-            "a lane not yet merged keeps its existing outstanding answer: {waiting}"
-        );
+        let template =
+            HISTORY_DIRECT_RELEASE_WAITS_FOR_A_COVER_AT_A_PRESENT_INTEGRATION_TARGET_CHECKPOINT;
+        let repo = IntegrationRepository::from_recorded_template(template);
+        let DirectReleaseWaitsForACoverAtAPresentIntegrationTargetHistory { lane, id } =
+            recorded_history::read(repo.root());
         if covered {
             repo.merge_by_commit("cover-release-lane");
         } else {
@@ -283,21 +704,11 @@ fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
 
 #[test]
 fn release_recognizes_a_checkpoint_on_the_reservation_target() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("target-release-lane", "integration");
-    let claim = repo.claim(&lane, "file:released.txt", FIRST_RUN, None);
-    assert_success(&claim);
-    let id = json(&claim)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "released.txt", "landed\n", "release work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    assert_eq!(
-        json(&checkpoint)["payload"]["data"]["status"],
-        "checkpointed"
+    let repo = IntegrationRepository::from_recorded_template(
+        BEFORE_RELEASE_RECOGNIZES_A_CHECKPOINT_ON_THE_RESERVATION_TARGET,
     );
+    let ReleaseRecognizesACheckpointOnTheReservationTargetState { lane, id } =
+        recorded_history::read(repo.root());
     repo.merge_by_commit("target-release-lane");
     let released = repo.run(&lane, &["release", &id, "--json"]);
     assert_success(&released);
@@ -308,22 +719,11 @@ fn release_recognizes_a_checkpoint_on_the_reservation_target() {
 
 #[test]
 fn release_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("missing-target-release-lane", "integration");
-    let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "landed.txt", "landed\n", "lane work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    repo.merge_by_commit("missing-target-release-lane");
-    let first_release = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&first_release);
-    assert_eq!(json(&first_release)["status"], "integrated");
-    repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+    let repo = IntegrationRepository::from_recorded_template(
+        ROUND_THREE_RELEASE_USES_TRUNK_AFTER_THE_RESERVATION_TARGET_DISAPPEARS,
+    );
+    let ReleaseUsesTrunkAfterTheReservationTargetDisappearsHistory { lane, id } =
+        recorded_history::read(repo.root());
     repo.remove_integration_branch();
 
     let released = repo.run(&lane, &["release", &id, "--json"]);
@@ -339,31 +739,15 @@ fn release_uses_trunk_after_the_reservation_target_disappears() {
 
 #[test]
 fn released_integration_target_witness_can_be_replaced() {
-    // The existing main checkout can hold work aimed at integration. A third
-    // checkout adds no target-reachability distinction to this scenario.
-    let repo = IntegrationRepository::from_template(INITIALIZED_REPOSITORY);
-    let lane = repo.root();
-    let claimed = repo.claim(lane, "file:replacement.txt", FIRST_RUN, Some("integration"));
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(lane, "replacement.txt", "work\n", "protected work");
-    let checkpoint = repo.run(lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    let target_before = loose_refs::read_loose_ref(repo.root(), "refs/heads/integration");
-    repo.commit_file(
-        &repo.integration,
-        "replacement.txt",
-        "work\n",
-        "squashed integration",
+    let repo = IntegrationRepository::from_recorded_template(
+        BEFORE_RELEASED_INTEGRATION_TARGET_WITNESS_CAN_BE_REPLACED,
     );
-    let landed = repo.run(lane, &["release", &id, "--json"]);
-    assert_success(&landed);
-    assert_eq!(json(&landed)["status"], "integrated");
-
-    repo.git(&repo.integration, &["reset", "--hard", &target_before]);
+    let ReleasedIntegrationTargetWitnessCanBeReplacedState {
+        id,
+        target_before,
+        integration,
+    } = recorded_history::read(repo.root());
+    repo.git(&integration, &["reset", "--hard", &target_before]);
     for _ in 0..2 {
         let lost = repo.run(repo.root(), &["release", &id, "--json"]);
         assert_success(&lost);
@@ -386,7 +770,7 @@ fn released_integration_target_witness_can_be_replaced() {
     );
 
     repo.commit_file(
-        &repo.integration,
+        &integration,
         "replacement.txt",
         "work\n",
         "replacement evidence",
@@ -405,36 +789,11 @@ fn released_integration_target_witness_can_be_replaced() {
 
 #[test]
 fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("target-orphan-lane", "integration");
-    let claimed = repo.claim(&lane, "file:orphan.txt", SECOND_RUN, None);
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "orphan.txt", "work\n", "orphan work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    let protected_tip = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
-    repo.commit_file(&lane, "later.txt", "later\n", "later lane work");
-    let later_head = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
-    let before_prune = repo.run(repo.root(), &["board", "--json"]);
-    assert_success(&before_prune);
-    let before_prune = json(&before_prune);
-    let reservation = ["ready_now", "unconstrained_reservations"]
-        .into_iter()
-        .flat_map(|section| {
-            before_prune["payload"]["data"][section]["entries"]
-                .as_array()
-                .into_iter()
-                .flatten()
-        })
-        .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .find(|entry| entry["reservation_id"] == id)
-        .expect("outstanding reservation remains on the board");
-    assert_eq!(reservation["merge_extent"]["status"], "protected");
-    assert_ne!(later_head, protected_tip);
+    let repo = IntegrationRepository::from_recorded_template(
+        BEFORE_ORPHAN_ALERT_AND_MANUAL_RECOVERY_USE_THE_RESERVATION_TARGET,
+    );
+    let OrphanAlertAndManualRecoveryUseTheReservationTargetState { lane, id, .. } =
+        recorded_history::read(repo.root());
     std::fs::remove_dir_all(&lane).expect("remove lane worktree");
     repo.git(repo.root(), &["worktree", "prune", "--expire", "now"]);
     repo.git(repo.root(), &["branch", "-D", "target-orphan-lane"]);
@@ -463,55 +822,18 @@ fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
         refusal["message"],
         "the --integrated-as commit must resolve in this repository and be reachable from the reservation's target"
     );
-
-    repo.git(
-        &repo.integration,
-        &["merge", "--no-ff", "--no-edit", &protected_tip],
-    );
-    let resolved = repo.run(
-        repo.root(),
-        &["resolve", &id, "--integrated-as", &protected_tip, "--json"],
-    );
-    assert_success(&resolved);
-    let resolution = json(&resolved);
-    assert_eq!(
-        resolution["payload"]["data"]["disposition"]["evidence"],
-        protected_tip
-    );
 }
 
 #[test]
 fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("missing-target-recovery-lane", "integration");
-    let claimed = repo.claim(&lane, "file:recovered.txt", SECOND_RUN, None);
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "recovered.txt", "work\n", "protected work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    repo.commit_file(&lane, "later.txt", "later\n", "later lane work");
-    repo.git(
-        repo.root(),
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            lane.to_str().expect("UTF-8 path"),
-        ],
+    let repo = IntegrationRepository::from_recorded_template(
+        liveness_fixtures::HISTORY_MISSING_TARGET_RECOVERY,
     );
-    repo.git(
-        repo.root(),
-        &["branch", "-D", "missing-target-recovery-lane"],
-    );
-    repo.commit_file(repo.root(), "recovered.txt", "work\n", "trunk carries work");
-    let trunk_commit = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
-    let missing_target_commit = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    repo.remove_integration_branch();
-
+    let liveness_fixtures::MissingTargetRecoveryHistory {
+        id,
+        trunk_commit,
+        missing_target_commit,
+    } = recorded_history::read(repo.root());
     let refused = repo.run(
         repo.root(),
         &[
@@ -580,30 +902,13 @@ fn retarget_of_checkpointed_reservation_remains_outstanding() {
 
 #[test]
 fn retarget_refuses_released_reservation() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("released-retarget-lane", "integration");
-    repo.commit_file(
-        &lane,
-        "released-retarget.txt",
-        "lane work\n",
-        "work to release",
+    let repo = IntegrationRepository::from_recorded_template(
+        ROUND_THREE_RETARGET_REFUSES_RELEASED_RESERVATION,
     );
-    let claim = repo.claim(&lane, "file:released-retarget.txt", FIRST_RUN, None);
-    assert_success(&claim);
-    let reservation_id = json(&claim)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("claim reservation ID")
-        .to_owned();
-    let release = repo.run(&lane, &["release", &reservation_id, "--json"]);
-    assert_success(&release);
-    repo.merge_fast_forward("released-retarget-lane");
-    let settled = repo.run(repo.root(), &["board", "--json"]);
-    assert_success(&settled);
-    assert!(
-        repo.journal()
-            .iter()
-            .any(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
-    );
+    let RetargetRefusesReleasedReservationHistory {
+        lane,
+        reservation_id,
+    } = recorded_history::read(repo.root());
     let before = repo.journal().len();
     let retarget = repo.run(
         &lane,
@@ -614,137 +919,17 @@ fn retarget_refuses_released_reservation() {
     assert_eq!(repo.journal().len(), before);
 }
 
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
-const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
-const MARKER_PATH: &str = ".git/cargo-berth-run-id";
-const PAUSE_MODE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_PAUSE";
-const PAUSE_MODE_HEAD: &str = "head";
-const PAUSE_MODE_MERGE_BASE: &str = "merge-base";
-const PAUSED_GIT_WRAPPER: &str = r#"#!/bin/sh
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
-    : > "$CARGO_BERTH_TEST_GIT_READY"
-    IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
-fi
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "cat-file" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
-    while IFS= read -r expression; do
-        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
-            : > "$CARGO_BERTH_TEST_GIT_READY"
-            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
-        fi
-        printf '%s\n' "$expression"
-    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
-    exit $?
-fi
-exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
-"#;
-const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
-const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
-const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
-const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
-
-struct PausedBerthProcess {
-    child:             cargo_berth_test_support::TestProcessGroup,
-    continue_path:     PathBuf,
-    ready_path:        PathBuf,
-    wrapper_directory: TempDir,
-}
-
-impl PausedBerthProcess {
-    fn spawn(repository_root: &Path, arguments: &[&str], pause_mode: &str) -> Self {
-        let wrapper_directory = tempdir().expect("git wrapper directory should exist");
-        let wrapper_path = wrapper_directory.path().join("git");
-        fs::write(&wrapper_path, PAUSED_GIT_WRAPPER).expect("git wrapper should write");
-        let mut permissions = fs::metadata(&wrapper_path)
-            .expect("git wrapper metadata should read")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
-        let ready_path = wrapper_directory.path().join("ready");
-        let continue_path = wrapper_directory.path().join("continue");
-        let fifo = Command::new("mkfifo")
-            .arg(&continue_path)
-            .output()
-            .expect("continuation FIFO command should run");
-        assert!(
-            fifo.status.success(),
-            "continuation FIFO should be created: {fifo:?}"
-        );
-        let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-        let wrapped_path = std::env::join_paths(
-            std::iter::once(wrapper_directory.path().to_path_buf())
-                .chain(std::env::split_paths(&original_path)),
-        )
-        .expect("wrapped PATH should join");
-        let child = cargo_berth_test_support::TestProcessGroup::spawn(
-            cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
-                "CARGO_BIN_EXE_cargo-berth"
-            )))
-            .args(arguments)
-            .current_dir(repository_root)
-            .env("PATH", wrapped_path)
-            .env(PAUSE_MODE_ENVIRONMENT, pause_mode)
-            .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
-            .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
-            .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
-            .env_remove(RUN_ENVIRONMENT)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-        )
-        .expect("cargo-berth should start with paused git");
-        Self {
-            child,
-            continue_path,
-            ready_path,
-            wrapper_directory,
-        }
-    }
-
-    fn wait_until_paused(&mut self) { wait_for_path(&self.ready_path, self.child.child_mut()); }
-
-    fn continue_and_wait(self) -> Output {
-        let Self {
-            child,
-            continue_path,
-            ready_path: _,
-            wrapper_directory,
-        } = self;
-        fs::write(continue_path, b"continue\n").expect("paused git should continue");
-        let output = child
-            .wait_with_output()
-            .expect("cargo-berth should finish after git continues");
-        std::mem::drop(wrapper_directory);
-        output
-    }
-}
-
 #[test]
 fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery() {
-    let repository = initialized_repository();
-    let worktree_parent = tempdir().expect("worktree parent should exist");
-    let phase_worktree = worktree_parent.path().join("phase");
-    GIT.add_worktree_without_hooks(repository.path(), &phase_worktree, "phase", "HEAD");
-    commit_file(&phase_worktree, "src/lib.rs", "phase work\n", "phase work");
-    let claim = run_berth(
-        &phase_worktree,
-        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
-    );
-    assert!(
-        claim.status.success(),
-        "claim failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&claim.stdout),
-        String::from_utf8_lossy(&claim.stderr)
-    );
-    let reservation_id = reservation_id(&claim);
-    let checkpoint = run_berth(&phase_worktree, &["release", &reservation_id, "--json"]);
-    assert!(checkpoint.status.success());
-    let protected_tip = json_output(&checkpoint)["payload"]["data"]["protected_tip"]
-        .as_str()
-        .expect("checkpoint should report a protected tip")
-        .to_owned();
-
+    let repository =
+        ROUND_THREE_PRUNABLE_AND_PRUNED_WORKTREES_KEEP_BLOCKING_AND_PRUNED_WORK_REPORTS_RECOVERY
+            .instantiate();
+    let PrunableAndPrunedWorktreesKeepBlockingAndPrunedWorkReportsRecoveryHistory {
+        phase_worktree,
+        reservation_id,
+        protected_tip,
+    } = recorded_history::read(repository.path());
+    let worktree_parent = repository.path().join(".git/fixture-worktrees");
     fs::remove_dir_all(&phase_worktree).expect("worktree directory should be removed");
     let orphan_candidate = run_berth(repository.path(), &["check", "file:src/lib.rs", "--json"]);
     assert_eq!(orphan_candidate.status.code(), Some(1));
@@ -759,7 +944,7 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
     git(repository.path(), &["worktree", "prune", "--expire", "now"]);
     assert_orphan_recovery_evidence(repository.path(), &reservation_id, &protected_tip);
 
-    let replacement_worktree = worktree_parent.path().join("replacement");
+    let replacement_worktree = worktree_parent.as_path().join("replacement");
     GIT.add_worktree_without_hooks(
         repository.path(),
         &replacement_worktree,
@@ -785,75 +970,6 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
             .as_array()
             .is_some_and(Vec::is_empty)
     );
-}
-
-/// Orphan recovery remains a separate fact from an unavailable merge derivation.
-fn orphan_alert(envelope: &serde_json::Value) -> &serde_json::Value {
-    envelope["payload"]["alerts"]
-        .as_array()
-        .expect("alerts should be a list")
-        .iter()
-        .find(|alert| alert["kind"] == "orphaned_outstanding")
-        .expect("the missing holder must still report orphan recovery")
-}
-
-fn assert_orphan_recovery_evidence(repository: &Path, reservation_id: &str, protected_tip: &str) {
-    let orphaned = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
-    let orphaned_json = json_output(&orphaned);
-    assert_eq!(orphaned.status.code(), Some(1));
-    assert_eq!(orphan_alert(&orphaned_json)["kind"], "orphaned_outstanding");
-    assert_eq!(
-        orphan_alert(&orphaned_json)["data"]["recoverability"],
-        "recoverable_from_branch"
-    );
-
-    git(
-        repository,
-        &["update-ref", "refs/heads/phase", "refs/heads/main"],
-    );
-    let protected = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
-    assert_eq!(
-        orphan_alert(&json_output(&protected))["data"]["branch_ref_status"]["status"],
-        "present"
-    );
-    assert_eq!(
-        orphan_alert(&json_output(&protected))["data"]["recoverability"],
-        "recoverable_from_protected_tip"
-    );
-
-    remove_protected_tip_recovery_sources(repository, reservation_id, protected_tip);
-    let unavailable = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
-    assert_eq!(
-        orphan_alert(&json_output(&unavailable))["data"]["branch_ref_status"]["status"],
-        "present"
-    );
-    assert_eq!(
-        orphan_alert(&json_output(&unavailable))["data"]["recoverability"],
-        "commit_unavailable"
-    );
-}
-
-fn remove_protected_tip_recovery_sources(
-    repository: &Path,
-    reservation_id: &str,
-    protected_tip: &str,
-) {
-    git(
-        repository,
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/cargo-berth/reservations/{reservation_id}"),
-        ],
-    );
-    let (object_directory, object_file) = protected_tip.split_at(2);
-    fs::remove_file(
-        repository
-            .join(".git/objects")
-            .join(object_directory)
-            .join(object_file),
-    )
-    .expect("protected commit object should delete");
 }
 
 #[test]
@@ -1289,143 +1405,6 @@ fn check_rejects_invalid_coordination_identities_and_claim_renews_stale_markers(
     assert_check_session_rejections(&repository);
 }
 
-fn assert_marker_claim_revalidation(repository: &TempDir) {
-    let first_claim = run_berth(
-        repository.path(),
-        &["claim", "file:first", "--run", FIRST_RUN, "--json"],
-    );
-    let raced_reservation_id = reservation_id(&first_claim);
-    let mut pending_claim = PausedBerthProcess::spawn(
-        repository.path(),
-        &["claim", "file:second", "--json"],
-        PAUSE_MODE_HEAD,
-    );
-    pending_claim.wait_until_paused();
-    assert!(
-        run_berth(
-            repository.path(),
-            &["release", &raced_reservation_id, "--json"]
-        )
-        .status
-        .success()
-    );
-
-    let rejected_claim = pending_claim.continue_and_wait();
-
-    assert_eq!(rejected_claim.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &json_output(&rejected_claim),
-        "stale_marker_run",
-        &["reconcile_and_sweep_marker"],
-    );
-    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
-        .expect("journal should read after rejected claim");
-    assert_eq!(journal.matches("\"op\":\"claim\"").count(), 1);
-}
-
-fn assert_stale_marker_check_and_new_claim(repository: &TempDir) {
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
-    commit_file(repository.path(), "a", "phase\n", "phase work");
-    let first_claim = run_berth(
-        repository.path(),
-        &["claim", "file:a", "--run", FIRST_RUN, "--json"],
-    );
-    let first_reservation_id = reservation_id(&first_claim);
-    assert!(
-        run_berth(repository.path(), &["release", &first_reservation_id])
-            .status
-            .success()
-    );
-    fs::write(
-        repository.path().join(MARKER_PATH),
-        format!("{FIRST_RUN}\n"),
-    )
-    .expect("stale marker should write");
-
-    let blocked = run_berth(repository.path(), &["check", "file:a", "--json"]);
-    assert_eq!(blocked.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &json_output(&blocked),
-        "stale_marker_run",
-        &["reconcile_and_sweep_marker"],
-    );
-
-    fs::write(
-        repository.path().join(MARKER_PATH),
-        format!("{FIRST_RUN}\n"),
-    )
-    .expect("stale marker should rewrite");
-    let second_claim = run_berth(repository.path(), &["claim", "file:b", "--json"]);
-    assert!(second_claim.status.success());
-    assert_ne!(
-        json_output(&second_claim)["payload"]["data"]["coordination_run_id"],
-        FIRST_RUN
-    );
-    assert!(
-        run_berth(
-            repository.path(),
-            &["release", &reservation_id(&second_claim), "--json"]
-        )
-        .status
-        .success()
-    );
-}
-
-fn assert_check_session_rejections(repository: &TempDir) {
-    let stale_session = "stale-check-session";
-    let mapped_claim = run_berth_with_session(
-        repository.path(),
-        &["claim", "file:stale-mapped", "--run", FIRST_RUN, "--json"],
-        stale_session,
-    );
-    assert!(mapped_claim.status.success());
-    let mapped_reservation_id = reservation_id(&mapped_claim);
-    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
-    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
-    assert!(
-        run_berth(
-            repository.path(),
-            &["release", &mapped_reservation_id, "--json"],
-        )
-        .status
-        .success()
-    );
-    fs::write(&mapping_path, stale_mapping).expect("stale mapping should write");
-    let stale_rejection = run_berth_with_session(
-        repository.path(),
-        &["check", "file:stale-mapped", "--json"],
-        stale_session,
-    );
-    assert_eq!(stale_rejection.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &json_output(&stale_rejection),
-        "stale_session_mapping",
-        &["clear_session_mapping"],
-    );
-
-    let worktree_parent = tempdir().expect("worktree parent should exist");
-    let second_root = worktree_parent.path().join("check-second");
-    GIT.add_worktree_without_hooks(repository.path(), &second_root, "check-second", "HEAD");
-    let mismatch_session = "foreign-check-session";
-    let live_claim = run_berth_with_session(
-        repository.path(),
-        &["claim", "file:live-mapped", "--run", SECOND_RUN, "--json"],
-        mismatch_session,
-    );
-    assert!(live_claim.status.success());
-    let mismatch_rejection = run_berth_with_session(
-        &second_root,
-        &["check", "file:live-mapped", "--json"],
-        mismatch_session,
-    );
-    assert_eq!(mismatch_rejection.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &json_output(&mismatch_rejection),
-        "session_worktree_mismatch",
-        &["rerun_from_holding_worktree", "claim_separately_here"],
-    );
-}
-
 #[test]
 fn rewritten_integration_reachability_leaves_the_mutation_lock_available() {
     let repository = initialized_repository();
@@ -1692,9 +1671,17 @@ fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() 
 
 #[test]
 fn abandon_and_retire_dispositions_remain_distinct_after_replay() {
-    let repository = RECOVERY_SOURCES.instantiate();
-    let (abandoned_id, retired_id) = record_terminal_recovery_dispositions(repository.path());
-
+    let repository =
+        BEFORE_ABANDON_AND_RETIRE_DISPOSITIONS_REMAIN_DISTINCT_AFTER_REPLAY.instantiate();
+    let AbandonAndRetireDispositionsRemainDistinctAfterReplayState {
+        abandoned_id,
+        retired_id,
+    } = recorded_history::read(repository.path());
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
     let replayed_journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
@@ -1740,33 +1727,12 @@ fn abandon_and_retire_dispositions_remain_distinct_after_replay() {
 
 #[test]
 fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
-    let repository = initialized_repository();
-    let claim = run_berth(
-        repository.path(),
-        &["claim", "file:unknown-trunk", "--run", FIRST_RUN, "--json"],
-    );
-    assert!(claim.status.success());
-    let reservation_id = reservation_id(&claim);
-    commit_file(
-        repository.path(),
-        "unknown-trunk",
-        "released work\n",
-        "unknown trunk work",
-    );
-    // Work committed on trunk ends its run in the release command's own reconciliation.
-    for (expected_status, expected_fact_status) in [
-        ("integrated", "released"),
-        ("integrated", "already_settled"),
-    ] {
-        let release = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
-        assert!(release.status.success());
-        assert_eq!(json_output(&release)["status"], expected_status);
-        assert_eq!(
-            json_output(&release)["payload"]["data"]["status"],
-            expected_fact_status
-        );
-    }
-    let integrated_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let repository =
+        BEFORE_UNRESOLVED_TRUNK_ALERT_SURVIVES_AND_DEFERS_INTEGRATED_AS_RECOVERY.instantiate();
+    let UnresolvedTrunkAlertSurvivesAndDefersIntegratedAsRecoveryState {
+        reservation_id,
+        integrated_tip,
+    } = recorded_history::read(repository.path());
     git(
         repository.path(),
         &[
@@ -1828,49 +1794,11 @@ fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
 
 #[test]
 fn retire_orphan_replaces_lost_integration_evidence_and_survives_replay() {
-    let repository = initialized_repository();
-    let claim = run_berth(
-        repository.path(),
-        &["claim", "file:reworked", "--run", FIRST_RUN, "--json"],
-    );
-    assert!(claim.status.success());
-    let reservation_id = reservation_id(&claim);
-    let trunk_before_landing = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    commit_file(repository.path(), "reworked", "work\n", "landed work");
-    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let released = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
-    assert_eq!(json_output(&released)["status"], "integrated");
-
-    // Evidence that still proves the integration leaves no disposition to replace.
-    assert_retire_orphan_is_already_resolved(repository.path(), &reservation_id);
-
-    // Trunk is rewritten and the work lands again reworked, so git cannot match it and the
-    // `--integrated-as` refusal names the retirement instead.
-    lose_the_integration_witness(repository.path(), &reservation_id, &trunk_before_landing);
-    commit_file(
-        repository.path(),
-        "reworked",
-        "reworked work\n",
-        "reworked landing",
-    );
-    let reworked_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    assert_integrated_as_lacks_the_work(
-        repository.path(),
-        &reservation_id,
-        &reworked_commit,
-        &protected_tip,
-    );
-    let board = json_output(&run_berth(repository.path(), &["board", "--json"]));
-    let alert = lost_evidence_alert(&board, &reservation_id)
-        .expect("the board should report the lost evidence");
-    assert_eq!(
-        alert["recovery"]["retirement"],
-        serde_json::json!({
-            "action": "resolve_retire_orphan",
-            "reservation_id": reservation_id,
-        })
-    );
-
+    let repository =
+        ROUND_THREE_RETIRE_ORPHAN_REPLACES_LOST_INTEGRATION_EVIDENCE_AND_SURVIVES_REPLAY
+            .instantiate();
+    let RetireOrphanReplacesLostIntegrationEvidenceAndSurvivesReplayHistory { reservation_id } =
+        recorded_history::read(repository.path());
     let retired = run_berth(
         repository.path(),
         &[
@@ -1916,81 +1844,14 @@ fn retire_orphan_replaces_lost_integration_evidence_and_survives_replay() {
     assert_retire_orphan_is_already_resolved(repository.path(), &reservation_id);
 }
 
-fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {
-    // The template contains only unclaimed source commits. Each reservation still
-    // checkpoints and resolves separately before replay tests their distinction.
-    let abandoned_claim = run_berth(
-        repository,
-        &["claim", "file:abandoned", "--run", FIRST_RUN, "--json"],
-    );
-    let abandoned_id = reservation_id(&abandoned_claim);
-    assert!(
-        run_berth(repository, &["release", &abandoned_id])
-            .status
-            .success()
-    );
-    let abandoned = run_berth(
-        repository,
-        &[
-            "resolve",
-            &abandoned_id,
-            "--abandon",
-            "--why",
-            "user confirmed discard",
-            "--json",
-        ],
-    );
-    assert_eq!(
-        json_output(&abandoned)["payload"]["data"]["disposition"]["kind"],
-        "abandoned"
-    );
-
-    let retired_claim = run_berth(
-        repository,
-        &["claim", "file:retired", "--run", FIRST_RUN, "--json"],
-    );
-    let retired_id = reservation_id(&retired_claim);
-    assert!(
-        run_berth(repository, &["release", &retired_id])
-            .status
-            .success()
-    );
-    let retired = run_berth(
-        repository,
-        &[
-            "resolve",
-            &retired_id,
-            "--retire-orphan",
-            "--why",
-            "user confirmed retirement",
-            "--json",
-        ],
-    );
-    assert_eq!(
-        json_output(&retired)["payload"]["data"]["disposition"]["kind"],
-        "retired_orphan"
-    );
-    (abandoned_id, retired_id)
-}
-
 #[test]
 fn rewritten_integration_replacement_validates_evidence() {
-    let sources = RECOVERY_SOURCES.instantiate();
+    let sources = BEFORE_REWRITTEN_INTEGRATION_REPLACEMENT_VALIDATES_EVIDENCE.instantiate();
+    let RewrittenIntegrationReplacementValidatesEvidenceState {
+        rewritten_id,
+        unreachable_tip,
+    } = recorded_history::read(sources.path());
     let repository = sources.path();
-    // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`.
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "rewritten"]);
-    let unreachable_tip = loose_refs::read_loose_ref(repository, "refs/heads/rewritten");
-    let rewritten_claim = run_berth(
-        repository,
-        &["claim", "file:rewritten", "--run", FIRST_RUN, "--json"],
-    );
-    let rewritten_id = reservation_id(&rewritten_claim);
-    assert!(
-        run_berth(repository, &["release", &rewritten_id])
-            .status
-            .success()
-    );
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
     let rejected = run_berth(
         repository,
         &[
@@ -2036,6 +1897,44 @@ fn rewritten_integration_replacement_validates_evidence() {
 
     // The released reservation is non-blocking, so replacing its lost evidence is refused for
     // a trunk commit lacking the work and accepted for one carrying identical scoped content.
+}
+
+#[test]
+fn manual_orphan_recovery_accepts_the_reservation_target() {
+    let repo = IntegrationRepository::from_recorded_template(
+        liveness_fixtures::HISTORY_MANUAL_ORPHAN_RECOVERY_ACCEPTS_THE_RESERVATION_TARGET,
+    );
+    let liveness_fixtures::ManualOrphanRecoveryAcceptsTheReservationTargetHistory {
+        id,
+        protected_tip,
+    } = recorded_history::read(repo.root());
+    repo.git(
+        &repo.integration,
+        &["merge", "--no-ff", "--no-edit", &protected_tip],
+    );
+    let resolved = repo.run(
+        repo.root(),
+        &["resolve", &id, "--integrated-as", &protected_tip, "--json"],
+    );
+    assert_success(&resolved);
+    let resolution = json(&resolved);
+    assert_eq!(
+        resolution["payload"]["data"]["disposition"]["evidence"],
+        protected_tip
+    );
+}
+
+#[test]
+fn rewritten_integration_replacement_accepts_equivalent_content() {
+    let sources =
+        liveness_fixtures::HISTORY_REWRITTEN_INTEGRATION_REPLACEMENT_ACCEPTS_EQUIVALENT_CONTENT
+            .instantiate();
+    let liveness_fixtures::RewrittenIntegrationReplacementAcceptsEquivalentContentHistory {
+        rewritten_id,
+        unreachable_tip,
+        unrelated_commit,
+    } = recorded_history::read(sources.path());
+    let repository = sources.path();
     lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
     assert_integrated_as_lacks_the_work(
         repository,
@@ -2046,7 +1945,18 @@ fn rewritten_integration_replacement_validates_evidence() {
     commit_rewritten_trunk_without_hooks(repository, "squashed again");
     let equivalent_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
+}
 
+#[test]
+fn rewritten_integration_replacement_accepts_merged_ancestry() {
+    let sources =
+        liveness_fixtures::HISTORY_REWRITTEN_INTEGRATION_REPLACEMENT_ACCEPTS_MERGED_ANCESTRY
+            .instantiate();
+    let liveness_fixtures::RewrittenIntegrationReplacementAcceptsMergedAncestryHistory {
+        rewritten_id,
+        unrelated_commit,
+    } = recorded_history::read(sources.path());
+    let repository = sources.path();
     // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
     lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
     GIT.run_without_hooks(
@@ -2075,364 +1985,4 @@ fn rewritten_integration_replacement_validates_evidence() {
             .code(),
         Some(0)
     );
-}
-
-/// Change trunk without allowing a hook to reconcile before the asserted release.
-fn commit_rewritten_trunk_without_hooks(repository: &Path, message: &str) {
-    fs::write(repository.join("rewritten"), "work\n").expect("trunk work should write");
-    GIT.run_without_hooks(repository, ["add", "rewritten"]);
-    GIT.run_without_hooks(repository, ["commit", "--quiet", "-m", message]);
-}
-
-/// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
-fn lose_the_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
-    GIT.run_without_hooks(repository, ["reset", "--hard", "--quiet", trunk]);
-    // The reset is the first thing this pass sees, so it records the loss and says nothing; the
-    // next pass, reading back the row it left, is the one that reports. See
-    // `ReconciliationAction::confirmed_lost_evidence`.
-    let reblocked = json_output(&run_berth(
-        repository,
-        &["release", reservation_id, "--json"],
-    ));
-    assert_eq!(reblocked["status"], "trunk_rewritten");
-    assert!(
-        reblocked["payload"]["alerts"]
-            .as_array()
-            .is_none_or(|alerts| {
-                alerts
-                    .iter()
-                    .all(|alert| alert["kind"] != "lost_integration_evidence")
-            }),
-        "one pass alone must not report integration evidence lost: {reblocked:#}"
-    );
-    let persisted = json_output(&run_berth(
-        repository,
-        &["release", reservation_id, "--json"],
-    ));
-    assert_eq!(persisted["status"], "trunk_rewritten");
-    let lost_evidence = &persisted["payload"]["alerts"][0];
-    assert_eq!(lost_evidence["kind"], "lost_integration_evidence");
-    // The current trunk proves nothing, so it is named only as the trunk that lost the proof.
-    assert_eq!(
-        lost_evidence["data"]["recovery"]["kind"],
-        "name_carrying_trunk_commit"
-    );
-    assert_eq!(lost_evidence["data"]["recovery"]["trunk_oid"], trunk);
-    assert_eq!(
-        lost_evidence["data"]["recovery"]["retirement"]["action"],
-        "resolve_retire_orphan"
-    );
-}
-
-/// Replace a released reservation's lost evidence with a trunk commit that carries the work.
-fn replace_the_integration_evidence(repository: &Path, reservation_id: &str, commit: &str) {
-    let replaced = run_berth(
-        repository,
-        &[
-            "resolve",
-            reservation_id,
-            "--integrated-as",
-            commit,
-            "--json",
-        ],
-    );
-    assert!(replaced.status.success(), "{:#}", json_output(&replaced));
-    assert_eq!(
-        json_output(&replaced)["payload"]["data"]["disposition"]["evidence"],
-        commit
-    );
-}
-
-/// Assert `resolve --integrated-as` refuses a trunk commit that does not carry the protected work.
-fn assert_integrated_as_lacks_the_work(
-    repository: &Path,
-    reservation_id: &str,
-    commit: &str,
-    protected_tip: &str,
-) {
-    let refused = run_berth(
-        repository,
-        &[
-            "resolve",
-            reservation_id,
-            "--integrated-as",
-            commit,
-            "--json",
-        ],
-    );
-    assert_eq!(refused.status.code(), Some(5));
-    let message = json_output(&refused)["message"]
-        .as_str()
-        .expect("refusal should carry a message")
-        .to_owned();
-    assert!(message.contains(commit), "{message}");
-    assert!(message.contains(protected_tip), "{message}");
-    assert!(
-        message.contains(&format!(
-            "cargo-berth resolve {reservation_id} --retire-orphan --why <reason>"
-        )),
-        "{message}"
-    );
-}
-
-/// Assert `resolve --retire-orphan` refuses a released reservation whose disposition stands.
-fn assert_retire_orphan_is_already_resolved(repository: &Path, reservation_id: &str) {
-    let refused = run_berth(
-        repository,
-        &[
-            "resolve",
-            reservation_id,
-            "--retire-orphan",
-            "--why",
-            "user confirmed retirement",
-            "--json",
-        ],
-    );
-    let refused_json = json_output(&refused);
-    assert_eq!(refused.status.code(), Some(5));
-    assert_eq!(refused_json["status"], "invalid_input");
-    assert_eq!(
-        refused_json["message"],
-        "the reservation is already resolved"
-    );
-}
-
-/// The board's lost-integration-evidence alert for one reservation, when it reports one.
-fn lost_evidence_alert<'board>(
-    board: &'board serde_json::Value,
-    reservation_id: &str,
-) -> Option<&'board serde_json::Value> {
-    board["payload"]["data"]["alerts"]["entries"]
-        .as_array()?
-        .iter()
-        .find(|alert| {
-            alert["kind"] == "lost_integration_evidence"
-                && alert["reservation_id"] == reservation_id
-        })
-}
-
-fn create_active_orphan(
-    repository: &Path,
-    worktree_parent: &Path,
-    branch: &str,
-    scope: &str,
-    run: &str,
-) -> String {
-    let worktree = worktree_parent.join(branch);
-    GIT.add_worktree_without_hooks(repository, &worktree, branch, "HEAD");
-    let claim = run_berth(&worktree, &["claim", scope, "--run", run, "--json"]);
-    assert!(claim.status.success());
-    let reservation_id = reservation_id(&claim);
-    fs::remove_dir_all(&worktree).expect("active orphan worktree should be removed");
-    git(repository, &["worktree", "prune", "--expire", "now"]);
-    reservation_id
-}
-
-fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
-
-fn build_recovery_sources(repository: &Path) {
-    // No ledger answer or reservation is cached. The source commits run their
-    // real hooks, just as they did before this setup was shared across processes.
-    build_initialized_repository(repository);
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "abandoned"]);
-    fs::write(repository.join("abandoned"), "work\n").expect("abandoned work should write");
-    fs::write(repository.join("retired"), "work\n").expect("retired work should write");
-    git(repository, &["add", "abandoned", "retired"]);
-    git(
-        repository,
-        &["commit", "--quiet", "-m", "terminal recovery work"],
-    );
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "rewritten", "main"]);
-    commit_file(repository, "rewritten", "work\n", "rewritten source");
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "abandoned"]);
-}
-
-fn build_initialized_repository(repository_root: &Path) {
-    git(
-        repository_root,
-        &["init", "--quiet", "--initial-branch=main"],
-    );
-    git_configuration::append_git_configuration(repository_root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
-    fs::write(repository_root.join("README.md"), "scratch repository\n")
-        .expect("scratch file should write");
-    git(repository_root, &["add", "README.md"]);
-    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
-    assert!(run_berth(repository_root, &["init"]).status.success());
-    git(
-        repository_root,
-        &["add", "--force", ".claude/config/berth.toml"],
-    );
-    // Nothing is claimed yet, so the commit skips the hooks; see `GitDriver::run_without_hooks`.
-    GIT.run_without_hooks(
-        repository_root,
-        ["commit", "--quiet", "-m", "track berth config"],
-    );
-}
-
-fn reservation_id(claim: &Output) -> String {
-    json_output(claim)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("claim should return a reservation id")
-        .to_owned()
-}
-
-fn board_reservation_snapshot<'board>(
-    data: &'board serde_json::Value,
-    reservation_id: &str,
-) -> &'board serde_json::Value {
-    ["ready_now", "unconstrained_reservations", "resolved"]
-        .into_iter()
-        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
-        .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
-        .expect("reservation should have a board snapshot")
-}
-
-fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str) {
-    let file_path = repository_root.join(path);
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent).expect("file parent should exist");
-    }
-    fs::write(file_path, contents).expect("committed file should write");
-    git(repository_root, &["add", path]);
-    git(repository_root, &["commit", "--quiet", "-m", message]);
-}
-
-fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
-    linked_checkout::administrative_directory(worktree_root)
-}
-
-fn run_contended_berth(command: &mut Command) -> Output {
-    let ready_directory = tempdir().expect("lock readiness directory should exist");
-    let ready_path = ready_directory.path().join("ready");
-    // Include startup: observing readiness happens after the child's deadline starts.
-    let started_at = Instant::now();
-    let mut child = command
-        .env(
-            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
-            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
-        )
-        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("contending cargo-berth should start");
-    wait_for_path(&ready_path, &mut child);
-    let output = child
-        .wait_with_output()
-        .expect("contending cargo-berth should finish");
-    let elapsed = started_at.elapsed();
-    assert!(
-        elapsed >= LOCK_CONTENTION_TOLERANCE,
-        "contention returned too early: {elapsed:?}"
-    );
-    assert!(
-        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
-        "contention took too long: {elapsed:?}"
-    );
-    output
-}
-
-fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(RUN_ENVIRONMENT)
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run")
-}
-
-fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(RUN_ENVIRONMENT)
-        .env(SESSION_ENVIRONMENT, session_id)
-        .output()
-        .expect("cargo-berth should run")
-}
-
-fn assert_coordination_identity_rejection(
-    envelope: &serde_json::Value,
-    expected_kind: &str,
-    expected_action_kinds: &[&str],
-) {
-    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
-    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
-    let actions = envelope["payload"]["data"]["recovery_actions"]
-        .as_array()
-        .expect("identity rejection should carry recovery actions");
-    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
-    assert_eq!(
-        actions
-            .iter()
-            .map(|action| action["kind"].as_str().expect("action kind should be text"))
-            .collect::<Vec<_>>(),
-        expected_action_kinds
-    );
-    for action in actions {
-        assert!(
-            action["argv"]
-                .as_array()
-                .is_some_and(|argv| !argv.is_empty())
-        );
-        assert!(
-            action["cwd"]
-                .as_str()
-                .is_some_and(|cwd| Path::new(cwd).is_absolute())
-        );
-    }
-}
-
-fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
-
-/// Commit on trunk without hooks before the claim, so `--integrated-as` the previous trunk commit
-/// names a strict ancestor of trunk and its `merge-base --is-ancestor` query starts git; the same
-/// commit on both sides answers without git.
-fn advance_trunk_past(repository_root: &Path) {
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "advance trunk",
-        ],
-    );
-}
-
-fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    GIT.stdout(repository_root, arguments)
-}
-
-fn git_binary() -> String {
-    let output = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("git lookup should run");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .expect("git path should be UTF-8")
-        .trim()
-        .to_owned()
-}
-
-fn wait_for_path(path: &Path, child: &mut Child) {
-    let deadline = Instant::now() + PAUSED_GIT_WRAPPER_TIMEOUT;
-    while !path.exists() && Instant::now() < deadline {
-        thread::sleep(POLL_INTERVAL);
-    }
-    if !path.exists() {
-        assert!(child.kill().is_ok(), "timed-out command should stop");
-        assert!(child.wait().is_ok(), "stopped command should be reaped");
-    }
-    assert!(path.exists(), "git wrapper did not reach its pause point");
-}
-
-fn json_output(output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).expect("command should render a JSON envelope")
 }

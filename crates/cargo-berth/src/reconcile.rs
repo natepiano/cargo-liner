@@ -1405,6 +1405,12 @@ enum RepositoryObservationScope {
 enum MergedRunEndings {
     /// End every such run in this append.
     End,
+    /// `MergedRunEndings::CheckpointRequested` permits the named phase to checkpoint beside
+    /// independent runs.
+    CheckpointRequested {
+        reservation_id: ReservationId,
+        worktree_id:    WorktreeId,
+    },
     /// Leave them for a later reconciliation, so drift attributes a new commit to its run first.
     Defer,
 }
@@ -1491,6 +1497,23 @@ pub(crate) fn reconcile(
         invocation_directory,
         RepositoryObservationScope::CurrentOrderingGraph,
         recovered_bypass_reporting,
+        |_| MergedRunEndings::End,
+    )
+}
+
+/// Select `MergedRunEndings::CheckpointRequested` for the phase named by the release command.
+pub(crate) fn reconcile_for_release(
+    invocation_directory: &Path,
+    reservation_id: ReservationId,
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
+    reconcile_with_scope(
+        invocation_directory,
+        RepositoryObservationScope::CurrentOrderingGraph,
+        RecoveredBypassReporting::Defer,
+        |worktree_id| MergedRunEndings::CheckpointRequested {
+            reservation_id,
+            worktree_id,
+        },
     )
 }
 
@@ -1638,6 +1661,7 @@ pub(crate) fn reconcile_for_sequence(
         invocation_directory,
         RepositoryObservationScope::RequestedOrderingEdge { before, after },
         RecoveredBypassReporting::Defer,
+        |_| MergedRunEndings::End,
     )
 }
 
@@ -1645,6 +1669,7 @@ fn reconcile_with_scope(
     invocation_directory: &Path,
     repository_observation_scope: RepositoryObservationScope,
     recovered_bypass_reporting: RecoveredBypassReporting,
+    select_merged_run_endings: impl FnOnce(WorktreeId) -> MergedRunEndings,
 ) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
     match BerthConfig::read(&worktree_context.configuration_lookup())? {
@@ -1653,6 +1678,7 @@ fn reconcile_with_scope(
             &berth_config,
             repository_observation_scope,
             recovered_bypass_reporting,
+            select_merged_run_endings,
         )
         .map(Enrollment::Enrolled),
         Enrollment::Unconfigured {
@@ -1669,8 +1695,14 @@ fn reconcile_enrolled(
     berth_config: &BerthConfig,
     repository_observation_scope: RepositoryObservationScope,
     recovered_bypass_reporting: RecoveredBypassReporting,
+    select_merged_run_endings: impl FnOnce(WorktreeId) -> MergedRunEndings,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
+    let worktree_id = ledger::worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?
+    .id;
     let repository = git::RepositorySnapshot::new(worktree_context.clone());
     reconcile_with_open_ledger(
         &repository,
@@ -1679,7 +1711,7 @@ fn reconcile_enrolled(
         ReconciliationRequest {
             repository_observation_scope,
             recovered_bypass_reporting,
-            merged_run_endings: MergedRunEndings::End,
+            merged_run_endings: select_merged_run_endings(worktree_id),
             stale_scope_releases: StaleScopeReleases::Defer,
         },
     )
@@ -1746,7 +1778,12 @@ fn reconcile_with_open_ledger_once(
                             },
                         }
                     },
-                    |action: ReconciliationAction, _, recoverable_failures| {
+                    |mut action: ReconciliationAction, state, recoverable_failures| {
+                        // Rebuild action.active_holders from committed lifecycles before
+                        // finish_cover_markers sweeps the markers.
+                        action.active_holders = active_reservation_holders(
+                            state.reservations().map_err(ReconcileError::Replay)?,
+                        );
                         action.commit_repairs(recoverable_failures)
                     },
                     |action, state, _| action.finish(state, journal_mutation_actor.worktree_id),
@@ -2781,10 +2818,14 @@ fn observe_merge_extent(
     let cached = holder_group(reservation, reservations, snapshot);
     let mut reservation_ids = cached.iter().map(|holder| holder.id()).collect::<Vec<_>>();
     reservation_ids.sort_unstable();
-    let reservation_group = if reservation_ids.len() == 1 {
+    let reservation_group = match reservation.merge_extent().holder_coverage() {
+        HolderMergeExtentCoverage::FullHolder if reservation_ids.len() == 1 => {
+            HolderMergeExtentCoverage::FullHolder
+        },
         HolderMergeExtentCoverage::FullHolder
-    } else {
-        HolderMergeExtentCoverage::ReservationShares { reservation_ids }
+        | HolderMergeExtentCoverage::ReservationShares { .. } => {
+            HolderMergeExtentCoverage::ReservationShares { reservation_ids }
+        },
     };
     let key = MergeExtentKey {
         trunk: trunk.clone(),
@@ -2980,7 +3021,9 @@ fn complete_reconciliation_plan(
     append_evidence_operations(reservations, plan)?;
     append_settlement_operations(reservations, ordering_graph, plan)?;
     let merged_runs = match context.merged_run_endings {
-        MergedRunEndings::End => append_merged_run_endings(reservations, plan),
+        MergedRunEndings::End | MergedRunEndings::CheckpointRequested { .. } => {
+            append_merged_run_endings(reservations, plan, context.merged_run_endings)
+        },
         MergedRunEndings::Defer => Vec::new(),
     };
     append_orphan_retirements(reservations, plan);
@@ -4815,17 +4858,19 @@ struct MergedRunEnding {
     integration_status: IntegrationEvidenceStatus,
 }
 
-/// End every active run whose work trunk now contains, with no release command.
+/// Checkpoint merged runs that `MergedRunEndings` permits to end.
 ///
-/// A run qualifies once it has done work — an earlier observation found unmerged paths, or its
-/// checkout has committed past the phase start — and this pass observes a clean checkout with
-/// no net branch change at a head trunk contains. Nothing is left to protect, so the run
-/// checkpoints at that head and settles in the same append. The result is the ordinary
-/// integrated release, revalidated on later reads like any other. A fresh claim that has not
-/// written yet has neither kind of work and keeps running.
+/// An independent run qualifies after observed work or a commit beyond its phase start.
+/// This pass must observe no net branch change at a head that trunk contains.
+/// The run checkpoints at that head and releases in the same append.
+/// Later reads revalidate its integration evidence.
+/// A fresh claim keeps running until it does work.
+/// `MergeExtentKey.reservation_group` requires a shared reservation to request its own checkpoint.
+/// A sibling can advance the holder's head while this phase still edits.
 fn append_merged_run_endings(
     reservations: &RetainedReservationSet,
     reconciliation: &mut ReconciliationPlan,
+    merged_run_endings: MergedRunEndings,
 ) -> Vec<MergedRunEnding> {
     let mut merged_runs = Vec::new();
     for reservation in reservations.iter() {
@@ -4840,6 +4885,18 @@ fn append_merged_run_endings(
         let MergeExtent::Empty { key } = extent else {
             continue;
         };
+        // MergeExtentKey.reservation_group separates shared branch progress from this phase's
+        // checkpoint request.
+        if matches!(
+            key.reservation_group,
+            HolderMergeExtentCoverage::ReservationShares { .. }
+        ) && !matches!(
+            merged_run_endings,
+            MergedRunEndings::CheckpointRequested { reservation_id, worktree_id }
+                if reservation_id == reservation.id() && worktree_id == reservation.actor().worktree
+        ) {
+            continue;
+        }
         // Enrollment requires a nonempty observed footprint. Its immutable source preserves
         // that evidence even if a preceding drift or gate already recorded an empty extent.
         let did_work = matches!(
@@ -5998,6 +6055,7 @@ mod tests {
     use super::SettlementSelection;
     use super::rewrite_target_judgment;
     use super::rewrite_target_tip;
+    use crate::config::Enrollment;
     use crate::drift::WorkingTreeFingerprint;
     use crate::edge::JudgedTargetTip;
     use crate::edge::RepositoryReservationEvidence;
@@ -6011,6 +6069,7 @@ mod tests {
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::ledger::IntegrationTarget;
+    use crate::ledger::JournalActor;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
     use crate::ledger::ObservedReservation;
@@ -6037,6 +6096,146 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_checkpoint_release_keeps_shared_phase_reservations_active()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_shared_checkpoint_preserves_siblings(2)
+    }
+
+    #[test]
+    fn the_reported_checkpoint_release_keeps_shared_phase_reservations_active()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_shared_checkpoint_preserves_siblings(4)
+    }
+
+    fn shared_checkpoint_repository()
+    -> Result<(TempDir, String, GitObjectId), Box<dyn std::error::Error>> {
+        let directory = cargo_berth_test_support::fixture_tempdir("shared-phase-");
+        let root = directory.path().canonicalize()?;
+        let git = |arguments: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+            let output = cargo_berth_test_support::fixture_git_command()
+                .args(arguments)
+                .current_dir(&root)
+                .bounded_output()?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+            }
+            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+        };
+        git(&["init", "--quiet", "--initial-branch=main"])?;
+        let configuration = root.join(".git/config");
+        let contents = std::fs::read_to_string(&configuration)?
+            + "\n[user]\n name = Test\n email = test@example.invalid\n";
+        std::fs::write(configuration, contents)?;
+        git(&["commit", "--quiet", "--allow-empty", "-m", "phase start"])?;
+        let start = git(&["rev-parse", "HEAD"])?;
+        git(&[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "checkpoint work",
+        ])?;
+        let head = git(&["rev-parse", "HEAD"])?.parse()?;
+        crate::ledger::Ledger::initialize(&root)?;
+        crate::config::BerthConfig::exclude_from_git(&root.join(".git"))?;
+        Ok((directory, start, head))
+    }
+
+    fn assert_shared_checkpoint_preserves_siblings(
+        reservation_count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../cargo-berth-test-support/fixtures/shared_phase_checkpoint.json"
+        ))?;
+        let (directory, start, head) = shared_checkpoint_repository()?;
+        let root = directory.path().canonicalize()?;
+        let ledger = crate::ledger::Ledger::open(&root)?;
+        let context = crate::ledger::WorktreeContext::discover(&root)?;
+        let actor = JournalActor {
+            repository: ledger.repository_identity()?,
+            worktree:   crate::ledger::worktree_identity(
+                context.administrative_directory(),
+                context.worktree_kind(),
+            )?
+            .id,
+            run:        crate::ids::CoordinationRunId::new(),
+        };
+        let claims = fixture["claims"].as_array().ok_or("snapshot claims")?;
+        let mut phases = Vec::new();
+        for original in claims.iter().take(reservation_count) {
+            let mut claim = original.clone();
+            claim["trunk_at_claim"] = json!(start);
+            claim["phase_start_head"] = json!(start);
+            claim["head_snapshot"] = json!({
+                "kind": "branch", "full_ref": "refs/heads/main", "head": start,
+            });
+            claim["worktree_root"] = json!(root);
+            claim["worktree_administrative_locator"] = json!(".");
+            claim["authorization"] = json!({"kind": "no_conflict"});
+            let id = claim["reservation_id"]
+                .as_str()
+                .ok_or("phase id")?
+                .parse::<ReservationId>()?;
+            phases.push((id, claim["scopes"].clone()));
+            let event: JournalEvent = serde_json::from_value(claim)?;
+            ledger.append_legacy_journal_operation(actor.clone(), event.operation)?;
+        }
+        let mut observation = fixture["empty_share"].clone();
+        observation["extent"]["key"]["head"] = json!(head);
+        observation["extent"]["key"]["trunk"] = json!(head);
+        observation["extent"]["key"]["working_tree"]["tracked_paths"] = json!([]);
+        observation["extent"]["key"]["reservation_group"]["reservation_ids"] =
+            json!(phases.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        observation["reservations"] = json!(
+            phases
+                .iter()
+                .map(|(id, _)| { json!({"reservation_id": id, "run_status": "editing"}) })
+                .collect::<Vec<_>>()
+        );
+        let observation: JournalEvent = serde_json::from_value(observation)?;
+        ledger.append_legacy_journal_operation(actor.clone(), observation.operation)?;
+        if let Some((_, scopes)) = phases.get(2) {
+            let pending = root.join(scopes[0]["path"].as_str().ok_or("pending phase path")?);
+            std::fs::create_dir_all(pending.parent().ok_or("pending phase directory")?)?;
+            std::fs::write(pending, "pending phase work\n")?;
+        }
+        let checkpointed = phases[0].0;
+        ledger.append_legacy_journal_operation(
+            actor,
+            JournalOperation::Checkpoint {
+                reservation_id: checkpointed,
+                protected_tip:  head.clone().into(),
+                trunk_snapshot: head,
+            },
+        )?;
+        // A second reconcile_for_board call must preserve MergeExtentKey.reservation_group after
+        // the checkpointed phase releases.
+        for _ in 0..2 {
+            let Enrollment::Enrolled(report) =
+                super::reconcile_for_board(&root, super::RecoveredBypassReporting::Defer)?
+            else {
+                return Err("fixture must enroll".into());
+            };
+            let released = serde_json::to_value(crate::board::reservation_lifecycle_snapshot(
+                &report,
+                checkpointed,
+            )?)?;
+            assert_eq!(released["lifecycle"]["status"], "released_after_checkpoint");
+            for (id, scopes) in &phases[1..] {
+                let sibling = serde_json::to_value(crate::board::reservation_lifecycle_snapshot(
+                    &report, *id,
+                )?)?;
+                assert_eq!(
+                    sibling["lifecycle"]["status"], "active",
+                    "sibling {id}: {sibling}"
+                );
+                assert_eq!(&sibling["race_extent"]["scopes"], scopes);
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn post_tool_use_does_not_walk_released_audit_history() -> Result<(), Box<dyn std::error::Error>>

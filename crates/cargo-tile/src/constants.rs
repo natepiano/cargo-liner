@@ -786,6 +786,8 @@ pub(crate) const CAPTURE_ENTRY_NAME_BYTES: usize = 255;
 /// names. A directory record that cannot fit fails enumeration conservatively.
 #[cfg(target_os = "linux")]
 pub(crate) const CAPTURE_DIRECTORY_BUFFER_BYTES: usize = 8192;
+/// Bytes read per transfer from cargo stderr to the log and caller stderr.
+pub(crate) const CAPTURE_STDERR_PUMP_BUFFER_BYTES: usize = 8192;
 /// Registration metadata is small; 64 KiB accommodates long command and cwd
 /// fields. Reads allow one extra byte solely to detect and reject larger files.
 pub(crate) const CAPTURE_REGISTRATION_BYTES: u64 = 64 * 1024;
