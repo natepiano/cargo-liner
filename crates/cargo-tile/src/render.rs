@@ -31,6 +31,7 @@ use cell_paint::PlacedCommandText;
 use command_cache::CachedProcessRow;
 use command_cache::CachedTableLayout;
 use command_cache::CachedTablePlan;
+use command_cache::CommandForm;
 use command_cache::MeasuredCommandWidths;
 use command_cache::ParentVisibility;
 use command_cache::PreparedCommandCells;
@@ -1220,6 +1221,50 @@ mod expanded_view_tests {
             press(&mut app, KeyCode::Enter);
             paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn an_expanded_summary_keeps_compact_rows_and_an_exact_end_range() -> Result<(), Box<dyn Error>>
+    {
+        let mut app = App::new_for_test()?;
+        app.arguments = super::ArgumentDetail::All;
+        let argument = "env.PHASE35M='".to_owned() + &"x".repeat(160) + "'";
+        let groups = (4100..4130)
+            .map(|pid| {
+                tests::cargo_group(tests::invocation(
+                    pid,
+                    &["nextest", "run", "--config", &argument],
+                ))
+            })
+            .collect();
+        app.roster.observe(groups, Instant::now());
+        for _ in 0..3 {
+            paint(&mut app, Instant::now(), 160, 36)?;
+            app.tiles.settle_for_test();
+        }
+        press(&mut app, KeyCode::Enter);
+        let start = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let header = tests::buffer_rows(&start)[1].clone();
+        assert!(
+            header.contains("pid") && header.contains("command"),
+            "{header}"
+        );
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        let middle = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let middle = tests::buffer_rows(&middle);
+        assert_eq!(middle[1], header);
+        assert!(middle[12].contains("6–15 of 31"), "{}", middle[12]);
+        press(&mut app, KeyCode::End);
+        let end = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let end = tests::buffer_rows(&end);
+        assert_eq!(end[1], header);
+        assert!(end[11].contains("4129"), "{}", end[11]);
+        assert!(end[11].contains("cargo nextest run"), "{}", end[11]);
+        assert!(!end[11].contains("--config"), "{}", end[11]);
+        assert!(end[12].contains("22–31 of 31"), "{}", end[12]);
         Ok(())
     }
 
@@ -6154,13 +6199,15 @@ struct LaidOutProcessRow<'a> {
     ground:        Color,
 
     /// Display mode used to prepare the command cell.
-    view: CommandView,
+    view:         CommandView,
+    command_form: CommandForm,
 }
 
 impl LaidOutProcessRow<'_> {
     /// The wrapper produces the cut row directly from the selected units.
     fn cut_command_continuation(&self, visible_lines: usize) -> Line<'static> {
-        let words = styled_process_command_words(self.source, &self.view, self.ground);
+        let words =
+            styled_process_command_words(self.source, &self.view, self.ground, self.command_form);
         wrapped_command(
             words,
             self.command_width,
@@ -6180,6 +6227,7 @@ fn process_command_words(
     arguments: Style,
     ground: Color,
     faded: RowInk,
+    form: CommandForm,
 ) -> Vec<StyledCommandWord> {
     let mut spans = Vec::new();
     let profile = profile_label(command);
@@ -6193,9 +6241,12 @@ fn process_command_words(
         displayed_program(command, view).to_string(),
         program,
     )));
-    let words = match view.arguments {
-        ArgumentDetail::All => command.words().iter().collect(),
-        ArgumentDetail::Default => command.selected_words(&view.defaults),
+    let words: Vec<_> = match form {
+        CommandForm::Full => match view.arguments {
+            ArgumentDetail::All => command.words().iter().collect(),
+            ArgumentDetail::Default => command.selected_words(&view.defaults),
+        },
+        CommandForm::WithoutArguments => command.named_words().collect(),
     };
     spans.extend(
         words
@@ -6206,7 +6257,7 @@ fn process_command_words(
 }
 
 fn prepared_command_cell(row: &TrackedRow, layout: &CellTableLayout) -> Rc<Text<'static>> {
-    layout.commands.borrow_mut().for_row(row, layout)
+    layout.commands.borrow_mut().for_row(row, layout).text
 }
 
 #[cfg(test)]
@@ -6218,13 +6269,14 @@ fn wrap_command_cell(
     row: &TrackedRow,
     layout: &CellTableLayout,
     command_width: u16,
+    form: CommandForm,
 ) -> Text<'static> {
     #[cfg(test)]
     tests::COMMAND_CELL_WRAPS.with(|count| count.set(count.get() + 1));
     if command_width == 0 {
         Text::default()
     } else {
-        let spans = styled_process_command_words(row, &layout.view, layout.ground);
+        let spans = styled_process_command_words(row, &layout.view, layout.ground, form);
         wrapped_command(
             spans,
             command_width,
@@ -6239,6 +6291,7 @@ fn styled_process_command_words(
     row: &TrackedRow,
     view: &CommandView,
     ground: Color,
+    form: CommandForm,
 ) -> Vec<StyledCommandWord> {
     let muted = Style::default().fg(row.ink().color(label_color(), ground));
     let process = &row.process;
@@ -6253,7 +6306,15 @@ fn styled_process_command_words(
     } else {
         Style::default().fg(success_color())
     };
-    process_command_words(&process.command, view, program, arguments, ground, faded)
+    process_command_words(
+        &process.command,
+        view,
+        program,
+        arguments,
+        ground,
+        faded,
+        form,
+    )
 }
 
 /// Read a prepared height without cloning the row's styled cells.
@@ -6301,10 +6362,12 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
             command_width: layout.column_width(COMMAND_COLUMN),
             ground:        layout.ground,
             view:          layout.view.clone(),
+            command_form:  cached.command_form,
         };
     }
 
-    let command = prepared_command_cell(row, layout);
+    let prepared = layout.commands.borrow_mut().for_row(row, layout);
+    let command = prepared.text;
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
     let cells = styled_process_cells(row, layout, command);
     layout
@@ -6322,6 +6385,8 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
             columns: layout.columns.clone(),
             ground: layout.ground,
             parent_visibility,
+            kind: layout.kind,
+            command_form: prepared.form,
         });
     LaidOutProcessRow {
         cells,
@@ -6330,6 +6395,7 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         command_width: layout.column_width(COMMAND_COLUMN),
         ground: layout.ground,
         view: layout.view.clone(),
+        command_form: prepared.form,
     }
 }
 
@@ -7637,7 +7703,7 @@ mod tests {
             width + indent + CONTENT_RIGHT_INSET,
             height + TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT,
         );
-        let mut layout = CellTableLayout::of(&[&row], TableKind::Summary, area, Color::Reset, view);
+        let mut layout = CellTableLayout::of(&[&row], TableKind::Command, area, Color::Reset, view);
         layout.columns = vec![COMMAND_COLUMN];
         layout.column_widths = vec![width];
         layout.constraints = vec![Constraint::Length(width)];
@@ -13830,7 +13896,17 @@ mod tests {
                 );
                 let command = buffer_line(&buffer, 2);
                 assert!(command.contains("[release]"), "{command}");
-                assert!(command.contains(ELISION), "{command}");
+                match kind {
+                    TableKind::Command => assert!(command.contains(ELISION), "{command}"),
+                    TableKind::Summary => {
+                        let layout = CellTableLayout::of(&[&row], kind, area, Color::Reset, view);
+                        assert_eq!(
+                            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim(),
+                            "[release] cargo build",
+                            "{command}"
+                        );
+                    },
+                }
             }
         }
     }
@@ -21299,6 +21375,153 @@ mod tests {
                 .to_string()
                 .trim()
                 .to_string()
+        }
+    }
+    mod summary_command_tests {
+        use super::*;
+
+        fn nextest_row() -> TrackedRow {
+            let mut row = row(None);
+            row.process.command = CommandText::of("cargo", &["nextest", "run", "--workspace"]);
+            row
+        }
+
+        fn command_column_layout(row: &TrackedRow, kind: TableKind, width: u16) -> CellTableLayout {
+            let mut layout = CellTableLayout::of(
+                &[row],
+                kind,
+                Rect::new(0, 0, 100, 8),
+                Color::Reset,
+                CommandView::long(),
+            );
+            // `command_column_layout` sets `layout.column_widths` to the solved command width.
+            layout.columns = vec![COMMAND_COLUMN];
+            layout.column_widths = vec![width];
+            layout
+        }
+
+        #[test]
+        fn a_narrow_summary_omits_arguments_and_reserves_one_member_row() {
+            let row = nextest_row();
+            let layout = command_column_layout(&row, TableKind::Summary, 20);
+            let measured = process_row_lines(&row, &layout);
+            let painted = process_row(&row, &layout);
+            assert_eq!(
+                measured, 1,
+                "summary member height excludes argument wrap rows"
+            );
+            assert_eq!(painted.lines, measured);
+            assert_eq!(
+                painted.cells[COMMAND_COLUMN].to_string(),
+                "cargo nextest run"
+            );
+            let spans = &painted.cells[COMMAND_COLUMN].lines[0].spans;
+            assert!(
+                spans
+                    .iter()
+                    .any(|span| span.content == "cargo" && span.style.fg == Some(text_default()))
+            );
+            assert!(
+                spans
+                    .iter()
+                    .any(|span| span.content == "nextest" && span.style.fg == Some(success_color()))
+            );
+        }
+
+        #[test]
+        fn a_summary_wraps_a_bare_command_wider_than_its_column() {
+            let row = nextest_row();
+            let layout = command_column_layout(&row, TableKind::Summary, 8);
+            let measured = process_row_lines(&row, &layout);
+            let painted = process_row(&row, &layout);
+            let command = &painted.cells[COMMAND_COLUMN];
+            assert_eq!(
+                command
+                    .lines
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                ["cargo", "nextest", "run"]
+            );
+            assert_eq!(measured, 3);
+            assert_eq!(painted.lines, measured);
+            assert_eq!(command.height(), usize::from(measured));
+        }
+
+        #[test]
+        fn a_wide_summary_keeps_arguments_on_one_member_row() {
+            let row = nextest_row();
+            let layout = command_column_layout(&row, TableKind::Summary, 29);
+            let measured = process_row_lines(&row, &layout);
+            let painted = process_row(&row, &layout);
+            assert_eq!(measured, 1);
+            assert_eq!(painted.lines, measured);
+            assert_eq!(
+                painted.cells[COMMAND_COLUMN].to_string(),
+                "cargo nextest run --workspace"
+            );
+        }
+
+        #[test]
+        fn a_command_cell_keeps_arguments_at_the_narrow_summary_width() {
+            let row = nextest_row();
+            let layout = command_column_layout(&row, TableKind::Command, 20);
+            let measured = process_row_lines(&row, &layout);
+            let painted = process_row(&row, &layout);
+            assert_eq!(measured, 2);
+            assert_eq!(painted.lines, measured);
+            let text = painted.cells[COMMAND_COLUMN]
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(text, "cargo nextest run --workspace");
+        }
+
+        #[test]
+        fn summary_and_cell_share_a_cache_without_sharing_the_command_form() {
+            let row = nextest_row();
+            let summary = command_column_layout(&row, TableKind::Summary, 20);
+            let mut cell = summary.clone();
+            cell.kind = TableKind::Command;
+            for layout in [&summary, &cell, &summary] {
+                let measured = process_row_lines(&row, layout);
+                let painted = process_row(&row, layout);
+                assert_eq!(painted.lines, measured);
+                match layout.kind {
+                    TableKind::Summary => assert_eq!(
+                        painted.cells[COMMAND_COLUMN].to_string(),
+                        "cargo nextest run"
+                    ),
+                    TableKind::Command => assert!(
+                        painted.cells[COMMAND_COLUMN]
+                            .to_string()
+                            .contains("--workspace")
+                    ),
+                }
+            }
+        }
+
+        #[test]
+        fn compact_summary_commands_keep_profiles_and_stop_at_the_first_flag() {
+            for (arguments, expected) in [
+                (
+                    vec!["build", "--release", "--locked"],
+                    "[release] cargo build",
+                ),
+                (
+                    vec!["clippy", "--fix", "--workspace", "--all-targets"],
+                    "cargo clippy",
+                ),
+                (vec!["mend", "--workspace", "check"], "cargo mend"),
+            ] {
+                let mut row = nextest_row();
+                row.process.command = CommandText::of("cargo", &arguments);
+                let layout = command_column_layout(&row, TableKind::Summary, 22);
+                assert_eq!(process_row_lines(&row, &layout), 1);
+                assert_eq!(command_cell(&row, &layout).to_string(), expected);
+            }
         }
     }
 }

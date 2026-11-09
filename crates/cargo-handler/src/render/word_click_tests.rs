@@ -65,8 +65,8 @@ pub(super) fn application() -> TestResult<App> {
             br#"{
         "accounts":[{"label":"claude1","tool":"claude","roles":["showrunners","units"],
         "weekly_left_percent":50,"use_credits":false,"read_ok":true,
-        "role_counts":[{"busy":1,"shell":2,"idle":3,"total":6},
-        {"busy":4,"shell":5,"idle":6,"total":15}]}],"problems":[]
+        "role_counts":[{"busy":1,"idle":3,"paused":2,"exited":0,"total":6},
+        {"busy":4,"idle":6,"paused":5,"exited":0,"total":15}]}],"problems":[]
     }"#,
         )
         .map_err(|error| error.to_string())?,
@@ -74,24 +74,51 @@ pub(super) fn application() -> TestResult<App> {
     Ok(app)
 }
 
+enum FramePaint {
+    Application,
+    FixedTime(u64),
+}
+
 pub(super) struct Renderer {
     terminal: Terminal<TestBackend>,
+    paint:    FramePaint,
 }
 
 impl Renderer {
     pub(super) fn new(app: &mut App, width: u16, height: u16) -> TestResult<Self> {
+        Self::with_paint(app, width, height, FramePaint::Application)
+    }
+
+    pub(super) fn with_fixed_time(
+        app: &mut App,
+        width: u16,
+        height: u16,
+        now: u64,
+    ) -> TestResult<Self> {
+        Self::with_paint(app, width, height, FramePaint::FixedTime(now))
+    }
+
+    fn with_paint(app: &mut App, width: u16, height: u16, paint: FramePaint) -> TestResult<Self> {
         let mut renderer = Self {
             terminal: Terminal::new(TestBackend::new(width, height))?,
+            paint,
         };
         renderer.paint(app)?;
-        app.tiles.settle_for_test();
-        renderer.paint(app)?;
+        if app.tiles.has_pending_motion_for_test() {
+            app.tiles.settle_for_test();
+            renderer.paint(app)?;
+        }
         Ok(renderer)
     }
 
     pub(super) fn paint(&mut self, app: &mut App) -> TestResult<Buffer> {
         let keymap = app.keymap();
-        self.terminal.draw(|frame| app.draw(frame, &keymap))?;
+        match self.paint {
+            FramePaint::Application => self.terminal.draw(|frame| app.draw(frame, &keymap))?,
+            FramePaint::FixedTime(now) => self
+                .terminal
+                .draw(|frame| draw_at_for_test(frame, app, &keymap, now))?,
+        };
         Ok(self.terminal.backend().buffer().clone())
     }
 }
@@ -533,7 +560,8 @@ fn visible_unicode_tokens_resolve_from_every_terminal_cell() -> TestResult {
     ] {
         let mut app = application()?;
         apply_rows(&mut app, vec![session(10, "unicode-owner", name)?]);
-        let mut renderer = Renderer::new(&mut app, WIDTH, HEIGHT)?;
+        // Keep every token and cell press in a smaller frame.
+        let mut renderer = Renderer::new(&mut app, 100, 30)?;
         let before = renderer.paint(&mut app)?;
         let point = tree_word(&before, name)?;
         let mut selected = Vec::new();

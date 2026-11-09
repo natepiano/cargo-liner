@@ -39,6 +39,15 @@ pub(crate) struct KernelObservation {
 }
 
 impl KernelObservation {
+    /// A publisher can use birth evidence only for its own registered pid.
+    pub(crate) fn into_capture_observation(self, pid: u32) -> Observation {
+        if self.pid == pid {
+            self.observation
+        } else {
+            Observation::Unknown
+        }
+    }
+
     /// Evidence about another pid authorizes neither admission nor removal.
     pub(crate) fn compare(&self, pid: u32, identity: &IdentityEvidence) -> Verification {
         if self.pid != pid {
@@ -146,6 +155,15 @@ fn observe_process(pid: u32) -> Observation {
         let _ = pid;
         Observation::Unknown
     }
+}
+
+/// Keep the completed boot read when the process birth is unavailable.
+pub(crate) fn capture_boot() -> &'static str {
+    #[cfg(target_os = "linux")]
+    let boot = linux::boot();
+    #[cfg(target_os = "macos")]
+    let boot = macos::boot();
+    boot.as_deref().unwrap_or("")
 }
 
 #[cfg(test)]

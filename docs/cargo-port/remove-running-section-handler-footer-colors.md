@@ -31,7 +31,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
   - Workers run only the Test/Lint lines above; each `verify.sh` run detaches and its result arrives as the worker's next message. Formatting only with `cargo +nightly fmt`.
   - No color value from the footer file is written into cargo-handler; tests use fixture text.
   - Invalid states are unrepresentable: a footer color is an enum parsed from its name, never a raw string carried to draw time.
-  - No test takes a second.
+  - No test takes a second in the parallel full-suite package run; an isolated time does not pass this rule. A change that makes a test faster keeps every draw between input events.
   - Phase 26 facts that bind phases 18, 21, 25, 27 and 29:
     - Root hues use a root counter that is independent of descendants. `agent_cell::cell_order_placed` (`agent_cell.rs` ≈1321) gives root i entry i of the theme's `session_hues` (mod 5) through `SessionHue::of_agent(ordinal)`. Descendants advance a separate `descendants` counter. Each agent tile title keeps its summary row's ink. Do not make root hues depend on descendant counts again.
     - A session row draws every fixed foreground only through `SessionRowInk::style()` (`theme/mod.rs` ≈58). `FooterColors::session_row_inks()` (`footer_colors/mod.rs` ≈765) lists the inks that can share a session row, and the session palette checks in `render/role_title_tests.rs` measure that list. A new ink on a session row enters through a `SessionRowInk` variant, so that the tests measure it.
@@ -1044,157 +1044,273 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a separate painted-word record (the retained frame already holds the cells); a press that waits for the next frame (it read census changes made after the draw); changing any foreground color to fit the match ground.
 
-### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
+### Phase 21 — Astra designer and Astra reviewer roles  · status: done
 
-**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 67
+#### As-built
 
-**Waits on:** the staff producer. sdlc agents phase 15b adds the read contract below; the showrunner sends the `~/.claude` main hash when it lands. The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json`. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. A worker with no staff backend entry has `"account": {"state": "AccountUnavailable", "reason": "..."}` and no `home` key. Final form from sdlc agents 15b (902339c74). Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
+cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gpt-6-astra) under the unit director or showrunner that holds it, with the role words `astra designer` and `astra reviewer`.
+- `HierarchyRole::{AstraDesigner, AstraReviewer}` and the matching `FooterRole` variants. The inks come from `role.astra-designer` (mauve, `FooterColor` index 139) and `role.astra-reviewer` (bright-green), and draw through `FooterColors::hierarchy_role` and `SessionRowInk::Management`. `SubagentRole` has no Astra variant.
+- The schema-2 staff reader converts a worker row's `role` and `home` into one checked `AstraMembership` (`census/hierarchy.rs`) with a required home. A row with no `role`, no `home`, or an unknown role publishes no membership and draws as a plain worker under its Phase 67 staff edge. `SessionIdentity::with_astra` (`census/session_identity.rs`) attaches the membership to a proven Codex identity, so Astra rows reuse the Phase 67 placement path.
+- Busy and idle come from `PaneWork` (`census/herdr.rs`), converted from the herdr pane state that cargo-handler already reads. An unknown pane state keeps the row visible. A closed Astra pane disappears like every pane worker and shows again on resume.
+- `ThreadRequester::Astra` (`census/codex.rs`) adds edge-named `codex_exec` threads to the one `OpenThreadRows::read_scan` call per scan, under the membership's home. Those rows get their own name, activity, model and effort.
+- Probe schema 3 carries Astra edges in the defaulted `astra_edges` extension (`census/probe.rs`); an older receiver accepts the report.
+- Guild heads (`designers`, `reviewers`, `showrunners`, `units` under a `guilds` showrunner) draw as ordinary unit director rows.
+- Theme shades, read from the theme TOML files only (Default Dark mauve is the statusline value):
+
+  | Theme | mauve | astra_reviewer |
+  | --- | --- | --- |
+  | Default Dark | #af87af | #91bd83 |
+  | Default Light | #251121 | #122d0b |
+  | High Contrast Dark | #bca7bc | #a6b387 |
+  | High Contrast Light | #6a3c41 | #0f2b06 |
+
+**Files:**
+- `crates/cargo-handler/src/census/hierarchy.rs` — staff parsing, `AstraMembership`
+- `crates/cargo-handler/src/census/session_identity.rs` — `SessionIdentity::with_astra`
+- `crates/cargo-handler/src/census/scan.rs` — Astra identity and thread requests
+- `crates/cargo-handler/src/census/herdr.rs` — `PaneWork` and `HerdrReader::record_work`
+- `crates/cargo-handler/src/census/codex.rs` — `ThreadRequester::Astra`
+- `crates/cargo-handler/src/census/probe.rs` — the `astra_edges` extension
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterRole` Astra variants, `mauve`
+- `crates/cargo-handler/themes/*.toml` — the per-theme Astra shades
+- `crates/cargo-handler/src/footer_colors/fixtures/statusline_astra.conf` — the Astra palette fixture
+- `crates/cargo-handler/src/census/astra_role_tests.rs`, `census/herdr_tests.rs`, `render/role_title_tests.rs`, `render/selected_ink_tests.rs`, `render/word_contrast_tests.rs`, `render/narrow_width_tests.rs`, `summary/accounts_gradient_tests.rs` — membership, pane state, palette floors, contrast, width and reset-shade tests
+
+**Binds later work:** Worker-role publication keeps the checked Astra membership and its tests in `census/astra_role_tests.rs`.
+
+**Gotchas:**
+- A row draws as Astra only when the staff file carries `role` and `home`; sdlc adds both fields.
+- CPU over three pairs: median +0.33 CPU-s/min, spread 0.48; no measured change, though all three pairs were higher.
+
+**Ruled out:** `worker.py list --json --all` per scan (1.16–1.35 CPU-s each 2 s scan); a separate Astra process read; a dormant membership state for closed Astra workers.
+
+### Phase 69 — Accounts view counts match the accounts board  · status: done
+
+#### As-built
+
+- The accounts view shows busy, idle, paused, exited and total for each account and role, in the accounts board's order, with no shell column. The source is `accounts.py status --json --stored`, read off the frame thread.
+- `RoleSessionCounts` (`census/accounts.rs`) carries the five counts as required `u64`. `checked_add(&self, &Self) -> Result<Self, RoleCountOverflow>` sums them; `From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionCounts>` turns an overflow into no reading, and `summed_counts` (`summary/accounts.rs`) folds with it.
+- `RoleCountsWire` requires the five keys and accepts other new keys. A `shell` key is rejected through `RetiredShellAbsent`, whose `Deserialize` always errors.
+- `AccountsColumn` (`sort.rs`) has `Paused` and `Exited` after `Idle`; sorting, the total row and column fitting cover them.
+
+**Files:**
+- `crates/cargo-handler/src/census/accounts.rs` — wire and domain role counts
+- `crates/cargo-handler/src/sort.rs` — `AccountsColumn`
+- `crates/cargo-handler/src/summary/accounts.rs` — accounts table, total row, `summed_counts`
+
+**Gotchas:**
+- A whole one-line summary needs 90 columns; narrower terminals use the stacked layout. Tests keep the 80, 56 and 60 column cases beside the 90, 64 and 84 column cases.
+- `theme/mod.rs` `Shell` is the session-row shell state, not an accounts column.
+
+**Ruled out:** a saved-sort migration — `AccountsSort` is never saved.
+
+### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: todo
+
+**Depends on:** none; runs beside Phases 21 and 69. `agent_cell.rs`, `render/mod.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
 
 #### Work Order
 
-**Goal:** cargo-handler shows an Astra designer session and an Astra reviewer session (Codex on gpt-6-astra) under the unit director or showrunner that runs it, each with its own role word and color.
+**Goal:** a left press anywhere on an expandable row opens or closes it, in cargo-handler as in the cargo-port project list today. One shared rule in tui_pane decides it.
 
-**Source:** the user (via hana and the showrunner), 2026-10-20: cargo-handler shows the two new Codex roles of the in-game metrics production; a designer is a lasting role that can be resumed and runs under a unit director or a showrunner. Showrunner rulings: a phase after Phase 17; order 15, 17, 21, 18, 19, 16, 20, 9; role words `astra designer` and `astra reviewer`; colors pink and bright-green; if the hierarchy edge is not on `~/.claude` main when Phase 17 checkpoints, run Phase 18 and return here when the showrunner says it landed. Lasting roles read from `roles.py` are not in this phase (see the note below).
+**Source:** the user, relayed by the showrunner, 2026-11-08: "when will handler deliver mouse clicking on expand/collapse - sharing that code with cargo port i would expect because that already works in the cargo port project list - sharing through tui_pane of course?"
 
-**Showrunner note (2026-10-21, revised guild design):** there are four guilds: `designers`, `reviewers`, `showrunners` and `units`. Workers have no guild. Each head is a unit director whose unit name is its guild ID, under a new top-level production `guilds` (herdr space `guilds` on natedev: the guilds showrunner in tab 1, then the four heads). In the census the heads are ordinary unit edges under the guilds showrunner, and each member keeps its real manager: an Astra designer stays under the unit director or showrunner that holds it, never under the `designers` head. `astra-designer` and `astra-reviewer` edges and colors do not change. Lasting roles will come only from sdlc phase 6 `scripts/guilds/roles.py list --json`; parse no other file for them. That file is not on `~/.claude` main, and this phase does not need it: reading it is a later phase. Tips are files in `~/rust/nate_style/guilds/<guild>/`; there is no guild message group and no publication record, so cargo-handler draws nothing for them. Design doc: `docs/plans/sdlc-guilds-design.md` on `~/.claude` branch `sdlc-guild-process` (dadb482b), sections "Guilds and heads" and "Data for cargo-handler".
-
-**Constraints from prior phases:**
-- Phase 41 changed the Codex startup query: it accepts user threads with a non-exec source (`constants.rs` ≈387) and keeps an older-schema query (≈392), chosen by `ThreadsLayout::{WithThreadSource, OriginatorOnly}` (`census/codex.rs` ≈249). The separate lookup for Astra exec threads stays required.
-- `census/scan.rs` belongs to Phase 47 until its checkpoint.
-- Phase 16: a selected row draws on the selection ground (`InkGrounds` in `footer_colors/mod.rs`). Rendered tests also draw both Astra roles on a selected row in a focused and an unfocused tile and require 4.5:1.
-- cargo-handler reads hierarchy from `census.staff_file`, through the schema-2 staff reader. It never runs `production_tree.py` or `staff.py`. Astra membership comes from the `worker.py list --json` row: `role`, `home` and `work`, joined to the staff edge by `id` and `current_session`. cargo-handler stores no busy/idle state of its own. Run that call outside the scheduler thread and the publication lock, inside the scan's existing deadline, and at most once per scan. Keep the `statusline.conf` keys `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
-- `census/hierarchy.rs` parses schema 2 through `StaffDocumentRow`, `StaffFields`, `StaffKind` and `ValidatedStaffForest`. Unknown kinds bypass field validation. Known rows must pass whole-forest validation before names or edges publish. `HierarchyRole` remains in `census/mod.rs`; `RoleLabel` remains in `census/placement.rs`. Extend the staff parser, rather than restoring `HierarchyWireRole` or a command parser. Astra session colors use `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈839) and `SessionRowInk::Management`; subagent colors use `SubagentRole::ink` (`census/transcript.rs` ≈597). `FooterColors::named_role` no longer exists. Keep Astra roles in `HierarchyRole` and `FooterRole`; do not add Astra variants to `SubagentRole`. Worker rows draw plain.
-- Phase 26 session-row ink path: `SessionRowInk::Management(FooterColor)` (`theme/mod.rs` ≈67) already draws a configured management ink through `FooterColor::management_style` (`footer_colors/mod.rs` ≈68). `FooterColors::session_row_inks()` (≈765) lists the fixed fields, then each account ink as `Account`, then each configured role ink as `Management`. `FooterColors::parse` (≈772) reads only `role.showrunner` and `role.unit-director`, so the `role.astra-*` keys in `footer_colors/fixtures/statusline.conf` are ignored today, and that fixture still has `role.astra-designer=pink`. `SessionRowInk` keeps no state; its observable result is the drawn foreground.
-- Phase 17 probe schema 3: `ProbeChildWork` sends the unit kind `subagent` with a defaulted role extension converted to the semantic domain role. Keep its compatibility tests beside the new hierarchy extension tests: a capable receiver keeps recorded subagent roles; an older receiver accepts the report without the extension.
-- The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
-- The run order is 18, 25, 26, 29, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19, 26, 29 and 20.
-- Colour limits for the Astra role inks, as built. Measure them through the production role API (`FooterColors::hierarchy_role` ≈839 with the new variants) and `SessionRowInk::Management`, not through fixed colors, on the final drawn output with the two-way 208/255 coverage of phase 18 (the lower of the unrounded and the byte-rounded blend).
-  - Floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. This phase does not restore the old exceptions.
-  - Covered contrast >= 4.5:1 applies in all four themes.
-  - Consecutive session hue spacing applies only to the session inks, not to role inks.
-- Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
-- The Codex startup lookup reads through the typed layouts Phase 41 shipped. `ThreadsLayout::WithThreadSource` runs `CODEX_THREADS_QUERY` (`constants.rs` ≈387: `thread_source = 'user'` with `source` not `'exec'`, or `codex-tui` rows with no `thread_source`). `ThreadsLayout::OriginatorOnly` runs `CODEX_LEGACY_THREADS_QUERY` (≈392: `codex-tui` only). Both leave out exec threads and worker threads at startup. `astra_review.py` runs `codex exec` (`originator` `codex_exec`), so its thread is not in the startup result.
-- The wire and lease token `review` stays accepted. Session rows and seat rows still draw "review"; only subagent rows draw "reviewer" (Phase 35).
-- Phase 35: `render/narrow_width_tests.rs` uses Showrunner/Impl fixtures at width 80, with source height 70 and enlarged height 140, and asserts the wider restored window (≈853). Preserve these assertions. Test the longer Astra labels through hierarchy rows: restored viewports, End/Home/cursor positions, whole-core and below-core compression, and the first enlarged frame.
-- Phase 35: the selected-palette helper in `render/selected_ink_tests.rs` (≈810) maps the Astra labels to `Agent` and `Reviewer` subagents, so those rows measure plain ink. Replace these substitutes with hierarchy-backed Astra session rows that use the Astra color fixture.
-- `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
-- The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
-- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). Keep this argument. `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
-- The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state is a semantic type converted from `work` (`idle`, `busy`, `unknown`), with a distinct variant when the call fails or times out. A live Astra session must remain visible between turns without a pool file.
-- `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert the worker row's `role`, `home` and `work` into one checked Astra membership with a required home. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
-- Probe schema 3 serializes `HierarchyEdges` directly; new role variants in `edges` make older receivers refuse a probe. Carry new roles in a defaulted extension.
-- Phase 15 fallbacks stay: a session with no name shows its pid text, and an unknown footer color name draws plain.
-- The former `production_tree.py` Astra output does not establish support in the staff file. Keep `role.astra-designer=mauve` and `role.astra-reviewer=bright-green` in the live config. `/astra_review` holds the reviewer role during its Codex process. Hold a designer with `~/.claude/scripts/lib/py ~/.claude/scripts/astra/astra_roles.py hold designer --session-dir <delegate dir> --worker <name> [--manager <session id>]`. Release it with `astra_roles.py release <thread id>`. cargo-handler reads only the resulting staff data and the `worker.py list --json` rows.
+**Constraints:**
+- Phase 63 opens a row only on a press on its `▶`/`▼` marker cells (`MarkerCells`, `interaction.rs` ≈297). The cargo-port project list toggles on a press anywhere on the row (`cargo-port/src/tui/interaction.rs` ≈25 and ≈44, through `ProjectList::toggle_expand_for_row`).
+- Each app keeps its own row hit test: which row is under the pointer. The shared piece is the rule after it: a press on a row toggles that row when the row is a branch, and does nothing more for a leaf.
+- Both apps already implement `tui_pane::ExpansionTree` (`cargo-handler/src/expansion.rs` ≈251, `cargo-port/src/tui/project_list/list.rs` ≈1543). Build the shared rule on that trait, beside `ExpansionModel::collapse_row`.
+- Keep the tui_pane API small: one method on `ExpansionModel` and at most one new public result type. No new trait.
+- Do not edit any cargo-port file. The port unit moves cargo-port onto the shared rule after its Phase 4p.
+- A terminal focus-gain never toggles a row. cargo-port's `ClickMode::FocusOnly` is the model.
+- A press still selects the row, as now. One press resolves once.
+- Do not edit `agent_cell.rs` or `render/mod.rs` until the director says the Phase 21 checkpoint is in. Phase 21 owns both now.
 
 **Spec:**
-1. Extend the schema-2 staff reader for the announced Astra fields. Add `AstraDesigner` and `AstraReviewer` to `HierarchyRole` and the checked Astra membership type. Read roles from the announced role field, without inventing new staff kinds. Keep the words `astra designer` and `astra reviewer` in the role column and tile title.
-2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules). On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
-3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the busy/idle status from the read call between turns.
-4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
-5. Tests, each red before its fix: both roles parse from schema-2 staff rows and keep their words. Each role uses its configured color. Astra rows draw under unit directors and showrunners. Edge-named `codex_exec` threads get their names and activity. Unknown roles do not publish Astra membership. Unknown staff kinds still preserve valid known rows.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through `SessionRowInk::Management`, keeps its configured role assignment, meets the Phase 26 floors in the constraints above from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra worker row with no `home` (the `AccountUnavailable` account form) converts to a typed unavailable variant, publishes no Astra membership, and still draws under its manager through the Phase 67 staff edge as a plain worker; a failed or timed-out busy/idle read keeps the row visible with its distinct state.
-7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
-8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
-9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the two-way 208/255 coverage (the lower of the unrounded and the byte-rounded blend). Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
-10. Reset shades: each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; no reset-vs-role-ink test exists yet). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
-11. Routed from Phase 67 review (F005): `codex::resume_request` (`census/codex.rs`) stops at a Codex switch that `CODEX_SWITCHES` omits, so `codex --dangerously-bypass-hook-trust resume <uuid>` loses command-line proof. Remove that list: skip every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`, and keep a value option's value out of the subcommand position. Red-first test with that command, under 1 s.
+1. tui_pane: add the shared row-press rule to `ExpansionModel` in `crates/tui_pane/src/expansion.rs`. It takes the tree and the pressed row. A branch row toggles and the result names the new state. A leaf row changes nothing and the result says so. Unit tests in tui_pane cover a branch that opens, a branch that closes, a leaf, and a branch open by the depth rule.
+2. cargo-handler: a left press on any line of an expandable row toggles that row through the shared rule. Delete `MarkerCells`, the marker clip (`SurfaceSelection::clip_markers`) and the marker columns (`agent_cell::tree_marker_columns`), when nothing else reads them. The `▶`/`▼` glyphs stay drawn.
+3. cargo-handler: `RowClick` keeps one resolution per press. A press on a leaf selects it. A press outside the rows misses.
+4. Tests under 1 s: a press on the body of a branch row toggles it; a press on a continuation line of a wrapped branch row toggles it; a press on a leaf only selects; a second press closes it again. Replace the marker-cell tests.
+5. Report the exact call the port unit uses in cargo-port, in the shape `ProjectList` already has: the method, its arguments and the result it matches.
+6. CHANGELOG: one Changed line in cargo-handler, and one Added line in tui_pane.
 
 **Files:**
-- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/census/astra_role_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/footer_colors/tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`
-- `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/schedule.rs`
-- `crates/cargo-handler/src/theme/mod.rs` — `SessionRowInk` (only if the Astra inks need a change there)
-- `crates/cargo-handler/src/footer_colors/fixtures/statusline_astra.conf` — new fixture with `role.astra-designer=mauve`
-- `crates/cargo-handler/src/render/role_title_tests.rs` — the session palette checks measure both Astra inks
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — phase 20's contrast module, extended for both Astra inks
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the Astra-vs-reset test (spec 10)
-- `crates/cargo-handler/src/render/narrow_width_tests.rs` — width growth and compression checks with the longer Astra labels
-- `crates/cargo-handler/src/render/selected_ink_tests.rs` — hierarchy-backed Astra session rows replace the Astra subagent substitutes
+- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`
+- `crates/tui_pane/CHANGELOG.md` — after the overlap answer on cargo-liner-port's outstanding reservation; the director adds the line
+- `crates/cargo-handler/src/interaction.rs`
+- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs`
+- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — after the Phase 21 checkpoint
+- `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the production files (hierarchy, scanner, probe, placement, color and rendering), `theme/mod.rs`, the registrations and the CHANGELOG; owns all shared module files; hub: `crates/cargo-handler/src/census/mod.rs` and `crates/cargo-handler/src/theme/mod.rs` (shared modules).
-- `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests, the Astra word-match tests in `render/word_contrast_tests.rs`, the Astra-vs-reset test in `summary/accounts_gradient_tests.rs`, the width checks in `render/narrow_width_tests.rs`, and the selected-palette rows in `render/selected_ink_tests.rs`.
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes. Both Astra roles keep their configured ink and covered contrast on active and remembered selections, with pane tint on and off. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
+
+### Phase 71 — A detached run joins its pane worker's row  · status: done
+
+#### As-built
+
+- A live detached run record joins its worker through `RunWorkerReference::{Identified, NamedSeat}` (`census/activity.rs`). `LiveWorkerRun::worker` resolves `RunWorkerIdentity::{Session, NamedSeat, Unrecorded}`: a seat name joins the one staff edge with that name under the run's director.
+- `run_directors` (`census/scan.rs`) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource::{Staff, Session, Unrecorded}` in `census/worker_dispatch/sessions.rs`: `owner_staff_id`, else `main_agent.session_id`), cached by file revision, then from the roster. `read_worker_runs` accepts non-Claude rows as directors.
+- While a run is live, its worker row says `waiting` or the run's step name, whatever the command. The run's supervisor and command processes fold into that row; no separate dispatch row draws. A worker whose only process is a live run keeps its row.
+- Astra rows: `AstraMembership` carries `AstraRunActivity::{Inactive, Live(Activity)}`. `AstraMembership::activity` and `TreeLine::status` (`agent_cell.rs`) put a live run's activity before the pane's idle or unknown state.
+- Each scan resolves a worker identity once and walks each process subtree once (`VerificationProcesses::live_runs`, cached `descendant_indices`).
+- Tests: `captured_tile_test_worker_keeps_a_row_with_only_its_live_run` and `captured_tile_astra_pane_keeps_its_live_run_status` run on the captured tile records and process rows.
+
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs` — run record join and worker identity
+- `crates/cargo-handler/src/census/scan.rs` — run directors, resolved worker runs, run activities
+- `crates/cargo-handler/src/census/worker_dispatch/sessions.rs` — recorded unit owner
+- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/agent_cell.rs` — Astra live-run status
+- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs` — run processes fold into the worker row
+- `crates/cargo-handler/src/census/fixtures/pane_detached_tile.json`, `.md` — captured tile records, processes and their provenance
+
+**Binds later work:**
+- A live run's activity wins over the transcript activity in three places: the worker row write in `census/scan.rs`, `AstraMembership::activity`, and `TreeLine::status`. Compaction status must change all three.
+- `astra_member.run` serializes the run's `Activity` on the probe wire; an unknown value fails an older receiver.
+- The recorded-owner director source and the named-seat join find a herdr unit's workers with no `mesh_roster.json`; roster removal keeps both.
+
+**Gotchas:**
+- A herdr unit has no `mesh_roster.json` and no director file; its run record names the worker by seat name only.
+
+### Phase 72 — A compacting session says compacting  · status: todo
+
+**Depends on:** Phase 71 (`census/activity.rs`). `crates/cargo-handler/CHANGELOG.md` waits for Phases 21, 69, 70 and 71.
+
+#### Work Order
+
+**Goal:** while a Claude or Codex session compacts its conversation, its row says `compacting`, not `thinking`. Every other case that says `thinking` today stays as it is.
+
+**Source:** the user, relayed by the showrunner, 2026-11-08: "add to the cargo handler - if we're compacting it would be good for the status to say that instead of "thinking" which is what i believe it says right now", and "if there are other conditoins for thinking that is fine - compacting is a special case".
+
+**Constraints:**
+- Today `ActivityRead::take_codex` and `ActivityRead::take_claude` (`census/activity.rs` ≈203 and ≈224) set `Activity::Thinking` at a turn start and leave it until a tool call or the turn end. A compaction is a turn with no tool call, so it draws as `thinking`.
+- Both transcripts write the compaction record only at its end. Claude writes a `system` line with `subtype: "compact_boundary"` and `compactMetadata` (`trigger`, `durationMs`, `precomputed`). Codex writes a top-level `"type": "compacted"` line. Director check, 2026-11-08: a Codex rollout showed `task_started` at 05:05:56 and `compacted` at 05:07:41, 1 m 45 s drawn as `thinking`, with no `user_message` between them.
+- Find a signal that is present while the compaction runs, for each family, on real sessions, and state it before you change code. Leads: the Codex app-server context-compaction item events, and the Claude `PreCompact` hook. A compaction that starts and ends between two scans needs no `compacting` frame.
+- Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
+- No new check of your own design.
+- The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
+- Constraints from Phase 71: a live detached run overwrites the transcript activity of its worker row in `census/scan.rs` ≈959–972, after the transcript read and the verification read. Three places put the run first:
+  1. `census/scan.rs` ≈967 sets `row.activity` to the run's activity, and ≈970 calls `AstraMembership::with_run_activity`.
+  2. `AstraMembership::activity` (`census/hierarchy.rs` ≈1161, applied in `census/scan.rs` ≈2672) returns `AstraRunActivity::Live` before it reads `PaneWork`.
+  3. `TreeLine::status` (`agent_cell.rs` ≈1680) draws `summary::status_text` when `has_live_run()` holds, and otherwise idle or unknown from `PaneWork`.
+  Spec 5 changes all three so `compacting` wins while the session compacts.
+- `AstraRunActivity::Live` (`census/hierarchy.rs` ≈1087) serializes the run's `Activity` in `astra_member.run` on the probe wire. Keep the run's own activity there; never store `Compacting` in it. A Phase 71 receiver rejects an unknown value in that field.
+
+**Spec:**
+1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
+2. Add `Activity::Compacting`, with the status word `compacting` and the busy color of `thinking`.
+3. A row says `compacting` from the start signal to the end signal. After the end, the row follows the next transcript line as today.
+4. A turn that is not a compaction keeps today's words.
+5. `compacting` wins over a live run's `waiting` or step name, because the session itself is compacting. After the compaction ends, the run's word returns.
+6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. `astra_member.run` keeps the live run's own activity. An older receiver shows `thinking`; a current receiver shows `compacting`.
+7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; an Astra row that compacts draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
+8. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
+- `crates/cargo-handler/src/census/fixtures/` — new compaction fixtures
+- `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/tier.rs` — only where the start signal is read; name the file in the summary before its edit
+- `crates/cargo-handler/src/census/probe.rs` — the compaction extension field and its compatibility tests
+- `crates/cargo-handler/src/census/scan.rs` — the run-activity precedence, after the Phase 71 checkpoint
+- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/agent_cell.rs` — the Astra status paths, after the Phase 71 checkpoint
+- `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69, 70 and 71
+
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
+
+### Phase 74 — The model-read transcript test finishes in under a second  · status: done
+
+#### As-built
+
+- `census::transcript::tests::a_large_codex_rollout_without_effort_reads_bounded_metadata` pads the rollout with `3 * TRANSCRIPT_TAIL_START` bytes (192 KiB), not 4 MiB. The test runs in 0.008 s.
+- The assert bound stays `2 * TRANSCRIPT_TAIL_START` (128 KiB). A full scan reads more than the bound, so the test still fails on a full scan. Every assert and the append half are unchanged.
+
+**Files:**
+- `crates/cargo-handler/src/census/transcript.rs` — the test module only
+
+**Gotchas:** a padding size taken from `TRANSCRIPT_TAIL_START` must stay larger than the assert bound. Below `2 * TRANSCRIPT_TAIL_START`, a full scan passes the test.
+
+### Phase 73 — The unmatched-ink test paints both frames at one time  · status: done
+
+#### As-built
+
+- `render::draw_at_for_test(frame, app, keymap, now)` paints the grid at `now` and the status line at a fixed uptime (`FIXED_UPTIME_SECS`, 0) through the private `draw_status_line_at`. The production `draw_status_line` passes `app.started.elapsed()`.
+- `word_click_tests::Renderer::with_fixed_time(app, width, height, now)` paints every frame through `draw_at_for_test` (`FramePaint::FixedTime`). `Renderer::new` keeps `App::draw` (`FramePaint::Application`).
+- `word_contrast_tests::single_word_frames` paints both frames at `BEFORE_AGE_STEP` (399) and moves `app.started` one second earlier between the paints. `check_unmatched_ink` keeps its symbol and ink asserts.
+
+**Files:**
+- `crates/cargo-handler/src/render/mod.rs` — `draw_at_for_test`, `draw_status_line`, `draw_status_line_at`
+- `crates/cargo-handler/src/render/word_click_tests.rs` — `Renderer`, `FramePaint`
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — `single_word_frames`, `check_unmatched_ink`, `BEFORE_AGE_STEP`
+
+**Gotchas:** a frame reads two clocks: `census::unix_now()` for grid ages and `app.started` for status uptime. A paired-paint test must fix both; `draw_at_for_test` does.
+
+**Ruled out:** a clock closure read on every paint (it cannot move after the fix, so a moving-clock case proves nothing); dropping the symbol assert or skipping digit cells.
 
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** each live Codex worker that runs in a herdr pane shows under its unit director or showrunner, not in the unassigned pool.
-
-**Source:** the showrunner, 2026-11-07, from a report by herdr-unit: under the herdr worker model, most workers show as 'unassigned'. Every run uses that model since 2026-11-07; no mesh app-server workers remain. Herdr facts:
-1. Each unit worker is a staff row in `~/.local/state/staff/staff.json` with kind `worker` and `parent` = the unit director's staff id. Its `current_session` is the Codex thread id (or the Claude session id).
-2. A working worker runs in a herdr pane in its unit's tab. A new worker's first pass runs a bare `codex --no-daemon ...` (`scripts/herdr/worker_panes.py` ≈592); Codex makes the thread id, and herdr then publishes it as `current_session`. Every later open runs `codex resume <thread id> --no-daemon --cd <dir>`. Since herdr phase 27, idle workers close after each pass, so most worker processes carry the id on the command line.
-3. The pane label and the herdr agent name are the worker name. herdr phase 24 changes the agent name to `<unit>-<worker>`. cargo-handler does not use either name for the link.
-4. An idle worker is closed: no pane and no process. Its staff row stays.
-
-**Constraints from prior phases:**
-- The staff reader links members by `current_session` only (`census/hierarchy.rs`, `StaffRoster::parse`): each edge holds the manager's and the member's `current_session`. No other key is needed.
-- `classify::codex_row` (`census/classify.rs` ≈493) builds a root interactive Codex row with `session_id: SessionIdentity::Unrecorded`; it uses the matched `CodexThread` only for the row label. `SessionIdentity` (`census/mod.rs` ≈171) has only `Unrecorded` and `Claude`.
-- `Placement::resolve_managers` (`census/placement.rs` ≈485) matches edges only on `SessionIdentity::Claude` for root rows. `resolve_threads` (≈422) matches Codex thread ids only on `ChildKind::Thread` children of an owner row (the app-server model). `HierarchySnapshot::matched` and `HierarchyEdges::with_worker_roles` (`census/hierarchy.rs` ≈123–165) have the same two cases.
-- `codex::resume_request` (`census/codex.rs` ≈72) reads the thread id from `codex resume <uuid>` as `ResumeRequest::NamedId`. A bare `codex` has its thread selected by working directory and start time (`classify::codex_thread_window`).
-- Phase 21 (Astra rows) waits on the staff producer and runs after this phase. It reuses this phase's Codex identity and placement path for Astra rows, so keep that path general to any Codex worker edge.
-- Probe rows carry `session_id`; older receivers must still accept a probe (keep the defaulted-extension rule of probe schema 3).
-
-**Spec:**
-1. A root interactive Codex row carries its thread id as its session identity when the thread is proven. A `codex resume <id>` process is proven by its command line. A bare `codex` is proven only by the staff `current_session` thread whose rollout file that process holds open (the open-file read that app-server discovery uses under the sessions directory). herdr-unit, 2026-11-07: do not link a staff worker by working directory and start time. The identity type names the proof. It is never a bare `Option` or a raw string at draw time.
-2. Placement, `HierarchySnapshot::matched` and `with_worker_roles` match a staff edge on that Codex identity as they do on a Claude session id. A pane Codex worker draws under its manager with its worker role.
-3. A staff row with no live process draws nothing. A closed worker never shows as a live unassigned session.
-4. App-server hosted threads keep their current placement.
-5. Tests, each red before its fix: a `codex resume <id>` worker draws under its unit director; a bare `codex` worker draws under its unit director when it holds its staff thread's rollout open, and stays unassigned when it does not; two workers with different managers on one machine each draw under their own manager; a staff row with no process draws nothing; a Codex row with no thread stays in the unassigned pool; an older probe receiver accepts the new row.
-6. CHANGELOG: one line.
+- A root interactive Codex row carries `SessionIdentity::Codex(ProvenCodexThread)` when its thread is proven. `SessionIdentity { Unrecorded, Claude, Codex(ProvenCodexThread) }` and `ProvenCodexThread { ResumeArgument, OpenStaffRollout }` live in `census/session_identity.rs`; `ids()` gives the ids placement reads. The module root re-exports them.
+- `ResumeArgument`: the command line is `codex resume <full UUID>`. `codex::resume_request` skips each `CODEX_VALUE_OPTIONS` option with its value, so a value never takes the subcommand position.
+- `OpenStaffRollout` (Linux only): the process holds exactly one open rollout under `/proc/<pid>/fd`, and that thread is in the staff roster (`StaffRoster::session_membership` → `StaffSessionMembership { Listed, Unlisted }`). `scan::attach_pane_codex_identities` reads it with the same open-rollout reader as the app-server thread scan.
+- Placement, `HierarchySnapshot::matched`, `with_worker_roles` and `HierarchyRequestSessions` match a staff edge on the Codex identity as on a Claude session id. The managers map keeps Codex managers. A pane worker draws under its manager as an `AgentRow` with its worker role.
+- A pane Codex process with no proof stays in the unassigned pool and never takes another worker's place. A staff row with no live process draws nothing. App-server hosted threads keep their placement.
+- The probe carries `codex_session` with a serde default, so an older receiver accepts the row.
 
 **Files:**
-- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/census/scan.rs` — the open-rollout read under `/proc/<pid>/fd` (`app_server_threads` ≈1367), reused for a bare `codex` process
-- `crates/cargo-handler/src/census/schedule.rs` — `HierarchyRequestSessions::new` and `newcomers` match every `SessionIdentity` variant, so they take the new Codex identity
-- `crates/cargo-handler/src/census/codex.rs` — `resume_request` reads `resume` only as the subcommand, so an option value never proves a thread
-- `crates/cargo-handler/src/census/session_identity.rs` — `SessionIdentity` and `ProvenCodexThread`, moved out of the module root
-- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — new test module
+- `crates/cargo-handler/src/census/session_identity.rs` — `SessionIdentity`, `ProvenCodexThread`
+- `crates/cargo-handler/src/census/codex.rs` — `resume_request`, `CODEX_VALUE_OPTIONS`, `CODEX_SWITCHES`
+- `crates/cargo-handler/src/census/classify.rs` — Codex rows get `ResumeArgument`
+- `crates/cargo-handler/src/census/scan.rs` — `open_rollouts`, `attach_pane_codex_identities`
+- `crates/cargo-handler/src/census/placement.rs`, `census/hierarchy.rs`, `census/schedule.rs` — match on `session_id.ids()`
+- `crates/cargo-handler/src/census/probe.rs` — the `codex_session` wire field
+- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — placement, proof and value-option tests
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the identity type, classification, placement, probe and the CHANGELOG; hub: `crates/cargo-handler/src/census/mod.rs`.
-- `test` — `census/pane_worker_placement_tests.rs`.
+**Binds later work:** Astra rows reuse the Codex identity and placement path and read the membership's account home. Worker-role publication keeps the pane-worker tests. `read_worker_runs` (`census/scan.rs`) still limits directors to Claude.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a framed shot of cargo-handler on natedev, started with my own process and the real staff file, shows each live pane Codex worker of a unit under that unit's director, and no pane worker in the unassigned pool. The checkpoint carries `Change-Review: cargo-handler shows each Codex worker running in a herdr pane under its unit director, not as unassigned | open cargo-handler while a unit has Codex workers working and find them under their unit`.
+**Gotchas:**
+- One `/proc/<pid>/fd` read per pane Codex process per scan, Linux only.
+- A pane whose thread no staff row names stays unassigned; failed launches leave such panes.
+- `CODEX_SWITCHES` is a hand list: an unknown switch before `resume` loses the proof until its removal lands.
 
-### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: todo
+**Ruled out:** linking a staff worker by working directory and start time (herdr-unit, 2026-11-07).
 
-**Depends on:** Phase 67
+### Phase 67a — An unknown Codex switch keeps the resume proof  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the tile grid keeps its column count when the text width of a summary cell changes; the layout changes only when the terminal size or the set and rows of the tiles change.
-
-**Source:** the showrunner, 2026-11-07. Change review C217 ("Tiles keep their places when the accounts table wraps", Phase 65, merge 99b87113) was returned after a live check failed:
-1. Check: installed cargo-handler at 80x45, one capture each 2 s for 150 s.
-2. Result: the tiles switch between two columns and one column 4 times in 150 s. Each switch follows a width change of a summary status cell: cargo-liner `waiting` (two columns) to `clippy (mac)` (one column), and back. The accounts table kept its 9 rows and did not wrap.
-3. Frames: `/home/natepiano/rust/repro/cargo-liner-C217-c217/f05.txt` (two columns), `f06.txt` (one column), `f08.txt` (one column), `f09.txt` (two columns). In `f06.txt` the status column is wider and the directory column narrower; the summary keeps the same row count.
-
-**Constraints from prior phases:**
-- Phase 65: `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs` ≈2391) runs the candidate search when `LayoutSelectionInputs` change; equal inputs reuse `LayoutSelection` with exactly 2 `cells.demands` calls per draw. Keep that reuse and the narrow-width demand-count tests (200:7, 80:4, 50:2, 40:2, then exactly 2) and `grid_at_height_70_keeps_all_work_rows_and_accounts`.
-- `CellView::requested_at_width` (`agent_cell.rs`) requests a tile's rows at each width; `TreePresentation::HeightCompressed` applies only at allocation.
-
-**Spec:**
-1. First reproduce the switch in a test that drives the real draw path: the frame-5 state at 80x45, then the same state with the `clippy (mac)` status, then back. The test fails before the fix. Name the input that changes the column choice, and quote it in the summary.
-2. Fix the cause where it lives: a change in a cell's text width that does not change any tile's requested rows at the candidate widths does not change the column count. Do not add a hold timer, a hysteresis count or a special case for the summary tile.
-3. A real change still reselects: a tile that gains or loses rows, a tile added or removed, and a terminal resize.
-4. Tests, each red before its fix: the status-width switch above keeps the column count over the full back-and-forth; each case in item 3 still changes the layout when its rows need it; the Phase 65 demand-count tests stay green.
-5. CHANGELOG: one line.
+A Codex pane worker started with a switch that cargo-handler does not know still shows under its unit director.
+- `codex::resume_request` skips every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`; a `--name=value` argument is one argument. `resume --last` matches before the switch arm.
+- `CODEX_VALUE_OPTIONS` lists every `<VALUE>` option of `codex --help` and `codex resume --help`, `--remote` and `--remote-auth-token-env` included, so a value never takes the subcommand position.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/mod.rs` — test module registration
-- `crates/cargo-handler/src/render/layout_stability_tests.rs` — new test module
+- `crates/cargo-handler/src/census/codex.rs` — `CODEX_VALUE_OPTIONS`, `resume_request`
+- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `an_unknown_codex_switch_keeps_the_resumed_worker_under_its_unit`, `remote_option_values_do_not_prove_a_staff_thread`; `assert_managed_worker` checks the role column shows `worker` apart from the name
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the cause and its fix, and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs`.
-- `test` — `render/layout_stability_tests.rs`.
+**Gotchas:** A Codex value option missing from `CODEX_VALUE_OPTIONS` lets its value take the subcommand position; add each new `<VALUE>` option from `codex --help`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: cargo-handler at 80x45, started with my own process, captured each 2 s for 150 s while a summary status changes width, keeps one column count in every frame. The checkpoint carries `Change-Review: cargo-handler tiles keep their columns when a session's status text changes width | open cargo-handler at 80x45 while a session moves between waiting and a longer status, and watch the tiles stay in place`.
+**Ruled out:** A fixed list of known switches: a new Codex switch drops the resume proof.
+
+### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: done
+
+#### As-built
+
+The tile grid keeps its column count when the text width of a summary cell changes. The layout changes only when the terminal size, the set of tiles or their requested rows change.
+- `TreeMeasurement::minimum_tile_width` (`agent_cell.rs`) reserves the status header width, not the widest status value. The guide, header, role, gap, indent and frame terms are unchanged.
+- The grid reuses `LayoutSelection` only when no tile's requested rows change at the cached candidate widths. `LayoutDemandMeasurement` equality compares widths and requested rows and ignores `summary_width`. A preferred summary width not yet seen at the current widths measures every cached candidate width again (`LayoutSelectionInputs::refresh_measurements`, `CandidateMeasurementFreshness::{CurrentWidth, AllCachedWidths}`).
+- `RowDemandChange::{Unchanged, Changed}` compares summary and group rows. Under `DemandSync::CurrentRender`, `Changed` replaces `HeldCellLayout::rows` before layout (`reconciled_held`), and `queue_row_resize` queues the resize from the drawn slots. Tiles that gain or lose rows, added or removed tiles, and a terminal resize still select a new layout.
+- Cost: equal inputs keep 2 `cells.demands` calls per draw; a new preferred summary width adds one measurement for each other cached candidate.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs` — `RowDemandChange`, `CandidateMeasurementFreshness`, `refresh_measurements`, `reconciled_held`, `queue_row_resize`; test `narrow_candidate_row_changes_reselect_a_wide_summary`
+- `crates/cargo-handler/src/agent_cell.rs` — `minimum_tile_width`
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — real-draw tests at 80x45: a status back-and-forth keeps two columns; gained and lost rows, added and removed tiles, and width and height changes reselect
+
+**Binds later work:** A new tile column adds no value-width term to `minimum_tile_width`; a term that follows drawn text lets a text change cross a column threshold with equal rows. `render/layout_stability_tests.rs` stays green.
+
+**Ruled out:** A role floor independent of the role text: the measured role widths stay in the floor so role words read whole (`narrow_width_tests.rs` `narrow_growth_envelope_contains_end_top_and_cursor_windows`; showrunner ruling).
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
@@ -1417,35 +1533,22 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: done
 
-**Depends on:** Phase 60. Runs first, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
+#### As-built
 
-#### Work Order
+- A Codex window gets a thread name only from proof on its own connection: a confirmed thread start or resume, or an in-process shell snapshot record (`ConfirmedSelection::snapshot`, `census/codex.rs`) from the window's own pid that names the same thread. A window with no such proof shows its pid, never a name from its start time or its command line.
+- A window on its own app-server (`codex --no-daemon`) is named and follows `/resume`. A window on the shared detached daemon has no proof on its own connection, so it shows its pid. Phase 60b then gives it the herdr pane name.
+- The log reader yields only pid → thread id. The codex_sqlite stage resolves the ids in one by-id query. `link` (`census/codex.rs`) returns `Option<&CodexThread>` and runs once per scan. Shared-daemon ownership is decided at link time from raw per-pid records.
+- The socket reader (`census/codex/socket.rs`) was removed, with its cache and constants. No unsafe code remains. A window links to its daemon only through the daemon parent relation.
+- The /simplify items removed `LogOwnership`, `SharedDaemon`, `CodexLogEvidence::Unread` and the test wrappers `agent_rows` and `codex_startup_threads`.
 
-**Goal:** morty, and every interactive Codex session that uses a detached managed daemon, shows its thread name in its tile and in the summary. The Phase 60 log reader also becomes simpler.
+**Files:**
+- `crates/cargo-handler/src/census/codex.rs` — the log reader, `link`, `ConfirmedSelection`
+- `crates/cargo-handler/src/census/{classify.rs, scan.rs, tier.rs, tree.rs}` — one link map per scan
+- `crates/cargo-handler/src/census/codex_session_tests.rs`, `crates/cargo-handler/src/census/scan/codex_home_tests.rs` — the launch-form and shared-daemon tests
 
-**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". The user, 2026-11-02, on the seven /simplify items: "okay i want you to add these things - they all sound proper to me".
+**Gotchas:** a start-time or argv match is not proof. Two windows on one daemon can match the same thread, so either row could show the wrong name.
 
-**Cause, found in the Phase 60 live check:** morty runs as pid 3190832, argv `codex resume`, `CODEX_HOME=~/.codex2`. Its managed daemon is pid 817986 under `systemd --user` (pid 2047), not a child of the TUI. The Phase 60 reader looks only at the TUI and its app-server children, so it finds no record for morty.
-
-**Spec:**
-1. State model first, in this section, for showrunner review before code: each state of a process-to-thread link, the one record that holds it, and every path that creates or changes it. Two records never hold the same fact.
-2. Part 1, the seven /simplify items, with no change to any name shown:
-   1. The log reader yields only pid → thread id. The existing codex_sqlite stage resolves those ids with the argv ids in one by-id query. Remove the reader's own thread connection, layout, name cache and retry list.
-   2. Ownership is a process property: keep raw records per pid, and decide shared-daemon ownership at link time. Remove `LogOwnership`, the unseen/pending split and the rewrite loop. One `app_server_children` helper replaces the two child filters.
-   3. Resolve links once per scan and pass one map to classify, names and tiers. `link` returns `Option<&CodexThread>`. Remove `SharedDaemon` and the link source names that nothing reads.
-   4. Remove the test-only `CodexLogEvidence::Unread` and the `#[cfg(test)]` wrappers `agent_rows` and `codex_startup_threads`.
-   5. Return early when the account directory stamp is unchanged. Use one `read_dir` pass, `FileRevision::of`, and one shared `FileIdentity::read`. Merge the open and reopen functions.
-   6. No transaction around the single steady SELECT. Remove the duplicate log read timing.
-   7. Tests use the shared fixture helpers. Merge the two client-exits-stays-ambiguous tests.
-3. Part 2: link a TUI to the thread of a detached daemon it is connected to. Find the evidence from a capture of morty's real process tree and its daemon connection (for example the TUI's unix socket peer). Do not use an invented layout. When the evidence cannot name one client, leave the row unnamed: never show a wrong name.
-4. Tests under 1 s: keep the five launch-form tests of Phase 60 with their asserted names. Add the detached-daemon form as the sixth, built from the capture.
-5. CHANGELOG: one Fixed line in cargo-handler.
-
-**Files:** `crates/cargo-handler/src/census/{codex.rs, classify.rs, scan.rs, codex_session_tests.rs}`, `crates/cargo-handler/CHANGELOG.md`.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: with two TUIs on one daemon, a `/resume` cannot retain an old name or show another TUI's name. An unresolved TUI shows its pid. The notice states the result. The socket stage stays under 1 ms. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
+**Ruled out:** the unix socket peer reader. It needed unsafe code and a socket stage on every scan, and the showrunner removed it.
 
 ### Phase 60b — A Codex window with no proven thread shows its herdr name  · status: done
 
@@ -1781,7 +1884,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 57e — Worker roles come from the staff file  · status: todo
 
-**Depends on:** Phase 42, Phase 57c and Phase 62; models 3n on `~/.claude` main supplies each worker's staff role.
+**Depends on:** Phase 42, Phase 57c, Phase 62, Phase 67, Phase 21, Phase 71 and Phase 72 (`census/activity.rs`); models 3n on `~/.claude` main supplies each worker's staff role.
 
 #### Work Order
 
@@ -1790,12 +1893,17 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
 **Constraints from prior phases:**
+- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261). Since Phase 71, `read_worker_runs` (`census/scan.rs` ≈1015) also accepts non-Claude rows as directors. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
 - Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
+- Phase 21: Astra worker membership comes from checked staff rows (`AstraMembership` in `census/hierarchy.rs`, `SessionIdentity::with_astra` in `census/scan.rs`). Keep it and its tests in `census/astra_role_tests.rs` when worker-role publication changes.
+- Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green, the `impl`-finishes-first case of `census/fixtures/pane_detached_tile.json` included. Two Phase 71 paths find a worker with no roster:
+  1. `run_directors` (`census/scan.rs` ≈220) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource` in `census/worker_dispatch/sessions.rs` ≈32, read ≈168), before the roster.
+  2. `LiveWorkerRun::worker` (`census/activity.rs` ≈755) joins a record's seat name to the one staff edge under that director, and falls back to `RunWorkerIdentity::NamedSeat`.
 - Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 
 **Spec:**
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈675) and the probe report (`census/probe.rs` ≈427, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
+2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep the Phase 71 recorded-owner director source and the named-seat join when the roster reads go. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
 5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
@@ -1929,129 +2037,89 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - A dependency of the marker-cell work on the click-mapping work: packaging only; a shared-geometry constraint replaces it.
 - New acceptance checks for the model and effort columns, worker-role and marker-cell work: no check is added without the user.
 
-### Phase 49a — The census reads each agent's model and effort  · status: todo
+### Phase 49a — The census reads each agent's model and effort  · status: done
 
-**Depends on:** Phase 40, Phase 41, Phase 47
+#### As-built
 
-#### Work Order
-
-**Goal:** every Claude and Codex agent row, and each subagent row whose record names one, carries its model's short name and its reasoning effort as typed values, read once when the row appears or its record changes.
-
-**Source:** user, 2026-10-29: "handler - in the cells needs a column for the short model name - like opus, astra, sol - and the effort also". Showrunner approved, with a CPU condition: read model and effort once, when an agent appears or its record changes, never per frame or per poll; state the added cost at the checkpoint. Unit session `phases/49/source.md`. Phase 49b draws the columns.
-
-**Constraints from prior phases:**
-- `AgentRow` (`census/mod.rs` ≈312) holds `agent`, `service_tier`, `account`, `name`, `activity`, `started`; rows also cross the probe wire from other machines ("missing from a probe printed before it existed"), so a new field needs a wire default for an older probe.
-- No model or effort reads exist yet. Candidate sources: the Claude transcript's assistant records (`message.model`, `census/transcript.rs`) and the session's effort setting; the Codex rollout's `turn_context` (`model`, `effort`) and the Codex thread records `census/codex.rs` reads (Phase 41 changed its thread queries: `ThreadsLayout::{WithThreadSource, OriginatorOnly}`); a worker dispatch line such as `codex/gpt-6.1-sol:high` (`census/worker_dispatch`).
-- Read model and effort through the existing transcript and rollout readers. Preserve `Rollouts` revision and append checks. App-server database rows use `OpenThreadRows::read`, cached per Codex home and invalidated by database and WAL revision. Extend that cache if database rows supply model or effort. `RunRecords::read_for_processes` reads verification evidence, rather than model data. `RunThread` can create a child without a rollout; keep that case valid.
-- `Rollouts::thread` returns `Option<&RolloutRead>` (`census/tier.rs` ≈425). Give it a named result such as `ThreadRollout::{NotRetained, Retained(..)}`, and keep a retained record with unrecorded model or effort distinct from a missing rollout; add no domain-owned `Option` fields.
-- Rows are built in `census/tree.rs` (subagents ≈657, flattened children ≈740) and `census/classify.rs`.
-- Phase 47 owns `census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` and `app.rs`; claim a shared file through berth, or keep the read in `transcript.rs`, `codex.rs` and a new `census/model.rs`.
-- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
-
-**Spec:**
-1. One typed model name: `ModelName` with a short form from one table (`opus`, `sonnet`, `haiku`, `fable`, and the Codex names such as `astra`, `sol`), and `ModelName::Unrecorded` where no record names one. An unknown full id keeps a short form cut by one rule (the last word of the id with no version digits), never a placeholder string.
-2. One typed effort: `ReasoningEffort::{Low, Medium, High, XHigh, Max, Unrecorded}` from the record's word.
-3. Read each value from the agent's own record when the row first appears. Read it again only when that record's revision changes. Subagents use their own record when it names a value; otherwise use `Unrecorded`. Shells carry `Unrecorded`. A run-only thread without its own metadata also carries `Unrecorded`; do not borrow the director's or hosting process's values.
-4. `AgentRow` and `ChildRow` (`census/mod.rs` ≈437) carry both. Subagents use `ChildRow`, and managed and unassigned Codex threads also use `ChildRow`. Each thread carries its own model and effort through its child row and the probe wire, never the values of the process that hosts it. The probe wire carries them with an `Unrecorded` default for an older probe.
-5. Red-first tests, each under 1 s: an unchanged record is not read again, appended settings are read, a replaced record is read anew; a Claude transcript fixture gives `opus` + its effort; a Codex rollout or thread fixture gives `sol` + `high`; a thread fixture whose model and effort differ from its hosting process's values keeps its own values on its child row and across the probe wire; an unchanged record is not read again (a counted read); an older probe line parses with `Unrecorded`; the short-name table covers each listed name.
-6. Measure the added cost on the release build in the Phase 40 way and state it at the checkpoint.
+- `census/model.rs` holds `ModelName` (`Unrecorded`, `Opus`, `Sonnet`, `Haiku`, `Fable`, `Astra`, `Sol`, or `Other(ShortModelName)`, a checked lowercase word) and `ReasoningEffort` (`Low`, `Medium`, `High`, `XHigh`, `Max`, `Unrecorded`), both `From<&str>`. `ConversationModel { model, effort }` takes values from Claude `assistant`/`system` records and Codex `turn_context`/`thread_settings_applied` records; a private decoder skips message bodies.
+- Every `AgentRow` and `ChildRow` carries `model: ModelName` and `effort: ReasoningEffort`, read from the agent's own record: the Claude transcript, the subagent transcript, or the Codex rollout. A probe without the fields reads `Unrecorded`; `Unrecorded` is not serialized.
+- `TranscriptModels` (`census/transcript.rs`) keeps one read per path. The first read takes at most a 64 KiB tail (Claude) or a 64 KiB head and tail (Codex); later reads take only appended bytes; an unchanged `FileRevision` reads nothing; `RecordChange::Replaced` (new inode or shorter file) resets. Measured idle cost: +0.02 CPU-s/min over 3 release pairs, under the 0.13 spread.
+- `Rollouts::thread` returns `ThreadRollout::{Retained(&RolloutRead), NotRetained}` (`census/tier.rs`).
+- `OpenThreadRows::process_rollouts` (`census/codex.rs`) resolves pane-worker rollouts by proven thread id within each account home, through the same per-home cache as the app-server lookup; `OpenThreadRows::read` keeps the union of requested ids per home.
+- The metadata pass in `census/scan.rs` walks child rows recursively and keys each subagent by the pid of the Claude process that owns it, so a Claude nested under another agent gives its subagents their own values.
 
 **Files:**
-- `crates/cargo-handler/src/census/model.rs` — `ModelName`, `ReasoningEffort`, the short-name table and their tests
-- `crates/cargo-handler/src/census/transcript.rs` — the Claude read
-- `crates/cargo-handler/src/census/codex.rs` — the Codex read
-- `crates/cargo-handler/src/census/mod.rs` — the row fields
-- `crates/cargo-handler/src/census/probe.rs` — the wire fields and their default
-- `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/census/tier.rs` — `Rollouts` and the `ThreadRollout` result
-- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/classify.rs` — carry the values to the rows (after Phase 47 hands off `scan.rs`)
+- `crates/cargo-handler/src/census/model.rs` — model and effort types, record decoder, tests
+- `crates/cargo-handler/src/census/transcript.rs` — `TranscriptModels`, `RecordChange`, bounded reads, byte-count tests
+- `crates/cargo-handler/src/census/codex.rs` — `process_rollouts`, request union, shared-cache test
+- `crates/cargo-handler/src/census/scan.rs` — metadata pass over rows and children
+- `crates/cargo-handler/src/census/{mod.rs,probe.rs,tier.rs,tree.rs,classify.rs}` — row fields, wire, `ThreadRollout`
 
-**Workers:** 1 writer (a new role-named seat `model` when every open seat is busy).
+**Binds later work:** effort is often `Unrecorded` (many Claude transcripts hold no effort key, and a first read sees only a 64 KiB window), so the model and effort columns are sparse. The requested-id union in `OpenThreadRows::read` grows until its home is pruned; the thread cache bound by requester replaces it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. The checkpoint states the measured added CPU cost. Change-Review: none (the columns arrive in Phase 49b).
+**Gotchas:** never search a transcript until a field appears: a record with no effort key turns that into a whole-file scan (259 MB transcripts, +40.5 CPU-s/min). `OpenThreadRows` is shared by more than one caller per home, so a per-call replace of the request set makes the callers evict each other.
 
-### Phase 49b — Agent tiles show model and effort columns  · status: todo
+**Ruled out:** searching back from the tail until both model and effort appear (unbounded on records with no effort key).
 
-**Depends on:** Phase 49a, Phase 43, Phase 66
+### Phase 49c — The Codex thread cache holds only live requests  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** agent tile rows show the model's short name and the reasoning effort in their own columns.
-
-**Source:** as Phase 49a. Unit session `phases/49/source.md`.
-
-**Constraints from prior phases:**
-- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈584); tiles that share a screen column use `GroupFitStep::ORDER` (≈1048). Both drop effort before model; test both.
-- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1507), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈941) reserves `session_guide_width + 1`. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
-- Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
-- Phase 9: a header press maps through the spans that were painted, not spans rebuilt at press time. `Cells::record_painted_surface` (`render/mod.rs` ≈693) saves `PaintedSurfaceContent::Tree { key, spans, default }` per painted allocation, and `tree_pressed` (`render/painted_surface.rs` ≈100) reads them. New columns reach presses only through those saved spans. Header-press regressions live in `render/drawn_frame_tests.rs`.
-- Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2393), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
-
-**Spec:**
-1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
-2. On a narrow tile the two columns drop before `Branch` and `Directory` keep their place (effort first, then model).
-3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
-4. Header-press tests in `render/drawn_frame_tests.rs`, each under 1 s: a press on the drawn `model` or `effort` header sorts by that column after the rows' model or effort changed between draw and press, and during motion.
-5. CHANGELOG: one line under Added.
+- `ThreadRequester::{PaneWorkers, AppServer}` (`census/codex.rs`) names the owner of a complete thread-id request set. `OpenThreadRows` keeps one set per requester per account home.
+- `OpenThreadRows::read_scan` runs once per scan. It gathers every requester's full set (empty included), prunes the live homes once, reads each live home once, and returns `LiveThreadRows` (pane rollout paths and rows per home).
+- `OpenThreadRows::read_requests` replaces the supplied sets, drops rows that no requester holds, and queries only the union of live ids. An empty union runs no query. A query reruns only on a database or WAL revision change or a new id.
+- `app_server_threads` (`census/scan.rs`) builds a server set for every live Codex home, empty included, and calls `read_scan`. A departed pane or server id leaves the cache at the next scan.
+- `OpenThreadRows::read` and `process_rollouts` are test-only adapters for the existing cache tests.
+- Idle CPU: no measured change (median −0.020 CPU-s/min over 3 pairs, spread 0.160).
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — the columns
-- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — tests
-- `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header-press tests
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/codex.rs` — `ThreadRequester`, `read_scan`, `read_requests`, request-set tests
+- `crates/cargo-handler/src/census/scan.rs` — one `read_scan` call per scan, scan-order tests
 
-**Workers:** 1 writer (`impl`).
+**Gotchas:** a new requester joins the single `read_scan` call. A second read per scan queries departed ids after a revision change, and reads twice on a cold scan.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile with Claude and Codex rows shows both columns. The checkpoint adds a Change-Review line.
+### Phase 49b — Agent tiles show model and effort columns  · status: done
 
-### Phase 50 — Slow cargo-handler tests run under a second  · status: todo
+#### As-built
 
-**Depends on:** Phase 41, Phase 43, Phase 47, Phase 48
-
-#### Work Order
-
-**Goal:** every cargo-handler test that takes over one second runs under one second.
-
-**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Phase 25's Codex slow test (showrunner, 2026-10-24: 1.510 s in the phase 30 full suite at high machine load) moved here on 2026-10-30. Phase 45's full run 12dd, 2026-11-03, at high machine load: two more took 1.308 s (pinned accounts) and 1.044 s (high-contrast light ink); alone they took 0.047 s and 0.110 s, and a later full run gave 0.112 s and 0.278 s (showrunner put them here). Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
-
-**Constraints from prior phases:**
-- The list below is history: each test took a second or more in a 2026-10 run. Phase 57b cut the first one. At the Phase 62 checkpoint the full suite has 857 tests and its slowest takes 0.309 s on the Mac. A name on this list is not work by itself. The eleven tests, all under `crates/cargo-handler/src/`:
-  - `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` (`summary/accounts_gradient_tests.rs` ≈532)
-  - `busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes` (`agent_cell/tests/design_ink_tests.rs` ≈99)
-  - `tree_role_and_account_words_meet_contrast_on_every_tile_ground` (`agent_cell/tests/design_ink_tests.rs` ≈336)
-  - `selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states` (`render/selected_ink_tests.rs` ≈133)
-  - `selected_row_inks_keep_glyph_contrast_in_default_light` (`render/selected_ink_tests.rs` ≈138)
-  - `every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection` (`render/selected_ink_tests.rs` ≈944)
-  - `every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection` (`render/selected_ink_tests.rs` ≈984)
-  - `codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts` (`census/codex_session_tests.rs` ≈291)
-  - `codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`census/codex_session_tests.rs` ≈447, module `census::scan::codex_session_tests`)
-  - `pinned_accounts_require_headers_and_one_body_line` (`render/pinned_accounts_tests.rs`)
-  - `selected_row_inks_keep_glyph_contrast_in_high_contrast_light` (`render/selected_ink_tests.rs`)
-- One Mac run under load on 2026-11-06 also took a second or more on three others: `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still` (`app.rs` ≈570, 1.837 s), `incremental_codex_last_tier_after_the_old_head_limit_replaces_priority` (`census/incremental_read_tests.rs` ≈265, 1.391 s) and `each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order` (`agent_cell/tests/sort_tests.rs` ≈621, 1.003 s). The next Mac run had every test below 1 s. Treat them as the list above: measure them, and change code only when a test takes a second or more.
-- Find each by name in a `verify.sh test cargo-handler` run's timing output. Fix each at its cause (the work it repeats, a real sleep, a fixture built per case), never by weakening an assert.
-- A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
-
-**Spec:**
-1. Run the suite once. List each of the eleven with its time, and every other test at a second or more. Measure only the tests at a second or more, alone and in the full suite.
-2. Cut each of those at its cause; keep every assert. With none at a second or more, change no code and record the times in the as-built.
-3. Show each test's time before and after, alone and in the full suite.
+- `TreeColumn::Model` (header `TREE_MODEL_HEADER`, "model") and `TreeColumn::Effort` (header `TREE_EFFORT_HEADER`, "effort") follow `Role`, left-aligned, in `agent_cell.rs`. Both use the shared `TreeColumnPopulation` count, so a sparse column never takes room from session names.
+- `ColumnDrop::ORDER` and `GroupFitStep::ORDER` now start with Effort, then Model, before Directory, Branch, Type, Age and Account.
+- `TreeLine::model` and `TreeLine::effort` read the conversation's own values: the row for a tile root, agent or unassigned session; the child for a managed thread or work row. Shell rows and `Unrecorded` values draw blank.
+- `ModelName::display_text` and `ReasoningEffort::display_text` (`census/model.rs`, both `pub(crate)`) return borrowed tile text; each cell allocates once.
+- A press on the drawn `model` or `effort` header sorts through the painted spans by the current values.
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the gradient test
-- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink and tree contrast tests
-- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests
-- `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — the pinned accounts test
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
-- `crates/cargo-handler/src/app.rs` — the overlay wheel test
-- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the tree sort test
-- `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
+- `crates/cargo-handler/src/agent_cell.rs` — columns, drop order, cell text
+- `crates/cargo-handler/src/census/model.rs` — display text
+- `crates/cargo-handler/src/constants.rs` — header constants
+- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — values, blanks, shell rows, sparse values, both fitting paths
+- `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header sorts after values change, and during motion
+- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — exhaustive `TreeColumn` match arms
 
-**Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, and `app.rs`.
-- `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
+**Gotchas:** earlier as-built lines that list `ColumnDrop::ORDER` or `GroupFitStep::ORDER` predate the two leading Effort and Model steps.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
+**Ruled out:** an allocation-count test for the cell text — no user-visible defect, so test rule 2 allows none.
+
+### Phase 50 — Slow cargo-handler tests run under a second  · status: done
+
+#### As-built
+
+- 26 cargo-handler tests that took 1.0–1.9 s in a full-suite run now run under 1 s. All 356 assertions are unchanged, and no test was added. On the Mac, all 1111 tests run under 1 s in the full suite (max 0.528 s).
+- The causes were unused frame columns, a fixture built per case, a second initial draw with no layout motion, and repeated draws of an unchanged frame. The tests now use smaller frames, share fixtures, draw a second initial frame only during layout motion, and resolve each token once.
+- `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still` (`app.rs`) draws after every wheel event on a 40×10 terminal. `visible_unicode_tokens_resolve_from_every_terminal_cell` repaints after each Esc. An injected draw fault fails each test.
+- `matched_inks_keep_glyph_contrast_in_default_dark_selected_unfocused` is now `…_selected_unfocused_table_words`, so its name filter selects only that test.
+- The other listed tests (gradient, pinned accounts, Codex tier, tree sort) ran under 1 s and were not changed.
+
+**Files:**
+- `crates/cargo-handler/src/app.rs` — overlay wheel test terminal size
+- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — busy-row frame width
+- `crates/cargo-handler/src/census/incremental_read_tests.rs` — one neutral record per gap
+- `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `render/selected_ink_tests.rs`, `render/word_click_tests.rs` — second initial draw only during layout motion
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — one unchanged-frame check
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — one shared fixture for all four widths
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — one token resolve, smaller frames
+
+**Gotchas:** full-suite time sets the 1 s bar, not isolated time. A faster test keeps every draw between input events.
 
 ### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
@@ -2087,71 +2155,34 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Spec 2 holds only with a reproduction of the extra session identity or of stale cells across consecutive frames. Equality of the drawn line count and the readout count is not the rule. Live: both shots; captures taken after Phase 56 turn the readout on with its key. The checkpoint adds a Change-Review line when code changes.
 
-### Phase 52 — No child stderr reaches the terminal  · status: todo
+### Phase 52 — No child stderr reaches the terminal  · status: done
 
-**Depends on:** Phase 47
+#### As-built
 
-#### Work Order
+No code change. The stray `~/.claudeN: mcpServers: - brp` text (user report, 2026-10-29) does not reproduce, and no cargo-handler child can write it:
 
-**Goal:** no command that cargo-handler starts can write to the terminal it draws on.
+- Every child that cargo-handler starts has stderr null or piped: the accounts read (`hierarchy::run_output`, `census/hierarchy.rs` ≈334, null since 2026-10-16), the ssh probe (`census/remote.rs` ≈156), `ps` and the scan helpers (`census/scan.rs`), and the desktop helpers (`tui_pane` `desktop_subprocess.rs`). Only the external editor and shell launchers inherit the terminal, by design.
+- `accounts.py status --stored --json` writes no stderr on natedev or the Mac (checked 2026-11-07); it folds the `mcpServers` advisory into its JSON `problems`.
 
-**Source:** user, 2026-10-29 (image 7): raw lines `~/.claudeN: mcpServers: - brp` (N = 1..4) appear at column 0 under the summary accounts table, over the tile border. The accounts script writes an MCP-server note to its stderr. The process and output path that put it on the terminal are not yet known.
+**Gotchas:** reopen only on a fresh shot of the text; the writer was outside cargo-handler's children or is gone.
 
-**Constraints from prior phases:**
-- `read_accounts` (`census/accounts.rs` ≈259) calls `hierarchy::run_output` (`census/hierarchy.rs` ≈512), which already sets null stdin, null stderr and piped stdout. `census/command_inputs.rs` caches commands and spawns none.
-- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). A scheduler change keeps this argument.
-- Phase 66: `cargo-handler probe` writes a refused configuration value to its own stderr through `print_to` (`census/probe.rs` ≈432), and stdout stays one JSON report. That diagnostic is the probe's, not a child's: keep it, and keep `refused_probe_config_reports_the_same_error_without_changing_json` green.
+### Phase 53 — Reset times step plainly from soonest to latest  · status: done
 
-**Spec:**
-1. Reproduce the stray text first. Identify the process that wrote it and the output path that took it to the terminal, and write both in the summary.
-2. Fix that path at its cause.
-3. Make one owner build every child command (stdin, stdout and stderr set there, stderr piped or null, never inherited) only if the diagnosis shows that this is needed.
-4. Red-first test: the diagnosed writer leaves the drawn buffer and the terminal unchanged. Under 1 s.
-5. CHANGELOG: one Fixed line.
+#### As-built
+
+- `theme::ResetRank::color` is the one reset source. It maps each reset rank to one of three steps: the first quarter of ranks takes `reset_nearest`, the last quarter takes `reset_farthest`, and the middle takes their sRGB midpoint (`tui_pane::blend_color` at 128). A single reset takes `reset_nearest`; the endpoints stay exact. `footer_colors::readable_status_style` corrects the drawn ink after it.
+- No reset step is red, and no step matches a session name color, in all four themes.
+- `ResetThemeFixture` (the `theme` test module, re-exported under `cfg(test)`) installs a theme and restores theme, transparency and tint on `Drop`. `SessionHue::ALL` is `pub(crate)`.
+- The `matched_inks_keep_glyph_contrast_*` tests reuse the plain baseline unless selection or motion changed it, measure each distinct word once, and draw later words from a copy of the painted baseline through `PaintedWords::apply_with_inks`.
 
 **Files:**
-- `crates/cargo-handler/src/census/command_inputs.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs` — the diagnosed output path and, if needed, the child command owner (the writer names any other file in a blocked post)
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, `ResetThemeFixture`
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order, distinct steps (`MINIMUM_RESET_STEP_DISTANCE` = 5.0 CIEDE2000), contrast, no red, no session color
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — each step on the plain and selected word-match grounds, with the pane tint on and off, in four themes
 
-**Workers:** 1 writer.
+**Gotchas:** the one-second rule is per test in the full suite, not per module. The word-contrast family exceeds it when each case redraws its baseline for every word.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: a shot of the summary with no stray text under the accounts table. The checkpoint adds a Change-Review line.
-
-### Phase 53 — Reset times step plainly from soonest to latest  · status: todo
-
-**Depends on:** Phase 52
-
-#### Work Order
-
-**Goal:** the color of an account's reset time tells at a glance which account resets soonest, in dark and light themes.
-
-**Source:** change review C113 returned (user, 2026-10-29): "the colors are what you say they are but the color gradient is so subtle in the terminal that i don't get the affrodance value". C115 folds into C113 (user): one judgement. Showrunner ruling: plainly different ends and steps (3 or 4 distinct hues or lightness steps, soonest the strongest), each step readable on its ground in both themes, still no red; no reset color matches any session name color. Unit session `phases/53/source.md`.
-
-**Constraints from prior phases:**
-- C113 (merge 1bc31a60): reset times never red; dark ramp light green → sea green, light ramp violet → dark indigo. `reset_colors` (`summary/accounts.rs` ≈145).
-- Red stays for a failed reading's dot.
-- C115 kept the darkest violet off session name colors on light themes.
-- `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
-- `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
-- Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
-- The reset colour work of Phase 35 (C71) moved here on 2026-10-30.
-
-**Spec:**
-1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color. It applies in all four themes.
-2. Tests: step order by reset time, distinct steps, contrast on ground, no step equals a session color, no red. Measure each step on the drawn ink, after `readable_status_style`, with the pane tint on and off and on the selected row. Also measure each step under a word highlight, on the plain and the selected word-match grounds: `MatchInk::resolve` (`word_highlight.rs` ≈233) can change a reset ink there. Use the independent contrast measure of `render/word_contrast_tests.rs`; an ink with enough contrast stays exact, and a changed ink keeps its hue. Run each check in all four themes. The formula tests follow the stepped colours. Each under 1 s.
-3. CHANGELOG: one Changed line.
-
-**Files:**
-- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the one reset source
-- `crates/cargo-handler/themes/` — the reset roles of each built-in theme
-- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the ramp and its tests
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — the reset steps on the word-match grounds (its fixture has no reset times today, ≈64 in `render/word_click_tests.rs`)
-- `crates/cargo-handler/src/render/role_title_tests.rs` — `SessionResetFloor` for the stepped colours
-- `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
+**Ruled out:** a test that the fixture restores settings on unwind — a fixture defect shows the user no wrong result.
 
 ### Phase 59 — Shift-left and shift-right move the tile focus  · status: done
 

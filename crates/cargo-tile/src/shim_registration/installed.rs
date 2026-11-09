@@ -1,8 +1,13 @@
 //! Shim publication wire contracts and their isolated executable fixture.
 
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,11 +17,12 @@ use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
+use super::parallel_cases;
 use super::python_cache;
+use crate::birth_stamp;
 use crate::constants::REGISTRATION_MAGIC;
-
-#[path = "parallel_cases.rs"]
-mod parallel_cases;
+use crate::hook;
+use crate::hook::CaptureTestPublication;
 
 /// Whether the fixture verifies the PID of each native birth query.
 enum NativeBirthVerification {
@@ -26,10 +32,10 @@ enum NativeBirthVerification {
 
 /// Share the system utility paths across isolated shim fixtures.
 struct SystemUtilities {
-    ln:   PathBuf,
-    date: PathBuf,
-    awk:  PathBuf,
-    ps:   PathBuf,
+    ln:     PathBuf,
+    date:   PathBuf,
+    ps:     PathBuf,
+    sysctl: PathBuf,
 }
 
 /// Own every path the copied shim and stand-in cargo can write.
@@ -48,7 +54,7 @@ impl InstalledShim {
             let utilities = Command::new("sh")
                 .args([
                     "-c",
-                    "command -v ln; command -v date; command -v awk; command -v ps",
+                    "command -v ln; command -v date; command -v ps; command -v sysctl || true",
                 ])
                 .output()
                 .expect("locate system utilities before changing the child PATH");
@@ -56,10 +62,10 @@ impl InstalledShim {
             let utilities = String::from_utf8(utilities.stdout).expect("utility paths are UTF-8");
             let mut utilities = utilities.lines();
             SystemUtilities {
-                ln:   PathBuf::from(utilities.next().expect("system ln path")),
-                date: PathBuf::from(utilities.next().expect("system date path")),
-                awk:  PathBuf::from(utilities.next().expect("system awk path")),
-                ps:   PathBuf::from(utilities.next().expect("system ps path")),
+                ln:     PathBuf::from(utilities.next().expect("system ln path")),
+                date:   PathBuf::from(utilities.next().expect("system date path")),
+                ps:     PathBuf::from(utilities.next().expect("system ps path")),
+                sysctl: PathBuf::from(utilities.next().unwrap_or("sysctl")),
             }
         });
         let fixture = Self {
@@ -75,7 +81,7 @@ impl InstalledShim {
         ] {
             fs::create_dir_all(fixture.path(directory)).expect("create fixture directory");
         }
-        let source = include_str!("../cargo-capture-shim.sh");
+        let source = hook::shim_source();
         let assignment = "capture_parent=/tmp/cargo-tile";
         assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
         let parent = fixture
@@ -93,14 +99,7 @@ impl InstalledShim {
             &source.replace(assignment, &format!("capture_parent='{parent}'")),
         );
         install_cargo(&fixture.path("bin/cargo-tile-real"));
-        install_date(&fixture.path("tools/date"));
         install_publication_observer(&fixture.path("tools/ln"));
-        if matches!(
-            fixture.native_birth_verification,
-            NativeBirthVerification::Required
-        ) {
-            install_native_birth_observers(&fixture);
-        }
         fixture
     }
 
@@ -125,6 +124,18 @@ impl InstalledShim {
         )
     }
 
+    /// Let `InstalledShim` use native `tools/ln` while retaining both live log observations.
+    fn repeat_in_same_shell(&self) {
+        fs::write(self.path("observations/repeat"), b"").expect("repeat in one shell");
+        for invocation in ["first", "second"] {
+            fs::create_dir(self.path(&format!("observations/{invocation}")))
+                .expect("create the repeated invocation's observations");
+        }
+        let publication = self.path("tools/ln");
+        fs::remove_file(&publication).expect("remove the unused publication observer");
+        symlink(&self.utilities.ln, publication).expect("retain native exclusive publication");
+    }
+
     /// Run with an independently recorded shim pid and a restrictive caller umask.
     fn run(&self, arguments: &[&str]) -> Output {
         self.command(arguments)
@@ -137,6 +148,52 @@ impl InstalledShim {
         self.command_recorded_in(observations, arguments)
             .output()
             .expect("execute copied shim with stand-in cargo")
+    }
+
+    /// Run an argument table through one publisher process with separate stream observations.
+    fn run_cases(&self, cases: &[(&str, &[&str])]) -> Vec<Output> {
+        let mut commands = cases
+            .iter()
+            .map(|(observations, arguments)| self.command_recorded_in(observations, arguments));
+        let mut command = commands.next().expect("an argument table has cases");
+        // Prepare every case's argument file before the publisher starts.
+        commands.for_each(drop);
+        let schedule: Vec<_> = cases
+            .iter()
+            .flat_map(|(observations, _)| {
+                let mut path = self.path(observations).as_os_str().as_bytes().to_vec();
+                path.push(0);
+                path
+            })
+            .collect();
+        let schedule_path = self.path("observations/cases");
+        fs::write(&schedule_path, schedule).expect("write argument table schedule");
+        let completed = command
+            .env("SHIM_NATIVE_TEST_CASES", schedule_path)
+            .output()
+            .expect("execute argument table in one publisher process");
+        cases
+            .iter()
+            .enumerate()
+            .map(|(index, (observations, _))| {
+                let observations = self.path(observations);
+                let status = fs::read_to_string(observations.join("exit-status"))
+                    .expect("record each invocation status")
+                    .parse::<i32>()
+                    .expect("numeric invocation status");
+                Output {
+                    status: if index + 1 == cases.len() {
+                        completed.status
+                    } else {
+                        std::process::ExitStatus::from_raw(status << 8)
+                    },
+                    stdout: fs::read(observations.join("stdout"))
+                        .expect("record each invocation stdout"),
+                    stderr: fs::read(observations.join("stderr"))
+                        .expect("record each invocation stderr"),
+                }
+            })
+            .collect()
     }
 
     fn observe_live_log(&self) {
@@ -167,54 +224,34 @@ impl InstalledShim {
         search_path.extend(std::env::split_paths(
             &std::env::var_os("PATH").expect("test runner supplies PATH"),
         ));
+        let argument_file = observations.join("invocation-arguments");
+        let mut argument_bytes = Vec::new();
+        for argument in arguments {
+            argument_bytes.extend_from_slice(argument.as_bytes());
+            argument_bytes.push(0);
+        }
+        fs::write(&argument_file, argument_bytes).expect("fixture arguments");
         let mut command = Command::new("sh");
-        python_cache::cache_python_modules(&mut command);
         command
-                .args([
-                    "-c",
-                // Native birth observers reject another PID even within the same clock tick.
-                    r#"umask 0066
+            .args([
+                "-c",
+                r#"umask 0066
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
-if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
-    mkdir -p "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids"
-    for generation in predecessor staging-only; do
-        publication=$$.$generation
-        log=run-$generation-$$.log
-        staging="$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids/$publication.tmp"
-        printf '%s\000' cargo-tile-v2 "$generation" old-boot birth "$log" /work /home 1 build > "$staging"
-        if [ "$generation" = predecessor ]; then
-            cp "$staging" "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids/$publication"
-        fi
-        printf 'old progress\n' > "$SHIM_TEST_ACCOUNT_DIRECTORY/$log"
-    done
-fi
-if [ -f "$SHIM_TEST_OBSERVATIONS/repeat" ]; then
-    for invocation in first second; do
-        mkdir "$SHIM_TEST_OBSERVATIONS/$invocation"
-        printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/$invocation/shim-pid"
-        (
-            SHIM_TEST_OBSERVATIONS=$SHIM_TEST_OBSERVATIONS/$invocation
-            export SHIM_TEST_OBSERVATIONS
-            . "$0" "$@"
-        )
-        result=$?
-        [ "$result" -eq 37 ] || exit "$result"
-    done
-    exit 37
-fi
-exec sh "$0" "$@""#,
-                ])
-                .arg(self.path("bin/cargo"))
-                .args(arguments)
-                .current_dir(self.path("home/work tree\twith\nlines"))
-                .env("HOME", self.path("home"))
-                .env("SHIM_TEST_ACCOUNT_DIRECTORY", self.path("capture"))
+exec "$@" 9>&1 >/dev/null"#,
+                "native-publication-fixture",
+            ])
+            .arg(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "shim_registration::installed::publication_links_a_complete_tmp_file_into_place",
+                "--nocapture",
+            ])
+            .env("SHIM_NATIVE_TEST_CALL", self.path("bin/cargo"))
+            .env("SHIM_NATIVE_TEST_ARGUMENTS", argument_file)
+            .current_dir(self.path("home/work tree\twith\nlines"))
+            .env("HOME", self.path("home"))
+            .env("SHIM_TEST_ACCOUNT_DIRECTORY", self.path("capture"))
             .env("SHIM_TEST_OBSERVATIONS", observations)
-            .env(
-                "SHIM_TEST_LOG_OBSERVER",
-                concat!(env!("CARGO_MANIFEST_DIR"), "/src/shim_registration/capture_log_observer.py"),
-            )
-            .env("SHIM_TEST_LOG_TIMEOUT_FILE", self.path("observations/log-timeout"))
             .env(
                 "SHIM_TEST_NATIVE_BIRTH_VERIFICATION",
                 match self.native_birth_verification {
@@ -222,27 +259,33 @@ exec sh "$0" "$@""#,
                     NativeBirthVerification::Required => "required",
                 },
             )
-                .env(
-                    "SHIM_TEST_REAL_LN",
-                    &self.utilities.ln,
-                )
-                .env(
-                    "SHIM_TEST_REAL_DATE",
-                    &self.utilities.date,
-                )
-                .env("SHIM_TEST_REAL_AWK", &self.utilities.awk)
-                .env("SHIM_TEST_REAL_PS", &self.utilities.ps)
-                .env("SHIM_TEST_GENERATION", "20260909-204000")
-                .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
-                .env_remove("SHIM_TEST_PENDING_DELETE")
-                .env(
-                    "PATH",
-                    std::env::join_paths(search_path).expect("join child PATH"),
-                )
-                .env_remove("CARGOTILE_NESTED")
-                .env_remove("CARGO_TERM_PROGRESS_WHEN")
-                .env_remove("CARGO_TERM_PROGRESS_WIDTH")
-                .stdin(Stdio::null());
+            .env("SHIM_TEST_REAL_DATE", &self.utilities.date)
+            .env("SHIM_TEST_REAL_PS", &self.utilities.ps)
+            .env("SHIM_TEST_REAL_SYSCTL", &self.utilities.sysctl)
+            .env("SHIM_TEST_GENERATION", "20260909-204000")
+            .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
+            .env_remove("SHIM_TEST_PENDING_DELETE")
+            .env(
+                "PATH",
+                std::env::join_paths(search_path).expect("join child PATH"),
+            )
+            .env_remove("CARGOTILE_NESTED")
+            .env_remove("CARGO_TERM_PROGRESS_WHEN")
+            .env_remove("CARGO_TERM_PROGRESS_WIDTH")
+            .stdin(Stdio::null());
+        python_cache::cache_python_modules(&mut command);
+        command
+            .env(
+                "SHIM_TEST_LOG_OBSERVER",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/shim_registration/capture_log_observer.py"
+                ),
+            )
+            .env(
+                "SHIM_TEST_LOG_TIMEOUT_FILE",
+                self.path("observations/log-timeout"),
+            );
         command
     }
 
@@ -289,32 +332,6 @@ exec sh "$0" "$@""#,
     }
 }
 
-/// Reject a setup child's PID before reading the native birth of the shim.
-fn install_native_birth_observers(fixture: &InstalledShim) {
-    executable(
-        &fixture.path("tools/awk"),
-        r#"#!/bin/sh
-set -eu
-if [ "$#" -eq 2 ] && [ "$1" = '{ sub(/^.*\) /, ""); print $20 }' ]; then
-    IFS= read -r shim_pid < "$SHIM_TEST_OBSERVATIONS/shim-pid" || [ -n "$shim_pid" ]
-    [ "$2" = "/proc/$shim_pid/stat" ] || exit 91
-fi
-exec "$SHIM_TEST_REAL_AWK" "$@"
-"#,
-    );
-    executable(
-        &fixture.path("tools/ps"),
-        r#"#!/bin/sh
-set -eu
-if [ "$#" -eq 4 ] && [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ]; then
-    IFS= read -r shim_pid < "$SHIM_TEST_OBSERVATIONS/shim-pid" || [ -n "$shim_pid" ]
-    [ "$4" = "$shim_pid" ] || exit 91
-fi
-exec "$SHIM_TEST_REAL_PS" "$@"
-"#,
-    );
-}
-
 /// Preserve the externally observed name and bytes for protocol assertions.
 struct PublishedRegistration {
     /// Include the generation so tests catch publication under a bare pid.
@@ -329,91 +346,7 @@ impl PublishedRegistration {
 }
 
 /// A stand-in cargo saves observations before the shim's exit trap removes them.
-fn install_cargo(path: &Path) {
-    executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-observations=$SHIM_TEST_OBSERVATIONS
-printf '%s\000' "$@" > "$observations/arguments"
-umask > "$observations/umask"
-printf '%s\000' "${CARGOTILE_NESTED-}" "${CARGO_TERM_PROGRESS_WHEN-}" "${CARGO_TERM_PROGRESS_WIDTH-}" > "$observations/capture-settings"
-printf '%s\000' "${LC_ALL-}" "${TZ-}" "${LANG-}" "${HOME-}" > "$observations/locale-settings"
-if [ "$SHIM_TEST_NATIVE_BIRTH_VERIFICATION" = required ]; then
-shim_pid=$(cat "$observations/shim-pid")
-case $SHIM_TEST_NATIVE_PLATFORM in
-    linux)
-        cat "/proc/$shim_pid/stat" > "$observations/shim-stat"
-        cat /proc/sys/kernel/random/boot_id > "$observations/boot"
-        ;;
-    macos)
-        started=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$shim_pid")
-        # BSD ps pads lstart to its column width; date warns about the suffix.
-        started=$(printf '%s\n' "$started" | sed 's/[[:space:]]*$//')
-        LC_ALL=C TZ=UTC0 "$SHIM_TEST_REAL_DATE" -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s > "$observations/birth"
-        sysctl -n kern.bootsessionuuid > "$observations/boot"
-        ;;
-esac
-fi
-if [ -n "${SHIM_TEST_PENDING_DELETE-}" ] && [ -f "$SHIM_TEST_PENDING_DELETE" ]; then
-    {
-        IFS= read -r old_registration
-        IFS= read -r old_log
-    } < "$SHIM_TEST_PENDING_DELETE"
-    rm -f "$old_registration" "$old_log"
-    printf 'delayed unlink attempted\n' > "$observations/delayed-delete"
-fi
-if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" ]; then
-    cp -R "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" "$observations/pids"
-fi
-if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state" ]; then
-    ls -A "$SHIM_TEST_ACCOUNT_DIRECTORY/state" > "$observations/state-entries"
-fi
-printf 'cargo stdout\n'
-printf 'registration log marker\n' >&2
-if [ -n "${CARGOTILE_NESTED-}" ]; then
-    exec python3 -S "$SHIM_TEST_LOG_OBSERVER"
-fi
-exit 37
-"#,
-    );
-}
-
-/// Freeze calendar time while leaving native birth-stamp conversion available.
-fn install_date(path: &Path) {
-    executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-if [ "$1" != +%Y%m%d-%H%M%S ]; then
-    if [ -f "$SHIM_TEST_OBSERVATIONS/darwin-conversion" ]; then
-        printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/date-conversion"
-        [ "${LC_ALL-}" = C ] || exit 91
-        if [ -f "$SHIM_TEST_OBSERVATIONS/gnu-date" ]; then
-            # GNU coreutils date: no -j, and -d parses the same text.
-            if [ "$1" = -j ]; then
-                printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/date-rejected"
-                printf "date: invalid option -- 'j'\n" >&2
-                exit 1
-            fi
-            [ "$#" -eq 4 ] && [ "$1" = -u ] && [ "$2" = -d ] && [ "$4" = +%s ] || exit 94
-            exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$3"
-        fi
-        [ "$#" -eq 5 ] && [ "$1" = -j ] && [ "$2" = -f ] || exit 92
-        [ "$3" = '%a %b %e %H:%M:%S %Y' ] && [ "$5" = +%s ] || exit 93
-        if [ -f "$SHIM_TEST_OBSERVATIONS/fail-conversion" ]; then
-            printf 'partial conversion output'
-            exit 1
-        fi
-        exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$4"
-    fi
-    exec "$SHIM_TEST_REAL_DATE" "$@"
-fi
-printf '%s\n' "$SHIM_TEST_GENERATION"
-printf '%s' "$SHIM_TEST_GENERATION" > "$SHIM_TEST_OBSERVATIONS/calendar"
-"#,
-    );
-}
+fn install_cargo(path: &Path) { executable(path, include_str!("capture_log_observer.py")); }
 
 /// Observe staging before forwarding publication to the real exclusive-create primitive.
 fn install_publication_observer(path: &Path) {
@@ -452,115 +385,6 @@ exec "$SHIM_TEST_REAL_LN" "$@"
 fn executable(path: &Path, source: &str) {
     fs::write(path, source).expect("write fixture executable");
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make fixture executable");
-}
-
-/// Exercise Darwin's conversion contract on either supported test host.
-fn install_darwin_observers(fixture: &InstalledShim, observations: &str) {
-    fs::create_dir_all(fixture.path(observations)).expect("create Darwin observations");
-    fs::write(
-        fixture.path(&format!("{observations}/darwin-conversion")),
-        b"",
-    )
-    .expect("select controlled Darwin observations");
-    fs::write(
-        fixture.path(&format!("{observations}/darwin-time.py")),
-        r"import locale
-import os
-import sys
-import time
-
-locale.setlocale(locale.LC_ALL, '')
-time.tzset()
-formatting = '%a %b %d %H:%M:%S %Y'
-if sys.argv[1] == 'ps':
-    birth = int(os.environ.get('SHIM_TEST_BIRTH', '1788957296'))
-    started = time.strftime(formatting, time.localtime(birth))
-    if os.environ.get('SHIM_TEST_PS_PADDING'):
-        started += '    '
-    print(started)
-else:
-    assert sys.argv[2] == sys.argv[2].rstrip(), 'date receives ps column padding'
-    print(int(time.mktime(time.strptime(sys.argv[2], formatting))))
-",
-    )
-    .expect("install timezone-sensitive Darwin conversion adapters");
-    executable(
-        &fixture.path("tools/uname"),
-        "#!/bin/sh\nprintf 'Darwin\\n'\n",
-    );
-    executable(
-        &fixture.path("tools/sysctl"),
-        r#"#!/bin/sh
-set -eu
-[ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = kern.bootsessionuuid ] || exit 91
-printf '12345678-1234-1234-1234-123456789abc\n'
-"#,
-    );
-    executable(
-        &fixture.path("tools/ps"),
-        r#"#!/bin/sh
-set -eu
-printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/ps-conversion"
-[ "${LC_ALL-}" = C ] || exit 91
-[ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] || exit 92
-exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
-"#,
-    );
-}
-
-/// Serve the two fixed UTC timestamps without launching a language runtime.
-fn install_darwin_fallback_observers(fixture: &InstalledShim, observations: &str) {
-    fs::create_dir_all(fixture.path(observations)).expect("create Darwin observations");
-    fs::write(
-        fixture.path(&format!("{observations}/darwin-conversion")),
-        b"",
-    )
-    .expect("select controlled Darwin observations");
-    executable(
-        &fixture.path("tools/uname"),
-        "#!/bin/sh\nprintf 'Darwin\\n'\n",
-    );
-    executable(
-        &fixture.path("tools/sysctl"),
-        r#"#!/bin/sh
-set -eu
-[ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = kern.bootsessionuuid ] || exit 91
-printf '12345678-1234-1234-1234-123456789abc\n'
-"#,
-    );
-    executable(
-        &fixture.path("tools/ps"),
-        r#"#!/bin/sh
-set -eu
-printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/ps-conversion"
-[ "${LC_ALL-}" = C ] || exit 91
-[ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] || exit 92
-case $SHIM_TEST_BIRTH in
-    1793511000) printf 'Sun Nov 01 05:30:00 2026\n' ;;
-    1793514600) printf 'Sun Nov 01 06:30:00 2026\n' ;;
-    *) exit 93 ;;
-esac
-"#,
-    );
-    executable(
-        &fixture.path("tools/date"),
-        r#"#!/bin/sh
-set -eu
-if [ "$1" = +%Y%m%d-%H%M%S ]; then
-    printf '%s\n' "$SHIM_TEST_GENERATION"
-    printf '%s' "$SHIM_TEST_GENERATION" > "$SHIM_TEST_OBSERVATIONS/calendar"
-    exit 0
-fi
-printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/date-conversion"
-[ "${LC_ALL-}" = C ] && [ "${TZ-}" = UTC0 ] || exit 91
-[ "$#" -eq 5 ] && [ "$1" = -j ] && [ "$2" = -f ] && [ "$5" = +%s ] || exit 92
-case $4 in
-    'Sun Nov 01 05:30:00 2026') printf '1793511000\n' ;;
-    'Sun Nov 01 06:30:00 2026') printf '1793514600\n' ;;
-    *) exit 93 ;;
-esac
-"#,
-    );
 }
 
 /// Remove only the framing terminator; a preceding empty field is still an argument.
@@ -651,7 +475,19 @@ fn assert_executed_arguments(
     arguments: &[&str],
     executed: &[&str],
 ) {
-    assert_cargo_result(&fixture.run_recorded_in(observations, arguments));
+    let output = fixture.run_recorded_in(observations, arguments);
+    assert_completed_arguments(fixture, observations, arguments, executed, &output);
+}
+
+/// Keep the same argument assertions for an individually recorded table invocation.
+fn assert_completed_arguments(
+    fixture: &InstalledShim,
+    observations: &str,
+    arguments: &[&str],
+    executed: &[&str],
+    output: &Output,
+) {
+    assert_cargo_result(output);
     let observed =
         fs::read(fixture.path(&format!("{observations}/arguments"))).expect("read executed argv");
     assert_eq!(
@@ -729,19 +565,17 @@ fn separate_json_format_removes_repeated_quiet_only_before_separator() {
 
 #[test]
 fn non_json_arguments_preserve_both_quiet_spellings() {
-    parallel_cases::run(
-        [
-            vec!["check", "probe-mismatch"],
-            vec!["check", "probe-mismatch", "--quiet"],
-            vec!["check", "probe-mismatch", "-q"],
-        ],
-        |arguments| {
-            let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-            fixture.observe_live_log();
-            assert_executed_arguments(&fixture, "observations/run", &arguments, &arguments);
-            fixture.assert_live_log("observations/run");
-        },
-    );
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    fixture.observe_live_log();
+    let cases: [(&str, &[&str]); 3] = [
+        ("observations/plain", &["check", "probe-mismatch"]),
+        ("observations/long", &["check", "probe-mismatch", "--quiet"]),
+        ("observations/short", &["check", "probe-mismatch", "-q"]),
+    ];
+    for ((observations, arguments), output) in cases.iter().zip(fixture.run_cases(&cases)) {
+        assert_completed_arguments(&fixture, observations, arguments, arguments, &output);
+        fixture.assert_live_log(observations);
+    }
 }
 
 #[test]
@@ -779,88 +613,116 @@ sys.stdout.buffer.write(data)
 
 #[test]
 fn json_arguments_preserve_both_quiet_spellings_after_separator() {
-    let _ = parallel_cases::run(["", "--quiet", "-q"], |quiet| {
-        let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-        if quiet.is_empty() {
-            let executed = ["check", "probe-mismatch", "--message-format=json", "--"];
-            assert_executed_arguments(&fixture, "observations/without-quiet", &executed, &executed);
-            return;
-        }
-        assert_executed_arguments(
-            &fixture,
-            &format!("observations/{quiet}"),
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "observations/without-quiet",
+            &["check", "probe-mismatch", "--message-format=json", "--"],
+        ),
+        (
+            "observations/--quiet",
             &[
                 "check",
                 "probe-mismatch",
-                quiet,
+                "--quiet",
                 "--message-format=json",
                 "--",
-                quiet,
+                "--quiet",
             ],
+        ),
+        (
+            "observations/-q",
             &[
                 "check",
                 "probe-mismatch",
+                "-q",
                 "--message-format=json",
                 "--",
-                quiet,
+                "-q",
             ],
-        );
-    });
+        ),
+    ];
+    let executed: [&[&str]; 3] = [
+        &["check", "probe-mismatch", "--message-format=json", "--"],
+        &[
+            "check",
+            "probe-mismatch",
+            "--message-format=json",
+            "--",
+            "--quiet",
+        ],
+        &[
+            "check",
+            "probe-mismatch",
+            "--message-format=json",
+            "--",
+            "-q",
+        ],
+    ];
+    for (((observations, arguments), output), executed) in
+        cases.iter().zip(fixture.run_cases(&cases)).zip(executed)
+    {
+        assert_completed_arguments(&fixture, observations, arguments, executed, &output);
+    }
 }
 
 #[test]
 fn quiet_json_rewrite_preserves_unrelated_arguments() {
-    std::thread::scope(|scope| {
-        let without_quiet = scope.spawn(|| {
-            let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-            let executed = [
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    let cases: [(&str, &[&str]); 2] = [
+        (
+            "observations/without-quiet",
+            &[
                 "check",
                 "probe-mismatch",
                 "--message-format=json",
                 "--release",
-            ];
-            assert_executed_arguments(&fixture, "observations/without-quiet", &executed, &executed);
-        });
-        let with_quiet = scope.spawn(|| {
-            let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-            assert_executed_arguments(
-                &fixture,
-                "observations/with-quiet",
-                &[
-                    "check",
-                    "probe-mismatch",
-                    "--quiet",
-                    "--message-format=json",
-                    "--workspace",
-                ],
-                &[
-                    "check",
-                    "probe-mismatch",
-                    "--message-format=json",
-                    "--workspace",
-                ],
-            );
-        });
-        without_quiet
-            .join()
-            .expect("the case without quiet finishes");
-        with_quiet.join().expect("the case with quiet finishes");
-    });
+            ],
+        ),
+        (
+            "observations/with-quiet",
+            &[
+                "check",
+                "probe-mismatch",
+                "--quiet",
+                "--message-format=json",
+                "--workspace",
+            ],
+        ),
+    ];
+    let executed: [&[&str]; 2] = [
+        &[
+            "check",
+            "probe-mismatch",
+            "--message-format=json",
+            "--release",
+        ],
+        &[
+            "check",
+            "probe-mismatch",
+            "--message-format=json",
+            "--workspace",
+        ],
+    ];
+    for (((observations, arguments), output), executed) in
+        cases.iter().zip(fixture.run_cases(&cases)).zip(executed)
+    {
+        assert_completed_arguments(&fixture, observations, arguments, executed, &output);
+    }
 }
 
 /// The old whitespace-joined representation could not distinguish these invocations.
 #[test]
 fn one_argument_with_a_space_differs_from_two_arguments() {
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
     let cases: [(&str, &[&str]); 2] = [
         ("observations/joined", &["run", "--", "a b"]),
         ("observations/separated", &["run", "--", "a", "b"]),
     ];
-    let mut results = parallel_cases::run(cases, |(observations, arguments)| {
-        let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-        let output = fixture.run_recorded_in(observations, arguments);
-        (output, fixture.registration_at(observations))
-    })
-    .into_iter();
+    let mut results = cases
+        .into_iter()
+        .zip(fixture.run_cases(&cases))
+        .map(|((observations, _), output)| (output, fixture.registration_at(observations)));
     let (joined_output, joined) = results.next().expect("joined argument case");
     let (separated_output, separated) = results.next().expect("separated argument case");
     assert_cargo_result(&joined_output);
@@ -967,6 +829,10 @@ fn registration_and_log_share_pid_and_generation() {
 /// Publish complete bytes from an ignored same-directory staging file using ln.
 #[test]
 fn publication_links_a_complete_tmp_file_into_place() {
+    if let Some(shim) = std::env::var_os("SHIM_NATIVE_TEST_CALL") {
+        run_native_publication_fixture(Path::new(&shim));
+    }
+
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
     assert_cargo_result(&fixture.run(&["check"]));
     let registration = fixture.registration();
@@ -989,6 +855,14 @@ fn publication_links_a_complete_tmp_file_into_place() {
         fs::read(fixture.path("observations/staged-registration")).expect("observe staging bytes"),
         registration.contents,
         "the full registration exists before its final name becomes visible"
+    );
+    assert_eq!(
+        fs::metadata(fixture.path("observations/staged-registration"))
+            .expect("staging mode")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
     );
     assert!(!temporary.exists());
 }
@@ -1019,17 +893,12 @@ fn birth_stamp_belongs_to_the_pid_in_the_registration_filename() {
 #[test]
 fn native_birth_verification_rejects_another_process() {
     let fixture = InstalledShim::new(NativeBirthVerification::Required);
-    let shim = fixture.path("bin/cargo");
-    let source = fs::read_to_string(&shim).expect("read the installed shim");
-    let other_pid = std::process::id();
-    let source = source
-        .replace("\"/proc/$$/stat\"", &format!("\"/proc/{other_pid}/stat\""))
-        .replace(
-            "ps -o lstart= -p \"$$\"",
-            &format!("ps -o lstart= -p {other_pid}"),
-        );
-    fs::write(shim, source).expect("select another live process for the birth query");
-    assert_cargo_result(&fixture.run(&["build"]));
+    let output = fixture
+        .command(&["build"])
+        .env("SHIM_TEST_BIRTH_PID", std::process::id().to_string())
+        .output()
+        .expect("supply another live process to the native birth query");
+    assert_cargo_result(&output);
     assert_eq!(fixture.registration().fields()[3], b"");
 }
 
@@ -1037,7 +906,7 @@ fn native_birth_verification_rejects_another_process() {
 #[test]
 fn same_pid_and_calendar_second_receive_different_generations() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    fs::write(fixture.path("observations/repeat"), b"").expect("repeat in one shell");
+    fixture.repeat_in_same_shell();
     let output = fixture.run(&["build"]);
     assert_eq!(output.status.code(), Some(37), "{output:?}");
     assert_eq!(output.stdout, b"cargo stdout\ncargo stdout\n");
@@ -1073,7 +942,7 @@ fn same_pid_and_calendar_second_receive_different_generations() {
 #[test]
 fn publication_after_final_confirmation_survives_delayed_unlinks() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    fs::write(fixture.path("observations/repeat"), b"").expect("repeat in one shell");
+    fixture.repeat_in_same_shell();
     let output = fixture
         .command(&["build"])
         .env(
@@ -1103,91 +972,28 @@ fn publication_after_final_confirmation_survives_delayed_unlinks() {
 #[test]
 fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
     parallel_cases::run(["UTC0", "UTC-11"], |timezone| {
-        let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+        let fixture = InstalledShim::new(NativeBirthVerification::Required);
         fixture.observe_live_log();
-        let observations = format!("observations/{timezone}");
-        install_darwin_observers(&fixture, &observations);
         let output = fixture
-            .command_recorded_in(&observations, &["build"])
+            .command(&["build"])
             .env("LC_ALL", "POSIX")
             .env("LANG", "C")
             .env("TZ", timezone)
             .output()
-            .expect("run controlled Darwin writer");
+            .expect("native birth writer");
         assert_cargo_result(&output);
-        fixture.assert_live_log(&observations);
+        fixture.assert_live_log("observations");
+        let registration = fixture.registration();
         assert_eq!(
-            fixture.registration_at(&observations).fields()[3],
-            b"1788957296"
+            registration.fields()[3],
+            observed_birth(&fixture).as_bytes()
         );
-        for utility in ["date", "ps"] {
-            let observed = fs::read(fixture.path(&format!("{observations}/{utility}-conversion")))
-                .expect("observe conversion environment");
-            assert_eq!(&nul_fields(&observed)[..2], [b"C".as_slice(), b"UTC0"]);
-        }
-        let cargo = fs::read(fixture.path(&format!("{observations}/locale-settings")))
-            .expect("cargo records unmodified environment");
+        let cargo = fs::read(fixture.path("observations/locale-settings")).expect("cargo locale");
         assert_eq!(
             &nul_fields(&cargo)[..3],
             [b"POSIX".as_slice(), timezone.as_bytes(), b"C"]
         );
     });
-}
-
-/// BSD ps column padding must not reach date or contaminate cargo's capture log.
-#[test]
-fn darwin_birth_conversion_removes_ps_column_padding() {
-    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    install_darwin_observers(&fixture, "observations");
-    let output = fixture
-        .command(&["build"])
-        .env("SHIM_TEST_PS_PADDING", "1")
-        .output()
-        .expect("run with padded Darwin ps output");
-    assert_cargo_result(&output);
-    let registration = fixture.registration();
-    let fields = registration.fields();
-    assert_eq!(fields[2], b"12345678-1234-1234-1234-123456789abc");
-    assert_eq!(fields[3], b"1788957296");
-    let converted = fs::read(fixture.path("observations/date-conversion"))
-        .expect("observe the exact date conversion argument");
-    let arguments = nul_fields(&converted);
-    assert_eq!(arguments[5], b"Wed Sep 09 12:34:56 2026");
-    let log = std::str::from_utf8(fields[4]).expect("registered log basename");
-    assert_eq!(
-        fs::read(fixture.path("observations").join(log)).expect("captured cargo bytes"),
-        b"registration log marker\n"
-    );
-}
-
-/// GNU coreutils ahead of /bin on PATH must not leave the birth field empty.
-#[test]
-fn darwin_birth_conversion_falls_back_to_gnu_date() {
-    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    install_darwin_observers(&fixture, "observations");
-    fs::write(fixture.path("observations/gnu-date"), b"")
-        .expect("select a GNU coreutils date on the search path");
-    assert_cargo_result(&fixture.run(&["build"]));
-    let registration = fixture.registration();
-    let fields = registration.fields();
-    assert_eq!(fields[2], b"12345678-1234-1234-1234-123456789abc");
-    assert_eq!(fields[3], b"1788957296");
-    let rejected = fs::read(fixture.path("observations/date-rejected"))
-        .expect("the BSD form is attempted first");
-    assert_eq!(nul_fields(&rejected)[0], b"-j");
-    let converted = fs::read(fixture.path("observations/date-conversion"))
-        .expect("observe the GNU conversion arguments");
-    assert_eq!(
-        nul_fields(&converted),
-        [
-            b"C".as_slice(),
-            b"UTC0",
-            b"-u",
-            b"-d",
-            b"Wed Sep 09 12:34:56 2026",
-            b"+%s"
-        ]
-    );
 }
 
 /// The two occurrences of 01:30 at DST fallback must publish different epoch seconds.
@@ -1212,7 +1018,7 @@ fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
         fixture.observe_live_log();
         let birth = birth.to_string();
         let observations = format!("observations/{birth}");
-        install_darwin_fallback_observers(&fixture, &observations);
+        fs::create_dir_all(fixture.path(&observations)).expect("epoch observations");
         let timezone = "EST5EDT,M3.2.0,M11.1.0";
         let output = fixture
             .command_recorded_in(&observations, &["build"])
@@ -1241,8 +1047,7 @@ fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
 #[test]
 fn failed_darwin_birth_conversion_publishes_empty_identity_field() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    install_darwin_observers(&fixture, "observations");
-    fs::write(fixture.path("observations/fail-conversion"), b"")
+    fs::write(fixture.path("observations/birth-unavailable"), b"")
         .expect("fail after emitting partial conversion output");
     assert_cargo_result(&fixture.run(&["build"]));
     let registration = fixture.registration();
@@ -1354,12 +1159,19 @@ fn occupied_directory_is_a_setup_failure_and_keeps_its_contents() {
 /// TERM can arrive after ln succeeds but before setup records ownership of its name.
 #[test]
 fn term_after_publication_cleans_artifacts_without_starting_cargo() {
-    parallel_cases::run(["shim", "setup"], |target| {
-        let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    for target in ["shim", "setup", "mirror"] {
         let observations = format!("observations/{target}");
         fs::create_dir_all(fixture.path(&observations)).expect("create signal observations");
         fs::write(
-            fixture.path(&format!("{observations}/signal-after-publication")),
+            fixture.path(&format!(
+                "{observations}/{}",
+                if target == "mirror" {
+                    "signal-after-readiness"
+                } else {
+                    "signal-after-publication"
+                }
+            )),
             target,
         )
         .expect("request TERM before ln returns to the setup shell");
@@ -1401,7 +1213,7 @@ fn term_after_publication_cleans_artifacts_without_starting_cargo() {
             1,
             "only the pids directory remains"
         );
-    });
+    }
 }
 
 /// Each shim sweeps dead registrations, staging, and logs only in its account.
@@ -1567,4 +1379,374 @@ fn phase_two_records_and_malformed_neighbors_survive_publication_and_cleanup() {
             b"older output\n"
         );
     }
+}
+
+/// Shell utility failures must not remove native capture identity.
+#[test]
+fn native_birth_needs_no_date_or_ps_conversion() {
+    let fixture = InstalledShim::new(NativeBirthVerification::Required);
+    for utility in ["date", "ps", "uname", "sysctl"] {
+        executable(
+            &fixture.path(&format!("tools/{utility}")),
+            "#!/bin/sh\nprintf 'partial conversion output'\nexit 1\n",
+        );
+    }
+    assert_cargo_result(&fixture.run(&["build"]));
+    let registration = fixture.registration();
+    let fields = registration.fields();
+    assert_ne!(fields[2], b"");
+    assert_ne!(fields[3], b"");
+    assert!(fields[3].iter().all(u8::is_ascii_digit));
+    assert_eq!(fields[3], observed_birth(&fixture).as_bytes());
+    fixture.assert_live_log("observations");
+}
+
+fn seed_native_predecessor(account: &Path) {
+    fs::create_dir_all(account.join("state/pids")).expect("predecessor directory");
+    for generation in ["predecessor", "staging-only"] {
+        let pid = std::process::id();
+        let registration = account
+            .join("state/pids")
+            .join(format!("{pid}.{generation}"));
+        let staging = registration.with_extension(format!("{generation}.tmp"));
+        fs::write(
+            &staging,
+            b"cargo-tile-v2\0old\0old-boot\0birth\0old.log\0/work\0/home\x001\0build\0",
+        )
+        .expect("old staging");
+        if generation == "predecessor" {
+            fs::copy(&staging, registration).expect("old publication");
+        }
+        fs::write(
+            account.join(format!("run-{generation}-{pid}.log")),
+            b"old progress\n",
+        )
+        .expect("old log");
+    }
+}
+
+fn native_publication_boundary(
+    account: &Path,
+    observed: &Path,
+    generation: &str,
+    staging: &Path,
+    registration: &Path,
+) -> std::io::Result<()> {
+    let mut paths = Vec::new();
+    for path in [staging, registration] {
+        paths.extend_from_slice(path.as_os_str().as_bytes());
+        paths.push(0);
+    }
+    fs::write(observed.join("publication-arguments"), paths)?;
+    fs::copy(staging, observed.join("staged-registration"))?;
+    fs::set_permissions(
+        observed.join("staged-registration"),
+        fs::metadata(staging)?.permissions(),
+    )?;
+    if observed.join("sweep-before-publication").exists() {
+        assert!(!registration.exists(), "sweep precedes publication");
+        for entry in fs::read_dir(account)? {
+            let entry = entry?;
+            if entry.file_name().as_bytes().starts_with(b"run-")
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "log")
+            {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        fs::write(observed.join("sweep"), b"swept before publication\n")?;
+    }
+    if observed.join("occupy-at-publication").exists() || observed.join("occupy-name").exists() {
+        fs::write(registration, b"previous registration\n")?;
+    }
+    if observed.join("occupy-log").exists() {
+        fs::write(
+            account.join(format!("run-{generation}-{}.log", std::process::id())),
+            b"previous log\n",
+        )?;
+    }
+    if observed.join("occupy-directory").exists() {
+        fs::create_dir(registration)?;
+        fs::write(registration.join("keep"), b"existing directory\n")?;
+    }
+    Ok(())
+}
+
+/// Preserve pid verification while supplying the native publication fixture's wire fields.
+fn native_fixture_identity(observations: &Path) -> (String, String) {
+    let birth_pid = std::env::var("SHIM_TEST_BIRTH_PID").map_or_else(
+        |_| std::process::id(),
+        |pid| pid.parse::<u32>().expect("native birth query pid"),
+    );
+    let (boot, birth) =
+        hook::capture_identity_fields(std::process::id(), birth_stamp::observe(birth_pid));
+    let birth = if observations.join("birth-unavailable").exists() {
+        String::new()
+    } else {
+        std::env::var("SHIM_TEST_BIRTH").unwrap_or(birth)
+    };
+    (boot, birth)
+}
+
+/// A table call records its actual streams while a normal call inherits the caller streams.
+enum FixtureOutput {
+    Inherited,
+    Recorded,
+}
+
+/// One publication call retains its own arguments and observations inside a shared process.
+struct NativePublicationInvocation {
+    observations: PathBuf,
+    arguments:    Vec<OsString>,
+    output:       FixtureOutput,
+}
+
+impl NativePublicationInvocation {
+    fn redirect(&self) {
+        if matches!(self.output, FixtureOutput::Recorded) {
+            let stdout = fs::File::create(self.observations.join("stdout")).expect("case stdout");
+            let stderr = fs::File::create(self.observations.join("stderr")).expect("case stderr");
+            rustix::stdio::dup2_stdout(&stdout).expect("select case stdout");
+            rustix::stdio::dup2_stderr(&stderr).expect("select case stderr");
+        }
+    }
+
+    fn finish(&self, status: i32) {
+        if matches!(self.output, FixtureOutput::Recorded) {
+            fs::write(self.observations.join("exit-status"), status.to_string())
+                .expect("record case exit status");
+        }
+    }
+}
+
+fn native_fixture_arguments(path: &Path) -> Vec<OsString> {
+    let bytes = fs::read(path).expect("fixture arguments");
+    bytes
+        .strip_suffix(&[0])
+        .unwrap_or(&bytes)
+        .split(|byte| *byte == 0)
+        .map(|word| OsString::from_vec(word.to_vec()))
+        .collect()
+}
+
+fn native_fixture_invocations(observations: &Path) -> Vec<NativePublicationInvocation> {
+    if let Some(schedule) = std::env::var_os("SHIM_NATIVE_TEST_CASES") {
+        let bytes = fs::read(schedule).expect("argument table schedule");
+        return bytes
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                let observations = PathBuf::from(std::ffi::OsStr::from_bytes(path));
+                let arguments =
+                    native_fixture_arguments(&observations.join("invocation-arguments"));
+                NativePublicationInvocation {
+                    observations,
+                    arguments,
+                    output: FixtureOutput::Recorded,
+                }
+            })
+            .collect();
+    }
+    let argument_file = std::env::var_os("SHIM_NATIVE_TEST_ARGUMENTS").expect("argument file");
+    let arguments = native_fixture_arguments(Path::new(&argument_file));
+    let runs = if observations.join("repeat").exists() {
+        vec![observations.join("first"), observations.join("second")]
+    } else {
+        vec![observations.to_owned()]
+    };
+    runs.into_iter()
+        .map(|observations| NativePublicationInvocation {
+            observations,
+            arguments: arguments.clone(),
+            output: FixtureOutput::Inherited,
+        })
+        .collect()
+}
+
+fn run_native_publication_fixture(shim: &Path) -> ! {
+    let stdout = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/fd/9")
+        .expect("original stdout");
+    rustix::stdio::dup2_stdout(&stdout)
+        .expect("restore cargo stdout after the test harness header");
+    drop(stdout);
+    let account =
+        PathBuf::from(std::env::var_os("SHIM_TEST_ACCOUNT_DIRECTORY").expect("account root"));
+    let parent = account.parent().expect("shared parent").to_owned();
+    let observations =
+        PathBuf::from(std::env::var_os("SHIM_TEST_OBSERVATIONS").expect("observations"));
+    let (boot, birth) = native_fixture_identity(&observations);
+    // A fixed calendar second exercises the UUID rather than wall-clock separation.
+    let calendar = "20260909-204000";
+    if observations.join("seed-predecessor").exists() {
+        seed_native_predecessor(&account);
+    }
+    let mut status = 127;
+    for invocation in native_fixture_invocations(&observations) {
+        let observed = invocation.observations.as_path();
+        invocation.redirect();
+        fs::create_dir_all(observed).expect("invocation observations");
+        fs::write(observed.join("shim-pid"), std::process::id().to_string()).expect("shim pid");
+        fs::write(observed.join("calendar"), calendar).expect("calendar input");
+        let generation = hook::capture_generation_at(
+            chrono::DateTime::parse_from_rfc3339("2026-09-09T20:40:00Z")
+                .expect("calendar input")
+                .to_utc(),
+        );
+        let environment = [("SHIM_TEST_OBSERVATIONS", observed.as_os_str())];
+        let publication = CaptureTestPublication {
+            boot:            &boot,
+            birth:           &birth,
+            generation:      &generation,
+            environment:     &environment,
+            after_readiness: if observed.join("signal-after-readiness").exists() {
+                || signal_hook::low_level::raise(signal_hook::consts::SIGTERM)
+            } else {
+                || Ok(())
+            },
+        };
+        let uid = if observations.join("foreign-account").exists() {
+            rustix::process::getuid().as_raw().wrapping_add(1)
+        } else {
+            rustix::process::getuid().as_raw()
+        };
+        status = publication
+            .run_for_account(
+                shim,
+                parent.clone(),
+                invocation.arguments.clone(),
+                uid,
+                |staging, registration| {
+                    native_publication_boundary(
+                        &account,
+                        observed,
+                        &generation,
+                        staging,
+                        registration,
+                    )
+                },
+                || {
+                    if observed.join("signal-after-publication").exists() {
+                        signal_hook::low_level::raise(signal_hook::consts::SIGTERM)?;
+                    }
+                    Ok(())
+                },
+            )
+            .expect("native fixture call");
+        invocation.finish(status);
+        if status != 37 {
+            break;
+        }
+    }
+    std::process::exit(status);
+}
+
+#[test]
+fn a_publication_boundary_sweep_keeps_registration_and_log_readable() {
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    fixture.observe_live_log();
+    fs::create_dir_all(fixture.path("capture")).expect("account directory");
+    let orphan = fixture.path("capture/run-orphan.log");
+    fs::write(&orphan, b"orphan output").expect("orphan log");
+    fs::write(fixture.path("observations/sweep-before-publication"), b"")
+        .expect("sweep at publication boundary");
+    assert_cargo_result(&fixture.run(&["build"]));
+    assert_eq!(
+        fs::read(fixture.path("observations/sweep")).expect("publication boundary sweep"),
+        b"swept before publication\n"
+    );
+    assert!(!orphan.exists());
+    let staged = fixture.path("observations/staged-registration");
+    assert_eq!(
+        fs::metadata(&staged)
+            .expect("staging mode")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+    let registration = fixture.registration();
+    assert_eq!(
+        fs::read(staged).expect("complete staging record"),
+        registration.contents
+    );
+    let published = fixture.path("observations/pids").join(&registration.name);
+    assert_eq!(
+        fs::metadata(published)
+            .expect("published mode")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+    let log = std::str::from_utf8(registration.fields()[4])
+        .expect("log name")
+        .to_owned();
+    let captured = fixture.path("observations").join(log);
+    assert_eq!(
+        fs::read(&captured).expect("captured cargo bytes"),
+        b"registration log marker\n"
+    );
+    assert_eq!(
+        fs::metadata(captured)
+            .expect("log mode")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+}
+
+#[test]
+fn foreign_owned_account_is_refused_without_changing_cargo() {
+    let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
+    let uid = rustix::process::getuid().as_raw().wrapping_add(1);
+    let foreign = fixture
+        .path("capture")
+        .parent()
+        .expect("capture parent")
+        .join(uid.to_string());
+    fs::create_dir_all(&foreign).expect("foreign account fixture");
+    assert_ne!(
+        fs::metadata(&foreign).expect("actual account owner").uid(),
+        uid
+    );
+    fs::write(foreign.join("keep"), b"untouched").expect("foreign sentinel");
+    fs::write(fixture.path("observations/foreign-account"), b"").expect("supplied account");
+    let arguments = ["check", "--quiet", "--message-format=json", "--", "a b"];
+    let output = fixture.run(&arguments);
+    assert_cargo_result(&output);
+    assert_eq!(
+        fs::read_dir(&foreign).expect("foreign directory").count(),
+        1
+    );
+    assert_eq!(
+        fs::read(foreign.join("keep")).expect("foreign sentinel"),
+        b"untouched"
+    );
+    assert_eq!(
+        fs::read(fixture.path("observations/capture-settings")).expect("cargo capture settings"),
+        b"\0\0\0"
+    );
+    assert_eq!(
+        fs::read(fixture.path("observations/environment")).expect("cargo environment"),
+        b"unset\0unset\0unset\0"
+    );
+    assert_eq!(
+        nul_fields(&fs::read(fixture.path("observations/arguments")).expect("cargo arguments")),
+        arguments.map(str::as_bytes)
+    );
+    assert_eq!(
+        u32::from_str_radix(
+            fs::read_to_string(fixture.path("observations/umask"))
+                .expect("cargo umask")
+                .trim(),
+            8
+        )
+        .expect("octal cargo umask"),
+        0o066
+    );
 }

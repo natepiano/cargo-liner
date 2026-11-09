@@ -175,8 +175,9 @@ pub(crate) enum AccountsColumn {
     WeeklyLeft,
     Roles,
     Busy,
-    Shell,
     Idle,
+    Paused,
+    Exited,
     Total,
     Resets,
     Credits,
@@ -185,13 +186,14 @@ pub(crate) enum AccountsColumn {
 
 impl AccountsColumn {
     /// The read mark has no header or sort key.
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Account,
         Self::WeeklyLeft,
         Self::Roles,
         Self::Busy,
-        Self::Shell,
         Self::Idle,
+        Self::Paused,
+        Self::Exited,
         Self::Total,
         Self::Resets,
         Self::Credits,
@@ -199,15 +201,22 @@ impl AccountsColumn {
     ];
 
     /// Count columns share their drawing and sum rules.
-    pub(crate) const COUNTS: [Self; 4] = [Self::Busy, Self::Shell, Self::Idle, Self::Total];
+    pub(crate) const COUNTS: [Self; 5] = [
+        Self::Busy,
+        Self::Idle,
+        Self::Paused,
+        Self::Exited,
+        Self::Total,
+    ];
 
     /// Numeric cells align at the right edge.
     pub(crate) const fn alignment(self) -> Alignment {
         match self {
             Self::WeeklyLeft
             | Self::Busy
-            | Self::Shell
             | Self::Idle
+            | Self::Paused
+            | Self::Exited
             | Self::Total
             | Self::Resets
             | Self::Credits => Alignment::Right,
@@ -222,20 +231,21 @@ impl AccountsColumn {
             Self::WeeklyLeft => 1,
             Self::Roles => 2,
             Self::Busy => 3,
-            Self::Shell => 4,
-            Self::Idle => 5,
-            Self::Total => 6,
-            Self::Resets => 7,
-            Self::Credits => 8,
-            Self::Enabled => 9,
+            Self::Idle => 4,
+            Self::Paused => 5,
+            Self::Exited => 6,
+            Self::Total => 7,
+            Self::Resets => 8,
+            Self::Credits => 9,
+            Self::Enabled => 10,
         }
     }
 
     /// The label before a sort is selected.
     pub(crate) const fn header(self) -> &'static str {
         const HEADERS: [&str; AccountsColumn::ALL.len()] = [
-            "account", "left", "role", "busy", "shell", "idle", "total", "resets", "credits",
-            "enabled",
+            "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
+            "credits", "enabled",
         ];
         HEADERS[self.index()]
     }

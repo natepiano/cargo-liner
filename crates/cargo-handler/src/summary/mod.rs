@@ -1000,6 +1000,8 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::accounts::AccountsTable;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
@@ -1025,6 +1027,8 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,

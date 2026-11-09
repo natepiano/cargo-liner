@@ -81,7 +81,7 @@ fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffe
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
     }));
-    let rect = area(180, 15);
+    let rect = area(100, 15);
     let mut buffer = Buffer::empty(rect);
     buffer.set_style(rect, Style::default().bg(ground));
     draw(

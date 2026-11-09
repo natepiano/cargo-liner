@@ -42,10 +42,12 @@ use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
+use crate::census::AstraSessionMembership;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyRole;
+use crate::census::PaneWork;
 use crate::census::Placement;
 use crate::census::RoleFallback;
 use crate::census::RoleLabel;
@@ -57,6 +59,8 @@ use crate::census::StaffRowName;
 #[cfg(test)]
 use crate::census::Timer;
 use crate::census::WorkIdentity;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::transcript::SubagentRole;
 use crate::census::worker_dispatch::DispatchLabel;
 use crate::census::worker_dispatch::WorkerDispatch;
@@ -77,7 +81,9 @@ use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH;
 use crate::constants::TREE_BRANCH_HEADER;
 use crate::constants::TREE_DIRECTORY_HEADER;
+use crate::constants::TREE_EFFORT_HEADER;
 use crate::constants::TREE_LAST_BRANCH;
+use crate::constants::TREE_MODEL_HEADER;
 use crate::constants::TREE_RAIL;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
@@ -385,6 +391,8 @@ pub(crate) enum TreeColumn {
     Session,
     Type,
     Role,
+    Model,
+    Effort,
     Status,
     Account,
     Branch,
@@ -403,6 +411,8 @@ impl TreeColumn {
             Self::Session
             | Self::Type
             | Self::Role
+            | Self::Model
+            | Self::Effort
             | Self::Status
             | Self::Account
             | Self::Branch
@@ -416,6 +426,8 @@ impl TreeColumn {
             Self::Session => TREE_SESSION_HEADER,
             Self::Type => TREE_TYPE_HEADER,
             Self::Role => TREE_ROLE_HEADER,
+            Self::Model => TREE_MODEL_HEADER,
+            Self::Effort => TREE_EFFORT_HEADER,
             Self::Status => TREE_STATUS_HEADER,
             Self::Account => TREE_ACCOUNT_HEADER,
             Self::Branch => TREE_BRANCH_HEADER,
@@ -573,9 +585,11 @@ impl PermittedTreeColumns {
     const fn remove(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = false; }
 }
 
-/// A finite fitting pass can discard only these three optional columns.
+/// `ColumnDrop::ORDER` defines the order for removing optional columns.
 #[derive(Clone, Copy)]
 enum ColumnDrop {
+    Effort,
+    Model,
     Directory,
     Branch,
     Type,
@@ -584,7 +598,9 @@ enum ColumnDrop {
 }
 
 impl ColumnDrop {
-    const ORDER: [Self; 5] = [
+    const ORDER: [Self; 7] = [
+        Self::Effort,
+        Self::Model,
         Self::Directory,
         Self::Branch,
         Self::Type,
@@ -594,6 +610,8 @@ impl ColumnDrop {
 
     const fn column(self) -> TreeColumn {
         match self {
+            Self::Effort => TreeColumn::Effort,
+            Self::Model => TreeColumn::Model,
             Self::Directory => TreeColumn::Directory,
             Self::Branch => TreeColumn::Branch,
             Self::Type => TreeColumn::Type,
@@ -696,7 +714,9 @@ impl TreeMetrics {
         let role_clipped =
             role_width.is_some_and(|(index, original)| minimum_widths[index] < original);
         let drop = match step {
-            ColumnDrop::Directory | ColumnDrop::Branch => !full_fits,
+            ColumnDrop::Effort | ColumnDrop::Model | ColumnDrop::Directory | ColumnDrop::Branch => {
+                !full_fits
+            },
             ColumnDrop::Type | ColumnDrop::Age | ColumnDrop::Account => {
                 minimum > usize::from(width)
                     || session_clipped
@@ -940,13 +960,13 @@ impl TreeMeasurement {
         allocated
     }
 
-    /// Session lead, role, status, gaps, content indent and frame use the same readings as fitting.
+    /// The column floor reserves guides, headers and roles; status values use the fitted columns.
     pub(crate) fn minimum_tile_width(&self) -> u16 {
         self.metrics
             .session_header_width()
             .max(self.metrics.session_guide_width.saturating_add(1))
             .saturating_add(self.role_widths.full.max(self.role_widths.compressed))
-            .saturating_add(self.status_widths.full.max(self.status_widths.compressed))
+            .saturating_add(self.status_header)
             .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(2))
             .saturating_add(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
             .saturating_add(u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX))
@@ -1070,7 +1090,9 @@ enum GroupFitStep {
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 6] = [
+    const ORDER: [Self; 8] = [
+        Self::Drop(ColumnDrop::Effort),
+        Self::Drop(ColumnDrop::Model),
         Self::Drop(ColumnDrop::Directory),
         Self::Drop(ColumnDrop::Branch),
         Self::Drop(ColumnDrop::Type),
@@ -1561,6 +1583,8 @@ impl TreeLine<'_> {
         match column {
             TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
             TreeColumn::Role => self.role_text().to_string(),
+            TreeColumn::Model => self.model().display_text().to_owned(),
+            TreeColumn::Effort => self.effort().display_text().to_owned(),
             TreeColumn::Type => match self.subject {
                 LineSubject::Work(Work {
                     kind: WorkKind::Shell(_),
@@ -1606,6 +1630,30 @@ impl TreeLine<'_> {
         }
     }
 
+    /// Use the conversation's model without inheriting its owner's metadata.
+    fn model(&self) -> &ModelName {
+        match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                &self.row.model
+            },
+            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+                &child.model
+            },
+        }
+    }
+
+    /// Use the conversation's effort without inheriting its owner's metadata.
+    fn effort(&self) -> ReasoningEffort {
+        match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                self.row.effort
+            },
+            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+                child.effort
+            },
+        }
+    }
+
     /// Text written into a tree cell, with the shared age width.
     fn cell_text(&self, column: TreeColumn, now: u64, ages: &AgeLayout) -> String {
         match column {
@@ -1613,6 +1661,8 @@ impl TreeLine<'_> {
             TreeColumn::Session
             | TreeColumn::Type
             | TreeColumn::Role
+            | TreeColumn::Model
+            | TreeColumn::Effort
             | TreeColumn::Status
             | TreeColumn::Account
             | TreeColumn::Branch
@@ -1622,6 +1672,25 @@ impl TreeLine<'_> {
 
     /// Resolve a shell's clock once so text and ink cannot disagree.
     fn status(&self, now: u64) -> ResolvedStatus {
+        if matches!(
+            self.subject,
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
+        ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
+        {
+            let text = if member.has_live_run() {
+                summary::status_text(self.row)
+            } else {
+                match member.work() {
+                    PaneWork::Idle => "idle",
+                    PaneWork::Busy => summary::status_text(self.row),
+                    PaneWork::Unknown => "unknown",
+                }
+            };
+            return ResolvedStatus {
+                text: text.to_owned(),
+                role: summary::status_role(self.row),
+            };
+        }
         let (text, role) = match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => (
                 summary::status_text(self.row).to_owned(),
@@ -2400,6 +2469,8 @@ const FULL_ACCOUNTS: &[TreeColumn] = &[
     TreeColumn::Session,
     TreeColumn::Type,
     TreeColumn::Role,
+    TreeColumn::Model,
+    TreeColumn::Effort,
     TreeColumn::Status,
     TreeColumn::Account,
     TreeColumn::Branch,
@@ -3484,6 +3555,8 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::WorkIdentity;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::scan::ScanStage;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
@@ -3545,6 +3618,8 @@ mod tests {
     /// seconds before [`NOW`] and opened by `launched_by`.
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
@@ -3568,6 +3643,8 @@ mod tests {
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             activity: AgentActivity::Idle,

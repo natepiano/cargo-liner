@@ -24,6 +24,8 @@ use super::constants::SRGB_LINEAR_THRESHOLD;
 use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
+use crate::theme::ResetThemeFixture;
+use crate::theme::Role;
 
 /// Proposed role assignments with the shared account assignments unchanged.
 const ROLE_ACCOUNT_FIXTURE: &str = include_str!("fixtures/statusline.conf");
@@ -759,4 +761,110 @@ fn covered_contrast_rejects_an_ink_that_only_fractional_coverage_accepts() {
     );
     assert!((measured - expected).abs() < 1e-12);
     assert!(measured < 4.5, "nearest-byte coverage must reject this ink");
+}
+
+#[test]
+fn astra_colors_enter_the_management_palette() -> Result<(), String> {
+    let colors = FooterColors::parse(include_str!("fixtures/statusline_astra.conf"));
+    for (wire, name) in [
+        ("astra-designer", "mauve"),
+        ("astra-reviewer", "bright-green"),
+    ] {
+        let role =
+            serde_json::from_value(serde_json::json!(wire)).map_err(|error| error.to_string())?;
+        let configured: FooterColor = name.parse().map_err(|_| format!("missing color {name}"))?;
+        let color = if wire == "astra-reviewer" {
+            FooterColor::AstraReviewerGreen
+        } else {
+            configured
+        };
+        assert_eq!(Color::from(color), Color::from(configured));
+        assert_eq!(colors.hierarchy_role(role), FooterTint::Management(color));
+        assert!(
+            colors
+                .session_row_inks()
+                .any(|ink| ink == SessionRowInk::Management(color))
+        );
+    }
+    assert_eq!(
+        Color::from(
+            "mauve"
+                .parse::<FooterColor>()
+                .map_err(|_| "missing mauve")?
+        ),
+        Color::Indexed(139)
+    );
+    Ok(())
+}
+
+fn check_astra_management_distances(role: HierarchyRole) {
+    let theme_reset = ResetThemeFixture::install();
+    let colors = FooterColors::parse(include_str!("fixtures/statusline_astra.conf"));
+    let mut failures = Vec::new();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        let floor = if name == "Default Dark" {
+            12.2
+        } else if name == "High Contrast Dark" {
+            14.8
+        } else {
+            15.0
+        };
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let tint_value = colors.hierarchy_role(role);
+            let FooterTint::Management(color) = tint_value else {
+                failures.push(format!("{role:?} requires management ink"));
+                continue;
+            };
+            let ink = tint_value.style(Style::default()).fg.expect("Astra ink");
+            for other in colors
+                .session_row_inks()
+                .filter(|other| *other != SessionRowInk::Management(color))
+            {
+                let other_ink = other.style().fg.expect("row ink");
+                let distance = perceptual_distance(ink, other_ink);
+                if distance < floor {
+                    failures.push(format!(
+                        "{name} tint={tint} {role:?}/{other:?} dE={distance:.9} floor={floor}"
+                    ));
+                }
+            }
+            for ordinal in 0..5 {
+                let session = Role::Session(crate::theme::SessionHue::of_agent(ordinal))
+                    .style()
+                    .fg
+                    .expect("session ink");
+                let distance = perceptual_distance(ink, session);
+                if distance < floor {
+                    failures.push(format!("{name} tint={tint} {role:?}/session-{ordinal} dE={distance:.9} floor={floor}"));
+                }
+            }
+            for ground in [
+                tui_pane::pane_background(false),
+                tui_pane::pane_background(true),
+            ] {
+                let ratio = covered_role_contrast(ink, ground);
+                if ratio < 4.5 {
+                    failures.push(format!("{name} tint={tint} {role:?} covered={ratio:.9}"));
+                }
+            }
+        }
+    }
+    drop(theme_reset);
+    assert!(
+        failures.is_empty(),
+        "Astra management distances: {failures:#?}"
+    );
+}
+
+#[test]
+fn astra_management_mauve_keeps_every_row_distance_and_covered_contrast() {
+    check_astra_management_distances(HierarchyRole::AstraDesigner);
+}
+#[test]
+fn astra_management_reviewer_keeps_every_row_distance_and_covered_contrast() {
+    check_astra_management_distances(HierarchyRole::AstraReviewer);
 }

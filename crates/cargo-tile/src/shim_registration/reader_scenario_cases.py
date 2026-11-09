@@ -197,7 +197,11 @@ environment: dict[str, str] = {}
 def prepare_fixture() -> None:
     global environment, writer_locale
     bin_directory.mkdir(parents=True)
-    copy_named_shell(bin_directory / 'cargo-tile-real')
+    if sys.platform == 'darwin' and scenario in ('excluded', 'quiet-json-long'):
+        # The executable spelling preserves cargo discovery through this native shell symlink.
+        (bin_directory / 'cargo-tile-real').symlink_to('/bin/bash')
+    else:
+        copy_named_shell(bin_directory / 'cargo-tile-real')
     for directory in (work, pids, root / 'config/cargo-tile',
                       home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
         directory.mkdir(parents=True)
@@ -400,15 +404,15 @@ def wait_for_files(predicate: Callable[[], object], description: str, *,
     with named_wait(description):
         if predicate():
             return
-        while time.monotonic() < deadline:
-            # Subscribe before checking. A write between the check and wait stays queued.
-            changes = FixtureChanges(root)
-            try:
+        changes = FixtureChanges(root)
+        try:
+            while time.monotonic() < deadline:
                 if predicate():
                     return
                 changes.wait(max(0.0, deadline - time.monotonic()))
-            finally:
-                changes.close()
+                changes.refresh()
+        finally:
+            changes.close()
         raise AssertionError(description)
 
 class WriterNotification:
@@ -475,7 +479,7 @@ class LaunchedWriter:
         self.writer_home = writer_home
         self.nested_observations = nested_observations
 
-# Keep the nested readiness checks while the reader starts its first scan.
+# The nested readiness checks finish before the reader starts its first scan.
 writers_awaiting_nested_readiness: list[LaunchedWriter] = []
 
 def launch_writer(name: str, writer_home: Path, command: str = 'build',
@@ -2128,9 +2132,6 @@ IFS= read -r notification < "$OBSERVED/notification"
         # and its still-running nested commands retained their artifacts.
         removed.extend(seed_ended_publication(enclosing))
 
-    if scenario != 'cpu-cache-server':
-        release_reader()
-
     for launch in writers_awaiting_nested_readiness:
         child = launch.child
         for nested in launch.nested_observations:
@@ -2139,6 +2140,10 @@ IFS= read -r notification < "$OBSERVED/notification"
                      'nested command does not inherit the enclosing capture')
             nested_pid = (nested / 'cargo-pid').read_text()
             assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
+
+    # The first scan must see each nested command after exec.
+    if scenario != 'cpu-cache-server':
+        release_reader()
 
     def reader_has_scanned():
         read_terminal(0.1)

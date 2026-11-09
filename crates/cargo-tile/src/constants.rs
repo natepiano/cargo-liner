@@ -659,6 +659,10 @@ pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs
 pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
 /// The shell that forwards a captured command.
 pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
+/// Version of the installed entry, independent of registration framing.
+pub(crate) const CAPTURE_SHIM_VERSION: u64 = 4;
+/// Placeholder for the installed runner path.
+pub(crate) const CAPTURE_SHIM_EXECUTABLE: &str = "@CARGO_TILE_EXECUTABLE@";
 /// Entry argument that selects native output capture.
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
 /// Entry argument that runs cargo without opening another capture.
@@ -678,16 +682,6 @@ printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" 
 printf 'cargo-stdout\n'
 printf 'cargo-stderr\n' >&2
 exit 37
-"#;
-/// Create the competing directory at the last possible command boundary,
-/// then use the host's actual ln to expose its directory-target behavior.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_LINK: &str = r#"#!/bin/sh
-set -eu
-mkdir "$2"
-printf 'preserved\n' > "$2/keep"
-printf '%s' "$2" > "$HOOK_TEST_OBSERVATIONS/registration-path"
-exec "$HOOK_TEST_REAL_LINK" "$@"
 "#;
 /// A saved cargo fixture that echoes its arguments. Its marker proves
 /// interrupted-install repair depends on the filenames, not its bytes.

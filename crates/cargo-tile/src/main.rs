@@ -33,4 +33,7 @@ mod tiles;
 
 use std::process::ExitCode;
 
-fn main() -> ExitCode { cli::Cli::parse_arguments().run() }
+fn main() -> ExitCode {
+    hook::capture_shim_entry();
+    cli::Cli::parse_arguments().run()
+}

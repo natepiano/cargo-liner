@@ -14,6 +14,8 @@ use std::time::Instant;
 use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
+use serde::Deserializer;
+use serde::de::Error;
 
 use super::hierarchy;
 use super::hierarchy::HierarchyError;
@@ -55,28 +57,44 @@ impl AccountRole {
 /// Source counts for one role across the reported machines.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoleSessionCounts {
-    pub(crate) busy:  u64,
-    pub(crate) shell: Reading<u64>,
-    pub(crate) idle:  u64,
-    pub(crate) total: u64,
+    pub(crate) busy:   u64,
+    pub(crate) idle:   u64,
+    pub(crate) paused: u64,
+    pub(crate) exited: u64,
+    pub(crate) total:  u64,
+}
+
+/// One source count exceeds the range of a combined count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RoleCountOverflow;
+
+impl From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionCounts> {
+    fn from(value: Result<RoleSessionCounts, RoleCountOverflow>) -> Self {
+        match value {
+            Ok(counts) => Self::Known(counts),
+            Err(RoleCountOverflow) => Self::Unavailable,
+        }
+    }
 }
 
 impl RoleSessionCounts {
-    /// Add known counts and preserve a shell count from either input.
-    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
-        let shell = match (self.shell, other.shell) {
-            (Reading::Known(left), Reading::Known(right)) => {
-                Reading::Known(left.checked_add(right)?)
-            },
-            (Reading::Known(value), Reading::Unavailable)
-            | (Reading::Unavailable, Reading::Known(value)) => Reading::Known(value),
-            (Reading::Unavailable, Reading::Unavailable) => Reading::Unavailable,
-        };
-        Some(Self {
-            busy: self.busy.checked_add(other.busy)?,
-            shell,
-            idle: self.idle.checked_add(other.idle)?,
-            total: self.total.checked_add(other.total)?,
+    /// `RoleSessionCounts::checked_add` sums all five source counts without overflow.
+    pub(crate) fn checked_add(self, other: &Self) -> Result<Self, RoleCountOverflow> {
+        Ok(Self {
+            busy:   self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
+            idle:   self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
+            paused: self
+                .paused
+                .checked_add(other.paused)
+                .ok_or(RoleCountOverflow)?,
+            exited: self
+                .exited
+                .checked_add(other.exited)
+                .ok_or(RoleCountOverflow)?,
+            total:  self
+                .total
+                .checked_add(other.total)
+                .ok_or(RoleCountOverflow)?,
         })
     }
 }
@@ -155,21 +173,46 @@ struct AccountWire {
     read_at:             Option<String>,
 }
 
+/// The wire reader constructs this proof only when the retired key is absent.
+#[derive(Default)]
+struct RetiredShellAbsent;
+
+impl<'de> Deserialize<'de> for RetiredShellAbsent {
+    fn deserialize<D>(_: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(D::Error::custom("the shell count is retired"))
+    }
+}
+
 #[derive(Deserialize)]
 struct RoleCountsWire {
-    busy:  u64,
-    shell: Option<u64>,
-    idle:  u64,
-    total: u64,
+    busy:          u64,
+    idle:          u64,
+    paused:        u64,
+    exited:        u64,
+    total:         u64,
+    #[serde(default, rename = "shell")]
+    retired_shell: RetiredShellAbsent,
 }
 
 impl From<RoleCountsWire> for RoleSessionCounts {
     fn from(counts: RoleCountsWire) -> Self {
+        let RoleCountsWire {
+            busy,
+            idle,
+            paused,
+            exited,
+            total,
+            retired_shell: RetiredShellAbsent,
+        } = counts;
         Self {
-            busy:  counts.busy,
-            shell: counts.shell.into(),
-            idle:  counts.idle,
-            total: counts.total,
+            busy,
+            idle,
+            paused,
+            exited,
+            total,
         }
     }
 }

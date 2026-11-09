@@ -24,8 +24,8 @@ pub(crate) use word_match::WordMatchGrounds;
 pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
 mod files_tests;
-
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
@@ -46,6 +46,8 @@ pub(crate) use self::files::AppearanceDiagnostic;
 pub(crate) use self::files::StartupThemeNotes;
 pub(crate) use self::files::ThemeInstallation;
 pub(crate) use self::files::install_theme;
+#[cfg(test)]
+pub(crate) use self::tests::ResetThemeFixture;
 use crate::constants::BUSY_ROLE;
 use crate::constants::CLAUDE_ROLE;
 use crate::constants::CODEX_ROLE;
@@ -124,24 +126,20 @@ impl ResetRank {
         })
     }
 
-    /// Blend the reset-only theme roles, retaining exact endpoints.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "positions constructs ranks at most last, so the rounded alpha is at most 255"
-    )]
+    /// `ResetRank::color` uses three steps between the `reset_nearest` and `reset_farthest` roles.
+    /// It retains the exact endpoint colors.
     pub(crate) fn color(self) -> Color {
         let nearest = tui_pane::role_color("reset_nearest", DEFAULT_DARK_ROLES.reset_nearest);
         let farthest = tui_pane::role_color("reset_farthest", DEFAULT_DARK_ROLES.reset_farthest);
-        if self.position == 0 {
+        let quarter_rank = self.position as u128 * 4;
+        let last = self.last as u128;
+        if self.last == 0 || quarter_rank < last {
             return nearest;
         }
-        if self.position == self.last {
+        if quarter_rank > last * 3 {
             return farthest;
         }
-        let intervals = self.last as u128;
-        let alpha =
-            ((self.position as u128 * u128::from(u8::MAX) + intervals / 2) / intervals) as u8;
-        tui_pane::blend_color(nearest, farthest, alpha)
+        tui_pane::blend_color(nearest, farthest, 128)
     }
 }
 
@@ -243,7 +241,7 @@ pub(crate) enum SessionHue {
 
 impl SessionHue {
     /// Every hue, in the order the cells take them.
-    const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::First,
         Self::Second,
         Self::Third,
@@ -327,6 +325,35 @@ impl RolePalette {
             ])
             .collect()
     }
+}
+
+/// The bundled theme files own the Astra role shades.
+fn astra_roles(mut roles: BTreeMap<String, StyleSpec>, name: &str) -> BTreeMap<String, StyleSpec> {
+    static SHADES: LazyLock<BTreeMap<String, BTreeMap<String, StyleSpec>>> = LazyLock::new(|| {
+        [
+            include_str!("../../themes/default_dark.toml"),
+            include_str!("../../themes/default_light.toml"),
+            include_str!("../../themes/high_contrast.toml"),
+        ]
+        .into_iter()
+        .filter_map(|text| files::parse_family(text).ok())
+        .flat_map(|family| family.variants)
+        .map(|variant| {
+            (
+                variant.name,
+                variant
+                    .roles
+                    .into_iter()
+                    .filter(|(key, _)| matches!(key.as_str(), "mauve" | "astra_reviewer"))
+                    .collect(),
+            )
+        })
+        .collect()
+    });
+    if let Some(shades) = SHADES.get(name) {
+        roles.extend(shades.clone());
+    }
+    roles
 }
 
 /// [`default_dark`]'s roles, and the value a variant without a role
@@ -491,7 +518,7 @@ fn default_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
-        roles:       DEFAULT_DARK_ROLES.map(),
+        roles:       astra_roles(DEFAULT_DARK_ROLES.map(), DEFAULT_DARK_THEME),
     }
 }
 
@@ -540,7 +567,7 @@ fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       DEFAULT_LIGHT_ROLES.map(),
+        roles:       astra_roles(DEFAULT_LIGHT_ROLES.map(), DEFAULT_LIGHT_THEME),
     }
 }
 
@@ -593,7 +620,7 @@ fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       HIGH_CONTRAST_DARK_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_DARK_ROLES.map(), DEFAULT_HC_DARK_THEME),
     }
 }
 
@@ -645,7 +672,7 @@ fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       HIGH_CONTRAST_LIGHT_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_LIGHT_ROLES.map(), DEFAULT_HC_LIGHT_THEME),
     }
 }
 
@@ -655,6 +682,8 @@ fn high_contrast_light() -> Theme {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::sync::Arc;
+
     use tui_pane::ThemeFamily;
     use tui_pane::ThemeVariantFile;
 
@@ -691,6 +720,35 @@ mod tests {
         assert_eq!(family.schema, 1);
         assert_eq!(family.variants.len(), expected);
         family.variants
+    }
+
+    /// `ResetThemeFixture` restores theme, transparency, and tint after a test.
+    pub(crate) struct ResetThemeFixture {
+        previous:    Arc<Theme>,
+        transparent: bool,
+        tinted:      bool,
+    }
+
+    impl ResetThemeFixture {
+        pub(crate) fn install() -> Self { Self::with_theme(default_dark()) }
+
+        pub(crate) fn with_theme(theme: Theme) -> Self {
+            let fixture = Self {
+                previous:    tui_pane::theme(),
+                transparent: tui_pane::transparent_background(),
+                tinted:      tui_pane::focused_pane_tint_enabled(),
+            };
+            tui_pane::set_active_theme(Arc::new(theme));
+            fixture
+        }
+    }
+
+    impl Drop for ResetThemeFixture {
+        fn drop(&mut self) {
+            tui_pane::set_active_theme(Arc::clone(&self.previous));
+            tui_pane::set_transparent_background(self.transparent);
+            tui_pane::set_focused_pane_tint(self.tinted);
+        }
     }
 
     #[test]

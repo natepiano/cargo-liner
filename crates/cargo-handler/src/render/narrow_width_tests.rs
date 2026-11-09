@@ -6,17 +6,24 @@
 )]
 
 use ratatui::layout::Position;
+use tui_pane::ExpansionAction;
 use tui_pane::NavAction;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
+use super::selection_tests;
 use super::*;
+use crate::app::expansion;
+use crate::app::expansion::HandlerExpansionAction;
 use crate::census::Activity;
+use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
+use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
+use crate::census::HierarchyRole;
 use crate::census::MachineState;
 use crate::census::ShellTimerObservation;
 use crate::census::Timer;
@@ -111,6 +118,23 @@ fn paint(app: &mut App, width: u16, height: u16) -> Buffer {
             })
             .expect("narrow frame");
     }
+    terminal.backend().buffer().clone()
+}
+
+fn paint_first(app: &mut App, width: u16, height: u16) -> Buffer {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("first-frame terminal");
+    terminal
+        .draw(|frame| {
+            draw_panes_at(
+                frame,
+                app,
+                Rect::new(0, 0, width, height),
+                TileGridContents::Shown,
+                NOW,
+            );
+        })
+        .expect("first enlarged Astra frame");
     terminal.backend().buffer().clone()
 }
 
@@ -228,6 +252,8 @@ fn failed_accounts_keep_the_first_selected_destination() {
 
 #[test]
 fn account_refresh_keeps_the_destination_through_animation_frames() {
+    // Every width uses the same unchanged destination data.
+    let source = fixture(6);
     for (width, search_calls, pending_motion) in
         [(200, 7, true), (80, 4, true), (50, 2, true), (40, 2, true)]
     {
@@ -239,7 +265,6 @@ fn account_refresh_keeps_the_destination_through_animation_frames() {
         paint(&mut app, width, 70);
         app.tiles.settle_for_test();
         app.tiles.set_instant_motion_for_test();
-        let source = fixture(6);
         let area = Rect::new(0, 0, width, 70);
         let growth = app.loaded_config.config.tiles.growth();
         for frame in 0..32 {
@@ -723,7 +748,22 @@ fn narrow_review_end_measures_the_restored_viewport() {
     );
 }
 
-fn growth_app() -> (App, crate::interaction::SelectionSurface) {
+#[derive(Clone, Copy, Debug)]
+enum GrowthRoles {
+    Subagents,
+    Astra,
+}
+
+impl GrowthRoles {
+    const fn words(self) -> &'static [&'static str] {
+        match self {
+            Self::Subagents => &["showrunner"],
+            Self::Astra => &["astra designer", "astra reviewer"],
+        }
+    }
+}
+
+fn growth_app(roles: GrowthRoles) -> (App, crate::interaction::SelectionSurface) {
     let mut app = fixture(6);
     let mut owner: AgentRow = serde_json::from_value(serde_json::json!({
         "agent":"claude", "pid":1_107_206, "session_id":"growth-owner",
@@ -751,11 +791,44 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
         children: owner.children[..1].to_vec(),
         ..owner.clone()
     });
+    let mut hierarchy = HierarchyEdges::default();
+    let mut workers = Vec::new();
+    if matches!(roles, GrowthRoles::Astra) {
+        for (index, child) in std::mem::take(&mut owner.children).into_iter().enumerate() {
+            let id = format!("growth-astra-{index}");
+            hierarchy.0.push(HierarchyEdge {
+                manager: "growth-owner".into(),
+                member:  id.clone(),
+                role:    match index {
+                    60 => HierarchyRole::AstraDesigner,
+                    61 => HierarchyRole::AstraReviewer,
+                    _ => HierarchyRole::Impl,
+                },
+            });
+            workers.push(AgentRow {
+                agent: Agent::Codex,
+                pid: child.pid.expect("Astra process pid")
+                    + u32::try_from(index).expect("Astra process index"),
+                session_id: id.into(),
+                name: child.name,
+                activity: child.activity,
+                children: Vec::new(),
+                ..owner.clone()
+            });
+        }
+    }
     app.census.apply(CensusUpdate::Local {
-        rows:      std::iter::once(owner).chain(neighbors).collect(),
-        hierarchy: HierarchyEdges::default().into(),
+        rows:      std::iter::once(owner)
+            .chain(neighbors)
+            .chain(workers)
+            .collect(),
+        hierarchy: hierarchy.into(),
         stage:     ScanStage::Completed,
     });
+    expansion::dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
     paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
     let key = app
         .tiles
@@ -779,108 +852,116 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
 
 #[test]
 fn narrow_growth_at_end_includes_a_wide_role_above_the_saved_window() {
-    let (mut app, surface) = growth_app();
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
-        ROLE_GROWTH_WIDTH,
-        ROLE_GROWN_HEIGHT,
-    ))
-    .expect("growth terminal");
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| {
-            draw_panes_at(
-                frame,
-                &mut app,
-                Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT),
-                TileGridContents::Shown,
-                NOW,
+    for roles in [GrowthRoles::Subagents, GrowthRoles::Astra] {
+        let (mut app, surface) = growth_app(roles);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+            ROLE_GROWTH_WIDTH,
+            ROLE_GROWN_HEIGHT,
+        ))
+        .expect("growth terminal");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| {
+                draw_panes_at(
+                    frame,
+                    &mut app,
+                    Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT),
+                    TileGridContents::Shown,
+                    NOW,
+                );
+            })
+            .expect("first enlarged frame");
+        let buffer = terminal.backend().buffer();
+        let state = app.selections.surface(&surface).expect("grown selection");
+        assert!(
+            state.viewport().visible_rows() >= 15,
+            "allocation must grow"
+        );
+        let placement = app
+            .tiles
+            .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+            .into_iter()
+            .find(|tile| {
+                selection_surface(&tile.content) == SelectableSurface::Surface(surface.clone())
+            })
+            .expect("grown tile");
+        let text = lines(buffer, placement.frame.inner()).join("\n");
+        for word in roles.words() {
+            assert!(
+                text.lines()
+                    .any(|line| line.contains(word) && line.contains("waiting")),
+                "{roles:?}: the first enlarged frame must show the whole role and status: {text}"
             );
-        })
-        .expect("first enlarged frame");
-    let buffer = terminal.backend().buffer();
-    let state = app.selections.surface(&surface).expect("grown selection");
-    assert!(
-        state.viewport().visible_rows() >= 15,
-        "allocation must grow"
-    );
-    let placement = app
-        .tiles
-        .placements(app.selection_area, app.loaded_config.config.tiles.growth())
-        .into_iter()
-        .find(|tile| {
-            selection_surface(&tile.content) == SelectableSurface::Surface(surface.clone())
-        })
-        .expect("grown tile");
-    let text = lines(buffer, placement.frame.inner()).join("\n");
-    assert!(
-        text.lines()
-            .any(|line| line.contains("showrunner") && line.contains("waiting")),
-        "growth must show the whole role and status on one line: {text}"
-    );
+        }
+    }
 }
 
 #[test]
 fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
-    let (app, surface) = growth_app();
-    let colors = FooterColors::default();
-    let sorts = HashMap::new();
-    let cells = Cells::new(
-        app.census
-            .machines(&app.loaded_config.config.machines.remote),
-        NOW,
-        &colors,
-        &sorts,
-        app.summary_sort,
-    )
-    .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
-    let area = Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
-    let tile = cells
-        .tiles
-        .iter()
-        .find(|tile| SelectionSurface::Tile(tile.key()) == surface)
-        .expect("source tile");
-    let saved = app.selections.surface(&surface).expect("saved selection");
-    for anchor in [NavAction::End, NavAction::Home, NavAction::Up] {
-        let mut state = saved.clone();
-        state.navigate(anchor);
-        tile.set_viewport(state.viewport());
-        let source = tile.measure(area, NOW, cells.account_column);
-        let tallest_area = tui_pane::frame_inner(area);
-        let tallest = source.allocated(tallest_area, &state);
-        if matches!(anchor, NavAction::End) {
-            let saved_window = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, 5), &state);
-            assert!(
-                tallest.minimum_tile_width() > saved_window.minimum_tile_width(),
-                "the restored window must include a wider supported role"
-            );
-        }
-        cells.measurements.borrow_mut().clear();
-        let minimum = {
-            let mut selections = cells.selections.borrow_mut();
-            *selections.surface_mut(&surface).expect("source selection") = state.clone();
-            drop(selections);
-            cells.measure_trees(area)
-        };
-        for height in 1..=tallest_area.height {
-            let mut shorter = state.clone();
-            shorter.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height));
-            let mut taller = state.clone();
-            taller.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT));
-            let short_start = shorter.viewport().scroll_offset();
-            let short_end = (short_start + usize::from(height)).min(71);
-            let tall_start = taller.viewport().scroll_offset();
-            let tall_end = (tall_start + usize::from(ROLE_SOURCE_HEIGHT)).min(71);
-            assert!(
-                tall_start <= short_start && short_end <= tall_end,
-                "{anchor:?}, height {height}: {short_start}..{short_end} outside {tall_start}..{tall_end}"
-            );
-            let allocated = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height), &state);
-            assert!(tallest.minimum_tile_width() >= allocated.minimum_tile_width());
-            assert!(
-                minimum >= allocated.minimum_tile_width(),
-                "pre-layout width {minimum} misses {anchor:?} allocation at height {height}: {}",
-                allocated.minimum_tile_width()
-            );
+    for roles in [GrowthRoles::Subagents, GrowthRoles::Astra] {
+        let (app, surface) = growth_app(roles);
+        let colors = FooterColors::default();
+        let sorts = HashMap::new();
+        let cells = Cells::new(
+            app.census
+                .machines(&app.loaded_config.config.machines.remote),
+            NOW,
+            &colors,
+            &sorts,
+            app.summary_sort,
+        )
+        .with_expansion(&app.expansion)
+        .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
+        let area = Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
+        let tile = cells
+            .tiles
+            .iter()
+            .find(|tile| SelectionSurface::Tile(tile.key()) == surface)
+            .expect("source tile");
+        let saved = app.selections.surface(&surface).expect("saved selection");
+        for anchor in [NavAction::End, NavAction::Home, NavAction::Up] {
+            let mut state = saved.clone();
+            state.navigate(anchor);
+            tile.set_viewport(state.viewport());
+            let source = tile.measure(area, NOW, cells.account_column);
+            let tallest_area = tui_pane::frame_inner(area);
+            let tallest = source.allocated(tallest_area, &state);
+            if matches!(anchor, NavAction::End) {
+                let saved_window = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, 5), &state);
+                assert!(
+                    tallest.minimum_tile_width() > saved_window.minimum_tile_width(),
+                    "the restored window must include a wider supported role"
+                );
+            }
+            cells.measurements.borrow_mut().clear();
+            let minimum = {
+                let mut selections = cells.selections.borrow_mut();
+                *selections.surface_mut(&surface).expect("source selection") = state.clone();
+                drop(selections);
+                cells.measure_trees(area)
+            };
+            for height in 1..=tallest_area.height {
+                let mut shorter = state.clone();
+                shorter.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height));
+                let mut taller = state.clone();
+                taller.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT));
+                let short_start = shorter.viewport().scroll_offset();
+                let short_end = (short_start + usize::from(height)).min(71);
+                let tall_start = taller.viewport().scroll_offset();
+                let tall_end = (tall_start + usize::from(ROLE_SOURCE_HEIGHT)).min(71);
+                assert!(
+                    tall_start <= short_start && short_end <= tall_end,
+                    "{anchor:?}, height {height}: {short_start}..{short_end} outside {tall_start}..{tall_end}"
+                );
+                let allocated =
+                    source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height), &state);
+                assert!(tallest.minimum_tile_width() >= allocated.minimum_tile_width());
+                assert!(
+                    minimum >= allocated.minimum_tile_width(),
+                    "pre-layout width {minimum} misses {anchor:?} allocation at height {height}: {}",
+                    allocated.minimum_tile_width()
+                );
+            }
         }
     }
 }
@@ -890,9 +971,9 @@ fn narrow_growth_reports_fixture_counts() {
     for (count, width, expected_groups, expected_summary_rows) in [
         (6, 200, 6, 28),
         (6, 80, 6, 28),
-        (6, 50, 6, 29),
-        (6, 40, 6, 29),
-        (20, 34, 2, 43),
+        (6, 50, 6, 30),
+        (6, 40, 6, 30),
+        (20, 34, 2, 44),
     ] {
         let mut app = fixture(count);
         paint(&mut app, width, 50);
@@ -913,4 +994,139 @@ fn narrow_growth_reports_fixture_counts() {
             "fixture count={count} width={width}: tile count and summary allocation stay unchanged"
         );
     }
+}
+
+fn check_astra_role_window(action: NavAction, height: u16) {
+    let mut app = selection_tests::astra_application();
+    let (mut rows, mut edges) = selection_tests::astra_rows("busy", "session-20");
+    for pid in 100..170 {
+        let id = format!("narrow-astra-{pid}");
+        rows.push(serde_json::from_value(serde_json::json!({"agent":"claude","pid":pid,"session_id":id,"name":format!("work-{pid}"),"started":100,"directory":"/fixture","status":"waiting","children":[]})).expect("narrow Astra sibling"));
+        edges.0.push(HierarchyEdge {
+            manager: "session-20".into(),
+            member:  id,
+            role:    HierarchyRole::Impl,
+        });
+    }
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: edges.into(),
+        stage: ScanStage::Completed,
+    });
+    paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
+    let surface = app
+        .tiles
+        .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+        .iter()
+        .find_map(|placement| match &placement.content {
+            TileContent::Group(key) => Some(SelectionSurface::Tile(key.clone())),
+            _ => None,
+        })
+        .expect("Astra tile");
+
+    app.selections
+        .surface_mut(&surface)
+        .expect("Astra selection")
+        .navigate(action);
+    paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
+    let saved = app
+        .selections
+        .surface(&surface)
+        .expect("saved Astra selection")
+        .selection();
+    let buffer = paint_first(&mut app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);
+    let text = lines(&buffer, buffer.area).join("\n");
+    assert!(
+        text.contains("astra designer"),
+        "grown Astra designer: {text}"
+    );
+    assert!(
+        text.contains("astra reviewer"),
+        "grown Astra reviewer: {text}"
+    );
+    assert!(
+        app.selections
+            .surface(&surface)
+            .expect("restored Astra selection")
+            .viewport()
+            .visible_rows()
+            >= 15
+    );
+
+    paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);
+    let buffer = paint(&mut app, ROLE_GROWTH_WIDTH, height);
+    assert_eq!(buffer.area.height, height);
+    let buffer = paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);
+    assert!(
+        lines(&buffer, buffer.area)
+            .join("\n")
+            .contains("astra designer")
+    );
+    assert_eq!(
+        app.selections
+            .surface(&surface)
+            .expect("restored Astra cursor")
+            .selection(),
+        saved
+    );
+    assert_astra_compression(&mut app, &surface, &saved, action);
+}
+
+fn assert_astra_compression(
+    app: &mut App,
+    surface: &SelectionSurface,
+    saved: &TileSelection,
+    action: NavAction,
+) {
+    let core = observed_cells(app).cells.measure_trees(Rect::new(
+        0,
+        0,
+        ROLE_GROWTH_WIDTH,
+        ROLE_GROWN_HEIGHT,
+    ));
+    for width in [core, core.saturating_sub(1)] {
+        let compressed = paint(app, width, ROLE_SOURCE_HEIGHT);
+        let placements = app
+            .tiles
+            .placements(app.selection_area, app.loaded_config.config.tiles.growth());
+        assert!(
+            placements
+                .iter()
+                .any(|tile| matches!(tile.content, TileContent::Group(_))),
+            "Astra hierarchy remains drawn at width {width}"
+        );
+        if width == core {
+            let text = lines(&compressed, compressed.area).join("\n");
+            assert!(
+                text.lines().any(|line| line.contains("session")
+                    && line.contains("role")
+                    && line.contains("status")),
+                "whole Astra core headers at width {width}: {text}"
+            );
+        }
+        paint(app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);
+        assert_eq!(
+            app.selections
+                .surface(surface)
+                .expect("returned Astra selection")
+                .selection(),
+            *saved,
+            "return from width {width} restores {action:?}"
+        );
+    }
+}
+
+#[test]
+fn astra_long_roles_survive_restored_windows_growth_and_compression() {
+    check_astra_role_window(NavAction::End, 16);
+}
+
+#[test]
+fn astra_long_roles_keep_home_during_growth_and_compression() {
+    check_astra_role_window(NavAction::Home, 10);
+}
+
+#[test]
+fn astra_long_roles_keep_the_cursor_during_growth_and_compression() {
+    check_astra_role_window(NavAction::Down, 5);
 }

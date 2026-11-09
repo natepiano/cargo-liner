@@ -34,6 +34,8 @@ use super::WorkIdentity;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
+use super::model::ModelName;
+use super::model::ReasoningEffort;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
 use super::transcript::SubagentParent;
@@ -305,19 +307,54 @@ pub(super) fn attach_children(
     added
 }
 
+/// `fold_run_processes` removes command rows that `WorkerRuns` joins to a worker row.
+pub(super) fn fold_run_processes(rows: &mut [AgentRow], processes: &HashSet<u32>) {
+    for row in rows {
+        let mut removed_depth = None;
+        row.children.retain(|child| {
+            if removed_depth.is_some_and(|depth| child.depth > depth) {
+                return false;
+            }
+            removed_depth = None;
+            if child.pid.is_some_and(|pid| processes.contains(&pid)) {
+                removed_depth = Some(child.depth);
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// Keep run-only seats that have no native conversation identity.
+pub(super) fn append_named_run_workers(
+    rows: &mut [AgentRow],
+    workers: &HashMap<u32, Vec<ChildRow>>,
+) {
+    for row in rows {
+        if let Some(children) = workers.get(&row.pid) {
+            row.children.extend(children.iter().cloned());
+        }
+    }
+}
+
 /// Add only missing run threads after the tree builder lays out all process sources.
 fn append_run_threads(
     rows: &[AgentRow],
     trees: &mut [Vec<ChildRow>],
     sources: &TreeSources<'_>,
 ) -> HashSet<String> {
-    let mut present: HashSet<_> = trees
+    let mut present: HashSet<_> = rows
         .iter()
-        .flatten()
-        .filter_map(|child| match &child.thread_id {
-            CodexThreadId::Recorded(id) => Some(id.clone()),
-            CodexThreadId::Unrecorded => None,
-        })
+        .flat_map(|row| row.session_id.ids().map(str::to_owned))
+        .chain(
+            trees
+                .iter()
+                .flatten()
+                .filter_map(|child| match &child.thread_id {
+                    CodexThreadId::Recorded(id) => Some(id.clone()),
+                    CodexThreadId::Unrecorded => None,
+                }),
+        )
         .collect();
     let mut added = HashSet::new();
     for (row, children) in rows.iter().zip(trees.iter_mut()) {
@@ -325,6 +362,8 @@ fn append_run_threads(
             if present.insert(thread.id.clone()) {
                 added.insert(thread.id.clone());
                 children.push(ChildRow {
+                    model:        ModelName::Unrecorded,
+                    effort:       ReasoningEffort::Unrecorded,
                     work_id:      WorkIdentity::Legacy,
                     worker_task:  WorkerTask::RoleOnly,
                     activity:     thread.activity,
@@ -772,6 +811,8 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             activity: node.activity,
             thread_id: node.thread_id,
@@ -807,6 +848,8 @@ mod tests {
     use crate::census::StaffRowNames;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::transcript::SubagentRole;
 
     /// The home directory every fixture's paths sit under.
@@ -1076,6 +1119,8 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,

@@ -991,6 +991,8 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::hierarchy::HierarchyError;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::config::Config;
 
     #[test]
@@ -1248,6 +1250,8 @@ mod tests {
     /// A local Claude fixture whose process identity may change independently of its session.
     fn session_row(id: &str, pid: u32) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: RoleFallback::None,

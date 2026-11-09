@@ -25,8 +25,12 @@ use serde_json::Value;
 use super::AgentActivity;
 use super::ServiceTier;
 use super::activity::ActivityRead;
+use super::codex::CodexModels;
+use super::hierarchy::FileRevision;
+use super::model::ConversationModel;
 use super::transcript;
 use super::transcript::JsonlCursor;
+use super::transcript::RecordChange;
 use super::transcript::RecordKind;
 use super::tree;
 use crate::constants::CODEX_CONFIG_FLAGS;
@@ -44,6 +48,7 @@ use crate::startup_log;
 /// Cached metadata and the current conversation state of one rollout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RolloutRead {
+    pub(super) inference:    ConversationModel,
     activity_read:           ActivityRead,
     pub(super) first_prompt: FirstTaskPrompt,
     pub(super) worktree:     ThreadWorktree,
@@ -59,6 +64,7 @@ pub(super) struct RolloutRead {
 impl Default for RolloutRead {
     fn default() -> Self {
         Self {
+            inference:     super::model::ConversationModel::default(),
             activity_read: ActivityRead::default(),
             first_prompt:  FirstTaskPrompt::Unread,
             worktree:      ThreadWorktree::Unrecorded,
@@ -192,6 +198,7 @@ impl RolloutRead {
                     CODEX_EVENT_LINE.as_bytes(),
                     CODEX_USER_MARKER,
                     CODEX_RESPONSE_LINE.as_bytes(),
+                    b"turn_context",
                 ]
                 .iter()
                 .any(|marker| std::str::from_utf8(marker).is_ok_and(|marker| text.contains(marker)))
@@ -262,13 +269,14 @@ impl RolloutRead {
     fn take(&mut self, line: &[u8]) {
         if !matches!(
             transcript::record_kind(line),
-            RecordKind::Codex | RecordKind::Session
+            RecordKind::Codex | RecordKind::Session | RecordKind::Context
         ) {
             return;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             return;
         };
+        self.inference.take_codex(&value);
         {
             self.activity_read.take_codex(&value);
             let payload = &value["payload"];
@@ -354,15 +362,29 @@ struct ThreadSettings {
 /// Every rollout the scanner reads, each as far as it has been read.
 #[derive(Debug, Default)]
 pub(super) struct Rollouts {
+    models:        CodexModels,
+    revisions:     HashMap<PathBuf, FileRevision>,
+    #[cfg(test)]
+    content_reads: usize,
     /// What each rollout holds so far, by path.
-    reads:   HashMap<PathBuf, RolloutRead>,
+    reads:         HashMap<PathBuf, RolloutRead>,
     /// The rollouts read since the last [`Rollouts::forget_unread`].
-    current: HashSet<PathBuf>,
+    current:       HashSet<PathBuf>,
     /// Exact thread identity to its currently read rollout path.
-    threads: HashMap<String, PathBuf>,
+    threads:       HashMap<String, PathBuf>,
 }
 
 impl Rollouts {
+    /// `read_model` reads model settings without extending the activity search.
+    pub(super) fn read_model(&mut self, path: &Path) -> ConversationModel {
+        self.read(path);
+        let inference = self.models.read(path);
+        if let Some(read) = self.reads.get_mut(path) {
+            read.inference = inference.clone();
+        }
+        inference
+    }
+
     /// What the rollout at `path` holds, reading only what was written
     /// since the last read of it.
     pub(super) fn read(&mut self, path: &Path) -> RolloutRead {
@@ -371,23 +393,54 @@ impl Rollouts {
             self.threads.insert(id, path.to_path_buf());
         }
         let read = self.reads.entry(path.to_path_buf()).or_default();
+        let revision = fs::metadata(path).map_or(FileRevision::Missing, |metadata| {
+            FileRevision::of(&metadata)
+        });
+        let previous = self
+            .revisions
+            .entry(path.to_owned())
+            .or_insert(FileRevision::Missing);
+        match transcript::record_change(previous, &revision) {
+            RecordChange::Unchanged => {
+                read.bytes_read = 0;
+                return read.clone();
+            },
+            RecordChange::Replaced => *read = RolloutRead::default(),
+            RecordChange::Appended => {},
+        }
+        *previous = revision;
+        #[cfg(test)]
+        {
+            self.content_reads += 1;
+        }
         read.advance(path);
         startup_log::startup_event(&format!("rollout_bytes_read {}", read.bytes_read()));
         read.clone()
     }
 
     /// Detail already read for a live thread, without reopening its rollout.
-    pub(super) fn thread(&self, id: &str) -> Option<&RolloutRead> {
-        self.threads.get(id).and_then(|path| self.reads.get(path))
+    pub(super) fn thread(&self, id: &str) -> ThreadRollout<'_> {
+        self.threads
+            .get(id)
+            .and_then(|path| self.reads.get(path))
+            .map_or(ThreadRollout::NotRetained, ThreadRollout::Retained)
     }
 
     /// Forget every rollout not read since the last call, as a scan
     /// ends.
     pub(super) fn forget_unread(&mut self) {
         let current = std::mem::take(&mut self.current);
+        self.models.retain(&current);
         self.reads.retain(|path, _| current.contains(path));
+        self.revisions.retain(|path, _| current.contains(path));
         self.threads.retain(|_, path| current.contains(path));
     }
+}
+
+/// `ThreadRollout` distinguishes missing retention from a retained record with missing values.
+pub(super) enum ThreadRollout<'a> {
+    NotRetained,
+    Retained(&'a RolloutRead),
 }
 
 /// Each change of the tier the codex-pacer launches threads at, oldest
@@ -538,6 +591,89 @@ mod tests {
             .iter()
             .map(|argument| (*argument).to_string())
             .collect()
+    }
+
+    #[test]
+    fn codex_turn_context_keeps_model_and_effort_across_appends_and_replacement() {
+        use crate::census::model::ModelName;
+        use crate::census::model::ReasoningEffort;
+        let directory = TempDir::new().expect("rollout directory");
+        let path = directory.path().join("rollout.jsonl");
+        append(
+            &path,
+            &[
+                META,
+                r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"high"}}"#,
+            ],
+        );
+        let mut rollouts = Rollouts::default();
+        let first = rollouts.read_model(&path);
+        assert_eq!(first.model, ModelName::Sol);
+        assert_eq!(first.effort, ReasoningEffort::High);
+        append(
+            &path,
+            &[r#"{"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"xhigh"}}"#],
+        );
+        let changed = rollouts.read_model(&path);
+        assert_eq!(changed.model, ModelName::Astra);
+        assert_eq!(changed.effort, ReasoningEffort::XHigh);
+        let replacement = directory.path().join("replacement.jsonl");
+        append(
+            &replacement,
+            &[
+                META,
+                r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#,
+            ],
+        );
+        fs::rename(replacement, &path).expect("rollout replacement");
+        let replaced = rollouts.read_model(&path);
+        assert_eq!(replaced.model, ModelName::Sol);
+        assert_eq!(replaced.effort, ReasoningEffort::Unrecorded);
+    }
+
+    #[test]
+    fn long_rollouts_keep_model_context_before_the_initial_tail() {
+        let directory = TempDir::new().expect("rollout directory");
+        let path = directory.path().join("rollout.jsonl");
+        let task =
+            r#"{"type":"response_item","payload":{"role":"user","content":[{"text":"own task"}]}}"#;
+        append(
+            &path,
+            &[
+                META,
+                task,
+                r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"high"}}"#,
+            ],
+        );
+        let padding = "x".repeat(usize::try_from(TRANSCRIPT_TAIL_START).expect("tail length") * 4);
+        append(
+            &path,
+            &[
+                &serde_json::json!({"type":"response_item","payload":{
+            "role":"assistant","content":[{"text":padding}]}})
+                .to_string(),
+                task,
+                &settings("null"),
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            ],
+        );
+        let read = Rollouts::default().read_model(&path);
+        assert_eq!(read.model, crate::census::model::ModelName::Sol);
+        assert_eq!(read.effort, crate::census::model::ReasoningEffort::High);
+    }
+
+    #[test]
+    fn unchanged_codex_rollouts_do_not_read_content_again() {
+        let directory = TempDir::new().expect("rollout directory");
+        let path = directory.path().join("rollout.jsonl");
+        append(&path, &[META]);
+        let mut rollouts = Rollouts::default();
+        rollouts.read_model(&path);
+        assert_eq!(rollouts.content_reads, 1);
+        assert_eq!(rollouts.models.content_reads(), 1);
+        rollouts.read_model(&path);
+        assert_eq!(rollouts.content_reads, 1);
+        assert_eq!(rollouts.models.content_reads(), 1);
     }
 
     /// The last event wins, `priority` is fast, `default` and null are
@@ -717,16 +853,15 @@ mod tests {
         );
         let mut rollouts = Rollouts::default();
         rollouts.read(&path);
-        assert_eq!(
-            rollouts.thread(id).map(RolloutRead::activity),
-            Some(AgentActivity::Active(
-                super::super::activity::Activity::Thinking
-            ))
-        );
-        assert!(rollouts.thread("prefix").is_none());
+        assert!(matches!(rollouts.thread(id), ThreadRollout::Retained(read)
+            if read.activity() == AgentActivity::Active(super::super::activity::Activity::Thinking)));
+        assert!(matches!(
+            rollouts.thread("prefix"),
+            ThreadRollout::NotRetained
+        ));
         rollouts.forget_unread();
         rollouts.forget_unread();
-        assert!(rollouts.thread(id).is_none());
+        assert!(matches!(rollouts.thread(id), ThreadRollout::NotRetained));
     }
 
     #[test]

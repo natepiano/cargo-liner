@@ -17,6 +17,8 @@
 pub(crate) mod account;
 pub(crate) mod accounts;
 pub(crate) mod activity;
+#[cfg(test)]
+mod astra_role_tests;
 mod branch;
 #[cfg(test)]
 mod catch_up_hierarchy_tests;
@@ -30,6 +32,7 @@ mod herdr;
 pub(crate) mod hierarchy;
 #[cfg(test)]
 mod incremental_read_tests;
+pub(crate) mod model;
 #[cfg(test)]
 mod pane_worker_placement_tests;
 mod placement;
@@ -65,9 +68,12 @@ pub(crate) use activity::AgentActivity;
 pub(crate) use activity::RunLocation;
 #[cfg(test)]
 pub(crate) use activity::VerifyStep;
+pub(crate) use herdr::PaneWork;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
+use model::ModelName;
+use model::ReasoningEffort;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
@@ -80,6 +86,7 @@ pub(crate) use placement::mesh_worker_fixture;
 use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
+pub(crate) use session_identity::AstraSessionMembership;
 pub(crate) use session_identity::ProvenCodexThread;
 pub(crate) use session_identity::SessionIdentity;
 use sysinfo::System;
@@ -190,6 +197,12 @@ pub(crate) enum HierarchyRole {
     Review,
     /// Repairs a defect.
     Fix,
+    /// Designs for a manager through Astra.
+    #[serde(rename = "astra-designer")]
+    AstraDesigner,
+    /// Reviews for a manager through Astra.
+    #[serde(rename = "astra-reviewer")]
+    AstraReviewer,
 }
 
 impl HierarchyRole {
@@ -204,6 +217,8 @@ impl HierarchyRole {
             Self::Test => "test",
             Self::Review => "review",
             Self::Fix => "fix",
+            Self::AstraDesigner => "astra designer",
+            Self::AstraReviewer => "astra reviewer",
         }
     }
 }
@@ -320,6 +335,10 @@ pub(crate) enum StaffRowName {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "probe::ProbeAgentRow")]
 pub(crate) struct AgentRow {
+    #[serde(skip_serializing_if = "ModelName::is_unrecorded")]
+    pub(crate) model:           ModelName,
+    #[serde(skip_serializing_if = "ReasoningEffort::is_unrecorded")]
+    pub(crate) effort:          ReasoningEffort,
     /// Claude Code, Codex, or an app server retained only for worker placement.
     pub(crate) agent:           Agent,
     /// The proven identity; Codex uses a defaulted probe extension.
@@ -448,6 +467,8 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "probe::ProbeChildRow", into = "probe::ProbeChildRow")]
 pub(crate) struct ChildRow {
+    pub(crate) model:        ModelName,
+    pub(crate) effort:       ReasoningEffort,
     /// Task naming survives placement so the final hierarchy role supplies its label.
     pub(crate) work_id:      WorkIdentity,
     pub(crate) worker_task:  WorkerTask,
@@ -732,6 +753,8 @@ mod tests {
     /// A claude row started at `started`.
     fn row(started: u64) -> AgentRow {
         AgentRow {
+            model: crate::census::model::ModelName::Unrecorded,
+            effort: crate::census::model::ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,

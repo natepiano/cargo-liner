@@ -284,6 +284,16 @@ impl CommandText {
     /// Parsed argument units in their original argv order.
     pub(crate) fn words(&self) -> &[CommandWord] { &self.words }
 
+    /// `named_words` exposes the parsed command names and toolchain selectors in argv order.
+    pub(crate) fn named_words(&self) -> impl Iterator<Item = &CommandWord> {
+        self.words.iter().filter(|word| {
+            matches!(
+                word.kind,
+                CommandWordKind::Name(_) | CommandWordKind::Selector(_)
+            )
+        })
+    }
+
     /// Both default text and wrapping select the same parsed units.
     pub(crate) fn selected_words<'a>(
         &'a self,
@@ -361,16 +371,12 @@ impl CommandText {
     /// than an argument to it -- `+nightly fmt` says something `fmt`
     /// alone does not.
     pub(crate) fn named(&self) -> CommandName {
-        let mut kept = Vec::new();
-        let mut omission = ArgumentOmission::Kept;
-        for word in &self.words {
-            match &word.kind {
-                CommandWordKind::Name(name) | CommandWordKind::Selector(name) => {
-                    kept.push(name.as_str());
-                },
-                _ => omission = ArgumentOmission::Dropped,
-            }
-        }
+        let kept: Vec<_> = self.named_words().map(CommandWord::text).collect();
+        let omission = if kept.len() == self.words.len() {
+            ArgumentOmission::Kept
+        } else {
+            ArgumentOmission::Dropped
+        };
         CommandName {
             words:     kept.join(COMMAND_WORD_SEPARATOR),
             arguments: omission,

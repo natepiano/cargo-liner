@@ -34,6 +34,8 @@ use crate::census::WorkIdentity;
 use crate::census::account::AccountLabels;
 use crate::census::account::ConfigHome;
 use crate::census::hierarchy::StaffFileReader;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::schedule;
 use crate::census::worker_dispatch::WorkerDispatch;
 use crate::census::worker_dispatch::WorkerTask;
@@ -41,6 +43,8 @@ use crate::census::worker_dispatch::WorkerTask;
 /// The shell detail attached after classification is published.
 fn staged_child() -> ChildRow {
     ChildRow {
+        model:        ModelName::Unrecorded,
+        effort:       ReasoningEffort::Unrecorded,
         worker_task:  WorkerTask::Unrecorded,
         thread_id:    CodexThreadId::Unrecorded,
         dispatch:     WorkerDispatch::Plain,
@@ -58,6 +62,8 @@ fn staged_child() -> ChildRow {
 
 fn staged_agent() -> AgentRow {
     AgentRow {
+        model:           ModelName::Unrecorded,
+        effort:          ReasoningEffort::Unrecorded,
         staff_names:     StaffRowNames::default(),
         role_fallback:   RoleFallback::None,
         session_id:      SessionIdentity::Claude("abcd1234".to_string()),

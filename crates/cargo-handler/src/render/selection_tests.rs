@@ -9,15 +9,20 @@ use crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+use tui_pane::ExpansionAction;
 use tui_pane::PaneFocusState;
 use tui_pane::ScrollDirection;
 use tui_pane::TerminalApp;
 
 use super::*;
+use crate::app::expansion;
+use crate::app::expansion::HandlerExpansionAction;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
+use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
+use crate::census::HierarchyRole;
 use crate::census::ShellTimerObservation;
 use crate::census::Timer;
 use crate::census::accounts::AccountsReading;
@@ -706,4 +711,132 @@ fn a_pidless_shell_keeps_selection_when_its_timer_changes_and_a_neighbor_leaves(
     }));
     apply_rows(&mut app, vec![owner]);
     assert_selected(&paint(&mut app), "selected-pidless-shell");
+}
+
+pub(super) fn astra_rows(work: &str, manager: &str) -> (Vec<AgentRow>, HierarchyEdges) {
+    let mut rows = vec![
+        session(10, "astra-boss"),
+        session(20, "astra-unit"),
+        with_shell(session(50, "astra-focus-away")),
+    ];
+    for (pid, label, role) in [
+        (30, "designer-session", "astra-designer"),
+        (40, "reviewer-session", "astra-reviewer"),
+    ] {
+        rows.push(serde_json::from_value(serde_json::json!({
+            "agent":"codex","pid":pid,"name":label,"started":100,"process_started":100,"directory":"/fixture","children":[],
+            "codex_session":{"resume_argument":format!("astra-thread-{pid}")},
+            "model":"astra","effort":"high","activity":if work=="idle" {serde_json::json!("idle")} else {serde_json::json!({"active":"thinking"})},
+            "astra_member":{"staff_id":role,"session":format!("astra-thread-{pid}"),"home":"/fixture/codex1","account":"codex1","role":role,"work":work}
+        })).expect("checked Astra row"));
+    }
+    let edges = serde_json::from_value(serde_json::json!([
+        {"manager":"session-10","member":"session-20","role":"unit"},
+        {"manager":manager,"member":"astra-thread-30","role":"astra-designer"},
+        {"manager":"session-10","member":"astra-thread-40","role":"astra-reviewer"}
+    ]))
+    .expect("Astra hierarchy");
+    (rows, edges)
+}
+
+pub(super) fn astra_application() -> App {
+    let (rows, edges) = astra_rows("busy", "session-20");
+    let mut app = application(rows.clone());
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: edges.into(),
+        stage: ScanStage::Completed,
+    });
+    expansion::dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
+    app
+}
+
+#[test]
+fn astra_selection_survives_work_updates_and_manager_placement() {
+    let mut app = astra_application();
+    for target in ["designer-session", "reviewer-session"] {
+        let before = paint(&mut app);
+        app.click(locate(&before, target));
+        assert_selected(&paint(&mut app), target);
+        for (work, manager) in [
+            ("idle", "session-20"),
+            ("busy", "session-10"),
+            ("idle", "session-20"),
+        ] {
+            let (rows, edges) = astra_rows(work, manager);
+            app.census.apply(CensusUpdate::Local {
+                rows,
+                hierarchy: edges.into(),
+                stage: ScanStage::Completed,
+            });
+            assert_selected(&paint(&mut app), target);
+        }
+    }
+}
+
+#[test]
+fn astra_guild_heads_keep_unit_roles_and_the_designer_keeps_its_real_manager() {
+    let mut app = astra_application();
+    let (mut rows, mut edges) = astra_rows("idle", "session-20");
+    for (pid, name) in [
+        (60, "designers"),
+        (70, "reviewers"),
+        (80, "showrunners"),
+        (90, "units"),
+    ] {
+        rows.push(session(pid, name));
+        edges.0.push(HierarchyEdge {
+            manager: "session-10".into(),
+            member:  format!("session-{pid}"),
+            role:    HierarchyRole::Unit,
+        });
+    }
+    rows[0].name = "guilds".into();
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: edges.into(),
+        stage: ScanStage::Completed,
+    });
+    let buffer = paint(&mut app);
+    for name in ["designers", "reviewers", "showrunners", "units"] {
+        let at = locate(&buffer, name);
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, at.y)].symbol())
+            .collect();
+        assert!(line.contains("unit"), "{name}: {line}");
+    }
+    let at = locate(&buffer, "designer-session");
+    let line: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, at.y)].symbol())
+        .collect();
+    assert!(line.contains("astra designer"));
+    assert!(locate(&buffer, "astra-unit").y < at.y);
+}
+
+pub(super) fn complete_astra_frame(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
+    use tui_pane::TerminalApp;
+    let mut app = App::new_for_test().expect("Astra test app");
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: edges.into(),
+        stage: crate::census::scan::ScanStage::Completed,
+    });
+    expansion::dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(220, 60))
+        .expect("Astra test terminal");
+    let keymap = app.keymap();
+    terminal
+        .draw(|frame| draw_at_for_test(frame, &mut app, &keymap, 1000))
+        .expect("Astra first frame");
+    app.tiles.settle_for_test();
+    terminal
+        .draw(|frame| draw_at_for_test(frame, &mut app, &keymap, 1000))
+        .expect("Astra settled frame");
+    terminal.backend().buffer().clone()
 }

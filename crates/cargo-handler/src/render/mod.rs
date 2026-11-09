@@ -97,6 +97,11 @@ pub(crate) use painted_surface::PaintedSurface;
 use painted_surface::PaintedSurfaceContent;
 pub(crate) use painted_surface::cell_clicked;
 
+#[cfg(test)]
+use crate::census::AgentRow;
+#[cfg(test)]
+use crate::census::HierarchyEdges;
+
 /// Draw one frame: the grid fills the body above the status line, and
 /// toasts are drawn inside the grid's outer frame. The favorites modal
 /// and any framework overlay float above both.
@@ -137,11 +142,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// Paint the production grid with one controlled frame clock.
 #[cfg(test)]
 pub(crate) fn draw_at_for_test(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>, now: u64) {
+    const FIXED_UPTIME_SECS: u64 = 0;
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
     draw_panes_at(frame, app, body, TileGridContents::Shown, now);
-    draw_status_line(frame, app, keymap, status);
+    draw_status_line_at(frame, app, keymap, status, FIXED_UPTIME_SECS);
 }
 
 /// Draw the tile grid into the body above the status line.
@@ -1010,6 +1016,16 @@ impl TileCells<TileKey> for Cells<'_> {
 /// The status line: the app's name and version, `attract` while the
 /// attract screen was asked for, the uptime, and the `?` shortcut.
 pub(crate) fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
+    draw_status_line_at(frame, app, keymap, area, app.started.elapsed().as_secs());
+}
+
+fn draw_status_line_at(
+    frame: &mut Frame,
+    app: &App,
+    keymap: &Keymap<App>,
+    area: Rect,
+    uptime_secs: u64,
+) {
     let globals = [StatusLineGlobal::global_shortcuts_help()];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
@@ -1020,12 +1036,7 @@ pub(crate) fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App
     if app.attract.asked_for() {
         notes.push(StatusLineNote::flag(ATTRACT_NOTE_LABEL));
     }
-    let status = StatusLine::new(
-        app.started.elapsed().as_secs(),
-        ScanIndicator::Hidden,
-        &notes,
-        &globals,
-    );
+    let status = StatusLine::new(uptime_secs, ScanIndicator::Hidden, &notes, &globals);
     render_status_line::<App, AppGlobalAction>(
         frame,
         area,
@@ -1089,6 +1100,8 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::WorkIdentity;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
@@ -1667,6 +1680,8 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             activity: AgentActivity::Idle,
@@ -1681,6 +1696,8 @@ fraying = "leading"
             work_id: WorkIdentity::Legacy,
         };
         AgentRow {
+            model:           ModelName::Unrecorded,
+            effort:          ReasoningEffort::Unrecorded,
             staff_names:     StaffRowNames::default(),
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
@@ -2356,3 +2373,12 @@ mod word_contrast_tests;
 #[cfg(test)]
 #[path = "drawn_frame_tests.rs"]
 mod drawn_frame_tests;
+
+#[cfg(test)]
+mod layout_stability_tests;
+
+/// Draw the complete frame for census placement tests, including tile titles.
+#[cfg(test)]
+pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
+    selection_tests::complete_astra_frame(rows, edges)
+}

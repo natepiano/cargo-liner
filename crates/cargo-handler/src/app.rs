@@ -663,7 +663,8 @@ mod tests {
     fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
         let mut app = wheel_test_app_with_agents();
         let keymap = std::rc::Rc::clone(&app.keymap);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16))
+        // Keep every scroll redraw in a smaller composed grid.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10))
             .expect("test terminal");
         draw_settled_wheel_frame(&mut app, &mut terminal);
         let summary = SelectionSurface::Summary;

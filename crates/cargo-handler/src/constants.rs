@@ -98,6 +98,10 @@ pub(crate) const TREE_AGE_HEADER: &str = "age";
 pub(crate) const TREE_BRANCH_HEADER: &str = "branch";
 /// The directory column of an agent tile tree.
 pub(crate) const TREE_DIRECTORY_HEADER: &str = "directory";
+/// The effort column of an agent tile tree.
+pub(crate) const TREE_EFFORT_HEADER: &str = "effort";
+/// The model column of an agent tile tree.
+pub(crate) const TREE_MODEL_HEADER: &str = "model";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
 /// The work type column of an agent tile tree.
