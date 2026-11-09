@@ -794,58 +794,27 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: done
 
-**Depends on:** Phase 4r and Phase 4q (it runs after both; it edits `crates/cargo-port/src/` and `crates/cargo-port/CHANGELOG.md`, as 4q does).
+#### As-built
 
-#### Work Order
+At 80 and 95 columns the Targets `Source` header draws whole while a target name cuts. Every Package `—` draws in `dim_value_color()`. The startup popup page footer meets 4.5:1 in every registered cargo-port theme.
 
-**Goal:** at 80 and 95 columns no label, title or number is cut, every empty value draws in one dim colour, the startup popup footer meets 4.5:1, and no theme test can leak its theme into another test.
-
-**Source:** Phase 4o final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4o/live/shots_4o_4/`, 2026-11-09. Each look is older than Phase 4o or was outside its scope.
-- `long95-*`: the Targets `Source` header cuts to `Sour…`/`So…` while target names (`proof_crate`, `cargo-handler`) stay whole.
-- `quota80-*`: a cut ahead/behind value cuts inside a number: `↑1 ↓1…` for `↑1 ↓17`.
-- The Startup popup page footer `1 of 3 ▼` is #7f7f7f on #1e1e1e, 4.16:1.
-- One Package pane: the Lint `—` draws dim, the License and Homepage `—` draw in the value colour.
-- The Workspace pane title cuts to `Workspace - …` at 80 columns.
-- Git `Core 49…` and `GraphQL 48…` cut the rate value inline at 80 columns.
-- The theme-override tests outside Phase 4o restore the theme by hand, so a failed assert skips the restore.
-
-**Decision:** showrunner, 2026-11-09: items 1-3 and 5-8 of the 4o add-ons are current, as this phase after 4r and 4q. Item 4 (a first-paint capture) went to `cargo-liner-port-next.md`.
-
-**Constraints:**
-- Change no other look. Keep the look at widths where nothing is cut now.
-- Never cut a label. Cut a value, a name or a message first.
-- Colours come from the theme, not from code.
-
-**Spec:**
-1. **Theme fixture.** Move every test that overrides the theme to the Phase 4o `Drop` fixture (`tui/test_support/readability.rs`): `tui/settings_readability_tests.rs`, `tui/sccache/readability_tests.rs`, `tui/render/status_bar_contrast_tests.rs`, `tui/panes/cpu/render.rs`, `tui/panes/cpu/pane.rs`, `tui/app/mod.rs`. No test restores a theme by hand.
-2. **Source header.** In the Targets table (`panes/targets/render.rs::render_targets_table`), cut a target name before the `Source` header. `Source` draws whole while a name can give a cell.
-3. **No cut inside a number.** A cut ahead/behind value (`pane_data/formatting.rs::format_ahead_behind`, `format_sync`) drops whole tokens: `↑1 ↓17` cuts to `↑1…`, never `↑1 ↓1…`.
-4. **Startup popup footer.** The startup popup is a `tui_pane` toast card; its page footer (`1 of 3 ▼`) is drawn in `crates/tui_pane/src/toasts/render/`. Draw it in a theme colour with at least 4.5:1 on the popup background in every registered cargo-port theme.
-5. **One dim colour for empty values.** Every `—` placeholder in the Package pane (`panes/package/render.rs`), License and Homepage included, uses the Phase 4o dim value role (`dim_value_color()`).
-6. **Workspace title.** `panes/package/render.rs::fit_package_title` never leaves ` - ` before `…`: it keeps the whole label, or the label, the separator and at least one letter of the name.
-7. **Rate values.** Git `Core` and `GraphQL` rate rows (`pane_data/detail_field.rs` `RateLimitCore`/`RateLimitGraphQl`, drawn in `panes/git/render.rs`) stack the value under the label when it does not fit inline. Where it fits inline now, the look stays.
-8. **Changelog.** Add the cargo-port entries.
-
-**Constraints from prior phases:**
-- Keep the Phase 4o rules: no space or ` ·` before `…` (`render::truncate_with_ellipsis`); the five-cell Main reserve (`MAIN_COMPARISON_VALUE_RESERVE`); the `Projects` header on the name start cell; a cut name keeps one letter; Git labels keep both margins when they fit; `Tracked` whole at 95 (Git pane 23 cells); dim value contrast is measured on focused and unfocused pane backgrounds.
-- Keep these rules from Phases 4l, 4m and 4n: a loading Git section draws no count; the Structure width reserve keeps the right-margin cell and the blank cell before the divider; the Package and Git readability tests stay green; the description states, `RepositoryProbe::NoRepository`, the fixed Structure width and the cut-title rule stay as built; the Targets preferred width, the cut-title gap and the opt-in footer fit stay as built. Targets Source values shrink before a target name is cut; Spec 2 changes only the `Source` header.
-- Keep the Phase 4p memory bounds and their tests green.
-- New drawing tests set `ColorMode` explicitly and build one App per test. Name each test for the behavior it pins.
+- A cut ahead/behind value drops whole tokens: `↑1 ↓17` cuts to `↑1…`.
+- `fit_package_title` keeps the whole label, or the label, the separator and at least one letter of the name.
+- `fit_rate_limit_value` returns `RateLimitValue::{Inline, Stacked}`. It keeps seconds only when the widest seconds form fits inline, otherwise it shows whole minutes, and under one minute it shows seconds. It drops the reset only when the reset does not fit `area_width - 2`.
+- Every test that overrides the theme uses the `ThemeOverride` Drop fixture.
 
 **Files:**
-- `crates/cargo-port/src/tui/test_support/readability.rs`, `crates/cargo-port/src/tui/settings_readability_tests.rs`, `crates/cargo-port/src/tui/sccache/readability_tests.rs`, `crates/cargo-port/src/tui/render/status_bar_contrast_tests.rs`, `crates/cargo-port/src/tui/panes/cpu/render.rs`, `crates/cargo-port/src/tui/panes/cpu/pane.rs` and `crates/cargo-port/src/tui/app/mod.rs` — Spec 1
-- `crates/cargo-port/src/tui/panes/targets/` — Spec 2
-- `crates/cargo-port/src/tui/panes/pane_data/` — Specs 3 and 7
-- `crates/tui_pane/src/toasts/render/`, `crates/cargo-port/src/tui/theme_roles.rs` and `crates/tui_pane/CHANGELOG.md` — Spec 4
-- `crates/cargo-port/src/tui/panes/package/` — Specs 5 and 6
-- `crates/cargo-port/src/tui/panes/git/` — Spec 7
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/tui/panes/git/render.rs` — `RateLimitValue`, `fit_rate_limit_value`
+- `crates/cargo-port/src/tui/panes/pane_data/formatting.rs` — whole-token ahead/behind fit
+- `crates/cargo-port/src/tui/panes/package/render.rs` — dim placeholders, `fit_package_title`
+- `crates/cargo-port/src/tui/panes/targets/render.rs` — `Source` header priority over names
+- `crates/tui_pane/src/toasts/render/card.rs` — toast page footer colour
+- `crates/cargo-port/src/tui/theme_roles.rs` — `startup_page_footer_meets_contrast_in_every_registered_theme`
+- `crates/cargo-port/src/tui/test_support/readability.rs` — `ThemeOverride`
 
-**Workers:** 1 writer: Specs 1-8 and their tests.
+**Gotchas:** A rate row shape must not change as the countdown runs, so precision and shape are selected in one function.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean (lint covers the whole workspace); no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** A rate value cut inline at 80 columns, because the value stacks under its label instead.
 
 ### Phase 4v — Returned narrow-width, border and lint column fixes  · status: todo
 
@@ -873,27 +842,68 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 
 **Spec:**
 1. **Project list columns.** At 60 columns a name gets `…` before Type, Git, Sync or Main drops (`tui/columns/`, `tui/panes/project_list/`).
-2. **Package and Git.** At 80 columns no Package label or pane title is cut. With 13 worktrees the Git list area keeps more than one row, and the divider carries `Worktrees (N)` (`tui/panes/package/`, `tui/panes/git/`).
-3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`).
+2. **Package and Git.** At 80 columns no Package label or pane title is cut. With 13 worktrees the Git list area keeps more than one row, and the divider carries `Worktrees (N)` (`tui/panes/package/`, `tui/panes/git/`). `git_lower_content_height` (`panes/git/render.rs`) omits the stacked rate rows, and `pane_data/detail_data.rs` shares that estimate: count those rows in both. Replace the two `Option<Rect>` fields of `GitAboutLayout` with a named type for its three outcomes: no description, a description with no separator space, and a description with a separator. Convert at the drawing and viewport boundaries.
+3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`). `PopupFrame::render` in `tui_pane/src/pane/popup.rs` selects the border, and the shared tests require a plain coloured border. Add a named border policy that Sccache selects. Every other popup keeps its border.
 4. **Lint Runs.** At 60, 80 and 160 columns no Lint Runs header or date is cut inside a word (`tui/panes/lints/render.rs`).
 5. **CI runs.** At 80 columns under NO_COLOR, outside branch mode, the CI runs table shows a Total column (`tui/panes/ci/`).
-6. **Popup title.** At 80 columns the popup title `crates.io unreachable` draws whole. Keep `[x]` and the card border. A longer title still cuts with `…`. (`crates/tui_pane/src/toasts/render/card.rs`).
+6. **Popup title.** At 80 columns the popup title `crates.io unreachable` draws whole. Keep `[x]` and the card border. A longer title still cuts with `…`. (`crates/tui_pane/src/toasts/render/card.rs`). `toasts/render/drawing.rs` caps the card width before `card.rs` fits the title, so the fix covers that width too. Extend `an_error_title_grows_before_it_uses_an_ellipsis` (`toasts/render/repair_tests.rs`, now a 32-cell area) with the recorded 29-cell layout, a whole title and a working close hit area.
 7. **Changelog.** Add the cargo-port and `tui_pane` entries.
+
+**Constraints from prior phases:**
+- Keep the Phase 4s rules: the Targets `Source` header draws whole before a name cuts; a cut ahead/behind value drops whole tokens; every Package `—` uses `dim_value_color()`; `fit_package_title` never leaves ` - ` before `…`.
+- A Git `Core` or `GraphQL` value that does not fit inline takes two rows. `fit_rate_limit_value` keeps the row shape steady as the reset counts down.
+- A new test that overrides the theme uses the `ThemeOverride` fixture (`tui/test_support/readability.rs`).
+- Keep `startup_page_footer_meets_contrast_in_every_registered_theme` (`tui/theme_roles.rs`) green: Spec 6 edits the file that draws the footer.
 
 **Files:**
 - `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
-- `crates/cargo-port/src/tui/panes/package/` and `crates/cargo-port/src/tui/panes/git/` — Spec 2
-- `crates/cargo-port/src/tui/sccache/render.rs` — Spec 3
+- `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/panes/pane_data/detail_data.rs` and `crates/cargo-port/src/tui/render/readability_tests.rs` — Spec 2
+- `crates/cargo-port/src/tui/sccache/render.rs` and `crates/tui_pane/src/pane/popup.rs` — Spec 3
 - `crates/cargo-port/src/tui/panes/lints/render.rs` — Spec 4
 - `crates/cargo-port/src/tui/panes/ci/` — Spec 5
-- `crates/tui_pane/src/toasts/render/card.rs` and `crates/tui_pane/CHANGELOG.md` — Spec 6
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` and `crates/tui_pane/src/toasts/render/repair_tests.rs` — Spec 6
+- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 7
 
-**Workers:** 1 writer: Specs 1-7 and their tests.
+**Workers:** 2 writers.
+- Slot 1: Specs 1, 2, 4 and 5, their tests and `crates/cargo-port/CHANGELOG.md`, with the Spec 3 line.
+- Slot 2: Specs 3 and 6, their tests and `crates/tui_pane/CHANGELOG.md`.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the six defects at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the six defects at the width that showed it. The Git test uses 13 worktrees, stacked rate rows and a description, and it scrolls. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
+
+### Phase 4w — Targets lists a binary whose name differs from its package  · status: todo
+
+**Depends on:** Phase 4s (it edits `crates/cargo-port/src/tui/panes/targets/`).
+
+#### Work Order
+
+**Goal:** a package whose binary has a different name from the package lists that binary in Targets and does not show `No Targets`.
+
+**Source:** live capture for Phase 4s, 2026-11-09. `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists a `TargetKind::Bin` only when `target.name == record.name`, and `primary_binary_matches_package_name_only` asserts that rule. A package with only a differently named `[[bin]]` shows `No Targets` and has a runnable binary.
+
+**Decision:** showrunner, 2026-11-09: this phase runs with its own selection-rule design.
+
+**Constraints:**
+- A package with one binary named for the package keeps its present row and launch.
+- Do not change how examples and benches are listed.
+- `primary_binary_matches_package_name_only` changes only as the approved rule states, with an `Assertion-Change:` line.
+
+**Spec:**
+1. **Selection rule.** Before any code, the unit director writes the rule and sends it to the showrunner. The rule covers a package with several binaries, `default-run`, a workspace member and a workspace root. Build only the approved rule.
+2. **Listing.** `TargetsData::from_workspace_metadata` lists the binaries that the approved rule selects.
+3. **Launch.** Each listed binary launches its own target (`--bin <name>` with its package).
+4. **Changelog.** Add the cargo-port entry.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/targets/` — Specs 2 and 3
+- `crates/cargo-port/CHANGELOG.md` — Spec 4
+
+**Workers:** 1 writer: Specs 2-4 and their tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Metadata and drawing tests show the selected binaries in place of `No Targets`. A launch test selects the correct target. A live capture of a package with a differently named `[[bin]]`, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
