@@ -1174,32 +1174,16 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 ### Phase 75 — The nested Astra reviewer test finishes in under a second  · status: done
 
-**Depends on:** Phase 72 checkpoint. `census/astra_role_tests.rs` is outside every open phase; a fix in `census/scan.rs` waits for Phase 72.
+#### As-built
 
-#### Work Order
-
-**Goal:** `census::astra_role_tests::astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing` takes well under 1 s on every run, with its asserts unchanged.
-
-**Source:** the showrunner, 2026-11-08: "Add a new handler phase after 72 for astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing (1.154 s), as for 73 and 74."
-
-**Constraints:**
-- The test took 1.154 s in the cargo-handler package run at the Phase 70 checkpoint (1178 tests). Every other test stayed under 0.4 s.
-- The test builds a new `AstraFixture` four times (`missing` in `none`, `home`, `role`, `both`) and scans once each through `LocalScanner::scan_astra_for_test`. `AstraFixture::new` builds its `LocalScanner` with no `with_herdr_probe_wait`; `astra_staff_membership_does_not_depend_on_the_name_wait` sets it to 0. Measure where the time goes before a change.
-- Remove the wall-clock cost at its source (a wait, a poll, a spawn, repeated setup). Do not raise a timeout and do not split the cases out to hide the time.
-- Keep every assert and all four cases. No new check of your own design.
-
-**Spec:**
-1. Name the cost in the summary, with its measured time before and after.
-2. Remove it in the test fixture, or in the scanner when a test-only wait is the cause.
-3. The test takes under 0.1 s alone and stays under 1 s in the package gate.
+- `AstraFixture::new` sets `PRAGMA synchronous=OFF` on its temporary SQLite database before it creates the threads table. `astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing` takes 0.034 s alone (0.061 s before); its four cases and every assert are unchanged.
 
 **Files:**
-- `crates/cargo-handler/src/census/astra_role_tests.rs` — the fixture and the test
-- `crates/cargo-handler/src/census/scan.rs` — only if the cost is in `scan_astra_for_test` or a wait it reaches; name it in the summary before the edit
+- `crates/cargo-handler/src/census/astra_role_tests.rs` — the Astra role fixture and tests
 
-**Workers:** 1 writer. It owns the listed test and fixture.
+**Gotchas:** SQLite setup was the cost: 90.7 ms over four fixtures, against 6.6 ms of scanning. Durability waits under load pushed the test to 1.154 s in the package run; the herdr name wait had no part in it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
+**Ruled out:** a longer timeout, or the four cases split into separate tests.
 
 ### Phase 74 — The model-read transcript test finishes in under a second  · status: done
 
