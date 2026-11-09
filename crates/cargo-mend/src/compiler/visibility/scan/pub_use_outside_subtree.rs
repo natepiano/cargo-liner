@@ -16,6 +16,7 @@ use super::FindingParams;
 use super::subtree_reexport_fix;
 use super::subtree_reexport_fix::PathWalk;
 use super::subtree_reexport_fix::SubtreeReexport;
+use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::visibility::source;
 use crate::config::DiagnosticCode;
@@ -23,10 +24,6 @@ use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::PUB_USE_OUTSIDE_SUBTREE_HELP;
 use crate::reporting::Severity;
-
-/// The module a crate prelude re-exports its parent's items from. `pub use
-/// super::Item` there is the prelude's whole purpose, not a sideways facade.
-const PRELUDE_MODULE_NAME: &str = "prelude";
 
 /// The last local module a re-export's path enters, and whether the walk
 /// reached it through module segments only.
