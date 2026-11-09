@@ -752,7 +752,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a Sync-column reserve (it moved the Main header and cut tree names to no letters at 80 columns).
 
-### Phase 4r — mend --fix keeps the tui_pane tiles re-exports and writes no empty use  · status: todo
+### Phase 4r — mend --fix keeps the tui_pane tiles re-exports and writes no empty use  · status: done
 
 **Depends on:** Phase 4o (it runs next; mend phases take priority over 4q). Phase 4q starts after this phase.
 
