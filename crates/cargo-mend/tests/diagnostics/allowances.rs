@@ -168,8 +168,16 @@ fn stored_reach_boundary(stored_reach: &Value) -> Option<&str> {
     }
 }
 
-fn constraint_has_requirement(constraint: &Value, boundary: &str) -> bool {
-    constraint
+/// `RequirementMatch` is `Matching` when `constraint_has_requirement` finds a stored
+/// signature or facade requirement at the requested boundary, and `Different` otherwise.
+#[derive(Debug, PartialEq, Eq)]
+enum RequirementMatch {
+    Matching,
+    Different,
+}
+
+fn constraint_has_requirement(constraint: &Value, boundary: &str) -> RequirementMatch {
+    if constraint
         .get("signature_requirement")
         .and_then(stored_reach_boundary)
         == Some(boundary)
@@ -178,6 +186,19 @@ fn constraint_has_requirement(constraint: &Value, boundary: &str) -> bool {
             .and_then(|facade| facade.get("required"))
             .and_then(stored_reach_boundary)
             == Some(boundary)
+    {
+        RequirementMatch::Matching
+    } else {
+        RequirementMatch::Different
+    }
+}
+
+/// `ConstraintLocationMatch` is `Matching` when `constraint_matches_location` finds
+/// the diagnostic code, source-path suffix and line all match, and `Different` otherwise.
+#[derive(Debug, PartialEq, Eq)]
+enum ConstraintLocationMatch {
+    Matching,
+    Different,
 }
 
 fn constraint_matches_location(
@@ -185,8 +206,8 @@ fn constraint_matches_location(
     diagnostic_code: &str,
     finding_path: &str,
     finding_line: u64,
-) -> bool {
-    constraint.get("diagnostic_code").and_then(Value::as_str) == Some(diagnostic_code)
+) -> ConstraintLocationMatch {
+    if constraint.get("diagnostic_code").and_then(Value::as_str) == Some(diagnostic_code)
         && constraint
             .get("source")
             .and_then(|source| source.get("path"))
@@ -197,6 +218,11 @@ fn constraint_matches_location(
             .and_then(|source| source.get("line"))
             .and_then(Value::as_u64)
             == Some(finding_line)
+    {
+        ConstraintLocationMatch::Matching
+    } else {
+        ConstraintLocationMatch::Different
+    }
 }
 
 fn assert_constraint_matches(
@@ -235,8 +261,9 @@ fn assert_constraint_matches(
         "{stored_report:#?}"
     );
     if let Some(boundary) = expectation.required_boundary() {
-        assert!(
+        assert_eq!(
             constraint_has_requirement(constraint, boundary),
+            RequirementMatch::Matching,
             "{stored_report:#?}"
         );
     }
@@ -280,9 +307,14 @@ fn assert_stored_forbidden_visibility_advice(
             .and_then(Value::as_array)
             .expect("read stored visibility constraints");
         for constraint in constraints {
-            if !constraint_matches_location(constraint, diagnostic_code, finding_path, finding_line)
-            {
-                continue;
+            match constraint_matches_location(
+                constraint,
+                diagnostic_code,
+                finding_path,
+                finding_line,
+            ) {
+                ConstraintLocationMatch::Matching => {},
+                ConstraintLocationMatch::Different => continue,
             }
             matches += 1;
             assert_constraint_matches(constraint, expectation, &stored_report);
@@ -1783,19 +1815,26 @@ pub fn run(app: &app::App) {
         r#"mod types;
 mod focus;
 
-pub use types::App;
+pub use types::{App, SearchPhase};
 "#,
     )
     .expect("write app facade");
     fs::write(
         temp.path().join("src/tui/app/types.rs"),
-        r#"pub struct App {
-    pub searching: bool,
+        r#"/// `SearchPhase` records `App::searching`, starting `Idle` before `Searching`.
+#[derive(Clone, Copy)]
+pub enum SearchPhase {
+    Idle,
+    Searching,
+}
+
+pub struct App {
+    pub searching: SearchPhase,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self { searching: false }
+        Self { searching: SearchPhase::Idle }
     }
 }
 "#,
@@ -1803,10 +1842,10 @@ impl App {
     .expect("write types child");
     fs::write(
         temp.path().join("src/tui/app/focus.rs"),
-        r#"use super::App;
+        r#"use super::{App, SearchPhase};
 
 impl App {
-    pub fn is_searching(&self) -> bool {
+    pub fn is_searching(&self) -> SearchPhase {
         self.searching
     }
 }
@@ -5196,6 +5235,14 @@ pub fn require(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 }
 
+/// `SignatureExposureClaim` is `Claimed` when `claims_public_signature_exposure` finds
+/// public-signature advice at the requested path, and `Absent` when no such advice occurs.
+#[derive(Debug, PartialEq, Eq)]
+enum SignatureExposureClaim {
+    Claimed,
+    Absent,
+}
+
 // `Marker`'s `#[require(AttributeTarget)]` argument is metadata, not a signature.
 // `AttributeTarget` is named in token position; whether it reaches public API
 // depends on what `require` expands to, which only post-expansion HIR knows.
@@ -5218,14 +5265,20 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
     };
     // `AttributeTarget` may keep a `DiagnosticCode::OverbroadPubCrate` finding
     // for an unrelated reason, or lose it entirely once the false exposure is gone.
-    // `claims_public_signature_exposure` must never claim a public signature carries it.
+    // `claims_public_signature_exposure` must return `SignatureExposureClaim::Absent`
+    // for it: a public signature must never be claimed to carry `AttributeTarget`.
     let claims_public_signature_exposure = |path: &str| {
-        report
+        if report
             .findings
             .iter()
             .filter(|finding| finding.path == path)
             .flat_map(|finding| finding.help.iter())
             .any(|line| line == "consider using: `pub`")
+        {
+            SignatureExposureClaim::Claimed
+        } else {
+            SignatureExposureClaim::Absent
+        }
     };
     assert!(
         target_finding("app/src/hidden/api/signature_target.rs")
@@ -5238,8 +5291,9 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
         "app/src/hidden/api/attribute_target.rs",
         "app/src/hidden/api.rs",
     ] {
-        assert!(
-            !claims_public_signature_exposure(path),
+        assert_eq!(
+            claims_public_signature_exposure(path),
+            SignatureExposureClaim::Absent,
             "a type named only by attribute metadata must not count as publicly exposed at {path}: {report:#?}",
         );
     }

@@ -19,15 +19,21 @@ pub(super) struct CpuBreakdownRaw {
     pub(super) idle:   u64,
 }
 
-pub(super) fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdown {
-    let current = read_cpu_breakdown_raw();
-    let delta_system = current.system.saturating_sub(previous.system);
-    let delta_user = current.user.saturating_sub(previous.user);
-    let delta_idle = current.idle.saturating_sub(previous.idle);
+pub(super) fn cpu_breakdown(previous_cpu_breakdown_raw: &mut CpuBreakdownRaw) -> CpuBreakdown {
+    let cpu_breakdown_raw = read_cpu_breakdown_raw();
+    let delta_system = cpu_breakdown_raw
+        .system
+        .saturating_sub(previous_cpu_breakdown_raw.system);
+    let delta_user = cpu_breakdown_raw
+        .user
+        .saturating_sub(previous_cpu_breakdown_raw.user);
+    let delta_idle = cpu_breakdown_raw
+        .idle
+        .saturating_sub(previous_cpu_breakdown_raw.idle);
     let delta_total = delta_system
         .saturating_add(delta_user)
         .saturating_add(delta_idle);
-    *previous = current;
+    *previous_cpu_breakdown_raw = cpu_breakdown_raw;
 
     if delta_total == 0 {
         return CpuBreakdown::default();

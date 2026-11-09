@@ -72,6 +72,13 @@ pub(in crate::fixes) struct TaggedFix {
     pub fix:      UseFix,
 }
 
+/// Whether a `ValidatedFixSet` holds any `TaggedFix` edits for the runner to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum FixSetPresence {
+    Empty,
+    HasEdits,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(in crate::fixes) struct ValidatedFixSet {
     fixes: Vec<TaggedFix>,
@@ -83,6 +90,14 @@ pub(in crate::fixes) struct RewrittenFiles {
 }
 
 impl ValidatedFixSet {
+    pub(in crate::fixes) const fn presence(&self) -> FixSetPresence {
+        if self.fixes.is_empty() {
+            FixSetPresence::Empty
+        } else {
+            FixSetPresence::HasEdits
+        }
+    }
+
     /// Use the write path for previews, so both paths apply equal byte ranges.
     pub(in crate::fixes) fn rewritten_files(&self) -> Result<RewrittenFiles> {
         self.rewritten_sources(&crate::rust_syntax::ParsedSources::default())
@@ -106,6 +121,8 @@ impl ValidatedFixSet {
                     .with_context(|| format!("failed to read {}", path.display()))?
                     .text()
                     .to_string();
+                // Apply later edits first to keep earlier byte offsets valid.
+                // For equal starts, apply the wider replacement before the insertion.
                 fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
                 for tagged in fixes {
                     let fix = &tagged.fix;
@@ -121,8 +138,6 @@ impl ValidatedFixSet {
             .collect::<Result<_>>()?;
         Ok(RewrittenFiles { files, counts })
     }
-
-    pub(in crate::fixes) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
 
     pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> {
         self.fixes.iter().map(|tagged| &tagged.fix)
@@ -286,10 +301,10 @@ mod tests {
             .into_iter()
             .collect();
 
-        let validated = ValidatedFixSet::try_from(fixes)?;
-        let paths = validated
+        let validated_fix_set = ValidatedFixSet::try_from(fixes)?;
+        let paths = validated_fix_set
             .iter()
-            .map(|fix| fix.path.as_path())
+            .map(|use_fix| use_fix.path.as_path())
             .collect::<Vec<_>>();
 
         assert_eq!(paths, vec![fs::canonicalize(fixtures_path)?]);
@@ -316,18 +331,18 @@ mod tests {
             },
         ];
 
-        let validated_result = ValidatedFixSet::try_from(fixes);
+        let validated_fix_set_result = ValidatedFixSet::try_from(fixes);
         assert!(
-            validated_result.is_ok(),
+            validated_fix_set_result.is_ok(),
             "adjacent edits should be valid: {}",
-            validated_result
+            validated_fix_set_result
                 .as_ref()
                 .err()
                 .map_or_else(String::new, |err| format!("{err:#}"))
         );
-        let Ok(validated) = validated_result else {
+        let Ok(validated_fix_set) = validated_fix_set_result else {
             return;
         };
-        assert_eq!(validated.iter().count(), 2);
+        assert_eq!(validated_fix_set.iter().count(), 2);
     }
 }

@@ -153,7 +153,7 @@ mod tests {
         }
 
         fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
-            |_action, _ctx| { /* no-op for the test impl */ }
+            |_foo_action, _ctx| { /* no-op for the test impl */ }
         }
     }
 
@@ -175,34 +175,34 @@ mod tests {
 
     #[test]
     fn default_visibility_returns_visible() {
-        let pane = FooPane;
-        let app = fresh_app();
+        let foo_pane = FooPane;
+        let test_app = fresh_app();
         assert_eq!(
-            pane.visibility(FooAction::Activate, &app),
+            foo_pane.visibility(FooAction::Activate, &test_app),
             Visibility::Visible,
         );
         assert_eq!(
-            pane.visibility(FooAction::Refresh, &app),
+            foo_pane.visibility(FooAction::Refresh, &test_app),
             Visibility::Visible
         );
     }
 
     #[test]
     fn default_state_is_enabled() {
-        let pane = FooPane;
-        let app = fresh_app();
+        let foo_pane = FooPane;
+        let test_app = fresh_app();
         assert_eq!(
-            pane.state(FooAction::Activate, &app),
+            foo_pane.state(FooAction::Activate, &test_app),
             ShortcutState::Enabled
         );
     }
 
     #[test]
     fn default_bar_slots_emit_one_pane_action_per_variant_in_declaration_order() {
-        let pane = FooPane;
-        let app = fresh_app();
+        let foo_pane = FooPane;
+        let test_app = fresh_app();
         assert_eq!(
-            pane.bar_slots(&app),
+            foo_pane.bar_slots(&test_app),
             vec![
                 (BarRegion::PaneAction, BarSlot::Single(FooAction::Activate)),
                 (BarRegion::PaneAction, BarSlot::Single(FooAction::Refresh)),
@@ -212,9 +212,9 @@ mod tests {
 
     #[test]
     fn default_mode_returns_navigable() {
-        let app = fresh_app();
+        let test_app = fresh_app();
         let query: fn(&TestApp) -> Mode<TestApp> = <FooPane as Pane<TestApp>>::mode();
-        assert!(matches!(query(&app), Mode::Navigable));
+        assert!(matches!(query(&test_app), Mode::Navigable));
     }
 
     #[test]
@@ -231,9 +231,9 @@ mod tests {
 
     #[test]
     fn dispatcher_is_callable() {
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         let dispatch: fn(FooAction, &mut TestApp) = FooPane::dispatcher();
-        dispatch(FooAction::Activate, &mut app);
+        dispatch(FooAction::Activate, &mut test_app);
     }
 
     #[test]

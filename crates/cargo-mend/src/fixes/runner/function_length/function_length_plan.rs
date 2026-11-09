@@ -452,6 +452,7 @@ fn has_surviving_reference(
 mod tests {
     use anyhow::Context;
 
+    use crate::fixes::imports::FixSetPresence;
     use crate::fixes::runner::function_length::FunctionLengthFixture;
     use crate::fixes::runner::function_length::constants::CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD;
     use crate::reporting::Report;
@@ -485,7 +486,7 @@ mod tests {
         crate::fixes::imports::apply_fixes(&first.fixes)?;
         let (second, report) = fixture.plan()?;
         assert!(
-            second.fixes.is_empty(),
+            second.fixes.presence() == FixSetPresence::Empty,
             "the second fix does not change the file"
         );
         assert!(report.findings.is_empty());
@@ -531,7 +532,7 @@ mod tests {
         std::fs::remove_file(fixture.0.path().join("clippy.toml"))?;
         let (plan, report) = fixture.plan()?;
         assert!(
-            plan.fixes.is_empty(),
+            plan.fixes.presence() == FixSetPresence::Empty,
             "fixes: {:?}; notice: {:?}",
             plan.fixes,
             plan.notice()
@@ -575,7 +576,7 @@ mod tests {
         )?;
         plan.filter_report(&mut report, &selection.analysis_root)?;
         assert_eq!(report.findings.len(), count);
-        assert!(!plan.fixes.is_empty());
+        assert_eq!(plan.fixes.presence(), FixSetPresence::HasEdits);
         crate::fixes::imports::apply_fixes(&plan.fixes)?;
         assert!(
             std::fs::read_to_string(selection.manifest_dir.join("src/scenarios.rs"))?

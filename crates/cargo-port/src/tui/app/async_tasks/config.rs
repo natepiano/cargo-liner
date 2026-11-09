@@ -393,7 +393,7 @@ impl App {
         }
 
         if prev_force != next_force {
-            self.net.set_force_github_rate_limit(next_force.is_forced());
+            self.net.set_force_github_rate_limit(next_force);
             // apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub)) reflects
             // next_force immediately rather than waiting for a natural request; the debug flag
             // simulates quota exhaustion, not network outage. mark_service_recovered handles

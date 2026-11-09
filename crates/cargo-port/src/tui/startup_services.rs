@@ -5,7 +5,6 @@ use std::sync::Mutex;
 use std::thread;
 #[cfg(test)]
 use std::thread::JoinHandle;
-use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -24,8 +23,6 @@ use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
-use crate::constants::SERVICE_RETRY_SECS;
-use crate::constants::SERVICE_UNAVAILABLE_GRACE;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint;
@@ -358,8 +355,9 @@ impl StartupServices {
             return;
         }
         self.record_real(StartupEffectKind::ServiceRetryProbes);
+        let http_config = config::active_config().http;
         thread::spawn(move || {
-            thread::sleep(SERVICE_UNAVAILABLE_GRACE);
+            thread::sleep(http_config.unavailable_grace());
             if probe_service_with_quota(&client, service, &quota_refresh) {
                 scan::emit_service_recovered(&sender, service);
                 return;
@@ -370,7 +368,7 @@ impl StartupServices {
                     scan::emit_service_recovered(&sender, service);
                     break;
                 }
-                thread::sleep(Duration::from_secs(SERVICE_RETRY_SECS));
+                thread::sleep(http_config.retry());
             }
         });
     }
@@ -575,9 +573,6 @@ impl WatcherHandle {
             Self::Disabled => Ok(()),
         }
     }
-
-    #[cfg(test)]
-    pub(super) const fn is_active(&self) -> bool { matches!(self, Self::Active(_)) }
 }
 
 #[derive(Clone)]

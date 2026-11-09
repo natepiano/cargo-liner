@@ -59,28 +59,31 @@ pub(super) fn collect_expansion_containers(
     layout: ExpansionKeyLayout,
 ) -> Vec<(ExpandKey, ExpandTarget)> {
     let mut out = Vec::new();
-    for (ni, entry) in list.iter().enumerate() {
+    for (node_index, entry) in list.iter().enumerate() {
         let item = &entry.root_item;
         if entry.has_children() {
-            out.push((ExpandKey::Node(ni), ExpandTarget::Root(item.path().clone())));
+            out.push((
+                ExpandKey::Node(node_index),
+                ExpandTarget::Root(item.path().clone()),
+            ));
         }
         match item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
-                for (gi, group) in ws.groups().iter().enumerate() {
-                    if group.is_named() {
+                for (gi, member_group) in ws.groups().iter().enumerate() {
+                    if member_group.is_named() {
                         out.push((
-                            ExpandKey::Group(ni, gi),
+                            ExpandKey::Group(node_index, gi),
                             ExpandTarget::Group(
                                 item.path().clone(),
-                                group.group_name().to_string(),
+                                member_group.group_name().to_string(),
                             ),
                         ));
                     }
-                    for (mi, member) in group.members().iter().enumerate() {
-                        if !member.vendored().is_empty() {
+                    for (mi, package) in member_group.members().iter().enumerate() {
+                        if !package.vendored().is_empty() {
                             out.push((
-                                ExpandKey::Member(ni, gi, mi),
-                                ExpandTarget::Member(member.path().clone()),
+                                ExpandKey::Member(node_index, gi, mi),
+                                ExpandTarget::Member(package.path().clone()),
                             ));
                         }
                     }
@@ -90,29 +93,29 @@ pub(super) fn collect_expansion_containers(
                 if worktree_group.renders_as_group()
                     || matches!(layout, ExpansionKeyLayout::WorktreeContainers) =>
             {
-                for (wi, worktree_entry) in worktree_group.iter_entries().enumerate() {
-                    if worktree_entry_has_children(worktree_entry) {
+                for (wi, rust_project) in worktree_group.iter_entries().enumerate() {
+                    if worktree_entry_has_children(rust_project) {
                         out.push((
-                            ExpandKey::Worktree(ni, wi),
-                            ExpandTarget::Worktree(worktree_entry.path().clone()),
+                            ExpandKey::Worktree(node_index, wi),
+                            ExpandTarget::Worktree(rust_project.path().clone()),
                         ));
                     }
-                    if let RustProject::Workspace(ws) = worktree_entry {
-                        for (gi, group) in ws.groups().iter().enumerate() {
-                            if group.is_named() {
+                    if let RustProject::Workspace(ws) = rust_project {
+                        for (gi, member_group) in ws.groups().iter().enumerate() {
+                            if member_group.is_named() {
                                 out.push((
-                                    ExpandKey::WorktreeGroup(ni, wi, gi),
+                                    ExpandKey::WorktreeGroup(node_index, wi, gi),
                                     ExpandTarget::WorktreeGroup(
-                                        worktree_entry.path().clone(),
-                                        group.group_name().to_string(),
+                                        rust_project.path().clone(),
+                                        member_group.group_name().to_string(),
                                     ),
                                 ));
                             }
-                            for (mi, member) in group.members().iter().enumerate() {
-                                if !member.vendored().is_empty() {
+                            for (mi, package) in member_group.members().iter().enumerate() {
+                                if !package.vendored().is_empty() {
                                     out.push((
-                                        ExpandKey::WorktreeMember(ni, wi, gi, mi),
-                                        ExpandTarget::WorktreeMember(member.path().clone()),
+                                        ExpandKey::WorktreeMember(node_index, wi, gi, mi),
+                                        ExpandTarget::WorktreeMember(package.path().clone()),
                                     ));
                                 }
                             }
@@ -125,21 +128,21 @@ pub(super) fn collect_expansion_containers(
             // `ExpandKey::WorktreeGroup`.
             RootItem::Worktrees(worktree_group) => {
                 if let Some(RustProject::Workspace(ws)) = worktree_group.single_live() {
-                    for (gi, group) in ws.groups().iter().enumerate() {
-                        if group.is_named() {
+                    for (gi, member_group) in ws.groups().iter().enumerate() {
+                        if member_group.is_named() {
                             out.push((
-                                ExpandKey::Group(ni, gi),
+                                ExpandKey::Group(node_index, gi),
                                 ExpandTarget::Group(
                                     item.path().clone(),
-                                    group.group_name().to_string(),
+                                    member_group.group_name().to_string(),
                                 ),
                             ));
                         }
-                        for (mi, member) in group.members().iter().enumerate() {
-                            if !member.vendored().is_empty() {
+                        for (mi, package) in member_group.members().iter().enumerate() {
+                            if !package.vendored().is_empty() {
                                 out.push((
-                                    ExpandKey::Member(ni, gi, mi),
-                                    ExpandTarget::Member(member.path().clone()),
+                                    ExpandKey::Member(node_index, gi, mi),
+                                    ExpandTarget::Member(package.path().clone()),
                                 ));
                             }
                         }

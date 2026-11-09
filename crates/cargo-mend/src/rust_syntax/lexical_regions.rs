@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 use std::ops::Range;
 
+use super::IdentifierCharacter;
 use super::identifier_character;
 
 /// What a [`LexicalRegion`] holds.
@@ -427,10 +428,12 @@ fn apostrophe_role(source: &str, quote_offset: usize, end: usize) -> ApostropheR
     let Some(first_character) = source[content_start..line_end].chars().next() else {
         return ApostropheRole::LifetimeOrUnclosed;
     };
-    if identifier_character(first_character) {
+    if identifier_character(first_character) == IdentifierCharacter::Member {
         let identifier_end = source[content_start..line_end]
             .char_indices()
-            .take_while(|(_, character)| identifier_character(*character))
+            .take_while(|(_, character)| {
+                identifier_character(*character) == IdentifierCharacter::Member
+            })
             .last()
             .map_or(content_start, |(offset, character)| {
                 content_start + offset + character.len_utf8()

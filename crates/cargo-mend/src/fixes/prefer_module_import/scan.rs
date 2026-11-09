@@ -201,17 +201,26 @@ impl<'a> RewriteBinding<'a> {
 pub(super) struct InlineCallFindingInputs<'a> {
     pub(super) candidates:     &'a [InlineCallCandidate],
     pub(super) imports:        &'a mut ModuleImports,
-    pub(super) file_insertion: FileInsertion,
+    pub(super) file_insertion: FileInsertionSite,
 }
 
-/// Where a file-level `use` goes: after the last top-level `use`, or before
-/// the first item when the file has none.
+/// Where a file-level `use` goes: after the last top-level `use`, before the first item,
+/// or at the start of an empty file. `BeforeFirstItem` and `EmptyFile` have no existing
+/// top-level `use`, so inserted imports need a blank line separating them from any following item.
 #[derive(Clone, Copy)]
-pub(super) struct FileInsertion {
-    pub(super) offset:            usize,
-    /// The file has no top-level `use`, so the inserted imports need a blank
-    /// line between them and the item that follows.
-    pub(super) before_first_item: bool,
+pub(super) enum FileInsertionSite {
+    AfterImport { offset: usize },
+    BeforeFirstItem { offset: usize },
+    EmptyFile,
+}
+
+impl FileInsertionSite {
+    pub(super) const fn offset(self) -> usize {
+        match self {
+            Self::AfterImport { offset } | Self::BeforeFirstItem { offset } => offset,
+            Self::EmptyFile => 0,
+        }
+    }
 }
 
 pub(crate) fn scan_selection(
@@ -271,9 +280,9 @@ fn scan_file(
     let file_context = ScanFileContext::new(analysis_root, path, text);
     let indexed = file_context.source();
 
-    let (candidates, mut inline_candidates) =
+    let (raw_candidates, mut inline_candidates) =
         detect_candidates(crate_sources, indexed, &current_module_path, syntax);
-    if candidates.is_empty() && inline_candidates.is_empty() {
+    if raw_candidates.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
@@ -287,7 +296,7 @@ fn scan_file(
             current_module_path: &current_module_path,
             imports: &imports,
         },
-        candidates,
+        raw_candidates,
         &mut inline_candidates,
     );
 
@@ -317,16 +326,17 @@ fn scan_file(
 
     if !inline_candidates.is_empty() {
         let file_insertion = file_level_insertion(syntax, text, indexed)?;
-        let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
-            &file_context,
-            &mut InlineCallFindingInputs {
-                candidates: &inline_candidates,
-                imports: &mut imports,
-                file_insertion,
-            },
-        )?;
+        let (inline_findings, inline_use_fixes) =
+            inline_calls::build_inline_call_findings_and_fixes(
+                &file_context,
+                &mut InlineCallFindingInputs {
+                    candidates: &inline_candidates,
+                    imports: &mut imports,
+                    file_insertion,
+                },
+            )?;
         findings.extend(inline_findings);
-        fixes.extend(inline_fixes);
+        fixes.extend(inline_use_fixes);
     }
 
     Ok((findings, fixes))
@@ -341,15 +351,15 @@ fn detect_candidates<'a>(
     syntax: &File,
 ) -> (Vec<RawCandidate>, Vec<InlineCallCandidate>) {
     let declared_modules = collect_declared_modules(syntax);
-    let mut detector = ImportDetector {
+    let mut import_detector = ImportDetector {
         crate_sources,
         current_module_path: current_module_path.to_vec(),
         inline_scope: Vec::new(),
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };
-    detector.visit_file(syntax, source);
-    let mut inline_detector = InlineCallDetector {
+    import_detector.visit_file(syntax, source);
+    let mut inline_call_detector = InlineCallDetector {
         crate_sources,
         current_module_path,
         declared_modules: &declared_modules,
@@ -357,8 +367,8 @@ fn detect_candidates<'a>(
         inline_mod_depth: 0,
         conditional_attributes: ConditionalAttributes::default(),
     };
-    inline_detector.visit_file(syntax, source);
-    (detector.candidates, inline_detector.candidates)
+    inline_call_detector.visit_file(syntax, source);
+    (import_detector.candidates, inline_call_detector.candidates)
 }
 
 /// What the candidate drops read about the scanned file.
@@ -533,7 +543,7 @@ fn file_level_insertion(
     syntax: &File,
     text: &str,
     source: &ImportSource<'_>,
-) -> Result<FileInsertion> {
+) -> Result<FileInsertionSite> {
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {
@@ -549,9 +559,10 @@ fn file_level_insertion(
             last_use_end = Some(end);
         }
     }
-    Ok(FileInsertion {
-        offset:            last_use_end.or(first_item_start).unwrap_or(0),
-        before_first_item: last_use_end.is_none(),
+    Ok(match (last_use_end, first_item_start) {
+        (Some(offset), _) => FileInsertionSite::AfterImport { offset },
+        (None, Some(offset)) => FileInsertionSite::BeforeFirstItem { offset },
+        (None, None) => FileInsertionSite::EmptyFile,
     })
 }
 

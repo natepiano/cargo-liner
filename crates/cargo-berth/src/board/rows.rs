@@ -759,7 +759,7 @@ impl BoardModel {
             .ready_now
             .entries
             .iter()
-            .map(|entry| entry.reservation.reservation_id)
+            .map(|ready_reservation| ready_reservation.reservation.reservation_id)
             .chain(
                 self.unconstrained_reservations
                     .entries
@@ -776,13 +776,15 @@ impl BoardModel {
                 self.waiting
                     .entries
                     .iter()
-                    .map(|entry| entry.reservation.reservation_id),
+                    .map(|waiting_entry| waiting_entry.reservation.reservation_id),
             )
             .chain(
                 self.unresolved_overlaps
                     .entries
                     .iter()
-                    .flat_map(|entry| [entry.deferred, entry.blocker]),
+                    .flat_map(|unresolved_overlap| {
+                        [unresolved_overlap.deferred, unresolved_overlap.blocker]
+                    }),
             )
             .collect::<HashSet<_>>()
             .into_iter()
@@ -876,7 +878,7 @@ fn declared_ordering_constraints(
     constraints: &IntegrationConstraintProjection,
     active_ids: &HashSet<ReservationId>,
 ) -> DeclaredOrderingConstraints {
-    let mut holds = Vec::new();
+    let mut waiting_ordering_constraints = Vec::new();
     let mut settled = Vec::new();
     let mut involved = HashSet::new();
     for edge in &constraints.ordering_constraints {
@@ -884,7 +886,7 @@ fn declared_ordering_constraints(
         involved.insert(edge.successor);
         match edge.readiness {
             EdgeReadiness::Holding { hold } if active_ids.contains(&edge.successor) => {
-                holds.push(WaitingOrderingConstraint {
+                waiting_ordering_constraints.push(WaitingOrderingConstraint {
                     edge_id:              edge.edge_id,
                     predecessor:          edge.predecessor,
                     successor:            edge.successor,
@@ -929,7 +931,7 @@ fn declared_ordering_constraints(
     }
 
     DeclaredOrderingConstraints {
-        holds,
+        holds: waiting_ordering_constraints,
         settled,
         constrained_reservations: involved,
     }

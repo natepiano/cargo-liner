@@ -71,7 +71,7 @@ impl SettingsFileSpec {
         if let Some(path) = &self.path {
             return Some(path.clone());
         }
-        dirs::config_dir().map(|dir| dir.join(self.app_id).join(self.file_name))
+        dirs::config_dir().map(|path_buf| path_buf.join(self.app_id).join(self.file_name))
     }
 }
 
@@ -127,7 +127,7 @@ impl SettingsStore {
         let path = spec.resolved_path();
         let table = read_settings_table(path.as_deref())?;
         let toast_settings = ToastSettings::from_table(&table)?;
-        let store = Self {
+        let settings_store = Self {
             spec,
             path,
             registry,
@@ -135,7 +135,7 @@ impl SettingsStore {
             save_state: SettingsSaveState::Clean,
         };
         Ok(LoadedSettings {
-            store,
+            store: settings_store,
             toast_settings,
         })
     }
@@ -234,8 +234,8 @@ impl SettingsStore {
             self.save_state = SettingsSaveState::Clean;
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        if let Some(parent_path) = path.parent() {
+            fs::create_dir_all(parent_path)?;
         }
         let text = toml::to_string_pretty(&self.table)?;
         fs::write(path, text)?;

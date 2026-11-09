@@ -8,8 +8,8 @@ use syn::punctuated::Punctuated;
 pub(in crate::fixes) fn render_use_tree(tree: &UseTree) -> String {
     match tree {
         UseTree::Path(path) => format!("{}::{}", path.ident, render_use_tree(&path.tree)),
-        UseTree::Name(name) => name.ident.to_string(),
-        UseTree::Rename(rename) => format!("{} as {}", rename.ident, rename.rename),
+        UseTree::Name(use_name) => use_name.ident.to_string(),
+        UseTree::Rename(use_rename) => format!("{} as {}", use_rename.ident, use_rename.rename),
         UseTree::Glob(_) => "*".to_string(),
         UseTree::Group(group) => format!(
             "{{{}}}",
@@ -57,11 +57,11 @@ pub(in crate::fixes) fn remove_use_leaves(
             let kept_items = group
                 .items
                 .iter()
-                .filter_map(|item| remove_use_leaves(prefix.clone(), item, remove))
+                .filter_map(|use_tree| remove_use_leaves(prefix.clone(), use_tree, remove))
                 .collect::<Vec<_>>();
             match kept_items.as_slice() {
                 [] => None,
-                [only] => Some(only.clone()),
+                [only_use_tree] => Some(only_use_tree.clone()),
                 _ => Some(UseTree::Group(UseGroup {
                     brace_token: group.brace_token,
                     items:       kept_items.into_iter().collect::<Punctuated<_, _>>(),
@@ -91,18 +91,18 @@ fn collect_use_lines(
             next_prefix.push(path.ident.to_string());
             collect_use_lines(next_prefix, &path.tree, use_prefix, lines);
         },
-        UseTree::Name(name) => {
+        UseTree::Name(use_name) => {
             let mut segments = path_prefix;
-            segments.push(name.ident.to_string());
+            segments.push(use_name.ident.to_string());
             lines.push(format!("{use_prefix} {};", segments.join("::")));
         },
-        UseTree::Rename(rename) => {
+        UseTree::Rename(use_rename) => {
             let mut segments = path_prefix;
-            segments.push(rename.ident.to_string());
+            segments.push(use_rename.ident.to_string());
             lines.push(format!(
                 "{use_prefix} {} as {};",
                 segments.join("::"),
-                rename.rename
+                use_rename.rename
             ));
         },
         UseTree::Glob(_) => {
@@ -114,8 +114,8 @@ fn collect_use_lines(
             lines.push(format!("{use_prefix} {rendered_prefix};"));
         },
         UseTree::Group(group) => {
-            for item in &group.items {
-                collect_use_lines(path_prefix.clone(), item, use_prefix, lines);
+            for use_tree in &group.items {
+                collect_use_lines(path_prefix.clone(), use_tree, use_prefix, lines);
             }
         },
     }
@@ -140,15 +140,16 @@ mod tests {
 
     #[test]
     fn removing_one_of_two_group_leaves_collapses_the_group() {
-        let kept = remove_use_leaves(Vec::new(), &tree("use a::{b::X, Y};"), &|prefix, name| {
-            if prefix == ["a", "b"] && name == "X" {
-                LeafRetention::Remove
-            } else {
-                LeafRetention::Keep
-            }
-        })
-        .expect("a leaf is left");
-        assert_eq!(render_use_tree(&kept), "a::Y");
+        let kept_use_tree =
+            remove_use_leaves(Vec::new(), &tree("use a::{b::X, Y};"), &|prefix, name| {
+                if prefix == ["a", "b"] && name == "X" {
+                    LeafRetention::Remove
+                } else {
+                    LeafRetention::Keep
+                }
+            })
+            .expect("a leaf is left");
+        assert_eq!(render_use_tree(&kept_use_tree), "a::Y");
     }
 
     #[test]

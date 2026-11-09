@@ -76,38 +76,38 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
     keymap: &Keymap<Ctx>,
     framework: &Framework<Ctx>,
 ) -> Vec<RenderedSlot> {
-    if let Some(overlay) = framework.overlay() {
-        let scope = keymap.overlay();
-        return match overlay {
+    if let Some(framework_overlay_id) = framework.overlay() {
+        let scope_map = keymap.overlay();
+        return match framework_overlay_id {
             FrameworkOverlayId::Keymap => {
-                render_overlay_slots(framework.keymap_pane.bar_slots(), scope)
+                render_overlay_slots(framework.keymap_pane.bar_slots(), scope_map)
             },
             FrameworkOverlayId::Settings => {
-                render_overlay_slots(framework.settings_pane.bar_slots(), scope)
+                render_overlay_slots(framework.settings_pane.bar_slots(), scope_map)
             },
             FrameworkOverlayId::GlobalShortcuts => {
-                render_overlay_slots(framework.global_shortcuts_pane.bar_slots(), scope)
+                render_overlay_slots(framework.global_shortcuts_pane.bar_slots(), scope_map)
             },
         };
     }
     match focused {
         FocusedPane::App(id) => keymap.render_app_pane_bar_slots(*id, ctx),
         FocusedPane::Framework(FrameworkFocusId::Toasts) => {
-            let scope = Toasts::<Ctx>::defaults().into_scope_map();
-            render_overlay_slots(framework.toasts.bar_slots(ctx), &scope)
+            let scope_map = Toasts::<Ctx>::defaults().into_scope_map();
+            render_overlay_slots(framework.toasts.bar_slots(ctx), &scope_map)
         },
     }
 }
 
 fn render_overlay_slots<A: Action>(
     slots: Vec<(BarRegion, crate::BarSlot<A>)>,
-    scope: &ScopeMap<A>,
+    scope_map: &ScopeMap<A>,
 ) -> Vec<RenderedSlot> {
     slots
         .into_iter()
         .filter_map(|(region, slot)| match slot {
             BarSlot::Single(action) => {
-                let key = scope.key_for(action).cloned()?;
+                let key = scope_map.key_for(action).cloned()?;
                 Some(RenderedSlot {
                     region,
                     label: action.bar_label(),
@@ -118,8 +118,8 @@ fn render_overlay_slots<A: Action>(
                 })
             },
             BarSlot::Paired(primary, secondary, label) => {
-                let key = scope.key_for(primary).cloned()?;
-                let secondary_key = scope.key_for(secondary).cloned()?;
+                let key = scope_map.key_for(primary).cloned()?;
+                let secondary_key = scope_map.key_for(secondary).cloned()?;
                 Some(RenderedSlot {
                     region,
                     label,
@@ -390,13 +390,13 @@ mod tests {
 
     #[test]
     fn navigable_mode_renders_every_region() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
         let bar = render(
             &FocusedPane::App(TestPaneId::Foo),
-            &app,
+            &test_app,
             &keymap,
-            app.framework(),
+            test_app.framework(),
         );
         let (nav, pane_action, global) = flatten_bar(&bar);
         assert!(!nav.is_empty(), "Nav region must render in Navigable mode");
@@ -412,13 +412,13 @@ mod tests {
 
     #[test]
     fn static_mode_suppresses_nav_only() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Bar));
-        let keymap = build_keymap_with_foo_and_static(&mut app.framework);
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Bar));
+        let keymap = build_keymap_with_foo_and_static(&mut test_app.framework);
         let bar = render(
             &FocusedPane::App(TestPaneId::Bar),
-            &app,
+            &test_app,
             &keymap,
-            app.framework(),
+            test_app.framework(),
         );
         let (nav, pane_action, global) = flatten_bar(&bar);
         assert!(nav.is_empty(), "Nav must be suppressed in Static mode");
@@ -428,13 +428,13 @@ mod tests {
 
     #[test]
     fn textinput_mode_suppresses_every_region() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Bar));
-        let keymap = build_keymap_with_foo_and_textinput(&mut app.framework);
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Bar));
+        let keymap = build_keymap_with_foo_and_textinput(&mut test_app.framework);
         let bar = render(
             &FocusedPane::App(TestPaneId::Bar),
-            &app,
+            &test_app,
             &keymap,
-            app.framework(),
+            test_app.framework(),
         );
         assert!(
             bar.is_empty(),
@@ -446,13 +446,13 @@ mod tests {
     fn unregistered_pane_id_renders_empty_bar() {
         // Nothing registered; the focus is on `TestPaneId::Foo` but no scope answers
         // `mode_queries`, so `focused_pane_mode` returns `None`.
-        let app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
         let keymap: Keymap<TestApp> = Keymap::new(None);
         let bar = render(
             &FocusedPane::App(TestPaneId::Foo),
-            &app,
+            &test_app,
             &keymap,
-            app.framework(),
+            test_app.framework(),
         );
         assert!(bar.is_empty(), "None mode → empty bar (got {bar:?})");
     }
@@ -461,11 +461,13 @@ mod tests {
 
     #[test]
     fn keymap_browse_renders_pane_actions_and_globals() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        app.framework_mut().dispatch_global_for_test_open_keymap();
-        let focused = *app.framework().focused();
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        test_app
+            .framework_mut()
+            .dispatch_global_for_test_open_keymap();
+        let focused_pane = *test_app.framework().focused();
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         let (nav, pane_action, global) = flatten_bar(&bar);
         // Browse → Mode::Navigable → Nav, PaneAction, Global all render.
         assert!(
@@ -492,14 +494,16 @@ mod tests {
 
     #[test]
     fn keymap_awaiting_text_input_suppresses_every_region() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        app.framework_mut().dispatch_global_for_test_open_keymap();
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        test_app
+            .framework_mut()
+            .dispatch_global_for_test_open_keymap();
         // Replace `app.framework_mut().keymap_pane` with one in Awaiting.
-        app.framework_mut().keymap_pane =
+        test_app.framework_mut().keymap_pane =
             KeymapPane::for_test_awaiting(Some(PathBuf::from("/tmp/keys.toml")));
-        let focused = *app.framework().focused();
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let focused_pane = *test_app.framework().focused();
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         assert!(
             bar.is_empty(),
             "Keymap Awaiting (TextInput mode) suppresses every region (got {bar:?})",
@@ -508,13 +512,15 @@ mod tests {
 
     #[test]
     fn keymap_conflict_renders_pane_actions_and_globals() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        app.framework_mut().dispatch_global_for_test_open_keymap();
-        app.framework_mut().keymap_pane =
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        test_app
+            .framework_mut()
+            .dispatch_global_for_test_open_keymap();
+        test_app.framework_mut().keymap_pane =
             KeymapPane::for_test_conflict(Some(PathBuf::from("/tmp/keys.toml")));
-        let focused = *app.framework().focused();
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let focused_pane = *test_app.framework().focused();
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         let (nav, pane_action, global) = flatten_bar(&bar);
         // Conflict → Mode::Static → Nav suppressed; PaneAction + Global render.
         assert!(
@@ -533,11 +539,13 @@ mod tests {
 
     #[test]
     fn settings_browse_renders_pane_actions_and_globals() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        app.framework_mut().dispatch_global_for_test_open_settings();
-        let focused = *app.framework().focused();
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        test_app
+            .framework_mut()
+            .dispatch_global_for_test_open_settings();
+        let focused_pane = *test_app.framework().focused();
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         let (_, pane_action, global) = flatten_bar(&bar);
         assert!(pane_action.contains("edit"));
         assert!(pane_action.contains("cancel"));
@@ -546,13 +554,15 @@ mod tests {
 
     #[test]
     fn settings_editing_text_input_suppresses_every_region() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        app.framework_mut().dispatch_global_for_test_open_settings();
-        app.framework_mut().settings_pane =
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        test_app
+            .framework_mut()
+            .dispatch_global_for_test_open_settings();
+        test_app.framework_mut().settings_pane =
             SettingsPane::for_test_editing(Some(PathBuf::from("/tmp/settings.toml")));
-        let focused = *app.framework().focused();
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let focused_pane = *test_app.framework().focused();
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         assert!(
             bar.is_empty(),
             "Settings Editing (TextInput mode) suppresses every region (got {bar:?})",
@@ -563,11 +573,11 @@ mod tests {
 
     #[test]
     fn focused_toasts_renders_nav_pane_actions_and_globals() {
-        let mut app = fresh_app(FocusedPane::Framework(FrameworkFocusId::Toasts));
-        let keymap = build_keymap_with_foo(&mut app.framework);
-        let _ = app.framework_mut().toasts.push("Build done", "ok");
-        let focused = FocusedPane::Framework(FrameworkFocusId::Toasts);
-        let bar = render(&focused, &app, &keymap, app.framework());
+        let mut test_app = fresh_app(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
+        let _ = test_app.framework_mut().toasts.push("Build done", "ok");
+        let focused_pane = FocusedPane::Framework(FrameworkFocusId::Toasts);
+        let bar = render(&focused_pane, &test_app, &keymap, test_app.framework());
         let (nav, pane_action, global) = flatten_bar(&bar);
         assert!(!nav.is_empty(), "Toasts must show nav (got nav={nav:?})");
         assert!(
@@ -585,13 +595,13 @@ mod tests {
 
     #[test]
     fn nav_row_renders_resolved_keys_via_display_short() {
-        let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        let keymap = build_keymap_with_foo(&mut app.framework);
+        let mut test_app = fresh_app(FocusedPane::App(TestPaneId::Foo));
+        let keymap = build_keymap_with_foo(&mut test_app.framework);
         let bar = render(
             &FocusedPane::App(TestPaneId::Foo),
-            &app,
+            &test_app,
             &keymap,
-            app.framework(),
+            test_app.framework(),
         );
         let nav = flatten(&bar.nav);
         // Default nav binds `NavAction::Up`/`NavAction::Down` to `KeyCode::Up`/`KeyCode::Down` →

@@ -69,9 +69,12 @@ impl PopupFrame {
             block = block.title(Span::styled(title, title_style()));
         }
 
-        let inner = block.inner(area);
+        let inner_rect = block.inner(area);
         frame.render_widget(block, area);
-        PopupAreas { outer: area, inner }
+        PopupAreas {
+            outer: area,
+            inner: inner_rect,
+        }
     }
 }
 

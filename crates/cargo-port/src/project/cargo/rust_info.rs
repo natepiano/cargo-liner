@@ -98,18 +98,20 @@ impl Cargo {
             .sum()
     }
 
-    #[allow(
-        dead_code,
-        reason = "no production callers; kept for future reuse against \
-                  PackageRecord.targets."
-    )]
-    pub(super) fn is_binary(&self) -> bool {
-        self.types
-            .iter()
-            .any(|project_type| matches!(project_type, ProjectType::Binary))
-    }
-
     pub(crate) const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
+}
+
+/// `LibraryTargetKind` retains procedural-macro precedence across all Cargo targets.
+enum LibraryTargetKind {
+    Absent,
+    Library,
+    ProcMacro,
+}
+
+/// `BinaryTargetPresence` records binary targets independently of the library kind.
+enum BinaryTargetPresence {
+    Absent,
+    Present,
 }
 
 impl From<&PackageRecord> for Cargo {
@@ -122,22 +124,28 @@ impl From<&PackageRecord> for Cargo {
     /// of the `[workspace]` table presence, owned by the parse path.
     fn from(package_record: &PackageRecord) -> Self {
         let manifest_dir = package_record.manifest_path.as_path().parent();
-        let mut has_lib = false;
-        let mut has_bin = false;
-        let mut has_proc_macro = false;
+        let mut library_target_kind = LibraryTargetKind::Absent;
+        let mut binary_target_presence = BinaryTargetPresence::Absent;
         let mut example_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut benches: Vec<String> = Vec::new();
 
         for target_record in &package_record.targets {
             for target_kind in &target_record.kinds {
                 match target_kind {
-                    TargetKind::Bin => has_bin = true,
+                    TargetKind::Bin => binary_target_presence = BinaryTargetPresence::Present,
                     TargetKind::Lib
                     | TargetKind::RLib
                     | TargetKind::DyLib
                     | TargetKind::CDyLib
-                    | TargetKind::StaticLib => has_lib = true,
-                    TargetKind::ProcMacro => has_proc_macro = true,
+                    | TargetKind::StaticLib => {
+                        library_target_kind = match library_target_kind {
+                            LibraryTargetKind::Absent | LibraryTargetKind::Library => {
+                                LibraryTargetKind::Library
+                            },
+                            LibraryTargetKind::ProcMacro => LibraryTargetKind::ProcMacro,
+                        };
+                    },
+                    TargetKind::ProcMacro => library_target_kind = LibraryTargetKind::ProcMacro,
                     TargetKind::Example => {
                         let category =
                             example_category(manifest_dir, target_record.src_path.as_path());
@@ -153,13 +161,14 @@ impl From<&PackageRecord> for Cargo {
         }
 
         let mut types = Vec::new();
-        if has_proc_macro {
-            types.push(ProjectType::ProcMacro);
-        } else if has_lib {
-            types.push(ProjectType::Library);
+        match library_target_kind {
+            LibraryTargetKind::Absent => {},
+            LibraryTargetKind::Library => types.push(ProjectType::Library),
+            LibraryTargetKind::ProcMacro => types.push(ProjectType::ProcMacro),
         }
-        if has_bin {
-            types.push(ProjectType::Binary);
+        match binary_target_presence {
+            BinaryTargetPresence::Absent => {},
+            BinaryTargetPresence::Present => types.push(ProjectType::Binary),
         }
 
         let mut examples: Vec<ExampleGroup> = example_groups

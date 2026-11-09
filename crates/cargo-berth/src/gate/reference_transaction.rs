@@ -136,7 +136,7 @@ impl<'transaction> ReferenceMovement<'transaction> {
             (&update.previous, &update.proposed)
             && objects
                 .commit(update.reference.as_str())
-                .is_ok_and(|current| current == *proposed)
+                .is_ok_and(|current_git_object_id| current_git_object_id == *proposed)
         {
             return Self::NoMove;
         }
@@ -172,7 +172,7 @@ pub(crate) enum IssuingCheckout<'a> {
 
 /// Parse every stdin line into one semantic git reference transaction.
 pub(crate) fn parse_reference_transaction(
-    phase: ReferenceTransactionPhase,
+    reference_transaction_phase: ReferenceTransactionPhase,
     input: &str,
 ) -> Result<ReferenceTransaction, ReferenceTransactionParseError> {
     let entries = input
@@ -180,17 +180,22 @@ pub(crate) fn parse_reference_transaction(
         .enumerate()
         .map(|(index, line)| parse_reference_update(index + 1, line))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(ReferenceTransaction { phase, entries })
+    Ok(ReferenceTransaction {
+        phase: reference_transaction_phase,
+        entries,
+    })
 }
 
 impl ReferenceTransaction {
     fn local_branch_updates(&self) -> Vec<&ReferenceUpdate> {
         self.entries
             .iter()
-            .filter_map(|entry| match entry {
-                ReferenceTransactionEntry::LocalBranch(update) => Some(update),
-                ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
-            })
+            .filter_map(
+                |reference_transaction_entry| match reference_transaction_entry {
+                    ReferenceTransactionEntry::LocalBranch(update) => Some(update),
+                    ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
+                },
+            )
             .collect()
     }
 
@@ -199,9 +204,9 @@ impl ReferenceTransaction {
         &self,
         trunk_reference: &FullRefName,
     ) -> TrunkReferencePresence {
-        if self.entries.iter().any(|entry| {
+        if self.entries.iter().any(|reference_transaction_entry| {
             matches!(
-                entry,
+                reference_transaction_entry,
                 ReferenceTransactionEntry::LocalBranch(update)
                     if &update.reference == trunk_reference
             )
@@ -222,24 +227,26 @@ impl ReferenceTransaction {
         }
         self.entries
             .iter()
-            .find_map(|entry| match entry {
-                ReferenceTransactionEntry::LocalBranch(update)
-                    if &update.reference == trunk_reference
-                        && matches!(&update.proposed, ReferenceObject::Absent) =>
-                {
-                    match &update.previous {
-                        ReferenceObject::Object(previous_tip) => {
-                            Some(ManagedTrunkDeletion::Deleted {
-                                reference:    update.reference.clone(),
-                                previous_tip: previous_tip.clone(),
-                            })
-                        },
-                        ReferenceObject::Symbolic(_) | ReferenceObject::Absent => None,
-                    }
+            .find_map(
+                |reference_transaction_entry| match reference_transaction_entry {
+                    ReferenceTransactionEntry::LocalBranch(update)
+                        if &update.reference == trunk_reference
+                            && matches!(&update.proposed, ReferenceObject::Absent) =>
+                    {
+                        match &update.previous {
+                            ReferenceObject::Object(previous_tip) => {
+                                Some(ManagedTrunkDeletion::Deleted {
+                                    reference:    update.reference.clone(),
+                                    previous_tip: previous_tip.clone(),
+                                })
+                            },
+                            ReferenceObject::Symbolic(_) | ReferenceObject::Absent => None,
+                        }
+                    },
+                    ReferenceTransactionEntry::LocalBranch(_)
+                    | ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
                 },
-                ReferenceTransactionEntry::LocalBranch(_)
-                | ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
-            })
+            )
             .unwrap_or(ManagedTrunkDeletion::NotDeleted)
     }
 }
@@ -358,15 +365,17 @@ pub(crate) fn evaluate_reference_transaction(
         trunk_reference,
     )?;
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
-    let repository = git::RepositorySnapshot::new(worktree_context.clone());
+    let repository_snapshot = git::RepositorySnapshot::new(worktree_context.clone());
     let mut results = Vec::new();
     for ReferenceMove(update) in gated_updates {
-        let target = IntegrationTarget::from_branch_argument(update.reference.as_str()).map_err(
-            |reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string())),
-        )?;
-        match update.gate_subject(target) {
+        let integration_target = IntegrationTarget::from_branch_argument(update.reference.as_str())
+            .map_err(|reason| {
+                GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string()))
+            })?;
+        match update.gate_subject(integration_target) {
             ReferenceUpdateGateSubject::ProposedTargetMove(update) => {
-                if update.materializes_existing_logical_target(&repository.object_reader()) {
+                if update.materializes_existing_logical_target(&repository_snapshot.object_reader())
+                {
                     continue;
                 }
                 match transaction.phase {
@@ -379,7 +388,7 @@ pub(crate) fn evaluate_reference_transaction(
                                 issuing_directory: issuing_directory.to_path_buf(),
                             },
                         )? {
-                            Enrollment::Enrolled(result) => results.push(result),
+                            Enrollment::Enrolled(gate_result) => results.push(gate_result),
                             Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
                         }
                     },
@@ -483,28 +492,31 @@ fn gated_updates<'transaction>(
 }
 
 impl ProposedTargetMove {
-    fn materializes_existing_logical_target(&self, objects: &OperationObjectReader) -> bool {
+    fn materializes_existing_logical_target(
+        &self,
+        operation_object_reader: &OperationObjectReader,
+    ) -> bool {
         matches!(&self.previous, PreviousTargetTip::Absent)
-            && git::branch_object_id(objects, self.target.short_name())
-                .is_ok_and(|current| current == self.proposed)
+            && git::branch_object_id(operation_object_reader, self.target.short_name())
+                .is_ok_and(|current_git_object_id| current_git_object_id == self.proposed)
     }
 }
 
 impl ReferenceUpdate {
-    fn gate_subject(&self, target: IntegrationTarget) -> ReferenceUpdateGateSubject {
+    fn gate_subject(&self, integration_target: IntegrationTarget) -> ReferenceUpdateGateSubject {
         match (&self.previous, &self.proposed) {
             (ReferenceObject::Object(previous), ReferenceObject::Object(proposed))
                 if previous != proposed =>
             {
                 ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
-                    target,
+                    target:   integration_target,
                     previous: PreviousTargetTip::Existing(previous.clone()),
                     proposed: proposed.clone(),
                 })
             },
             (ReferenceObject::Absent, ReferenceObject::Object(proposed)) => {
                 ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
-                    target,
+                    target:   integration_target,
                     previous: PreviousTargetTip::Absent,
                     proposed: proposed.clone(),
                 })
@@ -519,7 +531,7 @@ impl ReferenceUpdate {
                 ReferenceUpdateGateSubject::NotTargetEntry
             },
             (ReferenceObject::Symbolic(_), _) | (_, ReferenceObject::Symbolic(_)) => {
-                ReferenceUpdateGateSubject::UnsupportedTargetUpdate(target)
+                ReferenceUpdateGateSubject::UnsupportedTargetUpdate(integration_target)
             },
         }
     }

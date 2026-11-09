@@ -165,6 +165,7 @@ pub(in crate::fixes) enum ImportProposal {
 
 /// Hoisting retains the scanner's conservative collision behavior: a gated
 /// binding already at module scope can prevent a move from its nested scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::fixes) enum ImportMove {
     Blocked,
     Delete,

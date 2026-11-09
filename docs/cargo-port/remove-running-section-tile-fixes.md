@@ -1345,29 +1345,29 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Gotchas:** The grid tests' `expect(clippy::expect_used)` sits on `mod grid` in `tiles/mod.rs` as `#[cfg_attr(test, expect(...))]`, not on a test module inside `grid/`.
 
-### Phase 29a — The census scan file splits by type cluster  · status: todo
+### Phase 29a — The census scan file splits by type cluster  · status: done
 
-**Depends on:** Phase 39 (both change `census/scan.rs`).
+#### As-built
 
-#### Work Order
+`census/scan` is a module directory with one file for each type cluster. No function body or assertion changed in the move.
 
-**Goal:** `census/scan.rs` is split into submodules by type cluster, and the moved code does not change (showrunner approved, 2026-10-27). The review examines only module paths and imports.
-
-**Spec:**
-
-1. **`census/scan.rs` is split by type cluster** (style item 2). Move the production code of `crates/cargo-tile/src/census/scan.rs` into `census/` submodules, one submodule for each type cluster.
+- `census.rs` holds `Census`, CPU attribution and capture annotation.
+- `invocation.rs` holds `CargoProcess`, the shared helpers and `subtree_resource_totals`.
+- `refresh.rs` holds the scan worker, `NextRefresh` and `FreeDiskSpace`.
+- Each subject test module is declared under `#[cfg(test)]` in its production module.
 
 **Files:**
-- `crates/cargo-tile/src/census/` — `scan.rs`, `mod.rs` and the new submodules.
+- `crates/cargo-tile/src/census/scan/mod.rs` — module declarations and reexports.
+- `crates/cargo-tile/src/census/scan/census.rs`, `census_tests.rs` — the census cluster and its tests.
+- `crates/cargo-tile/src/census/scan/discovery.rs` — process discovery.
+- `crates/cargo-tile/src/census/scan/invocation.rs`, `invocation_tests.rs` — the invocation cluster and its tests.
+- `crates/cargo-tile/src/census/scan/observation.rs`, `observation_tests.rs` — observed process fields and their tests.
+- `crates/cargo-tile/src/census/scan/refresh.rs`, `refresh_tests.rs` — the scan worker and its tests.
+- `crates/cargo-tile/src/census/scan/resource_use.rs`, `resource_use_tests.rs` — resource totals and their tests.
+- `crates/cargo-tile/src/census/scan/scope.rs` — the scan scope.
+- `crates/cargo-tile/src/census/scan/tests.rs` — shared fixtures and the metadata exec child.
 
-**Workers:** 1 writer — `impl`: census modules, imports, visibility and their tests.
-
-**Constraints from prior phases:** Phase 29's split rules hold: keep tests beside the modules that own their subjects, keep shared fixtures in a test module, keep test bodies and assertions unchanged, and update intra-doc links after each move. The grid test `expect` sits on `mod grid` in `tiles/mod.rs`; a later move does not repeat it. Use the current branch checkpoint at dispatch, which holds Phase 39. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser. Phase 43b added `InvocationLifetimeReads`, whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green. Keep the Phase 43i deadline sleep in `ScanWorker::scan` (`NextRefresh::deadline`). Phase 39 added the compile memory owner rules to `scan.rs` (`detached_compilers`, the shared compiler cache share and the unattributed share). They move as one cluster, and `census/compile_memory_tests.rs` stays green unchanged. `CompilerRequest` stays in `invocation_cpu_accounting.rs`.
-
-**Acceptance gate:**
-- `verify.sh lint` and `verify.sh test cargo-tile`, green, with no test changed.
-- The review finds no change apart from module paths and imports.
-- Change-review line: none (no visible change).
+**Gotchas:** `resource_use` imports nothing from `invocation`, and `invocation` imports nothing from `census`. Shared helpers stay in `invocation.rs`.
 
 ### Phase 32m — CPU fix 1 on main  · status: done
 
@@ -1971,11 +1971,11 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 
 Another product file of a cause needs director routing.
 
-**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
+**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates. Phase 58a: merge its four registrations with `PREPARED_LOCK_REPOSITORIES` in `tests/recorded_templates.rs`. Keep both fixture module sets and `cold_single_target_setup_builds_every_recorded_template`.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58a.
+**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58b.
 
 ### Phase 58 — cargo-berth tests run under a second  · status: done
 
@@ -2000,53 +2000,91 @@ Another product file of a cause needs director routing.
 
 **Ruled out:** recurrence of the four earlier test-cost causes.
 
-### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: todo
+### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: done
 
-**Depends on:** Phase 58 (same writer and the same files). Edits to `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` wait for Phase 57 to merge.
+#### As-built
 
-Phase 58 landed after three repair rounds under the round cap. The paired Mac package run (six test threads, loads 7.2 and 8.1) counted 168 Phase 58 tests at 1 s or more on its head and 217 on its base. No binary rose. The goal is not met yet. The landing is not a passing suite: the head run failed `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 57 item 1).
+- Four recorded histories prepare compaction, rebase, answer and orphan prerequisites before the tested operations.
+- The two rebase hook modes use separate tests and private history copies.
+- Compaction readers, byte accounting, both compactions, answer transitions, orphan recovery, successor rotation and witness loss remain live.
+- The under-one-second goal remains unmet.
+- Gate counts at 1 s or more are natedev package 188 (load 46.73), natedev workspace 158, Mac package 416 and Mac workspace 574 (loads 9.60 and 18.47).
+- A later natedev package run on the same tests has 18 tests at 1 s or more. That run did not record its load.
 
-The inventory has two sources, and each keeps its own revision, scope, thread count and load:
-- `round-3-next-phase-slow.txt` of the Phase 58 run (143 tests).
-- The paired head run in `after-report.md` of the Phase 58 run (168 tests; 45 are not in the first list).
+**Files:**
+- `crates/cargo-berth/tests/{answers,compaction,edges,gate}.rs` — private history restoration and live test operations.
+- `crates/cargo-berth/tests/support/{answers_fixtures,compaction_fixture,edges_fixtures,gate_fixtures}.rs` — prerequisite histories and shared command helpers.
+- `crates/cargo-berth/tests/recorded_templates.rs` — registration of the four histories.
 
-An Astra review of the approach (2026-11-09, `/tmp/claude/astra/20261109T094600Z-2066252/review.md`) found that the evidence does not prove Git startup as the cause. The spec below starts with a controlled measurement.
+**Binds later work:** “Three cargo-berth lock tests pass under load” preserves both registration sets. “cargo-berth tests stay under a second when they run together” owns the remaining costs.
+
+**Gotchas:** Slow-test counts require load and concurrency records for comparison. The gate measurements do not separate cold and warm fixture-cache costs.
+
+**Ruled out:** a product pipe-collection repair based on these measurements.
+
+### Phase 59 — A reader scenario stops its processes and removes its folder on every exit path  · status: todo
+
+**Depends on:** none. It runs ahead of Phases 32 and 58b (showrunner, 2026-11-09). It shares `reader_scenario_cases.py` with Phase 43j; berth settles that order.
 
 #### Work Order
 
-**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. This includes the slow tests in the four Phase 57 files other than its six named tests (162 in the paired Mac run).
+**Goal:** When a reader scenario ends, by a pass, a failure, a timeout or a kill, no process that it started stays alive and its temporary folder is gone. User rule, 2026-11-09: a process removes the folders it makes, and the same holds for the processes it starts.
+
+**Evidence:** On the Mac, a process group stayed alive for 3 d 21 h and its folder stayed too (52 MB; natedev stopped the group and removed the folder at the user's request).
+- Pid 58772, ppid 1, session leader: `sh .../T/.tmpEfFiRo/bin/cargo build probe-first-.tmpEfFiRo`.
+- Its children were `cargo-tile-real build` and `tee -a .../capture/501/run-20261105-163421-...log`.
+- It started on 2026-11-05 at 16:34. Phase 51's guardian reached main on 2026-11-05 at 15:33. The Mac run may have used a checkout from before that merge.
 
 **Spec:**
-1. **Measure first, on the unchanged tree.** Use the four slowest tests of the paired head run: `edges::witness_survives_pruning_and_controls_successors` (5.198 s), `edges::successor_round_robin_covers_every_head` (4.334 s), `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (4.172 s) and `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks`.
-   - Run each one serially and under normal workspace concurrency, on the Mac and on natedev.
-   - Record setup, fixture restore, live commands, output collection and teardown as separate spans.
-   - Count the Git processes, hook processes and runtime threads in each span. Record child CPU time where possible; a parent wait alone does not separate work from a scheduling delay.
-   - Compare one small Git read through direct execution and through the shared child runtime, with the same command, environment, streams and process group. On the Mac, `ExitNotification::new` (`src/git/child.rs:591`) starts a waiter thread when the child still runs; Linux uses a process descriptor. Treat this as a measurement target.
-   - Record the thread count and the fixture cache state of each run.
-2. **Let the measurement choose the repair.** A large restore cost goes to fixture work. A large shared-runtime cost goes to child-runtime work. A large direct launch cost goes to fewer processes. A cost that grows only under concurrency goes to a contention investigation. Quote the line that takes the time.
-3. **Split a test only with a map.** For each proposed split, write which original assertion and which live transition each new test keeps. Put the map in the reply.
-   - Rebase (`tests/gate.rs:4856`): prepare the history once. Give each hook mode its own test with a private copy. Keep each three-commit rebase live.
-   - Compaction (`tests/compaction.rs:63`): prepare the history before the test clock through a fixture helper that passes lint. Keep the compaction, the reader comparisons, the byte accounting and the second compaction live. The readers append records: split them into separate fixtures only after you prove they are independent. Otherwise keep the ordered reader sequence. A test that forbids `expect` gets a helper that returns `Result`.
-   - Successor rotation (`tests/edges.rs:2305`): keep the live progression of four unavailable attempts, four comparisons and two cached reads.
-   - Witness pruning (`prepare_pruned_witness`, `tests/edges.rs:617`): it asserts settlement and real object collection. It is not disposable setup.
-4. **A test that cannot split gets a shared-cost repair** chosen in item 2: fewer repeated Git reads, less trace-helper setup, or fewer runtime threads. Keep Git fallback, command deadlines, pipe draining and descendant cleanup. Keep separate CLI invocations where they prove durable state across processes.
-5. Do not replace a live rebase, proof rotation or witness-loss command with a recorded result.
-6. Fix each cause where it lives. Keep every assertion and every test case.
-7. Measure the same counts after the fix, on the final source revision, with the same method.
+
+1. Find the exit path that left this group. First establish whether the 16:34 run had the guardian. Then find each way that a writer group outlives its scenario with the guardian in place, for example when the guardian itself dies. Write the result in the phase report.
+2. Every process group that a scenario starts ends when the scenario ends, on all four exit paths. This covers writers and cache servers. A scenario or test process killed with SIGKILL runs no cleanup of its own, so the fix sits where the processes start, as Phase 51's guardian does. Add no sweep and no name-based search.
+3. The scenario's `tempfile::tempdir` folder is removed on all four exit paths, after its processes end. A killed owner cannot remove it, so a process that outlives the owner removes it. Use the mechanism of item 2 for this.
+4. A normal end keeps its release order and its time.
+
+**Tests:** One test for each exit path: pass, failed assertion, deadline timeout and SIGKILL of the scenario. Each one proves two facts: no process of the group is alive, and the folder does not exist. Each test fails without the fix and takes less than 1 s. Keep `reader_scenario_sigkill_ends_its_waiting_writer_group` as it is.
 
 **Files:**
-- `crates/cargo-berth/tests/` — the integration tests. `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` only after Phase 57 merges.
-- `crates/cargo-berth/tests/support/` — shared test fixtures.
-- `crates/cargo-berth-test-support/` — the shared fixtures and recorded templates.
-- `crates/cargo-berth/src/` — test modules only, for measured slow unit tests: `board/answers.rs` (`overlap_answers_preserve_typed_authorization_variants`, 1.362 s), `board/rows.rs` (`waiting_reasons_pair_typed_evidence_with_actions`, 1.200 s) and `git/read.rs`.
-
-A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) needs director routing with the measurement that picks it.
-
-**Constraints from prior phases:** Phase 58: reuse `LedgerTemplate::restore_into`, `history_restore` and `recorded_history`. Keep owner renewal, linked-worktree relocation and derived-cache removal. Keep `cold_single_target_setup_builds_every_recorded_template` and `stalled_template_build_fails_with_a_clear_deadline` green. Phase 56: shared merge coverage does not checkpoint a sibling; keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Claim a shared fixture file `--after` the Phase 57 reservation when its edits overlap. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test at 1 s or more; lint. Report the package and workspace counts apart. Report the setup duration and the complete-suite duration beside each count, with cold-cache and warm-cache runs apart.
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac, with no new test at 1 s or more.
+- After the Mac pass, no process from a scenario folder stays on the Mac, and no scenario folder stays in its `TMPDIR`.
+- Change-review line: none (test support only).
+
+### Phase 58b — cargo-berth tests stay under a second when they run together  · status: todo
+
+**Depends on:** Phase 57 merged, and Phase 58a checkpointed.
+
+Phase 58a landed its fixture repairs with its goal open. Its gate passed on both machines. Tests at 1 s or more: natedev package 188 (load 47), Mac package 416 and Mac workspace 574 (loads 10 to 18). The Mac tests that took 1 to 3.5 s alone took 10 to 14 s under normal concurrency. One Git read costs the same direct and through the shared child runtime, and pipe collection after exit is negligible. The measurement report is `after-report.md` of the Phase 58a run.
+
+#### Work Order
+
+**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. A test of 1 s or more under load is a test defect. Fix the cost per test. Do not raise a limit, and do not call it a load flake.
+
+**Spec:**
+1. **Find the cause first.** Read the attempts log for Phase 43c: Mac test processes stall 1.9 to 4 s in full runs and take 0.01 s alone. This can be the same cause. Measure what a concurrent test waits on, and quote the line that takes the time.
+2. **Fix the cost per test:** fewer Git processes and shared fixtures. Keep the Phase 58a rules: no recorded result replaces a live rebase, proof rotation or witness-loss command.
+3. **Cover the four Phase 57 files:** `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs`.
+4. Keep every assertion and every test case. Split a test only with a map from each new test to the original assertions and live transitions.
+5. Measure baseline and final gate counts at the same test concurrency and declared load range on each machine. Record revision, load, test threads, cache state, setup duration and complete-suite duration beside each package and workspace count.
+
+**Files:**
+- `crates/cargo-berth/tests/` — the integration tests.
+- `crates/cargo-berth/tests/support/` — test fixtures.
+- `crates/cargo-berth-test-support/` — shared fixtures.
+- `crates/cargo-berth/src/board/{answers,rows}.rs` and `crates/cargo-berth/src/git/read.rs` — test modules only, for measured slow unit tests.
+
+A product change under `crates/cargo-berth/src/` needs director routing with the measurement that picks it.
+
+**Constraints from prior phases:** Phase 58a: preserve its four recorded histories, private restores, owner renewal, worktree relocation and derived-cache removal. Keep both rebase modes, ordered compaction readers, byte accounting, both compactions, answer transitions, orphan recovery, successor rotation and witness loss live.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, with every cargo-berth test under 1 s; lint.
 
 ### Phase 31 — Ended cells leave whole  · status: parked
 
@@ -2107,7 +2145,7 @@ The next paired capture measures rule a against the approved closing model, and 
 - `render.rs:524` returns the view to `Grid` when the expanded group leaves the visible roster. The grid can still paint a closing cell after that removal. Extend `an_ended_cell_returns_to_the_grid` to check the closing content, the focus, and the return during `Expanding` and `Collapsing`.
 
 **Forward edits from Phase 49 (director, 2026-11-07):**
-- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan.rs:855`) omits the disk value and its gap, with no user remedy.
+- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan/refresh.rs:143`) omits the disk value and its gap, with no user remedy.
 
 **Acceptance gate:**
 - The fixture fails before the fix and passes after.
@@ -2318,7 +2356,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - Phase 48 removed the `p` and `h` status-bar hints. Item 4's on state shows in the shortcuts surface, not on status-bar hints. Phases 32 and 33 keep the optional hint fit (`GlobalSlotFit`), the one hint styler in `bar/support.rs`, the spacing, and the trailing-cell tests (`render.rs:6777`).
 
 **Forward edits from Phase 49 (director, 2026-11-07):**
-- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan.rs:855`) omits the disk value and its gap, with no user remedy.
+- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan/refresh.rs:143`) omits the disk value and its gap, with no user remedy.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, then `... test cargo-tile` green; each test above red before its fix and green after; no test takes a second or more.
@@ -2341,7 +2379,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 **Spec:**
 
 1. **A nextest run without a terminal shows its testing bar (F056).** `crates/cargo-tile/src/progress/capture_read.rs` reads a bar (`Counter::Bar`, phase from the line's status word, `Counter::phase` ~240) and a per-test tally (`Counter::Tally`, `(11/24)`). A nextest run without a terminal draws no bar and writes its first tally only after its first test finishes; the start line it prints first (`Starting N tests across M binaries`) is ignored, so the row shows no bar. Rule: the start line reads as `testing 0/N` (`Phase::Testing`, done 0, total N), and a later tally or bar replaces it as today. The README (`crates/cargo-tile/README.md` ~437–440: "A run whose tests are drawn without a terminal … reports the build alone, a test runner drawing no bar where nothing is watching") is stale: it states that a run without a terminal shows `testing` from its start line and then its tallies. A row that still shows at 0% CPU is intended: a command stays on screen while it runs, whatever its CPU, and the README says so in the same section. Tests, red first: `a_nextest_start_line_reads_as_testing_from_nought` (`parse_state` over a captured start line answers `testing(0, N)`); `a_tally_after_the_start_line_is_what_the_run_is_doing` (start line then tally answers the tally).
-2. **CPU advances by each process's positive change (F057).** On Linux, `RetainedSubtreeCpuTime::update` (`crates/cargo-tile/src/census/invocation_cpu_accounting.rs` ~533-548, the rule at ~537) keeps `self.total = self.total.max(current.values().sum())`. When an orphaned mold helper leaves the tree, the sum falls below the retained maximum, and the reading carries that difference as a debt: CPU the live processes add does not move the total until it has made the debt up, so the row reads 0% while it works. Rule: the total advances by each process's positive change since the last scan, keyed by `ProcessIdentity`; a process that ended or went idle adds nothing and takes nothing away, so it cannot hold the reading. Linux moves an exited child's time into its reaper's counter (the field's comment, ~523), and that time is counted once. Follow the census files these lead to (`census/scan.rs` where the update is called). Tests, red first: `an_orphaned_helper_leaving_holds_no_cpu_debt` (a helper's time leaves the tree, then live processes add CPU: the reading rises by what they added); `cpu_advances_by_each_processs_positive_change`; `a_reaped_childs_time_is_counted_once`. **The CPU oracle changes with the rule.** Phase 27's oracle mirrors the current rule: `NativeCpuHistory.sample` (`crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`, the `CounterRetention.REAPED_CHILDREN` branch) keeps `max(total, sum(counters))`, and `NativeCpuOracle.observe` asserts the product's `accumulated` within 1e-7 of the oracle's. The same change moves that branch to the new per-process rule; no other oracle check changes and no assertion is relaxed. Test, red first: `reader_cpu_oracle_follows_an_orphan_departure_and_a_reaped_child` (supplied counters: the orphan-departure and reaped-child sequences of the three tests above, through the oracle, give the values those tests assert for the product).
+2. **CPU advances by each process's positive change (F057).** On Linux, `RetainedSubtreeCpuTime::update` (`crates/cargo-tile/src/census/invocation_cpu_accounting.rs` ~533-548, the rule at ~537) keeps `self.total = self.total.max(current.values().sum())`. When an orphaned mold helper leaves the tree, the sum falls below the retained maximum, and the reading carries that difference as a debt: CPU the live processes add does not move the total until it has made the debt up, so the row reads 0% while it works. Rule: the total advances by each process's positive change since the last scan, keyed by `ProcessIdentity`; a process that ended or went idle adds nothing and takes nothing away, so it cannot hold the reading. Linux moves an exited child's time into its reaper's counter (the field's comment, ~523), and that time is counted once. Follow the accounting path through `census/scan/census.rs`, where `Census::attribute_cpu_with` calls `InvocationCpuHistory::measure`. Tests, red first: `an_orphaned_helper_leaving_holds_no_cpu_debt` (a helper's time leaves the tree, then live processes add CPU: the reading rises by what they added); `cpu_advances_by_each_processs_positive_change`; `a_reaped_childs_time_is_counted_once`. **The CPU oracle changes with the rule.** Phase 27's oracle mirrors the current rule: `NativeCpuHistory.sample` (`crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`, the `CounterRetention.REAPED_CHILDREN` branch) keeps `max(total, sum(counters))`, and `NativeCpuOracle.observe` asserts the product's `accumulated` within 1e-7 of the oracle's. The same change moves that branch to the new per-process rule; no other oracle check changes and no assertion is relaxed. Test, red first: `reader_cpu_oracle_follows_an_orphan_departure_and_a_reaped_child` (supplied counters: the orphan-departure and reaped-child sequences of the three tests above, through the oracle, give the values those tests assert for the product).
 3. **Already satisfied.** `PlatformCreationTokenUnavailable` and its constructor have matching platform conditions; no source change is required.
 4. **The named slow tests run in under a second** (showrunner: logged for this phase's reader work). These cargo-tile tests took one second or more in phase 20's suite runs, all of which passed; each runs in under a second.
    - Mac:
@@ -2382,7 +2420,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 
 **Files:**
 - `crates/cargo-tile/src/progress/capture_read.rs` — item 1's start line and its tests.
-- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`, `crates/cargo-tile/src/census/scan.rs` — item 2 and its tests, and any other census file the accounting leads to.
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`, `crates/cargo-tile/src/census/scan/census.rs`, `crates/cargo-tile/src/census/scan/census_tests.rs` — item 2 and its tests, and any other census file the accounting leads to.
 - `crates/cargo-tile/README.md` — item 1's stale lines and the 0% CPU sentence.
 - `crates/cargo-port/src/process_observation/identity.rs` — item 3.
 - `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`, `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — item 2's oracle retention branch and its test, and items 4 and 5's reader tests. `reader_scenario.py` stays the launch wrapper; CPU accounting changes go in `reader_scenario_cases.py`.
@@ -2398,7 +2436,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - `impl` — items 1, 2, 3 and 6, item 5's CPU-oracle checks, cargo-tile source, README, the cargo-tile changelog and their tests. Items 4 and 5 measure current timings. Phase 43j owns its unresolved timing defects. Serialize shared reader-fixture edits with Phase 43j. This phase repairs only timing regressions caused by its changes.
 - `status` — item 7: `tui_pane` status rendering, the CPU sampler, the framework, runner deadlines, the `tui_pane` changelog and their tests.
 
-**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 43b: each scan prepares one `Census` and one CPU topology, and on the Mac `InvocationLifetimeReads::apply` patches CPU and lifetimes on that one census; item 2's accounting reads that census and adds no second one. Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan.rs` ~2754), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; The required rule makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. The dependencies name completed prerequisites. Phases 22, 24, 25 and 28 do not land. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. Phase 43h ("Mac reader tests stay under 1 s under load") keeps the compiler stopped until two later scan records complete, then reads the independent kernel CPU counter; keep that order, the strict counter bound and the `SIGCONT` cleanup. Complete nested-command readiness checks before the reader barrier release, with every readiness assertion. General fixture shortening belongs to Phase 43j for its named tests. Preserve its accepted fixture changes. This phase repairs only timing regressions caused by its own changes; the final suite measurement belongs to "Slow tests start first".
+**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 43b: each scan prepares one `Census` and one CPU topology, and on the Mac `InvocationLifetimeReads::apply` patches CPU and lifetimes on that one census; item 2's accounting reads that census and adds no second one. Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan/census.rs`, `census/scan/refresh.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan/invocation.rs` ~759), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; The required rule makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. The dependencies name completed prerequisites. Phases 22, 24, 25 and 28 do not land. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. Phase 43h ("Mac reader tests stay under 1 s under load") keeps the compiler stopped until two later scan records complete, then reads the independent kernel CPU counter; keep that order, the strict counter bound and the `SIGCONT` cleanup. Complete nested-command readiness checks before the reader barrier release, with every readiness assertion. General fixture shortening belongs to Phase 43j for its named tests. Preserve its accepted fixture changes. This phase repairs only timing regressions caused by its own changes; the final suite measurement belongs to "Slow tests start first".
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, `... lint cargo-port` and `... lint tui_pane` once, then `... test cargo-tile` and `... test cargo-port` green; items 1 and 2's tests red before their fix and green after; item 7's cadence tests green; no test takes a second or more.
@@ -2475,7 +2513,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 
 1. **One path draws the hidden-rows mark** (phase 20 finding F029, nit, moved here open; close it with this item) (`crates/cargo-tile/src/render.rs` ~3605). `TableContinuation::RowsWereOmitted` can be drawn by two paths, so where a table's mark lands depends on which path drew the table. Rule: one path draws the hidden-rows mark, in both views, at the row's right end (phase 20 item 8). Test: `a_cut_table_draws_one_hidden_rows_mark`, a cut table in Short and in Long view, reads exactly one hidden-rows `…` from the buffer, at the row's right end.
 2. **Met at phase 20's checkpoint** (phase 20 finding F030, nit; close it with this record). `measurement_cell` (`crates/cargo-tile/src/census/mod.rs` ~38) carries no `_for_test` suffix and is a `#[cfg(test)]` helper the tests share, and the file's tests stand in `mod tests` (~89). Nothing changes.
-3. **The ellipsis is written once, and constants come in through imports** (phase 20 finding F031, nit, moved here open; close it with this item) (`crates/cargo-tile/src/constants.rs` ~196). Phase 23 removed `ARGUMENT_OMISSION_MARK` and the spaced argument mark (its item 2), so that part is met; what remains is the inline `crate::constants::` paths phase 20 added (about 23 lines across `render.rs`, `census/mod.rs`, `census/scan.rs`, `census/process_identity.rs`, `app.rs`, `shim_registration/app_scenarios.rs` and `shim_registration/rows_readout.rs`) name constants at their use sites. Rule: the crate writes the ellipsis only in `ELISION`, and the spaced argument mark is built from it or drawn as a space then `ELISION`; a constant reaches its use site through a `use` import. Test: the render tests that read `…` and ` …` pass unchanged.
+3. **The ellipsis is written once, and constants come in through imports** (phase 20 finding F031, nit, moved here open; close it with this item) (`crates/cargo-tile/src/constants.rs` ~196). Phase 23 removed `ARGUMENT_OMISSION_MARK` and the spaced argument mark (its item 2), so that part is met; what remains is the inline `crate::constants::` paths phase 20 added (about 23 lines across `render.rs`, `census/mod.rs`, `census/scan/census_tests.rs`, `census/process_identity.rs`, `app.rs`, `shim_registration/app_scenarios.rs` and `shim_registration/rows_readout.rs`) name constants at their use sites. Rule: the crate writes the ellipsis only in `ELISION`, and the spaced argument mark is built from it or drawn as a space then `ELISION`; a constant reaches its use site through a `use` import. Test: the render tests that read `…` and ` …` pass unchanged.
 4. **A Long ancestry level cut between words keeps its mark against its text** (phase 20 finding F034, minor, moved here open; close it with this item) (shot `cdeeplong126x120`, the `verify.sh` argv). When the row budget ends at a word break, the row ends on the break's blank and the `…` follows it, so a blank cell stands between the last word and its mark. Rule (phase 20 item 4's, at a word break): the mark follows the last drawn character, with no blank cell between them. Test: `a_long_ancestry_cut_at_a_word_break_marks_its_last_word`, a Long ancestry level whose row budget ends at a blank between words, draws the `…` in the cell directly after the last word's final character.
 5. **The frame that paints is the frame that decided** (`render.rs` `prepare_frame` ~395-425; `crates/tui_pane/src/tiles/draw/paint.rs:60` `draw_tile_grid`; `draw/measurements.rs:41` `prepare_grid`). The row-end reservation is decided from a preliminary drawing whose heights and `grid.progress()` read can differ from the painted frame. On a motion frame, or the frame a cell's allocation changes, a table can hide rows without its two mark cells (the hidden-rows `…` lands on the rightmost value's last cell), or hold the two cells with nothing hidden. Rule: the reservation is decided on the heights the frame paints, read from item 33's prepared plan, and a frame reads `grid.progress()` once. First check whether phase 20's round 4, which makes `draw_tile_grid` run one demands pass and one sync per frame, already closed it; if so, this item is only the test that pins it. Test: `every_moving_frame_reserves_the_row_end_only_when_it_hides_rows`, through the public draw path across a motion and an allocation change, reads every frame: a table that hides rows draws its mark in the two cells after its last value, and a table that hides none reserves no cells.
 6. **Each cache keys on the inputs that change its answer** (`render.rs`: the `FrameTableColumnGrid` caches; `process_row` and its pid-indexed `by_pid: HashMap<u32, Vec<CachedProcessRow>>` ~4223). At phase 20's checkpoint process rows already look up by pid, and `pinned` is resolved before the layout cache is read, so a diagnosis of three scanned vectors, a quadratic lookup and a missing `pinned` key no longer holds. What remains: split the immutable frame context, fixed for the whole frame (the frame's column grids, view and the frame-wide `CommandView` Phase 23 added, whose hierarchy (`p`), argument detail (`h`) and default arguments are independent inputs), from the inputs that vary between lookups within a frame (row identity, `row_progress`, width, height); name the owner of each, and key every cache on the varying inputs it reads. Check each input against the current code first; one already keyed closes with its test. Test: `a_process_row_cache_answers_each_input_apart`, two rows on one grid that differ only in `row_progress` (and in any other varying input the check finds unkeyed), each draw their own form.
@@ -2498,8 +2536,8 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 23. **Long view wraps at the column's full width** (design check p20f, cnlong22x120). A 10-cell command column wraps at 8 cells, so 9-cell words split (`--profil`/`e ci`) and over-wide words break 2 cells short. Rule: wrap at the column's width less only the reserved mark cell, and only on the row that holds the mark. Test: `a_narrow_long_column_wraps_at_its_full_width`.
 24. **Shot coverage** (design check p20f): the shot set adds a Short ancestry with a cut basename and a Long ancestry level cut by its budget, so phase 20's items 3 and 4 are judged on screen.
 25. **Every external subcommand keeps its action word** (main read round 10, `render.rs` ~4687-4694, `constants.rs` ~277). A state frame's command budget keeps the action word only for `nextest`, so `cargo hack check …`, `cargo insta test …` and `cargo llvm-cov nextest …` budget as `cargo hack …`. Keep one following word for every external subcommand and none for a cargo built-in, then drop `NEXTEST_SUBCOMMAND_NAME`. The executable's layout does not decide it: `cargo_split` (`command_text.rs` ~453–465) answers `ArgumentLayout::Cargo` whenever argv holds the cargo binary, `cargo hack check` included, and `ArgumentLayout::External` only for a `cargo-<name>` binary run directly. Rule: `CommandText` carries a semantic classification of its subcommand (for example `SubcommandKind::{BuiltIn, External}`), decided from the subcommand name against one table of cargo's built-in commands in `constants.rs`, the same for `cargo hack check` and `cargo-hack hack check`. The subcommand is read through the one option-skipping function over the `Global` scope of `COMMAND_VALUED_OPTIONS` (Phase 23's table; Phase 24 carries Phase 22 item 11), so `commands.hidden` still matches `cargo --config k=v port`. Tests: `an_external_subcommand_keeps_its_action_word_in_both_spellings` (`cargo hack check …` and `cargo-hack hack check …` budget as `cargo hack check …`), `a_built_in_subcommand_keeps_no_action_word` (`cargo check`, `cargo test` controls), and `cargo --offline hack check …` classifies as external.
-26. **An excluded driver's reading falls back to its drawn child** (main read round 10, `census/scan.rs` `annotate_capture` ~3317 and `capture_boundaries.extend` ~3245, with `Census::prepare` ~1874). `capture_boundaries` holds cargo pids that `select_rows` later drops (`commands.excluded`, rejected programs), so a drawn `cargo check` under an excluded driver with an unconfirmed capture borrows a reading that no drawn row owns. Test the endpoint against the drawn cargo set, or give the excluded driver's reading to its child.
-27. **Round 10 tidy** (main read round 10). `NEXTEST_SUBCOMMAND_NAME` out of the alphabetical constants block (goes with item 25); the `FrameCommandColumns` doc moves its payload sentence to the `StateFrame` variant (`render.rs` ~3260); `annotate_capture`'s two disjuncts become one inclusive ancestor walk (`scan.rs` ~2289-2297); `longest_subcommand_width` is computed only for state-frame command grids (`render.rs` ~3192); `CHANGELOG.md` ~62 and ~64 merge into one line.
+26. **An excluded driver's reading falls back to its drawn child** (main read round 10, `census/scan/census.rs` `annotate_capture` ~1921 and `capture_boundaries.extend` ~1849, with `Census::prepare` ~314). `capture_boundaries` holds cargo pids that `select_rows` later drops (`commands.excluded`, rejected programs), so a drawn `cargo check` under an excluded driver with an unconfirmed capture borrows a reading that no drawn row owns. Test the endpoint against the drawn cargo set, or give the excluded driver's reading to its child.
+27. **Round 10 tidy** (main read round 10). `NEXTEST_SUBCOMMAND_NAME` out of the alphabetical constants block (goes with item 25); the `FrameCommandColumns` doc moves its payload sentence to the `StateFrame` variant (`render.rs` ~3260); `annotate_capture`'s two disjuncts become one inclusive ancestor walk (`census/scan/census.rs` ~1967-1975); `longest_subcommand_width` is computed only for state-frame command grids (`render.rs` ~3192); `CHANGELOG.md` ~62 and ~64 merge into one line.
 28. **A summary that hides rows keeps `mem` when it fits** (p20j and p20k w40_cut, 40x50, 26 projects). The summary draws `pid cpu state command` and drops `mem`, though `pid cpu mem state command` with `cargo tw …` and the hidden-rows mark needs 34 of its 36 cells. The row-end reservation takes width ahead of `mem`, the route F050 closed for command tables. Also seen in p20l c48 and cinst53-57.
 29. **One Long cut form** (round 12 read). A Long command cut is word-cut (`--locked …`) in a frame that draws `state` and grapheme-cut (`--offlin…`) in other frames, so one row changes its cut form when another command blocks. Use the whole-word cut for every Long cut, and remove `CommandCutBoundary` with its redundant clear of the command cells; give `command_cut_boundary` its doc comment if it stays. Also (p20l): the summary and every frame without a state slot still cut Long arguments mid-word (clong64k summary `--no-…` for `--no-fail-fast`; clong64 `--off…`, `bu…`; clong40, cutfoot, cdrvlong64x20, cdeeplong126x120), and the clong64k cells put the argument mark at a fixed column with blanks after the last word. One whole-word form everywhere, mark directly after the last kept word.
 30. **An empty column keeps the right title** (round 12 read). In a narrow frame that draws `state`, a table with no state value whose rows all lack a parent keeps an empty titled `state` column where round 10 drew an empty `parent` column: the reduced candidate restores no value, so the layout with the empty `state` slot stands. Drop the empty `state` slot there too.
@@ -2519,7 +2557,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
 - `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
 - `crates/cargo-tile/src/constants.rs` — item 3's ellipsis; items 25 and 27's constant, and item 25's table of cargo built-in commands.
-- `crates/cargo-tile/src/census/mod.rs` — item 3's imports; `census/scan.rs`, `census/process_identity.rs`, `app.rs`, `shim_registration/app_scenarios.rs`, `shim_registration/rows_readout.rs` — item 3's imports only. Items 26 and 27 also edit `census/scan.rs` (`annotate_capture`) and `census/command_text.rs` (item 25 carries the external-subcommand layout on `CommandText`).
+- `crates/cargo-tile/src/census/mod.rs` — item 3's imports; `census/scan/census_tests.rs`, `census/process_identity.rs`, `app.rs`, `shim_registration/app_scenarios.rs`, `shim_registration/rows_readout.rs` — item 3's imports only. Items 26 and 27 also edit `census/scan/census.rs` (`annotate_capture`) and `census/command_text.rs` (item 25 carries the external-subcommand layout on `CommandText`).
 - `crates/tui_pane/src/tiles/draw/contents.rs` — item 11; `draw/mod.rs` — its dyn-compatibility test; `draw/measurements.rs`, `draw/paint.rs` and `draw/paint_tests.rs` — item 5, only when phase 20's round 4 left the preliminary drawing.
 - `crates/tui_pane/src/tiles/grid/tile_grid.rs` and `grid/allocation_tests.rs` — item 14, when its decision reads the grid's allocation there.
 - `crates/tui_pane/src/pane/frame.rs` — item 9's test.
@@ -2538,7 +2576,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - Item 11's dyn-compatible `TileCells` change covers `prepare_moving_frame` (`tui_pane/src/tiles/draw/contents.rs:86`) as well as `prepare_frame`, and the caller `ExpandedCell::prepare_frame` (`render.rs:599`). The `&dyn TileCells<_>` test needs both.
 
 **Forward edits from Phase 49 (director, 2026-11-07):**
-- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan.rs:855`) omits the disk value and its gap, with no user remedy.
+- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan/refresh.rs:143`) omits the disk value and its gap, with no user remedy.
 - `SummaryFootPreparation` (`render/frame_preparation.rs`) retains the foot by memory, rounded disk text and theme. `PreparedPaneFrame` joins it to the independently retained tables. A table change keeps this boundary. `disk_text_changes_reuse_table_preparation_and_update_only_the_foot` and `an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize` pass unchanged.
 
 **Acceptance gate:**
@@ -2981,7 +3019,7 @@ New tests:
 Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `painting_twice_changes_no_layout_state`, `an_unchanged_scan_does_not_extend_travel`, and `claiming_an_entering_vacant_cell_preserves_its_identity_and_admission`.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid/{mod,demands,pieces,rows,heights,motion,arrangement,visual,selection,tile_grid,layout,allocation,bands}.rs`, their tests `grid/{allocation_tests,arrangement_tests,tile_grid_tests}.rs` and `grid/tests/{mod,motion,motion_rules,summary_depth}.rs`, `crates/tui_pane/src/tiles/draw/{mod,contents,fade,rows,foot,measurements,paint}.rs`, their tests `draw/{fade_tests,rows_tests,foot_tests,paint_tests}.rs` and `draw/tests/{mod,motion}.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code, the painter, `TileGroupTitle` and their tests.
+- `crates/tui_pane/src/tiles/grid/{mod,demands,pieces,rows,heights,motion,arrangement,visual,selection,tile_grid,layout,allocation,bands}.rs`, `crates/tui_pane/src/tiles/grid/{allocation_tests,arrangement_tests,tile_grid_tests}.rs`, `crates/tui_pane/src/tiles/grid/tests/{mod,motion,motion_rules,summary_depth}.rs`, `crates/tui_pane/src/tiles/draw/{mod,contents,fade,rows,foot,measurements,paint}.rs`, `crates/tui_pane/src/tiles/draw/{fade_tests,rows_tests,foot_tests,paint_tests}.rs`, `crates/tui_pane/src/tiles/draw/tests/{mod,motion}.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code, the painter, `TileGroupTitle` and their tests.
 - `crates/tui_pane/src/tiles/target_layout.rs`, `crates/tui_pane/src/tiles/motion.rs` — new: the pure target layout and the step.
 - `crates/tui_pane/src/tiles/settings.rs` — the ripple step settings, which the new model drops.
 - `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the additive preparation API and the `TileGroupTitle` export.
@@ -3004,7 +3042,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - Keep the Phase 46 motion tests green. Compare total motion CPU and frame counts for expand, collapse and ordinary travel against the pre-phase reader.
 
 **Forward edits from Phase 49 (director, 2026-11-07):**
-- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan.rs:855`) omits the disk value and its gap, with no user remedy.
+- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan/refresh.rs:143`) omits the disk value and its gap, with no user remedy.
 - Binding: a disk or summary change reaches both preparation paths (Grid and Expanded).
 - `SummaryFootPreparation` (`render/frame_preparation.rs`) retains the foot by memory, rounded disk text and theme. `PreparedPaneFrame` joins it to the independently retained tables. A table change keeps this boundary. `disk_text_changes_reuse_table_preparation_and_update_only_the_foot` and `an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize` pass unchanged. `SummaryFootPreparation` is the one permitted exception to this phase's frame-cache ban.
 - Item 19's idle gate assumes unchanged displayed disk text: `drain_scans` (`terminal.rs:296`) also requests a frame when the rounded disk text changes. Add an injected-scan test: a shown disk change updates the foot in each view, restarts no motion and rebuilds no table.

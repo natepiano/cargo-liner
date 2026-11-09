@@ -70,15 +70,15 @@ enum CrossTargetRemainder {
 impl ActingHeadContainment {
     /// Select the current checkout's recorded target, or its automatic branch target.
     pub(crate) fn observe_for_actor(
-        reservations: &RetainedReservationSet,
-        repository: &RepositorySnapshot,
-        authorization: ResolvedEditAuthorization,
+        retained_reservation_set: &RetainedReservationSet,
+        repository_snapshot: &RepositorySnapshot,
+        resolved_edit_authorization: ResolvedEditAuthorization,
     ) -> Self {
         Self::observe_for_actor_holders(
-            reservations,
-            repository,
-            authorization,
-            &reservations.iter().collect::<Vec<_>>(),
+            retained_reservation_set,
+            repository_snapshot,
+            resolved_edit_authorization,
+            &retained_reservation_set.iter().collect::<Vec<_>>(),
         )
     }
 
@@ -457,13 +457,13 @@ enum HolderTargetRelation {
 }
 
 fn committed_path_remains(
-    observed: &HolderHeadRemainder,
+    holder_head_remainder: &HolderHeadRemainder,
     path: &ReservationScopePath,
     holder_target_relation: HolderTargetRelation,
 ) -> bool {
-    observed.committed_paths.contains(path)
+    holder_head_remainder.committed_paths.contains(path)
         && (matches!(holder_target_relation, HolderTargetRelation::SameTarget)
-            || match &observed.outside_target {
+            || match &holder_head_remainder.outside_target {
                 CrossTargetRemainder::NotApplicable | CrossTargetRemainder::Unavailable => true,
                 CrossTargetRemainder::Paths(paths) => paths.contains(path),
             })
@@ -810,27 +810,27 @@ mod tests {
     fn cross_target_committed_work_requires_a_remainder_from_the_acting_target()
     -> Result<(), Box<dyn std::error::Error>> {
         let path: ReservationScopePath = "Cargo.toml".parse()?;
-        let cover = HolderHeadRemainder {
+        let cover_holder_head_remainder = HolderHeadRemainder {
             head:            "1111111111111111111111111111111111111111".parse::<GitObjectId>()?,
             committed_paths: paths(&["Cargo.toml"])?,
             outside_target:  CrossTargetRemainder::Paths(HashSet::new()),
         };
         assert!(!committed_path_remains(
-            &cover,
+            &cover_holder_head_remainder,
             &path,
             HolderTargetRelation::OtherTarget
         ));
         assert!(committed_path_remains(
-            &cover,
+            &cover_holder_head_remainder,
             &path,
             HolderTargetRelation::SameTarget
         ));
-        let sibling = HolderHeadRemainder {
+        let sibling_holder_head_remainder = HolderHeadRemainder {
             outside_target: CrossTargetRemainder::Paths(paths(&["Cargo.toml"])?),
-            ..cover
+            ..cover_holder_head_remainder
         };
         assert!(committed_path_remains(
-            &sibling,
+            &sibling_holder_head_remainder,
             &path,
             HolderTargetRelation::OtherTarget
         ));
@@ -838,12 +838,12 @@ mod tests {
             CrossTargetRemainder::NotApplicable,
             CrossTargetRemainder::Unavailable,
         ] {
-            let unfiltered = HolderHeadRemainder {
+            let unfiltered_holder_head_remainder = HolderHeadRemainder {
                 outside_target: remainder,
-                ..sibling.clone()
+                ..sibling_holder_head_remainder.clone()
             };
             assert!(committed_path_remains(
-                &unfiltered,
+                &unfiltered_holder_head_remainder,
                 &path,
                 HolderTargetRelation::OtherTarget
             ));
@@ -857,7 +857,7 @@ mod tests {
         let repository_trunk = IntegrationTarget::from_branch_argument("main")?;
         let acting_target = IntegrationTarget::from_branch_argument("integration")?;
         let path: ReservationScopePath = "integration.txt".parse()?;
-        let holder = HolderHeadRemainder {
+        let holder_head_remainder = HolderHeadRemainder {
             head:            "1111111111111111111111111111111111111111".parse()?,
             committed_paths: paths(&["integration.txt"])?,
             outside_target:  CrossTargetRemainder::Paths(HashSet::new()),
@@ -865,7 +865,7 @@ mod tests {
         let holder_target = holder_target(&RecordedTarget::Unrecorded, &repository_trunk);
         assert_ne!(holder_target, &acting_target);
         assert!(!committed_path_remains(
-            &holder,
+            &holder_head_remainder,
             &path,
             if holder_target == &acting_target {
                 HolderTargetRelation::SameTarget
@@ -874,7 +874,7 @@ mod tests {
             }
         ));
         assert!(committed_path_remains(
-            &holder,
+            &holder_head_remainder,
             &path,
             if holder_target == &repository_trunk {
                 HolderTargetRelation::SameTarget

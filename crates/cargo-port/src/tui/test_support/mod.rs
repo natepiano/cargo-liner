@@ -477,7 +477,7 @@ mod tests {
             "quiet reload and reset paths must keep every startup effect suppressed"
         );
         assert!(
-            !app.background.watcher_is_active(),
+            app.background.watcher_state() == crate::tui::background::WatcherState::Disabled,
             "quiet watcher respawn installs a disabled watcher handle"
         );
     }
@@ -544,7 +544,10 @@ mod tests {
         assert!(app.config.path().is_some_and(std::path::Path::exists));
         assert!(app.keymap.path().is_some_and(std::path::Path::exists));
         assert!(app.themes.dir().is_some_and(std::path::Path::exists));
-        assert!(!app.background.watcher_is_active());
+        assert_eq!(
+            app.background.watcher_state(),
+            crate::tui::background::WatcherState::Disabled
+        );
         assert_eq!(counts.watcher().real(), 0);
         assert_eq!(counts.lint_runtime().real(), 0);
         assert_eq!(counts.lint_history_hydration().real(), 0);

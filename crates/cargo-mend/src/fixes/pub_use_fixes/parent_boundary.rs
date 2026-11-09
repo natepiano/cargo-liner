@@ -49,16 +49,16 @@ impl ParentExportSpan {
 pub(super) fn build_parent_pub_use_edit_for_exports(
     parent_boundary: &ParentBoundaryKey,
     exports: &[(String, String)],
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<UseFix> {
-    let parsed = sources
+    let parsed_source = parsed_sources
         .source(&parent_boundary.parent_module)
         .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
-    let file = parsed
+    let file = parsed_source
         .syntax()
         .context("failed to parse parent module file")?;
-    let source = parsed.text();
-    let lines = SourceLines::new(source);
+    let source = parsed_source.text();
+    let source_lines = SourceLines::new(source);
     for item in &file.items {
         let Item::Use(item_use) = item else {
             continue;
@@ -66,7 +66,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
         let Some(use_prefix) = facade_use_prefix(&item_use.vis) else {
             continue;
         };
-        let (start, end) = facade_redirect::item_use_byte_range(&lines, item_use)?;
+        let (start, end) = facade_redirect::item_use_byte_range(&source_lines, item_use)?;
         if start != parent_boundary.item_start || end != parent_boundary.item_end {
             continue;
         }
@@ -92,15 +92,15 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
 }
 
 pub(super) fn resolve_parent_pub_use_export(
-    parent: &ParsedSource,
+    parsed_source: &ParsedSource,
     line: usize,
     child_module_name: &str,
     item_name: &str,
 ) -> Result<Option<ParentExportSpan>> {
-    let file = parent
+    let file = parsed_source
         .syntax()
         .context("failed to parse parent module file")?;
-    let lines = SourceLines::new(parent.text());
+    let source_lines = SourceLines::new(parsed_source.text());
     for item in &file.items {
         let Item::Use(item_use) = item else {
             continue;
@@ -113,14 +113,14 @@ pub(super) fn resolve_parent_pub_use_export(
         if !(start_line..=end_line).contains(&line) {
             continue;
         }
-        if !parent_pub_use_exports_item(&item_use.tree, child_module_name, item_name) {
-            // `resolve_parent_pub_use_export` keeps scanning when `parent_pub_use_exports_item`
-            // rejects an item: two `use` declarations can share one physical line, so
-            // scan the rest of the line rather than treating the first textual match as
-            // authoritative.
+        if parent_pub_use_exports_item(&item_use.tree, child_module_name, item_name)
+            == ParentExportMatch::Absent
+        {
+            // `ParentExportMatch::Absent` keeps `resolve_parent_pub_use_export` scanning the
+            // rest of this line for another declaration.
             continue;
         }
-        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use)?;
+        let (item_start, item_end) = facade_redirect::item_use_byte_range(&source_lines, item_use)?;
         return Ok(Some(ParentExportSpan {
             exported_name: item_name.to_string(),
             item_start,
@@ -130,7 +130,20 @@ pub(super) fn resolve_parent_pub_use_export(
     Ok(None)
 }
 
-fn parent_pub_use_exports_item(tree: &UseTree, child_module_name: &str, item_name: &str) -> bool {
+/// Whether a parent `UseTree` exports the named item directly from its child module.
+/// `Absent` keeps the scanner searching: two `use` declarations can share one physical
+/// line, so the first textual match is not authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParentExportMatch {
+    Matches,
+    Absent,
+}
+
+fn parent_pub_use_exports_item(
+    tree: &UseTree,
+    child_module_name: &str,
+    item_name: &str,
+) -> ParentExportMatch {
     parent_pub_use_exports_item_with_prefix(Vec::new(), tree, child_module_name, item_name)
 }
 
@@ -139,7 +152,7 @@ fn parent_pub_use_exports_item_with_prefix(
     tree: &UseTree,
     child_module_name: &str,
     item_name: &str,
-) -> bool {
+) -> ParentExportMatch {
     match tree {
         UseTree::Path(path) => {
             let mut next = prefix;
@@ -148,17 +161,30 @@ fn parent_pub_use_exports_item_with_prefix(
         },
         UseTree::Name(name) => {
             let normalized = rust_syntax::trim_leading_self(&prefix);
-            normalized.len() == 1 && normalized[0] == child_module_name && name.ident == item_name
+            if normalized.len() == 1
+                && normalized[0] == child_module_name
+                && name.ident == item_name
+            {
+                ParentExportMatch::Matches
+            } else {
+                ParentExportMatch::Absent
+            }
         },
-        UseTree::Group(group) => group.items.iter().any(|item| {
-            parent_pub_use_exports_item_with_prefix(
-                prefix.clone(),
-                item,
-                child_module_name,
-                item_name,
-            )
-        }),
-        UseTree::Rename(_) | UseTree::Glob(_) => false,
+        UseTree::Group(group) => {
+            for item in &group.items {
+                match parent_pub_use_exports_item_with_prefix(
+                    prefix.clone(),
+                    item,
+                    child_module_name,
+                    item_name,
+                ) {
+                    ParentExportMatch::Matches => return ParentExportMatch::Matches,
+                    ParentExportMatch::Absent => {},
+                }
+            }
+            ParentExportMatch::Absent
+        },
+        UseTree::Rename(_) | UseTree::Glob(_) => ParentExportMatch::Absent,
     }
 }
 

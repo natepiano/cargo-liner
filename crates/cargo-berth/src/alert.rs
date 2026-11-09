@@ -76,8 +76,12 @@ impl Alert {
                 waiting_reservations,
                 ..
             } => waiting_reservations[0],
-            Self::LostIntegrationEvidence(alert) => alert.reservation_id,
-            Self::OrphanedOutstanding(alert) => alert.reservation_id,
+            Self::LostIntegrationEvidence(lost_integration_evidence_alert) => {
+                lost_integration_evidence_alert.reservation_id
+            },
+            Self::OrphanedOutstanding(orphaned_outstanding_alert) => {
+                orphaned_outstanding_alert.reservation_id
+            },
         }
     }
 
@@ -95,8 +99,12 @@ impl Alert {
                 waiting_reservations,
                 ..
             } => waiting_reservations.as_slice(),
-            Self::LostIntegrationEvidence(alert) => std::slice::from_ref(&alert.reservation_id),
-            Self::OrphanedOutstanding(alert) => std::slice::from_ref(&alert.reservation_id),
+            Self::LostIntegrationEvidence(lost_integration_evidence_alert) => {
+                std::slice::from_ref(&lost_integration_evidence_alert.reservation_id)
+            },
+            Self::OrphanedOutstanding(orphaned_outstanding_alert) => {
+                std::slice::from_ref(&orphaned_outstanding_alert.reservation_id)
+            },
         }
     }
 
@@ -107,10 +115,12 @@ impl Alert {
             | Self::TargetUncovered { .. }
             | Self::MergeExtentUnavailable { .. }
             | Self::LostIntegrationEvidence(_) => 0,
-            Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
-                BranchRefStatus::Present { .. } => 4,
-                BranchRefStatus::Missing { .. } => 3,
-                BranchRefStatus::Detached => 2,
+            Self::OrphanedOutstanding(orphaned_outstanding_alert) => {
+                match orphaned_outstanding_alert.branch_ref_status {
+                    BranchRefStatus::Present { .. } => 4,
+                    BranchRefStatus::Missing { .. } => 3,
+                    BranchRefStatus::Detached => 2,
+                }
             },
         }
     }
@@ -133,13 +143,13 @@ impl Alert {
             Self::MergeExtentUnavailable { reservation_id, .. } => format!(
                 "cargo-berth could not observe the merge extent of reservation {reservation_id}, which keeps its previous protection"
             ),
-            Self::LostIntegrationEvidence(alert) => format!(
+            Self::LostIntegrationEvidence(lost_integration_evidence_alert) => format!(
                 "cargo-berth lost the integration evidence of released reservation {}",
-                alert.reservation_id
+                lost_integration_evidence_alert.reservation_id
             ),
-            Self::OrphanedOutstanding(alert) => format!(
+            Self::OrphanedOutstanding(orphaned_outstanding_alert) => format!(
                 "cargo-berth found no validated worktree holder for protected reservation {}",
-                alert.reservation_id
+                orphaned_outstanding_alert.reservation_id
             ),
         }
     }
@@ -173,42 +183,46 @@ impl Display for Alert {
                 formatter,
                 "Reservation {reservation_id} retains its previous merge protection: {failure}."
             ),
-            Self::LostIntegrationEvidence(alert) => match &alert.recovery {
-                LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
-                    formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and integration target commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --reservation {} --json`.",
-                    alert.reservation_id,
-                    trunk_oid,
-                    alert.protected_tip,
-                    alert.reservation_id,
-                    trunk_oid,
-                    alert.reservation_id,
-                ),
-                LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
-                    formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {} --json`.",
-                    alert.reservation_id,
-                    trunk_oid,
-                    alert.protected_tip,
-                    alert.reservation_id,
-                    alert.reservation_id,
-                    alert.reservation_id,
-                ),
-                LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
-                    formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --reservation {} --json`.",
-                    alert.reservation_id, alert.protected_tip, alert.reservation_id,
-                ),
+            Self::LostIntegrationEvidence(lost_integration_evidence_alert) => {
+                match &lost_integration_evidence_alert.recovery {
+                    LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
+                        formatter,
+                        "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and integration target commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --reservation {} --json`.",
+                        lost_integration_evidence_alert.reservation_id,
+                        trunk_oid,
+                        lost_integration_evidence_alert.protected_tip,
+                        lost_integration_evidence_alert.reservation_id,
+                        trunk_oid,
+                        lost_integration_evidence_alert.reservation_id,
+                    ),
+                    LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
+                        formatter,
+                        "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {} --json`.",
+                        lost_integration_evidence_alert.reservation_id,
+                        trunk_oid,
+                        lost_integration_evidence_alert.protected_tip,
+                        lost_integration_evidence_alert.reservation_id,
+                        lost_integration_evidence_alert.reservation_id,
+                        lost_integration_evidence_alert.reservation_id,
+                    ),
+                    LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
+                        formatter,
+                        "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --reservation {} --json`.",
+                        lost_integration_evidence_alert.reservation_id,
+                        lost_integration_evidence_alert.protected_tip,
+                        lost_integration_evidence_alert.reservation_id,
+                    ),
+                }
             },
-            Self::OrphanedOutstanding(alert) => write!(
+            Self::OrphanedOutstanding(orphaned_outstanding_alert) => write!(
                 formatter,
                 "Alert: orphaned outstanding reservation {} at protected tip {}; branch {}; object {}; retention {}; recovery {}.",
-                alert.reservation_id,
-                alert.protected_tip,
-                alert.branch_ref_status,
-                alert.object_availability,
-                alert.retention_ref,
-                alert.recoverability,
+                orphaned_outstanding_alert.reservation_id,
+                orphaned_outstanding_alert.protected_tip,
+                orphaned_outstanding_alert.branch_ref_status,
+                orphaned_outstanding_alert.object_availability,
+                orphaned_outstanding_alert.retention_ref,
+                orphaned_outstanding_alert.recoverability,
             ),
         }
     }
@@ -471,7 +485,7 @@ impl OrphanResolutionAction {
     /// Select recovery guidance without making another repository observation.
     pub(crate) fn new(
         orphan: &OrphanedOutstandingAlert,
-        repository_trunk: &JudgedTargetTip,
+        judged_target_tip: &JudgedTargetTip,
     ) -> Self {
         match orphan.recoverability() {
             RecoverabilityVerdict::CommitUnavailable => Self::RetireOrAbandon,
@@ -480,7 +494,7 @@ impl OrphanResolutionAction {
                 let action = LostEvidenceRecoveryCommand::ResolveIntegratedAs {
                     reservation_id: orphan.reservation_id(),
                 };
-                Self::Recover(match (orphan.integration_evidence(), repository_trunk) {
+                Self::Recover(match (orphan.integration_evidence(), judged_target_tip) {
                     (OrphanIntegrationEvidence::Proven(carrying_commit), _) => {
                         LostEvidenceRecovery::VerifyResolvedTrunk {
                             trunk_oid: carrying_commit.as_ref().clone(),
@@ -697,7 +711,7 @@ enum BranchProtectedTipStatus {
 /// Derive an alert when a released Git-backed disposition has no affirmative proof.
 pub(crate) fn for_lost_integration_evidence(
     reservation: &Reservation,
-    repository_trunk: &JudgedTargetTip,
+    judged_target_tip: &JudgedTargetTip,
 ) -> Result<Vec<Alert>, ReservationReplayError> {
     let ReservationEvidenceState::Released {
         protected_tip,
@@ -726,7 +740,7 @@ pub(crate) fn for_lost_integration_evidence(
     };
     // `for_lost_integration_evidence` emits an alert only when `repository_trunk` does not prove
     // the work, so its resolved tip is never offered as the `--integrated-as` argument.
-    let recovery = match repository_trunk {
+    let recovery = match judged_target_tip {
         JudgedTargetTip::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
             trunk_oid: trunk_oid.clone(),
             action,
@@ -761,7 +775,7 @@ impl Display for RecoverabilityVerdict {
 /// Derive an alert only for an outstanding reservation proven orphaned.
 pub(crate) fn for_orphaned_outstanding(
     repository_root: &Path,
-    objects: &OperationObjectReader,
+    operation_object_reader: &OperationObjectReader,
     reservation: &Reservation,
     worktree_liveness: WorktreeLiveness,
     integration_evidence: OrphanIntegrationEvidence,
@@ -774,11 +788,12 @@ pub(crate) fn for_orphaned_outstanding(
     }
 
     let branch_ref_status = branch_status(repository_root, reservation)?;
-    let object_availability = if objects.commit_is_available(protected_tip.as_ref())? {
-        ObjectAvailability::Available
-    } else {
-        ObjectAvailability::Unavailable
-    };
+    let object_availability =
+        if operation_object_reader.commit_is_available(protected_tip.as_ref())? {
+            ObjectAvailability::Available
+        } else {
+            ObjectAvailability::Unavailable
+        };
     let retention_ref = retention_status(repository_root, reservation.id(), protected_tip)?;
     let branch_protected_tip_status =
         branch_protected_tip_status(repository_root, &branch_ref_status, protected_tip)?;
@@ -1165,8 +1180,12 @@ mod tests {
             }
         }
 
-        fn routing(&self, occasion: EngineAnswerOccasion) -> AlertRouting {
-            AlertRouting::new(occasion, self.invoking_worktree, self.holders.clone())
+        fn routing(&self, engine_answer_occasion: EngineAnswerOccasion) -> AlertRouting {
+            AlertRouting::new(
+                engine_answer_occasion,
+                self.invoking_worktree,
+                self.holders.clone(),
+            )
         }
     }
 

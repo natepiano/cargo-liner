@@ -701,26 +701,61 @@ mod tests {
                 OperationIntent::ReadOnly,
                 OperationIntent::ReadOnly,
                 0,
-                false,
+                OperationIntent::Apply,
             ),
-            (OperationIntent::ReadOnly, OperationIntent::DryRun, 3, true),
-            (OperationIntent::ReadOnly, OperationIntent::Apply, 3, false),
-            (OperationIntent::DryRun, OperationIntent::ReadOnly, 2, true),
-            (OperationIntent::DryRun, OperationIntent::DryRun, 5, true),
-            (OperationIntent::DryRun, OperationIntent::Apply, 3, false),
-            (OperationIntent::Apply, OperationIntent::ReadOnly, 2, false),
-            (OperationIntent::Apply, OperationIntent::DryRun, 3, true),
-            (OperationIntent::Apply, OperationIntent::Apply, 5, false),
+            (
+                OperationIntent::ReadOnly,
+                OperationIntent::DryRun,
+                3,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::ReadOnly,
+                OperationIntent::Apply,
+                3,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::ReadOnly,
+                2,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::DryRun,
+                5,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::Apply,
+                3,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::ReadOnly,
+                2,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::DryRun,
+                3,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::Apply,
+                5,
+                OperationIntent::Apply,
+            ),
         ];
-        for (left, right, count, preview) in cases {
+        for (left, right, count, intent) in cases {
             let mut fix = FixNotice::from_intent(left, FixKind::Import, 2);
             fix.outcome
                 .merge(FixNotice::from_intent(right, FixKind::Import, 3).outcome);
-            let intent = if preview {
-                OperationIntent::DryRun
-            } else {
-                OperationIntent::Apply
-            };
             assert_eq!(fix, FixNotice::from_intent(intent, FixKind::Import, count));
             let mut pub_use = PubUseNotice::from_intent(left, 2, 1);
             pub_use.merge(PubUseNotice::from_intent(right, 3, 2));

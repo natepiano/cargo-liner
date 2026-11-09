@@ -127,7 +127,7 @@ impl CoveredIntegrationAnchors {
         reservations: &RetainedReservationSet,
         snapshot: &RepositorySnapshot,
     ) -> Self {
-        let Ok(registry) = crate::worktree::WorktreeRegistry::read(repository) else {
+        let Ok(worktree_registry) = crate::worktree::WorktreeRegistry::read(repository) else {
             return Self::default();
         };
         let mut tips = BTreeMap::new();
@@ -137,7 +137,7 @@ impl CoveredIntegrationAnchors {
                 continue;
             };
             let target = snapshot.recorded_target(holder.id());
-            if registry
+            if worktree_registry
                 .context_for_branch(target.reference())
                 .is_none_or(|context| context.repository_root() != repository.repository_root())
             {
@@ -178,10 +178,10 @@ impl IncursionCommitOriginMembership {
         // `IncursionCommitOriginMembership::TargetCheckout` avoids comparing a target checkout
         // against its own new tip, which would call every write inherited. Its phase range is
         // entering work; only per-holder cover ancestry can exempt a covered contribution.
-        let Ok(registry) = crate::worktree::WorktreeRegistry::read(repository) else {
+        let Ok(worktree_registry) = crate::worktree::WorktreeRegistry::read(repository) else {
             return Self::CannotClassifyOrigin;
         };
-        if registry
+        if worktree_registry
             .context_for_branch(recorded_target.reference())
             .is_some_and(|context| context.repository_root() == repository.repository_root())
         {
@@ -190,10 +190,11 @@ impl IncursionCommitOriginMembership {
         let JudgedTargetTip::Resolved(origin_basis) = origin_basis else {
             return Self::CannotClassifyOrigin;
         };
-        let Ok(upstream) = recorded_target.local_upstream(&repository.object_reader()) else {
+        let Ok(local_target_upstream) = recorded_target.local_upstream(&repository.object_reader())
+        else {
             return Self::CannotClassifyOrigin;
         };
-        if matches!(upstream, LocalTargetUpstream::Unavailable)
+        if matches!(local_target_upstream, LocalTargetUpstream::Unavailable)
             && let Some(anchor) = anchors.get(origin_basis)
             && anchor.state == IncursionAttributionAnchorState::UsableAncestor
         {
@@ -206,7 +207,7 @@ impl IncursionCommitOriginMembership {
             repository.repository_root(),
             origin_basis,
             target,
-            &upstream,
+            &local_target_upstream,
         )
         .map_or(Self::CannotClassifyOrigin, Self::Classified)
     }

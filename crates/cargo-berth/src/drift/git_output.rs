@@ -520,10 +520,10 @@ mod tests {
     #[test]
     fn porcelain_parser_consumes_second_path_for_combined_rename_and_copy_statuses()
     -> Result<(), Box<dyn std::error::Error>> {
-        let paths = parse_working_tree_status(
+        let working_tree_change_partition = parse_working_tree_status(
             b"RM renamed.txt\0original.txt\0CM copied.txt\0source.txt\0?? untracked.txt\0",
         )?;
-        let tracked_path_names = paths
+        let tracked_path_names = working_tree_change_partition
             .tracked()
             .iter()
             .map(ToString::to_string)
@@ -534,7 +534,7 @@ mod tests {
             vec!["copied.txt", "original.txt", "renamed.txt", "source.txt"]
         );
         assert_eq!(
-            paths
+            working_tree_change_partition
                 .untracked
                 .iter()
                 .map(ToString::to_string)

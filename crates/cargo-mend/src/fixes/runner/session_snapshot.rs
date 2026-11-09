@@ -32,13 +32,13 @@ impl SessionSnapshot {
     /// pre-edit content — the state a rollback has to return to — so a later
     /// pass must not replace it with the text it is about to overwrite.
     pub(super) fn record(&mut self, fixes: &ValidatedFixSet) -> Result<()> {
-        for fix in fixes.iter() {
-            let Entry::Vacant(slot) = self.originals.entry(fix.path.clone()) else {
+        for use_fix in fixes.iter() {
+            let Entry::Vacant(vacant_entry) = self.originals.entry(use_fix.path.clone()) else {
                 continue;
             };
-            let text = fs::read_to_string(slot.key())
-                .with_context(|| format!("failed to read {}", slot.key().display()))?;
-            slot.insert(text);
+            let text = fs::read_to_string(vacant_entry.key())
+                .with_context(|| format!("failed to read {}", vacant_entry.key().display()))?;
+            vacant_entry.insert(text);
         }
         Ok(())
     }
@@ -50,10 +50,10 @@ impl SessionSnapshot {
     pub(super) fn restore(&self) -> Result<()> {
         let mut first_failure = None;
         for (path, original) in &self.originals {
-            if let Err(err) = fs::write(path, original)
+            if let Err(error) = fs::write(path, original)
                 .with_context(|| format!("failed to restore {}", path.display()))
             {
-                first_failure.get_or_insert(err);
+                first_failure.get_or_insert(error);
             }
         }
         first_failure.map_or(Ok(()), Err)
@@ -91,9 +91,9 @@ mod tests {
     /// not to pass one's output.
     #[test]
     fn restore_returns_files_to_their_state_before_the_first_pass() -> Result<()> {
-        let temp = tempdir()?;
-        let alpha = temp.path().join("alpha.rs");
-        let beta = temp.path().join("beta.rs");
+        let temp_dir = tempdir()?;
+        let alpha = temp_dir.path().join("alpha.rs");
+        let beta = temp_dir.path().join("beta.rs");
         fs::write(&alpha, "alpha pristine\n")?;
         fs::write(&beta, "beta pristine\n")?;
 

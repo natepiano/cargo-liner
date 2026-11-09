@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 use anyhow::Context;
 
 use super::FrameState;
+use crate::config::GitHubRateLimitMode;
 use crate::tui::app::QuotaFetchAdmission;
 use crate::tui::app::QuotaFetchCompletion;
 use crate::tui::app::QuotaFetchReason;
@@ -14,7 +15,8 @@ use crate::tui::test_support;
 #[test]
 fn quota_expiry_requests_one_fetch_without_input_and_then_stays_idle() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
-    app.net.set_force_github_rate_limit(true);
+    app.net
+        .set_force_github_rate_limit(GitHubRateLimitMode::Forced);
     let reset = app
         .net
         .rate_limit()
@@ -72,7 +74,8 @@ fn quota_expiry_requests_one_fetch_without_input_and_then_stays_idle() -> anyhow
 fn expiry_during_recovery_draws_once_and_failed_completion_leaves_the_frame_idle()
 -> anyhow::Result<()> {
     let mut app = test_support::project_app();
-    app.net.set_force_github_rate_limit(true);
+    app.net
+        .set_force_github_rate_limit(GitHubRateLimitMode::Forced);
     let reset = app
         .net
         .rate_limit()

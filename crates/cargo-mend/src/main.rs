@@ -58,6 +58,7 @@ use reporting::OutputFormat;
 use reporting::PassEdits;
 use reporting::Report;
 use reporting::SubtreeReexportEdits;
+use reporting::WarningPresence;
 use selection::DisplayFilter;
 use selection::Selection;
 
@@ -273,10 +274,11 @@ fn report_exit_code(report: &Report, warning_policy: WarningPolicy) -> ExitCode 
     if report.outcome() == BuildOutcome::Failed {
         return ExitCode::from(EXIT_CODE_ERROR);
     }
-    if warning_policy == WarningPolicy::Fail && report.has_warnings() {
-        return ExitCode::from(EXIT_CODE_WARNING);
+    match (warning_policy, report.warning_presence()) {
+        (WarningPolicy::Fail, WarningPresence::Present) => ExitCode::from(EXIT_CODE_WARNING),
+        (WarningPolicy::Allow, WarningPresence::Present | WarningPresence::Absent)
+        | (WarningPolicy::Fail, WarningPresence::Absent) => ExitCode::SUCCESS,
     }
-    ExitCode::SUCCESS
 }
 
 /// Whether the convergence policy schedules another mend pass.

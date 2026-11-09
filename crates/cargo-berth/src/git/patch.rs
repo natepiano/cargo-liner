@@ -85,7 +85,7 @@ pub(crate) fn discover_historical_integration_candidate(
     scopes: &ReservationScopeSet,
     protected_tip: &GitObjectId,
     target: &GitObjectId,
-    target_histories: &PhaseStartTargetFirstParentHistories,
+    phase_start_target_first_parent_histories: &PhaseStartTargetFirstParentHistories,
 ) -> HistoricalIntegrationCandidateDiscovery {
     let Ok(matches) = phase_equivalent_commits(
         repository_root,
@@ -99,7 +99,12 @@ pub(crate) fn discover_historical_integration_candidate(
     if matches.is_empty() {
         return HistoricalIntegrationCandidateDiscovery::NoMatch;
     }
-    target_histories.earliest_containing_matches(repository_root, phase_start, target, &matches)
+    phase_start_target_first_parent_histories.earliest_containing_matches(
+        repository_root,
+        phase_start,
+        target,
+        &matches,
+    )
 }
 
 enum ScopedPatchComparisonError {
@@ -254,11 +259,19 @@ impl ScopedSymmetricDifference {
         if self.equivalent_commits.is_empty() {
             return Ok(());
         }
-        for merge in scoped_merges {
+        for first_parent_merge in scoped_merges {
             let mut arguments = vec![GIT_REV_LIST_COMMAND.to_owned()];
-            arguments.extend(merge.merged_parents.iter().map(ToString::to_string));
+            arguments.extend(
+                first_parent_merge
+                    .merged_parents
+                    .iter()
+                    .map(ToString::to_string),
+            );
             arguments.extend([
-                format!("{GIT_EXCLUDE_REVISION_PREFIX}{}", merge.first_parent),
+                format!(
+                    "{GIT_EXCLUDE_REVISION_PREFIX}{}",
+                    first_parent_merge.first_parent
+                ),
                 format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start_head}"),
             ]);
             let merged_commits = scoped_rev_list(repository_root, &arguments)?;
@@ -270,7 +283,8 @@ impl ScopedSymmetricDifference {
                 .iter()
                 .any(|merged_commit| self.equivalent_commits.contains(merged_commit));
             if carries_equivalent {
-                self.target_unmatched_commits.remove(&merge.commit);
+                self.target_unmatched_commits
+                    .remove(&first_parent_merge.commit);
             }
         }
         Ok(())
@@ -291,12 +305,12 @@ impl ScopedSymmetricDifference {
 /// a bare equivalence test read a dropped commit exactly like a replayed one. Position
 /// separates them: only the replayed commits are contiguous at the tip.
 pub(crate) fn rewritten_phase_anchor(
-    repository: &super::RepositorySnapshot,
+    repository_snapshot: &super::RepositorySnapshot,
     phase_start: &GitObjectId,
     previous_tip: &GitObjectId,
     proposed_tip: &GitObjectId,
 ) -> Result<GitObjectId, GitError> {
-    let repository_root = repository.repository_root();
+    let repository_root = repository_snapshot.repository_root();
     let phase_commit_count = commit_count(
         repository_root,
         &format!("{phase_start}{GIT_ANCESTOR_RANGE_INFIX}{previous_tip}"),
@@ -315,7 +329,7 @@ pub(crate) fn rewritten_phase_anchor(
         .iter()
         .take_while(|commit| equivalents.contains(commit))
         .count();
-    repository.object_reader().commit(&format!(
+    repository_snapshot.object_reader().commit(&format!(
         "{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"
     ))
 }
@@ -401,9 +415,9 @@ fn rev_list(repository_root: &Path, arguments: &[String]) -> Result<String, GitE
 }
 
 fn scoped_patch_command_output(
-    output_availability: GitCommandOutputAvailability,
+    git_command_output_availability: GitCommandOutputAvailability,
 ) -> Result<Output, ScopedPatchComparisonError> {
-    match output_availability {
+    match git_command_output_availability {
         GitCommandOutputAvailability::Available(output) => Ok(output),
         GitCommandOutputAvailability::Unavailable(error) => Err(GitError::Io(error).into()),
     }
@@ -1206,7 +1220,7 @@ mod tests {
         protected_tip: &GitObjectId,
         target: &GitObjectId,
     ) -> FixtureResult<HistoricalIntegrationCandidateDiscovery> {
-        let fallback = discover_historical_integration_candidate(
+        let historical_integration_candidate_discovery = discover_historical_integration_candidate(
             fixture.root(),
             &fixture.phase_start_head,
             scopes,
@@ -1214,23 +1228,24 @@ mod tests {
             target,
             &crate::git::PhaseStartTargetFirstParentHistories::default(),
         );
-        let observation = super::super::reachability::branch_commit_reachability(
-            &crate::git::RepositorySnapshot::discover(fixture.root())?,
-            "main",
-            std::slice::from_ref(&fixture.phase_start_head),
-        )?;
+        let commit_target_reachability_observation =
+            super::super::reachability::branch_commit_reachability(
+                &crate::git::RepositorySnapshot::discover(fixture.root())?,
+                "main",
+                std::slice::from_ref(&fixture.phase_start_head),
+            )?;
         assert_eq!(
-            fallback,
+            historical_integration_candidate_discovery,
             discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
                 scopes,
                 protected_tip,
                 target,
-                &observation.target_histories,
+                &commit_target_reachability_observation.target_histories,
             )
         );
-        Ok(fallback)
+        Ok(historical_integration_candidate_discovery)
     }
 
     /// Spaced edits let replay distinguish protected changes from resolution additions.

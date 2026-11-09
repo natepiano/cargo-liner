@@ -194,7 +194,7 @@ pub(crate) enum BackgroundMsg {
     /// 5xx).
     ServiceUnreachable { service: ServiceKind },
     /// The retry thread has confirmed the service is still unreachable
-    /// after the [`SERVICE_UNAVAILABLE_GRACE`](crate::constants::SERVICE_UNAVAILABLE_GRACE)
+    /// after the configured HTTP unavailable grace period
     /// window. Surfaces the user-visible "unreachable" toast on the
     /// main thread — single transient timeouts never make it this far.
     ServiceUnreachableConfirmed { service: ServiceKind },

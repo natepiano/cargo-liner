@@ -85,29 +85,29 @@ struct NarrowablePubUseCandidate {
 pub(crate) fn scan_selection(
     selection: &Selection,
     report: &Report,
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let facts = collect_pub_use_fix_facts(selection, report);
-    let analysis = analyze_pub_use_candidates(&facts, sources)?;
+    let analysis = analyze_pub_use_candidates(&facts, parsed_sources)?;
     let parent_fix_groups = group_parent_pub_use_plans(&analysis.supported_plans);
 
-    for plan in &analysis.supported_plans {
-        fixes.push(plan.child_narrowing.clone());
+    for validated_pub_use_plan in &analysis.supported_plans {
+        fixes.push(validated_pub_use_plan.child_narrowing.clone());
     }
 
     for (parent_boundary, exports) in parent_fix_groups {
-        let removal = parent_boundary::build_parent_pub_use_edit_for_exports(
+        let use_fix = parent_boundary::build_parent_pub_use_edit_for_exports(
             &parent_boundary,
             &exports,
-            sources,
+            parsed_sources,
         )?;
-        fixes.push(removal);
+        fixes.push(use_fix);
     }
 
     fixes.extend(validated_plan::rewrite_subtree_imports_for_plans(
         &analysis.supported_plans,
-        sources,
+        parsed_sources,
     )?);
     let fixes = ValidatedFixSet::try_from(fixes)?;
 
@@ -235,14 +235,14 @@ fn screen_candidate(
 }
 
 fn build_validated_plan(
-    narrowable: NarrowablePubUseCandidate,
+    narrowable_pub_use_candidate: NarrowablePubUseCandidate,
     parent_boundary: ParentBoundaryKey,
 ) -> Result<ValidatedPubUsePlan> {
     let NarrowablePubUseCandidate {
         candidate,
         bare_pub_keyword,
-    } = narrowable;
-    let child_narrowing = UseFix {
+    } = narrowable_pub_use_candidate;
+    let child_narrowing_use_fix = UseFix {
         path:         candidate.child_file.clone(),
         start:        bare_pub_keyword.start,
         end:          bare_pub_keyword.end,
@@ -250,13 +250,13 @@ fn build_validated_plan(
         import_group: None,
     };
     Ok(ValidatedPubUsePlan {
-        parent_boundary: ParentModuleFile::new(parent_boundary)?,
-        child_file: candidate.child_file,
-        child_module: candidate.child_module,
-        exported_name: candidate.exported_name,
+        parent_boundary:    ParentModuleFile::new(parent_boundary)?,
+        child_file:         candidate.child_file,
+        child_module:       candidate.child_module,
+        exported_name:      candidate.exported_name,
         parent_module_path: candidate.parent_module_path,
-        target_item_path: candidate.target_item_path,
-        child_narrowing,
+        target_item_path:   candidate.target_item_path,
+        child_narrowing:    child_narrowing_use_fix,
     })
 }
 
@@ -306,11 +306,14 @@ fn group_parent_pub_use_plans(
     plans: &[ValidatedPubUsePlan],
 ) -> BTreeMap<ParentBoundaryKey, Vec<(String, String)>> {
     let mut groups = BTreeMap::new();
-    for plan in plans {
+    for validated_pub_use_plan in plans {
         groups
-            .entry(plan.parent_boundary.boundary().clone())
+            .entry(validated_pub_use_plan.parent_boundary.boundary().clone())
             .or_insert_with(Vec::new)
-            .push((plan.child_module.clone(), plan.exported_name.clone()));
+            .push((
+                validated_pub_use_plan.child_module.clone(),
+                validated_pub_use_plan.exported_name.clone(),
+            ));
     }
     groups
 }

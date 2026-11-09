@@ -175,14 +175,9 @@ pub(super) fn process_occurrence(
         return;
     }
 
-    // Importing a name that already has prelude meaning (`Result`, `Option`,
-    // `Vec`, ...) at the top of a file silently changes what every future
-    // bare reference to that name resolves to. Even when nothing in the file
-    // currently writes bare `Result<T, E>`, adding `use io::Result;` is a
-    // correctness footgun the moment anyone edits the file. Skip these
-    // outright rather than rely on shadow detection.
-    if shadows_prelude(&occ.import_name) {
-        return;
+    match shadows_prelude(&occ.import_name) {
+        PreludeShadowing::Shadows => return,
+        PreludeShadowing::Clear => {},
     }
 
     let import_path = &resolved.import_path;
@@ -359,8 +354,16 @@ pub(super) fn resolve_occurrence<'a>(
 /// `std::io::Result<T>` type alias instead of the generic prelude `Result`.
 /// Conservative list: prelude types and the most commonly-derived prelude
 /// traits, all from std prelude v1 / 2021 / 2024.
-fn shadows_prelude(name: &str) -> bool {
-    matches!(
+/// Even when the file has no bare `Result<T, E>` yet, an inserted import changes future
+/// references. `PreludeShadowing::Shadows` therefore skips the import without relying on
+/// collision detection.
+enum PreludeShadowing {
+    Shadows,
+    Clear,
+}
+
+fn shadows_prelude(name: &str) -> PreludeShadowing {
+    if matches!(
         name,
         "Box"
             | "Option"
@@ -391,7 +394,11 @@ fn shadows_prelude(name: &str) -> bool {
             | "TryFrom"
             | "TryInto"
             | "Unpin"
-    )
+    ) {
+        PreludeShadowing::Shadows
+    } else {
+        PreludeShadowing::Clear
+    }
 }
 
 /// Resolve a partial path against ancestor scopes' imports, nearest ancestor

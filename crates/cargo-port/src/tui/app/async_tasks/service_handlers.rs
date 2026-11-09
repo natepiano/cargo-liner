@@ -79,7 +79,7 @@ impl App {
     /// the confirm handler fires — so a Reachable signal *inside*
     /// the grace window finds `unavailable_toast == None` and
     /// silently clears state without flashing a "back online" toast,
-    /// while still triggering the missing-data refetch.
+    /// without triggering the missing-data refetch.
     pub(super) fn handle_service_reachable(&mut self, service_kind: ServiceKind) {
         let recovery_outcome = self.net.availability_for(service_kind).mark_reachable();
         self.apply_recovery_outcome(service_kind, recovery_outcome);
@@ -87,7 +87,7 @@ impl App {
     /// Record the unavailability transition and spawn the retry
     /// thread. The user-visible toast is **not** pushed here — it's
     /// deferred to the [`Self::confirm_service_unreachable`] handler
-    /// which only fires after the [`crate::constants::SERVICE_UNAVAILABLE_GRACE`]
+    /// which only fires after the configured HTTP unavailable grace period
     /// window elapses without recovery. Single transient timeouts
     /// in a sea of successful fetches never reach the UI.
     pub(super) fn apply_unavailability(
@@ -114,7 +114,7 @@ impl App {
     /// from the dispatch path when
     /// [`crate::scan::BackgroundMsg::ServiceUnreachableConfirmed`]
     /// arrives — i.e. after the retry thread waited
-    /// [`crate::constants::SERVICE_UNAVAILABLE_GRACE`] and confirmed the service is
+    /// configured HTTP unavailable grace period and confirmed the service is
     /// still down. No-op if the state has flipped back to reachable
     /// during the grace window (a real fetch landed) or a live toast
     /// is already showing.
@@ -168,7 +168,7 @@ impl App {
     }
     /// Spawn the retry / grace probe thread.
     ///
-    /// The thread sleeps for [`crate::constants::SERVICE_UNAVAILABLE_GRACE`] before its
+    /// The thread sleeps for configured HTTP unavailable grace period before its
     /// first probe. If the service has recovered by then, emit a
     /// silent recovery (no "back online" toast — none was pushed).
     /// Otherwise emit [`crate::scan::BackgroundMsg::ServiceUnreachableConfirmed`]
@@ -195,17 +195,14 @@ impl App {
         let recovery_outcome = self.net.availability_for(service_kind).mark_recovered();
         self.apply_recovery_outcome(service_kind, recovery_outcome);
     }
-    /// Unified post-recovery dispatch: dismiss / push the back-online
-    /// toast on the `WithToast` variant, then fire
-    /// [`Self::refetch_missing_after_recovery`] — but only for a
-    /// *confirmed* outage. A transient blip absorbed by the grace window
-    /// recovers `Silent`, and refetching there re-dispatches every fetch
-    /// that failed during the blip; at startup those land after the panel
-    /// hands the network rows back to steady state and leak the standalone
-    /// "Fetching crates.io info" / "Retrieving GitHub repo details" toasts
-    /// the startup panel was meant to embed. Gating on
-    /// [`RecoveryOutcome::triggers_refetch`] keeps the missing-data refetch
-    /// for outages the user actually saw while suppressing that startup burst.
+    /// Dismiss the outage toast and show recovery for `RecoveryOutcome::WithToast`.
+    /// Refresh the scan generation after a recovery transition, before any missing-data refetch.
+    /// Only `WithToast` refetches data after an outage that the user saw.
+    /// `Silent` represents a transient failure within the grace period.
+    /// Refetching after `Silent` would repeat every failed request after the startup panel releases
+    /// its network rows. Those requests would show separate "Fetching crates.io info" and
+    /// "Retrieving GitHub repo details" toasts. The startup panel must contain those toasts, so
+    /// `Silent` and `NoTransition` do not refetch.
     fn apply_recovery_outcome(&mut self, service: ServiceKind, recovery_outcome: RecoveryOutcome) {
         match recovery_outcome {
             RecoveryOutcome::NoTransition => return,
@@ -217,8 +214,9 @@ impl App {
             },
         }
         self.scan.bump_generation();
-        if recovery_outcome.triggers_refetch() {
-            self.refetch_missing_after_recovery(service);
+        match recovery_outcome {
+            RecoveryOutcome::WithToast(_) => self.refetch_missing_after_recovery(service),
+            RecoveryOutcome::NoTransition | RecoveryOutcome::Silent => {},
         }
     }
 }
@@ -265,9 +263,52 @@ mod tests {
     use anyhow::Context;
     use tui_pane::ColorMode;
 
+    use super::RecoveryOutcome;
+    use super::ToastId;
+    use crate::ci::OwnerRepo;
     use crate::http::ServiceKind;
     use crate::http::ServiceSignal;
+    use crate::project::GithubRunCount;
+    use crate::project::ProjectPrData;
+    use crate::scan;
+    use crate::scan::CachedRepoData;
     use crate::tui::test_support;
+
+    #[test]
+    fn only_confirmed_outage_recovery_triggers_refetch() {
+        let mut app = test_support::make_app(&[]);
+        let owner_repo = OwnerRepo::new("acme", "failed");
+        scan::store_cached_repo_data(
+            &app.net.github.fetch_cache,
+            &owner_repo,
+            CachedRepoData {
+                runs:         Vec::new(),
+                meta:         None,
+                github_total: GithubRunCount::Known(0),
+                pr_data:      ProjectPrData::Unfetched,
+            },
+        );
+
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::NoTransition);
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_some(),
+            "NoTransition must not refetch failed entries"
+        );
+
+        // `Silent` absorbs a grace-window blip: refetching could leak standalone toasts
+        // after startup handoff. Only a user-visible `WithToast` outage refetches.
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::Silent);
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_some(),
+            "Silent must not refetch failed entries after a grace-window blip"
+        );
+
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::WithToast(ToastId(1)));
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_none(),
+            "WithToast must invalidate failed entries for refetch"
+        );
+    }
 
     #[test]
     fn github_unreachable_toast_keeps_its_body_on_one_line() -> anyhow::Result<()> {

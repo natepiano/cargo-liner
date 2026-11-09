@@ -32,7 +32,7 @@ use crate::title_color;
 /// lines are painted.
 pub fn draw_settings<S: Copy>(
     frame: &mut Frame,
-    pane: &mut SettingsPane,
+    settings_pane: &mut SettingsPane,
     rows: &SettingsRows<S>,
     mode: crate::ColorMode,
 ) {
@@ -41,7 +41,7 @@ pub fn draw_settings<S: Copy>(
     // to be laid out for the width that survives that clamp.
     let width = fitted_width(rows.widest_row()).min(area.width);
     let content_width = usize::from(width.saturating_sub(POPUP_BORDER_WIDTH));
-    let options = SettingsRenderOptions {
+    let settings_render_options = SettingsRenderOptions {
         focus: PaneFocusState::Active,
         inline_error: None,
         content_width,
@@ -57,12 +57,12 @@ pub fn draw_settings<S: Copy>(
         remembered_style: selection_style(PaneFocusState::Remembered, mode),
         hovered_style: Style::default().bg(hover_focus_color()),
     };
-    let rendered = pane.render_rows(rows.rows(), options);
-    let line_count = u16::try_from(rendered.lines.len()).unwrap_or(u16::MAX);
+    let settings_render = settings_pane.render_rows(rows.rows(), settings_render_options);
+    let line_count = u16::try_from(settings_render.lines.len()).unwrap_or(u16::MAX);
     let height = line_count
         .saturating_add(POPUP_BORDER_HEIGHT)
         .min(area.height);
-    let popup = PopupFrame {
+    let popup_areas = PopupFrame {
         color_mode: mode,
         title: Some(SETTINGS_TITLE.to_string()),
         border_color: title_color(),
@@ -71,9 +71,9 @@ pub fn draw_settings<S: Copy>(
     }
     .render_with_areas(frame);
 
-    pane.set_content_area(popup.inner);
-    pane.update_scroll();
-    pane.render_lines(frame, rendered.lines);
+    settings_pane.set_content_area(popup_areas.inner);
+    settings_pane.update_scroll();
+    settings_pane.render_lines(frame, settings_render.lines);
 }
 
 /// Popup width that fits the widest row plus borders, never narrower
@@ -113,7 +113,7 @@ mod tests {
             "where",
             "a plain value wider than the stepped one".to_string(),
         );
-        let options = SettingsRenderOptions {
+        let settings_render_options = SettingsRenderOptions {
             focus:                 PaneFocusState::Active,
             inline_error:          None,
             content_width:         usize::from(u16::MAX),
@@ -129,8 +129,8 @@ mod tests {
             remembered_style:      Style::default(),
             hovered_style:         Style::default(),
         };
-        let rendered = SettingsPane::new().render_rows(rows.rows(), options);
-        let widest = rendered.lines.iter().map(Line::width).max();
+        let settings_render = SettingsPane::new().render_rows(rows.rows(), settings_render_options);
+        let widest = settings_render.lines.iter().map(Line::width).max();
         assert_eq!(widest, Some(rows.widest_row()));
     }
 

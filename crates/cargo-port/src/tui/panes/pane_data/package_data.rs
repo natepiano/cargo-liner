@@ -292,8 +292,11 @@ pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, us
 /// outage, and the rate-limit rows already carry the auth hint.
 pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
     matches!(data.stars, super::GithubStars::Unreachable)
-        && !data.github_status.is_available()
-        && !data.github_status.is_unauthenticated()
+        && matches!(
+            data.github_status,
+            crate::tui::state::AvailabilityStatus::Unreachable
+                | crate::tui::state::AvailabilityStatus::RateLimited
+        )
 }
 
 /// Primary project fields for the `Package` column.

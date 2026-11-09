@@ -12,11 +12,10 @@ use walkdir::WalkDir;
 use super::BackgroundMsg;
 use super::background_workers;
 use super::cargo_metadata::StreamingScanContext;
+use crate::config::ScanConfig;
 use crate::constants::CARGO_LOCK;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
-use crate::constants::STORAGE_HEADROOM_AMPLE_BYTES;
-use crate::constants::STORAGE_HEADROOM_LOW_BYTES;
 use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -38,22 +37,21 @@ pub(crate) enum ProjectStorage {
 /// can color it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StorageHeadroom {
-    /// Above [`STORAGE_HEADROOM_AMPLE_BYTES`] free.
+    /// Above the configured ample free-space threshold.
     Ample,
-    /// [`STORAGE_HEADROOM_LOW_BYTES`] up to [`STORAGE_HEADROOM_AMPLE_BYTES`]
-    /// free.
+    /// From the configured low threshold through the ample threshold.
     Low,
-    /// Below [`STORAGE_HEADROOM_LOW_BYTES`] free.
+    /// Below the configured low free-space threshold.
     Critical,
 }
 
-impl From<u64> for StorageHeadroom {
+impl StorageHeadroom {
     /// `available_bytes` is the writable capacity carried by
     /// [`ProjectStorage::Available`].
-    fn from(available_bytes: u64) -> Self {
-        if available_bytes > STORAGE_HEADROOM_AMPLE_BYTES {
+    pub(crate) const fn classify(available_bytes: u64, scan_config: &ScanConfig) -> Self {
+        if available_bytes > scan_config.storage_ample_free.bytes() {
             Self::Ample
-        } else if available_bytes >= STORAGE_HEADROOM_LOW_BYTES {
+        } else if available_bytes >= scan_config.storage_low_free.bytes() {
             Self::Low
         } else {
             Self::Critical
@@ -327,22 +325,43 @@ mod tests {
 
     #[test]
     fn storage_headroom_bands_available_bytes() {
+        let scan_config = crate::config::ScanConfig::default();
         assert_eq!(
-            StorageHeadroom::from(STORAGE_HEADROOM_AMPLE_BYTES + 1),
+            StorageHeadroom::classify(scan_config.storage_ample_free.bytes() + 1, &scan_config),
             StorageHeadroom::Ample
         );
         assert_eq!(
-            StorageHeadroom::from(STORAGE_HEADROOM_AMPLE_BYTES),
+            StorageHeadroom::classify(scan_config.storage_ample_free.bytes(), &scan_config),
             StorageHeadroom::Low,
             "the ample threshold itself is still only low headroom"
         );
         assert_eq!(
-            StorageHeadroom::from(STORAGE_HEADROOM_LOW_BYTES),
+            StorageHeadroom::classify(scan_config.storage_low_free.bytes(), &scan_config),
             StorageHeadroom::Low
         );
         assert_eq!(
-            StorageHeadroom::from(STORAGE_HEADROOM_LOW_BYTES - 1),
+            StorageHeadroom::classify(scan_config.storage_low_free.bytes() - 1, &scan_config),
             StorageHeadroom::Critical
+        );
+    }
+
+    #[test]
+    fn storage_headroom_uses_custom_config_thresholds() {
+        let defaults = crate::config::ScanConfig::default();
+        let ample = defaults.storage_ample_free.bytes() * 2;
+        let low = defaults.storage_low_free.bytes() / 2;
+        let table = toml::from_str(&format!(
+            "[scan]\nstorage_ample_free = \"{ample} B\"\nstorage_low_free = \"{low} B\""
+        ))
+        .expect("custom storage config");
+        let config = crate::config::CargoPortConfig::from_table(&table).expect("valid thresholds");
+        assert_eq!(
+            StorageHeadroom::classify(defaults.storage_ample_free.bytes() + 1, &config.scan),
+            StorageHeadroom::Low
+        );
+        assert_eq!(
+            StorageHeadroom::classify(defaults.storage_low_free.bytes() - 1, &config.scan),
+            StorageHeadroom::Low
         );
     }
 

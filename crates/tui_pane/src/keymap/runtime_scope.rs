@@ -187,7 +187,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
         self.pane
             .bar_slots(ctx)
             .into_iter()
-            .filter_map(|(region, slot)| match slot {
+            .filter_map(|(bar_region, slot)| match slot {
                 BarSlot::Single(action) => {
                     let visibility = self.pane.visibility(action, ctx);
                     if matches!(visibility, Visibility::Hidden) {
@@ -195,7 +195,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                     }
                     let key = self.bindings.key_for(action).cloned()?;
                     Some(RenderedSlot {
-                        region,
+                        region: bar_region,
                         label: self.pane.bar_label(action, ctx),
                         key,
                         shortcut_state: self.pane.state(action, ctx),
@@ -214,7 +214,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                     let key = self.bindings.key_for(primary).cloned()?;
                     let secondary_key = self.bindings.key_for(secondary).cloned()?;
                     Some(RenderedSlot {
-                        region,
+                        region: bar_region,
                         label,
                         key,
                         shortcut_state: self.pane.state(primary, ctx),
@@ -246,9 +246,9 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
     }
 
     fn help_rows(&self) -> Vec<KeymapHelpRow> {
-        let mut rows = Vec::with_capacity(P::Actions::ALL.len() + 1);
-        rows.push(KeymapHelpRow::header(P::SECTION_NAME, P::SCOPE_NAME));
-        rows.extend(P::Actions::ALL.iter().copied().map(|action| KeymapHelpRow {
+        let mut keymap_help_rows = Vec::with_capacity(P::Actions::ALL.len() + 1);
+        keymap_help_rows.push(KeymapHelpRow::header(P::SECTION_NAME, P::SCOPE_NAME));
+        keymap_help_rows.extend(P::Actions::ALL.iter().copied().map(|action| KeymapHelpRow {
             section:     P::SECTION_NAME,
             scope:       P::SCOPE_NAME,
             action:      action.toml_key(),
@@ -256,7 +256,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
             bind:        self.bindings.display_keys_for(action).first().cloned(),
             row_kind:    KeymapHelpRowKind::Action,
         }));
-        rows
+        keymap_help_rows
     }
 
     fn toml_action_keys(&self) -> Vec<&'static str> {
@@ -352,9 +352,9 @@ pub(super) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navi
     let Some(scope) = keymap.navigation() else {
         return Vec::new();
     };
-    let mut rows = Vec::with_capacity(NavAction::ALL.len() + 1);
-    rows.push(KeymapHelpRow::header(N::SECTION_NAME, N::SCOPE_NAME));
-    rows.extend(NavAction::ALL.iter().copied().map(|action| KeymapHelpRow {
+    let mut keymap_help_rows = Vec::with_capacity(NavAction::ALL.len() + 1);
+    keymap_help_rows.push(KeymapHelpRow::header(N::SECTION_NAME, N::SCOPE_NAME));
+    keymap_help_rows.extend(NavAction::ALL.iter().copied().map(|action| KeymapHelpRow {
         section:     N::SECTION_NAME,
         scope:       N::SCOPE_NAME,
         action:      action.toml_key(),
@@ -362,7 +362,7 @@ pub(super) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navi
         bind:        scope.display_keys_for(action).first().cloned(),
         row_kind:    KeymapHelpRowKind::Action,
     }));
-    rows
+    keymap_help_rows
 }
 
 /// `G`-monomorphized renderer for the keymap help overlay's
@@ -394,7 +394,10 @@ pub(super) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Glo
 pub(super) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
     _: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
-    NavAction::ALL.iter().map(|a| a.toml_key()).collect()
+    NavAction::ALL
+        .iter()
+        .map(|nav_action| nav_action.toml_key())
+        .collect()
 }
 
 /// `G`-monomorphized TOML-action-keys collector for the app-globals
@@ -473,7 +476,7 @@ mod tests {
         }
 
         fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
-            |_action, ctx| {
+            |_foo_action, ctx| {
                 ctx.dispatched.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -496,29 +499,29 @@ mod tests {
     #[test]
     fn dispatch_consumed_on_match_and_calls_dispatcher() {
         let scope = fresh_scope();
-        let mut app = fresh_app();
-        let outcome = scope.dispatch_key(&KeyCode::Enter.into(), &mut app);
-        assert_eq!(outcome, KeyOutcome::Consumed);
-        assert_eq!(app.dispatched.load(Ordering::SeqCst), 1);
+        let mut test_app = fresh_app();
+        let key_outcome = scope.dispatch_key(&KeyCode::Enter.into(), &mut test_app);
+        assert_eq!(key_outcome, KeyOutcome::Consumed);
+        assert_eq!(test_app.dispatched.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn dispatch_unhandled_on_miss_does_not_call_dispatcher() {
         let scope = fresh_scope();
-        let mut app = fresh_app();
-        let outcome = scope.dispatch_key(&'z'.into(), &mut app);
-        assert_eq!(outcome, KeyOutcome::Unhandled);
-        assert_eq!(app.dispatched.load(Ordering::SeqCst), 0);
+        let mut test_app = fresh_app();
+        let key_outcome = scope.dispatch_key(&'z'.into(), &mut test_app);
+        assert_eq!(key_outcome, KeyOutcome::Unhandled);
+        assert_eq!(test_app.dispatched.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn render_bar_slots_resolves_label_key_and_state() {
         let scope = fresh_scope();
-        let app = fresh_app();
-        let slots = scope.render_bar_slots(&app);
-        assert_eq!(slots.len(), 2);
+        let test_app = fresh_app();
+        let rendered_slots = scope.render_bar_slots(&test_app);
+        assert_eq!(rendered_slots.len(), 2);
         assert_eq!(
-            slots[0],
+            rendered_slots[0],
             RenderedSlot {
                 region:         BarRegion::PaneAction,
                 label:          "go",
@@ -529,7 +532,7 @@ mod tests {
             },
         );
         assert_eq!(
-            slots[1],
+            rendered_slots[1],
             RenderedSlot {
                 region:         BarRegion::PaneAction,
                 label:          "clean",
@@ -564,10 +567,10 @@ mod tests {
             pane:     HidesActivate,
             bindings: HidesActivate::defaults().into_scope_map(),
         };
-        let app = fresh_app();
-        let slots = scope.render_bar_slots(&app);
-        assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].label, "clean");
+        let test_app = fresh_app();
+        let rendered_slots = scope.render_bar_slots(&test_app);
+        assert_eq!(rendered_slots.len(), 1);
+        assert_eq!(rendered_slots[0].label, "clean");
     }
 
     #[test]
@@ -593,12 +596,15 @@ mod tests {
             pane:     PairedPane,
             bindings: PairedPane::defaults().into_scope_map(),
         };
-        let app = fresh_app();
-        let slots = scope.render_bar_slots(&app);
-        assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].label, "/");
-        assert_eq!(slots[0].key, KeyBind::from(KeyCode::Enter));
-        assert_eq!(slots[0].secondary_key, Some(KeyBind::from('c').into()));
+        let test_app = fresh_app();
+        let rendered_slots = scope.render_bar_slots(&test_app);
+        assert_eq!(rendered_slots.len(), 1);
+        assert_eq!(rendered_slots[0].label, "/");
+        assert_eq!(rendered_slots[0].key, KeyBind::from(KeyCode::Enter));
+        assert_eq!(
+            rendered_slots[0].secondary_key,
+            Some(KeyBind::from('c').into())
+        );
     }
 
     #[test]
@@ -623,9 +629,9 @@ mod tests {
     #[test]
     fn dispatch_through_trait_object() {
         let scope = fresh_scope();
-        let erased: &dyn RuntimeScope<TestApp> = &scope;
-        let mut app = fresh_app();
-        let outcome = erased.dispatch_key(&KeyCode::Enter.into(), &mut app);
-        assert_eq!(outcome, KeyOutcome::Consumed);
+        let runtime_scope: &dyn RuntimeScope<TestApp> = &scope;
+        let mut test_app = fresh_app();
+        let key_outcome = runtime_scope.dispatch_key(&KeyCode::Enter.into(), &mut test_app);
+        assert_eq!(key_outcome, KeyOutcome::Consumed);
     }
 }

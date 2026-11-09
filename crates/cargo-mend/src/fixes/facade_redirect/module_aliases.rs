@@ -41,22 +41,22 @@ impl ModuleAliases {
         files: impl Iterator<Item = (&'file Path, &'file [String])>,
         sources: &ParsedSources,
     ) -> Result<Self> {
-        let mut collector = AliasCollector::default();
+        let mut alias_collector = AliasCollector::default();
         for (file, module_path) in files {
-            let source = sources
+            let parsed_source = sources
                 .source(file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
-            let syntax = source
+            let syntax_file = parsed_source
                 .syntax()
                 .with_context(|| format!("failed to parse {}", file.display()))?;
-            collector.modules.insert(module_path.to_vec());
-            collector.collect_items(module_path, &syntax.items);
+            alias_collector.modules.insert(module_path.to_vec());
+            alias_collector.collect_items(module_path, &syntax_file.items);
         }
         let AliasCollector {
             modules,
             bindings,
             globs,
-        } = collector;
+        } = alias_collector;
         let targets = bindings
             .into_iter()
             .filter(|(_, target)| modules.contains(target))

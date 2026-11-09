@@ -66,7 +66,7 @@ mod tests {
 
     impl Navigation<TestApp> for AppNavigation {
         fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) {
-            |_action, _focused, _ctx| { /* no-op for the test impl */ }
+            |_nav_action, _focused, _ctx| { /* no-op for the test impl */ }
         }
     }
 
@@ -80,11 +80,15 @@ mod tests {
 
     #[test]
     fn dispatcher_is_callable() {
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
         };
         let dispatch: fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) =
             AppNavigation::dispatcher();
-        dispatch(NavAction::Up, FocusedPane::App(TestPaneId::Foo), &mut app);
+        dispatch(
+            NavAction::Up,
+            FocusedPane::App(TestPaneId::Foo),
+            &mut test_app,
+        );
     }
 }

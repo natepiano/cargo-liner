@@ -28,7 +28,7 @@ impl App {
             summary_bytes:    self.project_list.visible_disk_total(),
             visible_rows:     self.visible_rows().to_vec(),
             include_non_rust: self.config.include_non_rust().includes_non_rust(),
-            lint_enabled:     self.config.lint_enabled(),
+            lint_enabled:     self.config.lint_enabled().into(),
             storage:          self.project_list.project_storage(),
         };
         if self.project_list.fit_widths_state.is_current(&desired) {

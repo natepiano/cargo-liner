@@ -25,14 +25,14 @@ use crate::KeymapError;
 /// the entry (lenient — see [`KeymapBuilder::ignore_unknown_entries`]).
 pub(super) fn apply_toml_overlay<A>(
     scope_name: &str,
-    defaults: Bindings<A>,
+    default_bindings: Bindings<A>,
     table: Option<&Table>,
     unknown: Option<&mut Vec<String>>,
 ) -> Result<Bindings<A>, KeymapError>
 where
     A: Action,
 {
-    apply_toml_overlay_with_peer(scope_name, defaults, table, None, unknown, false)
+    apply_toml_overlay_with_peer(scope_name, default_bindings, table, None, unknown, false)
 }
 
 /// Same as [`apply_toml_overlay`], but unknown actions present in
@@ -115,37 +115,40 @@ fn parse_toml_value(
     value: &Value,
 ) -> Result<Vec<KeySequence>, KeymapError> {
     match value {
-        Value::String(s) => {
-            if s.is_empty() {
+        Value::String(string) => {
+            if string.is_empty() {
                 return Ok(Vec::new());
             }
-            let bind =
-                canonicalize_toml_bind_sequence(&KeySequence::parse(s).map_err(|source| {
-                    KeymapError::InvalidBinding {
+            let key_sequence =
+                canonicalize_toml_bind_sequence(&KeySequence::parse(string).map_err(
+                    |key_parse_error| KeymapError::InvalidBinding {
+                        scope:  scope.to_string(),
+                        action: action.to_string(),
+                        source: key_parse_error,
+                    },
+                )?);
+            Ok(vec![key_sequence])
+        },
+        Value::Array(items) => {
+            let mut key_sequences = Vec::with_capacity(items.len());
+            for toml_value in items {
+                let string = toml_value
+                    .as_str()
+                    .ok_or_else(|| KeymapError::InvalidBinding {
+                        scope:  scope.to_string(),
+                        action: action.to_string(),
+                        source: KeyParseError::Empty,
+                    })?;
+                let key_sequence =
+                    KeySequence::parse(string).map_err(|source| KeymapError::InvalidBinding {
                         scope: scope.to_string(),
                         action: action.to_string(),
                         source,
-                    }
-                })?);
-            Ok(vec![bind])
-        },
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                let s = item.as_str().ok_or_else(|| KeymapError::InvalidBinding {
-                    scope:  scope.to_string(),
-                    action: action.to_string(),
-                    source: KeyParseError::Empty,
-                })?;
-                let bind = KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
-                    scope: scope.to_string(),
-                    action: action.to_string(),
-                    source,
-                })?;
-                let bind = canonicalize_toml_bind_sequence(&bind);
-                out.push(bind);
+                    })?;
+                let canonical_key_sequence = canonicalize_toml_bind_sequence(&key_sequence);
+                key_sequences.push(canonical_key_sequence);
             }
-            Ok(out)
+            Ok(key_sequences)
         },
         _ => Err(KeymapError::InvalidBinding {
             scope:  scope.to_string(),
@@ -155,9 +158,9 @@ fn parse_toml_value(
     }
 }
 
-fn canonicalize_toml_bind_sequence(sequence: &KeySequence) -> KeySequence {
+fn canonicalize_toml_bind_sequence(key_sequence: &KeySequence) -> KeySequence {
     KeySequence::new(
-        sequence
+        key_sequence
             .keys()
             .iter()
             .copied()
@@ -169,7 +172,7 @@ fn canonicalize_toml_bind_sequence(sequence: &KeySequence) -> KeySequence {
 fn canonicalize_toml_bind(mut key_bind: KeyBind) -> KeyBind {
     key_bind.code = match key_bind.code {
         KeyCode::Char('+') => KeyCode::Char('='),
-        other => other,
+        key_code => key_code,
     };
     if matches!(key_bind.code, KeyCode::Char('=')) {
         key_bind.mods &= !KeyModifiers::SHIFT;
@@ -182,10 +185,13 @@ fn canonicalize_toml_bind(mut key_bind: KeyBind) -> KeyBind {
 fn check_in_array_duplicates(
     scope: &str,
     action: &str,
-    keys: &[KeySequence],
+    key_sequences: &[KeySequence],
 ) -> Result<(), KeymapError> {
-    for (i, key) in keys.iter().enumerate() {
-        if keys[..i].iter().any(|k| k == key) {
+    for (index, key) in key_sequences.iter().enumerate() {
+        if key_sequences[..index]
+            .iter()
+            .any(|prior_key_sequence| prior_key_sequence == key)
+        {
             return Err(KeymapError::InArrayDuplicate {
                 scope:  scope.to_string(),
                 action: action.to_string(),

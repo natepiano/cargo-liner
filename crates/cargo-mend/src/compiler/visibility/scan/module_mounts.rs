@@ -16,20 +16,20 @@ use crate::compiler::visibility::source;
 /// Records every compiled source mount, whether or not it emitted a diagnostic.
 /// Inline modules in the same file are not additional mounts of that file.
 pub(super) fn collect_module_mounts(
-    tcx: TyCtxt<'_>,
+    ty_ctxt: TyCtxt<'_>,
     crate_root_file: &Path,
 ) -> Vec<StoredModuleMountFact> {
     let mut mounts: BTreeSet<(PathBuf, Vec<String>)> = BTreeSet::new();
-    tcx.hir_for_each_module(|module| {
+    ty_ctxt.hir_for_each_module(|module| {
         let module_def_id = module.to_local_def_id();
-        let Ok(module_path) = subtree_reexport_fix::module_path(tcx, module_def_id) else {
+        let Ok(module_path) = subtree_reexport_fix::module_path(ty_ctxt, module_def_id) else {
             return;
         };
-        let (hir_module, _, _) = tcx.hir_get_module(module);
+        let (hir_module, _, _) = ty_ctxt.hir_get_module(module);
         let module_file = if module_def_id == CRATE_DEF_ID {
             Some(crate_root_file.to_path_buf())
         } else {
-            source::real_file_path(tcx, hir_module.spans.inner_span)
+            source::real_file_path(ty_ctxt, hir_module.spans.inner_span)
         };
         let Some(module_file) = module_file else {
             return;
@@ -37,19 +37,19 @@ pub(super) fn collect_module_mounts(
         for item in hir_module
             .item_ids
             .iter()
-            .map(|item_id| tcx.hir_item(*item_id))
+            .map(|item_id| ty_ctxt.hir_item(*item_id))
         {
             match item_source_origin(item.span) {
                 ItemSourceOrigin::WrittenOrIncluded => {},
                 ItemSourceOrigin::OtherExpansion => continue,
             }
-            if let Some(item_file) = source::real_file_path(tcx, item.span)
+            if let Some(item_file) = source::real_file_path(ty_ctxt, item.span)
                 && item_file != module_file
             {
                 mounts.insert((item_file, module_path.clone()));
             }
         }
-        let declaration_file = source::real_file_path(tcx, tcx.def_span(module_def_id));
+        let declaration_file = source::real_file_path(ty_ctxt, ty_ctxt.def_span(module_def_id));
         if module_def_id == CRATE_DEF_ID || declaration_file.as_ref() != Some(&module_file) {
             mounts.insert((module_file, module_path));
         }

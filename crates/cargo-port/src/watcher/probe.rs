@@ -8,9 +8,9 @@ use std::time::Instant;
 use super::runtime::WatchRequest;
 use crate::channel::Sender;
 use crate::config::NonRustInclusion;
+use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
-use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::enrichment;
 use crate::http::HttpClient;
 use crate::project;
@@ -83,16 +83,30 @@ fn project_probe_outcome(item: &RootItem) -> FolderProbeOutcome {
     })
 }
 
+/// Inputs of new-project probing that stay fixed for the life of the watcher loop.
+#[derive(Clone, Copy)]
+pub(super) struct NewProjectProbeInputs<'a> {
+    pub(super) watcher_config:      &'a WatcherConfig,
+    pub(super) source_measurements: &'a Arc<SourceMeasurements>,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) exclude_dirs:        &'a ExcludeDirs,
+    pub(super) client:              &'a HttpClient,
+}
+
 /// Probe and publish discovery data; the caller applies each watch-role result.
 pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
-    source_measurements: &Arc<SourceMeasurements>,
-    non_rust: NonRustInclusion,
-    exclude_dirs: &ExcludeDirs,
-    client: &HttpClient,
+    inputs: NewProjectProbeInputs<'_>,
 ) -> Vec<FolderProbeOutcome> {
+    let NewProjectProbeInputs {
+        watcher_config,
+        source_measurements,
+        non_rust,
+        exclude_dirs,
+        client,
+    } = inputs;
     let mut outcomes = Vec::new();
     let now = Instant::now();
     let ready: Vec<AbsolutePath> = pending_new
@@ -142,13 +156,14 @@ pub(super) fn probe_new_projects(
                 entries:   disk_entries,
             });
             if abs_path.join(CARGO_TOML).exists() {
-                // `spawn_project_refresh_after` normalizes `abs_path` after `NEW_PROJECT_DEBOUNCE`:
-                // new Rust worktrees may be discovered before nested workspace members are visible,
-                // so the delayed refresh repairs partial state once the checkout settles.
+                // `spawn_project_refresh_after` normalizes `abs_path` after the configured
+                // new-project settling time: new Rust worktrees may be discovered
+                // before nested workspace members are visible, so the delayed
+                // refresh repairs partial state once the checkout settles.
                 spawn_project_refresh_after(
                     background_tx.clone(),
                     abs_path.clone(),
-                    NEW_PROJECT_DEBOUNCE,
+                    watcher_config.new_project_debounce(),
                 );
             }
             let sender = background_tx.clone();

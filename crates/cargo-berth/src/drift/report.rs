@@ -73,14 +73,14 @@ pub(crate) struct DriftReport {
 
 impl DriftReport {
     pub(super) fn unchanged(
-        comparison: DriftComparisonMode,
+        drift_comparison_mode: DriftComparisonMode,
         reservation_ids: &[ReservationId],
     ) -> Self {
         Self {
-            comparison,
-            path_attribution: DriftPathAttributionOutcome::NotNeeded,
+            comparison:        drift_comparison_mode,
+            path_attribution:  DriftPathAttributionOutcome::NotNeeded,
             scope_acquisition: DriftScopeAcquisition::Permitted,
-            results: reservation_ids
+            results:           reservation_ids
                 .iter()
                 .map(|reservation_id| ReservationDriftResult::Unchanged {
                     reservation_id: *reservation_id,
@@ -105,10 +105,12 @@ impl DriftReport {
             DriftPathAttributionOutcome::FirstTouchReserved { .. }
                 | DriftPathAttributionOutcome::IncursionDetected { .. }
                 | DriftPathAttributionOutcome::Ambiguous { .. }
-        ) || self
-            .results
-            .iter()
-            .any(|result| !matches!(result, ReservationDriftResult::Unchanged { .. }))
+        ) || self.results.iter().any(|reservation_drift_result| {
+            !matches!(
+                reservation_drift_result,
+                ReservationDriftResult::Unchanged { .. }
+            )
+        })
     }
 
     /// Return every reservation selected by this comparison.
@@ -227,9 +229,9 @@ impl ReservationDriftResult {
         match self {
             Self::Unchanged { .. } => false,
             Self::PhaseStartObjectUnknown { .. } => true,
-            Self::Changed { effects, .. } => effects.as_slice().iter().any(|effect| {
+            Self::Changed { effects, .. } => effects.as_slice().iter().any(|drift_effect| {
                 matches!(
-                    effect,
+                    drift_effect,
                     DriftEffect::Incursion { .. } | DriftEffect::Collision { .. }
                 )
             }),
@@ -242,7 +244,7 @@ impl ReservationDriftResult {
             Self::Changed { effects, .. } => effects
                 .as_slice()
                 .iter()
-                .flat_map(|effect| match effect {
+                .flat_map(|drift_effect| match drift_effect {
                     DriftEffect::Incursion {
                         foreign_reservation_ids,
                         ..

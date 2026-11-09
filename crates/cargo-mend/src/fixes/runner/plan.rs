@@ -13,6 +13,7 @@ use crate::config::FixKindSelection;
 use crate::config::OperationIntent;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility;
+use crate::fixes::imports::FixSetPresence;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::narrow_pub_crate;
 use crate::fixes::pub_use_fixes;
@@ -287,7 +288,7 @@ impl MendRunner<'_> {
         let accepted = protected.accepted_scans(scans);
         let declined_on_failure = if accepted
             .subtree_reexports
-            .is_some_and(|scan| !scan.fixes.is_empty())
+            .is_some_and(|scan| scan.fixes.presence() == FixSetPresence::HasEdits)
         {
             self.chain_validation.next_links(&planned.report)
         } else {

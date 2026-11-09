@@ -887,17 +887,23 @@ pub(crate) enum BuildOutcome {
     Succeeded,
 }
 
-impl BuildOutcome {
-    pub(crate) const fn is_success(self) -> bool { matches!(self, Self::Succeeded) }
-}
-
 impl Serialize for BuildOutcome {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_bool(self.is_success())
+        serializer.serialize_bool(match self {
+            Self::Succeeded => true,
+            Self::Failed => false,
+        })
     }
+}
+
+/// Whether the existing `ReportSummary` contains warning findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WarningPresence {
+    Present,
+    Absent,
 }
 
 impl Report {
@@ -909,7 +915,13 @@ impl Report {
         }
     }
 
-    pub(crate) const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
+    pub(crate) const fn warning_presence(&self) -> WarningPresence {
+        if self.summary.warnings > 0 {
+            WarningPresence::Present
+        } else {
+            WarningPresence::Absent
+        }
+    }
 
     pub(crate) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {

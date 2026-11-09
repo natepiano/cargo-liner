@@ -23,9 +23,10 @@ use syn::ext::IdentExt;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::AttributeTestGate;
 use super::ParsedSources;
+use super::attribute_test_gate;
 use super::file_module_path;
-use super::is_cfg_test;
 use super::parse_meta_list;
 
 /// Where a source file sits in its crate's module tree.
@@ -330,7 +331,7 @@ impl ModuleMap {
         };
         let root = Declared {
             module_path: Vec::new(),
-            test_only:   false,
+            builds:      DeclaredBuilds::AllBuilds,
         };
         walk.declare(crate_root, &root);
         walk.walk_file(
@@ -343,8 +344,8 @@ impl ModuleMap {
         }
     }
 
-    fn absorb(&mut self, other: Self) {
-        for (file, declared) in other.declarations {
+    fn absorb(&mut self, other_module_map: Self) {
+        for (file, declared) in other_module_map.declarations {
             match self.declarations.entry(file) {
                 Entry::Vacant(entry) => {
                     entry.insert(declared);
@@ -482,7 +483,7 @@ impl DeclaredFile {
 /// declaration or an ancestor's limits it to test builds.
 struct Declared {
     module_path: Vec<String>,
-    test_only:   bool,
+    builds:      DeclaredBuilds,
 }
 
 struct ModuleWalk<'a> {
@@ -496,11 +497,6 @@ struct ModuleWalk<'a> {
 impl ModuleWalk<'_> {
     fn declare(&mut self, file: &Path, module: &Declared) {
         let file = lexically_normalized(file);
-        let builds = if module.test_only {
-            DeclaredBuilds::TestOnly
-        } else {
-            DeclaredBuilds::AllBuilds
-        };
         match self.declarations.entry(file) {
             Entry::Vacant(entry) => {
                 entry.insert(DeclaredFile {
@@ -508,12 +504,12 @@ impl ModuleWalk<'_> {
                         first:      module.module_path.clone(),
                         additional: Vec::new(),
                     },
-                    builds,
+                    builds: module.builds,
                 });
             },
             Entry::Occupied(mut entry) => {
                 let declared = entry.get_mut();
-                declared.builds = declared.builds.merge(builds);
+                declared.builds = declared.builds.merge(module.builds);
                 if module.module_path != declared.mounts.first
                     && !declared.mounts.additional.contains(&module.module_path)
                 {
@@ -523,20 +519,30 @@ impl ModuleWalk<'_> {
         }
     }
 
-    fn walk_file(&mut self, file: &Path, module: &Declared, directories: &ModuleDirectories) {
+    fn walk_file(
+        &mut self,
+        file: &Path,
+        module: &Declared,
+        module_directories: &ModuleDirectories,
+    ) {
         let visit = (lexically_normalized(file), module.module_path.clone());
         if !self.visiting.insert(visit.clone()) {
             return;
         }
-        if let Ok(source) = self.sources.source(file)
-            && let Ok(syntax) = source.syntax()
+        if let Ok(parsed_source) = self.sources.source(file)
+            && let Ok(syntax) = parsed_source.syntax()
         {
-            self.walk_items(&syntax.items, directories, module);
+            self.walk_items(&syntax.items, module_directories, module);
         }
         self.visiting.remove(&visit);
     }
 
-    fn walk_items(&mut self, items: &[Item], directories: &ModuleDirectories, module: &Declared) {
+    fn walk_items(
+        &mut self,
+        items: &[Item],
+        module_directories: &ModuleDirectories,
+        module: &Declared,
+    ) {
         for item in items {
             let Item::Mod(declaration) = item else {
                 continue;
@@ -546,17 +552,23 @@ impl ModuleWalk<'_> {
             module_path.push(module_name.clone());
             let child = Declared {
                 module_path,
-                test_only: module.test_only || is_cfg_test(&declaration.attrs),
+                builds: match module.builds {
+                    DeclaredBuilds::TestOnly => DeclaredBuilds::TestOnly,
+                    DeclaredBuilds::AllBuilds => match attribute_test_gate(&declaration.attrs) {
+                        AttributeTestGate::DirectCfgTest => DeclaredBuilds::TestOnly,
+                        AttributeTestGate::NotDirectCfgTest => DeclaredBuilds::AllBuilds,
+                    },
+                },
             };
 
             if let Some((_, inline_items)) = &declaration.content {
-                for directory in directories.inside_inline_module(declaration) {
+                for directory in module_directories.inside_inline_module(declaration) {
                     self.walk_items(inline_items, &directory, &child);
                 }
                 continue;
             }
 
-            for module_file in directories.declared_module_files(declaration) {
+            for module_file in module_directories.declared_module_files(declaration) {
                 if !module_file.is_file() {
                     continue;
                 }
@@ -621,8 +633,8 @@ fn crate_root_files(source_root: &Path) -> Vec<PathBuf> {
         .into_iter()
         .flatten()
         .flatten()
-        .flat_map(|entry| {
-            let path = entry.path();
+        .flat_map(|dir_entry| {
+            let path = dir_entry.path();
             [path.join("main.rs"), path]
         });
     named_roots
@@ -640,25 +652,25 @@ fn crate_root_files(source_root: &Path) -> Vec<PathBuf> {
 /// that does not.
 pub(super) fn lexically_normalized(path: &Path) -> PathBuf {
     path.components()
-        .fold(PathBuf::new(), |mut normalized, component| {
+        .fold(PathBuf::new(), |mut normalized_path, component| {
             match component {
                 Component::CurDir => {},
                 Component::ParentDir => {
-                    if !normalized.pop() {
-                        normalized.push(component);
+                    if !normalized_path.pop() {
+                        normalized_path.push(component);
                     }
                 },
-                named => normalized.push(named),
+                named => normalized_path.push(named),
             }
-            normalized
+            normalized_path
         })
 }
 
 fn path_from_meta(meta: &Meta) -> Option<String> {
-    let Meta::NameValue(name_value) = meta else {
+    let Meta::NameValue(meta_name_value) = meta else {
         return None;
     };
-    let Expr::Lit(expr_lit) = &name_value.value else {
+    let Expr::Lit(expr_lit) = &meta_name_value.value else {
         return None;
     };
     let Lit::Str(path) = &expr_lit.lit else {
@@ -709,7 +721,7 @@ mod tests {
         let file = Path::new("/repo/src/shared.rs");
         let root = super::Declared {
             module_path: Vec::new(),
-            test_only:   true,
+            builds:      super::DeclaredBuilds::TestOnly,
         };
         walk.declare(file, &root);
         walk.declare(file, &root);
@@ -829,32 +841,32 @@ mod tests {
     /// resolves against the module's own directory.
     #[test]
     fn top_level_path_attribute_resolves_against_the_file_directory() {
-        let directories = ModuleDirectories::for_file(Path::new("/repo/src/a/b.rs"));
-        assert_eq!(directories.file, Path::new("/repo/src/a"));
-        assert_eq!(directories.module, Path::new("/repo/src/a/b"));
+        let module_directories = ModuleDirectories::for_file(Path::new("/repo/src/a/b.rs"));
+        assert_eq!(module_directories.file, Path::new("/repo/src/a"));
+        assert_eq!(module_directories.module, Path::new("/repo/src/a/b"));
     }
 
     #[test]
     fn a_mod_rs_file_resolves_both_bases_against_its_own_directory() {
-        let directories = ModuleDirectories::for_file(Path::new("/repo/src/a/mod.rs"));
-        assert_eq!(directories.file, Path::new("/repo/src/a"));
-        assert_eq!(directories.module, Path::new("/repo/src/a"));
+        let module_directories = ModuleDirectories::for_file(Path::new("/repo/src/a/mod.rs"));
+        assert_eq!(module_directories.file, Path::new("/repo/src/a"));
+        assert_eq!(module_directories.module, Path::new("/repo/src/a"));
     }
 
     #[test]
     fn an_inline_module_moves_both_bases_into_its_directory() {
         let declaration = syn::parse_str("mod inner {}").expect("parse inline module");
-        let directories = ModuleDirectories::for_file(Path::new("/repo/src/a/b.rs"))
+        let module_directories = ModuleDirectories::for_file(Path::new("/repo/src/a/b.rs"))
             .inside_inline_module(&declaration)
             .remove(0);
-        assert_eq!(directories.file, Path::new("/repo/src/a/b/inner"));
-        assert_eq!(directories.module, Path::new("/repo/src/a/b/inner"));
+        assert_eq!(module_directories.file, Path::new("/repo/src/a/b/inner"));
+        assert_eq!(module_directories.module, Path::new("/repo/src/a/b/inner"));
     }
 
     #[test]
     fn an_inline_path_attribute_resolves_child_files_at_its_declared_directory() {
-        let crate_dir = tempdir().expect("create inline mount crate");
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = tempdir().expect("create inline mount crate");
+        let source_root = crate_temp_dir.path().join("src");
         fs::create_dir_all(source_root.join("parent")).expect("create parent directory");
         fs::write(source_root.join("lib.rs"), "mod parent;\n").expect("write crate root");
         fs::write(source_root.join("parent/mod.rs"), "mod scan;\n").expect("write parent");
@@ -879,9 +891,10 @@ mod tests {
 
     #[test]
     fn a_crate_root_resolves_both_bases_against_its_own_directory() {
-        let directories = ModuleDirectories::for_crate_root(Path::new("/repo/src/bin/tool.rs"));
-        assert_eq!(directories.file, Path::new("/repo/src/bin"));
-        assert_eq!(directories.module, Path::new("/repo/src/bin"));
+        let module_directories =
+            ModuleDirectories::for_crate_root(Path::new("/repo/src/bin/tool.rs"));
+        assert_eq!(module_directories.file, Path::new("/repo/src/bin"));
+        assert_eq!(module_directories.module, Path::new("/repo/src/bin"));
     }
 
     /// rustc resolves `mod helper;` in the binary root `src/bin/tool.rs`
@@ -889,8 +902,8 @@ mod tests {
     /// non-root file named `tool.rs`.
     #[test]
     fn a_binary_root_declares_modules_beside_it() {
-        let crate_dir = tempdir().expect("create temp crate");
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = tempdir().expect("create temp crate");
+        let source_root = crate_temp_dir.path().join("src");
         let binary_dir = source_root.join("bin");
         fs::create_dir_all(binary_dir.join("tool")).expect("create bin dirs");
         fs::write(
@@ -922,8 +935,8 @@ fn main() {}
     /// A root outside `src`, such as an integration test, walks the same way.
     #[test]
     fn one_crate_root_resolves_only_its_own_modules() {
-        let crate_dir = crate_with_detached_module();
-        let tests_dir = crate_dir.path().join("tests");
+        let crate_temp_dir = crate_with_detached_module();
+        let tests_dir = crate_temp_dir.path().join("tests");
         fs::create_dir_all(tests_dir.join("common")).expect("create tests dirs");
         fs::write(
             tests_dir.join("it.rs"),
@@ -948,7 +961,7 @@ fn main() {}
                 "fixtures".to_string()
             ]))
         );
-        let source_root = crate_dir.path().join("src");
+        let source_root = crate_temp_dir.path().join("src");
         assert_eq!(
             module_map.file_module_path(&source_root, &source_root.join("stream/macos.rs")),
             Some(FileModulePath::Known(vec![
@@ -963,8 +976,8 @@ fn main() {}
     /// `super` names.
     #[test]
     fn a_path_attribute_moves_a_file_off_its_directory_module_path() {
-        let crate_dir = crate_with_detached_module();
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = crate_with_detached_module();
+        let source_root = crate_temp_dir.path().join("src");
         let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
         assert_eq!(
@@ -982,8 +995,8 @@ fn main() {}
 
     #[test]
     fn a_file_no_mod_declaration_reaches_falls_back_to_its_directory() {
-        let crate_dir = crate_with_detached_module();
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = crate_with_detached_module();
+        let source_root = crate_temp_dir.path().join("src");
         fs::write(source_root.join("stream/orphan.rs"), "").expect("write orphan");
         let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
@@ -998,8 +1011,8 @@ fn main() {}
 
     #[test]
     fn a_file_two_parents_declare_has_no_single_module_path() {
-        let crate_dir = crate_with_detached_module();
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = crate_with_detached_module();
+        let source_root = crate_temp_dir.path().join("src");
         fs::write(
             source_root.join("platform/mod.rs"),
             "#[path = \"../stream/macos.rs\"]\nmod camera_stream;\n\
@@ -1018,8 +1031,8 @@ fn main() {}
     /// ancestor's, file or inline, carries `#[cfg(test)]`.
     #[test]
     fn a_cfg_test_declaration_marks_its_file_and_the_files_below_it_test_only() {
-        let crate_dir = tempdir().expect("create temp crate");
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = tempdir().expect("create temp crate");
+        let source_root = crate_temp_dir.path().join("src");
         fs::create_dir_all(source_root.join("tests")).expect("create tests dir");
         fs::create_dir_all(source_root.join("gated/inner")).expect("create gated dir");
         fs::write(
@@ -1044,8 +1057,8 @@ fn main() {}
     /// `src/stream/macos.rs` sits under `stream` but is declared by `platform`,
     /// the layout cargo-mend used to read as `crate::stream::macos`.
     fn crate_with_detached_module() -> TempDir {
-        let crate_dir = tempdir().expect("create temp crate");
-        let source_root = crate_dir.path().join("src");
+        let crate_temp_dir = tempdir().expect("create temp crate");
+        let source_root = crate_temp_dir.path().join("src");
         fs::create_dir_all(source_root.join("platform")).expect("create platform dir");
         fs::create_dir_all(source_root.join("stream")).expect("create stream dir");
         fs::write(source_root.join("lib.rs"), "mod platform;\nmod stream;\n")
@@ -1065,6 +1078,6 @@ fn main() {}
             "use crate::stream::CameraFrame;\n",
         )
         .expect("write detached module");
-        crate_dir
+        crate_temp_dir
     }
 }

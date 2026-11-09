@@ -28,6 +28,7 @@ use crate::fixes::visibility_annotation_site;
 use crate::reporting::ModuleForm;
 use crate::reporting::SubtreeReexportFixFact;
 use crate::rust_syntax;
+use crate::rust_syntax::AttributeTestGate;
 
 /// One fact of an owner region, by its index in the scan's fact list.
 pub(super) struct OwnerFact<'a> {
@@ -369,10 +370,11 @@ fn rewrite_item(
             facade_redirect::render_use_tree(&kept)
         ));
     }
-    let test_gate = if rust_syntax::is_cfg_test(&item_use.attrs) {
-        String::new()
-    } else {
-        format!("{CFG_TEST_ATTRIBUTE}\n{}", lines.indent_before(start))
+    let test_gate = match rust_syntax::attribute_test_gate(&item_use.attrs) {
+        AttributeTestGate::DirectCfgTest => String::new(),
+        AttributeTestGate::NotDirectCfgTest => {
+            format!("{CFG_TEST_ATTRIBUTE}\n{}", lines.indent_before(start))
+        },
     };
     for leaf in used_leaves {
         let gate = match leaf.local_use {
