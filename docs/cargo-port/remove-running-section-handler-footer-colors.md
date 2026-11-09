@@ -1106,44 +1106,23 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 ### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: done
 
-**Depends on:** none; runs beside Phases 21 and 69. `agent_cell.rs`, `render/mod.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
+#### As-built
 
-#### Work Order
-
-**Goal:** a left press anywhere on an expandable row opens or closes it, in cargo-handler as in the cargo-port project list today. One shared rule in tui_pane decides it.
-
-**Source:** the user, relayed by the showrunner, 2026-11-08: "when will handler deliver mouse clicking on expand/collapse - sharing that code with cargo port i would expect because that already works in the cargo port project list - sharing through tui_pane of course?"
-
-**Constraints:**
-- Phase 63 opens a row only on a press on its `▶`/`▼` marker cells (`MarkerCells`, `interaction.rs` ≈297). The cargo-port project list toggles on a press anywhere on the row (`cargo-port/src/tui/interaction.rs` ≈25 and ≈44, through `ProjectList::toggle_expand_for_row`).
-- Each app keeps its own row hit test: which row is under the pointer. The shared piece is the rule after it: a press on a row toggles that row when the row is a branch, and does nothing more for a leaf.
-- Both apps already implement `tui_pane::ExpansionTree` (`cargo-handler/src/expansion.rs` ≈251, `cargo-port/src/tui/project_list/list.rs` ≈1543). Build the shared rule on that trait, beside `ExpansionModel::collapse_row`.
-- Keep the tui_pane API small: one method on `ExpansionModel` and at most one new public result type. No new trait.
-- Do not edit any cargo-port file. The port unit moves cargo-port onto the shared rule after its Phase 4p.
-- A terminal focus-gain never toggles a row. cargo-port's `ClickMode::FocusOnly` is the model.
-- A press still selects the row, as now. One press resolves once.
-- Do not edit `agent_cell.rs` or `render/mod.rs` until the director says the Phase 21 checkpoint is in. Phase 21 owns both now.
-
-**Spec:**
-1. tui_pane: add the shared row-press rule to `ExpansionModel` in `crates/tui_pane/src/expansion.rs`. It takes the tree and the pressed row. A branch row toggles and the result names the new state. A leaf row changes nothing and the result says so. Unit tests in tui_pane cover a branch that opens, a branch that closes, a leaf, and a branch open by the depth rule.
-2. cargo-handler: a left press on any line of an expandable row toggles that row through the shared rule. Delete `MarkerCells`, the marker clip (`SurfaceSelection::clip_markers`) and the marker columns (`agent_cell::tree_marker_columns`), when nothing else reads them. The `▶`/`▼` glyphs stay drawn.
-3. cargo-handler: `RowClick` keeps one resolution per press. A press on a leaf selects it. A press outside the rows misses.
-4. Tests under 1 s: a press on the body of a branch row toggles it; a press on a continuation line of a wrapped branch row toggles it; a press on a leaf only selects; a second press closes it again. Replace the marker-cell tests.
-5. Report the exact call the port unit uses in cargo-port, in the shape `ProjectList` already has: the method, its arguments and the result it matches.
-6. CHANGELOG: one Changed line in cargo-handler, and one Added line in tui_pane.
+- `tui_pane::ExpansionModel::press_row(&mut self, tree: &T, row: &T::Row) -> RowPressResult` is the shared row-press rule, for any `T: ExpansionTree`. `RowExpansion::Branch` toggles through `ExpansionModel::toggle` and returns `RowPressResult::Toggled(ExpansionState)`. `RowExpansion::Leaf` returns `RowPressResult::Leaf` and changes nothing.
+- cargo-handler resolves a left press anywhere in a painted row's rectangle, continuation lines included, to that row once. The press selects the row and calls `press_row`. The `▶`/`▼` glyphs stay drawn. `MarkerCells`, `RowSpan::with_marker` and `SurfaceSelection::clip_markers` are gone.
+- cargo-port calls the same rule as `expansion.press_row(&tree, &row)` and matches `RowPressResult::{Leaf, Toggled(state)}`. No cargo-port file changed here.
 
 **Files:**
-- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`
-- `crates/tui_pane/CHANGELOG.md` — after the overlap answer on cargo-liner-port's outstanding reservation; the director adds the line
-- `crates/cargo-handler/src/interaction.rs`
-- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs`
-- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — after the Phase 21 checkpoint
-- `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
+- `crates/tui_pane/src/expansion.rs` — `RowPressResult`, `ExpansionModel::press_row`, the `row_press_*` tests
+- `crates/tui_pane/src/lib.rs` — the `RowPressResult` export
+- `crates/cargo-handler/src/interaction.rs` — row-body press resolution
+- `crates/cargo-handler/src/agent_cell.rs` — `row_spans` with no marker columns
+- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs` — presses through `press_row`
+- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/mod.rs` — painted row rectangles
 
-**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+**Binds later work:** the cargo-port move onto the shared rule calls `ExpansionModel::press_row` and matches `RowPressResult`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
+**Gotchas:** a continuation line of a wrapped row resolves to the same row as its first line.
 
 ### Phase 71 — A detached run joins its pane worker's row  · status: done
 
@@ -1224,6 +1203,35 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 **Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
+
+### Phase 75 — The nested Astra reviewer test finishes in under a second  · status: todo
+
+**Depends on:** Phase 72 checkpoint. `census/astra_role_tests.rs` is outside every open phase; a fix in `census/scan.rs` waits for Phase 72.
+
+#### Work Order
+
+**Goal:** `census::astra_role_tests::astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing` takes well under 1 s on every run, with its asserts unchanged.
+
+**Source:** the showrunner, 2026-11-08: "Add a new handler phase after 72 for astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing (1.154 s), as for 73 and 74."
+
+**Constraints:**
+- The test took 1.154 s in the cargo-handler package run at the Phase 70 checkpoint (1178 tests). Every other test stayed under 0.4 s.
+- The test builds a new `AstraFixture` four times (`missing` in `none`, `home`, `role`, `both`) and scans once each through `LocalScanner::scan_astra_for_test`. `AstraFixture::new` builds its `LocalScanner` with no `with_herdr_probe_wait`; `astra_staff_membership_does_not_depend_on_the_name_wait` sets it to 0. Measure where the time goes before a change.
+- Remove the wall-clock cost at its source (a wait, a poll, a spawn, repeated setup). Do not raise a timeout and do not split the cases out to hide the time.
+- Keep every assert and all four cases. No new check of your own design.
+
+**Spec:**
+1. Name the cost in the summary, with its measured time before and after.
+2. Remove it in the test fixture, or in the scanner when a test-only wait is the cause.
+3. The test takes under 0.1 s alone and stays under 1 s in the package gate.
+
+**Files:**
+- `crates/cargo-handler/src/census/astra_role_tests.rs` — the fixture and the test
+- `crates/cargo-handler/src/census/scan.rs` — only if the cost is in `scan_astra_for_test` or a wait it reaches; name it in the summary before the edit
+
+**Workers:** 1 writer. It owns the listed test and fixture.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
 
 ### Phase 74 — The model-read transcript test finishes in under a second  · status: done
 
