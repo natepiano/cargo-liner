@@ -331,58 +331,67 @@ mod tests {
 
     #[test]
     fn not_attempted_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::NotAttempted;
+        let window_identification_state = WindowIdentificationState::NotAttempted;
 
-        assert_eq!(state.report(), WindowIdentification::NotAttempted);
         assert_eq!(
-            state.capture_window_target(),
+            window_identification_state.report(),
+            WindowIdentification::NotAttempted
+        );
+        assert_eq!(
+            window_identification_state.capture_window_target(),
             CaptureWindowTarget::TerminalWindowHeuristic,
         );
     }
 
     #[test]
     fn pending_before_marker_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::PendingBeforeMarker {
+        let window_identification_state = WindowIdentificationState::PendingBeforeMarker {
             attempts_consumed: 1,
             attempted_at:      Instant::now(),
         };
 
-        assert_eq!(state.report(), WindowIdentification::Pending);
         assert_eq!(
-            state.capture_window_target(),
+            window_identification_state.report(),
+            WindowIdentification::Pending
+        );
+        assert_eq!(
+            window_identification_state.capture_window_target(),
             CaptureWindowTarget::TerminalWindowHeuristic,
         );
     }
 
     #[test]
     fn pending_with_marker_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::PendingWithMarker {
+        let window_identification_state = WindowIdentificationState::PendingWithMarker {
             attempts_consumed: 1,
             attempted_at:      Instant::now(),
             previous_titles:   Vec::new(),
         };
 
-        assert_eq!(state.report(), WindowIdentification::Pending);
         assert_eq!(
-            state.capture_window_target(),
+            window_identification_state.report(),
+            WindowIdentification::Pending
+        );
+        assert_eq!(
+            window_identification_state.capture_window_target(),
             CaptureWindowTarget::TerminalWindowHeuristic,
         );
     }
 
     #[test]
     fn identified_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::Identified {
+        let window_identification_state = WindowIdentificationState::Identified {
             window_id: WINDOW_ID,
         };
 
         assert_eq!(
-            state.report(),
+            window_identification_state.report(),
             WindowIdentification::Identified {
                 window_id: WINDOW_ID,
             },
         );
         assert_eq!(
-            state.capture_window_target(),
+            window_identification_state.capture_window_target(),
             CaptureWindowTarget::PreferWindow {
                 window_id: WINDOW_ID,
             },
@@ -391,11 +400,14 @@ mod tests {
 
     #[test]
     fn fallback_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::Fallback;
+        let window_identification_state = WindowIdentificationState::Fallback;
 
-        assert_eq!(state.report(), WindowIdentification::Fallback);
         assert_eq!(
-            state.capture_window_target(),
+            window_identification_state.report(),
+            WindowIdentification::Fallback
+        );
+        assert_eq!(
+            window_identification_state.capture_window_target(),
             CaptureWindowTarget::TerminalWindowHeuristic,
         );
     }

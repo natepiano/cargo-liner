@@ -91,7 +91,11 @@ impl MendRunner<'_> {
             fixes.extend(tag(
                 Some(FixKind::Import),
                 scan.fixes.iter().filter(|fix| {
-                    !overlaps_any(fix, &prefer_ranges) && !lies_inside_any(fix, &moved_use_ranges)
+                    matches!(overlaps_any(fix, &prefer_ranges), FixOverlap::Clear)
+                        && matches!(
+                            lies_inside_any(fix, &moved_use_ranges),
+                            MovedUseRelation::Outside
+                        )
                 }),
             ));
         }
@@ -147,11 +151,11 @@ impl FixScans<'_> {
     /// convergence pass proposes it again.
     pub(super) fn without_pub_use_overlapping_subtree_reexports(self) -> Self {
         let subtree_ranges = subtree_reexport_ranges(self);
-        let pub_use = self.pub_use.filter(|scan| {
-            !scan
+        let pub_use = self.pub_use.filter(|pub_use_fix_scan| {
+            !pub_use_fix_scan
                 .fixes
                 .iter()
-                .any(|fix| overlaps_any(fix, &subtree_ranges))
+                .any(|fix| matches!(overlaps_any(fix, &subtree_ranges), FixOverlap::Overlapping))
         });
         Self { pub_use, ..self }
     }
@@ -173,13 +177,7 @@ enum FixOverlap {
 }
 
 impl FixOverlap {
-    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
-        if overlaps_any(fix, ranges) {
-            Self::Overlapping
-        } else {
-            Self::Clear
-        }
-    }
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self { overlaps_any(fix, ranges) }
 }
 
 #[derive(Clone, Copy)]
@@ -189,13 +187,7 @@ enum MovedUseRelation {
 }
 
 impl MovedUseRelation {
-    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
-        if lies_inside_any(fix, ranges) {
-            Self::Inside
-        } else {
-            Self::Outside
-        }
-    }
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self { lies_inside_any(fix, ranges) }
 }
 
 /// Drops every fix that overlaps one of `ranges`, together with every fix
@@ -255,16 +247,24 @@ fn tag<'a>(
 
 fn file_range(fix: &UseFix) -> FileRange<'_> { (fix.path.as_path(), fix.start, fix.end) }
 
-fn overlaps_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
-    ranges.iter().any(|(path, start, end)| {
+fn overlaps_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> FixOverlap {
+    if ranges.iter().any(|(path, start, end)| {
         fix.path.as_path() == *path && fix.start < *end && *start < fix.end
-    })
+    }) {
+        FixOverlap::Overlapping
+    } else {
+        FixOverlap::Clear
+    }
 }
 
-fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
-    ranges.iter().any(|(path, start, end)| {
+fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> MovedUseRelation {
+    if ranges.iter().any(|(path, start, end)| {
         fix.path.as_path() == *path && *start <= fix.start && fix.end <= *end
-    })
+    }) {
+        MovedUseRelation::Inside
+    } else {
+        MovedUseRelation::Outside
+    }
 }
 
 /// The prefer-module-import fixes that survive an imports-at-top move of the
@@ -275,10 +275,10 @@ fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
 /// statement text, so the next run rewrites the line at the module top and the
 /// call sites with it.
 fn module_import_fixes_outside_moved_uses<'a>(
-    scan: &'a PreferModuleImportScan,
+    prefer_module_import_scan: &'a PreferModuleImportScan,
     moved_use_ranges: &[FileRange<'_>],
 ) -> Vec<&'a UseFix> {
-    let classified: Vec<_> = scan
+    let classified: Vec<_> = prefer_module_import_scan
         .fixes
         .iter()
         .map(|fix| (MovedUseRelation::for_fix(fix, moved_use_ranges), fix))
@@ -362,6 +362,7 @@ mod tests {
     use super::TaggedFix;
     use super::ValidatedFixSet;
     use super::drop_conflicting_import_groups;
+    use crate::fixes::imports::FixSetPresence;
     use crate::fixes::imports::ImportGroup;
     use crate::fixes::imports::ImportScan;
     use crate::fixes::imports::UseFix;
@@ -394,7 +395,7 @@ mod tests {
         let module_imports =
             crate::fixes::prefer_module_import::scan_selection(&selection, &sources)?;
         assert!(
-            !module_imports.fixes.is_empty(),
+            module_imports.fixes.presence() == FixSetPresence::HasEdits,
             "the fixture has module rewrites"
         );
         let imports = import_scan(Vec::new())?;
@@ -451,7 +452,7 @@ mod tests {
                 Ok(BTreeSet::default())
             })?;
         assert!(
-            !subtree.fixes.is_empty(),
+            subtree.fixes.presence() == FixSetPresence::HasEdits,
             "the real scanner relocates the re-export"
         );
         let plan = MendRunner::combined_function_plan(
@@ -846,8 +847,8 @@ mod tests {
                 "crate::foo::Baz",
             ),
         ];
-        let result = drop_conflicts(fixes);
-        assert_eq!(result.len(), 3);
+        let remaining_use_fixes = drop_conflicts(fixes);
+        assert_eq!(remaining_use_fixes.len(), 3);
     }
 
     #[test]
@@ -870,10 +871,10 @@ mod tests {
             ),
             tagged("src/a.rs", 75, "Package", "Package", "crate::b::Package"),
         ];
-        let result = drop_conflicts(fixes);
+        let remaining_use_fixes = drop_conflicts(fixes);
         assert!(
-            result.is_empty(),
-            "conflicting-group fixes should all be dropped, got {result:?}"
+            remaining_use_fixes.is_empty(),
+            "conflicting-group fixes should all be dropped, got {remaining_use_fixes:?}"
         );
     }
 
@@ -910,8 +911,8 @@ mod tests {
             tagged("src/a.rs", 50, "Package", "Package", "crate::a::Package"),
             tagged("src/a.rs", 80, "Package", "Package", "crate::a::Package"),
         ];
-        let result = drop_conflicts(fixes);
-        assert_eq!(result.len(), 3);
+        let remaining_use_fixes = drop_conflicts(fixes);
+        assert_eq!(remaining_use_fixes.len(), 3);
     }
 
     #[test]
@@ -932,8 +933,8 @@ mod tests {
                 "crate::b::Package",
             ),
         ];
-        let result = drop_conflicts(fixes);
-        assert_eq!(result.len(), 2);
+        let remaining_use_fixes = drop_conflicts(fixes);
+        assert_eq!(remaining_use_fixes.len(), 2);
     }
 
     #[test]
@@ -955,9 +956,9 @@ mod tests {
             ),
             untagged("src/a.rs", 100, "use super::other;"),
         ];
-        let result = drop_conflicts(fixes);
-        assert_eq!(result.len(), 1);
-        assert!(result[0].import_group.is_none());
+        let remaining_use_fixes = drop_conflicts(fixes);
+        assert_eq!(remaining_use_fixes.len(), 1);
+        assert!(remaining_use_fixes[0].import_group.is_none());
     }
 
     #[test]
@@ -1046,23 +1047,23 @@ mod tests {
             skipped: 0,
         };
         let subtree_reexports = subtree_reexport_scan()?;
-        let overlapping = FixScans {
+        let overlapping_fix_scans = FixScans {
             pub_use: Some(&pub_use),
             ..fix_scans_with_subtree_reexports(None, None, &subtree_reexports)
         };
-        let clear = FixScans {
+        let clear_fix_scans = FixScans {
             subtree_reexports: None,
-            ..overlapping
+            ..overlapping_fix_scans
         };
 
         assert!(
-            overlapping
+            overlapping_fix_scans
                 .without_pub_use_overlapping_subtree_reexports()
                 .pub_use
                 .is_none()
         );
         assert!(
-            clear
+            clear_fix_scans
                 .without_pub_use_overlapping_subtree_reexports()
                 .pub_use
                 .is_some()

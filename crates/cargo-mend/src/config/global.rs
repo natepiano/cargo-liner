@@ -66,7 +66,7 @@ impl From<GlobalConfigFile> for GlobalConfig {
 }
 
 pub(crate) fn global_config_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join(APP_NAME).join(GLOBAL_CONFIG_FILE))
+    config_dir().map(|path_buf| path_buf.join(APP_NAME).join(GLOBAL_CONFIG_FILE))
 }
 
 pub(crate) fn load_global_config() -> GlobalConfig {
@@ -95,53 +95,58 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
 
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read global config {}", path.display()))?;
-    let mut doc = contents
+    let mut document_mut = contents
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse global config {}", path.display()))?;
 
-    let mut edit = ConfigEdit::Unchanged;
+    let mut config_edit = ConfigEdit::Unchanged;
 
-    if let Some(diagnostics) = ensure_table(doc.as_table_mut(), DIAGNOSTICS_TABLE_KEY) {
+    if let Some(diagnostics_table) =
+        ensure_table(document_mut.as_table_mut(), DIAGNOSTICS_TABLE_KEY)
+    {
         if matches!(
-            migrate_overbroad_pub_crate_key(diagnostics),
+            migrate_overbroad_pub_crate_key(diagnostics_table),
             ConfigEdit::Rewritten
         ) {
-            edit = ConfigEdit::Rewritten;
+            config_edit = ConfigEdit::Rewritten;
         }
         for code in DiagnosticCode::ALL {
-            if !diagnostics.contains_key(code.as_str()) {
-                diagnostics.insert(code.as_str(), value(true));
-                edit = ConfigEdit::Rewritten;
+            if !diagnostics_table.contains_key(code.as_str()) {
+                diagnostics_table.insert(code.as_str(), value(true));
+                config_edit = ConfigEdit::Rewritten;
             }
         }
     }
 
-    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
+    if let Some(visibility) = ensure_table(document_mut.as_table_mut(), VISIBILITY_TABLE_KEY)
         && !visibility.contains_key(PRELUDE_KEY)
     {
         visibility.insert(PRELUDE_KEY, value(true));
         if let Some(mut key) = visibility.key_mut(PRELUDE_KEY) {
             key.leaf_decor_mut().set_prefix(PRELUDE_COMMENT);
         }
-        edit = ConfigEdit::Rewritten;
+        config_edit = ConfigEdit::Rewritten;
     }
 
-    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
+    if let Some(visibility) = ensure_table(document_mut.as_table_mut(), VISIBILITY_TABLE_KEY)
         && !visibility.contains_key(PUB_IN_PATH_KEY)
     {
         visibility.insert(PUB_IN_PATH_KEY, value(PubInPath::Required.config_value()));
         if let Some(mut key) = visibility.key_mut(PUB_IN_PATH_KEY) {
             key.leaf_decor_mut().set_prefix(PUB_IN_PATH_COMMENT);
         }
-        edit = ConfigEdit::Rewritten;
+        config_edit = ConfigEdit::Rewritten;
     }
 
-    if matches!(migrate_unversioned_config(&mut doc), ConfigEdit::Rewritten) {
-        edit = ConfigEdit::Rewritten;
+    if matches!(
+        migrate_unversioned_config(&mut document_mut),
+        ConfigEdit::Rewritten
+    ) {
+        config_edit = ConfigEdit::Rewritten;
     }
 
-    if matches!(edit, ConfigEdit::Rewritten) {
-        fs::write(path, doc.to_string())
+    if matches!(config_edit, ConfigEdit::Rewritten) {
+        fs::write(path, document_mut.to_string())
             .with_context(|| format!("failed to write global config {}", path.display()))?;
     }
     Ok(())
@@ -155,21 +160,22 @@ enum ConfigEdit {
     Rewritten,
 }
 
-fn migrate_overbroad_pub_crate_key(diagnostics: &mut Table) -> ConfigEdit {
+fn migrate_overbroad_pub_crate_key(diagnostics_table: &mut Table) -> ConfigEdit {
     let current_key = DiagnosticCode::OverbroadPubCrate.as_str();
-    if diagnostics.contains_key(current_key) {
-        return diagnostics
+    if diagnostics_table.contains_key(current_key) {
+        return diagnostics_table
             .remove(LEGACY_OVERBROAD_PUB_CRATE_KEY)
             .map_or(ConfigEdit::Unchanged, |_| ConfigEdit::Rewritten);
     }
 
-    let Some((legacy_key, item)) = diagnostics.remove_entry(LEGACY_OVERBROAD_PUB_CRATE_KEY) else {
+    let Some((legacy_key, item)) = diagnostics_table.remove_entry(LEGACY_OVERBROAD_PUB_CRATE_KEY)
+    else {
         return ConfigEdit::Unchanged;
     };
     let current_key = Key::new(current_key)
         .with_leaf_decor(legacy_key.leaf_decor().clone())
         .with_dotted_decor(legacy_key.dotted_decor().clone());
-    diagnostics.insert_formatted(&current_key, item);
+    diagnostics_table.insert_formatted(&current_key, item);
     ConfigEdit::Rewritten
 }
 
@@ -179,12 +185,12 @@ fn migrate_overbroad_pub_crate_key(diagnostics: &mut Table) -> ConfigEdit {
 /// deliberate setting and is kept. Stamping the version is what keeps this a
 /// one-time migration: an explicit `permitted` written afterwards survives every
 /// later run.
-fn migrate_unversioned_config(doc: &mut DocumentMut) -> ConfigEdit {
-    if doc.contains_key(CONFIG_VERSION_KEY) {
+fn migrate_unversioned_config(document_mut: &mut DocumentMut) -> ConfigEdit {
+    if document_mut.contains_key(CONFIG_VERSION_KEY) {
         return ConfigEdit::Unchanged;
     }
 
-    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
+    if let Some(visibility) = ensure_table(document_mut.as_table_mut(), VISIBILITY_TABLE_KEY)
         && visibility.get(PUB_IN_PATH_KEY).and_then(Item::as_str)
             == Some(PubInPath::Permitted.config_value())
     {
@@ -194,14 +200,15 @@ fn migrate_unversioned_config(doc: &mut DocumentMut) -> ConfigEdit {
         }
     }
 
-    doc.insert(CONFIG_VERSION_KEY, value(CONFIG_VERSION));
+    document_mut.insert(CONFIG_VERSION_KEY, value(CONFIG_VERSION));
     ConfigEdit::Rewritten
 }
 
 /// Returns the named table, inserting an empty one if absent. `None` only when the
 /// key already exists as a non-table value (a malformed config we leave untouched).
-fn ensure_table<'a>(root: &'a mut Table, name: &str) -> Option<&'a mut Table> {
-    root.entry(name)
+fn ensure_table<'a>(root_table: &'a mut Table, name: &str) -> Option<&'a mut Table> {
+    root_table
+        .entry(name)
         .or_insert_with(|| {
             let mut table = Table::new();
             table.set_implicit(false);
@@ -282,9 +289,9 @@ mod tests {
                 code.as_str()
             );
         }
-        let global = GlobalConfig::from(global_config_file);
-        assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
-        assert_eq!(global.pub_in_path, PubInPath::Required);
+        let global_config = GlobalConfig::from(global_config_file);
+        assert_eq!(global_config.prelude_pub_mod, PreludePubMod::Allowed);
+        assert_eq!(global_config.pub_in_path, PubInPath::Required);
     }
 
     #[test]
@@ -309,20 +316,20 @@ mod tests {
                 .is_enabled(DiagnosticCode::OverbroadPubCrate),
             DiagnosticStatus::Enabled
         ));
-        let global = GlobalConfig::from(global_config_file);
-        assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
-        assert_eq!(global.pub_in_path, PubInPath::Required);
+        let global_config = GlobalConfig::from(global_config_file);
+        assert_eq!(global_config.prelude_pub_mod, PreludePubMod::Allowed);
+        assert_eq!(global_config.pub_in_path, PubInPath::Required);
     }
 
     #[test]
     fn reconcile_creates_canonical_default_when_missing() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join(GLOBAL_CONFIG_FILE);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join(GLOBAL_CONFIG_FILE);
         reconcile_global_config(&path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         let file: GlobalConfigFile = from_str(&contents).unwrap();
-        for (_, enabled) in file.diagnostics_config.entries() {
-            assert!(matches!(enabled, DiagnosticStatus::Enabled));
+        for (_, diagnostic_status) in file.diagnostics_config.entries() {
+            assert!(matches!(diagnostic_status, DiagnosticStatus::Enabled));
         }
         assert!(contents.contains(PRELUDE_KEY));
         assert!(contents.contains(PUB_IN_PATH_KEY));
@@ -330,8 +337,8 @@ mod tests {
 
     #[test]
     fn reconcile_preserves_comments_and_explicit_values_when_complete() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join(GLOBAL_CONFIG_FILE);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join(GLOBAL_CONFIG_FILE);
         std::fs::write(&path, default_global_config_toml()).unwrap();
         // `original` changes `prefer_module_import` and adds a user comment before
         // `std::fs::write` writes the complete file.

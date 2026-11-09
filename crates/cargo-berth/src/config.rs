@@ -323,7 +323,7 @@ impl BerthConfig {
     }
 
     fn from_toml(contents: &str) -> Result<Self, ConfigError> {
-        let mut parsed_values = ParsedConfigValues::default();
+        let mut parsed_config_values = ParsedConfigValues::default();
         for line in contents.lines() {
             let stripped_line = strip_comment(line)?.trim();
             if stripped_line.is_empty() {
@@ -332,9 +332,9 @@ impl BerthConfig {
             let (key, value) = stripped_line
                 .split_once('=')
                 .ok_or_else(|| ConfigError::InvalidSyntax(stripped_line.to_owned()))?;
-            parsed_values.set(key.trim(), value.trim())?;
+            parsed_config_values.set(key.trim(), value.trim())?;
         }
-        Ok(parsed_values.finish())
+        Ok(parsed_config_values.finish())
     }
 }
 
@@ -576,11 +576,11 @@ mod tests {
 
     #[test]
     fn default_configuration_round_trips() {
-        let configuration = BerthConfig::default();
+        let berth_config = BerthConfig::default();
 
         assert!(
-            BerthConfig::from_toml(&configuration.to_toml())
-                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+            BerthConfig::from_toml(&berth_config.to_toml())
+                .is_ok_and(|parsed_configuration| parsed_configuration == berth_config)
         );
         assert_eq!(BerthConfig::default().gate_mode, GateMode::Observe);
     }
@@ -595,48 +595,48 @@ mod tests {
 
     #[test]
     fn partial_configuration_uses_defaults_for_omitted_values() {
-        let expected_configuration = BerthConfig {
+        let expected_berth_config = BerthConfig {
             trunk: "release".to_owned(),
             ..BerthConfig::default()
         };
 
         assert!(
             BerthConfig::from_toml("trunk = \"release\"")
-                .is_ok_and(|configuration| configuration == expected_configuration)
+                .is_ok_and(|configuration| configuration == expected_berth_config)
         );
     }
 
     #[test]
     fn an_absolute_approver_round_trips() {
-        let configuration = BerthConfig {
+        let berth_config = BerthConfig {
             approver: Some(ApproverWorktree(PathBuf::from("/work/hana_catalyst"))),
             ..BerthConfig::default()
         };
 
         assert!(
             BerthConfig::from_toml("approver = \"/work/hana_catalyst\"")
-                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+                .is_ok_and(|parsed_configuration| parsed_configuration == berth_config)
         );
         assert!(
-            BerthConfig::from_toml(&configuration.to_toml())
-                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+            BerthConfig::from_toml(&berth_config.to_toml())
+                .is_ok_and(|parsed_configuration| parsed_configuration == berth_config)
         );
     }
 
     #[test]
     fn a_default_answer_round_trips_and_rejects_unknown_answers() {
-        let configuration = BerthConfig {
+        let berth_config = BerthConfig {
             default_answer: Some(DefaultAnswer::FirstReady),
             ..BerthConfig::default()
         };
 
         assert!(
             BerthConfig::from_toml("default_answer = \"first_ready\"")
-                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+                .is_ok_and(|parsed_configuration| parsed_configuration == berth_config)
         );
         assert!(
-            BerthConfig::from_toml(&configuration.to_toml())
-                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+            BerthConfig::from_toml(&berth_config.to_toml())
+                .is_ok_and(|parsed_configuration| parsed_configuration == berth_config)
         );
         assert!(!BerthConfig::default().to_toml().contains("default_answer"));
         for unknown_answer in ["holder_first", "requester_first"] {
@@ -817,7 +817,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let main = tempdir()?;
         let linked = tempdir()?;
-        let policy = BerthConfig {
+        let berth_config = BerthConfig {
             trunk:                  "release".to_owned(),
             maximum_reservations:   17,
             maximum_ordering_edges: 29,
@@ -825,8 +825,8 @@ mod tests {
             approver:               Some(ApproverWorktree(PathBuf::from("/work/approver"))),
             default_answer:         Some(DefaultAnswer::FirstReady),
         };
-        write_configuration(linked.path(), &policy.trunk)?;
-        let linked_contents = format!("# Linked policy\n{}", policy.to_toml());
+        write_configuration(linked.path(), &berth_config.trunk)?;
+        let linked_contents = format!("# Linked policy\n{}", berth_config.to_toml());
         fs::write(BerthConfig::path(linked.path()), &linked_contents)?;
 
         assert_eq!(
@@ -838,7 +838,7 @@ mod tests {
         );
         assert_eq!(
             BerthConfig::read_file(&BerthConfig::path(main.path()))?,
-            ConfigurationFilePresence::Present(policy)
+            ConfigurationFilePresence::Present(berth_config)
         );
         assert_eq!(
             fs::read_to_string(BerthConfig::path(linked.path()))?,

@@ -1,5 +1,13 @@
 use syn::UseTree;
 
+/// Whether a `UseBinding::Named` binds its path's leaf spelling, including a rename to that
+/// same spelling; a `UseBinding::Glob` is `AliasOrGlob`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum BindingSpelling {
+    PathLeaf,
+    AliasOrGlob,
+}
+
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::fixes) enum UseBinding {
     Named { name: String, path: String },
@@ -20,16 +28,24 @@ impl UseBinding {
         }
     }
 
-    pub(in crate::fixes) fn binds_path_leaf(&self) -> bool {
-        self.name()
-            .is_some_and(|name| self.path().rsplit("::").next() == Some(name))
+    pub(in crate::fixes) fn spelling(&self) -> BindingSpelling {
+        match self {
+            Self::Named { name, path } => {
+                if path.rsplit("::").next() == Some(name.as_str()) {
+                    BindingSpelling::PathLeaf
+                } else {
+                    BindingSpelling::AliasOrGlob
+                }
+            },
+            Self::Glob { .. } => BindingSpelling::AliasOrGlob,
+        }
     }
 }
 
 pub(super) fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {
-    let mut bindings = Vec::new();
-    collect(tree, &mut Vec::new(), &mut bindings);
-    bindings
+    let mut use_bindings = Vec::new();
+    collect(tree, &mut Vec::new(), &mut use_bindings);
+    use_bindings
 }
 
 fn collect(tree: &UseTree, prefix: &mut Vec<String>, bindings: &mut Vec<UseBinding>) {
@@ -70,9 +86,9 @@ fn collect(tree: &UseTree, prefix: &mut Vec<String>, bindings: &mut Vec<UseBindi
                 });
             }
         },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                collect(item, prefix, bindings);
+        UseTree::Group(use_group) => {
+            for use_tree in &use_group.items {
+                collect(use_tree, prefix, bindings);
             }
         },
         UseTree::Glob(_) => bindings.push(UseBinding::Glob {

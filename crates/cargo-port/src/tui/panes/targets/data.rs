@@ -161,12 +161,12 @@ impl BuildMode {
 /// then examples, then benches. Each kind section is pre-sorted by
 /// [`TargetsData::from_workspace_metadata`].
 pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
-    let mut entries =
+    let mut target_entries =
         Vec::with_capacity(data.binaries.len() + data.examples.len() + data.benches.len());
-    entries.extend(data.binaries.iter().cloned());
-    entries.extend(data.examples.iter().cloned());
-    entries.extend(data.benches.iter().cloned());
-    entries
+    target_entries.extend(data.binaries.iter().cloned());
+    target_entries.extend(data.examples.iter().cloned());
+    target_entries.extend(data.benches.iter().cloned());
+    target_entries
 }
 
 /// Per-pane data for the Targets panel. Each kind list is pre-sorted by
@@ -230,19 +230,19 @@ impl TargetsData {
     /// column shows the cargo package name either way; the source kind
     /// only orders the rows.
     pub fn from_workspace_metadata(
-        metadata: &WorkspaceMetadata,
+        workspace_metadata: &WorkspaceMetadata,
         selected_path: &AbsolutePath,
     ) -> Self {
-        let checkout_root = metadata.declared_checkout_root.as_path();
+        let checkout_root = workspace_metadata.declared_checkout_root.as_path();
         let selected_path = selected_path.as_path();
         let include_all_members = selected_path == checkout_root;
-        let is_real_workspace = metadata.packages.len() > 1;
+        let is_real_workspace = workspace_metadata.packages.len() > 1;
         let project_path = AbsolutePath::from(selected_path);
         let mut binaries: Vec<TargetEntry> = Vec::new();
         let mut examples: Vec<TargetEntry> = Vec::new();
         let mut benches: Vec<TargetEntry> = Vec::new();
 
-        for record in metadata.packages.values() {
+        for record in workspace_metadata.packages.values() {
             let manifest_dir = record.manifest_path.as_path().parent();
             if !include_all_members && manifest_dir != Some(selected_path) {
                 continue;
@@ -340,15 +340,15 @@ fn lookup_worktree_group_targets(
     app: &App,
     worktree_item: Option<&RootItem>,
 ) -> Option<TargetsData> {
-    let RootItem::Worktrees(group) = worktree_item? else {
+    let RootItem::Worktrees(worktree_group) = worktree_item? else {
         return None;
     };
-    if !group.renders_as_group() {
+    if !worktree_group.renders_as_group() {
         return None;
     }
 
-    let mut merged = TargetsData::default();
-    let entries: Vec<_> = group
+    let mut targets_data = TargetsData::default();
+    let entries: Vec<_> = worktree_group
         .iter_entries()
         .filter(|entry| entry.visibility() == Visibility::Visible)
         .collect();
@@ -361,10 +361,10 @@ fn lookup_worktree_group_targets(
     for (entry, label) in entries.into_iter().zip(labels) {
         let mut targets = lookup_targets_data_for_path(app, entry.path());
         targets.relabel_as_worktree(&label);
-        merged.append(targets);
+        targets_data.append(targets);
     }
-    merged.sort_entries();
-    Some(merged)
+    targets_data.sort_entries();
+    Some(targets_data)
 }
 
 fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsData {
@@ -375,10 +375,10 @@ fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsDa
     let Some(root) = store.containing_checkout_root(abs_path) else {
         return TargetsData::default();
     };
-    let Some(metadata) = store.get(root) else {
+    let Some(workspace_metadata) = store.get(root) else {
         return TargetsData::default();
     };
-    TargetsData::from_workspace_metadata(metadata, abs_path)
+    TargetsData::from_workspace_metadata(workspace_metadata, abs_path)
 }
 
 fn compare_target_name(a: &TargetEntry, b: &TargetEntry) -> Ordering {
@@ -410,7 +410,7 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path, target_name: &
         .and_then(|rel| {
             let parts: Vec<_> = rel
                 .components()
-                .filter_map(|c| match c {
+                .filter_map(|component| match component {
                     Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
                     _ => None,
                 })
@@ -476,8 +476,11 @@ mod target_list_tests {
     #[test]
     fn preserves_input_order_binaries_then_examples_then_benches() {
         let data = data();
-        let entries = build_target_list_from_data(&data);
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        let target_entries = build_target_list_from_data(&data);
+        let names: Vec<&str> = target_entries
+            .iter()
+            .map(|target_entry| target_entry.name.as_str())
+            .collect();
         assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
     }
 }
@@ -511,31 +514,31 @@ mod targets_from_metadata {
         }
     }
 
-    fn record(name: &str, manifest: &str, targets: Vec<TargetRecord>) -> PackageRecord {
+    fn record(name: &str, manifest: &str, target_records: Vec<TargetRecord>) -> PackageRecord {
         PackageRecord {
-            name: name.into(),
-            version: Version::new(0, 1, 0),
-            edition: "2021".into(),
-            description: None,
-            license: None,
-            homepage: None,
-            repository: None,
+            name:          name.into(),
+            version:       Version::new(0, 1, 0),
+            edition:       "2021".into(),
+            description:   None,
+            license:       None,
+            homepage:      None,
+            repository:    None,
             manifest_path: AbsolutePath::from(PathBuf::from(manifest)),
-            targets,
-            publish: PublishPolicy::Any,
+            targets:       target_records,
+            publish:       PublishPolicy::Any,
         }
     }
 
     fn path(s: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(s)) }
 
-    fn workspace(workspace_root: &str, packages: Vec<PackageRecord>) -> WorkspaceMetadata {
+    fn workspace(workspace_root: &str, package_records: Vec<PackageRecord>) -> WorkspaceMetadata {
         let root = AbsolutePath::from(PathBuf::from(workspace_root));
         let mut map: HashMap<PackageId, PackageRecord> = HashMap::new();
-        for pkg in packages {
-            let id = PackageId {
+        for pkg in package_records {
+            let package_id = PackageId {
                 repr: format!("{}-test-id", pkg.name),
             };
-            map.insert(id, pkg);
+            map.insert(package_id, pkg);
         }
         WorkspaceMetadata {
             declared_checkout_root:   root.clone(),
@@ -585,7 +588,7 @@ mod targets_from_metadata {
         let display_names: Vec<&str> = data
             .examples
             .iter()
-            .map(|e| e.display_name.as_str())
+            .map(|target_entry| target_entry.display_name.as_str())
             .collect();
         assert_eq!(display_names, vec!["top", "2d/draw", "3d/cube", "3d/mesh"]);
     }
@@ -616,7 +619,7 @@ mod targets_from_metadata {
         let display_names: Vec<&str> = data
             .examples
             .iter()
-            .map(|e| e.display_name.as_str())
+            .map(|target_entry| target_entry.display_name.as_str())
             .collect();
         assert_eq!(display_names, vec!["custom_app_name", "restore_window"]);
     }
@@ -643,7 +646,11 @@ mod targets_from_metadata {
             &workspace("/ws/demo", vec![pkg]),
             &path("/ws/demo"),
         );
-        let names: Vec<&str> = data.benches.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = data
+            .benches
+            .iter()
+            .map(|target_entry| target_entry.name.as_str())
+            .collect();
         assert_eq!(names, vec!["a_alpha", "b_zed"]);
     }
 
@@ -776,10 +783,14 @@ mod targets_from_metadata {
 
     #[test]
     fn aggregates_targets_across_root_and_members_when_selected_is_workspace_root() {
-        let metadata = three_package_workspace();
-        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws"));
+        let workspace_metadata = three_package_workspace();
+        let data = TargetsData::from_workspace_metadata(&workspace_metadata, &path("/ws"));
 
-        let binary_sources: Vec<&TargetSource> = data.binaries.iter().map(|e| &e.source).collect();
+        let binary_sources: Vec<&TargetSource> = data
+            .binaries
+            .iter()
+            .map(|target_entry| &target_entry.source)
+            .collect();
         assert!(binary_sources.contains(&&TargetSource::workspace_root("ws-root".into())));
         assert!(binary_sources.contains(&&TargetSource::member("core".into())));
         assert_eq!(data.binaries.len(), 2);
@@ -801,8 +812,9 @@ mod targets_from_metadata {
         // `TargetsData::from_workspace_metadata` narrows a workspace-member selection to that
         // member's targets; selecting sibling members or the root produces different results,
         // confirming the user-visible narrow-on-member rule.
-        let metadata = three_package_workspace();
-        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/core"));
+        let workspace_metadata = three_package_workspace();
+        let data =
+            TargetsData::from_workspace_metadata(&workspace_metadata, &path("/ws/crates/core"));
 
         assert_eq!(data.binaries.len(), 1, "only core's bin shows");
         assert_eq!(data.binaries[0].name, "core");
@@ -821,8 +833,9 @@ mod targets_from_metadata {
         // `TargetsData::from_workspace_metadata` returns empty lists when the selected path matches
         // no member manifest directory; falling back to workspace aggregation would make selection
         // ambiguous.
-        let metadata = three_package_workspace();
-        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/unknown"));
+        let workspace_metadata = three_package_workspace();
+        let data =
+            TargetsData::from_workspace_metadata(&workspace_metadata, &path("/ws/crates/unknown"));
 
         assert!(data.binaries.is_empty());
         assert!(data.examples.is_empty());

@@ -77,9 +77,9 @@ impl<'source> VisibilityAnnotation<'source> {
     pub(super) fn from_item(
         source: &'source str,
         target: LocalDefId,
-        tcx: TyCtxt<'_>,
+        ty_ctxt: TyCtxt<'_>,
     ) -> Option<Self> {
-        Self::from_source_and_reach(source, tcx.visibility(target.to_def_id()).into())
+        Self::from_source_and_reach(source, ty_ctxt.visibility(target.to_def_id()).into())
     }
 
     pub(super) const fn source(&self) -> &str {
@@ -114,8 +114,8 @@ impl<'source> VisibilityAnnotation<'source> {
         }
     }
 
-    pub(super) fn reach(&self, target: LocalDefId, tcx: TyCtxt<'_>) -> VisibilityReach {
-        let current_module = tcx.parent_module_from_def_id(target);
+    pub(super) fn reach(&self, target: LocalDefId, ty_ctxt: TyCtxt<'_>) -> VisibilityReach {
+        let current_module = ty_ctxt.parent_module_from_def_id(target);
         let visibility = match self {
             Self::Private | Self::Current | Self::InCurrent => {
                 Visibility::Restricted(current_module.to_def_id())
@@ -123,7 +123,7 @@ impl<'source> VisibilityAnnotation<'source> {
             Self::Public => Visibility::Public,
             Self::Crate | Self::InCrate => Visibility::Restricted(CRATE_DEF_ID.to_def_id()),
             Self::Parent | Self::InParent => {
-                let parent_module = tcx.parent_module_from_def_id(current_module.into());
+                let parent_module = ty_ctxt.parent_module_from_def_id(current_module.into());
                 Visibility::Restricted(parent_module.to_def_id())
             },
             Self::InPath { reach, .. } => return *reach,
@@ -136,25 +136,25 @@ impl<'source> VisibilityAnnotation<'source> {
             return Some(Self::Private);
         }
 
-        let visibility = syn::parse_str::<SyntaxVisibility>(source).ok()?;
-        match visibility {
+        let syntax_visibility = syn::parse_str::<SyntaxVisibility>(source).ok()?;
+        match syntax_visibility {
             SyntaxVisibility::Inherited => Some(Self::Private),
             SyntaxVisibility::Public(_) => Some(Self::Public),
-            SyntaxVisibility::Restricted(restricted) => {
-                Self::from_restricted_source(source, &restricted, reach)
+            SyntaxVisibility::Restricted(vis_restricted) => {
+                Self::from_restricted_source(source, &vis_restricted, reach)
             },
         }
     }
 
     fn from_restricted_source(
         source: &'source str,
-        restricted: &VisRestricted,
+        vis_restricted: &VisRestricted,
         reach: VisibilityReach,
     ) -> Option<Self> {
-        let first_segment = restricted.path.segments.first()?.ident.to_string();
-        let segment_count = restricted.path.segments.len();
+        let first_segment = vis_restricted.path.segments.first()?.ident.to_string();
+        let segment_count = vis_restricted.path.segments.len();
         match (
-            restricted.in_token.is_some(),
+            vis_restricted.in_token.is_some(),
             segment_count,
             first_segment.as_str(),
         ) {
@@ -197,16 +197,16 @@ impl From<ScopeReach<DefId>> for VisibilityReach {
 }
 
 impl VisibilityReach {
-    pub(in crate::compiler) fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
-        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), tcx);
+    pub(in crate::compiler) fn compare(self, other: Self, ty_ctxt: TyCtxt<'_>) -> Option<Ordering> {
+        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), ty_ctxt);
         self.reach().compare(other.reach(), &mut dominance)
     }
 
-    pub(in crate::compiler) fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
-        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), tcx);
+    pub(in crate::compiler) fn join(self, other: Self, ty_ctxt: TyCtxt<'_>) -> Self {
+        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), ty_ctxt);
         let mut parent_module = |module: DefId| {
             module.as_local().map_or(module, |local_module| {
-                tcx.parent_module_from_def_id(local_module).to_def_id()
+                ty_ctxt.parent_module_from_def_id(local_module).to_def_id()
             })
         };
         Self::from(
@@ -239,12 +239,12 @@ impl VisibilityReach {
 
     pub(super) fn boundary(self) -> ReachBoundary { ReachBoundary::from(self) }
 
-    pub(super) fn to_source(self, tcx: TyCtxt<'_>) -> String {
+    pub(super) fn to_source(self, ty_ctxt: TyCtxt<'_>) -> String {
         match self.boundary() {
             ReachBoundary::Everywhere => String::from("pub"),
             ReachBoundary::CrateRoot => String::from("pub(crate)"),
             ReachBoundary::Module(boundary) => {
-                format!("pub(in crate::{})", tcx.def_path_str(boundary))
+                format!("pub(in crate::{})", ty_ctxt.def_path_str(boundary))
             },
         }
     }
@@ -260,14 +260,14 @@ impl VisibilityReach {
 pub(in crate::compiler) fn anchored(
     reach: VisibilityReach,
     target: LocalDefId,
-    tcx: TyCtxt<'_>,
+    ty_ctxt: TyCtxt<'_>,
 ) -> VisibilityReach {
-    let target_module = tcx.parent_module_from_def_id(target).to_def_id();
+    let target_module = ty_ctxt.parent_module_from_def_id(target).to_def_id();
     let mut dominance =
-        |lhs, rhs| VisibilityReach::from(lhs).dominance(VisibilityReach::from(rhs), tcx);
+        |lhs, rhs| VisibilityReach::from(lhs).dominance(VisibilityReach::from(rhs), ty_ctxt);
     let mut parent_module = |module: DefId| {
         module.as_local().map_or(module, |local_module| {
-            tcx.parent_module_from_def_id(local_module).to_def_id()
+            ty_ctxt.parent_module_from_def_id(local_module).to_def_id()
         })
     };
     reach
@@ -279,17 +279,19 @@ pub(in crate::compiler) fn anchored(
 pub(in crate::compiler) fn capped_by_enclosing_modules(
     mut reach: VisibilityReach,
     declaration: LocalDefId,
-    tcx: TyCtxt<'_>,
+    ty_ctxt: TyCtxt<'_>,
 ) -> Option<VisibilityReach> {
-    let mut module = tcx.parent_module_from_def_id(declaration).to_local_def_id();
+    let mut module = ty_ctxt
+        .parent_module_from_def_id(declaration)
+        .to_local_def_id();
     while module != CRATE_DEF_ID {
-        let module_reach = VisibilityReach::from(tcx.visibility(module.to_def_id()));
-        reach = match reach.compare(module_reach, tcx) {
+        let module_reach = VisibilityReach::from(ty_ctxt.visibility(module.to_def_id()));
+        reach = match reach.compare(module_reach, ty_ctxt) {
             Some(Ordering::Equal | Ordering::Less) => reach,
             Some(Ordering::Greater) => module_reach,
             None => return None,
         };
-        module = tcx.parent_module_from_def_id(module).to_local_def_id();
+        module = ty_ctxt.parent_module_from_def_id(module).to_local_def_id();
     }
     Some(reach)
 }
@@ -371,10 +373,11 @@ impl<Scope: Copy + Eq> ScopeReach<Scope> {
                 (Self::Restricted(lhs), Self::Restricted(rhs)) => {
                     let mut common_ancestor = lhs;
                     loop {
-                        let candidate = Self::Restricted(common_ancestor);
-                        if dominance(candidate, Self::Restricted(rhs)) == ReachDominance::Dominates
+                        let scope_reach = Self::Restricted(common_ancestor);
+                        if dominance(scope_reach, Self::Restricted(rhs))
+                            == ReachDominance::Dominates
                         {
-                            return candidate;
+                            return scope_reach;
                         }
                         let parent = parent_module(common_ancestor);
                         if parent == common_ancestor {
@@ -647,9 +650,10 @@ mod tests {
     #[test]
     fn reports_written_syntax_without_reclassifying_path_annotations() {
         let reach = VisibilityReach::from(Visibility::<DefId>::Public);
-        let annotation = VisibilityAnnotation::from_source_and_reach("pub(in crate::a)", reach);
+        let visibility_annotation =
+            VisibilityAnnotation::from_source_and_reach("pub(in crate::a)", reach);
 
-        assert!(annotation.is_some_and(|annotation| {
+        assert!(visibility_annotation.is_some_and(|annotation| {
             annotation.source() == "pub(in crate::a)"
                 && annotation.syntax() == VisibilitySyntax::InPath(PathSpelling::CrateRooted)
         }));

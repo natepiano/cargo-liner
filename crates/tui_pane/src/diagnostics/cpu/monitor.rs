@@ -78,8 +78,8 @@ impl CpuMonitor {
     #[must_use]
     pub fn latest(&self) -> Option<CpuUsage> {
         let mut newest = None;
-        while let Ok(usage) = self.samples.try_recv() {
-            newest = Some(usage);
+        while let Ok(cpu_usage) = self.samples.try_recv() {
+            newest = Some(cpu_usage);
         }
         newest
     }
@@ -90,8 +90,8 @@ impl Drop for CpuMonitor {
         // `self.stop_sender` wakes the worker out of its timed wait so the join is prompt;
         // a closed channel (worker already exited) is fine to ignore.
         let _ = self.stop_sender.send(());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        if let Some(join_handle) = self.handle.take() {
+            let _ = join_handle.join();
         }
     }
 }
@@ -101,7 +101,7 @@ impl Drop for CpuMonitor {
 /// is dropped (stop channel disconnects), or when the sample channel
 /// is closed.
 fn cpu_poll_loop(
-    poller: &mut CpuPoller,
+    cpu_poller: &mut CpuPoller,
     samples: &Sender<CpuUsage>,
     stop: &Receiver<()>,
     interval: Duration,
@@ -110,7 +110,7 @@ fn cpu_poll_loop(
     // forward); `Ok`/`RecvTimeoutError::Disconnected` means stop was signaled or the monitor
     // dropped.
     while stop.recv_timeout(interval) == Err(RecvTimeoutError::Timeout) {
-        if samples.send(poller.poll()).is_err() {
+        if samples.send(cpu_poller.poll()).is_err() {
             break;
         }
     }

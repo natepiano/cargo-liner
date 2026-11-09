@@ -18,6 +18,30 @@ pub(super) struct CrateFiles {
     test_only: BTreeSet<PathBuf>,
 }
 
+/// A file is `TestOnly` when `#[cfg(test)]` sits on its module declaration or an ancestor's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileBuilds {
+    Every,
+    TestOnly,
+}
+
+/// Whether a canonical file has one declared module path, several parents, or no declaration.
+pub(super) enum ModuleLookup {
+    Known,
+    SeveralParents,
+    Undeclared,
+}
+
+impl From<Option<&FileModulePath>> for ModuleLookup {
+    fn from(module_path: Option<&FileModulePath>) -> Self {
+        match module_path {
+            Some(FileModulePath::Known(_)) => Self::Known,
+            Some(FileModulePath::SeveralParents) => Self::SeveralParents,
+            None => Self::Undeclared,
+        }
+    }
+}
+
 impl CrateFiles {
     /// The files `mod` declarations reach from `crate_root`, plus the `mounts`
     /// the compiler recorded (`include!` targets and module files outside the
@@ -49,19 +73,23 @@ impl CrateFiles {
         self.modules
             .iter()
             .filter_map(|(file, module_path)| match module_path {
-                FileModulePath::Known(module_path) => {
-                    Some((file.as_path(), module_path.as_slice()))
-                },
+                FileModulePath::Known(path) => Some((file.as_path(), path.as_slice())),
                 FileModulePath::SeveralParents => None,
             })
     }
 
-    /// Whether `file` (canonical) compiles only under test.
-    pub(super) fn is_test_only(&self, file: &Path) -> bool { self.test_only.contains(file) }
+    /// The builds that compile `file` (canonical).
+    pub(super) fn builds(&self, file: &Path) -> FileBuilds {
+        if self.test_only.contains(file) {
+            FileBuilds::TestOnly
+        } else {
+            FileBuilds::Every
+        }
+    }
 
-    /// Whether `file` (canonical) is attached to several parents.
-    pub(super) fn has_several_parents(&self, file: &Path) -> bool {
-        matches!(self.modules.get(file), Some(FileModulePath::SeveralParents))
+    /// The module attachment status of `file` (canonical), classified from the existing map.
+    pub(super) fn module_lookup(&self, file: &Path) -> ModuleLookup {
+        ModuleLookup::from(self.modules.get(file))
     }
 }
 

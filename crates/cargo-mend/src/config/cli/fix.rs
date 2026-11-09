@@ -117,22 +117,22 @@ struct RawFixExecutionCli {
 }
 
 impl From<RawFixCli> for FixCli {
-    fn from(raw: RawFixCli) -> Self {
-        let mut requested_fixes = BTreeSet::new();
-        if raw.auto_fix.mend {
-            requested_fixes.insert(FixRequest::Mend);
+    fn from(raw_fix_cli: RawFixCli) -> Self {
+        let mut fix_requests = BTreeSet::new();
+        if raw_fix_cli.auto_fix.mend {
+            fix_requests.insert(FixRequest::Mend);
         }
-        if raw.auto_fix.pub_use {
-            requested_fixes.insert(FixRequest::PubUse);
+        if raw_fix_cli.auto_fix.pub_use {
+            fix_requests.insert(FixRequest::PubUse);
         }
-        if raw.auto_fix.compiler {
-            requested_fixes.insert(FixRequest::Compiler);
+        if raw_fix_cli.auto_fix.compiler {
+            fix_requests.insert(FixRequest::Compiler);
         }
 
-        let execution = match (
-            raw.execution.fix_all,
-            raw.execution.dry_run,
-            requested_fixes.is_empty(),
+        let fix_execution = match (
+            raw_fix_cli.execution.fix_all,
+            raw_fix_cli.execution.dry_run,
+            fix_requests.is_empty(),
         ) {
             (true, true, _) | (false, true, true) => FixExecution::PreviewAll,
             (true, false, _) => FixExecution::ApplyAll,
@@ -142,8 +142,8 @@ impl From<RawFixCli> for FixCli {
         };
 
         Self {
-            execution,
-            requested_fixes,
+            execution:       fix_execution,
+            requested_fixes: fix_requests,
         }
     }
 }
@@ -161,53 +161,53 @@ mod tests {
 
     #[test]
     fn runs_compiler_fix_false_for_read_only() {
-        let fix = FixCli::default();
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
+        let fix_cli = FixCli::default();
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
     fn runs_compiler_fix_false_for_preview_all() {
-        let fix = FixCli {
+        let fix_cli = FixCli {
             execution: FixExecution::PreviewAll,
             ..FixCli::default()
         };
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
     fn runs_compiler_fix_false_for_preview_requested_with_compiler() {
-        let fix = FixCli {
+        let fix_cli = FixCli {
             execution:       FixExecution::PreviewRequested,
             requested_fixes: BTreeSet::from([FixRequest::Compiler]),
         };
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
     fn runs_compiler_fix_true_for_apply_all() {
-        let fix = FixCli {
+        let fix_cli = FixCli {
             execution: FixExecution::ApplyAll,
             ..FixCli::default()
         };
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Run);
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 
     #[test]
     fn runs_compiler_fix_true_for_apply_requested_with_compiler() {
-        let fix = FixCli {
+        let fix_cli = FixCli {
             execution:       FixExecution::ApplyRequested,
             requested_fixes: BTreeSet::from([FixRequest::Compiler]),
         };
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Run);
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 
     #[test]
     fn runs_compiler_fix_false_for_apply_requested_without_compiler() {
-        let fix = FixCli {
+        let fix_cli = FixCli {
             execution:       FixExecution::ApplyRequested,
             requested_fixes: BTreeSet::from([FixRequest::Mend]),
         };
-        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
+        assert_eq!(fix_cli.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
     #[test]
     fn named_fix_policies_cover_every_execution_and_request_set() {

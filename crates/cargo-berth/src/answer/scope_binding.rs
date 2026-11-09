@@ -73,17 +73,17 @@ impl OverlapScopeRevision {
             .map(|scope| (scope.path.to_string(), scope.kind))
             .collect::<Vec<_>>();
         canonical_scopes.sort();
-        let mut hasher = Sha256::new();
-        for (path, kind) in &canonical_scopes {
-            hasher.update(match kind {
+        let mut sha256 = Sha256::new();
+        for (path, scope_kind) in &canonical_scopes {
+            sha256.update(match scope_kind {
                 ScopeKind::File => b"file\0",
                 ScopeKind::Tree => b"tree\0",
             });
-            hasher.update(path.as_bytes());
-            hasher.update(b"\0");
+            sha256.update(path.as_bytes());
+            sha256.update(b"\0");
         }
         let mut digest = String::with_capacity(REVISION_DIGEST_HEX_LENGTH);
-        for byte in hasher.finalize() {
+        for byte in sha256.finalize() {
             let _ = write!(digest, "{byte:02x}");
         }
         Self(digest)
@@ -127,7 +127,9 @@ impl AuthorizedOverlapScopeSet {
         self.0
             .as_slice()
             .iter()
-            .any(|authorized_scope| authorized_scope.contains(overlap_scope, path_case))
+            .any(|authorized_reservation_scope| {
+                authorized_reservation_scope.contains(overlap_scope, path_case)
+            })
     }
 }
 
@@ -180,7 +182,7 @@ impl AuthorizedOverlapSet {
         Self::try_from(
             self.0
                 .iter()
-                .filter(|overlap| overlap.reservation_id == holder)
+                .filter(|authorized_overlap| authorized_overlap.reservation_id == holder)
                 .cloned()
                 .collect::<Vec<_>>(),
         )
@@ -210,8 +212,8 @@ impl<'de> Deserialize<'de> for AuthorizedOverlapSet {
     where
         DeserializerType: serde::Deserializer<'de>,
     {
-        let overlaps = Vec::<AuthorizedOverlap>::deserialize(deserializer)?;
-        Self::try_from(overlaps).map_err(serde::de::Error::custom)
+        let authorized_overlaps = Vec::<AuthorizedOverlap>::deserialize(deserializer)?;
+        Self::try_from(authorized_overlaps).map_err(serde::de::Error::custom)
     }
 }
 

@@ -6,11 +6,13 @@ use syn::Item;
 use syn::UseTree;
 use syn::ext::IdentExt;
 
+use super::crate_files::FileBuilds;
 use super::crate_files::OwnerCrate;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::rust_syntax;
+use crate::rust_syntax::AttributeTestGate;
 
 /// How the owner module still needs a name its re-export no longer provides,
 /// ordered from no need to a need in every build.
@@ -74,10 +76,9 @@ impl GlobReach<'_> {
             let Some((brace, content)) = &item_mod.content else {
                 continue;
             };
-            let gate = if rust_syntax::is_cfg_test(&item_mod.attrs) {
-                LocalUse::TestOnly
-            } else {
-                gate
+            let gate = match rust_syntax::attribute_test_gate(&item_mod.attrs) {
+                AttributeTestGate::DirectCfgTest => LocalUse::TestOnly,
+                AttributeTestGate::NotDirectCfgTest => gate,
             };
             let mut child = module.to_vec();
             child.push(item_mod.ident.unraw().to_string());
@@ -106,16 +107,16 @@ impl GlobReach<'_> {
         owner_file: &Path,
     ) -> Result<LocalUse> {
         let files = owner_crate.files;
-        let owner_test_only = files.is_test_only(owner_file);
+        let owner_builds = files.builds(owner_file);
         let mut reach = LocalUse::Unused;
         for (file, module) in files.scannable() {
             if file == owner_file || !module.starts_with(self.owner) {
                 continue;
             }
-            let gate = if files.is_test_only(file) && !owner_test_only {
-                LocalUse::TestOnly
-            } else {
-                LocalUse::Always
+            let gate = match (files.builds(file), owner_builds) {
+                (FileBuilds::TestOnly, FileBuilds::Every) => LocalUse::TestOnly,
+                (FileBuilds::Every, FileBuilds::Every | FileBuilds::TestOnly)
+                | (FileBuilds::TestOnly, FileBuilds::TestOnly) => LocalUse::Always,
             };
             let source = owner_crate
                 .sources

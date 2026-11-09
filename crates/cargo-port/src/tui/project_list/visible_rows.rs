@@ -143,42 +143,46 @@ impl ProjectList {
         expanded: &ExpansionModel<ExpandKey>,
         include_non_rust: bool,
     ) -> Vec<VisibleRow> {
-        let mut rows = Vec::new();
-        for (ni, entry) in self.iter().enumerate() {
-            let item = &entry.root_item;
+        let mut visible_rows = Vec::new();
+        for (ni, project_entry) in self.iter().enumerate() {
+            let item = &project_entry.root_item;
             if matches!(item.visibility(), Visibility::Dismissed) {
                 continue;
             }
             if !include_non_rust && !item.is_rust() {
                 continue;
             }
-            rows.push(VisibleRow::Root { node_index: ni });
+            visible_rows.push(VisibleRow::Root { node_index: ni });
             if !expanded.is_open(&ExpandKey::Node(ni), 0) {
                 continue;
             }
             match item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
-                    emit_groups(&mut rows, ni, ws.groups(), expanded);
-                    emit_vendored_rows(&mut rows, ni, ws.vendored());
+                    emit_groups(&mut visible_rows, ni, ws.groups(), expanded);
+                    emit_vendored_rows(&mut visible_rows, ni, ws.vendored());
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
-                    emit_vendored_rows(&mut rows, ni, pkg.vendored());
+                    emit_vendored_rows(&mut visible_rows, ni, pkg.vendored());
                 },
                 RootItem::NonRust(_) => {},
                 RootItem::Worktrees(worktree_group) => {
                     if worktree_group.renders_as_group() {
-                        emit_worktree_group(&mut rows, ni, worktree_group, expanded);
-                    } else if let Some(entry) = worktree_group.single_live() {
-                        if let RustProject::Workspace(ws) = entry {
-                            emit_groups(&mut rows, ni, ws.groups(), expanded);
+                        emit_worktree_group(&mut visible_rows, ni, worktree_group, expanded);
+                    } else if let Some(rust_project) = worktree_group.single_live() {
+                        if let RustProject::Workspace(ws) = rust_project {
+                            emit_groups(&mut visible_rows, ni, ws.groups(), expanded);
                         }
-                        emit_vendored_rows(&mut rows, ni, entry.rust_info().vendored());
+                        emit_vendored_rows(
+                            &mut visible_rows,
+                            ni,
+                            rust_project.rust_info().vendored(),
+                        );
                     }
                 },
             }
-            emit_submodule_rows(&mut rows, ni, item.submodules());
+            emit_submodule_rows(&mut visible_rows, ni, item.submodules());
         }
-        rows
+        visible_rows
     }
 }
 
@@ -276,19 +280,25 @@ fn emit_worktree_group(
     let mut entries: Vec<_> = worktree_group
         .iter_entries()
         .enumerate()
-        .filter(|(_, entry)| !matches!(entry.visibility(), Visibility::Dismissed))
-        .map(|(wi, entry)| (entry.root_directory_name().into_string(), wi, entry))
+        .filter(|(_, rust_project)| !matches!(rust_project.visibility(), Visibility::Dismissed))
+        .map(|(wi, rust_project)| {
+            (
+                rust_project.root_directory_name().into_string(),
+                wi,
+                rust_project,
+            )
+        })
         .collect();
     entries.sort_by(|(a_name, a_wi, _), (b_name, b_wi, _)| {
         a_name.cmp(b_name).then_with(|| a_wi.cmp(b_wi))
     });
 
-    for (_, wi, entry) in entries {
+    for (_, wi, rust_project) in entries {
         rows.push(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: wi,
         });
-        match entry {
+        match rust_project {
             RustProject::Workspace(ws)
                 if (ws.has_members() || !ws.vendored().is_empty())
                     && expanded.is_open(&ExpandKey::Worktree(ni, wi), 0) =>
@@ -401,7 +411,9 @@ pub(super) fn worst_git_status(
             GitStatus::Ignored => 1,
         }
     }
-    states.flatten().max_by_key(|s| severity(*s))
+    states
+        .flatten()
+        .max_by_key(|git_status| severity(*git_status))
 }
 
 /// Snapshot of a top-level expansion captured before a tree rebuild

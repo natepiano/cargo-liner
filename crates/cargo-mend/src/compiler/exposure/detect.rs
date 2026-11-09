@@ -151,8 +151,8 @@ enum FieldIdentityMatch {
 impl CycleCutReach {
     /// The shallower of two reaches. [`Self::None`] constrains nothing, so it
     /// yields to any depth.
-    fn shallower_of(self, other: Self) -> Self {
-        match (self, other) {
+    fn shallower_of(self, other_cycle_cut_reach: Self) -> Self {
+        match (self, other_cycle_cut_reach) {
             (Self::None, reach) | (reach, Self::None) => reach,
             (Self::AtDepth(left), Self::AtDepth(right)) => Self::AtDepth(left.min(right)),
         }
@@ -206,11 +206,11 @@ impl SignatureExposureCache {
 
     /// Records that the cycle guard cut a branch at `depth`, the stack position
     /// of the entry the cut targeted.
-    fn record_cycle_cut(&self, depth: StackDepth) {
+    fn record_cycle_cut(&self, stack_depth: StackDepth) {
         self.cycle_cut_reach.set(
             self.cycle_cut_reach
                 .get()
-                .shallower_of(CycleCutReach::AtDepth(depth)),
+                .shallower_of(CycleCutReach::AtDepth(stack_depth)),
         );
     }
 
@@ -222,9 +222,10 @@ impl SignatureExposureCache {
 
     /// Ends the measurement, folding what this call saw back into `enclosing`
     /// so the cuts keep counting against the calls above, and returning it.
-    fn end_cut_measurement(&self, enclosing: CycleCutReach) -> CycleCutReach {
+    fn end_cut_measurement(&self, enclosing_cycle_cut_reach: CycleCutReach) -> CycleCutReach {
         let measured = self.cycle_cut_reach.get();
-        self.cycle_cut_reach.set(enclosing.shallower_of(measured));
+        self.cycle_cut_reach
+            .set(enclosing_cycle_cut_reach.shallower_of(measured));
         measured
     }
 }
@@ -264,10 +265,14 @@ impl<'syntax> BoundaryScopeCache<'syntax> {
         self.by_boundary.borrow().get(&boundary).map(Rc::clone)
     }
 
-    fn insert(&self, boundary: LocalDefId, scopes: &Rc<[BoundaryFileScopes<'syntax>]>) {
+    fn insert(
+        &self,
+        boundary: LocalDefId,
+        boundary_file_scopes: &Rc<[BoundaryFileScopes<'syntax>]>,
+    ) {
         self.by_boundary
             .borrow_mut()
-            .insert(boundary, Rc::clone(scopes));
+            .insert(boundary, Rc::clone(boundary_file_scopes));
     }
 }
 
@@ -383,34 +388,34 @@ impl ImplSignatureCarrierReachSource<'_> {
         self,
         ctx: &ExposureContext<'_, '_>,
         containing_module: LocalDefId,
-        self_type: &ResolvedImplSelfType,
-        visited: &mut VisitedItems,
-        facade_exposes: &mut FacadeExposure<'_>,
+        resolved_impl_self_type: &ResolvedImplSelfType,
+        visited_items: &mut VisitedItems,
+        facade_exposure: &mut FacadeExposure<'_>,
     ) -> Result<Option<VisibilityReach>> {
         let recursive_outward_reach = type_is_exposed_outside_parent(
             ctx,
-            self_type.item_def_id,
-            &self_type.definition_file,
-            &self_type.name,
-            visited,
-            facade_exposes,
+            resolved_impl_self_type.item_def_id,
+            &resolved_impl_self_type.definition_file,
+            &resolved_impl_self_type.name,
+            visited_items,
+            facade_exposure,
         )?;
         match self {
             Self::Module(signature_carrier_reach_source) => Ok(signature_carrier_reach_source
                 .outward_reach(
                     ctx,
                     containing_module,
-                    self_type.item_def_id,
+                    resolved_impl_self_type.item_def_id,
                     recursive_outward_reach,
                 )),
             Self::ParentBoundary { module_path } => {
                 let mut outward_reach = recursive_outward_reach;
-                match parent_export_usage(ctx, module_path, &self_type.name)? {
+                match parent_export_usage(ctx, module_path, &resolved_impl_self_type.name)? {
                     ParentExportUsage::UsedOutsideSubtree => accumulate_exposure_reach(
                         ctx,
-                        self_type.item_def_id,
+                        resolved_impl_self_type.item_def_id,
                         &mut outward_reach,
-                        effective_path_reach(ctx, self_type.item_def_id),
+                        effective_path_reach(ctx, resolved_impl_self_type.item_def_id),
                     ),
                     ParentExportUsage::UnusedOutsideSubtree => {},
                 }
@@ -425,7 +430,7 @@ pub(in crate::compiler) fn child_item_is_exposed_by_other_crate_visible_signatur
     item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
-    facade_exposes: &mut FacadeExposure<'_>,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     crate_visible_signature_exposes_item(
         ctx,
@@ -433,7 +438,7 @@ pub(in crate::compiler) fn child_item_is_exposed_by_other_crate_visible_signatur
         child_file,
         item_name,
         &mut VisitedItems::default(),
-        facade_exposes,
+        facade_exposure,
     )
 }
 
@@ -442,8 +447,8 @@ fn crate_visible_signature_exposes_item(
     item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     if ctx.source_cache.name_mention(child_file, item_name) == NameMention::Absent {
         return Ok(None);
@@ -467,8 +472,8 @@ fn crate_visible_signature_exposes_item(
                     def_id: item_def_id,
                     name:   item_name,
                 },
-                visited,
-                facade_exposes,
+                visited_items,
+                facade_exposure,
                 SignatureCarrierReachSource::DeclarationPath,
             )?,
         );
@@ -480,9 +485,9 @@ fn module_signature_exposes_item(
     ctx: &ExposureContext<'_, '_>,
     module_scope: &ModuleScope<'_>,
     source_file: &Path,
-    target: SignatureTarget<'_>,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    signature_target: SignatureTarget<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
     signature_carrier_reach_source: SignatureCarrierReachSource,
 ) -> Result<Option<VisibilityReach>> {
     let mut exposure_reach = None;
@@ -493,13 +498,13 @@ fn module_signature_exposes_item(
         else {
             continue;
         };
-        if exposing_declaration.name == target.name {
+        if exposing_declaration.name == signature_target.name {
             continue;
         }
         let source_signature_carriers =
             visitor::potentially_outward_item_surface_carriers_mentioning_name(
                 exposing_declaration.item,
-                target.name,
+                signature_target.name,
             );
         if source_signature_carriers.is_empty() {
             continue;
@@ -512,7 +517,7 @@ fn module_signature_exposes_item(
         ) else {
             continue;
         };
-        let signature_carriers = resolve_item_signature_carriers(
+        let resolved_item_signature_carriers = resolve_item_signature_carriers(
             ctx,
             source_file,
             source_signature_carriers,
@@ -523,8 +528,8 @@ fn module_signature_exposes_item(
             exposing_item_def_id,
             source_file,
             &exposing_declaration.name,
-            visited,
-            facade_exposes,
+            visited_items,
+            facade_exposure,
         )?;
         let Some(outward_reach) = signature_carrier_reach_source.outward_reach(
             ctx,
@@ -539,27 +544,32 @@ fn module_signature_exposes_item(
         else {
             continue;
         };
-        for signature_carrier in signature_carriers {
-            let carrier_reach = signature_carrier.effective_outward_reach(
+        for resolved_item_signature_carrier in resolved_item_signature_carriers {
+            let carrier_reach = resolved_item_signature_carrier.effective_outward_reach(
                 ctx,
                 module_scope.module,
                 exposing_item_reach,
             );
-            accumulate_exposure_reach(ctx, target.def_id, &mut exposure_reach, carrier_reach);
+            accumulate_exposure_reach(
+                ctx,
+                signature_target.def_id,
+                &mut exposure_reach,
+                carrier_reach,
+            );
         }
     }
 
     accumulate_exposure_reach(
         ctx,
-        target.def_id,
+        signature_target.def_id,
         &mut exposure_reach,
         module_impl_signature_exposes_item(
             ctx,
             module_scope,
             source_file,
-            target,
-            visited,
-            facade_exposes,
+            signature_target,
+            visited_items,
+            facade_exposure,
             ImplSignatureCarrierReachSource::Module(signature_carrier_reach_source),
         )?,
     );
@@ -571,53 +581,58 @@ fn module_impl_signature_exposes_item(
     ctx: &ExposureContext<'_, '_>,
     module_scope: &ModuleScope<'_>,
     source_file: &Path,
-    target: SignatureTarget<'_>,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
-    signature_carrier_reach_source: ImplSignatureCarrierReachSource<'_>,
+    signature_target: SignatureTarget<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
+    impl_signature_carrier_reach_source: ImplSignatureCarrierReachSource<'_>,
 ) -> Result<Option<VisibilityReach>> {
     let mut exposure_reach = None;
     for item in module_scope.items {
         let Item::Impl(item_impl) = item else {
             continue;
         };
-        let Some(signature_surface) = resolve_impl_signature_surface(
+        let Some(resolved_impl_signature_surface) = resolve_impl_signature_surface(
             ctx,
             module_scope.module,
             source_file,
             item_impl,
-            target.name,
+            signature_target.name,
         ) else {
             continue;
         };
-        if signature_surface.self_type.item_def_id == target.def_id {
+        if resolved_impl_signature_surface.self_type.item_def_id == signature_target.def_id {
             continue;
         }
-        let Some(self_type_outward_reach) = signature_carrier_reach_source
+        let Some(self_type_outward_reach) = impl_signature_carrier_reach_source
             .self_type_outward_reach(
                 ctx,
                 module_scope.module,
-                &signature_surface.self_type,
-                visited,
-                facade_exposes,
+                &resolved_impl_signature_surface.self_type,
+                visited_items,
+                facade_exposure,
             )?
         else {
             continue;
         };
         let Some(self_type_reach) = effective_declaration_reach(
             ctx,
-            signature_surface.self_type.item_def_id,
+            resolved_impl_signature_surface.self_type.item_def_id,
             self_type_outward_reach,
         ) else {
             continue;
         };
-        for signature_carrier in signature_surface.signature_carriers {
-            let carrier_reach = signature_carrier.effective_outward_reach(
+        for resolved_impl_signature_carrier in resolved_impl_signature_surface.signature_carriers {
+            let carrier_reach = resolved_impl_signature_carrier.effective_outward_reach(
                 ctx,
                 module_scope.module,
                 self_type_reach,
             );
-            accumulate_exposure_reach(ctx, target.def_id, &mut exposure_reach, carrier_reach);
+            accumulate_exposure_reach(
+                ctx,
+                signature_target.def_id,
+                &mut exposure_reach,
+                carrier_reach,
+            );
         }
     }
     Ok(exposure_reach)
@@ -627,14 +642,14 @@ pub(in crate::compiler) fn child_item_is_exposed_by_sibling_boundary_signature(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,
-    facade_exposes: &mut FacadeExposure<'_>,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     sibling_boundary_signature_exposes_item(
         ctx,
         item_def_id,
         item_name,
         &mut VisitedItems::default(),
-        facade_exposes,
+        facade_exposure,
     )
 }
 
@@ -642,8 +657,8 @@ fn sibling_boundary_signature_exposes_item(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     let Some(parent_boundary) = facade::logical_parent_boundary_for_child(ctx.tcx, item_def_id)
     else {
@@ -652,9 +667,9 @@ fn sibling_boundary_signature_exposes_item(
     let child_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
     let mut exposure_reach = None;
 
-    let candidate_files = boundary_scopes(ctx, parent_boundary.module());
-    sweep_counters::record_sweep(candidate_files.len());
-    for candidate_file in candidate_files.iter() {
+    let boundary_file_scopes = boundary_scopes(ctx, parent_boundary.module());
+    sweep_counters::record_sweep(boundary_file_scopes.len());
+    for candidate_file in boundary_file_scopes.iter() {
         if ctx
             .source_cache
             .name_mention(&candidate_file.source_file, item_name)
@@ -685,8 +700,8 @@ fn sibling_boundary_signature_exposes_item(
                         def_id: item_def_id,
                         name:   item_name,
                     },
-                    visited,
-                    facade_exposes,
+                    visited_items,
+                    facade_exposure,
                     SignatureCarrierReachSource::ContainingModulePath,
                 )?,
             );
@@ -716,11 +731,11 @@ fn boundary_scopes<'source>(
     ctx: &ExposureContext<'source, '_>,
     boundary: LocalDefId,
 ) -> Rc<[BoundaryFileScopes<'source>]> {
-    if let Some(scopes) = ctx.boundary_scope_cache.get(boundary) {
-        return scopes;
+    if let Some(cached_boundary_file_scopes) = ctx.boundary_scope_cache.get(boundary) {
+        return cached_boundary_file_scopes;
     }
 
-    let mut scopes = Vec::new();
+    let mut boundary_file_scopes = Vec::new();
     for source_file in ctx.source_cache.source_files_under(ctx.source_root).iter() {
         let inside: Vec<ModuleScope<'source>> = module_scopes(ctx, source_file)
             .iter()
@@ -734,23 +749,24 @@ fn boundary_scopes<'source>(
             })
             .collect();
         if !inside.is_empty() {
-            scopes.push(BoundaryFileScopes {
+            boundary_file_scopes.push(BoundaryFileScopes {
                 source_file:   source_file.clone(),
                 module_scopes: inside,
             });
         }
     }
 
-    let scopes: Rc<[BoundaryFileScopes<'source>]> = scopes.into();
-    ctx.boundary_scope_cache.insert(boundary, &scopes);
-    scopes
+    let boundary_file_scopes: Rc<[BoundaryFileScopes<'source>]> = boundary_file_scopes.into();
+    ctx.boundary_scope_cache
+        .insert(boundary, &boundary_file_scopes);
+    boundary_file_scopes
 }
 
 pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     _: &str,
-    facade_exposes: &mut FacadeExposure<'_>,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     if !matches!(
         ctx.tcx.def_kind(item_def_id),
@@ -761,10 +777,11 @@ pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
     let Some(impl_def_id) = ctx.tcx.parent(item_def_id.to_def_id()).as_local() else {
         return Ok(None);
     };
-    let signature_carrier = ResolvedImplSignatureCarrier::new(ctx.tcx, item_def_id, impl_def_id);
+    let resolved_impl_signature_carrier =
+        ResolvedImplSignatureCarrier::new(ctx.tcx, item_def_id, impl_def_id);
     let Some(self_type_def_id) = ctx
         .tcx
-        .type_of(signature_carrier.implementation)
+        .type_of(resolved_impl_signature_carrier.implementation)
         .instantiate_identity()
         .skip_normalization()
         .ty_adt_def()
@@ -786,7 +803,7 @@ pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
         &definition_file,
         &self_type_name,
         &mut VisitedItems::default(),
-        facade_exposes,
+        facade_exposure,
     )?
     else {
         return Ok(None);
@@ -796,27 +813,27 @@ pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
     else {
         return Ok(None);
     };
-    Ok(signature_carrier
+    Ok(resolved_impl_signature_carrier
         .effective_outward_reach(
             ctx,
             ctx.tcx.parent_module_from_def_id(item_def_id).into(),
             self_type_reach,
         )
-        .map(|reach| visibility::anchored(reach, item_def_id, ctx.tcx)))
+        .map(|visibility_reach| visibility::anchored(visibility_reach, item_def_id, ctx.tcx)))
 }
 
 pub(in crate::compiler) fn parent_boundary_public_signature_exposes_child_used_outside_parent(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,
-    facade_exposes: &mut FacadeExposure<'_>,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     parent_boundary_signature_exposes_child(
         ctx,
         item_def_id,
         item_name,
         &mut VisitedItems::default(),
-        facade_exposes,
+        facade_exposure,
     )
 }
 
@@ -824,15 +841,15 @@ fn parent_boundary_signature_exposes_child(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     let Some(parent_boundary) = facade::logical_parent_boundary_for_child(ctx.tcx, item_def_id)
     else {
         return Ok(None);
     };
 
-    let mut exposing_items = Vec::new();
+    let mut parent_boundary_exposers = Vec::new();
     let mut impl_exposure_reach = None;
     for boundary_file in ctx.module_sources.source_files(parent_boundary.module()) {
         if ctx.source_cache.name_mention(boundary_file, item_name) == NameMention::Absent {
@@ -854,15 +871,15 @@ fn parent_boundary_signature_exposes_child(
                         def_id: item_def_id,
                         name:   item_name,
                     },
-                    visited,
-                    facade_exposes,
+                    visited_items,
+                    facade_exposure,
                     ImplSignatureCarrierReachSource::ParentBoundary {
                         module_path: parent_boundary.module_path(),
                     },
                 )?,
             );
             for item in module_scope.items {
-                let Some(exposer) = parent_boundary_exposer_for_item(
+                let Some(parent_boundary_exposer) = parent_boundary_exposer_for_item(
                     ctx,
                     parent_boundary.module(),
                     boundary_file,
@@ -871,21 +888,21 @@ fn parent_boundary_signature_exposes_child(
                 ) else {
                     continue;
                 };
-                if exposing_items
-                    .iter()
-                    .any(|existing: &ParentBoundaryExposer| {
-                        existing.item_def_id == exposer.item_def_id
-                    })
-                {
+                if parent_boundary_exposers.iter().any(
+                    |existing_parent_boundary_exposer: &ParentBoundaryExposer| {
+                        existing_parent_boundary_exposer.item_def_id
+                            == parent_boundary_exposer.item_def_id
+                    },
+                ) {
                     continue;
                 }
-                exposing_items.push(exposer);
+                parent_boundary_exposers.push(parent_boundary_exposer);
             }
         }
     }
 
     let mut exposure_reach = impl_exposure_reach;
-    for exposer in exposing_items {
+    for parent_boundary_exposer in parent_boundary_exposers {
         accumulate_exposure_reach(
             ctx,
             item_def_id,
@@ -894,9 +911,9 @@ fn parent_boundary_signature_exposes_child(
                 ctx,
                 item_def_id,
                 parent_boundary.module_path(),
-                exposer,
-                visited,
-                facade_exposes,
+                parent_boundary_exposer,
+                visited_items,
+                facade_exposure,
             )?,
         );
     }
@@ -931,20 +948,20 @@ fn parent_boundary_exposer_for_item(
     }
     let exposing_item_def_id =
         resolve_active_declaration(ctx, module, definition_file, &exposing_declaration)?;
-    let signature_carriers = resolve_item_signature_carriers(
+    let resolved_item_signature_carriers = resolve_item_signature_carriers(
         ctx,
         definition_file,
         source_signature_carriers,
         exposing_item_def_id,
     );
-    if signature_carriers.is_empty() {
+    if resolved_item_signature_carriers.is_empty() {
         return None;
     }
     Some(ParentBoundaryExposer {
-        name: exposing_declaration.name,
-        item_def_id: exposing_item_def_id,
-        definition_file: definition_file.to_path_buf(),
-        signature_carriers,
+        name:               exposing_declaration.name,
+        item_def_id:        exposing_item_def_id,
+        definition_file:    definition_file.to_path_buf(),
+        signature_carriers: resolved_item_signature_carriers,
     })
 }
 
@@ -952,24 +969,24 @@ fn parent_boundary_exposer_reach(
     ctx: &ExposureContext<'_, '_>,
     target: LocalDefId,
     parent_module_path: &[String],
-    exposer: ParentBoundaryExposer,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    parent_boundary_exposer: ParentBoundaryExposer,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     let mut outward_reach = type_is_exposed_outside_parent(
         ctx,
-        exposer.item_def_id,
-        &exposer.definition_file,
-        &exposer.name,
-        visited,
-        facade_exposes,
+        parent_boundary_exposer.item_def_id,
+        &parent_boundary_exposer.definition_file,
+        &parent_boundary_exposer.name,
+        visited_items,
+        facade_exposure,
     )?;
-    match parent_export_usage(ctx, parent_module_path, &exposer.name)? {
+    match parent_export_usage(ctx, parent_module_path, &parent_boundary_exposer.name)? {
         ParentExportUsage::UsedOutsideSubtree => accumulate_exposure_reach(
             ctx,
-            exposer.item_def_id,
+            parent_boundary_exposer.item_def_id,
             &mut outward_reach,
-            effective_path_reach(ctx, exposer.item_def_id),
+            effective_path_reach(ctx, parent_boundary_exposer.item_def_id),
         ),
         ParentExportUsage::UnusedOutsideSubtree => {},
     }
@@ -977,18 +994,21 @@ fn parent_boundary_exposer_reach(
         return Ok(None);
     };
     let Some(exposing_item_reach) =
-        effective_declaration_reach(ctx, exposer.item_def_id, outward_reach)
+        effective_declaration_reach(ctx, parent_boundary_exposer.item_def_id, outward_reach)
     else {
         return Ok(None);
     };
     let containing_module: LocalDefId = ctx
         .tcx
-        .parent_module_from_def_id(exposer.item_def_id)
+        .parent_module_from_def_id(parent_boundary_exposer.item_def_id)
         .into();
     let mut exposure_reach = None;
-    for signature_carrier in exposer.signature_carriers {
-        let carrier_reach =
-            signature_carrier.effective_outward_reach(ctx, containing_module, exposing_item_reach);
+    for resolved_item_signature_carrier in parent_boundary_exposer.signature_carriers {
+        let carrier_reach = resolved_item_signature_carrier.effective_outward_reach(
+            ctx,
+            containing_module,
+            exposing_item_reach,
+        );
         accumulate_exposure_reach(ctx, target, &mut exposure_reach, carrier_reach);
     }
     Ok(exposure_reach)
@@ -999,21 +1019,21 @@ fn type_is_exposed_outside_parent(
     item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
-    visited: &mut VisitedItems,
-    facade_exposes: &mut FacadeExposure<'_>,
+    visited_items: &mut VisitedItems,
+    facade_exposure: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
     match ctx.signature_exposure_cache.exterior_reach(item_def_id) {
         CachedExteriorReach::Absent => {},
         CachedExteriorReach::Unexposed => return Ok(None),
         CachedExteriorReach::Exposed(exterior_reach) => return Ok(Some(exterior_reach)),
     }
-    if let Some(&cut_depth) = visited.get(&item_def_id) {
+    if let Some(&cut_depth) = visited_items.get(&item_def_id) {
         ctx.signature_exposure_cache.record_cycle_cut(cut_depth);
         return Ok(None);
     }
-    let depth = visited.len();
-    visited.insert(item_def_id, depth);
-    let enclosing_cut_reach = ctx.signature_exposure_cache.begin_cut_measurement();
+    let stack_depth = visited_items.len();
+    visited_items.insert(item_def_id, stack_depth);
+    let enclosing_cycle_cut_reach = ctx.signature_exposure_cache.begin_cut_measurement();
 
     let result = (|| {
         let mut exterior_reach = None;
@@ -1021,7 +1041,7 @@ fn type_is_exposed_outside_parent(
             ctx,
             item_def_id,
             &mut exterior_reach,
-            facade_exposes(item_def_id, child_file, item_name)?,
+            facade_exposure(item_def_id, child_file, item_name)?,
         );
         accumulate_exposure_reach(
             ctx,
@@ -1032,8 +1052,8 @@ fn type_is_exposed_outside_parent(
                 item_def_id,
                 child_file,
                 item_name,
-                visited,
-                facade_exposes,
+                visited_items,
+                facade_exposure,
             )?,
         );
         accumulate_exposure_reach(
@@ -1044,8 +1064,8 @@ fn type_is_exposed_outside_parent(
                 ctx,
                 item_def_id,
                 item_name,
-                visited,
-                facade_exposes,
+                visited_items,
+                facade_exposure,
             )?,
         );
         accumulate_exposure_reach(
@@ -1056,19 +1076,19 @@ fn type_is_exposed_outside_parent(
                 ctx,
                 item_def_id,
                 item_name,
-                visited,
-                facade_exposes,
+                visited_items,
+                facade_exposure,
             )?,
         );
 
         Ok(exterior_reach)
     })();
-    visited.remove(&item_def_id);
+    visited_items.remove(&item_def_id);
     let cut_reach = ctx
         .signature_exposure_cache
-        .end_cut_measurement(enclosing_cut_reach);
+        .end_cut_measurement(enclosing_cycle_cut_reach);
     if let Ok(exterior_reach) = result.as_ref() {
-        match cut_reach.signature_reuse(depth) {
+        match cut_reach.signature_reuse(stack_depth) {
             SignatureReuse::Reusable => ctx
                 .signature_exposure_cache
                 .store_exterior_reach(item_def_id, *exterior_reach),
@@ -1081,14 +1101,19 @@ fn type_is_exposed_outside_parent(
 fn accumulate_exposure_reach(
     ctx: &ExposureContext<'_, '_>,
     target: LocalDefId,
-    current: &mut Option<VisibilityReach>,
-    next: Option<VisibilityReach>,
+    current_visibility_reach: &mut Option<VisibilityReach>,
+    next_visibility_reach: Option<VisibilityReach>,
 ) {
-    let Some(next) = next else {
+    let Some(next_visibility_reach) = next_visibility_reach else {
         return;
     };
-    let next = visibility::anchored(next, target, ctx.tcx);
-    *current = Some(current.map_or(next, |current| current.join(next, ctx.tcx)));
+    let anchored_visibility_reach = visibility::anchored(next_visibility_reach, target, ctx.tcx);
+    *current_visibility_reach = Some(current_visibility_reach.map_or(
+        anchored_visibility_reach,
+        |current_visibility_reach| {
+            current_visibility_reach.join(anchored_visibility_reach, ctx.tcx)
+        },
+    ));
 }
 
 fn effective_declaration_reach(
@@ -1106,7 +1131,7 @@ fn effective_declaration_reach(
 
 impl ResolvedImplSignatureCarrier {
     fn new(tcx: TyCtxt<'_>, associated_item: LocalDefId, implementation: LocalDefId) -> Self {
-        let contract = match tcx.def_kind(implementation.to_def_id()) {
+        let impl_signature_contract = match tcx.def_kind(implementation.to_def_id()) {
             DefKind::Impl { of_trait: true } => ImplSignatureContract::Trait {
                 trait_def_id: tcx
                     .impl_trait_ref(implementation)
@@ -1119,7 +1144,7 @@ impl ResolvedImplSignatureCarrier {
         Self {
             associated_item,
             implementation,
-            contract,
+            contract: impl_signature_contract,
         }
     }
 
@@ -1185,9 +1210,8 @@ impl ResolvedItemSignatureCarrier {
                 )
                 .then_some(declaration_reach)
             },
-            Self::Field(field_carrier) => {
-                field_carrier.effective_outward_reach(ctx, containing_module, surface_item_reach)
-            },
+            Self::Field(resolved_field_signature_carrier) => resolved_field_signature_carrier
+                .effective_outward_reach(ctx, containing_module, surface_item_reach),
         }
     }
 }
@@ -1202,23 +1226,23 @@ fn effective_trait_reach(
     };
     let mut effective_reach = effective_path_reach(ctx, local_trait)?;
     let facade_subject = ctx.reexport_index.facade_subject(local_trait);
-    for reach in ctx
+    for visibility_reach in ctx
         .reexport_index
         .applicable_reexport_reaches_outside_parent(ctx.tcx, local_trait, facade_subject)
     {
-        effective_reach = effective_reach.join(reach, ctx.tcx);
+        effective_reach = effective_reach.join(visibility_reach, ctx.tcx);
     }
     Some(effective_reach)
 }
 
 fn cap_reach(
     ctx: &ExposureContext<'_, '_>,
-    reach: VisibilityReach,
-    cap: VisibilityReach,
+    visibility_reach: VisibilityReach,
+    cap_visibility_reach: VisibilityReach,
 ) -> Option<VisibilityReach> {
-    match reach.compare(cap, ctx.tcx) {
-        Some(Ordering::Equal | Ordering::Less) => Some(reach),
-        Some(Ordering::Greater) => Some(cap),
+    match visibility_reach.compare(cap_visibility_reach, ctx.tcx) {
+        Some(Ordering::Equal | Ordering::Less) => Some(visibility_reach),
+        Some(Ordering::Greater) => Some(cap_visibility_reach),
         None => None,
     }
 }
@@ -1230,11 +1254,11 @@ fn effective_path_reach(
     let declared_reach = VisibilityReach::from(ctx.tcx.visibility(declaration.to_def_id()));
     let mut effective_reach =
         visibility::capped_by_enclosing_modules(declared_reach, declaration, ctx.tcx)?;
-    for reach in ctx
+    for visibility_reach in ctx
         .reexport_index
         .applicable_exported_ancestor_path_reaches(ctx.tcx, declaration)
     {
-        effective_reach = effective_reach.join(reach, ctx.tcx);
+        effective_reach = effective_reach.join(visibility_reach, ctx.tcx);
     }
     Some(effective_reach)
 }
@@ -1279,12 +1303,12 @@ fn resolve_active_declaration(
     ctx: &ExposureContext<'_, '_>,
     module: LocalDefId,
     source_file: &Path,
-    source_declaration: &OutwardDeclaration<'_>,
+    outward_declaration: &OutwardDeclaration<'_>,
 ) -> Option<LocalDefId> {
     let Ok(source) = ctx.source_cache.read_source(source_file) else {
         return None;
     };
-    let source_byte_position = source_byte_position(source, source_declaration.identifier_span)?;
+    let source_byte_position = source_byte_position(source, outward_declaration.identifier_span)?;
     let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
     let (active_module, _, _) = ctx.tcx.hir_get_module(LocalModId::new_unchecked(module));
     for item_id in active_module.item_ids {
@@ -1295,9 +1319,9 @@ fn resolve_active_declaration(
             continue;
         };
         if declaration_module != module
-            || declaration_name.as_str() != source_declaration.name
+            || declaration_name.as_str() != outward_declaration.name
             || declaration_kind_compatibility(
-                source_declaration.kind,
+                outward_declaration.kind,
                 ctx.tcx.def_kind(local_def_id.to_def_id()),
             ) == DeclarationKindCompatibility::Incompatible
         {
@@ -1321,11 +1345,11 @@ fn resolve_active_declaration(
 }
 
 const fn declaration_kind_compatibility(
-    source_kind: OutwardDeclarationKind,
+    outward_declaration_kind: OutwardDeclarationKind,
     def_kind: DefKind,
 ) -> DeclarationKindCompatibility {
     if matches!(
-        (source_kind, def_kind),
+        (outward_declaration_kind, def_kind),
         (
             visitor::OutwardDeclarationKind::Const,
             DefKind::Const { .. }
@@ -1350,9 +1374,9 @@ fn resolve_impl_signature_carrier(
     ctx: &ExposureContext<'_, '_>,
     module: LocalDefId,
     source_file: &Path,
-    source_item: &ImplItem,
+    impl_item: &ImplItem,
 ) -> Option<ResolvedImplSignatureCarrier> {
-    let (source_name, source_span) = match source_item {
+    let (source_name, source_span) = match impl_item {
         ImplItem::Const(item) => (item.ident.to_string(), item.ident.span()),
         ImplItem::Fn(item) => (item.sig.ident.to_string(), item.sig.ident.span()),
         ImplItem::Type(item) => (item.ident.to_string(), item.ident.span()),

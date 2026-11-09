@@ -919,9 +919,9 @@ mod tests {
         let keymap = Keymap::<TestApp>::builder()
             .build()
             .expect("empty build must succeed");
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Unhandled,
         );
         assert!(keymap.config_path().is_none());
@@ -933,11 +933,13 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
-        let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
-        assert_eq!(outcome, KeyOutcome::Consumed);
-        let other = keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
-        assert_eq!(other, KeyOutcome::Unhandled);
+        let mut test_app = fresh_app();
+        let key_outcome =
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app);
+        assert_eq!(key_outcome, KeyOutcome::Consumed);
+        let other_key_outcome =
+            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut test_app);
+        assert_eq!(other_key_outcome, KeyOutcome::Unhandled);
     }
 
     #[test]
@@ -953,24 +955,24 @@ mod tests {
 
     #[test]
     fn navigation_missing_when_panes_registered_without_nav() {
-        let err = Keymap::<TestApp>::builder()
+        let keymap_error = Keymap::<TestApp>::builder()
             .register_globals::<AppGlobals>()
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .build()
             .expect_err("navigation missing must surface");
-        assert!(matches!(err, KeymapError::NavigationMissing));
+        assert!(matches!(keymap_error, KeymapError::NavigationMissing));
     }
 
     #[test]
     fn globals_missing_when_panes_registered_without_globals() {
-        let err = Keymap::<TestApp>::builder()
+        let keymap_error = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
             .register::<FooPane>(FooPane)
             .build()
             .expect_err("globals missing must surface");
-        assert!(matches!(err, KeymapError::GlobalsMissing));
+        assert!(matches!(keymap_error, KeymapError::GlobalsMissing));
     }
 
     #[test]
@@ -986,13 +988,13 @@ mod tests {
             fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
         }
 
-        let err = fresh_builder_singletons()
+        let keymap_error = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
             .register::<OtherFoo>(OtherFoo)
             .build()
             .expect_err("duplicate must surface");
-        let KeymapError::DuplicateScope { type_name } = err else {
-            panic!("expected DuplicateScope, got {err:?}");
+        let KeymapError::DuplicateScope { type_name } = keymap_error else {
+            panic!("expected DuplicateScope, got {keymap_error:?}");
         };
         assert!(
             type_name.contains("OtherFoo"),
@@ -1002,36 +1004,36 @@ mod tests {
 
     #[test]
     fn on_quit_hook_fires_on_global_action_quit() {
-        fn bump_quits(ctx: &mut TestApp) { ctx.quits += 1; }
+        fn bump_quits(test_app: &mut TestApp) { test_app.quits += 1; }
         let keymap = fresh_builder_singletons()
             .on_quit(bump_quits)
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
-        keymap.dispatch_framework_global(GlobalAction::Quit, &mut app);
-        assert!(app.framework().quit_requested());
-        assert_eq!(app.quits, 1);
+        let mut test_app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Quit, &mut test_app);
+        assert!(test_app.framework().quit_requested());
+        assert_eq!(test_app.quits, 1);
     }
 
     #[test]
     fn on_restart_hook_fires_on_global_action_restart() {
-        fn bump_restarts(ctx: &mut TestApp) { ctx.restarts += 1; }
+        fn bump_restarts(test_app: &mut TestApp) { test_app.restarts += 1; }
         let keymap = fresh_builder_singletons()
             .on_restart(bump_restarts)
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
-        keymap.dispatch_framework_global(GlobalAction::Restart, &mut app);
-        assert!(app.framework().restart_requested());
-        assert_eq!(app.restarts, 1);
+        let mut test_app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Restart, &mut test_app);
+        assert!(test_app.framework().restart_requested());
+        assert_eq!(test_app.restarts, 1);
     }
 
     #[test]
     fn dismiss_fallback_fires_on_global_action_dismiss() {
-        fn handle_dismiss(ctx: &mut TestApp) -> bool {
-            ctx.dismisses += 1;
+        fn handle_dismiss(test_app: &mut TestApp) -> bool {
+            test_app.dismisses += 1;
             true
         }
         let keymap = fresh_builder_singletons()
@@ -1039,9 +1041,9 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
-        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
-        assert_eq!(app.dismisses, 1);
+        let mut test_app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut test_app);
+        assert_eq!(test_app.dismisses, 1);
     }
 
     #[test]
@@ -1055,22 +1057,38 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let nav = keymap.navigation().expect("nav must be registered");
-        assert_eq!(nav.action_for(&KeyBind::from('h')), Some(NavAction::Left));
-        assert_eq!(nav.action_for(&KeyBind::from('j')), Some(NavAction::Down));
-        assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
-        assert_eq!(nav.action_for(&KeyBind::from('l')), Some(NavAction::Right));
+        let navigation_scope_map = keymap.navigation().expect("nav must be registered");
         assert_eq!(
-            nav.action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
+            navigation_scope_map.action_for(&KeyBind::from('h')),
+            Some(NavAction::Left)
+        );
+        assert_eq!(
+            navigation_scope_map.action_for(&KeyBind::from('j')),
+            Some(NavAction::Down)
+        );
+        assert_eq!(
+            navigation_scope_map.action_for(&KeyBind::from('k')),
+            Some(NavAction::Up)
+        );
+        assert_eq!(
+            navigation_scope_map.action_for(&KeyBind::from('l')),
+            Some(NavAction::Right)
+        );
+        assert_eq!(
+            navigation_scope_map
+                .action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
             Some(NavAction::Home),
         );
-        assert_eq!(nav.action_for(&KeyBind::from('G')), Some(NavAction::End));
+        assert_eq!(
+            navigation_scope_map.action_for(&KeyBind::from('G')),
+            Some(NavAction::End)
+        );
     }
 
     #[test]
     fn vim_navigation_chords_survive_toml_home_end_overrides() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         fs::write(&path, "[navigation]\nhome = \"home\"\nend = \"end\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1083,13 +1101,17 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let nav = keymap.navigation().expect("nav must be registered");
+        let navigation_scope_map = keymap.navigation().expect("nav must be registered");
 
         assert_eq!(
-            nav.action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
+            navigation_scope_map
+                .action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
             Some(NavAction::Home),
         );
-        assert_eq!(nav.action_for(&KeyBind::from('G')), Some(NavAction::End));
+        assert_eq!(
+            navigation_scope_map.action_for(&KeyBind::from('G')),
+            Some(NavAction::End)
+        );
     }
 
     #[test]
@@ -1103,9 +1125,11 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let nav = keymap.navigation().expect("nav must be registered");
+        let navigation_scope_map = keymap.navigation().expect("nav must be registered");
         assert_eq!(
-            nav.key_for(NavAction::Up).and_then(KeySequence::single_key),
+            navigation_scope_map
+                .key_for(NavAction::Up)
+                .and_then(KeySequence::single_key),
             Some(KeyBind::from(KeyCode::Up))
         );
     }
@@ -1117,13 +1141,13 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let app = TestApp {
+        let test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
-        assert!(app.framework().focused_pane_mode(&app).is_some());
+        assert!(test_app.framework().focused_pane_mode(&test_app).is_some());
     }
 
     #[test]
@@ -1144,21 +1168,21 @@ mod tests {
             .register::<OtherPane>(OtherPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Consumed,
         );
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Consumed,
         );
     }
 
     #[test]
     fn toml_overlay_replaces_pane_action_keys() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = \"x\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1170,21 +1194,21 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut test_app),
             KeyOutcome::Consumed,
         );
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Unhandled,
         );
     }
 
     #[test]
     fn toml_overlay_array_form_binds_multiple_keys() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = [\"x\", \"y\"]\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1196,13 +1220,13 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut test_app),
             KeyOutcome::Consumed,
         );
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('y'), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('y'), &mut test_app),
             KeyOutcome::Consumed,
         );
     }
@@ -1211,8 +1235,8 @@ mod tests {
     fn toml_overlay_array_in_array_duplicate_rejected_at_build() {
         // `KeymapError::InArrayDuplicate` rejects the `[foo]` array because
         // `x` is bound twice to `FooAction::Activate`.
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = [\"x\", \"x\"]\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1228,8 +1252,8 @@ mod tests {
 
     #[test]
     fn toml_unknown_scope_surfaces_at_build() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[mystery]\nactivate = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1245,8 +1269,8 @@ mod tests {
 
     #[test]
     fn cross_action_collision_in_toml_surfaces_at_build() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[navigation]\nup = \"x\"\ndown = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1254,15 +1278,15 @@ mod tests {
             .register_navigation::<AppNav>();
         match result {
             Err(KeymapError::CrossActionCollision { .. }) => {},
-            Err(other) => panic!("expected CrossActionCollision, got {other:?}"),
+            Err(keymap_error) => panic!("expected CrossActionCollision, got {keymap_error:?}"),
             Ok(_) => panic!("expected CrossActionCollision, got Ok"),
         }
     }
 
     #[test]
     fn vim_mode_rejects_app_global_that_shadows_navigation_chord_prefix() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         fs::write(&path, "[global]\nfind = \"g\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1283,15 +1307,15 @@ mod tests {
                 assert_eq!(key, "g");
                 assert_eq!(navigation_key, "g g");
             },
-            Err(other) => panic!("expected CrossScopeVimCollision, got {other:?}"),
+            Err(keymap_error) => panic!("expected CrossScopeVimCollision, got {keymap_error:?}"),
             Ok(_) => panic!("expected CrossScopeVimCollision, got Ok"),
         }
     }
 
     #[test]
     fn vim_mode_rejects_framework_global_that_shadows_navigation_chord_prefix() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         fs::write(&path, "[global]\nquit = \"g\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1314,15 +1338,15 @@ mod tests {
                 assert_eq!(key, "g");
                 assert_eq!(navigation_key, "g g");
             },
-            Err(other) => panic!("expected CrossScopeVimCollision, got {other:?}"),
+            Err(keymap_error) => panic!("expected CrossScopeVimCollision, got {keymap_error:?}"),
             Ok(_) => panic!("expected CrossScopeVimCollision, got Ok"),
         }
     }
 
     #[test]
     fn global_toml_overlay_overrides_framework_globals() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nquit = \"z\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1343,8 +1367,8 @@ mod tests {
 
     #[test]
     fn shared_global_table_applies_framework_and_app_keys() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         fs::write(
             &path,
             "[global]\nquit = \"z\"\nsettings = \"F2\"\nfind = \"?\"\n",
@@ -1368,19 +1392,19 @@ mod tests {
                 .action_for(&KeyBind::from(KeyCode::F(2))),
             Some(GlobalAction::OpenSettings),
         );
-        let app_globals = keymap
+        let app_globals_scope_map = keymap
             .globals::<AppGlobals>()
             .expect("app globals must be registered");
         assert_eq!(
-            app_globals.action_for(&KeyBind::from('?')),
+            app_globals_scope_map.action_for(&KeyBind::from('?')),
             Some(AppGlobalAction::Find),
         );
     }
 
     #[test]
     fn shared_global_table_still_rejects_truly_unknown_actions() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nbogus_action = \"z\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1395,8 +1419,8 @@ mod tests {
 
     #[test]
     fn app_global_key_errors_without_registered_app_globals_peer() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nfind = \"?\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1411,7 +1435,7 @@ mod tests {
 
     #[test]
     fn overlay_toml_rebinds_actions() {
-        for (name, toml, key, action, replaced_default) in [
+        for (name, toml, key, overlay_action, replaced_default) in [
             (
                 "start_edit",
                 "[overlay]\nstart_edit = \"F2\"\n",
@@ -1427,8 +1451,8 @@ mod tests {
                 None,
             ),
         ] {
-            let dir = TempDir::new().expect("create temp keymap dir");
-            let path = dir.path().join("keymap.toml");
+            let temp_dir = TempDir::new().expect("create temp keymap dir");
+            let path = temp_dir.path().join("keymap.toml");
             std::fs::write(&path, toml).expect("write toml");
             let keymap = Keymap::<TestApp>::builder()
                 .load_toml(path.clone())
@@ -1438,10 +1462,14 @@ mod tests {
                 .build()
                 .expect("build must succeed");
 
-            assert_eq!(keymap.overlay().action_for(&key), Some(action), "{name}");
-            if let Some(default_key) = replaced_default {
+            assert_eq!(
+                keymap.overlay().action_for(&key),
+                Some(overlay_action),
+                "{name}"
+            );
+            if let Some(default_key_bind) = replaced_default {
                 assert_eq!(
-                    keymap.overlay().action_for(&default_key),
+                    keymap.overlay().action_for(&default_key_bind),
                     None,
                     "TOML replaces the action's default binding",
                 );
@@ -1451,8 +1479,8 @@ mod tests {
 
     #[test]
     fn known_overlay_unknown_action_errors() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[overlay]\nbogus_action = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1464,8 +1492,8 @@ mod tests {
 
     #[test]
     fn unknown_overlay_table_still_errors_when_overlay_registered() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[bogus_overlay]\nfoo = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1485,16 +1513,16 @@ mod tests {
             .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
             "the pane consumed the step, so focus stayed put",
         );
@@ -1508,16 +1536,16 @@ mod tests {
             .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Bar),
         );
     }
@@ -1531,14 +1559,14 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let app = TestApp {
+        let test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        assert!(!app.framework().pane_cycle_is_live(&app));
+        assert!(!test_app.framework().pane_cycle_is_live(&test_app));
     }
 
     #[test]
@@ -1548,14 +1576,14 @@ mod tests {
             .register_pane::<RingFooPane>()
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let app = TestApp {
+        let test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        assert!(app.framework().pane_cycle_is_live(&app));
+        assert!(test_app.framework().pane_cycle_is_live(&test_app));
     }
 
     #[test]
@@ -1566,34 +1594,34 @@ mod tests {
             .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Bar),
         );
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
             "next-pane wraps from the last pane to the first",
         );
 
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Bar),
             "prev-pane wraps from the first pane to the last",
         );
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
         );
     }
@@ -1607,27 +1635,27 @@ mod tests {
             .register::<OrderedBarPane>(OrderedBarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
             "explicit order must beat registration order",
         );
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Baz),
         );
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
         );
     }
@@ -1642,28 +1670,28 @@ mod tests {
             .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Bar),
         );
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
         );
     }
 
     #[test]
     fn stale_focus_uses_first_or_last_live_tab_stop() {
-        for (action, expected) in [
+        for (global_action, expected) in [
             (GlobalAction::NextPane, FocusedPane::App(TestPaneId::Foo)),
             (GlobalAction::PrevPane, FocusedPane::App(TestPaneId::Bar)),
         ] {
@@ -1673,15 +1701,15 @@ mod tests {
                 .register::<BarPane>(BarPane)
                 .build_into(&mut framework)
                 .expect("build_into must succeed");
-            let mut app = TestApp {
+            let mut test_app = TestApp {
                 framework,
                 quits: 0,
                 restarts: 0,
                 dismisses: 0,
             };
 
-            keymap.dispatch_framework_global(action, &mut app);
-            assert_eq!(app.framework().focused(), &expected);
+            keymap.dispatch_framework_global(global_action, &mut test_app);
+            assert_eq!(test_app.framework().focused(), &expected);
         }
     }
 
@@ -1695,16 +1723,16 @@ mod tests {
             .register::<OrderedBarPane>(OrderedBarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Bar),
             "empty toast focus must reconcile to the first live app tab stop",
         );
@@ -1713,43 +1741,45 @@ mod tests {
     #[test]
     fn active_toasts_append_after_app_tab_stops_and_reset_on_entry() {
         let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
-        let first = framework.toasts.push("one", "body");
-        let second = framework.toasts.push("two", "body");
+        let first_toast_id = framework.toasts.push("one", "body");
+        let second_toast_id = framework.toasts.push("two", "body");
         let keymap = fresh_builder_singletons()
             .register::<OrderedBarPane>(OrderedBarPane)
             .register::<OrderedFooPane>(OrderedFooPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
             dismisses: 0,
         };
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
         assert_eq!(
-            app.framework()
+            test_app
+                .framework()
                 .toasts
-                .focused_id(app.framework().toast_pane_focus_state()),
-            crate::ToastFocus::PaneFocusedOn(first)
+                .focused_id(test_app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first_toast_id)
         );
 
-        app.set_focus(FocusedPane::App(TestPaneId::Bar));
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        test_app.set_focus(FocusedPane::App(TestPaneId::Bar));
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
         assert_eq!(
-            app.framework()
+            test_app
+                .framework()
                 .toasts
-                .focused_id(app.framework().toast_pane_focus_state()),
-            crate::ToastFocus::PaneFocusedOn(second)
+                .focused_id(test_app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(second_toast_id)
         );
     }
 
@@ -1757,14 +1787,14 @@ mod tests {
     fn focused_toasts_scroll_before_advancing_cycle() {
         let mut framework =
             Framework::<TestApp>::new(FocusedPane::Framework(FrameworkFocusId::Toasts));
-        let first = framework.toasts.push("one", "body");
-        let second = framework.toasts.push("two", "body");
+        let first_toast_id = framework.toasts.push("one", "body");
+        let second_toast_id = framework.toasts.push("two", "body");
         let keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
             .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework,
             quits: 0,
             restarts: 0,
@@ -1772,42 +1802,45 @@ mod tests {
         };
 
         assert_eq!(
-            app.framework()
+            test_app
+                .framework()
                 .toasts
-                .focused_id(app.framework().toast_pane_focus_state()),
-            crate::ToastFocus::PaneFocusedOn(first)
+                .focused_id(test_app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first_toast_id)
         );
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
         assert_eq!(
-            app.framework()
+            test_app
+                .framework()
                 .toasts
-                .focused_id(app.framework().toast_pane_focus_state()),
-            crate::ToastFocus::PaneFocusedOn(second)
+                .focused_id(test_app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(second_toast_id)
         );
 
-        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
             "NextPane advances out of Toasts after the last toast",
         );
 
-        app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
-        app.framework_mut().toasts.reset_to_last();
-        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        test_app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        test_app.framework_mut().toasts.reset_to_last();
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut test_app);
         assert_eq!(
-            app.framework().focused(),
+            test_app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
         assert_eq!(
-            app.framework()
+            test_app
+                .framework()
                 .toasts
-                .focused_id(app.framework().toast_pane_focus_state()),
-            crate::ToastFocus::PaneFocusedOn(first)
+                .focused_id(test_app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first_toast_id)
         );
     }
 
@@ -1816,36 +1849,39 @@ mod tests {
         let keymap = Keymap::<TestApp>::builder()
             .build()
             .expect("empty build must succeed");
-        let mut app = fresh_app();
-        let initial_focus = *app.framework().focused();
+        let mut test_app = fresh_app();
+        let initial_focused_pane = *test_app.framework().focused();
 
-        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut app);
-        assert_eq!(app.framework().overlay(), Some(FrameworkOverlayId::Keymap));
-        assert_eq!(*app.framework().focused(), initial_focus);
-
-        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut test_app);
         assert_eq!(
-            app.framework().overlay(),
+            test_app.framework().overlay(),
+            Some(FrameworkOverlayId::Keymap)
+        );
+        assert_eq!(*test_app.framework().focused(), initial_focused_pane);
+
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut test_app);
+        assert_eq!(
+            test_app.framework().overlay(),
             Some(FrameworkOverlayId::Settings)
         );
-        assert_eq!(*app.framework().focused(), initial_focus);
+        assert_eq!(*test_app.framework().focused(), initial_focused_pane);
 
-        keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, &mut test_app);
         assert_eq!(
-            app.framework().overlay(),
+            test_app.framework().overlay(),
             Some(FrameworkOverlayId::GlobalShortcuts)
         );
-        assert_eq!(*app.framework().focused(), initial_focus);
+        assert_eq!(*test_app.framework().focused(), initial_focused_pane);
 
-        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
-        assert_eq!(app.framework().overlay(), None);
-        assert_eq!(*app.framework().focused(), initial_focus);
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut test_app);
+        assert_eq!(test_app.framework().overlay(), None);
+        assert_eq!(*test_app.framework().focused(), initial_focused_pane);
     }
 
     #[test]
     fn invalid_binding_in_toml_surfaces_at_build() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = \"Bogus+nonsense\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1856,17 +1892,17 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .build();
-        let err = result.expect_err("invalid binding must surface");
+        let keymap_error = result.expect_err("invalid binding must surface");
         assert!(
-            matches!(err, KeymapError::InvalidBinding { .. }),
-            "expected InvalidBinding, got {err:?}",
+            matches!(keymap_error, KeymapError::InvalidBinding { .. }),
+            "expected InvalidBinding, got {keymap_error:?}",
         );
     }
 
     #[test]
     fn unknown_action_in_toml_surfaces_at_build() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
             .load_toml(path)
@@ -1877,17 +1913,17 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .build();
-        let err = result.expect_err("unknown action must surface");
+        let keymap_error = result.expect_err("unknown action must surface");
         assert!(
-            matches!(err, KeymapError::UnknownAction { .. }),
-            "expected UnknownAction, got {err:?}",
+            matches!(keymap_error, KeymapError::UnknownAction { .. }),
+            "expected UnknownAction, got {keymap_error:?}",
         );
     }
 
     #[test]
     fn ignore_unknown_entries_skips_unknown_action() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .ignore_unknown_entries()
@@ -1906,17 +1942,17 @@ mod tests {
             "the skipped action must be recorded as a warning",
         );
         // `FooPane`'s default Enter binding to `FooAction::Activate` survives the skipped entry.
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Consumed,
         );
     }
 
     #[test]
     fn ignore_unknown_entries_skips_unknown_scope() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         std::fs::write(&path, "[bogus_scope]\nx = \"y\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .ignore_unknown_entries()
@@ -1938,8 +1974,8 @@ mod tests {
 
     #[test]
     fn load_toml_missing_file_treated_as_no_overlay() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
             .expect("missing file must yield Ok")
@@ -1950,16 +1986,16 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Consumed,
         );
     }
 
     #[test]
     fn build_into_registers_copy_selection() {
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1967,24 +2003,26 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .register_copy_selection::<FooPane>()
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard::default();
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let mut fake_clipboard = FakeClipboard::default();
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
         assert_eq!(
-            outcome,
+            copy_outcome,
             CopyOutcome::Copied {
                 label: CopyLabel::Value,
             }
         );
-        assert_eq!(clipboard.writes, ["foo"]);
+        assert_eq!(fake_clipboard.writes, ["foo"]);
     }
 
     #[test]
     fn duplicate_copy_registration_replaces_resolver() {
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1993,44 +2031,50 @@ mod tests {
             .register::<FooPane>(FooPane)
             .register_copy_selection::<FooPane>()
             .register_copy_selection::<AlternateFooCopyPane>()
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard::default();
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let mut fake_clipboard = FakeClipboard::default();
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
         assert_eq!(
-            outcome,
+            copy_outcome,
             CopyOutcome::Copied {
                 label: CopyLabel::Path,
             }
         );
-        assert_eq!(clipboard.writes, ["alternate"]);
+        assert_eq!(fake_clipboard.writes, ["alternate"]);
     }
 
     #[test]
     fn pane_without_copy_resolver_returns_nothing() {
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
             .register_globals::<AppGlobals>()
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard::default();
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let mut fake_clipboard = FakeClipboard::default();
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
-        assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert_eq!(clipboard.writes, [] as [String; 0]);
+        assert_eq!(copy_outcome, CopyOutcome::NothingToCopy);
+        assert_eq!(fake_clipboard.writes, [] as [String; 0]);
     }
 
     #[test]
     fn pane_returning_nothing_does_not_write_clipboard() {
-        let mut app = fresh_app();
-        app.framework.set_focused(FocusedPane::App(TestPaneId::Bar));
+        let mut test_app = fresh_app();
+        test_app
+            .framework
+            .set_focused(FocusedPane::App(TestPaneId::Bar));
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -2038,19 +2082,21 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .register_copy_selection::<EmptyCopyPane>()
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard::default();
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let mut fake_clipboard = FakeClipboard::default();
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
-        assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert_eq!(clipboard.writes, [] as [String; 0]);
+        assert_eq!(copy_outcome, CopyOutcome::NothingToCopy);
+        assert_eq!(fake_clipboard.writes, [] as [String; 0]);
     }
 
     #[test]
     fn clipboard_failure_returns_failed() {
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -2058,28 +2104,31 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .register_copy_selection::<FooPane>()
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard {
+        let mut fake_clipboard = FakeClipboard {
             writes: Vec::new(),
             result: Err(ClipboardError::WriteFailed("nope".to_string())),
         };
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
         assert_eq!(
-            outcome,
+            copy_outcome,
             CopyOutcome::Failed {
                 reason: ClipboardError::WriteFailed("nope".to_string()),
             }
         );
-        assert_eq!(clipboard.writes, ["foo"]);
+        assert_eq!(fake_clipboard.writes, ["foo"]);
     }
 
     #[test]
     fn focused_toasts_do_not_write_clipboard() {
-        let mut app = fresh_app();
-        app.framework
+        let mut test_app = fresh_app();
+        test_app
+            .framework
             .set_focused(FocusedPane::Framework(FrameworkFocusId::Toasts));
         let _ = Keymap::<TestApp>::builder()
             .register_navigation::<AppNav>()
@@ -2088,13 +2137,15 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .register_copy_selection::<FooPane>()
-            .build_into(&mut app.framework)
+            .build_into(&mut test_app.framework)
             .expect("build_into");
 
-        let mut clipboard = FakeClipboard::default();
-        let outcome = app.framework.copy_selection(&app, &mut clipboard);
+        let mut fake_clipboard = FakeClipboard::default();
+        let copy_outcome = test_app
+            .framework
+            .copy_selection(&test_app, &mut fake_clipboard);
 
-        assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert_eq!(clipboard.writes, [] as [String; 0]);
+        assert_eq!(copy_outcome, CopyOutcome::NothingToCopy);
+        assert_eq!(fake_clipboard.writes, [] as [String; 0]);
     }
 }

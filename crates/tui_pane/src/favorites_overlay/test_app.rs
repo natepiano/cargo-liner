@@ -114,7 +114,7 @@ struct MainPane;
 impl Pane<TestApp> for MainPane {
     const APP_PANE_ID: TestPaneId = TestPaneId::Main;
 
-    fn mode() -> fn(&TestApp) -> Mode<TestApp> { |_app| Mode::Static }
+    fn mode() -> fn(&TestApp) -> Mode<TestApp> { |_test_app| Mode::Static }
 }
 
 /// An app carrying the attract screen and the favorites overlay, with
@@ -197,7 +197,7 @@ impl AppContext for TestApp {
 impl SettingsHost for TestApp {
     fn settings_row_count(&self) -> usize { 0 }
 
-    fn step_setting(&mut self, _step: SettingStep) {}
+    fn step_setting(&mut self, _setting_step: SettingStep) {}
 }
 
 impl KeymapUiContext for TestApp {
@@ -242,7 +242,9 @@ impl TerminalApp for TestApp {
         crate::dispatch_attract_key(self, keymap, bind)
     }
 
-    fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
+    fn resized(&mut self, terminal_rect: Rect) {
+        self.attract.record_terminal_resize(terminal_rect);
+    }
 
     fn resize_settled(&mut self) { favorites_resize_settled(self); }
 }

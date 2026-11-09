@@ -58,7 +58,7 @@ pub(super) struct InterfaceCeiling {
 pub(super) fn collect_interface_ceilings(
     tcx: TyCtxt<'_>,
 ) -> FxHashMap<LocalDefId, InterfaceCeiling> {
-    let mut ceilings: FxHashMap<LocalDefId, InterfaceCeiling> = FxHashMap::default();
+    let mut interface_ceilings: FxHashMap<LocalDefId, InterfaceCeiling> = FxHashMap::default();
     for item_id in tcx.hir_crate_items(()).free_items() {
         let impl_def = item_id.owner_id.def_id;
         if !matches!(
@@ -77,22 +77,23 @@ pub(super) fn collect_interface_ceilings(
         let Some(local_self_adt) = self_adt.as_local() else {
             continue;
         };
-        let Some(ceiling) = impl_ceiling(tcx, impl_def, trait_ref, self_adt) else {
+        let Some(interface_ceiling) = impl_ceiling(tcx, impl_def, trait_ref, self_adt) else {
             continue;
         };
-        match ceilings.entry(local_self_adt) {
+        match interface_ceilings.entry(local_self_adt) {
             Entry::Occupied(mut occupied) => {
-                if occupied.get().reach.widening(ceiling.reach, tcx) == ReachWidening::StrictlyWider
+                if occupied.get().reach.widening(interface_ceiling.reach, tcx)
+                    == ReachWidening::StrictlyWider
                 {
-                    occupied.insert(ceiling);
+                    occupied.insert(interface_ceiling);
                 }
             },
             Entry::Vacant(vacant) => {
-                vacant.insert(ceiling);
+                vacant.insert(interface_ceiling);
             },
         }
     }
-    ceilings
+    interface_ceilings
 }
 
 /// The narrowest interface component of one impl that actually constrains its

@@ -36,6 +36,7 @@ use super::network_stage::NetworkRunningTrackers;
 use super::network_stage::StartupServiceExit;
 use super::network_stage::SteadyStateNetworkToasts;
 use crate::ci::OwnerRepo;
+use crate::config::GitHubRateLimitMode;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
@@ -54,6 +55,8 @@ use crate::tui::startup_services::StartupServices;
 /// installed but logged out, `NotInstalled` when the `gh` binary is
 /// absent — so authenticated calls silently no-op. Recovery, display
 /// text, and toast copy diverge between them — hence the explicit enum.
+/// `AvailabilityStatus::Unauthenticated` and `AvailabilityStatus::NotInstalled`
+/// both need an actionable authentication warning, with distinct remediation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::tui) enum AvailabilityStatus {
     #[default]
@@ -70,46 +73,27 @@ pub(in crate::tui) enum AvailabilityStatus {
     NotInstalled,
 }
 
-impl AvailabilityStatus {
-    pub(in crate::tui) const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
-
-    /// True when GitHub has no usable auth token — whether `gh` is logged
-    /// out (`Unauthenticated`) or absent (`NotInstalled`). Both render the
-    /// same actionable-warning state; only the remediation copy differs.
-    pub(in crate::tui) const fn is_unauthenticated(self) -> bool {
-        matches!(self, Self::Unauthenticated | Self::NotInstalled)
-    }
-}
-
 /// Outcome of a "service became reachable" call. The retry / recovery
 /// paths converge on this so callers handle every case the same way:
-/// `NoTransition` no-ops, `Silent` triggers refetch without a toast,
-/// `WithToast(id)` triggers refetch and surfaces the back-online toast.
+/// `NoTransition` and `Silent` do no recovery dispatch; `WithToast(id)`
+/// triggers refetch and surfaces the back-online toast in `App::apply_recovery_outcome`.
+/// Only a confirmed outage whose unavailable toast the user actually saw
+/// (`WithToast`) refetches. A transient blip absorbed by the grace window
+/// (`Silent`) must not: during startup its re-dispatched crates.io / GitHub
+/// fetches would land after the startup panel hands the network rows back
+/// to steady state, spraying the standalone "Fetching crates.io info"
+/// toasts the panel was meant to embed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::tui) enum RecoveryOutcome {
     /// The service was already reachable — nothing to do.
     NoTransition,
     /// State transitioned from unavailable → reachable, but no
     /// user-visible toast was ever pushed (the grace window absorbed
-    /// the outage). Refetch missing data; stay silent on toasts.
+    /// the outage). `App::apply_recovery_outcome` skips refetches and toasts.
     Silent,
     /// State transitioned from unavailable → reachable and a toast
     /// was up. Dismiss it, push the back-online message, refetch.
     WithToast(ToastId),
-}
-
-impl RecoveryOutcome {
-    /// Whether recovery should re-dispatch the fetches that failed during the
-    /// outage. Only a *confirmed* outage — one whose unavailable toast the
-    /// user actually saw (`WithToast`) — refetches. A transient blip absorbed
-    /// by the grace window (`Silent`) must not: during startup its
-    /// re-dispatched crates.io / GitHub fetches would land after the startup
-    /// panel hands the network rows back to steady state, spraying the
-    /// standalone "Fetching crates.io info" toasts the panel was meant to
-    /// embed.
-    pub(in crate::tui) const fn triggers_refetch(self) -> bool {
-        matches!(self, Self::WithToast(_))
-    }
 }
 
 /// Render-side snapshot of service availability — collapses
@@ -159,12 +143,14 @@ impl ServiceAvailability {
     pub(in crate::tui) const fn status(&self) -> AvailabilityStatus { self.status }
 
     #[cfg(test)]
-    pub const fn is_unavailable(&self) -> bool { !self.status.is_available() }
+    pub const fn is_unavailable(&self) -> bool {
+        !matches!(self.status, AvailabilityStatus::Reachable)
+    }
 
     /// Mark the service reachable. Returns [`RecoveryOutcome`]:
     /// - `NoTransition` if already reachable (subsequent successes are silent).
     /// - `Silent` on the transition edge when no toast was ever surfaced (the grace window absorbed
-    ///   the outage). Caller refetches missing data without showing a toast.
+    ///   the outage). `App::apply_recovery_outcome` skips refetches and toasts.
     /// - `WithToast(id)` on the transition edge with a live toast slot to dismiss; caller also
     ///   pushes the recovery toast and refetches.
     pub(in crate::tui) const fn mark_reachable(&mut self) -> RecoveryOutcome {
@@ -234,6 +220,13 @@ impl ServiceAvailability {
     }
 }
 
+/// `Github::retain_pr_check_polls_for_repo` reports whether stale polls were removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::tui) enum PrPollSetUpdate {
+    Changed,
+    Unchanged,
+}
+
 pub(in crate::tui) struct Github {
     pub availability:     ServiceAvailability,
     pub fetch_cache:      RepoCache,
@@ -291,11 +284,15 @@ impl Github {
         &mut self,
         repo: &OwnerRepo,
         active_numbers: &HashSet<u32>,
-    ) -> bool {
+    ) -> PrPollSetUpdate {
         let before = self.pr_check_polls.len();
         self.pr_check_polls
             .retain(|(poll_repo, number)| poll_repo != repo || active_numbers.contains(number));
-        before != self.pr_check_polls.len()
+        if before == self.pr_check_polls.len() {
+            PrPollSetUpdate::Unchanged
+        } else {
+            PrPollSetUpdate::Changed
+        }
     }
 
     /// Reset every GitHub field to its post-construction state.
@@ -501,8 +498,8 @@ impl Net {
 
     pub(in crate::tui) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit() }
 
-    pub(in crate::tui) fn set_force_github_rate_limit(&self, on: bool) {
-        self.http_client.set_force_github_rate_limit(on);
+    pub(in crate::tui) fn set_force_github_rate_limit(&self, policy: GitHubRateLimitMode) {
+        self.http_client.set_force_github_rate_limit(policy);
     }
 
     pub(in crate::tui) const fn github_status(&self) -> AvailabilityStatus {
@@ -558,24 +555,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_confirmed_outage_recovery_triggers_refetch() {
-        // `RecoveryOutcome::Silent` absorbs a grace-window blip and `triggers_refetch` must stay
-        // false: redispatched fetches could leak standalone toasts after startup handoff. Only a
-        // confirmed user-visible `RecoveryOutcome::WithToast` outage refetches.
-        assert!(!RecoveryOutcome::NoTransition.triggers_refetch());
-        assert!(!RecoveryOutcome::Silent.triggers_refetch());
-        assert!(RecoveryOutcome::WithToast(ToastId(1)).triggers_refetch());
-    }
-
-    #[test]
     fn mark_unauthenticated_sets_status_and_reports_unavailable() {
         let mut avail = ServiceAvailability::new();
         avail.mark_unauthenticated();
         assert_eq!(avail.status(), AvailabilityStatus::Unauthenticated);
-        assert!(avail.status().is_unauthenticated());
-        // `AvailabilityStatus::Unauthenticated.is_available()` is false, so Git pane readers
+        assert!(matches!(
+            avail.status(),
+            AvailabilityStatus::Unauthenticated | AvailabilityStatus::NotInstalled
+        ));
+        // `AvailabilityStatus::Unauthenticated` is not `Reachable`, so Git pane readers
         // suppress real values and show the authentication hint.
-        assert!(!avail.status().is_available());
+        assert_ne!(avail.status(), AvailabilityStatus::Reachable);
     }
 
     #[test]
@@ -583,9 +573,12 @@ mod tests {
         let mut avail = ServiceAvailability::new();
         avail.mark_not_installed();
         assert_eq!(avail.status(), AvailabilityStatus::NotInstalled);
-        // `AvailabilityStatus::NotInstalled.is_unauthenticated()` must cover missing gh as well as
-        // missing login tokens, since Git-pane and pane-data readers branch on that predicate.
-        assert!(avail.status().is_unauthenticated());
-        assert!(!avail.status().is_available());
+        // `AvailabilityStatus::NotInstalled` joins `Unauthenticated` for missing gh as well as
+        // missing login tokens, since Git-pane and pane-data readers show the same auth warning.
+        assert!(matches!(
+            avail.status(),
+            AvailabilityStatus::Unauthenticated | AvailabilityStatus::NotInstalled
+        ));
+        assert_ne!(avail.status(), AvailabilityStatus::Reachable);
     }
 }

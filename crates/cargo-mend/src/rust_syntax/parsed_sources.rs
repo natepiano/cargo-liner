@@ -74,21 +74,22 @@ impl ParsedSources {
     /// Seed module maps from Cargo's target roots, including integration tests
     /// and targets whose manifest paths do not follow the directory defaults.
     pub(crate) fn for_selection(selection: &Selection) -> Self {
-        let sources = Self::default();
-        for package in &selection.packages {
-            let source_root = module_map::lexically_normalized(&package.root.join(SOURCE_DIR_SRC));
-            let crate_roots = package
+        let parsed_sources = Self::default();
+        for package_metadata in &selection.packages {
+            let source_root =
+                module_map::lexically_normalized(&package_metadata.root.join(SOURCE_DIR_SRC));
+            let crate_roots = package_metadata
                 .targets
                 .iter()
-                .map(|target| target.src_path.clone())
+                .map(|target_metadata| target_metadata.src_path.clone())
                 .collect::<Vec<_>>();
-            let map = ModuleMap::for_crate_roots(&crate_roots, &sources);
-            sources
+            let map = ModuleMap::for_crate_roots(&crate_roots, &parsed_sources);
+            parsed_sources
                 .module_maps
                 .borrow_mut()
                 .insert(source_root, Rc::new(map));
         }
-        sources
+        parsed_sources
     }
 
     /// The text of `path`, read on the first request. A read failure is
@@ -136,48 +137,48 @@ mod tests {
 
     #[test]
     fn a_repeat_request_returns_the_same_source() {
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("lib.rs");
+        let temp_dir = tempdir().expect("create temp dir");
+        let path = temp_dir.path().join("lib.rs");
         fs::write(&path, "pub(crate) fn run() {}\n").expect("write source");
-        let sources = ParsedSources::default();
+        let parsed_sources = ParsedSources::default();
 
-        let first = sources.source(&path).expect("read source");
-        let again = sources
-            .source(&dir.path().join("./nested/../lib.rs"))
+        let first_parsed_source = parsed_sources.source(&path).expect("read source");
+        let repeated_parsed_source = parsed_sources
+            .source(&temp_dir.path().join("./nested/../lib.rs"))
             .expect("read source again");
 
-        assert!(Rc::ptr_eq(&first, &again));
-        assert!(first.syntax().is_ok());
+        assert!(Rc::ptr_eq(&first_parsed_source, &repeated_parsed_source));
+        assert!(first_parsed_source.syntax().is_ok());
     }
 
     #[test]
     fn a_repeat_module_map_request_returns_the_same_map() {
-        let dir = tempdir().expect("create temp dir");
-        let source_root = dir.path().join("src");
+        let temp_dir = tempdir().expect("create temp dir");
+        let source_root = temp_dir.path().join("src");
         fs::create_dir_all(&source_root).expect("create source root");
         fs::write(source_root.join("lib.rs"), "").expect("write lib root");
-        let sources = ParsedSources::default();
+        let parsed_sources = ParsedSources::default();
 
-        let first = sources.module_map(&source_root);
-        let again = sources.module_map(&source_root);
+        let first_module_map = parsed_sources.module_map(&source_root);
+        let repeated_module_map = parsed_sources.module_map(&source_root);
 
-        assert!(Rc::ptr_eq(&first, &again));
+        assert!(Rc::ptr_eq(&first_module_map, &repeated_module_map));
     }
 
     #[test]
     fn a_parse_error_is_kept_and_reported() {
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("broken.rs");
+        let temp_dir = tempdir().expect("create temp dir");
+        let path = temp_dir.path().join("broken.rs");
         fs::write(&path, "fn broken( {\n").expect("write source");
-        let sources = ParsedSources::default();
+        let parsed_sources = ParsedSources::default();
 
-        let source = sources.source(&path).expect("read source");
+        let source = parsed_sources.source(&path).expect("read source");
         let first = source
             .syntax()
             .map(|_| ())
             .expect_err("parse fails")
             .to_string();
-        let again = sources
+        let again = parsed_sources
             .source(&path)
             .expect("read source again")
             .syntax()
@@ -191,33 +192,41 @@ mod tests {
 
     #[test]
     fn a_read_error_is_not_kept() {
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("late.rs");
-        let sources = ParsedSources::default();
+        let temp_dir = tempdir().expect("create temp dir");
+        let path = temp_dir.path().join("late.rs");
+        let parsed_sources = ParsedSources::default();
 
-        assert!(sources.source(&path).is_err());
+        assert!(parsed_sources.source(&path).is_err());
         fs::write(&path, "fn late() {}\n").expect("write source");
 
-        let source = sources.source(&path).expect("read source after it exists");
+        let source = parsed_sources
+            .source(&path)
+            .expect("read source after it exists");
         assert_eq!(source.text(), "fn late() {}\n");
     }
 
     #[test]
     fn a_fresh_cache_sees_a_rewritten_file() {
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("lib.rs");
+        let temp_dir = tempdir().expect("create temp dir");
+        let path = temp_dir.path().join("lib.rs");
         fs::write(&path, "fn before() {}\n").expect("write source");
-        let before = ParsedSources::default();
+        let before_parsed_sources = ParsedSources::default();
         assert_eq!(
-            before.source(&path).expect("read source").text(),
+            before_parsed_sources
+                .source(&path)
+                .expect("read source")
+                .text(),
             "fn before() {}\n"
         );
 
         fs::write(&path, "fn after() {}\n").expect("rewrite source");
-        let after = ParsedSources::default();
+        let after_parsed_sources = ParsedSources::default();
 
         assert_eq!(
-            after.source(&path).expect("read rewritten source").text(),
+            after_parsed_sources
+                .source(&path)
+                .expect("read rewritten source")
+                .text(),
             "fn after() {}\n"
         );
     }

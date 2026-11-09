@@ -581,19 +581,20 @@ pub(super) fn classify_locked(
             continue;
         }
         let reservation = reservations.reservation(*reservation_id)?;
-        let mut builder = DriftEffectBuilder::default();
+        let mut drift_effect_builder = DriftEffectBuilder::default();
         let drift_coverage_probe = subject_coverage_probe(reservations, reservation, path_case);
         let widening_admission = WideningAdmission::new(reservations, reservation, changes);
         changes.visit_paths(*reservation_id, |path| {
             if reservation_covers_path(reservation, path, path_case) {
                 return;
             }
-            let coverage = prior.blocking_coverage(&drift_coverage_probe, reservation, path);
-            match &coverage {
+            let drift_blocking_coverage =
+                prior.blocking_coverage(&drift_coverage_probe, reservation, path);
+            match &drift_blocking_coverage {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
                     let WideningPathAdmission::Admitted(admitted_path) =
-                        widening_admission.admit(path, &coverage)
+                        widening_admission.admit(path, &drift_blocking_coverage)
                     else {
                         return;
                     };
@@ -603,7 +604,7 @@ pub(super) fn classify_locked(
                             DriftWideningSelection::Selected(selected)
                                 if selected == reservation_id =>
                             {
-                                builder.widened_paths.push(admitted_path);
+                                drift_effect_builder.widened_paths.push(admitted_path);
                             },
                             DriftWideningSelection::Ambiguous(_) => {
                                 unattributed_paths.push(path.clone());
@@ -633,12 +634,18 @@ pub(super) fn classify_locked(
                     {
                         return;
                     }
-                    builder.observe_foreign_path(prior, reservation, path, reservations, blockers);
+                    drift_effect_builder.observe_foreign_path(
+                        prior,
+                        reservation,
+                        path,
+                        reservations,
+                        blockers,
+                    );
                 },
             }
         });
         let (mut subject_operations, result, subject_widening_attempt) =
-            builder.finish(&observed, reservation, path_case);
+            drift_effect_builder.finish(&observed, reservation, path_case);
         observed = observed.with_pending_incursions(&subject_operations)?;
         if matches!(subject_widening_attempt, WideningAttempt::Attributed) {
             widening_attempt = WideningAttempt::Attributed;
@@ -909,9 +916,9 @@ fn blocking_coverage(
     }]) else {
         return DriftBlockingCoverage::Unclaimed;
     };
-    let coverage = drift_coverage_probe.coverage(&candidate);
-    let DriftBlockingCoverage::Foreign(conflicts) = coverage else {
-        return coverage;
+    let drift_blocking_coverage = drift_coverage_probe.coverage(&candidate);
+    let DriftBlockingCoverage::Foreign(conflicts) = drift_blocking_coverage else {
+        return drift_blocking_coverage;
     };
     let Some(committed_at) = written_at else {
         return DriftBlockingCoverage::Foreign(conflicts);

@@ -57,22 +57,21 @@ impl MendRunner<'_> {
                 pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
-                // Count `previewed` from `Self::combined_fixes`, not the scans: a dry run must
-                // preview the edits an apply would write, and combining is
-                // where conflicting groups are dropped and duplicates collapse.
+                // Preview the accepted function plan so dry runs count the edits an apply writes.
+                // The plan excludes conflicting groups and duplicate edits.
                 let fix_scans = planned.function_plan.accepted_scans(planned.fix_scans());
                 let previewed = &planned.function_plan.fixes;
-                let notice = Self::build_fix_notice(
+                let execution_notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),
                     fix_scans,
                     previewed.counts(),
                 );
-                let notice = planned.function_plan.merge_notice(notice);
+                let execution_notice = planned.function_plan.merge_notice(execution_notice);
                 Ok(ExecutionOutcome {
                     compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                     report: planned.report,
-                    notice,
+                    notice: execution_notice,
                     check_duration,
                     compiler_warnings,
                     compiler_fixable,
@@ -87,13 +86,13 @@ impl MendRunner<'_> {
 
     pub(super) fn build_selection(
         &self,
-        output_mode: BuildOutputMode,
+        build_output_mode: BuildOutputMode,
     ) -> Result<CheckedSelection, MendFailure> {
         let result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
             self.loaded_config,
-            output_mode,
+            build_output_mode,
             self.color_mode,
             self.toolchain_probes,
             &self.wrapper,
@@ -110,40 +109,63 @@ impl MendRunner<'_> {
         let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
-            codes
+            if codes
                 .iter()
                 .any(|&code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled)
+            {
+                DiagnosticStatus::Enabled
+            } else {
+                DiagnosticStatus::Disabled
+            }
         };
-        let scans = SyntaxScans {
-            imports:              enabled(&[
+        let syntax_scans = SyntaxScans {
+            imports:              match enabled(&[
                 DiagnosticCode::ShortenLocalCrateImport,
                 DiagnosticCode::ReplaceDeepSuperImport,
-            ])
-            .then(|| imports::scan_selection(self.selection, &sources))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?,
-            prefer_module_import: enabled(&[DiagnosticCode::PreferModuleImport])
-                .then(|| prefer_module_import::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
-            inline_path:          enabled(&[DiagnosticCode::InlinePathQualifiedType])
-                .then(|| inline_path_qualified_type::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
-            imports_at_top:       enabled(&[DiagnosticCode::ImportsAtTop])
-                .then(|| imports_at_top::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
+            ]) {
+                DiagnosticStatus::Enabled => Some(
+                    imports::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            prefer_module_import: match enabled(&[DiagnosticCode::PreferModuleImport]) {
+                DiagnosticStatus::Enabled => Some(
+                    prefer_module_import::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            inline_path:          match enabled(&[DiagnosticCode::InlinePathQualifiedType]) {
+                DiagnosticStatus::Enabled => Some(
+                    inline_path_qualified_type::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            imports_at_top:       match enabled(&[DiagnosticCode::ImportsAtTop]) {
+                DiagnosticStatus::Enabled => Some(
+                    imports_at_top::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
         };
         let report = &mut result.report;
         let scan_findings = [
-            scans
+            syntax_scans
                 .prefer_module_import
                 .as_ref()
-                .map(|scan| &scan.findings),
-            scans.inline_path.as_ref().map(|scan| &scan.findings),
-            scans.imports.as_ref().map(|scan| &scan.findings),
-            scans.imports_at_top.as_ref().map(|scan| &scan.findings),
+                .map(|prefer_module_import_scan| &prefer_module_import_scan.findings),
+            syntax_scans
+                .inline_path
+                .as_ref()
+                .map(|inline_path_scan| &inline_path_scan.findings),
+            syntax_scans.imports.as_ref().map(|scan| &scan.findings),
+            syntax_scans
+                .imports_at_top
+                .as_ref()
+                .map(|imports_at_top_scan| &imports_at_top_scan.findings),
         ];
         report
             .findings
@@ -160,7 +182,7 @@ impl MendRunner<'_> {
         report.refresh_summary();
         Ok(CheckedSelection {
             result,
-            scans,
+            scans: syntax_scans,
             sources,
         })
     }

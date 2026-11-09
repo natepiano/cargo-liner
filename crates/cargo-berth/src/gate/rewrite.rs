@@ -163,8 +163,8 @@ fn stopped_apply_rebase_previous_tip(
             "stopped apply rebase head-name is not a local branch",
         ));
     }
-    let rebase_reference: FullRefName = head_name.parse().map_err(io::Error::other)?;
-    if &rebase_reference != reference {
+    let rebase_full_ref_name: FullRefName = head_name.parse().map_err(io::Error::other)?;
+    if &rebase_full_ref_name != reference {
         return Ok(ApplyRebasePreviousTip::NotApplyBranch);
     }
     let previous = fs::read_to_string(directory.join("orig-head"))?
@@ -184,8 +184,9 @@ fn uninterrupted_apply_rebase_previous_tip(
     reference: &FullRefName,
     proposed: &GitObjectId,
 ) -> Result<GitObjectId, GateError> {
-    let current = branch_reflog_tip(repository_root, reference, 0).map_err(GateError::Git)?;
-    if &current != proposed {
+    let current_git_object_id =
+        branch_reflog_tip(repository_root, reference, 0).map_err(GateError::Git)?;
+    if &current_git_object_id != proposed {
         return Err(LedgerError::Io(io::Error::new(
             ErrorKind::InvalidData,
             "apply rebase branch reflog does not end at the proposed tip",
@@ -283,13 +284,13 @@ pub(super) fn capture_branch_rewrites(
             })
         })
         .collect::<Result<Vec<_>, GateError>>()?;
-    for event in &events {
+    for branch_rewrite_event in &events {
         permit::write_branch_rewrite_marker(
             context.common_git_directory(),
             context.administrative_directory(),
-            event.pairs.clone(),
-            vec![event.branch.proposed.clone()],
-            event.created_commits.clone(),
+            branch_rewrite_event.pairs.clone(),
+            vec![branch_rewrite_event.branch.proposed.clone()],
+            branch_rewrite_event.created_commits.clone(),
         )
         .map_err(LedgerError::Io)?;
     }
@@ -349,18 +350,25 @@ pub(crate) fn capture_rewrite_created_commits(
         new_tip.to_string(),
         "--not".to_owned(),
     ];
-    if let RewriteBase::RebaseOnto(onto) = base {
-        arguments.push(onto.to_string());
+    if let RewriteBase::RebaseOnto(onto_git_object_id) = base {
+        arguments.push(onto_git_object_id.to_string());
     }
-    arguments.extend(pairs.iter().map(|pair| pair.old.to_string()));
+    arguments.extend(
+        pairs
+            .iter()
+            .map(|rewrite_map_pair| rewrite_map_pair.old.to_string()),
+    );
     arguments.push(previous_tip.to_string());
     let mut created = decode_rewrite_history(git::execute_read_only_git(
         repository_root,
         &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
     ))?;
     if *base == RewriteBase::RecordedDestinations {
-        let destinations = pairs.iter().map(|pair| &pair.new).collect::<HashSet<_>>();
-        created.retain(|commit| destinations.contains(commit));
+        let destinations = pairs
+            .iter()
+            .map(|rewrite_map_pair| &rewrite_map_pair.new)
+            .collect::<HashSet<_>>();
+        created.retain(|git_object_id| destinations.contains(git_object_id));
     }
     Ok(created)
 }
@@ -530,19 +538,21 @@ fn resnapshot_operations(
         let ClaimHeadSnapshot::Branch { full_ref, .. } = reservation.head_snapshot() else {
             continue;
         };
-        let Some(event) = events
+        let Some(branch_rewrite_event) = events
             .iter()
-            .find(|event| &event.branch.reference == full_ref)
+            .find(|branch_rewrite_event| &branch_rewrite_event.branch.reference == full_ref)
         else {
             continue;
         };
         let phase_start = reservation.phase_start_head();
-        let created = RewriteCreatedCommits::from_commits(event.created_commits.iter().cloned());
+        let created = RewriteCreatedCommits::from_commits(
+            branch_rewrite_event.created_commits.iter().cloned(),
+        );
         let ActivePhaseAnchor::Replace(claim_snapshot) = active_phase_anchor(
             repository,
             reservation,
-            &event.branch,
-            &event.pairs,
+            &branch_rewrite_event.branch,
+            &branch_rewrite_event.pairs,
             &created,
         ) else {
             continue;
@@ -580,7 +590,10 @@ fn active_phase_anchor(
     else {
         return ActivePhaseAnchor::Preserve;
     };
-    if !pairs.iter().any(|pair| old_phase.contains(&pair.old)) {
+    if !pairs
+        .iter()
+        .any(|rewrite_map_pair| old_phase.contains(&rewrite_map_pair.old))
+    {
         return git::rewritten_phase_anchor(
             repository,
             phase_start,
@@ -645,22 +658,22 @@ mod tests {
             ("rebase-merge", "rewritten-list"),
             ("rebase-apply", "rewritten"),
         ] {
-            let directory = tempdir()?;
-            fs::create_dir(directory.path().join(backend))?;
+            let temp_dir = tempdir()?;
+            fs::create_dir(temp_dir.path().join(backend))?;
             fs::write(
-                directory.path().join(backend).join(name),
+                temp_dir.path().join(backend).join(name),
                 format!("{old} {new}\n{other_old} {new}\n"),
             )?;
             let expected_base = if backend == "rebase-merge" {
                 fs::write(
-                    directory.path().join(backend).join("onto"),
+                    temp_dir.path().join(backend).join("onto"),
                     format!("{old}\n"),
                 )?;
                 RewriteBase::RebaseOnto(old.parse()?)
             } else {
                 RewriteBase::RecordedDestinations
             };
-            let operation = read_rewrite_map(directory.path(), &[])?;
+            let operation = read_rewrite_map(temp_dir.path(), &[])?;
             assert_eq!(operation.base, expected_base);
             assert_eq!(
                 operation.pairs,
@@ -681,13 +694,13 @@ mod tests {
 
     #[test]
     fn capture_nominates_tip_replacement_when_no_rebase_map_exists() -> Result<(), Box<dyn Error>> {
-        let directory = tempdir()?;
+        let temp_dir = tempdir()?;
         let rewrite = BranchRewrite {
             reference: "refs/heads/topic".parse()?,
             previous:  "1111111111111111111111111111111111111111".parse()?,
             proposed:  "2222222222222222222222222222222222222222".parse()?,
         };
-        let operation = read_rewrite_map(directory.path(), std::slice::from_ref(&rewrite))?;
+        let operation = read_rewrite_map(temp_dir.path(), std::slice::from_ref(&rewrite))?;
         assert_eq!(operation.base, RewriteBase::TipReplacement);
         assert_eq!(
             operation.pairs,
@@ -702,8 +715,8 @@ mod tests {
     #[test]
     fn uninterrupted_apply_capture_keeps_only_reachable_map_destinations()
     -> Result<(), Box<dyn Error>> {
-        let directory = tempdir()?;
-        let root = directory.path();
+        let temp_dir = tempdir()?;
+        let root = temp_dir.path();
         git_output(root, &["init", "--quiet", "--initial-branch", "main"])?;
         git_output(root, &["config", "user.name", "Test User"])?;
         git_output(root, &["config", "user.email", "test@example.com"])?;
@@ -736,13 +749,20 @@ mod tests {
         assert_eq!(operation.base, RewriteBase::RecordedDestinations);
         let events = super::capture_branch_rewrites(root, std::slice::from_ref(&rewrite))?;
         assert_eq!(events.len(), 1);
-        let event = &events[0];
-        assert_eq!(event.created_commits, vec![rewrite.proposed.clone()]);
+        let branch_rewrite_event = &events[0];
+        assert_eq!(
+            branch_rewrite_event.created_commits,
+            vec![rewrite.proposed.clone()]
+        );
         for excluded in [&trunk, &onto, &other_new] {
-            assert!(!event.created_commits.contains(&excluded.parse()?));
+            assert!(
+                !branch_rewrite_event
+                    .created_commits
+                    .contains(&excluded.parse()?)
+            );
         }
         assert_eq!(
-            event.pairs,
+            branch_rewrite_event.pairs,
             vec![RewriteMapPair {
                 old: rewrite.previous,
                 new: rewrite.proposed.clone(),
@@ -750,8 +770,11 @@ mod tests {
         );
         let markers = super::permit::pending_branch_rewrite_markers(&root.join(".git"))?;
         assert_eq!(markers.len(), 1);
-        assert_eq!(markers[0].rewrite.pairs, event.pairs);
-        assert_eq!(markers[0].rewrite.created_commits, event.created_commits);
+        assert_eq!(markers[0].rewrite.pairs, branch_rewrite_event.pairs);
+        assert_eq!(
+            markers[0].rewrite.created_commits,
+            branch_rewrite_event.created_commits
+        );
         assert_eq!(markers[0].rewrite.new_tips, vec![rewrite.proposed]);
         Ok(())
     }
@@ -820,24 +843,32 @@ mod tests {
             root,
             &["reflog", "delete", &format!("{}@{{1}}", upper.reference)],
         )?;
-        let misleading_previous: GitObjectId = misleading_previous.parse()?;
+        let misleading_previous_git_object_id: GitObjectId = misleading_previous.parse()?;
         assert_eq!(
             super::branch_reflog_tip(root, &upper.reference, 0)?,
             upper.proposed
         );
         assert_eq!(
             super::branch_reflog_tip(root, &upper.reference, 1)?,
-            misleading_previous
+            misleading_previous_git_object_id
         );
-        assert_ne!(misleading_previous, upper.previous);
-        for pair in fixture.pairs() {
+        assert_ne!(misleading_previous_git_object_id, upper.previous);
+        for rewrite_map_pair in fixture.pairs() {
             assert_eq!(
-                crate::git::reachability(root, &pair.old, &misleading_previous)?,
+                crate::git::reachability(
+                    root,
+                    &rewrite_map_pair.old,
+                    &misleading_previous_git_object_id
+                )?,
                 crate::git::Reachability::Ancestor
             );
         }
         assert_eq!(
-            crate::git::reachability(root, &fixture.split_first, &misleading_previous)?,
+            crate::git::reachability(
+                root,
+                &fixture.split_first,
+                &misleading_previous_git_object_id
+            )?,
             crate::git::Reachability::Ancestor
         );
         let events = capture_zero_previous_update(&fixture, 1)?;
@@ -862,7 +893,7 @@ mod tests {
         let fixture = StackedRewriteFixture::new()?;
         fixture.write_stopped_apply_rebase(1)?;
         let root = fixture.directory.path();
-        let unrelated = ReferenceUpdate {
+        let unrelated_reference_update = ReferenceUpdate {
             reference: "refs/heads/unrelated".parse()?,
             previous:  ReferenceObject::Absent,
             proposed:  ReferenceObject::Object(fixture.base.clone()),
@@ -871,12 +902,12 @@ mod tests {
             root,
             &[
                 "update-ref",
-                &unrelated.reference.to_string(),
+                &unrelated_reference_update.reference.to_string(),
                 &fixture.base.to_string(),
             ],
         )?;
-        assert!(super::branch_reflog_tip(root, &unrelated.reference, 1).is_err());
-        let rewrites = super::branch_rewrites(root, &[&unrelated])?;
+        assert!(super::branch_reflog_tip(root, &unrelated_reference_update.reference, 1).is_err());
+        let rewrites = super::branch_rewrites(root, &[&unrelated_reference_update])?;
         assert!(super::capture_branch_rewrites(root, &rewrites)?.is_empty());
         assert!(super::permit::pending_branch_rewrite_markers(&root.join(".git"))?.is_empty());
         let upper = &fixture.branches[1];
@@ -888,12 +919,13 @@ mod tests {
                 &upper.proposed.to_string(),
             ],
         )?;
-        let own = ReferenceUpdate {
+        let own_reference_update = ReferenceUpdate {
             reference: upper.reference.clone(),
             previous:  ReferenceObject::Absent,
             proposed:  ReferenceObject::Object(upper.proposed.clone()),
         };
-        let rewrites = super::branch_rewrites(root, &[&unrelated, &own])?;
+        let rewrites =
+            super::branch_rewrites(root, &[&unrelated_reference_update, &own_reference_update])?;
         let events = super::capture_branch_rewrites(root, &rewrites)?;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].branch.reference, upper.reference);
@@ -1042,13 +1074,13 @@ mod tests {
     fn apply_reflog_previous_must_contain_every_old_map_commit() -> Result<(), Box<dyn Error>> {
         let fixture = StackedRewriteFixture::new()?;
         fixture.write_rebase_map("rebase-apply", "rewritten")?;
-        let lower = &fixture.branches[0];
+        let lower_branch_rewrite = &fixture.branches[0];
         git_output(
             fixture.directory.path(),
             &[
                 "update-ref",
-                &lower.reference.to_string(),
-                &lower.proposed.to_string(),
+                &lower_branch_rewrite.reference.to_string(),
+                &lower_branch_rewrite.proposed.to_string(),
             ],
         )?;
         assert_zero_previous_capture_failure(&fixture, 0, "does not contain every old map commit")
@@ -1228,7 +1260,7 @@ mod tests {
                     std::slice::from_ref(rewrite),
                 )?;
                 assert_eq!(events.len(), 1);
-                let event = &events[0];
+                let branch_rewrite_event = &events[0];
                 let mut expected_created = vec![
                     fixture.branches[0].proposed.clone(),
                     fixture.split_first.clone(),
@@ -1236,17 +1268,26 @@ mod tests {
                 if index == 1 {
                     expected_created.insert(0, fixture.branches[1].proposed.clone());
                 }
-                assert_eq!(event.created_commits, expected_created);
-                assert_eq!(event.pairs, fixture.pairs()[..=index]);
+                assert_eq!(branch_rewrite_event.created_commits, expected_created);
+                assert_eq!(branch_rewrite_event.pairs, fixture.pairs()[..=index]);
                 let markers = super::permit::pending_branch_rewrite_markers(
                     &fixture.directory.path().join(".git"),
                 )?;
-                let marker = markers
+                let pending_branch_rewrite_marker = markers
                     .iter()
-                    .find(|marker| marker.rewrite.new_tips == vec![rewrite.proposed.clone()])
+                    .find(|pending_branch_rewrite_marker| {
+                        pending_branch_rewrite_marker.rewrite.new_tips
+                            == vec![rewrite.proposed.clone()]
+                    })
                     .ok_or_else(|| std::io::Error::other("branch marker missing"))?;
-                assert_eq!(marker.rewrite.created_commits, expected_created);
-                assert_eq!(marker.rewrite.pairs, event.pairs);
+                assert_eq!(
+                    pending_branch_rewrite_marker.rewrite.created_commits,
+                    expected_created
+                );
+                assert_eq!(
+                    pending_branch_rewrite_marker.rewrite.pairs,
+                    branch_rewrite_event.pairs
+                );
             }
         }
         Ok(())

@@ -23,10 +23,10 @@ pub(super) enum ClickMode {
 }
 
 pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> bool {
-    let Some(hit) = hit_test_at(app, pos) else {
+    let Some(hover_target) = hit_test_at(app, pos) else {
         return false;
     };
-    match hit {
+    match hover_target {
         HoverTarget::PaneRow { pane, row } => {
             app.set_focus_to_pane(pane);
             if pane == PaneId::ProjectList {
@@ -53,9 +53,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
                 app.dismiss(target);
             }
         },
-        HoverTarget::ToastCard(id) => {
+        HoverTarget::ToastCard(toast_id) => {
             let active = app.framework.toasts.active_now();
-            if let Some(index) = active.iter().position(|toast| toast.id() == id) {
+            if let Some(index) = active.iter().position(|toast| toast.id() == toast_id) {
                 app.framework.toasts.viewport.set_pos(index);
                 app.set_focus_to_pane(PaneId::Toasts);
             }
@@ -87,8 +87,8 @@ impl HitTestRegistry for App {
 
     fn z_order() -> &'static [HittableId] { &HITTABLE_Z_ORDER }
 
-    fn pane(&self, id: HittableId) -> Option<&dyn Hittable<HoverTarget>> {
-        Some(match id {
+    fn pane(&self, hittable_id: HittableId) -> Option<&dyn Hittable<HoverTarget>> {
+        Some(match hittable_id {
             HittableId::ProjectList => &self.panes.project_list,
             HittableId::Package => &self.panes.package,
             HittableId::Lang => &self.panes.lang,
@@ -101,8 +101,8 @@ impl HitTestRegistry for App {
         })
     }
 
-    fn viewport_mut(&mut self, id: HittableId) -> Option<&mut Viewport> {
-        Some(match id {
+    fn viewport_mut(&mut self, hittable_id: HittableId) -> Option<&mut Viewport> {
+        Some(match hittable_id {
             HittableId::ProjectList => &mut self.panes.project_list.viewport,
             HittableId::Package => &mut self.panes.package.viewport,
             HittableId::Lang => &mut self.panes.lang.viewport,
@@ -140,10 +140,10 @@ impl InputContext for App {
 
     fn map_framework_hit(&self, hit: FrameworkHit) -> Option<HoverTarget> {
         match hit {
-            FrameworkHit::Toast(ToastHit::Close(id)) => {
-                Some(HoverTarget::Dismiss(DismissTarget::Toast(id)))
+            FrameworkHit::Toast(ToastHit::Close(toast_id)) => {
+                Some(HoverTarget::Dismiss(DismissTarget::Toast(toast_id)))
             },
-            FrameworkHit::Toast(ToastHit::Card(id)) => Some(HoverTarget::ToastCard(id)),
+            FrameworkHit::Toast(ToastHit::Card(toast_id)) => Some(HoverTarget::ToastCard(toast_id)),
             FrameworkHit::Overlay {
                 id: FrameworkOverlayId::Keymap,
                 row,
@@ -187,8 +187,8 @@ pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
 }
 
 /// Mutable viewport accessor by `PaneId`.
-pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut Viewport> {
-    let viewport = match id {
+pub(super) const fn viewport_mut_for(app: &mut App, pane_id: PaneId) -> Option<&mut Viewport> {
+    let viewport = match pane_id {
         PaneId::Cpu => &mut app.panes.cpu.viewport,
         PaneId::Lang => &mut app.panes.lang.viewport,
         PaneId::Lints => &mut app.lint.viewport,
@@ -228,7 +228,7 @@ pub(super) fn apply_hovered_pane_row(app: &mut App) {
     app.overlays.sccache_pane.viewport.set_hovered(None);
     app.panes.output.viewport.set_hovered(None);
     tui_pane::clear_all_hover(app);
-    if let Some(hovered) = app.panes.hovered_row() {
-        set_hovered(app, hovered.pane, Some(hovered.row));
+    if let Some(hovered_pane_row) = app.panes.hovered_row() {
+        set_hovered(app, hovered_pane_row.pane, Some(hovered_pane_row.row));
     }
 }

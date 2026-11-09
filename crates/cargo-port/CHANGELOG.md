@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add file-only `[scan]`, `[watcher]`, `[http]` and `[lint]` operational timing, concurrency and storage thresholds; edit config and restart without rebuilding.
+
 ### Changed
 
 - Use the shared row press operation for project expansion. Preserve row selection and focus-only clicks.

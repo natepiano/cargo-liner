@@ -77,17 +77,17 @@ mod tests {
 
     #[test]
     fn a_scoped_redirect_picks_its_side_by_the_caller_module() {
-        let redirect = scoped();
+        let facade_redirect = scoped();
         let inside = path("tool::staging::Widget");
         let outside = path("tool::Widget");
         assert_eq!(
-            redirect.target_for(&path("tool::render")),
+            facade_redirect.target_for(&path("tool::render")),
             Some((inside.as_slice(), TargetSide::Inside))
         );
         assert_eq!(
-            redirect.target_for(&path("app")),
+            facade_redirect.target_for(&path("app")),
             Some((outside.as_slice(), TargetSide::Outside))
         );
-        assert_eq!(redirect.target_for(&path("tool::panel")), None);
+        assert_eq!(facade_redirect.target_for(&path("tool::panel")), None);
     }
 }

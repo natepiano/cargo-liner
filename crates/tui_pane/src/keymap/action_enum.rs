@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn from_toml_key_round_trips_every_variant() {
-        for variant in Foo::ALL {
-            assert_eq!(Foo::from_toml_key(variant.toml_key()), Some(*variant));
+        for foo in Foo::ALL {
+            assert_eq!(Foo::from_toml_key(foo.toml_key()), Some(*foo));
         }
     }
 

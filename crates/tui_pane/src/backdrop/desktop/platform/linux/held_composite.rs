@@ -70,11 +70,11 @@ pub(super) fn composited_display(
 ) -> Option<(u16, u16, Vec<Color>)> {
     let uuid = window::uuid_of(handle)?;
     let layout = compose::layout_below(&uuid, output)?;
-    let key = CompositeKey::of(metrics, output, layout.clone());
+    let composite_key = CompositeKey::of(metrics, output, layout.clone());
     let now = Instant::now();
     if let Ok(held) = HELD_COMPOSITE.lock()
         && let Some(held) = held.as_ref()
-        && !composite_due(held, &key, now)
+        && !composite_due(held, &composite_key, now)
     {
         return Some((held.grid.0, held.grid.1, held.colors.clone()));
     }
@@ -85,9 +85,9 @@ pub(super) fn composited_display(
             .ok()?;
     if let Ok(mut held) = HELD_COMPOSITE.lock() {
         *held = Some(HeldComposite {
-            key,
-            grid: (reduced.0, reduced.1),
-            colors: reduced.2.clone(),
+            key:      composite_key,
+            grid:     (reduced.0, reduced.1),
+            colors:   reduced.2.clone(),
             taken_at: now,
         });
     }

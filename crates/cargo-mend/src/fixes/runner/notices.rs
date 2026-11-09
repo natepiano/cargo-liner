@@ -9,6 +9,14 @@ use crate::reporting::NoticeKind;
 use crate::reporting::PubUseNotice;
 use crate::reporting::Report;
 
+/// An enabled `FixKind` has a fixer for this run even when it made no edits;
+/// a disabled kind has no notice to render.
+#[derive(Clone, Copy)]
+enum FixerAvailability {
+    Enabled,
+    Disabled,
+}
+
 impl FixScans<'_> {
     /// Which kinds this run had a fixer for. A kind that ran and edited nothing
     /// still has a notice to render; a kind that never ran has none.
@@ -16,20 +24,49 @@ impl FixScans<'_> {
     /// Only the fixers that move or rewrite a `use` item share one total. Each
     /// remaining fixer edits a visibility annotation, so it reports under its
     /// own `FixKind` rather than being counted as an import fix.
-    const fn enabled_kinds(self) -> [(FixKind, bool); 5] {
+    const fn enabled_kinds(self) -> [(FixKind, FixerAvailability); 5] {
         [
             (
                 FixKind::Import,
-                self.imports.is_some()
+                if self.imports.is_some()
                     || self.module_imports.is_some()
                     || self.inline_types.is_some()
                     || self.imports_at_top.is_some()
-                    || self.subtree_reexports.is_some(),
+                    || self.subtree_reexports.is_some()
+                {
+                    FixerAvailability::Enabled
+                } else {
+                    FixerAvailability::Disabled
+                },
             ),
-            (FixKind::PubRemoval, self.unused_pub.is_some()),
-            (FixKind::Narrowing, self.narrowed_pub.is_some()),
-            (FixKind::Annotation, self.restricted_annotation.is_some()),
-            (FixKind::FieldVisibility, self.field_visibility.is_some()),
+            (
+                FixKind::PubRemoval,
+                match self.unused_pub {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::Narrowing,
+                match self.narrowed_pub {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::Annotation,
+                match self.restricted_annotation {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::FieldVisibility,
+                match self.field_visibility {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
         ]
     }
 }
@@ -41,16 +78,18 @@ impl MendRunner<'_> {
     /// the same edit, and skipped when a range no longer fits its file, so a
     /// finding count announces edits that were already discarded.
     pub(super) fn build_fix_notice(
-        intent: OperationIntent,
+        operation_intent: OperationIntent,
         report: Option<&Report>,
         fix_scans: FixScans<'_>,
-        applied: AppliedFixCounts,
+        applied_fix_counts: AppliedFixCounts,
     ) -> Option<ExecutionNotice> {
         let enabled = fix_scans
             .enabled_kinds()
             .into_iter()
-            .filter(|&(_, enabled)| enabled)
-            .map(|(fix_kind, _)| (fix_kind, applied.count(fix_kind)))
+            .filter_map(|(fix_kind, availability)| match availability {
+                FixerAvailability::Enabled => Some((fix_kind, applied_fix_counts.count(fix_kind))),
+                FixerAvailability::Disabled => None,
+            })
             .collect::<Vec<_>>();
 
         // `reported` names only the `FixKind` values that edited something, so a run that removes
@@ -66,25 +105,27 @@ impl MendRunner<'_> {
             reported.extend(enabled.first().copied());
         }
 
-        let mut notices = reported
+        let mut notice_kinds = reported
             .into_iter()
             .map(|(fix_kind, count)| {
-                NoticeKind::Fixes(FixNotice::from_intent(intent, fix_kind, count))
+                NoticeKind::Fixes(FixNotice::from_intent(operation_intent, fix_kind, count))
             })
             .collect::<Vec<_>>();
 
-        if let Some(scan) = fix_scans.pub_use {
-            notices.push(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
-                intent,
-                scan.applied,
-                scan.skipped,
+        if let Some(pub_use_fix_scan) = fix_scans.pub_use {
+            notice_kinds.push(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
+                operation_intent,
+                pub_use_fix_scan.applied,
+                pub_use_fix_scan.skipped,
             )));
         }
 
         // `NoticeKind::SubtreeReexportSkipped` is pushed at zero too: a convergence pass that skips
         // nothing replaces an earlier pass's count instead of leaving it standing.
-        if let Some(scan) = fix_scans.subtree_reexports {
-            notices.push(NoticeKind::SubtreeReexportSkipped(scan.skipped));
+        if let Some(subtree_reexport_scan) = fix_scans.subtree_reexports {
+            notice_kinds.push(NoticeKind::SubtreeReexportSkipped(
+                subtree_reexport_scan.skipped,
+            ));
         }
 
         // The historical `ImportCleanupSuggested` notice is gone; the
@@ -92,10 +133,10 @@ impl MendRunner<'_> {
         // applied edits and `unused import` warnings followed.
         let _ = report;
 
-        match notices.len() {
+        match notice_kinds.len() {
             0 => None,
-            1 => notices.into_iter().next().map(ExecutionNotice::from),
-            _ => Some(ExecutionNotice::from(notices)),
+            1 => notice_kinds.into_iter().next().map(ExecutionNotice::from),
+            _ => Some(ExecutionNotice::from(notice_kinds)),
         }
     }
 }
@@ -145,9 +186,9 @@ mod tests {
     fn unused_pub_scan(fixes: Vec<UseFix>) -> UnusedPubScan { UnusedPubScan { fixes } }
 
     fn one_applied(fix_kind: FixKind) -> AppliedFixCounts {
-        let mut applied = AppliedFixCounts::default();
-        applied.record(fix_kind);
-        applied
+        let mut applied_fix_counts = AppliedFixCounts::default();
+        applied_fix_counts.record(fix_kind);
+        applied_fix_counts
     }
 
     fn use_fix() -> UseFix {
@@ -163,7 +204,7 @@ mod tests {
     #[test]
     fn field_visibility_scan_names_the_rewrite_rather_than_an_import_fix() {
         let field_visibility = field_visibility_scan(vec![use_fix()]);
-        let notice = MendRunner::build_fix_notice(
+        let execution_notice = MendRunner::build_fix_notice(
             OperationIntent::Apply,
             None,
             fix_scans_with_field_visibility(&field_visibility),
@@ -171,7 +212,7 @@ mod tests {
         );
 
         assert_eq!(
-            notice.map(|notice| notice.render()),
+            execution_notice.map(|notice| notice.render()),
             Some("mend: applied 1 field visibility rewrite(s)".to_string())
         );
     }
@@ -179,7 +220,7 @@ mod tests {
     #[test]
     fn empty_field_visibility_scan_emits_noop_field_visibility_notice() {
         let field_visibility = field_visibility_scan(Vec::new());
-        let notice = MendRunner::build_fix_notice(
+        let execution_notice = MendRunner::build_fix_notice(
             OperationIntent::Apply,
             None,
             fix_scans_with_field_visibility(&field_visibility),
@@ -187,7 +228,7 @@ mod tests {
         );
 
         assert_eq!(
-            notice.map(|notice| notice.render()),
+            execution_notice.map(|notice| notice.render()),
             Some("mend: no field visibility rewrites available".to_string())
         );
     }
@@ -196,7 +237,7 @@ mod tests {
     fn a_kind_that_applied_nothing_is_left_out_when_another_kind_applied_something() {
         let unused_pub = unused_pub_scan(vec![use_fix()]);
         let field_visibility = field_visibility_scan(Vec::new());
-        let notice = MendRunner::build_fix_notice(
+        let execution_notice = MendRunner::build_fix_notice(
             OperationIntent::Apply,
             None,
             fix_scans_with_unused_pub_and_field_visibility(&unused_pub, &field_visibility),
@@ -204,7 +245,7 @@ mod tests {
         );
 
         assert_eq!(
-            notice.map(|notice| notice.render()),
+            execution_notice.map(|notice| notice.render()),
             Some("mend: applied 1 `pub` removal(s)".to_string())
         );
     }
@@ -213,7 +254,7 @@ mod tests {
     fn several_enabled_kinds_at_zero_emit_only_the_first_kinds_clause() {
         let unused_pub = unused_pub_scan(Vec::new());
         let field_visibility = field_visibility_scan(Vec::new());
-        let notice = MendRunner::build_fix_notice(
+        let execution_notice = MendRunner::build_fix_notice(
             OperationIntent::Apply,
             None,
             fix_scans_with_unused_pub_and_field_visibility(&unused_pub, &field_visibility),
@@ -221,7 +262,7 @@ mod tests {
         );
 
         assert_eq!(
-            notice.map(|notice| notice.render()),
+            execution_notice.map(|notice| notice.render()),
             Some("mend: no `pub` removals available".to_string())
         );
     }

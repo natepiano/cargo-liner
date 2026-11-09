@@ -55,7 +55,7 @@ pub(super) struct ValidatedPubUsePlan {
 
 pub(super) fn rewrite_subtree_imports_for_plans(
     plans: &[ValidatedPubUsePlan],
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<Vec<UseFix>> {
     let mut plan_groups: BTreeMap<(&Path, &Path), Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
     for plan in plans {
@@ -76,8 +76,8 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                 parent_module.display()
             )
         })?;
-        let module_map = sources.module_map(&source_root);
-        let redirects = parent_plans
+        let module_map = parsed_sources.module_map(&source_root);
+        let facade_redirects = parent_plans
             .iter()
             .copied()
             .map(facade_redirect)
@@ -95,9 +95,9 @@ pub(super) fn rewrite_subtree_imports_for_plans(
             fixes.extend(
                 facade_redirect::redirect_callers_in_file(
                     &file,
-                    sources,
+                    parsed_sources,
                     module_path,
-                    &redirects,
+                    &facade_redirects,
                     &ModuleAliases::default(),
                 )?
                 .fixes
@@ -151,8 +151,8 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
     for entry in fs::read_dir(dir)
         .with_context(|| format!("failed to read source directory {}", dir.display()))?
     {
-        let entry = entry?;
-        let path = entry.path();
+        let dir_entry = entry?;
+        let path = dir_entry.path();
         match SourceEntryKind::from(path.as_path()) {
             SourceEntryKind::Directory => collect_rust_source_files(&path, files)?,
             SourceEntryKind::RustFile => files.push(path),

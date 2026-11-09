@@ -3,6 +3,7 @@ use super::RunPlan;
 use super::chain::WrittenPass;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
+use crate::fixes::imports::FixSetPresence;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::AppliedFixes;
 use crate::reporting::CompilerFailureCause;
@@ -25,16 +26,13 @@ impl MendRunner<'_> {
             .map_or(0, |pub_use_fix_scan| pub_use_fix_scan.applied);
         let subtree_reexport_edits = fix_scans.subtree_reexports.map_or(
             SubtreeReexportEdits::Unchanged,
-            |subtree_reexport_scan| {
-                if subtree_reexport_scan.fixes.is_empty() {
-                    SubtreeReexportEdits::Unchanged
-                } else {
-                    SubtreeReexportEdits::Written
-                }
+            |subtree_reexport_scan| match subtree_reexport_scan.fixes.presence() {
+                FixSetPresence::Empty => SubtreeReexportEdits::Unchanged,
+                FixSetPresence::HasEdits => SubtreeReexportEdits::Written,
             },
         );
         let fixes = &planned.function_plan.fixes;
-        if fixes.is_empty() {
+        if fixes.presence() == FixSetPresence::Empty {
             let notice = Self::build_fix_notice(
                 planned.operation_mode.intent,
                 Some(&planned.report),

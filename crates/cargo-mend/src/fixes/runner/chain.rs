@@ -19,6 +19,7 @@ use crate::config::DiagnosticCode;
 use crate::config::FixKind;
 use crate::fixes::FIX_CONVERGENCE_MAX_PASSES;
 use crate::fixes::imports;
+use crate::fixes::imports::FixSetPresence;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::subtree_reexport;
@@ -243,7 +244,7 @@ impl MendRunner<'_> {
         if planned
             .subtree_reexport_scan
             .as_ref()
-            .is_none_or(|scan| scan.fixes.is_empty())
+            .is_none_or(|scan| scan.fixes.presence() == FixSetPresence::Empty)
         {
             return Ok(ChainBatch::Unchanged);
         }
@@ -265,7 +266,7 @@ impl MendRunner<'_> {
         } else {
             planned.function_plan.fixes.clone()
         };
-        if first.is_empty() {
+        if first.presence() == FixSetPresence::Empty {
             return Ok(ChainBatch::Unchanged);
         }
         let mut steps = vec![ChainStep::record(
@@ -285,7 +286,7 @@ impl MendRunner<'_> {
                 break;
             }
             let next = self.chain_pass(&report, &sources)?;
-            if next.is_empty() {
+            if next.presence() == FixSetPresence::Empty {
                 break;
             }
             steps.push(ChainStep::record(
@@ -445,7 +446,7 @@ impl MendRunner<'_> {
         } else {
             planned.function_plan.fixes.clone()
         };
-        if fixes.is_empty() {
+        if fixes.presence() == FixSetPresence::Empty {
             let mut validation = self.rescan_restored_chain(planned)?;
             validation.check_duration += rejected_duration;
             return Ok(WrittenPass {
