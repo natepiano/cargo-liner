@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context;
 use ratatui::Terminal;
@@ -36,6 +37,46 @@ pub(in crate::tui) const PROJECT: &str = "readable-project";
 pub(in crate::tui) const PROJECT_PATH: &str = "/tmp/test/readable-project";
 pub(in crate::tui) const WIDTH: u16 = 160;
 pub(in crate::tui) const HEIGHT: u16 = 45;
+
+/// Restore the theme and its rendering settings when this fixture leaves scope.
+pub(in crate::tui) struct ThemeOverride {
+    previous:              Arc<Theme>,
+    previous_tint:         bool,
+    previous_transparency: bool,
+}
+
+impl ThemeOverride {
+    pub(in crate::tui) fn install(theme: Theme) -> Self {
+        let guard = Self {
+            previous:              tui_pane::theme(),
+            previous_tint:         tui_pane::focused_pane_tint_enabled(),
+            previous_transparency: tui_pane::transparent_background(),
+        };
+        tui_pane::set_active_theme(Arc::new(theme));
+        guard
+    }
+}
+
+impl Drop for ThemeOverride {
+    fn drop(&mut self) {
+        tui_pane::set_active_theme(self.previous.clone());
+        tui_pane::set_focused_pane_tint(self.previous_tint);
+        tui_pane::set_transparent_background(self.previous_transparency);
+    }
+}
+
+pub(in crate::tui) fn assert_ellipses_follow_text(buffer: &Buffer, area: Rect) {
+    let cuts = (area.y + 1..area.bottom().saturating_sub(1))
+        .flat_map(|y| (area.x + 2..area.right().saturating_sub(1)).map(move |x| (x, y)))
+        .filter(|position| buffer[*position].symbol() == "…")
+        .inspect(|(x, y)| assert_ne!(buffer[(*x - 1, *y)].symbol(), " ", "{:?}", rows(buffer)))
+        .count();
+    assert!(
+        cuts > 0,
+        "the fixture must contain cut text: {:?}",
+        rows(buffer)
+    );
+}
 
 pub(in crate::tui) fn target_data() -> TargetsData {
     TargetsData {
@@ -142,8 +183,10 @@ fn draw_pane_in_area(
     let mut terminal = Terminal::new(TestBackend::new(window_width, height))?;
     terminal.draw(|frame| {
         frame.render_widget(
-            ratatui::widgets::Block::default()
-                .style(ratatui::style::Style::default().bg(tui_pane::theme().text.bg_focus.color)),
+            ratatui::widgets::Block::default().style(
+                ratatui::style::Style::default()
+                    .bg(tui_pane::pane_background(app.focused_pane_id() == pane)),
+            ),
             frame.area(),
         );
         let mut split = app.split_for_render(

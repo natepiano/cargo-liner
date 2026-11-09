@@ -1018,10 +1018,18 @@ impl ProjectList {
         let targets: Vec<AbsolutePath> = self
             .roots
             .values()
-            .filter_map(|entry| {
-                let url = self.fetch_url_for(entry.root_item.path())?;
-                (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
-                    .then(|| entry.root_item.path().clone())
+            .flat_map(|entry| {
+                std::iter::once(entry.root_item.path()).chain(
+                    entry
+                        .root_item
+                        .submodules()
+                        .iter()
+                        .map(|submodule| &submodule.path),
+                )
+            })
+            .filter_map(|path| {
+                let url = self.fetch_url_for(path)?;
+                (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo)).then(|| path.clone())
             })
             .collect();
         for path in targets {
