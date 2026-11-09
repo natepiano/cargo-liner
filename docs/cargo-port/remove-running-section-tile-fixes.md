@@ -1345,7 +1345,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Gotchas:** The grid tests' `expect(clippy::expect_used)` sits on `mod grid` in `tiles/mod.rs` as `#[cfg_attr(test, expect(...))]`, not on a test module inside `grid/`.
 
-### Phase 29a — The census scan file splits by type cluster  · status: todo
+### Phase 29a — The census scan file splits by type cluster  · status: done
 
 **Depends on:** Phase 39 (both change `census/scan.rs`).
 

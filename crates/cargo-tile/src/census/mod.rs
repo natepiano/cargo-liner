@@ -10,6 +10,14 @@ pub(crate) mod invocation_cpu_accounting;
 #[cfg(test)]
 mod memory_tests;
 pub(crate) mod process_identity;
+#[cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::panic,
+        reason = "tests should panic on unexpected values"
+    )
+)]
 pub(crate) mod scan;
 #[cfg(test)]
 #[allow(

@@ -1,5 +1,7 @@
 // Reader scenarios sampled without subprocess timing or terminal polling.
 
+use std::os::unix::ffi::OsStrExt;
+
 use super::*;
 use crate::census;
 use crate::render;
