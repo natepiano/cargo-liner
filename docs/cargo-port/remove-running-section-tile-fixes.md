@@ -2304,71 +2304,29 @@ The new clipped-state check compares an exact prefix; it does not accept arbitra
 
 Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check hold.
 
-### Phase 32 — Phase 23's follow-ups: rows name what runs, and all arguments fit the screen  · status: todo
+### Phase 32 — Phase 23's follow-ups: rows name what runs, and all arguments fit the screen  · status: done
 
-**Sort (2026-11-06):** the `run` ink lift in item 5 is dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). All other items fix a wrong label, lost rows or draw time, and stay.
+#### As-built
 
-**Depends on:** Phase 23, Phase 39 (both change `render.rs` and `render/frame_preparation.rs`), Phase 29 (item 5 edits the split drawing, preparation, allocation and motion modules). Phase 31 is parked; this phase uses no Phase 31 behavior and does not wait for it (director, 2026-11-09). A Phase 31 restart rebases on this phase.
+A row for cargo running as the compiler wrapper names the compiler and its crate. With all arguments on, every process keeps its command row, and a cell or summary that cannot hold them shows `+N more`.
 
-#### Work Order
-
-**Goal:** A row for a cargo process that runs as the rustc wrapper shows `rustc <crate>`, not a bare `cargo`. Found in the Phase 23 live shots (2026-10-22): the children of `cargo fix --allow-dirty … --keep-going` have the argv `cargo-tile-real <toolchain>/bin/rustc --crate-name hana_diegetic …`, and each row reads `cargo` with no subcommand. Main draws them the same way: the reader drops a word that holds a path separator, so nothing names the command. The showrunner's ruling (2026-10-22): current, because a bare `cargo` is a wrong label; a small phase; the crate name comes from the parsed `--crate-name` argument, never from painted text.
-
-**Spec:**
-
-1. **The reader knows a rustc wrapper call.** When the first argument after the cargo program is a path whose file name is a compiler frontend (`rustc`, `clippy-driver`; the one named set Phase 23 added for lint owners), the parsed command is a wrapper call: an enum variant of the command's layout, not a string test at each site. Its name is the frontend's file name, and its crate is the value of `--crate-name` (both `--crate-name x` and `--crate-name=x`), read once where argv is parsed (`census/command_text.rs`). A wrapper call with no `--crate-name` shows the frontend name alone. Tests, red first: `a_rustc_wrapper_call_reads_its_frontend_and_crate`; `a_rustc_wrapper_call_without_a_crate_name_reads_its_frontend`.
-2. **The row shows `rustc <crate>`.** With all arguments off (`h` off), the row shows `rustc hana_diegetic`; with `h` on, it shows the frontend name and all its arguments under the Phase 23 rules (default arguments, `…` only at a real cut, a flag kept with its value). The ancestry rows use the same parsed command. Test, red first: `a_rustc_wrapper_row_shows_rustc_and_its_crate` (render to a buffer and read the row back).
-
-3. **nextest's valued flags keep their values.** Found in the Phase 23 round 3 live shots (2026-10-22, `ph23r3`): the valued-option table knows no nextest options, so a flag ends a row and its value starts the next row although the pair fits on one row: `--bin hana -E` / `package(hana) &` (pid 2681136, 20-cell column), `--test tube_centerline_tests -E` / `package(hana_conduit)`, `--success-output immediate --failure-output` / `immediate`. Main splits them too (it groups no flag with its value), so Phase 23 landed with this open under its repair cap. Add nextest's valued options (`-E`/`--filterset`, `--success-output`, `--failure-output`, `--status-level`, `--final-status-level`, `--test-threads`/`-j`, `--partition`, `--profile`/`-P`, `--retries`, `--cargo-profile`, `--archive-file`, and the rest of `cargo nextest run --help` that take a value) to the one valued-option table under a nextest owner, so arity stays one table read. Also, with `h` on, the subcommand is cut or wrapped (showrunner's design check, 2026-10-22, p0h1 and p1h1): pid 2691846 reads `cargo --color=aut…` with 2 free cells after the mark, and in pid 3092581 `test` wraps to row 2. Rule: the subcommand stays on the first row next to `cargo`; cargo's global options (the `Global` scope, for example `--color`) are cut first, and the mark stands at the last cell the text reaches. Test, red first: `a_subcommand_stays_beside_cargo_when_global_options_are_cut`. Tests, red first: `a_nextest_filter_flag_wraps_with_its_expression`; `nextest_output_flags_keep_their_values`; and the subcommand test above.
-
-4. **The Phase 23 design check's defects** (fresh helper on the round 3 shots, 2026-10-22; full table with each shot and fix in `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/23/ux_23_1_helper.txt`, shots in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph23r3/`). Phase 23 landed with them open under its 3-round repair cap (landing rule). Fix each, with a red-first render test:
-   - With `h` on, the summary loses whole commands to height with no mark (5 of 12 shown at 160x49), and in a cell one process's argument rows fill the tile and push the next processes out with no mark (showrunner's design check, p0h1 and p1h1: pids 2820269, 2942129, 3092581 and 3158940 show in p0h0 and are gone). Rule, in cells and in the summary: every process gets its command row first; only the rows that remain go to arguments, cut with `…`; if processes still do not fit, a `+N more` row names how many are hidden. It may share a cause with the summary drop; fix both at the one cause. Tests, red first: `all_arguments_never_push_a_process_out_of_its_cell`; `a_cell_that_cannot_hold_every_process_shows_how_many_more`.
-   - A value wider than its cell is split at `_` or `/` with no mark (`test(rear_jack_` / `pixels)`), beside values that are cut with `…`: one treatment, a value wider than the cell is cut with `…` on its row.
-   - A cut keeps a lone punctuation fragment of the dropped word (`--test-threads 8 -…`): drop the fragment and keep the separator (`--test-threads 8 …`).
-   - `h` widens the pid and parent columns, so a 38-cell tile column loses its parent column while its 39-cell neighbours keep it. Rule: a key toggle never changes which columns a tile shows; the pid and parent columns are sized the same with `h` on and off. Phase 35's table-specific removal of empty columns (its items 20, 30 and 39) is a different rule and stays. Test, red first: `a_key_toggle_keeps_each_tiles_columns`.
-   - Summary blank rows between groups are uneven under height pressure: keep all or none.
-   - The status bar prints the mode words (`tree all arguments`) in the version's ink and with names that differ from the key hints, and the hint `p process_tree` shows an internal name (showrunner's design check). Rule: plain words on the hints (`p processes`, lowercase key, to match the shared bar; showrunner add-on 2026-10-22), and the on state shows on the key hint itself. The on state is a semantic toggle state of the hint, apart from availability: today a label comes from `AppGlobalAction` (`crates/cargo-tile/src/app_global_action.rs`) and `StatusLineGlobal` (`crates/tui_pane/src/bar/status_line.rs`) carries only `ShortcutState::{Enabled, Disabled}` (`crates/tui_pane/src/bar/slot.rs`), so a hint gets its own on/off state type, never a third `ShortcutState` value. Test, red first: `a_toggled_key_hint_shows_its_on_state`.
-   - At 24 rows, `p` makes no visible change: `short_p1h1` and `short_p0h1` are the same (showrunner's design check). A toggle shows its effect: with too little room for the tree, at least one compact ancestor row (`… python3`) shows, or a short hint says the tree has no room. Test, red first: `the_tree_key_changes_a_short_tile`.
-   - Summary `state` percentages mix precision (`99.1%`, `  33%`): one precision, and a header that names the number.
-   - With `h` on, each ancestry row wraps its full command (systemd takes 3 rows): an ancestry row stays one row, cut with `…`.
-
-5. **Add-ons approved by the showrunner (2026-10-22 to 2026-10-25),** each with a red-first test:
-   - **The `run` ink.** On the focused tile ground (46,46,57), the command word `run` ink (3,197,3) measures 4.28:1. Lift it to at least 4.5:1 with an OKLCH lightness-only lift that keeps the hue.
-   - **The rows readout is off by default:** moved to handler Phase 55, 2026-10-30.
-   - **Frame draw time:** moved to Phase 32b, 2026-11-09. It is a separate measurement and repair on a stable tree.
-   - **Summary rows name their crate.** Phase 24's t80 shot at 9.00 (`ph24b`) shows summary rows with no crate path line and with cut names. In t40, summary pids are listed under the p22k02 path line with no path line of their own. Each summary row names its own crate path when the whole path fits beside the command. A row with no room for the whole path keeps the command and relies on its directory heading row. A path is never cut to a tail fragment (director, 2026-11-09).
+- `census/command_text.rs` parses a wrapper call into `CommandLayout::CompilerWrapper(CompilerCrate)`. The frontend file name comes from the first argument after cargo, and the crate comes from `--crate-name x` or `--crate-name=x`. A call with no crate name shows the frontend alone. With `h` on, the row shows the frontend and all arguments in argv order.
+- The valued-option table in `constants.rs` owns nextest options and compiler options. `ValuedOptionScope::{GlobalAndRustc, CargoAndRustc}` bind `-C`, `-Z`, `--color` and `--target` to their values on wrapper rows.
+- Row budgets are shared by measurement and painting. `reserve_command_rows` and `measured_table_row_use` return early only when every row is one line and arguments are Default. `HiddenProcessCountRow::{Absent, Reserved}` and `ProcessRowVisibility::{AllFit, SomeHidden}` name the count row and the overflow.
+- `render/command_cache.rs` caches each command once per width, ground and table kind. `for_summary_row` reads the shared wrapped command. A summary command shows arguments only under the Phase 35m rule.
+- `tui_pane` adds the public `HintToggleState` and the crate-private `HintValue`, both in `bar/status_line.rs`. `StatusLineGlobal::with_toggle` sets the on state, and the shortcuts surface shows it in plain words. `p processes` is the hint word.
+- The tree key changes a short tile: a compact ancestor row shows, or a short hint says that the tree has no room.
+- Ten render fixtures that assumed full capacity under arguments All use Default. Their assertions did not change.
 
 **Files:**
-- `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — items 1 and 3 and their tests.
-- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/app_global_action.rs` — item 4 and its render tests, and item 2's row form and its render test.
-- `crates/cargo-tile/src/render/frame_preparation.rs` — preparation inputs, retained tables, allocation decisions and row measurements.
-- `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
-- `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
-- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/slot.rs` — item 4's key-hint on state, additive; `crates/tui_pane/CHANGELOG.md` — one Added line.
-- `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only. This phase adds no readout key and no caller; handler Phase 55 owns the readout default.
-- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
+- `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — the wrapper layout, the crate name, and valued options.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/frame_preparation.rs`, `crates/cargo-tile/src/render/command_cache.rs` — row budgets, the count row and shared command caching.
+- `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/app_global_action.rs` — toggle states and hint names.
+- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/mod.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/src/keymap/globals.rs`, `crates/tui_pane/src/overlays/global_shortcuts.rs` — the hint toggle state and its surface.
 
-**Workers:** 1 writer — `impl`, every file above.
+**Binds later work:** `capture_requested` in `hook.rs` reads only `ValuedOptionScope::Global`, so `--color`, `-Z` and `-C` need the repair in "The capture shim skips every option that cargo accepts before its subcommand". "All arguments keep the crate name, and status words match the key names" owns the crate name under `h` and the status-bar words. "No tile frame draws for more than 4 ms" owns the Mac run of this tree.
 
-**Constraints from prior phases:** Phase 35m: a summary command shows its arguments only when the whole command fits one line in the command column, also with `h` on (showrunner ruling from the user's 2026-10-29 words); otherwise it shows `CommandText::named()` words (`census/command_text.rs`) through `CommandForm::WithoutArguments` (`render/command_cache.rs`). Command cells show every argument. Item 2's `rustc <crate>` row follows this rule in the summary. The summary height evidence in this Work Order (5 of 12 at 160x49) is from before Phase 35m; measure it again before the fix. Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
-
-- Phase 48 removed the `p` and `h` status-bar hints. Item 4's on state shows in the shortcuts surface, not on status-bar hints. Phases 32 and 33 keep the optional hint fit (`GlobalSlotFit`), the one hint styler in `bar/support.rs`, the spacing, and the trailing-cell tests (`render.rs:6777`).
-
-**Forward edits from Phase 49 (director, 2026-11-07):**
-- Phase 49 footer contract: the summary foot is `SummaryFoot::WithOptionalSuffix` (`tui_pane/src/tiles/draw/foot.rs:17`), prefix `mem`, suffix `disk`. The unit is `G`. Memory has one decimal. Disk has one decimal below 10G and is whole from 10G. At a narrow width the foot keeps `mem` and drops the disk suffix and its gap. `FreeDiskSpace::Unavailable` (`census/scan/refresh.rs:143`) omits the disk value and its gap, with no user remedy.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, then `... test cargo-tile` green; each test above red before its fix and green after; no test takes a second or more.
-- The `tui_pane` change: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- Shots of a live tile with a `cargo fix` or `cargo clippy` whose children run as the rustc wrapper, with `h` off and on; a fresh helper's design check passes.
-- At most 3 repair rounds.
-- Change-review line: a row for cargo as the rustc wrapper shows `rustc <crate>`.
-- Change-review line: with all arguments on, every process keeps its command row in its cell and in the summary, a cell that cannot hold them shows `+N more`, and the shortcuts surface shows the on state in plain words.
-- Change-review line: with `h` on, the subcommand stays beside `cargo`; at 24 rows, `p` makes a visible change.
-- Change-review line: a wrapped nextest command keeps `-E` and its expression, and each output flag and its value, on one row.
+**Gotchas:** The count row takes one row under arguments All whenever a cell overflows, so a fixture that needs full capacity uses Default.
 
 ### Phase 32d — The capture shim skips every option that cargo accepts before its subcommand  · status: todo
 
