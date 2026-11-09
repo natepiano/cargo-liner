@@ -40,7 +40,6 @@ use edges_fixtures::assert_success;
 use edges_fixtures::berth_command;
 use edges_fixtures::claim;
 use edges_fixtures::claim_id;
-use edges_fixtures::defer_answer;
 use edges_fixtures::defer_claim;
 use edges_fixtures::deferred_pair;
 use edges_fixtures::dirty_source;
@@ -959,25 +958,6 @@ fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSucces
         protected_tip,
         successor_head,
     }
-}
-
-/// The middle holder retains its real outgoing work while its checkout is absent.
-fn commit_middle_work(middle_root: &Path) {
-    for path in ["right/before.rs", "right/orphaned.rs", "right/recovered.rs"] {
-        dirty_source(middle_root, path);
-    }
-    git(middle_root, &["add", "right"]);
-    git(
-        middle_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "middle work",
-        ],
-    );
 }
 
 /// Exercise legacy protected-tip cache subjects independently of automatic rewritten witnesses.
@@ -2447,37 +2427,16 @@ fn released_predecessor_ref_retires_only_after_every_successor_is_terminal() {
 
 #[test]
 fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
-    let repository = edges_templates::LEFT_RIGHT_TREES.instantiate();
+    let repository = edges_fixtures::ORPHANED_MIDDLE_START.instantiate();
+    let edges_fixtures::OrphanedMiddleStart {
+        first_id,
+        middle_id,
+        ordinary_readiness,
+    } = recorded_history::read(repository.path());
     let worktrees = repository.path().join(".git/fixture-worktrees");
-    let first_root = worktrees.join("first");
     let middle_root = worktrees.join("middle");
-    let before_root = worktrees.join("before-orphaning");
     let orphaned_root = worktrees.join("while-orphaned");
     let recovered_root = worktrees.join("after-recovery");
-    dirty_source(&first_root, "left/shared.rs");
-    let first = claim(&first_root, "tree:left", FIRST_RUN);
-    let first_id = reservation_id(&first);
-    let middle_id = reservation_id(&claim(&middle_root, "tree:right", SECOND_RUN));
-    let middle = defer_answer(&middle_root, "file:left/shared.rs", SECOND_RUN, &first_id);
-    assert_eq!(reservation_id(&middle), middle_id);
-    let first_edge = sequence(
-        repository.path(),
-        &first_id,
-        &middle_id,
-        "first before middle",
-    );
-    assert!(first_edge.status.success());
-    commit_middle_work(&middle_root);
-    let before = defer_claim(&before_root, "file:right/before.rs", THIRD_RUN, &middle_id);
-    let before_id = reservation_id(&before);
-    let before_edge = sequence(
-        repository.path(),
-        &middle_id,
-        &before_id,
-        "middle before the comparison successor",
-    );
-    assert!(before_edge.status.success());
-    let ordinary_readiness = json_output(&before_edge)["payload"]["data"]["readiness"].clone();
     fs::remove_dir_all(&middle_root).expect("middle worktree should be removable");
     git(repository.path(), &["worktree", "prune", "--expire", "now"]);
 
