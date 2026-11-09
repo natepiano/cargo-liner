@@ -2058,6 +2058,33 @@ The diagnosis found that none of the four earlier causes came back. The new shar
 
 **Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test at 1 s or more; lint.
 
+### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: todo
+
+**Depends on:** Phase 58 (same writer and the same files). `hooks.rs` and `lifecycle.rs` edits also wait for Phase 57.
+
+Phase 58 landed after three repair rounds under the round cap: the paired Mac run counted 168 Phase 58 tests at 1 s or more on its head against 217 on its base, and no binary rose. The goal is not met yet. The remaining tests are listed in `round-3-next-phase-slow.txt` of the Phase 58 run.
+
+#### Work Order
+
+**Goal:** every cargo-berth test in the Phase 58 files runs under 1 s in the full workspace run on natedev and on the Mac.
+
+**Spec:**
+1. Measure before any edit, with the Phase 58 method: the cargo-berth package at full load on natedev and on the Mac under the unit Mac lock. Count the tests at 1 s or more per binary.
+2. Start with the slowest four: `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (3.7 s), `edges::witness_survives_pruning_and_controls_successors` (3.2 s), `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks` (2.8 s) and `edges::successor_round_robin_covers_every_head` (2.2 s). For each, quote the line that takes the time.
+3. The compaction test may split its five reader cases into separate tests, each with its own fixture. Keep every reader and every assertion. A test that forbids `expect` gets a helper that returns `Result`.
+4. Do not replace a live rebase, proof rotation or witness-loss command with a recorded result.
+5. Fix each cause where it lives. Keep every assertion and every test case.
+6. Measure the same counts after the fix, with the same method.
+
+**Files:**
+- `crates/cargo-berth/tests/` — the integration tests, except `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs` (Phase 57).
+- `crates/cargo-berth/tests/support/` — shared test fixtures.
+- `crates/cargo-berth-test-support/` — the shared fixtures and recorded templates.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test in these files at 1 s or more; lint.
+
 ### Phase 31 — Ended cells leave whole  · status: parked
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
