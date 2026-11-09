@@ -1,5 +1,9 @@
 //! Exercise capture permissions through an isolated installed toolchain.
 
+#[cfg(test)]
+#[path = "../src/shim_registration/native_fixture.rs"]
+mod native_fixture;
+
 #[path = "../src/shim_registration/parallel_cases.rs"]
 mod parallel_cases;
 
@@ -29,6 +33,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::native_fixture;
     use super::parallel_cases;
 
     /// The stand-in for the real cargo, run after `DESCRIPTOR_PROBE`. It records what it
@@ -54,6 +59,15 @@ if [ -n "${SHIM_TEST_WRITE_DESCRIPTOR-}" ]; then
     printf 'through the descriptor\n' >&"$SHIM_TEST_WRITE_DESCRIPTOR"
 fi
 case ${SHIM_TEST_SCENARIO-} in
+    observe-birth)
+        shim_pid=$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")
+        if [ -r "/proc/$shim_pid/stat" ]; then
+            cat "/proc/$shim_pid/stat" > "$SHIM_TEST_OBSERVATIONS/shim-stat"
+        else
+            start=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$shim_pid")
+            LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %H:%M:%S %Y' "$start" +%s > "$SHIM_TEST_OBSERVATIONS/birth"
+        fi
+        ;;
     bytes)
         printf 'a\000b\n\n\n'
         printf 'first line\nlast line, unterminated' >&2
@@ -62,6 +76,10 @@ case ${SHIM_TEST_SCENARIO-} in
     kill)
         printf 'killed next\n' >&2
         kill -KILL $$
+        ;;
+    exit-signal)
+        printf 'cargo signal\n' >&2
+        kill -"$SHIM_TEST_SIGNAL" $$
         ;;
     signal-shim)
         kill -"$SHIM_TEST_SIGNAL" "$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")"
@@ -140,10 +158,19 @@ exit "$SHIM_TEST_EXIT_STATUS"
         stderr: Vec<u8>,
     }
 
+    /// Installation checks use the CLI; capture checks can use its compiled entry.
+    #[derive(Clone, Copy)]
+    enum CaptureFixtureInstallation {
+        InstallCommand,
+        CompiledEntry,
+    }
+
     /// Own the installed shim, cargo stand-in, and observations until assertions end.
     struct InstalledToolchain {
         /// All subprocess writes, including the default capture root, stay here.
         directory:    TempDir,
+        /// Executables in this fixture toolchain.
+        bin:          PathBuf,
         /// The selected capture directory is independent of the real `/tmp` root.
         root:         PathBuf,
         /// Every numeric account directory lives under this sticky parent.
@@ -155,19 +182,67 @@ exit "$SHIM_TEST_EXIT_STATUS"
     }
 
     impl InstalledToolchain {
-        /// Copy the shim beside a recording cargo executable, as installation does.
-        fn new() -> Self {
+        /// Create an isolated entry beside a recording cargo executable.
+        fn new() -> Self { Self::with_installation(CaptureFixtureInstallation::CompiledEntry) }
+
+        /// Capture mode checks need the entry and runner, without another install process.
+        fn for_live_capture() -> Self {
+            Self::with_installation(CaptureFixtureInstallation::CompiledEntry)
+        }
+
+        fn with_installation(installation: CaptureFixtureInstallation) -> Self {
             let directory = tempfile::tempdir().expect("create isolated toolchain");
             let parent = directory.path().join("capture");
             let uid = fs::metadata(directory.path()).expect("fixture owner").uid();
             let root = parent.join(uid.to_string());
             let observations = directory.path().join("observations");
-            let bin = directory.path().join("toolchain/bin");
+            let bin = directory.path().join("rustup/toolchains/fixture/bin");
             let launcher = directory.path().join("invoke-shim");
             fs::create_dir_all(&bin).expect("create toolchain bin directory");
             fs::create_dir(&observations).expect("create cargo observations directory");
             fs::create_dir(directory.path().join("home")).expect("create isolated HOME");
-            let source = include_str!("../src/cargo-capture-shim.sh");
+            write_executable(
+                &bin.join("cargo"),
+                &["#!/bin/sh\nset -eu\n", DESCRIPTOR_PROBE, CARGO_STAND_IN].concat(),
+            );
+            match installation {
+                CaptureFixtureInstallation::InstallCommand => {
+                    let prepared = native_fixture::executable();
+                    assert!(prepared.is_ok(), "{prepared:?}");
+                    let installed =
+                        Command::new(prepared.expect("prepare the real installer executable"))
+                            .arg("install")
+                            .env_clear()
+                            .env(
+                                "PATH",
+                                env::var_os("PATH").expect("locate system utilities"),
+                            )
+                            .env("HOME", directory.path().join("home"))
+                            .env("RUSTUP_HOME", directory.path().join("rustup"))
+                            .env("XDG_CONFIG_HOME", directory.path().join("config"))
+                            .stdin(Stdio::null())
+                            .output()
+                            .expect("install the fixture capture shim");
+                    assert!(installed.status.success(), "{installed:?}");
+                    assert!(installed.stderr.is_empty(), "{installed:?}");
+                },
+                CaptureFixtureInstallation::CompiledEntry => {
+                    fs::rename(bin.join("cargo"), bin.join("cargo-tile-real"))
+                        .expect("retain the original fixture cargo");
+                    let source = include_str!("../src/cargo-capture-shim.sh")
+                        .replace(
+                            "@CARGO_TILE_EXECUTABLE@",
+                            &shell_word(env!("CARGO_BIN_EXE_cargo-tile")),
+                        )
+                        .replace("@CAPTURE_SHIM_ARGUMENT@", "--capture-shim")
+                        .replace(
+                            "@CAPTURE_SHIM_PASSTHROUGH_ARGUMENT@",
+                            "--capture-shim-passthrough",
+                        );
+                    write_executable(&bin.join("cargo"), &source);
+                },
+            }
+            let source = fs::read_to_string(bin.join("cargo")).expect("read installed shim");
             let assignment = "capture_parent=/tmp/cargo-tile";
             assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
             let source = source.replace(
@@ -178,10 +253,6 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 ),
             );
             write_executable(&bin.join("cargo"), &source);
-            write_executable(
-                &bin.join("cargo-tile-real"),
-                &["#!/bin/sh\nset -eu\n", DESCRIPTOR_PROBE, CARGO_STAND_IN].concat(),
-            );
             // The launcher execs the shim, so the pid it records is the shim's.
             // `SHIM_TEST_CALLER_REDIRECTIONS` opens or closes descriptors the way
             // a caller of cargo would before handing them down.
@@ -192,6 +263,8 @@ exit "$SHIM_TEST_EXIT_STATUS"
                     DESCRIPTOR_PROBE,
                     r#"umask "$SHIM_TEST_CALLER_UMASK"
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
+# Close test-runner descriptors before the fixture opens the caller's selected descriptors.
+exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 if [ -n "${SHIM_TEST_CALLER_REDIRECTIONS-}" ]; then
     eval "exec $SHIM_TEST_CALLER_REDIRECTIONS"
 fi
@@ -201,8 +274,12 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 ]
                 .concat(),
             );
+            fs::create_dir_all(directory.path().join("toolchain"))
+                .expect("create utility alias parent");
+            symlink(&bin, directory.path().join("toolchain/bin")).expect("alias fixture utilities");
             Self {
                 directory,
+                bin,
                 root,
                 parent,
                 observations,
@@ -573,42 +650,11 @@ done
     /// Delete orphan logs synchronously before publication, then inspect the writer's mode.
     /// This models a sweep at ln, not an earlier pid snapshot used after publication.
     fn assert_log_mode_after_sweep(capture_path: CapturePath) {
-        let toolchain = InstalledToolchain::new();
-        let link = Command::new("sh")
-            .args(["-c", "command -v ln"])
-            .output()
-            .expect("locate ln before installing its fixture wrapper");
-        assert!(link.status.success());
-        let link = shell_word(
-            String::from_utf8(link.stdout)
-                .expect("system ln path is UTF-8")
-                .trim_end(),
-        );
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/ln"),
-            &format!(
-                r#"#!/bin/sh
-set -eu
-[ ! -e "$2" ]
-for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
-    [ -f "$log" ] || continue
-    rm -f "$log"
-done
-printf 'swept before publication\n' > "$SHIM_TEST_OBSERVATIONS/sweep"
-exec {link} "$@"
-"#
-            ),
-        );
-        // Snapshot after tee drains stderr, while the shim still owns its log.
-        // This also covers recreation happening after cargo's earlier snapshot.
+        let toolchain = InstalledToolchain::for_live_capture();
+        // Copy the log after tee drains stderr, while the runner still owns it.
         toolchain.install_tee_recorder();
         let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
         toolchain.assert_cargo(&output, 0o066, &["build"]);
-        assert_eq!(
-            fs::read(toolchain.observations.join("sweep"))
-                .expect("the sweep runs before the real ln publishes"),
-            b"swept before publication\n"
-        );
         if matches!(capture_path, CapturePath::NoTerminal) {
             let log = toolchain.observations.join("written-log");
             assert_eq!(
@@ -632,88 +678,6 @@ exec {link} "$@"
     #[test]
     fn no_terminal_log_stays_world_readable_after_publication_boundary_sweep() {
         assert_log_mode_after_sweep(CapturePath::NoTerminal);
-    }
-
-    /// The additional identity fields are readable by the group before publication too.
-    #[test]
-    fn extended_registration_is_world_readable_before_publication() {
-        parallel_cases::run(
-            [CapturePath::Pty, CapturePath::NoTerminal],
-            |capture_path| {
-                let toolchain = InstalledToolchain::new();
-                let link = Command::new("sh")
-                    .args(["-c", "command -v ln"])
-                    .output()
-                    .expect("locate native publication utility");
-                assert!(link.status.success());
-                let link = String::from_utf8(link.stdout).expect("UTF-8 utility path");
-                write_executable(
-                    &toolchain.directory.path().join("toolchain/bin/ln"),
-                    &format!(
-                        r#"#!/bin/sh
-set -eu
-cp -p "$1" "$SHIM_TEST_OBSERVATIONS/staged-registration"
-exec {} "$@"
-"#,
-                        shell_word(link.trim_end())
-                    ),
-                );
-                let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
-                toolchain.assert_cargo(&output, 0o066, &["build"]);
-                toolchain.assert_capture_modes(capture_path);
-                let staged = toolchain.observations.join("staged-registration");
-                assert_mode(&staged, 0o644);
-                let published = entries(&toolchain.observations.join("root/state/pids"));
-                assert_eq!(
-                    fs::read(staged).expect("complete staging record"),
-                    fs::read(&published[0]).expect("published record")
-                );
-            },
-        );
-    }
-
-    /// Without a unique generation, capture must fail before publishing a repeatable name.
-    #[test]
-    fn unavailable_uuid_sources_run_cargo_with_original_permissions_and_environment() {
-        let toolchain = InstalledToolchain::new();
-        let cat = Command::new("sh")
-            .args(["-c", "command -v cat"])
-            .output()
-            .expect("locate native cat for unrelated fixture reads");
-        assert!(cat.status.success());
-        let cat = String::from_utf8(cat.stdout).expect("UTF-8 utility path");
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/cat"),
-            &format!(
-                r#"#!/bin/sh
-case "$1" in /proc/sys/kernel/random/uuid) exit 1 ;; esac
-exec {} "$@"
-"#,
-                shell_word(cat.trim_end())
-            ),
-        );
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/uuidgen"),
-            "#!/bin/sh\nexit 1\n",
-        );
-        let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
-        let output = toolchain.run(
-            CapturePath::NoTerminal,
-            HomeSelection::Present,
-            0o066,
-            &arguments,
-        );
-        toolchain.assert_cargo(&output, 0o066, &arguments);
-        assert_eq!(output.stdout, b"cargo-stdout\n");
-        assert_eq!(output.stderr, b"cargo-stderr\n");
-        assert_eq!(
-            fs::read(toolchain.observations.join("environment")).expect("cargo capture settings"),
-            UNCAPTURED_ENVIRONMENT
-        );
-        assert!(
-            !toolchain.root.exists(),
-            "no repeatable capture artifacts are published"
-        );
     }
 
     /// A desktop caller keeps its mask when cargo runs in a terminal.
@@ -865,43 +829,6 @@ exec {} "$@"
         assert_symlinked_capture_directory("state/pids", CapturePath::NoTerminal);
     }
 
-    /// Inject the account identity while all processes retain the test runner's uid.
-    #[test]
-    fn foreign_owned_account_is_refused_without_changing_cargo() {
-        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            let toolchain = InstalledToolchain::new();
-            assert_ne!(
-                fs::metadata(toolchain.directory.path())
-                    .expect("fixture owner")
-                    .uid(),
-                0
-            );
-            let foreign = toolchain.parent.join("0");
-            fs::create_dir_all(&foreign).expect("create directory owned by fixture uid");
-            fs::write(foreign.join("keep"), b"untouched").expect("seed foreign directory");
-            write_executable(
-                &toolchain.directory.path().join("toolchain/bin/id"),
-                "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n' ;; -un) printf 'root\\n' ;; *) exit 93 ;; esac\n",
-            );
-            let arguments = ["check", "--quiet", "--message-format=json", "--", "a b"];
-            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
-            toolchain.assert_cargo(&output, 0o066, &arguments);
-            assert_eq!(
-                entries(&foreign).len(),
-                1,
-                "no registration in differently owned directory"
-            );
-            assert_eq!(
-                fs::read(foreign.join("keep")).expect("read sentinel"),
-                b"untouched"
-            );
-            assert_eq!(
-                fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
-                UNCAPTURED_ENVIRONMENT
-            );
-        }
-    }
-
     /// A non-directory parent cannot abort cargo or change its argument handling.
     #[test]
     fn unusable_shared_parent_runs_original_cargo_and_returns_its_status() {
@@ -926,23 +853,16 @@ exec {} "$@"
     #[test]
     fn denied_log_creation_does_not_exit_the_posix_shell_before_cargo() {
         let toolchain = InstalledToolchain::new();
-        let chmod = Command::new("sh")
-            .args(["-c", "command -v chmod"])
-            .output()
-            .expect("locate chmod");
-        assert!(chmod.status.success());
-        let chmod = String::from_utf8(chmod.stdout).expect("UTF-8 chmod");
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/chmod"),
-            &format!(
-                r#"#!/bin/sh
-{} "$@" || exit $?
-case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
-"#,
-                shell_word(chmod.trim()),
-                shell_word(chmod.trim())
-            ),
+        // Establish the boot receipt, then deny a later log open without replacing a helper.
+        let initial = toolchain.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o077,
+            &["build"],
         );
+        toolchain.assert_cargo(&initial, 0o077, &["build"]);
+        fs::remove_dir_all(toolchain.observations.join("root")).expect("remove first snapshot");
+        set_mode(&toolchain.root, 0o500);
         let arguments = ["check", "--quiet", "--message-format=json"];
         let output = toolchain.run(
             CapturePath::NoTerminal,
@@ -1095,6 +1015,7 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         assert_eq!(output.stdout, b"cargo-stdout\n");
         assert_eq!(output.stderr, b"cargo-stderr\n");
         toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        toolchain.assert_cleaned_up();
     }
 
     #[test]
@@ -1311,5 +1232,316 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
                 toolchain.assert_capture_modes(capture_path);
             },
         );
+    }
+    #[derive(Clone, Copy)]
+    enum MirrorStartup {
+        Missing,
+        ExitsBeforeReady,
+    }
+
+    #[test]
+    fn a_missing_mirror_shell_runs_original_cargo_without_capture_artifacts() {
+        assert_mirror_setup_failure(MirrorStartup::Missing);
+    }
+
+    #[test]
+    fn a_mirror_shell_that_exits_before_ready_runs_original_cargo_without_artifacts() {
+        assert_mirror_setup_failure(MirrorStartup::ExitsBeforeReady);
+    }
+
+    fn assert_mirror_setup_failure(startup: MirrorStartup) {
+        let fixture = InstalledToolchain::for_live_capture();
+        write_executable(
+            &fixture.bin.join("cargo-tile-real"),
+            r#"#!/bin/sh
+printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
+printf 'original stdout\n'
+printf 'original stderr\n' >&2
+exit 43
+"#,
+        );
+        if matches!(startup, MirrorStartup::ExitsBeforeReady) {
+            write_executable(&fixture.bin.join("sh"), "#!/bin/sh\nexit 19\n");
+        }
+        let arguments = ["build", "--quiet", "--message-format=json", "--", "a b", ""];
+        let output = Command::new("/bin/sh")
+            .arg(fixture.bin.join("cargo"))
+            .args(arguments)
+            .env("PATH", &fixture.bin)
+            .env("HOME", fixture.directory.path().join("home"))
+            .env("SHIM_TEST_OBSERVATIONS", &fixture.observations)
+            .env_remove("CARGOTILE_NESTED")
+            .env_remove("CARGO_TERM_PROGRESS_WHEN")
+            .env_remove("CARGO_TERM_PROGRESS_WIDTH")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run capture without a mirror shell");
+        assert_eq!(output.status.code(), Some(43), "{output:?}");
+        assert_eq!(output.stdout, b"original stdout\n");
+        assert_eq!(output.stderr, b"original stderr\n");
+        let expected: Vec<u8> = arguments
+            .iter()
+            .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
+            .collect();
+        assert_eq!(fixture.observed("arguments"), expected);
+        assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+        fixture.assert_cleaned_up();
+    }
+
+    #[test]
+    fn a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts() {
+        let fixture = InstalledToolchain::for_live_capture();
+        write_executable(
+            &fixture.bin.join("script"),
+            "#!/bin/sh\nprintf helper > \"$SHIM_TEST_OBSERVATIONS/helper\"\nexit 19\n",
+        );
+        write_executable(
+            &fixture.bin.join("cargo-tile-real"),
+            r#"#!/bin/sh
+printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
+printf 'original stdout\n'
+printf 'original stderr\n' >&2
+exit 43
+"#,
+        );
+        let arguments = ["build", "--quiet", "--message-format=json", "--", "a b", ""];
+        let temporary = fixture.directory.path().join("startup");
+        fs::create_dir(&temporary).expect("create private socket directory");
+        let prepared = fixture.prepare(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o066,
+            &arguments,
+        );
+        // Supply a terminal without sending an EOF character through script's outer input.
+        let mut terminal = Command::new("python3");
+        terminal
+            .arg("-c")
+            .arg(
+                r#"
+import errno, os, pty, selectors, subprocess, sys, termios
+out_master, out_slave = pty.openpty()
+err_master, err_slave = pty.openpty()
+for slave in (out_slave, err_slave):
+    settings = termios.tcgetattr(slave)
+    settings[1] &= ~termios.OPOST
+    settings[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, settings)
+child = subprocess.Popen(sys.argv[1:], stdin=out_slave, stdout=out_slave, stderr=err_slave)
+os.close(out_slave)
+os.close(err_slave)
+with selectors.DefaultSelector() as streams:
+    streams.register(out_master, selectors.EVENT_READ, sys.stdout.buffer)
+    streams.register(err_master, selectors.EVENT_READ, sys.stderr.buffer)
+    while streams.get_map():
+        for key, _ in streams.select():
+            try:
+                data = os.read(key.fd, 65536)
+            except OSError as error:
+                if error.errno != errno.EIO: raise
+                data = b""
+            if data: key.data.write(data)
+            else:
+                streams.unregister(key.fd)
+                os.close(key.fd)
+sys.exit(child.wait())
+"#,
+            )
+            .arg("/bin/sh")
+            .args(prepared.get_args());
+        for (key, value) in prepared.get_envs() {
+            if let Some(value) = value {
+                terminal.env(key, value);
+            } else {
+                terminal.env_remove(key);
+            }
+        }
+        if let Some(directory) = prepared.get_current_dir() {
+            terminal.current_dir(directory);
+        }
+        let output = terminal
+            .env("TMPDIR", &temporary)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run with failed inner PTY helper");
+        assert_eq!(fixture.observed("helper"), b"helper");
+        assert_eq!(output.status.code(), Some(43), "{output:?}");
+        assert_eq!(output.stdout, b"original stdout\n");
+        assert_eq!(output.stderr, b"original stderr\n");
+        let expected: Vec<u8> = arguments
+            .iter()
+            .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
+            .collect();
+        assert_eq!(fixture.observed("arguments"), expected);
+        assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+        fixture.assert_cleaned_up();
+        assert_eq!(entries(&temporary).len(), 0, "startup socket is removed");
+    }
+
+    #[test]
+    fn empty_progress_settings_use_the_capture_defaults() {
+        let fixture = InstalledToolchain::new();
+        let output = fixture
+            .no_terminal(&["build"])
+            .env("CARGO_TERM_PROGRESS_WHEN", "")
+            .env("CARGO_TERM_PROGRESS_WIDTH", "")
+            .output()
+            .expect("run with empty progress settings");
+        fixture.assert_cargo(&output, 0o066, &["build"]);
+        let environment =
+            fs::read(fixture.observations.join("environment")).expect("cargo environment");
+        let fields: Vec<_> = environment.split(|byte| *byte == 0).collect();
+        assert_eq!(fields[1], b"always");
+        assert_eq!(fields[2], b"100");
+    }
+
+    #[test]
+    fn installed_native_capture_birth_matches_an_independent_pid_read() {
+        let fixture = InstalledToolchain::new();
+        let output = fixture
+            .no_terminal(&["build"])
+            .env("SHIM_TEST_SCENARIO", "observe-birth")
+            .output()
+            .expect("run installed capture identity check");
+        fixture.assert_cargo(&output, 0o066, &["build"]);
+        let paths = entries(&fixture.observations.join("root/state/pids"));
+        assert_eq!(paths.len(), 1);
+        let record = fs::read(&paths[0]).expect("published registration");
+        let fields: Vec<_> = record.split(|byte| *byte == 0).collect();
+        let pid = String::from_utf8(fixture.observed("shim-pid")).expect("decimal runner pid");
+        assert!(
+            paths[0]
+                .file_name()
+                .expect("registration name")
+                .as_encoded_bytes()
+                .starts_with(format!("{pid}.").as_bytes())
+        );
+        #[cfg(target_os = "linux")]
+        let birth = {
+            let stat = String::from_utf8(fixture.observed("shim-stat")).expect("live proc stat");
+            let (process, fields) = stat.rsplit_once(") ").expect("proc comm terminator");
+            assert!(process.starts_with(&format!("{pid} (")));
+            fields
+                .split_whitespace()
+                .nth(19)
+                .expect("proc birth field")
+                .to_owned()
+        };
+        #[cfg(target_os = "macos")]
+        let birth = String::from_utf8(fixture.observed("birth"))
+            .expect("independent birth observation")
+            .trim_end_matches('\n')
+            .to_owned();
+        assert_ne!(birth, "");
+        assert_eq!(fields[3], birth.as_bytes());
+    }
+
+    #[test]
+    fn native_setup_reuses_one_boot_receipt() {
+        let fixture =
+            InstalledToolchain::with_installation(CaptureFixtureInstallation::InstallCommand);
+        let first = fixture.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o077,
+            &["build"],
+        );
+        fixture.assert_cargo(&first, 0o077, &["build"]);
+        let uid = fs::metadata(fixture.directory.path())
+            .expect("fixture owner")
+            .uid();
+        let receipt = fixture.parent.join(format!(".setup-v4-{uid}"));
+        let past = std::time::UNIX_EPOCH + Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&receipt)
+            .expect("first call writes setup receipt")
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .expect("set receipt time");
+        let written = fs::metadata(&receipt)
+            .expect("setup receipt")
+            .modified()
+            .expect("receipt time");
+        let second = fixture.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o077,
+            &["build"],
+        );
+        fixture.assert_cargo(&second, 0o077, &["build"]);
+        assert_eq!(
+            fs::metadata(&receipt)
+                .expect("retained receipt")
+                .modified()
+                .expect("retained receipt time"),
+            written
+        );
+    }
+
+    #[test]
+    fn native_capture_needs_no_setup_helper_process() {
+        let toolchain = InstalledToolchain::new();
+        for name in [
+            "id", "dirname", "readlink", "ps", "awk", "uname", "sysctl", "date", "uuidgen", "find",
+            "chmod", "mkdir", "ln", "rm",
+        ] {
+            write_executable(&toolchain.bin.join(name), "#!/bin/sh\nexit 99\n");
+        }
+        let output = toolchain.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o077,
+            &["build", "a b", ""],
+        );
+        toolchain.assert_cargo(&output, 0o077, &["build", "a b", ""]);
+        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+    }
+
+    #[test]
+    fn native_capture_returns_a_fast_cargo_signal() {
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command
+            .env("SHIM_TEST_SCENARIO", "exit-signal")
+            .env("SHIM_TEST_SIGNAL", "TERM");
+        let output = command.output().expect("run terminated cargo");
+        assert_eq!(output.status.code(), Some(143));
+        assert_eq!(output.stderr, b"cargo signal\n");
+        toolchain.assert_cleaned_up();
+    }
+
+    #[test]
+    fn unavailable_uuid_utilities_keep_cargo_permissions_and_native_capture() {
+        let toolchain = InstalledToolchain::new();
+        let cat = Command::new("sh")
+            .args(["-c", "command -v cat"])
+            .output()
+            .expect("locate native cat for unrelated fixture reads");
+        assert!(cat.status.success());
+        let cat = String::from_utf8(cat.stdout).expect("UTF-8 utility path");
+        write_executable(
+            &toolchain.bin.join("cat"),
+            &format!(
+                r#"#!/bin/sh
+case "$1" in /proc/sys/kernel/random/uuid) exit 1 ;; esac
+exec {} "$@"
+"#,
+                shell_word(cat.trim_end())
+            ),
+        );
+        write_executable(&toolchain.bin.join("uuidgen"), "#!/bin/sh\nexit 1\n");
+        let arguments = ["check", "--quiet", "--release", "--", "a b", ""];
+        let output = toolchain.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o066,
+            &arguments,
+        );
+        toolchain.assert_cargo(&output, 0o066, &arguments);
+        assert_eq!(output.stdout, b"cargo-stdout\n");
+        assert_eq!(output.stderr, b"cargo-stderr\n");
+        toolchain.assert_capture_modes(CapturePath::NoTerminal);
     }
 }

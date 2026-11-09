@@ -1358,7 +1358,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
 
-### Phase 30m — Capture shim cost on main  · status: todo
+### Phase 30m — Capture shim cost on main  · status: done
 **Depends on:** Phase 43g (both change `shim_registration/` and the install lifecycle tests).
 
 
@@ -1376,7 +1376,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 - The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
 
-**Constraints from Phase 43g (director, 2026-11-08):** keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. Phase 43i runs beside this phase on the reader scenario timing. This phase integrates after Phase 43i. **Scope (director, 2026-11-08):** this phase also edits `main.rs` (the capture entry call before argument parsing), `birth_stamp/mod.rs` and `birth_stamp/kernel_observation.rs` (crate-visible `capture_boot`, `observe_process`, `BirthStamp::registration_fields`), `Cargo.toml` and `Cargo.lock` (the workspace `signal-hook` dependency), `installed.rs` (the native birth tests replace the shell conversion tests; the six slow install tests from the 43g suites go under 1 s), and the reader templates in `reader_scenario_cases.py` and `reader_scenarios.rs` (render the runner path and flags from the constants). `tee` stays the mirror.
+**Constraints from Phase 43g (director, 2026-11-08):** keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. Phase 43i runs beside this phase on the reader scenario timing. This phase integrates before Phase 43i: the two share no file, and 43i repair round 2 takes the `census/scan.rs` wait cut on top of this phase (director, 2026-11-08). **Scope (director, 2026-11-08):** this phase also edits `main.rs` (the capture entry call before argument parsing), `birth_stamp/mod.rs` and `birth_stamp/kernel_observation.rs` (crate-visible `capture_boot`, `observe_process`, `BirthStamp::registration_fields`), `Cargo.toml` and `Cargo.lock` (the workspace `signal-hook` dependency), `installed.rs` (the native birth tests replace the shell conversion tests; the six slow install tests from the 43g suites go under 1 s), and the reader templates in `reader_scenario_cases.py` and `reader_scenarios.rs` (render the runner path and flags from the constants). `tee` stays the mirror.
 
 ### Phase 35m — Summary arguments on main  · status: done
 
