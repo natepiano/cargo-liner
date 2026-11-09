@@ -2332,8 +2332,8 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 5. **Add-ons approved by the showrunner (2026-10-22 to 2026-10-25),** each with a red-first test:
    - **The `run` ink.** On the focused tile ground (46,46,57), the command word `run` ink (3,197,3) measures 4.28:1. Lift it to at least 4.5:1 with an OKLCH lightness-only lift that keeps the hue.
    - **The rows readout is off by default:** moved to handler Phase 55, 2026-10-30.
-   - **Frame draw time** (showrunner 2026-10-25, moved from Phase 24). Phase 24's release captures: d80 max 19.1 ms (p99 3.2), t40 7.8 (p99 3.5), t80 79.9 (one frame; p99 6.1), d40 9.7 (p99 5.4) (`shots41_reply.txt` FRAME TIME). Exit: in busy release captures, no frame draws for more than 4 ms.
-   - **Summary rows name their crate.** Phase 24's t80 shot at 9.00 (`ph24b`) shows summary rows with no crate path line and with cut names. In t40, summary pids are listed under the p22k02 path line with no path line of their own. Each summary row names its own crate path, and a name is cut only with `…`.
+   - **Frame draw time:** moved to Phase 32b, 2026-11-09. It is a separate measurement and repair on a stable tree.
+   - **Summary rows name their crate.** Phase 24's t80 shot at 9.00 (`ph24b`) shows summary rows with no crate path line and with cut names. In t40, summary pids are listed under the p22k02 path line with no path line of their own. Each summary row names its own crate path when the whole path fits beside the command. A row with no room for the whole path keeps the command and relies on its directory heading row. A path is never cut to a tail fragment (director, 2026-11-09).
 
 **Files:**
 - `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — items 1 and 3 and their tests.
@@ -2342,7 +2342,6 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
 - `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
 - `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/slot.rs` — item 4's key-hint on state, additive; `crates/tui_pane/CHANGELOG.md` — one Added line.
-- `crates/tui_pane/src/tiles/draw/{paint,measurements}.rs`, `crates/tui_pane/src/tiles/grid/{tile_grid,bands,allocation,layout,heights,rows,selection}.rs` — item 5's measured frame draw time.
 - `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only. This phase adds no readout key and no caller; handler Phase 55 owns the readout default.
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
 
@@ -2364,9 +2363,38 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - Shots of a live tile with a `cargo fix` or `cargo clippy` whose children run as the rustc wrapper, with `h` off and on; a fresh helper's design check passes.
 - At most 3 repair rounds.
 - Change-review line: a row for cargo as the rustc wrapper shows `rustc <crate>`.
-- Change-review line: with all arguments on, every process keeps its command row in its cell and in the summary, a cell that cannot hold them shows `+N more`, and the status bar shows the on state on its key hints in plain words.
+- Change-review line: with all arguments on, every process keeps its command row in its cell and in the summary, a cell that cannot hold them shows `+N more`, and the shortcuts surface shows the on state in plain words.
 - Change-review line: with `h` on, the subcommand stays beside `cargo`; at 24 rows, `p` makes a visible change.
 - Change-review line: a wrapped nextest command keeps `-E` and its expression, and each output flag and its value, on one row.
+
+### Phase 32b — No tile frame draws for more than 4 ms  · status: todo
+
+**Depends on:** Phase 32 (it changes the summary command cell and the row budgets that this phase measures).
+
+#### Work Order
+
+**Goal:** In busy release captures, no frame of `cargo-tile` draws for more than 4 ms. Phase 24's release captures measured d80 max 19.1 ms (p99 3.2), t40 7.8 (p99 3.5), t80 79.9 (one frame; p99 6.1), d40 9.7 (p99 5.4). Phase 32's captures measured 7.8 ms at 40 rows and 31.8 ms at 24 rows, with no comparable baseline.
+
+**Spec:**
+
+1. **Measure first.** Make one capture script that runs one fixed busy workload at 24, 40 and 80 rows against a release build. Record the frame maximum, p99 and sample count. Capture the parent of this phase's first edit, and name the slowest frames and the stage that spent their time.
+2. **Repair the measured cost at its cause.** Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings. Add no timing test: the exit is the measured capture.
+3. **Compare with the same script on the final tree.** Report the before and after maximum, p99 and sample count at each size.
+
+**Files:**
+- `crates/tui_pane/src/tiles/draw/{paint,measurements}.rs`, `crates/tui_pane/src/tiles/grid/{tile_grid,bands,allocation,layout,heights,rows,selection}.rs` — measured tile draw cost.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/{frame_preparation,command_cache,cell_paint}.rs` — measured cargo-tile preparation and paint cost.
+- `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 32: route parsed-command and `CommandView` changes through preparation. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
+- The fixed capture shows no frame over 4 ms at 24, 40 and 80 rows on the final release build, beside the same script's result on the parent tree.
+- Change-Review: none — draw time only, with no visible change.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 
