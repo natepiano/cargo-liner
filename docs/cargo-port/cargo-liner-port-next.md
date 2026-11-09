@@ -13,7 +13,7 @@ Backlog the showrunner approved. Not started; each becomes a phase when the show
 
 ## cargo-mend wrapper follow-ups (phase 2p review, 2026-11-02)
 
-Phase 2p reached its three repair rounds and landed. These two review findings are the top of the next cargo-mend phase.
+Phase 2p reached its three repair rounds and landed. These two review findings remain pending. Phase 4u runs first under the 2026-11-09 CPU priority.
 
 1. **The copy-failure test repeats the staging path rule (F004).**
    Target: `failed_wrapper_copy_keeps_the_published_executable` in `crates/cargo-mend/src/compiler/build/execute.rs`. It rebuilds the staging path with `WRAPPER_ALIAS_STAGING_EXTENSION` and the process id, a copy of the rule in `StagedWrapperCopy::create`.

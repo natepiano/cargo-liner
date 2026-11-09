@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
 #[cfg(not(target_os = "linux"))]
 use std::env;
@@ -99,6 +100,7 @@ pub(crate) enum BuildOutputMode {
 
 #[derive(Debug)]
 struct CommandOutcome {
+    error_files:            BTreeSet<PathBuf>,
     exit_status:            ExitStatus,
     compiler_warning_facts: CompilerWarningFacts,
     duration:               Duration,
@@ -261,7 +263,9 @@ fn check_with_cache_recovery(
 
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
 
@@ -293,7 +297,9 @@ fn check_with_cache_recovery(
     command_outcome.duration += previous_duration;
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
     match AnalysisCache::inspect(
@@ -524,7 +530,9 @@ pub(crate) fn run_cargo_fix(
         Ok(status) if status.success() => Ok(start.elapsed()),
         Ok(_) => Err(compiler_fix_failure(
             &transaction,
-            CompilerFailureCause::CargoCheck,
+            CompilerFailureCause::CargoCheck {
+                error_files: BTreeSet::new(),
+            },
         )),
         Err(error) => Err(compiler_fix_failure(
             &transaction,
@@ -733,6 +741,7 @@ fn run_cargo_command(
     let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {
+        error_files: stderr_outcome.error_files,
         exit_status,
         compiler_warning_facts: stderr_outcome.compiler_warning_facts,
         duration,

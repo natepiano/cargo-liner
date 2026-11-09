@@ -1,5 +1,6 @@
 use std::cell::OnceCell;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -50,6 +51,23 @@ impl ParsedSource {
 pub(crate) struct ParsedSources {
     sources:     RefCell<FxHashMap<PathBuf, Rc<ParsedSource>>>,
     module_maps: RefCell<FxHashMap<PathBuf, Rc<ModuleMap>>>,
+}
+
+impl From<&BTreeMap<PathBuf, String>> for ParsedSources {
+    /// Read proposed source text before a batch writes any file.
+    fn from(files: &BTreeMap<PathBuf, String>) -> Self {
+        let sources = Self::default();
+        for (path, text) in files {
+            sources.sources.borrow_mut().insert(
+                module_map::lexically_normalized(path),
+                Rc::new(ParsedSource {
+                    text:   text.clone(),
+                    syntax: OnceCell::new(),
+                }),
+            );
+        }
+        sources
+    }
 }
 
 impl ParsedSources {

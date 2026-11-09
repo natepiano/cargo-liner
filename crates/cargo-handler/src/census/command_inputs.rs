@@ -240,18 +240,14 @@ impl<T: Clone> InputDrivenCommand<T> {
     }
 
     fn accounts_inputs(&mut self, home: &Path) {
-        for file in ["groups.json", "role_map_cache.json", "login_renewals.json"] {
+        for file in ["groups.json", "login_renewals.json"] {
             self.paths
                 .push(home.join(".local/state/accounts").join(file));
         }
         let usage = home.join(".local/state/agent-notes/usage.json");
         self.paths.push(usage.clone());
         self.clock = ScriptClockInputs::Stored {
-            paths:      vec![
-                usage,
-                home.join(".local/state/accounts/groups.json"),
-                home.join(".local/state/accounts/role_map_cache.json"),
-            ],
+            paths:      vec![usage, home.join(".local/state/accounts/groups.json")],
             revisions:  BTreeMap::new(),
             boundaries: Vec::new(),
         };

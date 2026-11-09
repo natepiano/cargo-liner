@@ -594,7 +594,7 @@ fn scan_configured(config: &Config) -> ProbeReport {
     .with_herdr_read_timeout(config.census.herdr_read_timeout)
     .with_staff_file(super::StaffFileSetting::new(source), staff)
     .scan();
-    let edges = snapshot.publication().edges.with_worker_roles(&rows);
+    let edges = snapshot.publication().edges;
     ProbeReport::from_answer(local_machine_name(), rows, edges)
 }
 

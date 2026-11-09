@@ -71,6 +71,35 @@ impl FunctionLengthPlan {
         package_roots: &[PathBuf],
         workspace: &Path,
     ) -> Result<Self> {
+        if proposals.is_empty() {
+            return Ok(Self::default());
+        }
+        let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
+        let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+        let paths = fixes.iter().map(|fix| &fix.path).collect::<BTreeSet<_>>();
+        let changes_function =
+            paths
+                .into_iter()
+                .try_fold(false, |changed, path| -> Result<bool> {
+                    if changed || !path.is_file() {
+                        return Ok(changed);
+                    }
+                    let original = std::fs::read_to_string(path)?;
+                    let Ok(functions) = function_collector::collect(&original) else {
+                        return Ok(true);
+                    };
+                    Ok(functions.iter().any(|function| {
+                        fixes
+                            .iter()
+                            .any(|fix| fix.path == *path && touches(&function.range, fix))
+                    }))
+                })?;
+        if !changes_function {
+            return Ok(Self {
+                fixes,
+                ..Self::default()
+            });
+        }
         Self::with_formatter(
             proposals,
             dependent_passes,

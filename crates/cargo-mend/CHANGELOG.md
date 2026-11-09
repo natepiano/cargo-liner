@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `--fix` validates private re-export chains as one batch. Compiler error files identify rejected links only when a planning step contains one binding. Steps with multiple bindings use individual checks. Invalid links keep their previous sources. Independent chains and other validated fixes stay on disk.
+- `--fix` reuses workspace metadata during re-export convergence instead of starting another Cargo metadata command for each changed tree.
+- `--fix` keeps imports that name their own module instead of writing an empty `use` path. Nested modules and root re-exports remain valid.
 - `--fix` keeps a parent import when a child module uses its binding through a qualified path, including `super::` paths in macro arguments.
 - `--fix` keeps a function and its imports when formatted edits would exceed Clippy's function length limit.
 - `--fix` keeps a local import when a glob in its destination scope can supply the same binding or trait.

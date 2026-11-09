@@ -2,6 +2,7 @@ use super::CheckedSelection;
 use super::FixScans;
 use super::MendRunner;
 use super::RunPlan;
+use super::chain::ChainLinkIdentity;
 use super::function_length::FunctionLengthPlan;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
@@ -12,6 +13,7 @@ use crate::config::FixKindSelection;
 use crate::config::OperationIntent;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility;
+use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::narrow_pub_crate;
 use crate::fixes::pub_use_fixes;
 use crate::fixes::pub_use_fixes::PubUseFixScan;
@@ -24,6 +26,11 @@ use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
+
+pub(super) struct PlannedChainLinks {
+    pub(super) fixes:               ValidatedFixSet,
+    pub(super) declined_on_failure: Vec<ChainLinkIdentity>,
+}
 
 enum PassOutputPolicy {
     Json,
@@ -239,7 +246,7 @@ impl MendRunner<'_> {
         ) {
             FixKindSelection::Selected => subtree_reexport::scan_selection(
                 self.selection,
-                &planned.report,
+                &self.chain_validation.planning_report(&planned.report),
                 &planned.sources,
                 |subtree| {
                     let scans = FixScans {
@@ -259,6 +266,37 @@ impl MendRunner<'_> {
             .map_err(MendFailure::Unexpected),
             FixKindSelection::NotSelected => Ok(None),
         }
+    }
+
+    pub(super) fn plan_selected_chain_links(
+        &self,
+        planned: &RunPlan,
+    ) -> Result<PlannedChainLinks, MendFailure> {
+        let subtree = self.scan_subtree_reexports(planned)?;
+        let scans = FixScans {
+            subtree_reexports: subtree.as_ref(),
+            ..planned.function_plan.accepted_scans(planned.fix_scans())
+        }
+        .without_pub_use_overlapping_subtree_reexports();
+        let protected = Self::combined_function_plan(
+            scans,
+            &planned.sources,
+            &self.selection.package_roots,
+            &self.selection.workspace_root,
+        )?;
+        let accepted = protected.accepted_scans(scans);
+        let declined_on_failure = if accepted
+            .subtree_reexports
+            .is_some_and(|scan| !scan.fixes.is_empty())
+        {
+            self.chain_validation.next_links(&planned.report)
+        } else {
+            Vec::new()
+        };
+        Ok(PlannedChainLinks {
+            fixes: protected.fixes,
+            declined_on_failure,
+        })
     }
 
     /// Selects `fix_kind` for this pass only when the mode requests it and at least
