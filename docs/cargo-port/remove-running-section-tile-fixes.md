@@ -1970,34 +1970,22 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: done
 
-**Depends on:** none. Phases 31 and 43i join the tile worktree only after this phase merges and berth is installed.
+#### As-built
 
-The showrunner assigned this phase on 2026-11-08; the user said to fix berth defect k now, as a unit phase with a Codex writer. Report and evidence: `~/.claude/state/berth-fix/inbox/20261108T152729Z-cargo-liner/` (`report.md`, `ledger-snapshot.tar.gz`, `resolution.md`).
-
-Today a checkpoint release also releases each sibling reservation in the same `reservation_shares` group, as `released_after_checkpoint`. The siblings did not checkpoint. Three cases: the 43g shrink (40bb8be2) released Phase 31's `01a1b9c0-03fe-7771-bb2a-264f9d6b2497` and Phase 43i's `01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8`; the 35m shrink (a833d5504) released Phase 31's `01a1b90d`; a later release freed 43g's `01a1b891`.
-
-#### Work Order
-
-**Goal:** a checkpoint release frees only the reservation of the phase that checkpointed. Sibling reservations in the same `reservation_shares` group stay active.
-
-**Spec:**
-1. Red first. Add a `cargo-berth-test-support` fixture case: two phases' reservations in one share group; one checkpoints and releases; the other stays `active` on the board, with its claims. Run it red on the current code and record the red output. It takes under 1 s.
-2. Find the path that reaches the siblings (start at `ReservationShares { reservation_ids }` in `reservation/merge_extent.rs`, the release in `verb/release.rs`, and `reconcile.rs`, the other user of shares). Quote the line that releases a sibling.
-3. Fix it there. The share group may still inform the merge extent of the released reservation; it must not change a sibling's lifecycle.
-4. Keep every existing berth assertion. Add the new case as a row of an existing release test where one covers this behavior.
-5. Replay the ledger snapshot from the report: after the fix, the 43g release leaves `01a1b9c0-...-264f9d6b2497` and `01a1b9c9-...` active, or the replay shows why it cannot.
+- Checkpoint release uses `reconcile_for_release` with the selected reservation and current worktree.
+- `MergedRunEndings::CheckpointRequested` permits the selected shared reservation to checkpoint; sibling reservations keep their active lifecycle and claims.
+- Merge observations retain `ReservationShares` coverage when the remaining group contains one reservation.
+- Reconciliation refreshes active holders from committed lifecycles before it removes cover markers.
+- Tests cover the real release command and repeated reconciliation with two and four shared reservations.
 
 **Files:**
-- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reservation/merge_extent.rs`, `crates/cargo-berth/src/reservation/record.rs`, `crates/cargo-berth/src/reconcile.rs` — the release path and the share group.
-- `crates/cargo-berth-test-support/` — the red fixture.
+- `crates/cargo-berth/src/verb/release.rs` — selects checkpoint reconciliation.
+- `crates/cargo-berth/src/reconcile.rs` — controls checkpoint selection, active holders and sibling regression tests.
+- `crates/cargo-berth/src/reservation/merge_extent.rs` — reads retained holder coverage.
+- `crates/cargo-berth-test-support/fixtures/active_phase_claim.rs` and `shared_phase_checkpoint.json` — supply active sibling claims and shared ledger evidence.
+- `crates/cargo-berth/tests/parallel_phases.rs` — checks release results and retained sibling claims.
 
-Other cargo-berth files need director routing.
-
-**Out of scope:** the second defect in the report (an `Active` phase record with no repair verb) is in `~/.claude`; the showrunner routes it to sdlc.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** the berth package suite on natedev and the Mac, `--no-cache`, every test under 1 s; lint. After the merge and the berth install, Phases 31 and 43i claim their files again.
+**Binds later work:** “Three cargo-berth lock tests pass under load” and “cargo-berth tests run under a second” preserve the shared-reservation lifecycle tests.
 
 ### Phase 57 — Three cargo-berth lock tests pass under load  · status: todo
 
@@ -2007,10 +1995,10 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 
 #### Work Order
 
-**Goal:** the three tests pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
+**Goal:** all six tests named in Spec items 1–4 pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
 
 **Spec:**
-1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". The Phase 58 paired Mac head run (2026-11-09) failed it again with a ledger-lock refusal. Find the wait that takes the time, quote its line, and fix it there.
+1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". The Phase 58 paired Mac head run (2026-11-09) failed it again with a ledger-lock refusal. Find the wait that takes the time, quote its line, and fix it there. The timer at `tests/hooks.rs:771` includes `FixtureCommand::output`, which uses the shared child runtime's Mac waiter thread. Compare the previous and current shared child runtimes under the same Mac load. Measure check execution, hook execution and output collection apart before you change a lock wait.
 2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
 3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
 4. Three `tests/board.rs` tests failed on the Mac in the Phase 30m round 3 workspace gate (2026-11-08 22:1x, load 16-40): `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` (`tests/board.rs:6989`, left `Null`, right `"protected_tip_ancestor"`), and `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` (`tests/board.rs:7070`, "ordinary reconciliation should settle the reachable checkpoint", left `"outstanding"`, right `"released"`). Find the cause, quote its line, and fix it there.
@@ -2020,47 +2008,43 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 **Files:**
 - `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/board.rs` — the tests and their fixtures.
 - `crates/cargo-berth-test-support/` — shared fixtures.
+- `crates/cargo-berth/tests/recorded_templates.rs` — registrations of the recorded fixture states for these tests (routed 2026-11-09).
+- `crates/cargo-berth/src/git/error.rs`, `crates/cargo-berth/src/git/protocol.rs` — the `lsof` holder lookup in `git_lock_holders` (`error.rs:408`) runs under `CONTROL_REPLY_DEADLINE` (750 ms, `protocol.rs:21`); under Mac load it ends without a holder (routed 2026-11-09).
 
-The product file of each cause needs director routing.
+Another product file of a cause needs director routing.
+
+**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with both tests green and every test under 1 s; lint.
+**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58a.
 
 ### Phase 58 — cargo-berth tests run under a second  · status: done
 
-**Depends on:** Phase 56 for edits to `crates/cargo-berth-test-support/`. The measurement in item 1 starts at once.
+#### As-built
 
-The showrunner assigned this phase on 2026-11-08. The user's rule: a test that takes a second is a defect, not a load flake. Phase 56's first gate timed 444 cargo-berth tests at 1 s or more on the Mac. The Phase 30m and 43i gates saw the same cost. An earlier fix (2026-10-03, ending at `afe59f30`, with `48889b3f` and `38be8d3a`) removed four causes: managed git hooks in fixtures, repeated git spawns per run, an fsync on every write, and a fresh repository per test.
-
-#### Work Order
-
-**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac.
-
-**Spec:**
-1. Measure before any edit. Count the cargo-berth tests at 1 s or more at `-j 1` and at full load, on natedev and on the Mac. Record each count and the load.
-2. For each of the four earlier causes, find whether it came back since `afe59f30`. Quote the line that brought it back.
-3. Find any new shared cause in the ten slowest tests. Quote its line.
-4. Fix each cause where it lives. Keep every assertion and every test case.
-5. Measure the same counts after the fix, with the same method.
+- Integration tests restore recorded Git histories before their live operations.
+- `LedgerTemplate::restore_into` renews owners and removes derived replay files.
+- The shared child runtime uses exit notifications and collects active output pipes without threads for absent streams.
+- Native reads use the requested checkout despite inherited selectors; unsupported inherited Git settings retain the subprocess route.
+- The under-one-second goal remains unmet. Paired Mac counts fall from 406 to 330 overall, and from 217 to 168 within this phase’s scope.
 
 **Files:**
-- `crates/cargo-berth-test-support/` — the shared fixtures, after Phase 56 merges.
-- `crates/cargo-berth/tests/` — the integration tests, except the three files of Phase 57.
-- `crates/cargo-berth/src/git/child.rs` — the child runtime polls exit every 1 ms (`child.rs:421`) and starts a thread for a pipe that does not exist (`child.rs:245`). Test support includes this file.
-- `crates/cargo-berth/src/git/read.rs`, `crates/cargo-berth/src/git/command.rs` — in-process reads fall back to git subprocesses when a hook passes a repository selector (`read.rs:202`, `read.rs:265`).
-- `crates/cargo-berth/src/board/rows.rs`, `crates/cargo-berth/src/board/answers.rs` — test modules only: one slow unit test in each (`rows.rs:1847`). The showrunner assigned them on 2026-11-08; the claim runs before the quiet style cover `01a192d3`.
-- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs` — only after Phase 57 merges: a recorded template for the two-orphan setup (`hooks.rs:2785`) and the partly landed lane (`lifecycle.rs:2739`), and one test per landing mode (`lifecycle.rs:322`).
+- `crates/cargo-berth/src/git/child.rs` — exit notifications, pipe collection and cleanup.
+- `crates/cargo-berth/src/git/read.rs`, `crates/cargo-berth/src/git/constants.rs`, `crates/cargo-berth/src/git/constants/child.rs` — native-read policy and shared constants.
+- `crates/cargo-berth-test-support/src/` — the shared child runtime and history restoration API.
+- `crates/cargo-berth/tests/` — recorded histories, fixture restoration and live test operations.
+- `crates/cargo-berth/src/board/answers.rs`, `crates/cargo-berth/src/board/rows.rs` — shorter test setup and separate waiting-reason cases.
 
-The diagnosis found that none of the four earlier causes came back. The new shared costs are the 1 ms exit poll, the empty pipe threads, the git subprocess fallback and fixture setup inside the test clock. Phase 56 and Phase 57 keep only their own failures.
+**Binds later work:** “Three cargo-berth lock tests pass under load” checks the shared runtime as a possible contention-cost source. “The remaining cargo-berth tests in Phase 58 files run under a second” preserves live operations and fixture renewal.
 
-**Workers:** 1 writer.
+**Gotchas:** The paired Mac head fails the hooks contention test. The natedev count of 48 slow tests precedes restoration of the original compaction setup. Mac exit notification can require a waiter thread.
 
-**Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test at 1 s or more; lint.
+**Ruled out:** recurrence of the four earlier test-cost causes.
 
 ### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: todo
 
-**Depends on:** Phase 58 (same writer and the same files). `hooks.rs` and `lifecycle.rs` edits also wait for Phase 57.
+**Depends on:** Phase 58 (same writer and the same files). Edits to `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` wait for Phase 57 to merge.
 
 Phase 58 landed after three repair rounds under the round cap. The paired Mac package run (six test threads, loads 7.2 and 8.1) counted 168 Phase 58 tests at 1 s or more on its head and 217 on its base. No binary rose. The goal is not met yet. The landing is not a passing suite: the head run failed `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 57 item 1).
 
@@ -2072,7 +2056,7 @@ An Astra review of the approach (2026-11-09, `/tmp/claude/astra/20261109T094600Z
 
 #### Work Order
 
-**Goal:** every cargo-berth test in the Phase 58 files runs under 1 s in the full workspace run on natedev and on the Mac.
+**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. This includes the slow tests in the four Phase 57 files other than its six named tests (162 in the paired Mac run).
 
 **Spec:**
 1. **Measure first, on the unchanged tree.** Use the four slowest tests of the paired head run: `edges::witness_survives_pruning_and_controls_successors` (5.198 s), `edges::successor_round_robin_covers_every_head` (4.334 s), `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (4.172 s) and `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks`.
@@ -2093,15 +2077,18 @@ An Astra review of the approach (2026-11-09, `/tmp/claude/astra/20261109T094600Z
 7. Measure the same counts after the fix, on the final source revision, with the same method.
 
 **Files:**
-- `crates/cargo-berth/tests/` — the integration tests, except `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs` (Phase 57).
+- `crates/cargo-berth/tests/` — the integration tests. `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` only after Phase 57 merges.
 - `crates/cargo-berth/tests/support/` — shared test fixtures.
 - `crates/cargo-berth-test-support/` — the shared fixtures and recorded templates.
+- `crates/cargo-berth/src/` — test modules only, for measured slow unit tests: `board/answers.rs` (`overlap_answers_preserve_typed_authorization_variants`, 1.362 s), `board/rows.rs` (`waiting_reasons_pair_typed_evidence_with_actions`, 1.200 s) and `git/read.rs`.
 
 A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) needs director routing with the measurement that picks it.
 
+**Constraints from prior phases:** Phase 58: reuse `LedgerTemplate::restore_into`, `history_restore` and `recorded_history`. Keep owner renewal, linked-worktree relocation and derived-cache removal. Keep `cold_single_target_setup_builds_every_recorded_template` and `stalled_template_build_fails_with_a_clear_deadline` green. Phase 56: shared merge coverage does not checkpoint a sibling; keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Claim a shared fixture file `--after` the Phase 57 reservation when its edits overlap. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
+
 **Workers:** 1 writer.
 
-**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test in these files at 1 s or more; lint. Report the package and workspace counts apart.
+**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test at 1 s or more; lint. Report the package and workspace counts apart. Report the setup duration and the complete-suite duration beside each count, with cold-cache and warm-cache runs apart.
 
 ### Phase 31 — Ended cells leave whole  · status: parked
 
