@@ -14,6 +14,10 @@ fn restricted_visibility_annotations_are_rejected_once() {
 name = "restricted_visibility_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             (
@@ -62,6 +66,10 @@ fn glob_blocker_precedes_repair_for_restricted_visibility_annotations() {
 name = "glob_blocker_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
@@ -108,6 +116,10 @@ fn public_signature_requires_bare_pub_for_every_pub_in_spelling() {
 name = "public_pub_in_glob_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -174,6 +186,10 @@ fn public_signature_precedes_a_constructible_glob_blocker() {
 name = "public_pub_in_glob_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -231,6 +247,10 @@ fn restricted_signature_retains_glob_blocker_for_pub_in_annotation() {
 name = "restricted_pub_in_glob_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -290,6 +310,10 @@ fn exact_crate_rooted_boundary_is_accepted_when_enabled() {
 name = "exact_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
                 ),
                 (
@@ -340,6 +364,10 @@ fn exact_crate_rooted_boundary_on_a_use_item_is_accepted_when_enabled() {
 name = "exact_boundary_use_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
                 ),
                 (
@@ -448,6 +476,10 @@ fn required_setting_reviews_bare_pub_behind_restricted_facade() {
 name = "required_path_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
                 ),
                 (
@@ -486,6 +518,10 @@ fn fix_rewrites_a_required_bare_pub_to_the_exact_boundary() {
 name = "required_path_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"required\"\n"),
@@ -542,6 +578,10 @@ fn fix_leaves_an_accepted_restricted_annotation_alone() {
 name = "accepted_boundary_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"required\"\n"),
@@ -729,6 +769,7 @@ fn visibility_batch(policy: VisibilityPolicy, declaration: &str) -> DiagnosticBa
             ),
         ],
     );
+    batch.single_compile_targets();
     batch
 }
 
@@ -790,6 +831,10 @@ fn pub_in_crate_is_accepted_at_a_required_crate_boundary() {
 name = "canonical-pub-in-crate-fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
                 ),
                 (
@@ -819,6 +864,10 @@ fn relative_exact_boundary_suggests_crate_rooted_spelling() {
 name = "relative_exact_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
                 ),
                 (
@@ -855,6 +904,10 @@ fn resolved_restricted_annotation_too_wide_keeps_exact_boundary_advice() {
 name = "resolved_annotation_too_wide_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -892,6 +945,10 @@ fn declaration_narrower_than_facade_is_rejected_by_rustc() {
 name = "too_narrow_compile_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -991,6 +1048,10 @@ fn caller_derived_boundary_is_directly_fixable() {
 name = "caller_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -1185,6 +1246,10 @@ fn exact_field_boundary_is_accepted_for_ancestor_access() {
 name = "field-caller-fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -1216,6 +1281,10 @@ fn caller_analysis_tracks_intermediate_modules() {
 name = "module-caller-fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -1262,6 +1331,10 @@ fn caller_analysis_withholds_replacement_for_use_items() {
 name = "use-item-caller-fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -1329,6 +1402,10 @@ fn advised_facade_converges_once_it_reaches_the_boundary() {
 name = "converging-facade-fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -1697,6 +1774,10 @@ fn bounded_pub_in_path_is_fixable_on_declarations_but_not_on_a_module() {
 name = "bounded_pub_in_path_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
@@ -1796,6 +1877,10 @@ fn bounded_pub_in_path_is_fixable_on_a_use_reexport_but_not_on_a_module() {
 name = "reexport_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             (

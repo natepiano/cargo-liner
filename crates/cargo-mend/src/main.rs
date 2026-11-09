@@ -29,6 +29,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
+use compiler::CompilerFixOutcome;
 use compiler::DRIVER_ENV;
 use config::BuildInfoMode;
 use config::CompilerFixExecution;
@@ -180,21 +181,13 @@ fn run() -> Result<ExitCode, MendFailure> {
     match cli.fix.applies_fixes() {
         FixApplication::DoNotApply => {},
         FixApplication::Apply => loop {
-            // Decide whether to chain `cargo fix`. Two trigger conditions:
-            //  1. The user explicitly asked for it (`--fix-compiler` / `--fix-all`).
-            //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that
-            //     produced `unused import` warnings; auto-clean them.
-            let runs_compiler_fix = compiler_fix_execution(
+            let fixed = run_compiler_fix(
+                &mut runner,
                 cli.fix.runs_compiler_fix(),
-                outcome.applied_pub_use,
-                outcome.compiler_warning_facts,
-            );
-            total_compiler_fix_duration += match runs_compiler_fix {
-                CompilerFixExecution::Run => {
-                    runner.fix_compiler(outcome.report.facts.all_features_coverage)?
-                },
-                CompilerFixExecution::Skip => Duration::ZERO,
-            };
+                &outcome,
+                &operation_mode,
+            )?;
+            total_compiler_fix_duration += fixed.duration;
 
             if passes >= runner.fix_pass_limit() {
                 break;
@@ -203,9 +196,7 @@ fn run() -> Result<ExitCode, MendFailure> {
             // A pass that wrote nothing leaves the tree it planned against, so
             // another pass would plan the same fix set and write nothing again.
             // Only a `cargo fix` run since then can change what mend finds.
-            if outcome.pass_edits == PassEdits::Unchanged
-                && runs_compiler_fix == CompilerFixExecution::Skip
-            {
+            if outcome.pass_edits == PassEdits::Unchanged && fixed.edits == PassEdits::Unchanged {
                 break;
             }
 
@@ -256,6 +247,27 @@ fn run() -> Result<ExitCode, MendFailure> {
     )?;
 
     Ok(report_exit_code(&outcome.report, cli.warning_policy))
+}
+
+fn run_compiler_fix(
+    runner: &mut MendRunner<'_>,
+    requested: CompilerFixExecution,
+    outcome: &ExecutionOutcome,
+    operation_mode: &OperationMode,
+) -> Result<CompilerFixOutcome, MendFailure> {
+    match compiler_fix_execution(
+        requested,
+        outcome.applied_pub_use,
+        outcome.compiler_warning_facts,
+    ) {
+        CompilerFixExecution::Run => {
+            runner.fix_compiler(outcome.report.facts.all_features_coverage, operation_mode)
+        },
+        CompilerFixExecution::Skip => Ok(CompilerFixOutcome {
+            duration: Duration::ZERO,
+            edits:    PassEdits::Unchanged,
+        }),
+    }
 }
 
 fn report_exit_code(report: &Report, warning_policy: WarningPolicy) -> ExitCode {

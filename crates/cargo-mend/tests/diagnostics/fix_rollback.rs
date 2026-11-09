@@ -7,11 +7,11 @@ use crate::support::*;
 /// and validates, so those edits stay on disk. The chained `cargo fix` then
 /// deletes the now-unused `use crate::deep::thing::Widget;`, and only once that
 /// import is gone does `src/deep.rs` become narrowable. That narrowing is pass
-/// two's edit, and `build.rs` fails the build the moment it lands.
+/// two's edit. A compile-time source check rejects that edit.
 const FIXTURE_SOURCES: &[(&str, &str)] = &[
     (
         "src/main.rs",
-        "mod deep;\nmod outer;\n\nfn main() {\n    outer::go();\n}\n",
+        "mod deep;\nmod outer;\n\nconst _: () = assert!(include_str!(\"deep.rs\").as_bytes()[4] == b'c', \"second-pass narrowing landed\");\n\nfn main() {\n    outer::go();\n}\n",
     ),
     (
         "src/deep.rs",
@@ -33,22 +33,15 @@ const FIXTURE_SOURCES: &[(&str, &str)] = &[
     ("src/outer/parent/child.rs", "pub struct SpawnStats;\n"),
 ];
 
-/// Fails the build as soon as the pass-two narrowing of `src/deep.rs` lands,
-/// which is what drives that pass's validation failure.
-const FIXTURE_BUILD_SCRIPT: &str = r#"fn main() {
-    println!("cargo::rerun-if-changed=src");
-    let deep = std::fs::read_to_string("src/deep.rs").unwrap();
-    assert!(
-        deep.contains("pub(crate) mod thing;"),
-        "second-pass narrowing landed"
-    );
-}
-"#;
-
 const FIXTURE_MANIFEST: &str = r#"[package]
 name = "fix_rollback_fixture"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[test]]
+name = "rollback"
+path = "src/main.rs"
 "#;
 
 /// Rollback covers the whole invocation, not the pass that failed.
@@ -71,8 +64,6 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
     let temp = tempdir().expect("create fix rollback fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(temp.path().join("Cargo.toml"), FIXTURE_MANIFEST).expect("write fixture manifest");
-    fs::write(temp.path().join("build.rs"), FIXTURE_BUILD_SCRIPT)
-        .expect("write fixture build script");
     for (relative_path, source) in FIXTURE_SOURCES {
         let path = temp.path().join(relative_path);
         fs::create_dir_all(path.parent().expect("fixture source has a parent"))
@@ -87,7 +78,7 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
         .expect("run cargo-mend --fix-all");
     assert!(
         !output.status.success(),
-        "the fixture's build script must fail the second pass's validation:\n{}",
+        "the second pass must fail validation:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);

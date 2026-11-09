@@ -10,6 +10,7 @@ use proc_macro2::LineColumn;
 use super::formatter;
 use super::formatter::Formatter;
 use super::function_collector;
+use super::function_collector::FunctionBody;
 use super::function_collector::LengthExemption;
 use crate::fixes::imports;
 use crate::fixes::imports::ImportSource;
@@ -19,6 +20,7 @@ use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::runner::FixScans;
 use crate::reporting::ExecutionNotice;
 use crate::reporting::NoticeKind;
+use crate::reporting::PassEdits;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
 
@@ -76,6 +78,7 @@ impl FunctionLengthPlan {
         }
         let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
         let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+        let limit = formatter::threshold(workspace)?;
         let paths = fixes.iter().map(|fix| &fix.path).collect::<BTreeSet<_>>();
         let changes_function =
             paths
@@ -88,11 +91,9 @@ impl FunctionLengthPlan {
                     let Ok(functions) = function_collector::collect(&original) else {
                         return Ok(true);
                     };
-                    Ok(functions.iter().any(|function| {
-                        fixes
-                            .iter()
-                            .any(|fix| fix.path == *path && touches(&function.range, fix))
-                    }))
+                    Ok(functions
+                        .iter()
+                        .any(|function| needs_measurement(function, path, &fixes, limit)))
                 })?;
         if !changes_function {
             return Ok(Self {
@@ -196,14 +197,10 @@ impl FunctionLengthPlan {
                 .iter()
                 .enumerate()
                 .filter(|(_, function)| {
-                    function.lines <= limit
-                        && matches!(function.length_exemption, LengthExemption::Limited)
+                    needs_measurement(function, path, fixes, limit)
                         && !self.retained.iter().any(|kept| {
                             kept.source.path == *path && kept.source.range == function.range
                         })
-                        && fixes
-                            .iter()
-                            .any(|fix| fix.path == *path && touches(&function.range, fix))
                 })
                 .collect::<Vec<_>>();
             if candidates.is_empty() {
@@ -335,6 +332,31 @@ impl FunctionLengthPlan {
             .map(|kept| &kept.source)
             .chain(&self.dependencies)
     }
+}
+
+fn needs_measurement(
+    function: &FunctionBody,
+    path: &Path,
+    fixes: &ValidatedFixSet,
+    limit: usize,
+) -> bool {
+    if function.lines > limit || !matches!(function.length_exemption, LengthExemption::Limited) {
+        return false;
+    }
+    // Each byte permits two lines, including punctuation inserted by rustfmt.
+    let (edits, bytes) = fixes
+        .iter()
+        .filter(|fix| fix.path == path && touches(&function.range, fix))
+        .fold(
+            (PassEdits::Unchanged, function.range.len()),
+            |(_, bytes), fix| {
+                (
+                    PassEdits::Written,
+                    bytes.saturating_add(fix.replacement.len()),
+                )
+            },
+        );
+    edits == PassEdits::Written && bytes.saturating_mul(2) > limit
 }
 
 const fn touches(range: &Range<usize>, fix: &UseFix) -> bool {

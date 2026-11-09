@@ -587,6 +587,10 @@ fn cached_findings_reused_across_different_target_selections() {
 name = "selection_cache_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");

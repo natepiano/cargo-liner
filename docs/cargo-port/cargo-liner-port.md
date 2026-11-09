@@ -772,7 +772,7 @@ A left click on a project row goes through `tui_pane::ExpansionModel::press_row`
 
 **Ruled out:** named eligibility states for `public_use` and `use_path`, which are private syntax-match helpers where `None` means no match.
 
-### Phase 4u — Every cargo-mend test runs under a second  · status: todo
+### Phase 4u — Every cargo-mend test runs under a second  · status: done
 
 **Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q, which edits `crates/cargo-port/`, and beside 4s, which edits `crates/cargo-port/` and `crates/tui_pane/`, when berth fences its files (showrunner, 2026-11-09).
 
@@ -869,6 +869,51 @@ A left click on a project row goes through `tui_pane::ExpansionModel::press_row`
 **State:** none.
 
 **Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean (lint covers the whole workspace); no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4v — Returned narrow-width, border and lint column fixes  · status: todo
+
+**Depends on:** Phase 4s (both edit `crates/cargo-port/src/tui/panes/`). It runs after Phase 4s (showrunner, 2026-11-09).
+
+#### Work Order
+
+**Goal:** at 60 and 80 columns a project name gives way before any list column goes, Package labels and pane titles draw whole, the Git list keeps usable height, Sccache draws one border, and the Lint Runs and CI runs tables show their columns.
+
+**Source:** showrunner validation of C222-C229, 2026-11-09. C222, C224 and C227 return; items 4 and 5 are new defects.
+1. C222: at 60 columns Type, Git, Sync and Main drop while names grow: `│   Projects    CI      Disk │`, `│ ▶ bevy-0.20.0    142.1 MiB │`. The user's rule: names get `…` before any column goes.
+2. C224: at 80 columns a Package label is cut (`│  integ… 1294  │`, page 3) and the pane title is cut (`┌Worktree Gr… ┐`). With 13 worktrees the Git list area is one row tall (`▲ 18 of 28 ▼`) and the divider has no `Worktrees (N)` title.
+3. C227: NO_COLOR draws the thick Sccache border; color mode draws a thin one (`┌ Sccache stats ───┐`).
+4. Lint Runs columns are cut at every width. 160: `│2026-10-  19:00:55  19:00:55`. 80: `ration`, `2026-1`. 60: `art  End  ion  ize  Res`.
+5. At 80 columns under NO_COLOR, `CI runs (466)` (not branch mode) shows only Commit, with no Total column.
+
+**Decision:** showrunner, 2026-11-09: one fix phase for all five, after Phase 4s. Each fix returns as a new Change-Review row.
+
+**Constraints:**
+- Never cut a label. Cut a value, a name or a message first.
+- Colours come from the theme, not from code.
+- Keep the Phase 4o rules: no space or ` ·` before `…`; the five-cell Main reserve; the `Projects` header on the name start cell; a cut name keeps one letter.
+- Change no other look at widths where nothing is cut now.
+
+**Spec:**
+1. **Project list columns.** At 60 columns a name gets `…` before Type, Git, Sync or Main drops (`tui/columns/`, `tui/panes/project_list/`).
+2. **Package and Git.** At 80 columns no Package label or pane title is cut. With 13 worktrees the Git list area keeps more than one row, and the divider carries `Worktrees (N)` (`tui/panes/package/`, `tui/panes/git/`).
+3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`).
+4. **Lint Runs.** At 60, 80 and 160 columns no Lint Runs header or date is cut inside a word (`tui/panes/lints/render.rs`).
+5. **CI runs.** At 80 columns under NO_COLOR, outside branch mode, the CI runs table shows a Total column (`tui/panes/ci/`).
+6. **Changelog.** Add the cargo-port entries.
+
+**Files:**
+- `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
+- `crates/cargo-port/src/tui/panes/package/` and `crates/cargo-port/src/tui/panes/git/` — Spec 2
+- `crates/cargo-port/src/tui/sccache/render.rs` — Spec 3
+- `crates/cargo-port/src/tui/panes/lints/render.rs` — Spec 4
+- `crates/cargo-port/src/tui/panes/ci/` — Spec 5
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer: Specs 1-6 and their tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the five defects at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
