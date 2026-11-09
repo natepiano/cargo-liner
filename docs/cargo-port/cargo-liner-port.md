@@ -787,7 +787,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 **Constraints:**
 - Fix the cost in cargo-mend. Keep every fix mend applies today, and the final sources of the chain.
 - A fix mend cannot validate stays declined or rolled back, as today.
-- No test takes a second in the full suite.
+- No test is slower in the full suite than on main. Phase 4u brings every cargo-mend test under 1 s in the full suite.
 
 **Spec:**
 1. **Measure.** Count the `cargo check` and `cargo metadata` runs of the chain test, with the time of each. Quote the source lines that start each run.
@@ -804,40 +804,43 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; `reexport_chain_collapses_in_one_run` under 1 s in the full suite, and no other test at a second or more. The fallback row fails without the fallback. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean. The chain and fallback tests use the minimum check count, take under 1 s alone, and are no slower in the full suite than on main (chain 2.7-3.1 s). The fallback row fails without the fallback. The checkpoint carries a `Change-Review:` line. (Showrunner, 2026-11-09: the chain test's full-suite time follows suite load, 1.052 s and 3.360 s with the same checks; 4u owns the full-suite bound.)
 
-### Phase 4u — The cfg(test) re-export test runs under a second  · status: todo
+### Phase 4u — Every cargo-mend test runs under a second  · status: todo
 
 **Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q and 4s, which edit only `crates/cargo-port/`, when berth fences its files (showrunner, 2026-11-09).
 
 #### Work Order
 
-**Goal:** `fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` takes under 1 s alone and in the full `verify.sh test cargo-mend` suite.
+**Goal:** every test in the full `verify.sh test cargo-mend` suite takes under 1 s.
 
-**Source:** Phase 4t, 2026-11-09. The test (`crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs:1147`) takes 1.818 s alone (run `20261109T100445-2101576-30f9`) and 4.407 s in the full suite (run `20261109T100344-1891821-0129`). It runs `cargo mend --fix-compiler`, which chains `cargo fix` after the mend checks.
+**Source:** Phase 4t, 2026-11-09. Full-suite run `20261109T102754-1307842-587d` lists these slow tests:
+- `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`: 11.808 s.
+- `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` (`crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs:1147`): 1.818 s alone (run `20261109T100445-2101576-30f9`) and 4.407 s in the full suite (run `20261109T100344-1891821-0129`). It runs `cargo mend --fix-compiler`, which chains `cargo fix` after the mend checks.
+- The 4t chain and fallback tests: 3.360 s and 2.537 s in that run, with the minimum check count. Their full-suite time follows the load of the slow tests.
 
-**Decision:** showrunner, 2026-11-09: a multi-second test is a defect; add this phase.
+**Decision:** showrunner, 2026-11-09: a multi-second test is a defect, never load. This phase is not done until the full-suite list of tests at 1 s or more is empty.
 
 **Constraints:**
-- Find the cost first. If the cost is in cargo-mend, fix it there, so every mend user saves the same CPU.
-- Keep the test's proof: the `pub use` used only by `#[cfg(test)]` code survives `--fix-compiler`, and the test target still compiles.
-- No test takes a second in the full suite.
+- Find the cost of each slow test first. If the cost is in cargo-mend, fix it there, so every mend user saves the same CPU.
+- Keep each test's proof. For example, the `pub use` used only by `#[cfg(test)]` code survives `--fix-compiler`, and the test target still compiles.
 
 **Spec:**
-1. **Measure.** Count the `cargo check`, `cargo fix` and `cargo metadata` runs of the test, with the time of each. Quote the source lines that start each run.
-2. **Cut the cost.** Remove repeated or unneeded runs in cargo-mend. Change the fixture shape only when the runs are all needed, and report that as an `Assertion-Change:` line.
-3. **Changelog.** Add an entry to `crates/cargo-mend/CHANGELOG.md` when mend's behavior or cost changes.
+1. **Measure.** List every cargo-mend test at 1 s or more in the full suite. For each, count the `cargo check`, `cargo fix` and `cargo metadata` runs, with the time of each. Quote the source lines that start each run.
+2. **Cut the cost.** Start with `fix_rollback` (11.8 s) and `narrow_pub_crate` (4.4 s). Remove repeated or unneeded runs in cargo-mend. Change a fixture shape only when the runs are all needed, and report that as an `Assertion-Change:` line.
+3. **Recheck.** Run the full suite again, and check the 4t chain and fallback tests. Repeat steps 1-2 until no test takes 1 s or more.
+4. **Changelog.** Add an entry to `crates/cargo-mend/CHANGELOG.md` when mend's behavior or cost changes.
 
 **Files:**
-- `crates/cargo-mend/src/` — the runs that `--fix-compiler` starts
-- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs` — the test
+- `crates/cargo-mend/src/` — the runs that the slow tests start
+- `crates/cargo-mend/tests/` — the slow tests
 - `crates/cargo-mend/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the test under 1 s alone and in the full suite, and no other test at a second or more. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean, and no test at 1 s or more in the full suite. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
