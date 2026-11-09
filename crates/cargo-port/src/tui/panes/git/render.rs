@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -32,6 +34,7 @@ use unicode_width::UnicodeWidthStr;
 use super::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::NO_REMOTE_SYNC;
+use crate::constants::SECONDS_PER_MINUTE;
 use crate::project::AheadBehind;
 use crate::project::CommitDate;
 use crate::project::Comparison;
@@ -70,6 +73,7 @@ use crate::tui::panes::constants::REMOTES_URL_HEADER;
 use crate::tui::panes::constants::SYNC_HEADER;
 use crate::tui::panes::constants::TRACKED_HEADER;
 use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
+use crate::tui::panes::pane_data;
 use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
@@ -1029,84 +1033,173 @@ fn flat_field_lines(
         format!(" {label:<label_width$} ")
     };
     let wraps = matches!(field, DetailField::WorktreeError | DetailField::Bisect);
-    let value = if is_rate_limit_row {
-        fit_rate_limit_value(args.data, field, value, available)
+    let (value, rate_value_row) = if is_rate_limit_row {
+        match fit_rate_limit_value(
+            args.data,
+            field,
+            value,
+            available,
+            usize::from(args.area_width).saturating_sub(2),
+        ) {
+            RateLimitValue::Inline(value) => (value, false),
+            RateLimitValue::Stacked(value) => (value, true),
+        }
     } else {
-        value
+        (value, false)
     };
+    let separate_value = rate_value_row
+        || (!is_rate_limit_row
+            && field_uses_value_row(args, label_width)
+            && value.width() > usize::from(args.area_width).saturating_sub(1 + prefix.width()));
     let value_style = field_value_style(args.data, field).patch(overlay);
-    let mut lines = if !is_rate_limit_row && field_uses_value_row(args, label_width) {
-        support::field_value_lines(
-            prefix,
+    let mut lines = if separate_value {
+        let fitted = fit_field_value(
+            field,
             &value,
-            usize::from(args.area_width),
-            label_style,
-            value_style,
-            true,
-        )
+            usize::from(args.area_width).saturating_sub(2),
+        );
+        vec![
+            Line::from(Span::styled(prefix.trim_end().to_string(), label_style)),
+            Line::from(Span::styled(format!(" {fitted}"), value_style)),
+        ]
     } else if wraps && !value.is_empty() && available > 0 && value.width() > available {
-        let prefix_len = prefix.width();
-        support::word_wrap(&value, available)
-            .into_iter()
-            .enumerate()
-            .map(|(index, chunk)| {
-                let prefix_span = if index == 0 {
-                    Span::styled(prefix.clone(), label_style)
-                } else {
-                    Span::raw(" ".repeat(prefix_len))
-                };
-                Line::from(vec![prefix_span, Span::styled(chunk, value_style)])
-            })
-            .collect()
+        wrapped_field_lines(&prefix, &value, available, label_style, value_style)
     } else {
         let value = if wraps || value.width() <= available {
             value
         } else {
-            fit_text(&value, available).into_owned()
+            fit_field_value(field, &value, available)
         };
-        let mut spans = vec![Span::styled(prefix, label_style)];
-        if is_rate_limit_row
-            && args.data.github_status.is_available()
-            && let Some(index) = value.find(" resets ")
-        {
-            let (base, reset) = value.split_at(index);
-            let reset_style =
-                selection.patch(Style::default().fg(tui_pane::secondary_text_color()), mode);
-            spans.push(Span::styled(base.to_string(), value_style));
-            spans.push(Span::styled(reset.to_string(), reset_style));
-        } else {
-            spans.push(Span::styled(value, value_style));
-        }
-        vec![Line::from(spans)]
+        vec![Line::from(vec![
+            Span::styled(prefix, label_style),
+            Span::styled(value, value_style),
+        ])]
     };
     for line in &mut lines {
+        if is_rate_limit_row && args.data.github_status.is_available() {
+            let reset_style =
+                selection.patch(Style::default().fg(tui_pane::secondary_text_color()), mode);
+            style_rate_limit_reset(line, reset_style);
+        }
         line.style = line.style.patch(overlay);
     }
     lines
 }
 
+fn wrapped_field_lines(
+    prefix: &str,
+    value: &str,
+    width: usize,
+    label_style: Style,
+    value_style: Style,
+) -> Vec<Line<'static>> {
+    let prefix_len = prefix.width();
+    support::word_wrap(value, width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let prefix_span = if index == 0 {
+                Span::styled(prefix.to_string(), label_style)
+            } else {
+                Span::raw(" ".repeat(prefix_len))
+            };
+            Line::from(vec![prefix_span, Span::styled(chunk, value_style)])
+        })
+        .collect()
+}
+
+fn fit_field_value(field: DetailField, value: &str, width: usize) -> String {
+    if field == DetailField::VsLocal {
+        pane_data::fit_sync_text(value, width)
+    } else {
+        fit_text(value, width).into_owned()
+    }
+}
+
+fn style_rate_limit_reset(line: &mut Line<'static>, reset_style: Style) {
+    for span in std::mem::take(&mut line.spans) {
+        if let Some(index) = span.content.find(" resets ") {
+            let (base, reset) = span.content.split_at(index);
+            line.spans.push(Span::styled(base.to_string(), span.style));
+            line.spans
+                .push(Span::styled(reset.to_string(), reset_style));
+        } else {
+            line.spans.push(span);
+        }
+    }
+}
+
+enum RateLimitValue {
+    Inline(String),
+    Stacked(String),
+}
+
 fn fit_rate_limit_value(
     data: &GitData,
     field: DetailField,
-    value: String,
-    available: usize,
-) -> String {
-    if value.width() <= available {
-        return value;
-    }
+    mut value: String,
+    inline_width: usize,
+    stacked_width: usize,
+) -> RateLimitValue {
     let observation = match field {
         DetailField::RateLimitCore => data.rate_limit_core,
         DetailField::RateLimitGraphQl => data.rate_limit_graphql,
-        _ => return value,
+        _ => return RateLimitValue::Inline(value),
     };
     let QuotaObservation::Observed(quota) = observation else {
-        return value;
+        return RateLimitValue::Inline(value);
     };
     let base = format!("{}/{}", quota.remaining, quota.limit);
-    if base.width() <= available {
-        base
+    let mut required_width = value.width();
+    if quota.used > 0
+        && let Some(reset_at) = quota.reset_at
+    {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let seconds = reset_at.saturating_sub(now);
+        if seconds > 0 {
+            let suffix = if data.github_status.is_unauthenticated() {
+                format!(" ({})", DetailField::GithubStatus.git_value(data))
+            } else {
+                String::new()
+            };
+            let whole_minutes = seconds - seconds % SECONDS_PER_MINUTE;
+            let widest = format!(
+                "{base} resets {}{suffix}",
+                tui_pane::format_progressive(whole_minutes.saturating_add(SECONDS_PER_MINUTE - 1)),
+            );
+            if widest.width() <= inline_width {
+                return RateLimitValue::Inline(value);
+            }
+            let precision = if seconds < SECONDS_PER_MINUTE {
+                seconds
+            } else {
+                whole_minutes
+            };
+            value = format!(
+                "{base} resets {}{suffix}",
+                tui_pane::format_progressive(precision)
+            );
+            required_width = if seconds < SECONDS_PER_MINUTE {
+                widest.width()
+            } else {
+                value.width()
+            };
+        }
+    }
+    if required_width > stacked_width {
+        value = if base.width() <= stacked_width {
+            base
+        } else {
+            quota.remaining.to_string()
+        };
+        required_width = value.width();
+    }
+    if required_width <= inline_width {
+        RateLimitValue::Inline(value)
     } else {
-        quota.remaining.to_string()
+        RateLimitValue::Stacked(value)
     }
 }
 
@@ -1475,7 +1568,10 @@ fn remote_row_line(
             Span::styled(
                 format!(
                     "{gap}{}",
-                    right_column(&row.status_text(), layout.sync),
+                    right_column(
+                        &pane_data::fit_sync_text(&row.status_text(), layout.sync),
+                        layout.sync,
+                    ),
                     gap = " ".repeat(layout.column_gap())
                 ),
                 sync_style,
@@ -1519,7 +1615,10 @@ fn worktree_row_line(
     mode: ColorMode,
 ) -> Line<'static> {
     let sync_text = panes::format_ahead_behind(row.ahead_behind);
-    let sync = right_column(&sync_text, layout.sync);
+    let sync = right_column(
+        &pane_data::fit_sync_text(&sync_text, layout.sync),
+        layout.sync,
+    );
     let leading = format!(" {}", left_column(&row.name, layout.worktree_name));
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let prefix = format!(

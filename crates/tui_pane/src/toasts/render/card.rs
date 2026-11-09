@@ -46,20 +46,16 @@ pub(super) fn render_toast(
     focus: ToastFocus,
     page_height: u16,
 ) -> Rect {
-    let palette = fallback_toast_palette();
     let card = card.intersection(area);
     clear_toast_surroundings(frame, area, card);
 
     let focused = focus == ToastFocus::PaneFocusedOn(toast.id());
     let toast_style = toast.style();
-    // `ToastStyle::Error` and `ToastStyle::Warning` keep the safety-pinned
-    // `fallback_toast_palette` so they stay legible under any user theme.
-    // Plain (info) `ToastStyle::Normal` toasts mirror `crate::default_pane_chrome`
-    // so their border and title match the framework pane chrome.
+    let body_style = toast_body_style(toast_style);
+    // Transparent cards keep the fallback colours. Opaque cards use the theme colours over the
+    // theme background. Normal cards use the pane border and title colours.
     let border_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Error | ToastStyle::Success | ToastStyle::Warning => body_style,
         ToastStyle::Normal => {
             if focused {
                 Style::default().fg(title_color())
@@ -69,9 +65,7 @@ pub(super) fn render_toast(
         },
     };
     let text_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Error | ToastStyle::Success | ToastStyle::Warning => body_style,
         ToastStyle::Normal => {
             if focused {
                 Style::default()
@@ -82,13 +76,6 @@ pub(super) fn render_toast(
             }
         },
     };
-    let body_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
-        ToastStyle::Normal => Style::default(),
-    };
-
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
     let raw_title = toast_title(toast);
@@ -133,10 +120,7 @@ pub(super) fn render_toast(
         };
         page_area.width = countdown_rect.x.saturating_sub(card.x).saturating_add(1);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                countdown,
-                Style::default().fg(palette.label),
-            ))),
+            Paragraph::new(Line::from(Span::styled(countdown, toast_label_style()))),
             countdown_rect,
         );
     }
@@ -151,10 +135,57 @@ pub(super) fn render_toast(
             alloc_interior,
             page_height.saturating_sub(2),
         );
-        render_overflow_affordance(frame, page_area, overflow, border_style);
+        render_page_footer(frame, page_area, overflow, toast_style, border_style);
     }
 
     close_rect
+}
+
+/// Select text colours for the card background.
+fn toast_body_style(toast_style: ToastStyle) -> Style {
+    if crate::transparent_background() {
+        let palette = fallback_toast_palette();
+        match toast_style {
+            ToastStyle::Error => Style::default().fg(palette.error),
+            ToastStyle::Success => Style::default().fg(palette.success),
+            ToastStyle::Warning => Style::default().fg(palette.warning),
+            ToastStyle::Normal => Style::default(),
+        }
+    } else {
+        let color = match toast_style {
+            ToastStyle::Error => crate::error_color(),
+            ToastStyle::Success => crate::success_color(),
+            ToastStyle::Warning => crate::warning_color(),
+            ToastStyle::Normal => crate::text_default(),
+        };
+        Style::default().fg(color)
+    }
+}
+
+/// Keep secondary card text readable over opaque backgrounds.
+fn toast_label_style() -> Style {
+    let color = if crate::transparent_background() {
+        fallback_toast_palette().label
+    } else {
+        crate::text_default()
+    };
+    Style::default().fg(color)
+}
+
+/// Use the theme text colour over the card background.
+fn render_page_footer(
+    frame: &mut Frame,
+    area: Rect,
+    overflow: ViewportOverflow,
+    toast_style: ToastStyle,
+    border_style: Style,
+) {
+    let style = if toast_style == ToastStyle::Normal || !crate::transparent_background() {
+        Style::default().fg(crate::text_default())
+    } else {
+        border_style
+    };
+    render_overflow_affordance(frame, area, overflow, style);
 }
 
 fn toast_title(toast: &ToastView) -> String {
@@ -263,6 +294,11 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         }
     }
     frame.render_widget(Clear, card);
+    if !crate::transparent_background() {
+        frame
+            .buffer_mut()
+            .set_style(card, Style::default().bg(crate::pane_background(false)));
+    }
     clear_covered_border_fragments(frame, gaps, card);
     join_adjacent_frame_columns(frame, area, card);
 }
@@ -377,7 +413,6 @@ fn render_toast_body(
     alloc_interior: u16,
     page_interior: u16,
 ) -> ViewportOverflow {
-    let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
     let has_action = toast.has_action() && alloc_body >= 2;
     let lines_for_body = if has_action {
@@ -419,9 +454,7 @@ fn render_toast_body(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "Enter open",
-                Style::default()
-                    .fg(palette.label)
-                    .add_modifier(Modifier::ITALIC),
+                toast_label_style().add_modifier(Modifier::ITALIC),
             ))),
             hint_area,
         );
@@ -480,9 +513,7 @@ pub(super) fn body_lines_tracked(
         .map(|item| tracked_item_line(item, body_style, line_width))
         .collect::<Vec<_>>();
     if visible < total_items && lines_for_body > 0 {
-        let overflow_style = Style::default()
-            .fg(fallback_toast_palette().label)
-            .add_modifier(Modifier::ITALIC);
+        let overflow_style = toast_label_style().add_modifier(Modifier::ITALIC);
         result.push(Line::from(Span::styled(
             format!("(+{} more)", total_items - visible),
             overflow_style,

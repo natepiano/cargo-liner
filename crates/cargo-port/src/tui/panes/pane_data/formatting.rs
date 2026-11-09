@@ -2,6 +2,8 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
+use unicode_width::UnicodeWidthStr;
+
 use super::DetailField;
 use crate::constants::GIT_STATUS_UNREADABLE;
 use crate::constants::GIT_UNREADABLE_LABEL;
@@ -27,6 +29,8 @@ use crate::project::RemoteList;
 use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
+use crate::tui::panes::constants::FIT_TEXT_ELLIPSIS;
+use crate::tui::render;
 use crate::tui::state::AvailabilityStatus;
 
 /// Whether any completed git read failed, independently of path status.
@@ -473,6 +477,33 @@ pub fn format_ahead_behind(comparison: Comparison) -> String {
     }
 }
 
+/// Fit sync text with whole counts and whole words.
+pub(in crate::tui::panes) fn fit_sync_text(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut prefix =
+        render::truncate_with_ellipsis(text, width.saturating_sub(FIT_TEXT_ELLIPSIS.width()), "");
+    let remaining = &text[prefix.len()..];
+    if !remaining.starts_with(char::is_whitespace)
+        && !remaining.starts_with(SYNC_UP)
+        && !remaining.starts_with(SYNC_DOWN)
+    {
+        let start = prefix
+            .rfind(char::is_whitespace)
+            .into_iter()
+            .chain(prefix.rfind(SYNC_UP))
+            .chain(prefix.rfind(SYNC_DOWN))
+            .max()
+            .unwrap_or(0);
+        prefix.truncate(start);
+    }
+    format!("{}{FIT_TEXT_ELLIPSIS}", prefix.trim_end())
+}
+
 /// Compact sync text shared by the project rows and their fitted widths.
 fn format_sync(comparison: Comparison) -> String {
     match comparison {
@@ -552,6 +583,15 @@ mod tests {
                 ),
                 expected
             );
+        }
+        for (value, width, expected) in [
+            ("↑1234 ↓5678 diverged from main", 11, "↑1234…"),
+            ("↑1234 ↓5678 diverged from main", 12, "↑1234 ↓5678…"),
+            ("↑1 ↓91 diverged from main", 12, "↑1 ↓91…"),
+            ("↑1 ↓91 diverged from main", 25, "↑1 ↓91 diverged from main"),
+            ("↑1234↓5678", 6, "↑1234…"),
+        ] {
+            assert_eq!(fit_sync_text(value, width), expected);
         }
     }
 }

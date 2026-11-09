@@ -131,9 +131,30 @@ fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result
                     description: DescriptionState::KnownEmpty,
                     lint_display: LintDisplay::NoRuns,
                     ci_display: ci,
+                    package_presence: PackagePresence::Present,
                     ..PackageData::default()
                 });
                 let buffer = test_support::draw_pane(&mut app, PaneId::Package, 70)?;
+                for y in buffer.area.y..buffer.area.bottom() {
+                    for x in buffer.area.x..buffer.area.right() {
+                        if buffer[(x, y)].symbol() == "—" {
+                            assert_eq!(
+                                buffer[(x, y)].fg,
+                                tui_pane::dim_value_color(),
+                                "{} ({x}, {y})",
+                                variant.id.as_str()
+                            );
+                        }
+                    }
+                }
+                for label in ["License", "Homepage"] {
+                    let (_, y) = test_support::position(&buffer, label)?;
+                    assert!(
+                        (buffer.area.x..buffer.area.right())
+                            .any(|x| buffer[(x, y)].symbol() == "—"),
+                        "{label}"
+                    );
+                }
                 for value in [text, "—"] {
                     let position = test_support::position(&buffer, value)?;
                     assert_eq!(buffer[position].bg, tui_pane::pane_background(focused));
@@ -158,9 +179,23 @@ fn cut_workspace_description_pane_title_keeps_a_blank_cell_before_the_corner() -
         name: "package-with-a-long-name".to_string(),
         ..PackageData::default()
     });
-    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
-    let rows = test_support::rows(&buffer);
-    assert!(rows[0].trim_end().ends_with("… ┐"), "{rows:?}");
+    app.framework.color_mode = ColorMode::Colored;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, width) in [(80, 17), (95, 17), (80, 18), (80, 24)] {
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Package, window, width)?;
+            let rows = test_support::rows(&buffer);
+            assert!(!rows[0].contains(" - …"), "{rows:?}");
+            if width == 17 {
+                assert!(rows[0].contains("Workspace"), "{rows:?}");
+                assert!(rows[0].trim_end().ends_with("Workspace ────┐"), "{rows:?}");
+            } else {
+                assert!(rows[0].contains("Workspace - p"), "{rows:?}");
+                assert!(rows[0].trim_end().ends_with("… ┐"), "{rows:?}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -425,56 +460,51 @@ fn package_draws_sentence_case_release_and_disk_labels() -> anyhow::Result<()> {
 
 #[test]
 fn selected_descriptions_use_one_text_color_and_fill_each_row() -> anyhow::Result<()> {
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
-            for pane in [PaneId::Package, PaneId::Git] {
-                let mut app = test_support::project_app();
-                if pane == PaneId::Git {
-                    app.panes.git.set_content(GitData {
-                        description: DescriptionState::Known(
-                            "A fleet of tools with a long description for several rows".to_string(),
-                        ),
-                        ..crate::tui::panes::GitData::default()
-                    });
-                    app.panes.git.focus.pane_focus_state = focus;
-                } else {
-                    app.panes.package.focus.pane_focus_state = focus;
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+        for pane in [PaneId::Package, PaneId::Git] {
+            let mut app = test_support::project_app();
+            if pane == PaneId::Git {
+                app.panes.git.set_content(GitData {
+                    description: DescriptionState::Known(
+                        "A fleet of tools with a long description for several rows".to_string(),
+                    ),
+                    ..crate::tui::panes::GitData::default()
+                });
+                app.panes.git.focus.pane_focus_state = focus;
+            } else {
+                app.panes.package.focus.pane_focus_state = focus;
+            }
+            let buffer = test_support::draw_pane(&mut app, pane, 24)?;
+            let word = if pane == PaneId::Git {
+                "A fleet"
+            } else {
+                "No description"
+            };
+            let failures =
+                test_support::contrast_failures(&buffer, &[word], "selected description");
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            let (_, y) = test_support::position(&buffer, word)?;
+            let ground = buffer[(2, y)].bg;
+            for row in y..buffer.area.bottom() - 1 {
+                if buffer[(2, row)].bg != ground {
+                    break;
                 }
-                let buffer = test_support::draw_pane(&mut app, pane, 24)?;
-                let word = if pane == PaneId::Git {
-                    "A fleet"
-                } else {
-                    "No description"
-                };
-                let failures =
-                    test_support::contrast_failures(&buffer, &[word], "selected description");
-                assert!(failures.is_empty(), "{}", failures.join("\n"));
-                let (_, y) = test_support::position(&buffer, word)?;
-                let ground = buffer[(2, y)].bg;
-                for row in y..buffer.area.bottom() - 1 {
-                    if buffer[(2, row)].bg != ground {
-                        break;
-                    }
-                    for x in 1..buffer.area.right() - 1 {
-                        assert_eq!(
-                            buffer[(x, row)].bg,
-                            ground,
-                            "description fill {pane:?} {focus:?} at {x},{row}"
-                        );
-                        assert_eq!(
-                            buffer[(x, row)].fg,
-                            ratatui::style::Color::Rgb(255, 255, 255)
-                        );
-                    }
+                for x in 1..buffer.area.right() - 1 {
+                    assert_eq!(
+                        buffer[(x, row)].bg,
+                        ground,
+                        "description fill {pane:?} {focus:?} at {x},{row}"
+                    );
+                    assert_eq!(
+                        buffer[(x, row)].fg,
+                        ratatui::style::Color::Rgb(255, 255, 255)
+                    );
                 }
             }
         }
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+    }
+    Ok(())
 }
 
 #[test]

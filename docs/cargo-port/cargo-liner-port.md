@@ -792,7 +792,7 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 
 **Ruled out:** One exclusive lock for publish and retention, because the publisher waits on every running mend.
 
-### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
+### Phase 4s — Remaining cut and contrast defects read clean  · status: done
 
 **Depends on:** Phase 4r and Phase 4q (it runs after both; it edits `crates/cargo-port/src/` and `crates/cargo-port/CHANGELOG.md`, as 4q does).
 
@@ -861,8 +861,9 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 3. C227: NO_COLOR draws the thick Sccache border; color mode draws a thin one (`┌ Sccache stats ───┐`).
 4. Lint Runs columns are cut at every width. 160: `│2026-10-  19:00:55  19:00:55`. 80: `ration`, `2026-1`. 60: `art  End  ion  ize  Res`.
 5. At 80 columns under NO_COLOR, `CI runs (466)` (not branch mode) shows only Commit, with no Total column.
+6. Phase 4s final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4s/live/shots_4s_3/`: in `quota80-*-loading-git-2_of_3`, the popup title draws `! crates.io unreacha…` in the 29-cell card. It needs 2 more cells. `! GitHub unreachable` draws whole.
 
-**Decision:** showrunner, 2026-11-09: one fix phase for all five, after Phase 4s. Each fix returns as a new Change-Review row.
+**Decision:** showrunner, 2026-11-09: one fix phase for all five, after Phase 4s. Each fix returns as a new Change-Review row. Item 6 moved here from Phase 4s under the landing rule: it is older than that phase and outside its Spec.
 
 **Constraints:**
 - Never cut a label. Cut a value, a name or a message first.
@@ -876,7 +877,8 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`).
 4. **Lint Runs.** At 60, 80 and 160 columns no Lint Runs header or date is cut inside a word (`tui/panes/lints/render.rs`).
 5. **CI runs.** At 80 columns under NO_COLOR, outside branch mode, the CI runs table shows a Total column (`tui/panes/ci/`).
-6. **Changelog.** Add the cargo-port entries.
+6. **Popup title.** At 80 columns the popup title `crates.io unreachable` draws whole. Keep `[x]` and the card border. A longer title still cuts with `…`. (`crates/tui_pane/src/toasts/render/card.rs`).
+7. **Changelog.** Add the cargo-port and `tui_pane` entries.
 
 **Files:**
 - `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
@@ -884,13 +886,14 @@ Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the sl
 - `crates/cargo-port/src/tui/sccache/render.rs` — Spec 3
 - `crates/cargo-port/src/tui/panes/lints/render.rs` — Spec 4
 - `crates/cargo-port/src/tui/panes/ci/` — Spec 5
+- `crates/tui_pane/src/toasts/render/card.rs` and `crates/tui_pane/CHANGELOG.md` — Spec 6
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer: Specs 1-6 and their tests.
+**Workers:** 1 writer: Specs 1-7 and their tests.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the five defects at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the six defects at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

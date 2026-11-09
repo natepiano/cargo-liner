@@ -247,7 +247,7 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
     let target_wanted = target_col_width_from(target_entries.iter());
     let target_min = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
-    let source_min = SOURCE_MIN_WIDTH;
+    let source_min = columns::display_width(SOURCE_HEADER);
     let target_budget = if text_budget >= source_min + target_min {
         text_budget.saturating_sub(source_min)
     } else {

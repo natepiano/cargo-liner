@@ -1058,7 +1058,7 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
     let first = draw_short_ui(&mut app)?;
     let area = app.panes.tiled_layout.area(PaneId::Git);
     assert_eq!(area.width, 15, "the full UI keeps the after-data Git width");
-    assert_pane_page(&first, area, "1 of 2 ▼");
+    assert_pane_page(&first, area, "1 of 3 ▼");
     let first_worktree =
         panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
     app.panes.git.viewport.set_pos(first_worktree - 1);
@@ -1067,11 +1067,11 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
         .with_context(|| format!("worktree divider: {:?}", test_support::rows(&second)))?;
     assert_eq!(second[(area.x, title.1)].symbol(), "├");
     assert_eq!(second[(area.right() - 1, title.1)].symbol(), "┤");
-    assert_pane_page(&second, area, "▲ 2 of 2");
+    assert_pane_page(&second, area, "▲ 2 of 3 ▼");
     test_support::find_text_cell(&second, area, "master").context("worktree table on page 2")?;
     app.panes.git.viewport.home();
     let first_again = draw_short_ui(&mut app)?;
-    assert_pane_page(&first_again, area, "1 of 2 ▼");
+    assert_pane_page(&first_again, area, "1 of 3 ▼");
     Ok(())
 }
 

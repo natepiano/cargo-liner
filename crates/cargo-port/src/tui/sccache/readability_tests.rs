@@ -66,10 +66,8 @@ fn sccache_reasons_explain_the_uncached_call() -> anyhow::Result<()> {
 fn selected_sccache_label_has_readable_contrast() -> anyhow::Result<()> {
     let mut app = test_support::stats_app(vec!["Cache hits  7".to_string()]);
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(theme));
+    let _theme = crate::tui::test_support::ThemeOverride::install(theme);
     let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
-    tui_pane::set_active_theme(previous);
     let failures = test_support::contrast_failures(&buffer, &["Cache hits"], "selected sccache");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())

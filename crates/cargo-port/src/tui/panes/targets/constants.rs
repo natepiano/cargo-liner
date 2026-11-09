@@ -1,6 +1,6 @@
-/// Source header text. Narrow tables fit it with an ellipsis.
+/// Source header text. Cut target names before this header.
 pub(super) const SOURCE_HEADER: &str = "Source";
-/// Minimum Source width: one letter and an ellipsis.
+/// Layout reserve for Source before the complete header fits.
 pub(super) const SOURCE_MIN_WIDTH: usize = 2;
 /// Leaf index of the targets table box in the pane's tree.
 pub(super) const TABLE_BOX: usize = 0;

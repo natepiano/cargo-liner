@@ -9,6 +9,7 @@ use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
 use super::sync_column_tests;
+use crate::constants::SECONDS_PER_MINUTE;
 use crate::http::RateLimitQuota;
 use crate::project::AheadBehind;
 use crate::project::CommitDate;
@@ -92,16 +93,21 @@ fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
         description: DescriptionState::KnownEmpty,
-        worktrees: ["verify-run-long", "sdlc-merge-long"]
-            .into_iter()
-            .map(|branch| WorktreeInfo {
-                name:         "proof_crate".to_string(),
-                path:         format!("/tmp/{branch}"),
-                branch:       Some(branch.to_string()),
-                tracked:      None,
-                ahead_behind: Comparison::NotCompared,
-            })
-            .collect(),
+        worktrees: [
+            "verify-run-long",
+            "sdlc-merge-long",
+            "↑123456release",
+            "↓123456release",
+        ]
+        .into_iter()
+        .map(|branch| WorktreeInfo {
+            name:         "proof_crate".to_string(),
+            path:         format!("/tmp/{branch}"),
+            branch:       Some(branch.to_string()),
+            tracked:      None,
+            ahead_behind: Comparison::NotCompared,
+        })
+        .collect(),
         remotes: RemoteRows::Listed(vec![RemoteRow {
             name:            "origin".to_string(),
             icon:            "",
@@ -120,9 +126,14 @@ fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
         if width == 17 {
             test_support::position(&buffer, "Worktrees")?;
         }
-        for (offset, branch) in ["verify-run-long", "sdlc-merge-long"]
-            .into_iter()
-            .enumerate()
+        for (offset, branch) in [
+            "verify-run-long",
+            "sdlc-merge-long",
+            "↑123456release",
+            "↓123456release",
+        ]
+        .into_iter()
+        .enumerate()
         {
             sync_column_tests::assert_fitted_column(
                 &buffer,
@@ -172,90 +183,178 @@ fn git_rate_rows_keep_the_remaining_count_when_the_quota_does_not_fit() -> anyho
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
         description: DescriptionState::KnownEmpty,
+        vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind {
+            ahead:  1,
+            behind: 17,
+        })),
         rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      4770,
             limit:     5000,
             remaining: 230,
             reset_at:  None,
         }),
-        ..crate::tui::panes::GitData::default()
+        rate_limit_graphql: QuotaObservation::Observed(RateLimitQuota {
+            used:      42,
+            limit:     5000,
+            remaining: 4958,
+            reset_at:  None,
+        }),
+        ..GitData::default()
     });
-    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 18)?;
-    let (_, y) = test_support::position(&buffer, "Core")?;
-    let row = &test_support::rows(&buffer)[usize::from(y)];
-    assert!(row.contains("230"), "{row}");
-    assert!(!row.contains('/'), "{row}");
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, width, stacked) in [(80, 18, true), (95, 23, true), (95, 45, false)] {
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, width)?;
+            let rows = test_support::rows(&buffer);
+            for (label, value) in [("Core", "230/5000"), ("GraphQL", "4958/5000")] {
+                let (_, y) = test_support::position(&buffer, label)?;
+                let value_y = y + u16::from(stacked);
+                let row = &rows[usize::from(value_y)];
+                assert!(row.contains(value), "{window}, {width}, {label}: {rows:?}");
+                assert!(!row.contains('…'), "{row}");
+                if stacked {
+                    assert!(!rows[usize::from(y)].contains(value), "{rows:?}");
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+fn countdown_git_data(reset_at: u64) -> GitData {
+    let quota = |remaining| {
+        QuotaObservation::Observed(RateLimitQuota {
+            used: 5000 - remaining,
+            limit: 5000,
+            remaining,
+            reset_at: Some(reset_at),
+        })
+    };
+    GitData {
+        description: DescriptionState::KnownEmpty,
+        github_status: AvailabilityStatus::Reachable,
+        rate_limit_core: quota(230),
+        rate_limit_graphql: quota(4959),
+        worktrees: vec![WorktreeInfo {
+            name:         "checkout".into(),
+            path:         "/tmp/checkout".into(),
+            branch:       Some("main".into()),
+            tracked:      None,
+            ahead_behind: Comparison::NotCompared,
+        }],
+        ..GitData::default()
+    }
 }
 
 #[test]
 fn git_reset_countdown_has_readable_contrast() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
-    app.panes.git.set_content(GitData {
-        description: DescriptionState::KnownEmpty,
-        github_status: AvailabilityStatus::Reachable,
-        rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
-            used:      4770,
-            limit:     5000,
-            remaining: 230,
-            reset_at:  Some(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600),
-        }),
-        ..crate::tui::panes::GitData::default()
-    });
+    let reset_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3599;
+    app.panes.git.set_content(countdown_git_data(reset_at));
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(theme));
-    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 80)?;
-    tui_pane::set_active_theme(previous);
-    let failures = test_support::contrast_failures(&buffer, &["resets"], "Git countdown");
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let _theme = crate::tui::test_support::ThemeOverride::install(theme);
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        app.panes.git.set_content(countdown_git_data(reset_at));
+        for (window, width, stacked) in [(80, 80, false), (95, 29, true)] {
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, width)?;
+            let failures = test_support::contrast_failures(&buffer, &["resets"], "Git countdown");
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            let label = test_support::position(&buffer, "Core")?;
+            let reset = test_support::position(&buffer, "resets")?;
+            assert_eq!(reset.1, label.1 + u16::from(stacked));
+            if mode == ColorMode::Colored {
+                for x in reset.0..width - 2 {
+                    if !buffer[(x, reset.1)].symbol().trim().is_empty() {
+                        assert_eq!(buffer[(x, reset.1)].fg, tui_pane::secondary_text_color());
+                    }
+                }
+            }
+        }
+        for (width, stacked, unit, samples) in [
+            (24, true, "m", [2760, 2772]),
+            (33, false, "m", [2760, 2772]),
+            (80, false, "s", [2772, 2773]),
+            (32, true, "s", [9, 45]),
+            (23, false, "", [2760, 2772]),
+        ] {
+            let mut shapes = Vec::new();
+            for seconds in samples {
+                let before = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                let deadline = before + seconds;
+                app.panes.git.set_content(countdown_git_data(deadline));
+                let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, 95, width)?;
+                let after = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                let label = test_support::position(&buffer, "GraphQL")?;
+                let value = test_support::position(&buffer, "4959/5000")?;
+                assert_eq!(value.1, label.1 + u16::from(stacked));
+                let rows = test_support::rows(&buffer);
+                let row = &rows[usize::from(value.1)];
+                if unit.is_empty() {
+                    assert!(!row.contains("resets"), "{row}");
+                } else {
+                    let duration = row.split_once("resets ").context("GraphQL reset")?.1;
+                    let duration = duration.trim().trim_end_matches('│').trim();
+                    assert!(duration.ends_with(unit), "{width}: {row}");
+                    if unit == "m" {
+                        let minutes = duration.trim_end_matches('m').parse::<u64>()?;
+                        assert!(
+                            (deadline.saturating_sub(after) / SECONDS_PER_MINUTE
+                                ..=seconds / SECONDS_PER_MINUTE)
+                                .contains(&minutes)
+                        );
+                    }
+                    if width == 80 {
+                        assert!(duration.contains('m'), "{row}");
+                    }
+                }
+                let divider = test_support::position(&buffer, "Worktrees")?;
+                shapes.push((label.1, value.1, divider.1));
+            }
+            assert_eq!(shapes[0], shapes[1], "{width}: countdown shape");
+        }
+    }
     Ok(())
 }
 
 #[test]
 fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<()> {
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
-            let mut app = test_support::project_app();
-            app.panes.git.set_content(GitData {
-                description: DescriptionState::KnownEmpty,
-                github_status: AvailabilityStatus::Reachable,
-                rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
-                    used:      30,
-                    remaining: 4970,
-                    limit:     5000,
-                    reset_at:  Some(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600),
-                }),
-                ..GitData::default()
-            });
-            app.panes.git.focus.pane_focus_state = focus;
-            test_support::draw_pane(&mut app, PaneId::Git, 80)?;
-            let fields = panes::git_fields_from_data(
-                app.panes
-                    .git
-                    .content()
-                    .ok_or_else(|| anyhow::anyhow!("Git content"))?,
-            );
-            let index = fields
-                .iter()
-                .position(|field| field.label() == "Core")
-                .ok_or_else(|| anyhow::anyhow!("Core field"))?;
-            app.panes.git.viewport.set_pos(index);
-            let buffer = test_support::draw_pane(&mut app, PaneId::Git, 80)?;
-            let failures =
-                test_support::contrast_failures(&buffer, &["resets"], "selected countdown");
-            assert!(failures.is_empty(), "{}", failures.join("\n"));
-            let label = test_support::position(&buffer, "Core")?;
-            let reset = test_support::position(&buffer, "resets")?;
-            assert_eq!(buffer[label].fg, buffer[reset].fg);
-            assert_eq!(buffer[label].bg, buffer[reset].bg);
-        }
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+        let mut app = test_support::project_app();
+        app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
+            github_status: AvailabilityStatus::Reachable,
+            rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
+                used:      30,
+                remaining: 4970,
+                limit:     5000,
+                reset_at:  Some(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600),
+            }),
+            ..GitData::default()
+        });
+        app.panes.git.focus.pane_focus_state = focus;
+        test_support::draw_pane(&mut app, PaneId::Git, 80)?;
+        let fields = panes::git_fields_from_data(
+            app.panes
+                .git
+                .content()
+                .ok_or_else(|| anyhow::anyhow!("Git content"))?,
+        );
+        let index = fields
+            .iter()
+            .position(|field| field.label() == "Core")
+            .ok_or_else(|| anyhow::anyhow!("Core field"))?;
+        app.panes.git.viewport.set_pos(index);
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, 80)?;
+        let failures = test_support::contrast_failures(&buffer, &["resets"], "selected countdown");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        let label = test_support::position(&buffer, "Core")?;
+        let reset = test_support::position(&buffer, "resets")?;
+        assert_eq!(buffer[label].fg, buffer[reset].fg);
+        assert_eq!(buffer[label].bg, buffer[reset].bg);
+    }
+    Ok(())
 }
 
 #[test]
@@ -617,31 +716,105 @@ fn narrow_worktree_divider_keeps_its_count() -> anyhow::Result<()> {
 
 #[test]
 fn narrow_git_fields_keep_ahead_behind_whole_and_loading_has_an_ellipsis() -> anyhow::Result<()> {
-    for (window, pane_width) in [(80, 17), (95, 24)] {
-        let mut app = test_support::project_app();
-        app.framework.color_mode = ColorMode::Colored;
-        app.panes.git.set_content(GitData {
-            description: DescriptionState::KnownEmpty,
-            vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind {
-                ahead:  123,
-                behind: 456,
-            })),
-            pull_requests: PullRequestSection {
-                state: PullRequestSectionState::Loading,
-                ..Default::default()
-            },
-            ..GitData::default()
-        });
-        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, pane_width)?;
-        test_support::position(&buffer, "Ahead/Behind")?;
-        let loading = test_support::rows(&buffer)
-            .into_iter()
-            .find(|row| row.contains("loading pull"))
-            .context("Pull request loading row")?;
-        let body: String = loading.chars().take(usize::from(pane_width - 1)).collect();
-        assert!(body.trim_end().ends_with('…'), "{loading}");
-        let y = test_support::position(&buffer, "loading pull")?.1;
-        assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+    let mut app = test_support::project_app();
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, pane_width, ahead, behind, expected) in [
+            (80, 17, 123, 456, "↑123 ↓456…"),
+            (95, 24, 123, 456, "↑123…"),
+        ] {
+            app.panes.git.set_content(GitData {
+                description: DescriptionState::KnownEmpty,
+                vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind { ahead, behind })),
+                pull_requests: PullRequestSection {
+                    state: PullRequestSectionState::Loading,
+                    ..Default::default()
+                },
+                ..GitData::default()
+            });
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Git, window, pane_width)?;
+            test_support::position(&buffer, "Ahead/Behind")?;
+            test_support::position(&buffer, expected)?;
+            let loading = test_support::rows(&buffer)
+                .into_iter()
+                .find(|row| row.contains("loading pull"))
+                .context("Pull request loading row")?;
+            let body: String = loading.chars().take(usize::from(pane_width - 1)).collect();
+            assert!(body.trim_end().ends_with('…'), "{loading}");
+            let y = test_support::position(&buffer, "loading pull")?.1;
+            assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+        }
+        for (window, pane_width, ahead, behind, expected) in [
+            (80, 15, 1234, 5678, "↑1234…"),
+            (95, 16, 1234, 5678, "↑1234 ↓5678…"),
+            (80, 16, 1, 91, "↑1 ↓91…"),
+            (95, 17, 1, 91, "↑1 ↓91…"),
+        ] {
+            app.panes.git.set_content(GitData {
+                description: DescriptionState::KnownEmpty,
+                vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind { ahead, behind })),
+                ..GitData::default()
+            });
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Git, window, pane_width)?;
+            test_support::position(&buffer, "Ahead/Behind")?;
+            test_support::position(&buffer, expected)?;
+        }
     }
+    Ok(())
+}
+
+#[test]
+fn cut_sync_values_keep_each_visible_count_whole() -> anyhow::Result<()> {
+    #[derive(Debug, PartialEq, Eq)]
+    enum CountCoverage {
+        Unseen,
+        Seen,
+    }
+    let mut app = test_support::project_app();
+    app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
+        remotes: RemoteRows::Listed(vec![RemoteRow {
+            name:            "origin".into(),
+            icon:            "",
+            display_url:     "github.com/acme/project".into(),
+            branch:          "main".into(),
+            tracked_ref:     TrackedRef::Named("origin/main".into()),
+            status:          Comparison::Counted(AheadBehind {
+                ahead:  1,
+                behind: 17,
+            }),
+            full_url:        None,
+            push_annotation: None,
+        }]),
+        ..GitData::default()
+    });
+    let mut saw_cut = CountCoverage::Unseen;
+    let mut saw_whole = CountCoverage::Unseen;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, width) in [(80, 24), (80, 30), (95, 35), (95, 60)] {
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, width)?;
+            for row in test_support::rows(&buffer) {
+                if row.contains('↑') {
+                    assert!(row.contains("↑1"), "{width}: {row}");
+                    assert!(!row.contains("↓1…"), "{width}: {row}");
+                    assert!(!row.contains("↓…"), "{width}: {row}");
+                    if row.contains('↓') {
+                        assert!(row.contains("↓17"), "{width}: {row}");
+                        saw_whole = CountCoverage::Seen;
+                    } else {
+                        assert!(row.contains('…'), "{width}: {row}");
+                        saw_cut = CountCoverage::Seen;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        (saw_cut, saw_whole),
+        (CountCoverage::Seen, CountCoverage::Seen)
+    );
     Ok(())
 }

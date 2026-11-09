@@ -242,65 +242,60 @@ fn disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Resu
 
 #[test]
 fn selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        for status in [GitStatus::Clean, GitStatus::Untracked, GitStatus::Modified] {
-            let mut app = test_support::project_app();
-            app.framework.color_mode = ColorMode::Colored;
-            app.project_list
-                .at_path_mut(Path::new(PROJECT_PATH))
-                .expect_found("project")
-                .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-                status,
-                head: HeadState::Branch("fleet".to_string()),
-                last_commit: CommitDate::At("2026-11-05 12:00".to_string()),
-                ahead_behind_local: Comparison::Counted(AheadBehind {
-                    ahead:  0,
-                    behind: 0,
-                }),
-                primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
-                bisect: None,
-            }));
-            let run = serde_json::from_value(serde_json::json!({
-                "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
-                "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
-            }))?;
-            app.project_list
-                .ensure_git_repo_for(Path::new(PROJECT_PATH))
-                .context("Git repo")?
-                .repo_info = RepositoryProbe::Repository(RepoInfo {
-                local_main_branch: ResolvedBranch::Named("fleet".to_string()),
-                default_branch: ResolvedBranch::Named("fleet".to_string()),
-                ..crate::project::RepoInfo::default()
-            });
-            app.project_list
-                .ensure_git_repo_for(Path::new(PROJECT_PATH))
-                .context("Git repo")?
-                .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
-                runs:          vec![run],
-                github_total:  GithubRunCount::Known(1),
-                ci_pagination: CiPagination::Exhausted,
-            });
-            let buffer = test_support::draw_ui(&mut app, WIDTH)?;
-            let body = app.panes.project_list.body_rect;
-            let (_, y) =
-                test_support::find_text_cell(&buffer, body, PROJECT).context("selected row")?;
-            let mut row = Buffer::empty(ratatui::layout::Rect::new(body.x, y, body.width, 1));
-            for x in body.x..body.right() {
-                row[(x, y)] = buffer[(x, y)].clone();
-            }
-            let mut words = vec!["🟢", status.icon(), "1.0 GiB"];
-            if status == GitStatus::Clean {
-                words.push("☑");
-            }
-            let failures = test_support::contrast_failures(&row, &words, "selected status cells");
-            assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    for status in [GitStatus::Clean, GitStatus::Untracked, GitStatus::Modified] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.project_list
+            .at_path_mut(Path::new(PROJECT_PATH))
+            .expect_found("project")
+            .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+            status,
+            head: HeadState::Branch("fleet".to_string()),
+            last_commit: CommitDate::At("2026-11-05 12:00".to_string()),
+            ahead_behind_local: Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
+            primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
+            bisect: None,
+        }));
+        let run = serde_json::from_value(serde_json::json!({
+            "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
+            "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
+        }))?;
+        app.project_list
+            .ensure_git_repo_for(Path::new(PROJECT_PATH))
+            .context("Git repo")?
+            .repo_info = RepositoryProbe::Repository(RepoInfo {
+            local_main_branch: ResolvedBranch::Named("fleet".to_string()),
+            default_branch: ResolvedBranch::Named("fleet".to_string()),
+            ..crate::project::RepoInfo::default()
+        });
+        app.project_list
+            .ensure_git_repo_for(Path::new(PROJECT_PATH))
+            .context("Git repo")?
+            .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+            runs:          vec![run],
+            github_total:  GithubRunCount::Known(1),
+            ci_pagination: CiPagination::Exhausted,
+        });
+        let buffer = test_support::draw_ui(&mut app, WIDTH)?;
+        let body = app.panes.project_list.body_rect;
+        let (_, y) =
+            test_support::find_text_cell(&buffer, body, PROJECT).context("selected row")?;
+        let mut row = Buffer::empty(ratatui::layout::Rect::new(body.x, y, body.width, 1));
+        for x in body.x..body.right() {
+            row[(x, y)] = buffer[(x, y)].clone();
         }
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+        let mut words = vec!["🟢", status.icon(), "1.0 GiB"];
+        if status == GitStatus::Clean {
+            words.push("☑");
+        }
+        let failures = test_support::contrast_failures(&row, &words, "selected status cells");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    Ok(())
 }
 
 #[test]
@@ -459,11 +454,10 @@ fn project_type_icons_have_a_heading() -> anyhow::Result<()> {
 #[test]
 fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()> {
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
     let mut failures = Vec::new();
     for deleted in [false, true] {
         let mut app = test_support::project_app();
-        tui_pane::set_active_theme(std::sync::Arc::new(theme.clone()));
+        let _theme = test_support::ThemeOverride::install(theme.clone());
         let info = app
             .project_list
             .at_path_mut(Path::new(PROJECT_PATH))
@@ -500,7 +494,6 @@ fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()>
             ));
         }
     }
-    tui_pane::set_active_theme(previous);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }
@@ -509,10 +502,8 @@ fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()>
 fn project_selection_has_visible_fill_and_one_text_color() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(theme));
+    let _theme = test_support::ThemeOverride::install(theme);
     let buffer = test_support::draw_ui(&mut app, WIDTH)?;
-    tui_pane::set_active_theme(previous);
     let name = test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, PROJECT)
         .context("the selected project name")?;
     let disk = test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, "1.0 GiB")

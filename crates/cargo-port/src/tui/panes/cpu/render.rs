@@ -827,10 +827,9 @@ mod tests {
 
     #[test]
     fn cpu_filled_cells_use_background_and_readable_number_ink() -> anyhow::Result<()> {
-        let previous = tui_pane::theme();
-        tui_pane::set_active_theme(std::sync::Arc::new(
+        let _theme = crate::tui::test_support::ThemeOverride::install(
             crate::tui::test_support::shipped_dark_theme()?,
-        ));
+        );
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 3))?;
         terminal.draw(|frame| {
             for (y, percent) in [(0, 40), (1, 100), (2, 10)] {
@@ -862,7 +861,6 @@ mod tests {
         let failures =
             crate::tui::test_support::contrast_failures(buffer, &["1", "2", "3"], "CPU labels");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-        tui_pane::set_active_theme(previous);
         Ok(())
     }
 

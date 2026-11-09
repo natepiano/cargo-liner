@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep the Targets Source header whole before target names. Drop whole ahead/behind tokens instead of cutting numbers.
+- Stack Git rate values when they do not fit inline, and keep the row shape steady as the reset counts down. Keep a name letter after the Package title separator.
+- Draw all empty Package values in the dim value colour. Keep Startup page marks readable under every registered theme.
+- Restore test themes through the shared Drop fixture after failures.
+
 - Remove spaces and trailing middle-dot separators before cut-value ellipses. Keep the Tracked header and short Worktree Group CI values whole.
 - Give quiet CI and lint values a separate theme role with readable contrast on focused and unfocused panes.
 - Deliver pull-request results to submodules. Keep cached rows when the remote list cannot be read. Hide empty loading sections without a fetch.

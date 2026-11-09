@@ -705,6 +705,9 @@ fn package_field_value(ctx: &PackageRenderCtx<'_>, field: DetailField) -> String
 }
 
 fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> Style {
+    if package_field_value(ctx, field) == "—" {
+        return Style::default().fg(tui_pane::dim_value_color());
+    }
     match field {
         DetailField::Ci => ci_display_style(&ctx.data.ci_display),
         DetailField::Lint => lint_display_style(&ctx.data.lint_display),
@@ -1221,7 +1224,7 @@ fn fit_package_title(data: &PackageData, width: usize) -> String {
         data.title.clone()
     };
     let available = width.saturating_sub(label.width()).saturating_sub(1);
-    if available > 3 {
+    if available > 4 {
         format!(
             "{label} - {} ",
             render::truncate_with_ellipsis(&data.name, available - 3, "…")

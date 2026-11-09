@@ -87,39 +87,33 @@ fn phase4e_settings_wrap_paths_at_slashes_inside_the_popup_margin() -> anyhow::R
 fn phase4e_selected_settings_use_one_readable_ink() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        let buffer = select_setting(&mut app, SettingOption::InvertScroll)?;
-        let label = test_support::position(&buffer, "Invert scroll")?;
-        let area = app.framework.settings_pane.viewport().content_area();
-        let mut selected =
-            Buffer::empty(ratatui::layout::Rect::new(area.x, label.1, area.width, 1));
-        for x in area.x..area.right() {
-            selected[(x, label.1)] = buffer[(x, label.1)].clone();
-            if !buffer[(x, label.1)].symbol().trim().is_empty() {
-                assert_eq!(
-                    buffer[(x, label.1)].fg,
-                    buffer[label].fg,
-                    "the selected value and label need one ink"
-                );
-            }
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    let buffer = select_setting(&mut app, SettingOption::InvertScroll)?;
+    let label = test_support::position(&buffer, "Invert scroll")?;
+    let area = app.framework.settings_pane.viewport().content_area();
+    let mut selected = Buffer::empty(ratatui::layout::Rect::new(area.x, label.1, area.width, 1));
+    for x in area.x..area.right() {
+        selected[(x, label.1)] = buffer[(x, label.1)].clone();
+        if !buffer[(x, label.1)].symbol().trim().is_empty() {
+            assert_eq!(
+                buffer[(x, label.1)].fg,
+                buffer[label].fg,
+                "the selected value and label need one ink"
+            );
         }
-        let toggle = if app.config.invert_scroll().is_inverted() {
-            "ON"
-        } else {
-            "OFF"
-        };
-        let failures = test_support::contrast_failures(
-            &selected,
-            &["Invert scroll", toggle],
-            "Settings selection",
-        );
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+    }
+    let toggle = if app.config.invert_scroll().is_inverted() {
+        "ON"
+    } else {
+        "OFF"
+    };
+    let failures = test_support::contrast_failures(
+        &selected,
+        &["Invert scroll", toggle],
+        "Settings selection",
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
 }
 
 #[test]
