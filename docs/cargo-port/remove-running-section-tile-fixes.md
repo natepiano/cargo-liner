@@ -1358,7 +1358,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
 
-### Phase 30m — Capture shim cost on main  · status: todo
+### Phase 30m — Capture shim cost on main  · status: done
 **Depends on:** Phase 43g (both change `shim_registration/` and the install lifecycle tests).
 
 
@@ -1376,7 +1376,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 - The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
 
-**Constraints from Phase 43g (director, 2026-11-08):** keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. Phase 43i runs beside this phase on the reader scenario files and the slow `installed.rs` tests; this phase does not edit `reader_scenarios.rs`, `reader_scenario_cases.py` or `fixture_events.py`.
+**Constraints from Phase 43g (director, 2026-11-08):** keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. Phase 43i runs beside this phase on the reader scenario timing. This phase integrates before Phase 43i: the two share no file, and 43i repair round 2 takes the `census/scan.rs` wait cut on top of this phase (director, 2026-11-08). **Scope (director, 2026-11-08):** this phase also edits `main.rs` (the capture entry call before argument parsing), `birth_stamp/mod.rs` and `birth_stamp/kernel_observation.rs` (crate-visible `capture_boot`, `observe_process`, `BirthStamp::registration_fields`), `Cargo.toml` and `Cargo.lock` (the workspace `signal-hook` dependency), `installed.rs` (the native birth tests replace the shell conversion tests; the six slow install tests from the 43g suites go under 1 s), and the reader templates in `reader_scenario_cases.py` and `reader_scenarios.rs` (render the runner path and flags from the constants). `tee` stays the mirror.
 
 ### Phase 35m — Summary arguments on main  · status: done
 
@@ -1652,7 +1652,7 @@ Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader sce
 **Spec:**
 0. **43g F004 and F005, first.** `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.082 s on natedev (load 68) and `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.049 s and 1.190 s on the Mac (load 7-17) in the 43g round 3 suites (`phases/43g/fix3_summary.md`). Diagnose on the current code before any cut: split native scan, rendering and scheduling time. The 43g round 2 stage times (Mac scan gap 865 ms, CPU baselines 671 ms, required frame 1173 ms) are observations from reverted code, not a proven cause. Do not add the kernel-worker and frame-observer durations; they overlap. Keep the nested commands' `CARGOTILE_NESTED` from the product shim, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace. The 43g attempts (rounds 1-3) are in `phases/43g/fix1_summary.md`, `fix2_summary.md` and `fix3_summary.md`.
 1. `reader_keeps_parent_family_across_its_only_childs_source_switch` (`shim_registration/reader_scenarios.rs:359`) took 1.029 s on natedev in the 43g gate and 1.900 s on the Mac in the Phase 35m gate. Measure its stages, then fix the cause. Keep every assertion and readiness wait.
-1a. **Seven more slow tests from the 43g round 3 head suites** (`phases/43g/fix3_summary.md`): `reader_opens_settings_when_resize_and_key_are_pending_together` (1.004-1.174 s), `darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` (1.037 s), `darwin_birth_conversion_falls_back_to_gnu_date` (1.106 s), `darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment` (1.034-1.039 s), `darwin_birth_conversion_removes_ps_column_padding` (1.051-1.054 s), `failed_darwin_birth_conversion_publishes_empty_identity_field` (1.018 s) and `same_pid_and_calendar_second_receive_different_generations` (1.050 s). Measure each test's stages, then fix the cause. Keep every assertion.
+1a. **One more slow reader test from the 43g round 3 head suites** (`phases/43g/fix3_summary.md`): `reader_opens_settings_when_resize_and_key_are_pending_together` (1.004-1.174 s). Measure its stages, then fix the cause. Keep every assertion. The six slow `installed.rs` tests from the same suites (five `darwin_birth_conversion` tests and `same_pid_and_calendar_second_receive_different_generations`) belong to Phase 30m, whose native capture entry replaces the shell birth conversion.
 2. `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (`shim_registration/shared_capture.rs:111`) took 1.634 s on natedev in the 43g gate. Measure its stages, then fix the cause. Keep every assertion.
 3. Leak owners (43g F006; items 1, 4 and 7 of Phase 43g): nextest marked `install_prints_a_completed_toolchain_before_a_later_lock_finishes`, `control_s_saves_a_favorite` and `caller_descriptors_reach_captured_cargo` leaky on the Mac in earlier gates. Run the Mac suite with Phase 43g's process observer (`phases/43g/measure_baseline.py`; its driver names an old scratch path, so point it at this phase's copy) until one of them leaks again, at most six suites. Record the owner's pid, command and parent, then fix it by its cause. If none leaks in six suites, report the six results and change no code.
 4. Interrupt race (43g F007; Phase 43g item 5): `interrupt_to_the_process_group_lets_cargo_finish_first` failed "the shim returned before cargo finished stopping" twice on natedev under load 37-44. Run it alone under comparable natedev load until it fails, at most 200 runs. Record the order of the shim's return and cargo's stop, then fix the cause. If it does not fail, report the counts and change no code. Keep the cargo-finished assertion.
@@ -1927,27 +1927,136 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - At merge, the showrunner installs cargo-tile on both machines.
 - Change-review line: none (no visible change), or the faster cargo call if a test can show it.
 
+### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: todo
+
+**Depends on:** none. Phases 31 and 43i join the tile worktree only after this phase merges and berth is installed.
+
+The showrunner assigned this phase on 2026-11-08; the user said to fix berth defect k now, as a unit phase with a Codex writer. Report and evidence: `~/.claude/state/berth-fix/inbox/20261108T152729Z-cargo-liner/` (`report.md`, `ledger-snapshot.tar.gz`, `resolution.md`).
+
+Today a checkpoint release also releases each sibling reservation in the same `reservation_shares` group, as `released_after_checkpoint`. The siblings did not checkpoint. Three cases: the 43g shrink (40bb8be2) released Phase 31's `01a1b9c0-03fe-7771-bb2a-264f9d6b2497` and Phase 43i's `01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8`; the 35m shrink (a833d5504) released Phase 31's `01a1b90d`; a later release freed 43g's `01a1b891`.
+
+#### Work Order
+
+**Goal:** a checkpoint release frees only the reservation of the phase that checkpointed. Sibling reservations in the same `reservation_shares` group stay active.
+
+**Spec:**
+1. Red first. Add a `cargo-berth-test-support` fixture case: two phases' reservations in one share group; one checkpoints and releases; the other stays `active` on the board, with its claims. Run it red on the current code and record the red output. It takes under 1 s.
+2. Find the path that reaches the siblings (start at `ReservationShares { reservation_ids }` in `reservation/merge_extent.rs`, the release in `verb/release.rs`, and `reconcile.rs`, the other user of shares). Quote the line that releases a sibling.
+3. Fix it there. The share group may still inform the merge extent of the released reservation; it must not change a sibling's lifecycle.
+4. Keep every existing berth assertion. Add the new case as a row of an existing release test where one covers this behavior.
+5. Replay the ledger snapshot from the report: after the fix, the 43g release leaves `01a1b9c0-...-264f9d6b2497` and `01a1b9c9-...` active, or the replay shows why it cannot.
+
+**Files:**
+- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reservation/merge_extent.rs`, `crates/cargo-berth/src/reservation/record.rs`, `crates/cargo-berth/src/reconcile.rs` — the release path and the share group.
+- `crates/cargo-berth-test-support/` — the red fixture.
+
+Other cargo-berth files need director routing.
+
+**Out of scope:** the second defect in the report (an `Active` phase record with no repair verb) is in `~/.claude`; the showrunner routes it to sdlc.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the berth package suite on natedev and the Mac, `--no-cache`, every test under 1 s; lint. After the merge and the berth install, Phases 31 and 43i claim their files again.
+
+### Phase 57 — Three cargo-berth lock tests pass under load  · status: todo
+
+**Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
+
+The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit it blocks. The Phase 30m round 2 Mac workspace gate (run `20261108T100328-2152148-9d81`) failed two cargo-berth tests that Phase 30m does not touch.
+
+#### Work Order
+
+**Goal:** the three tests pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
+
+**Spec:**
+1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". Find the wait that takes the time, quote its line, and fix it there.
+2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
+3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
+4. Three `tests/board.rs` tests failed on the Mac in the Phase 30m round 3 workspace gate (2026-11-08 22:1x, load 16-40): `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` (`tests/board.rs:6989`, left `Null`, right `"protected_tip_ancestor"`), and `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` (`tests/board.rs:7070`, "ordinary reconciliation should settle the reachable checkpoint", left `"outstanding"`, right `"released"`). Find the cause, quote its line, and fix it there.
+5. Reproduce each fault red first on the machine that showed it, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
+6. Do not loosen an assertion. Keep every existing assertion.
+
+**Files:**
+- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/board.rs` — the tests and their fixtures.
+- `crates/cargo-berth-test-support/` — shared fixtures.
+
+The product file of each cause needs director routing.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with both tests green and every test under 1 s; lint.
+
+### Phase 58 — cargo-berth tests run under a second  · status: todo
+
+**Depends on:** Phase 56 for edits to `crates/cargo-berth-test-support/`. The measurement in item 1 starts at once.
+
+The showrunner assigned this phase on 2026-11-08. The user's rule: a test that takes a second is a defect, not a load flake. Phase 56's first gate timed 444 cargo-berth tests at 1 s or more on the Mac. The Phase 30m and 43i gates saw the same cost. An earlier fix (2026-10-03, ending at `afe59f30`, with `48889b3f` and `38be8d3a`) removed four causes: managed git hooks in fixtures, repeated git spawns per run, an fsync on every write, and a fresh repository per test.
+
+#### Work Order
+
+**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac.
+
+**Spec:**
+1. Measure before any edit. Count the cargo-berth tests at 1 s or more at `-j 1` and at full load, on natedev and on the Mac. Record each count and the load.
+2. For each of the four earlier causes, find whether it came back since `afe59f30`. Quote the line that brought it back.
+3. Find any new shared cause in the ten slowest tests. Quote its line.
+4. Fix each cause where it lives. Keep every assertion and every test case.
+5. Measure the same counts after the fix, with the same method.
+
+**Files:**
+- `crates/cargo-berth-test-support/` — the shared fixtures, after Phase 56 merges.
+- `crates/cargo-berth/tests/` — the integration tests, except the three files of Phase 57.
+- `crates/cargo-berth/src/git/child.rs` — the child runtime polls exit every 1 ms (`child.rs:421`) and starts a thread for a pipe that does not exist (`child.rs:245`). Test support includes this file.
+- `crates/cargo-berth/src/git/read.rs`, `crates/cargo-berth/src/git/command.rs` — in-process reads fall back to git subprocesses when a hook passes a repository selector (`read.rs:202`, `read.rs:265`).
+- `crates/cargo-berth/src/board/rows.rs`, `crates/cargo-berth/src/board/answers.rs` — test modules only: one slow unit test in each (`rows.rs:1847`). The showrunner assigned them on 2026-11-08; the claim runs before the quiet style cover `01a192d3`.
+- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs` — only after Phase 57 merges: a recorded template for the two-orphan setup (`hooks.rs:2785`) and the partly landed lane (`lifecycle.rs:2739`), and one test per landing mode (`lifecycle.rs:322`).
+
+The diagnosis found that none of the four earlier causes came back. The new shared costs are the 1 ms exit poll, the empty pipe threads, the git subprocess fallback and fixture setup inside the test clock. Phase 56 and Phase 57 keep only their own failures.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test at 1 s or more; lint.
+
 ### Phase 31 — Ended cells leave whole  · status: todo
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
 
 #### Work Order
 
-**Goal:** An ended cell fades and shrinks as one whole cell. It never paints as a one-row headless cell in mid-column (Phase 24 second capture, `r24b_d40_overview_9.00`; first capture, `r24_d80_overview_9.00`).
+**Goal:** An ended cell shrinks on its text fade clock and always draws its heading row. It never paints as a headless row or as a bordered box with no text (Phase 24 second capture, `r24b_d40_overview_9.00`; first capture, `r24_d80_overview_9.00`; Phase 31 first attempt, `paired/p31_d80_ended_p22k00_f162_8.575`).
 
 **Spec:**
 
-1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame. The fixture also covers the frame with no rows: the roster has dropped the group while the grid still draws its closing cell (main 1fdee462: empty bordered box with `content rows: 0` in 38 of 107 frames, from 3 ms to 550 ms; `frame_draw_group` returns without rows).
+0. **State model first (showrunner, 2026-11-08).** Before any code, the writer puts the closing cell's state model in this section: each state, the one record that owns it, and every path that constructs or changes it. Two records never hold the same fact. The showrunner reviews it before code starts.
+
+1. **An ended cell shrinks with its heading (user, 2026-10-16: "tiles should start disappearing over the time frame that the text fades away - which can clip some of the text obviously if the cell is tall. but that's fine with me."; showrunner ruling B, 2026-11-08).**
+   - A closing cell shrinks on its text fade clock (plan item 9).
+   - Every frame draws its heading row. Body rows clip from the bottom. Clipped text is acceptable.
+   - No frame draws a bordered box with no text. No frame draws a headless row.
+   - At the last step the cell is heading only. Then it is gone.
+   Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame. The fixture refuses an empty inner buffer (the first attempt's test allowed one at `render.rs:1020`). It also covers the frame where the roster has dropped the group while the grid still draws its closing cell (main 1fdee462: empty bordered box with `content rows: 0` in 38 of 107 frames; `frame_draw_group` returns without rows).
 
 2. **The tile motion tests run under 1 s under load** (showrunner, 2026-11-07). Port's Mac run (six nextest threads, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T193135-3235537-9756.log`) timed seven `tui_pane` tile tests at 1.0 to 1.7 s; an earlier full run on the same code had a maximum of 0.645 s. In `tiles/draw.rs`: `every_frame_of_a_key_keeps_the_motion_rules` (1.712 s), `a_content_change_mid_motion_leaves_no_blank_row` (1.674 s), `a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row` (1.628 s), `startup_cells_leave_no_line_before_their_first_row` (1.383 s), `a_content_change_keeps_the_motion_clock_with_a_key_waiting` (1.200 s), `sliding_pieces_leave_no_band_row_on_the_screen_ground` (1.015 s). In `tiles/grid.rs`: `a_sliding_arrival_shows_its_nearest_content_row_with_its_first_visible_row` (1.180 s). A test near 1 s under load is a defect. Measure each test's stages, then cut the cost so each stays under 1 s in a loaded Mac full suite. Keep every assertion and every checked frame.
 
-**Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds.
+**Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds; the count restarts with the redesign (showrunner, 2026-11-08).
+
+**Round 4, the last (showrunner, 2026-11-08):** the redesign capture said LAND no (`phases/31/diagnose5_report.md`). Closing-model faults fell to 0 (main 5104) and blank boxes to 22 (main 1058). One more round fixes two causes:
+
+1. A new cell is admitted only while its command is Live. A Closing group that never had a cell does not take a slot (t40: seven jobs got a first cell after their work ended).
+2. Admission counts reclaimable blank rows in live cells and closing spans, at O(C+W) and only when its inputs change (longest free wait t40 9.9 s against 2.45 s).
+
+The next paired capture measures rule a against the approved closing model, and reports CPU as total reader CPU and time-weighted visible cells. Per-cell CPU is reported but does not decide landing. The free-wait measure stays as it is. If any live count is still worse, the showrunner decides land or park. No further round.
+
+**First attempt (2026-11-07 to 11-08, copy head 9b85b0e, not landed):** it gated a closing cell's content all or nothing (`draw.rs:623`, `draw.rs:798`, `render.rs:1707`) while the grid still shrank its geometry. The paired capture found empty bordered boxes in 2387 frames against the base's 45. Keep its cost cuts: `draw_clipped` scratch reuse and the `GridLines::render` cut (`pane/frame.rs`), and the motion tests that run each key once.
 
 **Files:**
 - `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/cargo-tile/src/render.rs` — item 1 and its fixture. Item 2 adds each file that a moved defect names; the dispatch lists it with that defect's evidence.
 - `crates/cargo-tile/src/render/frame_preparation.rs` — preparation inputs, retained tables, allocation decisions and row measurements.
 - `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
 - `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
+- `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/roster/invocation_continuity.rs` — the shared finish record and the canonical fade sample (state model; showrunner, 2026-11-08).
+- `crates/tui_pane/src/pane/frame.rs` — the first attempt's cost cuts (`draw_clipped` scratch reuse, `GridLines::render`).
+- `crates/cargo-tile/src/grid_view.rs` — expand and collapse apply the closing height after the viewport candidate.
 
 **Workers:** 1 writer + 1 tester. `impl` owns source and regression fixtures; `test` owns paired captures.
 
@@ -1964,6 +2073,138 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green.
 - The paired live capture against main meets the landing rule.
 - Change-review line: an ended cell never paints as a headless row.
+
+#### State model
+
+Source: first-attempt copy `9b85b0e`; diagnosis `phases/31/diagnose4_report.md`. Written by the Phase 31 writer, 2026-11-08. Status: approved by the showrunner 2026-11-08, with the director's change: `HeadingOnly` is a time window on the fade clock, and no paint receipt exists.
+Heading means the account/directory row produced by `CommandHeading`.
+New types below are proposals. Their references identify current replacement sites, not existing definitions.
+
+| Reference | File under `crates/` |
+|---|---|
+| R | `cargo-tile/src/roster.rs` |
+| I | `cargo-tile/src/roster/invocation_continuity.rs` |
+| O | `cargo-tile/src/roster/invocation_owners.rs` |
+| C | `cargo-tile/src/render.rs` |
+| P | `cargo-tile/src/render/frame_preparation.rs` |
+| G | `tui_pane/src/tiles/grid.rs` |
+| D | `tui_pane/src/tiles/draw.rs` |
+| F | `tui_pane/src/pane/frame.rs` |
+| V | `cargo-tile/src/grid_view.rs` |
+
+**States and rows**
+
+`ClosingCellFrame` borrows one source, one lifecycle sample, and one heading-bearing placement for the current frame.
+It cannot represent a bordered placement without a heading row.
+Only an admitted command cell creates closing geometry; an unshown command does not acquire a departure cell.
+
+| State | Entry | Rows drawn | Exit |
+|---|---|---|---|
+| `Live` | The cell has a live invocation. | Existing heading and body. | All retained invocations finish; select the latest canonical finish as the close origin. |
+| `FadingWhole` | Closing begins and its height holds the source. | Heading, reading, ancestry, table, process rows, and foot. | The shared fade reduces the available height below the source height. |
+| `FadingClipped` | The available interior holds the heading and part of the body. | Heading and the top prefix of the same body. Bottom rows disappear first. | The interior reaches one row. |
+| `HeadingOnly` | The fade sample reaches `A_h`, the start of the heading-only window. | Exactly the fitted account/directory heading; no table, progress, foot, or count. | The fade completes. |
+| `Gone` | Closing completes after its terminal presentation. | No piece, cell border, readout, or summary fallback for that departure. | Release the presentation lease; never reopen from the same finished observation. |
+
+| Boundary | Decision |
+|---|---|
+| The cell already has clipped content when it ends | Enter `FadingClipped`; retain its source and its actual starting height. |
+| The viewport cannot contain a heading and its borders | Emit no piece or cell border. Retain the lifecycle source while its deadline runs; create no empty slot. |
+| The same invocation becomes live again | The canonical lifecycle cancels closing. PID reuse keeps its distinct invocation identity. |
+
+**One owner per fact**
+
+Shared handles borrow the same record. They do not copy lifecycle facts into another mutable owner.
+
+| Fact | Sole owner after redesign | Current site and change |
+|---|---|---|
+| Each invocation's end time and final process readings | `FinishedInvocation` inside the canonical `InvocationContinuity` | I:52, I:234. Share this finished record; do not clone its end timestamp into presentation rows. Keep `InvocationOwners`, O:19. |
+| Current frame time | Existing shared `RosterClock` | R:76, R:795. Renderers and retained sources borrow it. |
+| Fade duration and easing | `TilesConfig::fade()` plus the single lifetime curve exposed through new `CellLifecycleTiming` | `cargo-tile/src/config.rs:195`, R:311. The timing view borrows the finish owner and frame clock. Text and geometry consume one sample. |
+| Close origin for a group | New `ClosingCommand` holds a handle to the latest finished invocation | Replace P:80. Store the owner reference, not another `Instant`. An earlier child finish does not close a live group. |
+| Retained heading and body source | The canonical `TrackedGroup` and its invocation snapshot handles | R:339, I:16. Roster membership and the presentation lease share the source. Roster removal releases membership only. |
+| Fitted heading text | One `CommandHeading` in the width-specific prepared command plan | C:7007, P:761. Share its account decision with the table. Refit on width or view changes; add no second formatter. |
+| Prepared body rows | One width-specific prepared command plan | P:724, C:2559. It references canonical rows; it owns only derived wrapping and layout. |
+| Starting height and closing geometry after roster removal | New `ClosingGeometry` owned by `TileGrid` | G:1451, G:1185. It has the admitted source height and band binding, but no start time or duration. |
+| Last painted geometry | Existing `LastPainted::Painted` | G:1089, G:3942. This is previous-frame evidence, not a second current-height authority. Move the completed drawing into it. |
+| Source release | New `ClosingCommand` presentation state | Replace clip-only retention at C:429 and G:3928. Source release depends on lifecycle completion only. |
+
+| Today's duplicate or competing fact | Resolution |
+|---|---|
+| `VisibleRoster` copies `TrackedGroup` and its row lifecycle state, R:472, R:615. `ClosingCellSnapshot` clones it again, P:404. | Use selected source handles and derived filtered totals. Keep one canonical continuity; retain no copied finish time or `RowFade`. |
+| Painted clones copy `RowFade`, R:370; closing snapshots can retain an old alpha. | Borrow canonical lifetime ink. Keep the existing shared entry decision and command-visibility callback; entry brightening does not restart closure. |
+| Roster fade uses I:55/R:311; a later grid departure starts `Transition.started/millis`, G:1420. | The canonical lifetime sample drives closing text and height. Keep transition timing only for resident movement, entry, and viewport travel. |
+| `PreparedTables.drawing`, P:77, and `PreparedFrame.drawing`, P:158, copy the drawn identity list. | Remove both lists. Retain sources by presentation leases, not copied geometry lists in table-preparation keys. |
+| Grid and expanded preparations retain separate source copies, P:314/P:347. | Both plans borrow the same source. Their width-dependent layouts may differ; their lifecycle cannot differ. |
+
+The shared canonical lifecycle boundary requires changes in R and I beyond the first attempt's drawing files.
+The showrunner approved these scope additions (2026-11-08).
+
+**Paths that construct or change records**
+
+| Event and current path | State-model action |
+|---|---|
+| New scan: R:639 → R:657/O:40 → R:395 | Resolve the existing invocation key, then update its canonical source. Create no second lifecycle owner. |
+| Job end: R:682 → R:420 → R:282 → I:234 | Finish once. Bind `ClosingCommand` to the latest finish owner and create `ClosingGeometry` from the last admitted placement. |
+| Fade tick: `cargo-tile/src/terminal.rs:231` → R:784 | Sample `CellLifecycleTiming` once. Use its ordinary lifetime phase for heading ink and closing height; do not enqueue per-alpha resize steps. |
+| Roster drop: R:786 | Release roster membership. Keep the same source through the presentation lease until `Gone`. Keep aliases while their canonical presentation owner remains. |
+| Each grid motion step: G:2670 → G:3027 → G:3237/G:3792 | Resident steps change placement. Closing height still uses the existing lifecycle sample; the step queue cannot delay or restart it. |
+| Resize: G:2335 → G:2458 | Refit the source for the new width and choose a heading-bearing band placement. Preserve close origin and progress. |
+| Summary depth or row demand: G:2771/G:2807 → G:3027 | Move neighbors and reclaim released rows in the same sample. Never split a closing cell into a headless second piece. |
+| Expand/collapse: V:107/V:121/V:137 → C:505 → G:3832 | Apply closing height after the viewport candidate. Pin the directory heading; scroll only the body. Viewport travel owns no departure clock. |
+| Expanded group leaves the roster: C:551 → C:596 | Return to `Grid` as today. The grid borrows the same retained source and close phase for its remaining presentation. |
+| Cached paint or scratch path: C:1919 → F:374 | Validate source generation, width/view, ink sample, and destination. Replay borrows the same heading-bearing frame; it owns no lifecycle decision. |
+| Final removal: fade completion → G:3942 and presentation lease release | Erase the piece and release its rows together. Do not queue another shrinking step after the fade. |
+
+**Height and clipping rule**
+
+| Quantity | Rule |
+|---|---|
+| `H0` | The cell's admitted outer height when closing starts. |
+| `a` | The ordinary lifetime fade sample from R:311. Use the same easing as the text. |
+| `A` | The largest nonterminal fade sample; currently 254 with `FADE_ALPHA_STEP = 2`, `cargo-tile/src/constants.rs:176`. |
+| Heading-only window | `A_h = floor(0.9 * A)`: the last 10% of the fade clock (300 ms at the default 3 s fade). |
+| Closing outer height | `H(a) = 3 + floor((H0 - 3) * max(0, A_h - a) / A_h)` for `0 <= a <= A`. |
+| Minimum | Three rows: top border, account/directory heading, bottom border. Shared borders count once in the lattice. |
+| Heading only | `a >= A_h` gives `H = 3`, so the cell is heading only for the whole window. Fade completion is `Gone`. |
+| Heading ink | Use the existing blend rounding toward source ink for nonterminal closing samples. Preserve a visible heading channel; start no entry-brightening state. |
+| Height after retargeting | Cap the derived height by available space and the last committed closing height. Never restart from a larger height. |
+| Enforcement | Construct new `HeadingPlacement` before a `TilePiece`, G:224/G:6847/G:6918. Never admit a one- or two-row closing rectangle. |
+| Body clipping | Paint the heading at the first inner row. Copy only the top prefix of the prepared body below it. Keep the closing source shift at zero. |
+| Foot | Include it at its source position. Clip it before earlier body rows; never reserve the final heading row for `content rows:`. Replace the closing use of D:879/D:1142. |
+| Cross-column motion | Keep one closing piece per identity. Retarget its band atomically; do not paint old and new fragments independently. |
+
+
+**Rules as frame checks — proposed changes only**
+
+All checks use injected time and read the production draw buffer. This step runs none of them.
+
+| Rule/state | Strict frame check | Existing test to extend |
+|---|---|---|
+| 1: all fading states | At 3 s and 30 s settings, text alpha and height match the same sampled phase. Closing starts before roster removal. | `render::expanded_view_tests::an_ended_cell_keeps_its_whole_content_through_every_leave_frame`, C:978 |
+| 2: whole/clipped | First inner row equals the fitted directory heading. Subsequent rows equal the prepared body prefix; clipping removes only its bottom. | Same test, C:978; `render::tests::a_closing_cell_keeps_its_retained_ancestry_cut`, C:13214 |
+| 3: every visible closing frame | Reject an empty inner buffer. Require a nonblank heading with visible ink. Reject any attributed border without that heading, including cached and shifted paths. | Same test, C:978; remove its empty-buffer escape at C:1020 |
+| 4: heading only → gone | Observe exactly one interior heading row and no readout. The `HeadingOnly` window spans at least one frame at the default 3 s fade. After completion, find no piece, cell border, or repeated departure. | Same test, C:978 |
+| All states after roster removal | Heading/source persist through grid return; focus settles correctly during `Expanding`, `Expanded`, and `Collapsing`. | `render::expanded_view_tests::an_ended_cell_returns_to_the_grid`, C:1051 |
+| Resize/depth/motion | Preserve phase and minimum height; never produce a second headless fragment. Keep every existing checked frame. | `a_resize_during_queued_closings_settles_focus_and_keeps_navigation_working`, G:13180; `a_content_change_mid_motion_leaves_no_blank_row`, D:3641 |
+
+The full-body assertion remains strict in `FadingWhole`.
+The new clipped-state check compares an exact prefix; it does not accept arbitrary missing content.
+
+**What goes and what stays**
+
+| Remove or replace | Reason |
+|---|---|
+| D:623 gate, D:746 `VisibleCellBody`, D:785–800 whole-body predicate, C:1707 `minimum_visible_rows` | They hide text while retaining an enclosing slot. Replace them with heading-bearing geometry and bottom clipping. |
+| P:703/P:725/P:935 minimum-complete-body calculations | The closing minimum is one heading row, not an entire process table. |
+| Copied `ClosingCellSnapshot.group`, old-grid binding, `CellSourceLifetime`, and drawn-list cache inputs | Shared canonical source handles and explicit presentation lifetime replace these competing retention decisions. |
+| Fade completion followed by a normal timed `Step` departure | Closing geometry already reaches its endpoint on the fade clock. |
+| Per-height closing body relayout and bottom-pinned closing readouts | A width-specific source prefix keeps the heading and clips the bottom deterministically. |
+| Keep F:345–400 scratch reuse and F:435 slice blits | These reduce moving-pane cost without owning lifecycle state. |
+| Keep F:778–821 `GridLines::render` cut and D:718 background cut | These reduce traversal cost. They do not decide whether a closing slot exists. |
+| Keep G:7367/G:7699 per-key motion fixtures and their assertions | Each key still runs once; the redesign adds no repeated fixture pass. |
+
+Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check hold.
 
 ### Phase 32 — Phase 23's follow-ups: rows name what runs, and all arguments fit the screen  · status: todo
 

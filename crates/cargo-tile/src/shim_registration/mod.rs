@@ -9,6 +9,10 @@ mod app_scenarios;
 )]
 mod installed;
 #[cfg(test)]
+pub(crate) mod native_fixture;
+#[cfg(test)]
+mod parallel_cases;
+#[cfg(test)]
 mod python_cache;
 #[cfg(test)]
 mod reader_scenarios;

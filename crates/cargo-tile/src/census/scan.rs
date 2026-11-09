@@ -17,6 +17,7 @@ use std::fs;
 use std::io::Read;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -1968,10 +1969,7 @@ impl Census {
         let Some(candidate) = records.process(pid) else {
             return CargoProcessRole::Invocation(pid);
         };
-        if matches!(
-            CargoTransport::from_argv(candidate.cmd()),
-            CargoTransport::NativeCapture { .. }
-        ) {
+        if Self::is_native_capture(CargoTransport::from_argv(candidate.cmd())) {
             return CargoProcessRole::Invocation(pid);
         }
         let mut workers = vec![candidate];
@@ -2015,7 +2013,7 @@ impl Census {
             role = CargoProcessRole::CaptureWorker {
                 invocation: ancestor,
             };
-            if matches!(transport, CargoTransport::NativeCapture { .. }) {
+            if Self::is_native_capture(transport) {
                 break;
             }
             workers.push(parent);
@@ -2035,12 +2033,7 @@ impl Census {
                 .parents
                 .get(&worker.pid())
                 .and_then(|pid| records.process(*pid))
-                .is_some_and(|parent| {
-                    matches!(
-                        Self::dispatch(parent, worker),
-                        DispatchedProcess::Matched { .. }
-                    )
-                })
+                .is_some_and(|parent| Self::is_dispatched(parent, worker))
     }
 
     /// A cargo-launched script keeps its dispatched pid despite an interpreter's native name.
@@ -2073,6 +2066,19 @@ impl Census {
         process: &ProcessObservation<'_>,
     ) -> DispatchedProcess {
         process_identity::dispatched_process(shim.cmd(), process.cmd(), process.pid())
+    }
+
+    /// Exact dispatch evidence identifies a forwarded cargo process.
+    fn is_dispatched(parent: &ProcessObservation<'_>, child: &ProcessObservation<'_>) -> bool {
+        matches!(
+            Self::dispatch(parent, child),
+            DispatchedProcess::Matched { .. }
+        )
+    }
+
+    /// The native capture process owns its invocation boundary.
+    const fn is_native_capture(transport: CargoTransport<'_>) -> bool {
+        matches!(transport, CargoTransport::NativeCapture { .. })
     }
 
     /// Canonical external-tool arguments leave process identity and all sampled fields intact.
@@ -2796,11 +2802,7 @@ impl Census {
                 };
                 // Preserve the runs of an external dispatch chain. A shim in front of
                 // a built-in cargo command carries no runs of its own to preserve.
-                if !matches!(
-                    Self::dispatch(outer, inner),
-                    DispatchedProcess::Matched { .. }
-                ) && !self.dispatched_runs.contains_key(&shim)
-                {
+                if !Self::is_dispatched(outer, inner) && !self.dispatched_runs.contains_key(&shim) {
                     continue;
                 }
                 let runs = Self::descendants(&children, shim)
@@ -2832,10 +2834,7 @@ impl Census {
         let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
             return false;
         };
-        if matches!(
-            CargoTransport::from_argv(outer.cmd()),
-            CargoTransport::NativeCapture { .. }
-        ) {
+        if Self::is_native_capture(CargoTransport::from_argv(outer.cmd())) {
             return false;
         }
         if matches!(
@@ -2847,10 +2846,7 @@ impl Census {
         ) {
             return false;
         }
-        if matches!(
-            Self::dispatch(outer, inner),
-            DispatchedProcess::Matched { .. }
-        ) {
+        if Self::is_dispatched(outer, inner) {
             return true;
         }
         if inner
@@ -3706,6 +3702,16 @@ fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -
 
 /// Compare the command after its transport boundary, preserving each original argv byte.
 fn forwards_cargo_arguments(argv: &[OsString], registered: &[OsString]) -> bool {
+    if argv
+        .first()
+        .is_some_and(|program| Path::new(program).file_name() == Some(OsStr::new("script")))
+        && (0..argv.len()).any(|start| {
+            matches!(CargoTransport::from_argv(&argv[start..]),
+                CargoTransport::NativeCapture { arguments } if arguments == registered)
+        })
+    {
+        return true;
+    }
     if let Ok(arguments) = command_text::cargo_split(argv)
         && (argv[arguments.start..] == *registered
             || forwards_json_capture_arguments(&argv[arguments.start..], registered))
@@ -3725,6 +3731,9 @@ fn forwards_cargo_arguments(argv: &[OsString], registered: &[OsString]) -> bool 
         expected_arguments.extend_from_slice(b"' ");
     }
     argv.iter().any(|argument| {
+        if native_capture_shell_forwards(argument, registered) {
+            return true;
+        }
         argument
             .as_bytes()
             .strip_suffix(expected_arguments.as_slice())
@@ -3732,6 +3741,45 @@ fn forwards_cargo_arguments(argv: &[OsString], registered: &[OsString]) -> bool 
             .and_then(|binary| binary.strip_suffix(b"' "))
             .is_some_and(quoted_cargo_binary)
     })
+}
+
+/// Decode only the native entry's quoted command, including raw Unix path bytes.
+fn native_capture_shell_forwards(command: &OsStr, registered: &[OsString]) -> bool {
+    let mut remaining = command.as_bytes();
+    if let Some(command) = remaining.strip_prefix(b"exec ") {
+        remaining = command;
+    }
+    let mut words = Vec::new();
+    while !remaining.is_empty() {
+        let Some(quoted) = remaining.strip_prefix(b"'") else {
+            return false;
+        };
+        remaining = quoted;
+        let mut word = Vec::new();
+        loop {
+            if let Some(escaped) = remaining.strip_prefix(b"'\\''") {
+                word.push(b'\'');
+                remaining = escaped;
+            } else if let Some(rest) = remaining.strip_prefix(b"'") {
+                remaining = rest;
+                break;
+            } else if let Some((byte, rest)) = remaining.split_first() {
+                word.push(*byte);
+                remaining = rest;
+            } else {
+                return false;
+            }
+        }
+        words.push(OsString::from_vec(word));
+        if !remaining.is_empty() {
+            let Some(rest) = remaining.strip_prefix(b" ") else {
+                return false;
+            };
+            remaining = rest;
+        }
+    }
+    matches!(CargoTransport::from_argv(&words),
+        CargoTransport::NativeCapture { arguments } if arguments == registered)
 }
 
 /// Match only the shim's complete removal of quiet flags before `--` in JSON mode.
@@ -7172,7 +7220,33 @@ pub(crate) mod tests {
     #[test]
     fn capture_forwarding_matches_exact_registered_arguments_in_both_pty_forms() {
         let record = directory_record("/writer");
+        let native = format!(
+            "exec '/writer'\\''s toolchain/cargo-tile-capture' '{}' '/toolchain/cargo' '/capture' 'build'",
+            crate::constants::CAPTURE_SHIM_ARGUMENT
+        );
         for argv in [
+            vec![
+                "script",
+                "-q",
+                "-t",
+                "0",
+                "/capture/run-generation-10.log",
+                "/toolchain/cargo-tile-capture",
+                crate::constants::CAPTURE_SHIM_ARGUMENT,
+                "/toolchain/cargo",
+                "/capture",
+                "build",
+            ],
+            vec![
+                "script",
+                "-q",
+                "-e",
+                "-f",
+                "-c",
+                native.as_str(),
+                "/capture/run-generation-10.log",
+            ],
+            vec!["sh", "-c", native.as_str()],
             vec![
                 "script",
                 "-q",
@@ -7204,6 +7278,18 @@ pub(crate) mod tests {
             ));
         }
         for argv in [
+            vec![
+                "script",
+                "-q",
+                "-t",
+                "0",
+                "/capture/run-generation-10.log",
+                "/toolchain/cargo-tile-capture",
+                crate::constants::CAPTURE_SHIM_ARGUMENT,
+                "/toolchain/cargo",
+                "/capture",
+                "test",
+            ],
             vec!["sh", "/writer/application"],
             vec!["cargo-tile-real", "test"],
             vec!["sh", "-c", "'/toolchain/cargo-tile-real' 'test' "],

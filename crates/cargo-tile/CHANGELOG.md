@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Shim version 4 uses native capture setup to reduce the cost of each cargo call.
+
 ### Added
 
 - Enter expands the focused cell over the grid. Esc returns it with focus kept. Navigation keys scroll its rows.

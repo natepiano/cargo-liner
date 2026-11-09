@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python3 -S
 """Publish and load the shared reader before the tests start."""
+import fcntl
 import hashlib
 import os
 import re
@@ -69,9 +70,38 @@ def stage(source, cache=None):
                           cache_directory() if cache is None else cache)
 
 
+def native_fixture(source):
+    """Keep debug data out of repeated installer copies."""
+    if sys.platform not in ('linux', 'darwin'):
+        return source
+    metadata = source.stat()
+    options = ('-u', '-r') if sys.platform == 'darwin' else ('--strip-all',)
+    identity = (str(source.resolve()), metadata.st_dev, metadata.st_ino,
+                metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns, options)
+    name = hashlib.sha256(repr(identity).encode()).hexdigest()
+    cache = cache_directory() / 'native-fixtures'
+    cache.mkdir(parents=True, exist_ok=True)
+    destination = cache / name
+    with (cache / (name + '.lock')).open('a') as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        if destination.is_file():
+            return destination
+        with tempfile.TemporaryDirectory(prefix='prepare-', dir=cache) as temporary:
+            executable = Path(temporary) / 'cargo-tile'
+            subprocess.run(['strip', *options, '-o', str(executable), str(source)], check=True)
+            if sys.platform == 'darwin':
+                subprocess.run(['codesign', '--force', '--sign', '-', str(executable)], check=True)
+            executable.chmod(0o755)
+            os.link(executable, destination)
+    return destination
+
+
 def main():
     """Select publication, listing, or setup from the command arguments."""
     mode = sys.argv[1]
+    if mode == 'native-fixture':
+        print(native_fixture(Path(sys.argv[2])))
+        return
     if mode == 'stage':
         print(stage(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) == 4 else None))
         return

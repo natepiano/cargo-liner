@@ -15,6 +15,7 @@ pub(crate) use kernel_observation::KernelObservation;
 pub(crate) use kernel_observation::Observation;
 pub(crate) use kernel_observation::Verification;
 pub(crate) use kernel_observation::boot_verification;
+pub(crate) use kernel_observation::capture_boot;
 pub(crate) use kernel_observation::observe;
 pub(crate) use process_lifetime::LifetimeEvidence;
 pub(crate) use process_lifetime::ProcessLifetime;
@@ -36,6 +37,9 @@ pub(crate) struct BirthStamp {
 }
 
 impl BirthStamp {
+    /// Supply the existing wire units to the native publisher.
+    pub(crate) fn registration_fields(&self) -> (&str, u64) { (&self.boot, self.birth) }
+
     /// Empty identity fields and old textual macOS births remain unverifiable.
     pub(crate) fn from_fields(boot: &str, birth: &str) -> IdentityEvidence {
         let Ok(birth) = Self::decimal(birth) else {
