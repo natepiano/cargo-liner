@@ -2010,7 +2010,7 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 **Goal:** the three tests pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
 
 **Spec:**
-1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". Find the wait that takes the time, quote its line, and fix it there.
+1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". The Phase 58 paired Mac head run (2026-11-09) failed it again with a ledger-lock refusal. Find the wait that takes the time, quote its line, and fix it there.
 2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
 3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
 4. Three `tests/board.rs` tests failed on the Mac in the Phase 30m round 3 workspace gate (2026-11-08 22:1x, load 16-40): `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` (`tests/board.rs:6989`, left `Null`, right `"protected_tip_ancestor"`), and `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` (`tests/board.rs:7070`, "ordinary reconciliation should settle the reachable checkpoint", left `"outstanding"`, right `"released"`). Find the cause, quote its line, and fix it there.
@@ -2062,28 +2062,46 @@ The diagnosis found that none of the four earlier causes came back. The new shar
 
 **Depends on:** Phase 58 (same writer and the same files). `hooks.rs` and `lifecycle.rs` edits also wait for Phase 57.
 
-Phase 58 landed after three repair rounds under the round cap: the paired Mac run counted 168 Phase 58 tests at 1 s or more on its head against 217 on its base, and no binary rose. The goal is not met yet. The remaining tests are listed in `round-3-next-phase-slow.txt` of the Phase 58 run.
+Phase 58 landed after three repair rounds under the round cap. The paired Mac package run (six test threads, loads 7.2 and 8.1) counted 168 Phase 58 tests at 1 s or more on its head and 217 on its base. No binary rose. The goal is not met yet. The landing is not a passing suite: the head run failed `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 57 item 1).
+
+The inventory has two sources, and each keeps its own revision, scope, thread count and load:
+- `round-3-next-phase-slow.txt` of the Phase 58 run (143 tests).
+- The paired head run in `after-report.md` of the Phase 58 run (168 tests; 45 are not in the first list).
+
+An Astra review of the approach (2026-11-09, `/tmp/claude/astra/20261109T094600Z-2066252/review.md`) found that the evidence does not prove Git startup as the cause. The spec below starts with a controlled measurement.
 
 #### Work Order
 
 **Goal:** every cargo-berth test in the Phase 58 files runs under 1 s in the full workspace run on natedev and on the Mac.
 
 **Spec:**
-1. Measure before any edit, with the Phase 58 method: the cargo-berth package at full load on natedev and on the Mac under the unit Mac lock. Count the tests at 1 s or more per binary.
-2. Start with the slowest four: `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (3.7 s), `edges::witness_survives_pruning_and_controls_successors` (3.2 s), `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks` (2.8 s) and `edges::successor_round_robin_covers_every_head` (2.2 s). For each, quote the line that takes the time.
-3. The compaction test may split its five reader cases into separate tests, each with its own fixture. Keep every reader and every assertion. A test that forbids `expect` gets a helper that returns `Result`.
-4. Do not replace a live rebase, proof rotation or witness-loss command with a recorded result.
-5. Fix each cause where it lives. Keep every assertion and every test case.
-6. Measure the same counts after the fix, with the same method.
+1. **Measure first, on the unchanged tree.** Use the four slowest tests of the paired head run: `edges::witness_survives_pruning_and_controls_successors` (5.198 s), `edges::successor_round_robin_covers_every_head` (4.334 s), `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (4.172 s) and `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks`.
+   - Run each one serially and under normal workspace concurrency, on the Mac and on natedev.
+   - Record setup, fixture restore, live commands, output collection and teardown as separate spans.
+   - Count the Git processes, hook processes and runtime threads in each span. Record child CPU time where possible; a parent wait alone does not separate work from a scheduling delay.
+   - Compare one small Git read through direct execution and through the shared child runtime, with the same command, environment, streams and process group. On the Mac, `ExitNotification::new` (`src/git/child.rs:591`) starts a waiter thread when the child still runs; Linux uses a process descriptor. Treat this as a measurement target.
+   - Record the thread count and the fixture cache state of each run.
+2. **Let the measurement choose the repair.** A large restore cost goes to fixture work. A large shared-runtime cost goes to child-runtime work. A large direct launch cost goes to fewer processes. A cost that grows only under concurrency goes to a contention investigation. Quote the line that takes the time.
+3. **Split a test only with a map.** For each proposed split, write which original assertion and which live transition each new test keeps. Put the map in the reply.
+   - Rebase (`tests/gate.rs:4856`): prepare the history once. Give each hook mode its own test with a private copy. Keep each three-commit rebase live.
+   - Compaction (`tests/compaction.rs:63`): prepare the history before the test clock through a fixture helper that passes lint. Keep the compaction, the reader comparisons, the byte accounting and the second compaction live. The readers append records: split them into separate fixtures only after you prove they are independent. Otherwise keep the ordered reader sequence. A test that forbids `expect` gets a helper that returns `Result`.
+   - Successor rotation (`tests/edges.rs:2305`): keep the live progression of four unavailable attempts, four comparisons and two cached reads.
+   - Witness pruning (`prepare_pruned_witness`, `tests/edges.rs:617`): it asserts settlement and real object collection. It is not disposable setup.
+4. **A test that cannot split gets a shared-cost repair** chosen in item 2: fewer repeated Git reads, less trace-helper setup, or fewer runtime threads. Keep Git fallback, command deadlines, pipe draining and descendant cleanup. Keep separate CLI invocations where they prove durable state across processes.
+5. Do not replace a live rebase, proof rotation or witness-loss command with a recorded result.
+6. Fix each cause where it lives. Keep every assertion and every test case.
+7. Measure the same counts after the fix, on the final source revision, with the same method.
 
 **Files:**
 - `crates/cargo-berth/tests/` — the integration tests, except `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs` (Phase 57).
 - `crates/cargo-berth/tests/support/` — shared test fixtures.
 - `crates/cargo-berth-test-support/` — the shared fixtures and recorded templates.
 
+A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) needs director routing with the measurement that picks it.
+
 **Workers:** 1 writer.
 
-**Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test in these files at 1 s or more; lint.
+**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test in these files at 1 s or more; lint. Report the package and workspace counts apart.
 
 ### Phase 31 — Ended cells leave whole  · status: parked
 
