@@ -726,7 +726,7 @@ impl<'a> Cells<'a> {
                 },
                 TileContent::Empty(_) => return,
             };
-            let mut rows = self.selections.borrow().surface(&surface).map_or(
+            let rows = self.selections.borrow().surface(&surface).map_or(
                 {
                     let mut state = crate::interaction::SurfaceSelection::default();
                     state.set_area(inner);
@@ -734,9 +734,6 @@ impl<'a> Cells<'a> {
                 },
                 Clone::clone,
             );
-            if matches!(content, TileContent::Group(_)) {
-                rows.clip_markers(agent_cell::tree_marker_columns(inner));
-            }
             self.painted_surfaces.borrow_mut().push(PaintedSurface {
                 area: inner,
                 rows,

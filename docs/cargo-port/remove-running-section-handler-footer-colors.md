@@ -1104,7 +1104,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Ruled out:** a saved-sort migration — `AccountsSort` is never saved.
 
-### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: todo
+### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: done
 
 **Depends on:** none; runs beside Phases 21 and 69. `agent_cell.rs`, `render/mod.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
 
@@ -1185,7 +1185,13 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 **Constraints:**
 - Today `ActivityRead::take_codex` and `ActivityRead::take_claude` (`census/activity.rs` ≈203 and ≈224) set `Activity::Thinking` at a turn start and leave it until a tool call or the turn end. A compaction is a turn with no tool call, so it draws as `thinking`.
 - Both transcripts write the compaction record only at its end. Claude writes a `system` line with `subtype: "compact_boundary"` and `compactMetadata` (`trigger`, `durationMs`, `precomputed`). Codex writes a top-level `"type": "compacted"` line. Director check, 2026-11-08: a Codex rollout showed `task_started` at 05:05:56 and `compacted` at 05:07:41, 1 m 45 s drawn as `thinking`, with no `user_message` between them.
-- Find a signal that is present while the compaction runs, for each family, on real sessions, and state it before you change code. Leads: the Codex app-server context-compaction item events, and the Claude `PreCompact` hook. A compaction that starts and ends between two scans needs no `compacting` frame.
+- No transcript records a compaction start. Showrunner ruling, 2026-11-08 (answer A): a `PreCompact` hook in both families writes a start marker; natedev builds the hook and its registrations in `~/.claude`. cargo-handler reads the marker:
+  1. Path: `~/.local/state/compaction/<session id>.json`.
+  2. Content: `{"session_id": "<id>", "family": "claude" | "codex", "started_at": "<ISO 8601 with offset>"}`.
+  3. The row says `compacting` while `started_at` is newer than the session's last `compact_boundary` (Claude) or `compacted` (Codex) line. Otherwise it keeps the current status.
+  4. A missing folder, an unreadable file or a bad field means no marker, never an error row.
+  5. Showrunner ruling, 2026-11-08 (answer B): the hook deletes the session's marker on Stop, on UserPromptSubmit (Claude), on the Codex turn-start event, and on PostCompact where the CLI has it. A missing marker means not compacting; the native end line still closes it too. A cancelled or failed compaction closes at the latest at the next prompt. Transcript turn lines do not close a marker.
+  The live capture waits for the hook on main. A compaction that starts and ends between two scans needs no `compacting` frame.
 - Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
 - No new check of your own design.
 - The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
