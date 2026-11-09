@@ -774,6 +774,41 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no space before `…` in Git values and CI commits; `Tracked` whole at 95; `CI` and `No CI` on one row at 80; dim value contrast at least 4.5:1; the Projects width the same before and after Sync data; the Git page count the same before and after a `loading pull requests` row; no `on branch rows` title. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
+### Phase 4r — mend --fix keeps the tui_pane tiles re-exports and writes no empty use  · status: todo
+
+**Depends on:** Phase 4o (it runs next; mend phases take priority over 4q). Phase 4q starts after this phase.
+
+#### Work Order
+
+**Goal:** `cargo mend --all-targets --workspace --fix` on the cargo-tile Phase 31 tree applies its fixes, and the workspace builds after them with nothing rolled back.
+
+**Source:** showrunner, 2026-11-09: a blocking mend bug in cargo-tile's Phase 31 lint gate. Log: `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/31/repair4_lint.txt`. Tree: `/tmp/claude/scratch/until-2026-11-16T0500Z-phase-tile-unit-31-dcj7s6/src` (kept until 2026-11-16). A copy of its `crates/tui_pane` sources, both Cargo files and the log is in `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4r/inputs/`.
+- `crates/tui_pane/src/tiles/grid.rs:103`: mend wrote `use ;`, so rustc reports `expected identifier, found ;`.
+- `tiles/draw.rs:1257`, `tiles/host.rs:333` and `tiles/host_tests.rs:14`: `use crate::TileDemand` and `use crate::TileContent` no longer resolve after the fix. The source tree has `pub use tiles::TileDemand` and `pub use tiles::TileContent` in `lib.rs` (lines 592-593); rustc's help names `crate::tiles::TileDemand`.
+- The two E0282 errors on `CellPress::Retired` (`host.rs:108`, `host_tests.rs:58`) follow from the broken imports.
+
+**Decision:** user rule 2026-11-02: any cargo-mend bug is always fixed, as its own phase, before other work it blocks.
+
+**Constraints:**
+- Fix the cause in cargo-mend. Change no tui_pane or cargo-tile source.
+- A fix that mend cannot apply safely is declined with its report; mend never writes an empty or unresolved import.
+
+**Spec:**
+1. **Find the fix that writes `use ;`.** Run the current mend on the copied inputs, name the fixer and the planned edit, and quote the source line that produces the empty path.
+2. **Find the fix that removes or bypasses the root re-exports.** Name the fixer that leaves `crate::TileDemand` and `crate::TileContent` unresolved, and why it judged the root re-exports removable or the imports rewritable.
+3. **Repair both causes in cargo-mend.** Each fixture test reduces the tiles shape: a private module `tiles` with `pub use` re-exports, root `pub use tiles::X`, and in-crate `use crate::X` users in sibling and test modules. After `--fix` the fixture builds, and a second `--fix` changes nothing.
+4. **Prove on the real tree.** Run the new mend on a copy of the Phase 31 tree: `--fix` applies with no rollback, and the workspace check passes.
+5. **Changelog.** Add the entry to `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/src/` — the fixers Specs 1-2 name
+- `crates/cargo-mend/tests/diagnostics/` — the fixture tests
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second. The fixture tests fail without the repair. `cargo mend --fix` on a copy of the Phase 31 tree reports no rollback. The checkpoint carries a `Change-Review:` line.
+
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
 **Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`) and Phase 4b (it changes CPU drawing and pane geometry, and this phase measures after it)
