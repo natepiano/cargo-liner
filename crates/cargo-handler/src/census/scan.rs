@@ -91,6 +91,7 @@ use super::desktop::WindowEntry;
 use super::herdr::HerdrNames;
 use super::hierarchy::AstraWorkerMembership;
 use super::hierarchy::StaffFileReader;
+use super::hierarchy::StaffMemberLookup;
 use super::hierarchy::StaffRoster;
 use super::hierarchy::StaffSnapshot;
 use super::model::ConversationModel;
@@ -109,7 +110,8 @@ use super::tree::ShellCall;
 use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
-use super::worker_dispatch::JobText;
+#[cfg(test)]
+use super::worker_dispatch;
 use super::worker_dispatch::ManagedSession;
 use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
@@ -1113,35 +1115,26 @@ impl LocalScanner {
         self.read_rollout_runs(thread_ids, rows, &live_processes, &mut records);
         let live = VerificationProcesses::new(processes).live_runs(records.values().flatten());
         let owners = run_directors(&live, &staff, &directors);
-        let names = &mut self.worker_names;
-        let mut roster_sessions = HashSet::new();
         let sessions =
             self.session_roots
                 .managed_sessions(&active_units, &directors, &staff, |directory| {
-                    roster_sessions.insert(directory.to_path_buf());
                     if let Some(pids) = owners.get(directory)
                         && pids.len() == 1
                     {
                         return pids.iter().next().copied();
                     }
-                    names
-                        .roster(directory)
-                        .current_director(&staff)
-                        .and_then(|session| directors.get(session).copied())
+                    None
                 });
         let resolved = resolved_worker_runs(&live, &sessions, &directors, &staff);
         let activities = run_activities(&resolved);
         let mut answer = WorkerRuns {
-            sessions: roster_sessions,
+            sessions: active_units,
             threads: HashMap::new(),
             activities,
             named: HashMap::new(),
             folded: HashSet::new(),
         };
-        for session in &sessions {
-            self.attach_roster_runs(session, &mut answer);
-        }
-        Self::attach_record_runs(&resolved, &mut answer);
+        Self::attach_record_runs(&resolved, &mut answer, &staff);
         answer.sessions.extend(records.into_keys());
         answer
     }
@@ -1176,40 +1169,12 @@ impl LocalScanner {
         }
     }
 
-    /// Preserve mesh roster names while pane records supply the same run source.
-    fn attach_roster_runs(&mut self, session: &ManagedSession, answer: &mut WorkerRuns) {
-        for (seat, worker) in self.worker_names.roster(&session.directory).workers() {
-            let id = worker.thread_id();
-            if let Some(WorkerRun::Running {
-                activity,
-                started,
-                worktree,
-            }) = answer.activities.get(id)
-            {
-                let prefix = match self.rollouts.thread(id) {
-                    ThreadRollout::Retained(read) => read.worktree.seat_prefix(),
-                    ThreadRollout::NotRetained => None,
-                };
-                let short = prefix
-                    .or_else(|| worktree.seat_prefix())
-                    .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
-                    .unwrap_or(seat);
-                answer
-                    .threads
-                    .entry(session.director_pid)
-                    .or_default()
-                    .push(RunThread {
-                        id:       id.to_owned(),
-                        dispatch: worker.dispatch(seat, short, JobText::Unrecorded),
-                        activity: *activity,
-                        started:  *started,
-                    });
-            }
-        }
-    }
-
     /// `WorkerRuns` adds rows for `RunRecord` workers that have no visible process.
-    fn attach_record_runs(sources: &[ResolvedWorkerRun<'_>], answer: &mut WorkerRuns) {
+    fn attach_record_runs(
+        sources: &[ResolvedWorkerRun<'_>],
+        answer: &mut WorkerRuns,
+        staff: &StaffRoster,
+    ) {
         let mut present: HashSet<_> = answer
             .threads
             .iter()
@@ -1222,14 +1187,24 @@ impl LocalScanner {
             };
             match source.worker {
                 RunWorkerIdentity::Session(id) => {
-                    if let RunSeat::Named(seat) = source.run.record.seat()
-                        && let Some(WorkerRun::Running {
-                            activity, started, ..
-                        }) = answer.activities.get(id)
+                    let seat = match source.run.record.seat() {
+                        RunSeat::Named(seat) => seat,
+                        RunSeat::Unrecorded => match staff.member(id) {
+                            StaffMemberLookup::Managed { member, .. } => member.name,
+                            StaffMemberLookup::Root(_) | StaffMemberLookup::Unavailable => continue,
+                        },
+                    };
+                    if let Some(WorkerRun::Running {
+                        activity,
+                        started,
+                        worktree,
+                    }) = answer.activities.get(id)
                         && present.insert((pid, id.to_owned()))
                         && let Ok(dispatch) = ResolvedWorkerDispatch::for_run(
                             seat,
                             WorkerIdentity::CodexThread(id.to_owned()),
+                            staff,
+                            worktree,
                         )
                     {
                         answer.threads.entry(pid).or_default().push(RunThread {
@@ -1270,7 +1245,7 @@ impl LocalScanner {
         }
     }
 
-    /// Share one cached run reader between roster and rollout sources.
+    /// Share one cached run reader between supervisors and rollouts.
     fn read_run_session(
         &mut self,
         directory: &Path,
@@ -1551,15 +1526,26 @@ fn process_is_below(pid: u32, root: u32, table: &HashMap<u32, &ProcessEntry>) ->
     false
 }
 
-/// Resolve literal launchers against one roster read per directory per scan.
+/// Resolve fixture launchers against one shared staff snapshot.
 /// A launcher's actual pid is used even when a shell wrapper owns its row.
 #[cfg(test)]
 pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32, WorkerDispatch> {
-    worker_dispatches(
-        processes,
-        &mut WorkerNames::default(),
-        &mut WorkerCommands::default(),
-    )
+    let mut names = WorkerNames::default();
+    let mut commands = WorkerCommands::default();
+    let staff = commands
+        .read(processes)
+        .values()
+        .flat_map(|command| [&command.direct, &command.wrapped])
+        .filter_map(|launcher| match launcher {
+            WorkerLauncher::Dispatch(dispatch) => dispatch.session_directory().ok(),
+            WorkerLauncher::OtherCommand => None,
+        })
+        .map(|directory| worker_dispatch::fixture_names(directory).staff_snapshot())
+        .find(|staff| !staff.edges.0.is_empty());
+    if let Some(staff) = staff {
+        names.set_staff(staff);
+    }
+    worker_dispatches(processes, &mut names, &mut commands)
 }
 
 /// Resolve fixture dispatches through the same staff snapshot as a census scan.
@@ -1658,7 +1644,7 @@ impl WorkerCommands {
     }
 }
 
-/// Share the mtime roster cache with launcher-free naming.
+/// Share the staff snapshot with launcher-free naming.
 fn worker_dispatches(
     processes: &[ProcessEntry],
     names: &mut WorkerNames,
@@ -3991,7 +3977,7 @@ impl LocalScanner {
             |_, answer, _| rows = answer,
             |scanner, rows| scanner.attach_details(processes, sessions, Some(home), rows),
         );
-        let edges = snapshot.publication().edges.with_worker_roles(&rows);
+        let edges = snapshot.publication().edges;
         (rows, edges)
     }
 }

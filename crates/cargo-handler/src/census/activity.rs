@@ -24,7 +24,6 @@ use serde_json::Value;
 
 use super::classify::ProcessEntry;
 use super::hierarchy::FileRevision;
-use super::hierarchy::StaffName;
 use super::hierarchy::StaffRoster;
 use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
@@ -751,14 +750,11 @@ impl LiveWorkerRun<'_> {
             return RunWorkerIdentity::Unrecorded;
         };
         if let RunDirector::Session(manager) = director {
-            let mut candidates = staff.edges.0.iter().filter(|edge| {
-                edge.manager == manager
-                    && matches!(staff.name(&edge.member), StaffName::Named(name) if name == seat)
-            });
+            let mut candidates = staff.workers(manager).filter(|member| member.name == seat);
             if let Some(candidate) = candidates.next()
                 && candidates.next().is_none()
             {
-                return RunWorkerIdentity::Session(&candidate.member);
+                return RunWorkerIdentity::Session(candidate.session);
             }
         }
         RunWorkerIdentity::NamedSeat(seat)

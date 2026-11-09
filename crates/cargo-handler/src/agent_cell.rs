@@ -1205,7 +1205,7 @@ impl TreeLineContent<'_> {
         if let DispatchLabel::Worker(dispatch) = self.dispatch_label {
             return SelectedRow::Seat {
                 machine: self.machine.to_owned(),
-                seat:    dispatch.seat().to_owned(),
+                seat:    dispatch.selection_key().to_owned(),
                 worker:  census::worker_identity(dispatch),
             };
         }
@@ -1231,14 +1231,14 @@ fn work_selection_identity(
     if let DispatchLabel::Worker(dispatch) = dispatch_label {
         return SelectedRow::Seat {
             machine: machine.to_owned(),
-            seat:    dispatch.seat().to_owned(),
+            seat:    dispatch.selection_key().to_owned(),
             worker:  census::worker_identity(dispatch),
         };
     }
     if let WorkerDispatch::Worker(dispatch) = &child.dispatch {
         return SelectedRow::Seat {
             machine: machine.to_owned(),
-            seat:    dispatch.seat().to_owned(),
+            seat:    dispatch.selection_key().to_owned(),
             worker:  census::worker_identity(dispatch),
         };
     }

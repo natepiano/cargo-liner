@@ -36,18 +36,15 @@ use serde_json::Value;
 use super::Activity;
 use super::AgentActivity;
 use super::AgentRow;
-use super::AstraSessionMembership;
 use super::CodexThreadId;
 use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyRole;
 use super::HierarchySource;
-use super::RoleFallback;
 #[cfg(test)]
 use super::SessionIdentity;
 use super::herdr::PaneWork;
-use super::worker_dispatch::WorkerDispatch;
-use super::worker_dispatch::WorkerIdentity;
+use super::worker_dispatch::WorkerRole;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::HIERARCHY_SCHEMA;
@@ -122,41 +119,6 @@ impl From<HierarchyEdges> for HierarchySnapshot {
             edges,
             notice: HierarchyNotice::Clear,
         }
-    }
-}
-
-impl HierarchyEdges {
-    /// Staff kinds preserve the roles that the census already resolved from mesh rosters.
-    pub(super) fn with_worker_roles(mut self, rows: &[AgentRow]) -> Self {
-        let mut roles = BTreeMap::new();
-        for row in rows {
-            if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
-                roles.insert(member.session(), member.role().hierarchy());
-            } else if let Some(session) = row.session_id.ids().next()
-                && let RoleFallback::Worker(role) = row.role_fallback
-            {
-                roles.insert(session, role);
-            }
-            for child in &row.children {
-                if let WorkerDispatch::Worker(dispatch) = &child.dispatch
-                    && let RoleFallback::Worker(role) = dispatch.fallback()
-                {
-                    let session = match &dispatch.identity {
-                        WorkerIdentity::ClaudeSession(session)
-                        | WorkerIdentity::CodexThread(session) => session,
-                    };
-                    roles.insert(session.as_str(), role);
-                }
-            }
-        }
-        for edge in &mut self.0 {
-            if edge.role == HierarchyRole::Worker
-                && let Some(role) = roles.get(edge.member.as_str())
-            {
-                edge.role = *role;
-            }
-        }
-        self
     }
 }
 
@@ -432,6 +394,7 @@ pub(super) struct StaffRoster {
     names:            BTreeMap<String, String>,
     astra:            BTreeMap<String, AstraWorkerMembership>,
     members:          BTreeMap<String, StaffMembership>,
+    sessions:         BTreeMap<String, String>,
 }
 
 /// A checked member retains its current session and its current manager.
@@ -439,12 +402,64 @@ pub(super) struct StaffRoster {
 struct StaffMembership {
     session: String,
     parent:  StaffManager,
+    role:    StaffWorkerRole,
+    kind:    StaffKind,
 }
 
 #[derive(Clone, Debug)]
 enum StaffManager {
     Root,
     Session(String),
+}
+
+/// A worker role from the checked staff document.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum StaffWorkerRole {
+    Known(WorkerRole),
+    #[default]
+    Unknown,
+}
+
+impl From<Option<&Value>> for StaffWorkerRole {
+    fn from(value: Option<&Value>) -> Self {
+        let role = match value.and_then(Value::as_str) {
+            Some("impl") => WorkerRole::Impl,
+            Some("test") => WorkerRole::Test,
+            Some("review") => WorkerRole::Review,
+            Some("fix") => WorkerRole::Fix,
+            Some("astra-designer") => WorkerRole::AstraDesigner,
+            Some("astra-reviewer") => WorkerRole::AstraReviewer,
+            _ => return Self::Unknown,
+        };
+        Self::Known(role)
+    }
+}
+
+impl StaffWorkerRole {
+    pub(super) const fn hierarchy(self) -> HierarchyRole {
+        match self {
+            Self::Known(role) => role.hierarchy(),
+            Self::Unknown => HierarchyRole::Worker,
+        }
+    }
+}
+
+/// The checked staff identity and current worker responsibility.
+pub(super) struct StaffMember<'a> {
+    pub(super) id:      &'a str,
+    pub(super) session: &'a str,
+    pub(super) name:    &'a str,
+    pub(super) role:    StaffWorkerRole,
+}
+
+/// A missing member differs from a root and a member with a manager.
+pub(super) enum StaffMemberLookup<'a> {
+    Unavailable,
+    Root(StaffMember<'a>),
+    Managed {
+        member:  StaffMember<'a>,
+        manager: &'a str,
+    },
 }
 
 /// Stable staff identities and legacy thread identities have separate meanings.
@@ -472,9 +487,9 @@ impl WorkerReference {
         let Self::Staff { staff_id } = self else {
             return None;
         };
-        match &staff.members.get(staff_id)?.parent {
-            StaffManager::Root => None,
-            StaffManager::Session(session) => Some(session),
+        match staff.member(&staff.members.get(staff_id)?.session) {
+            StaffMemberLookup::Managed { manager, .. } => Some(manager),
+            StaffMemberLookup::Root(_) | StaffMemberLookup::Unavailable => None,
         }
     }
 }
@@ -627,6 +642,44 @@ pub(super) enum StaffSessionMembership {
 }
 
 impl StaffRoster {
+    /// `StaffMemberLookup` retains the checked manager state from `StaffRoster`.
+    pub(super) fn member(&self, session: &str) -> StaffMemberLookup<'_> {
+        let Some((id, membership)) = self
+            .sessions
+            .get(session)
+            .and_then(|id| self.members.get_key_value(id))
+        else {
+            return StaffMemberLookup::Unavailable;
+        };
+        let member = StaffMember {
+            id,
+            session: &membership.session,
+            name: self.names.get(session).map_or("", String::as_str),
+            role: membership.role,
+        };
+        match &membership.parent {
+            StaffManager::Root => StaffMemberLookup::Root(member),
+            StaffManager::Session(manager) => StaffMemberLookup::Managed { member, manager },
+        }
+    }
+
+    /// Select checked worker rows under one current manager session.
+    pub(super) fn workers<'a>(&'a self, manager: &str) -> impl Iterator<Item = StaffMember<'a>> {
+        self.members.iter().filter_map(move |(id, item)| {
+            if !matches!(item.kind, StaffKind::Worker)
+                || !matches!(&item.parent, StaffManager::Session(parent) if parent == manager)
+            {
+                return None;
+            }
+            Some(StaffMember {
+                id,
+                session: &item.session,
+                name: self.names.get(&item.session).map_or("", String::as_str),
+                role: item.role,
+            })
+        })
+    }
+
     /// `StaffRoster` admits only sessions listed in this scan's staff snapshot.
     pub(super) fn session_membership(&self, id: &str) -> StaffSessionMembership {
         self.members
@@ -669,11 +722,17 @@ impl StaffRoster {
                     StaffManager::Session(members[id.as_str()].current_session.clone())
                 },
             };
+            let worker_role = StaffWorkerRole::from(member.role.as_ref());
+            roster
+                .sessions
+                .insert(member.current_session.clone(), member.id.clone());
             roster.members.insert(
                 member.id.clone(),
                 StaffMembership {
                     session: member.current_session.clone(),
                     parent,
+                    role: worker_role,
+                    kind: member.kind,
                 },
             );
             if matches!(member.kind, StaffKind::Worker) {
@@ -682,7 +741,11 @@ impl StaffRoster {
                     AstraMembership::from_staff(member),
                 );
             }
-            let role = member.kind.role();
+            let role = if matches!(member.kind, StaffKind::Worker) {
+                worker_role.hierarchy()
+            } else {
+                member.kind.role()
+            };
             if !member.name.is_empty() {
                 roster
                     .names
@@ -1143,7 +1206,6 @@ impl TryFrom<AstraMemberWire> for AstraMembership {
 impl AstraMembership {
     pub(super) fn session(&self) -> &str { &self.session }
     pub(super) fn home(&self) -> &Path { &self.home }
-    const fn role(&self) -> AstraRole { self.role }
     pub(crate) const fn work(&self) -> PaneWork { self.work }
 
     pub(crate) const fn has_live_run(&self) -> bool {

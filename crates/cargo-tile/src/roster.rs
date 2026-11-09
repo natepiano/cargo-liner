@@ -25,6 +25,7 @@ use crate::census::InvocationId;
 use crate::census::Measurement;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
+use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 use crate::census::scan;
 use crate::census::scan::AncestryWalk;
 use crate::constants::CELL_BRIGHTEN_DURATION;
@@ -541,12 +542,22 @@ impl PartialEq for RosterRevision {
 
 impl Eq for RosterRevision {}
 
+/// Whether a scan changed the compiler memory shares.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemorySharesChange {
+    /// The shares changed and invalidate the retained summary.
+    Changed,
+    /// The shares match the retained summary.
+    Unchanged,
+}
+
 /// Every group the display knows about, running or fading.
 #[derive(Clone)]
 pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
     groups:        Vec<TrackedGroup>,
+    memory_shares: CompileMemoryShares,
     revision:      RosterRevision,
     owners:        InvocationOwners,
     /// The only frame-time owner for rows and their painting snapshots.
@@ -576,6 +587,7 @@ impl Roster {
     pub(crate) fn new() -> Self {
         Self {
             groups:        Vec::new(),
+            memory_shares: CompileMemoryShares::default(),
             revision:      RosterRevision::default(),
             owners:        InvocationOwners::default(),
             clock:         RosterClock(Rc::new(Cell::new(Instant::now()))),
@@ -626,9 +638,23 @@ impl Roster {
         }
         self.column_widths = column_widths;
         VisibleRoster {
+            memory_shares: self.memory_shares,
             groups,
             column_widths,
         }
+    }
+
+    /// A share change invalidates the summary even when the cargo rows stay equal.
+    pub(crate) fn observe_memory_shares(
+        &mut self,
+        shares: CompileMemoryShares,
+    ) -> MemorySharesChange {
+        if self.memory_shares == shares {
+            return MemorySharesChange::Unchanged;
+        }
+        self.memory_shares = shares;
+        self.revision = RosterRevision::default();
+        MemorySharesChange::Changed
     }
 
     /// Fold one scan in, stamping whatever it no longer carries.
@@ -802,11 +828,15 @@ impl Roster {
 pub(crate) struct VisibleRoster {
     /// Retained groups with only visible rows and their contributions.
     groups:        Vec<TrackedGroup>,
+    memory_shares: CompileMemoryShares,
     /// Session widths measured after hidden rows leave.
     column_widths: SessionColumnWidths,
 }
 
 impl VisibleRoster {
+    /// Compiler bytes displayed beside the visible cargo groups.
+    pub(crate) const fn memory_shares(&self) -> CompileMemoryShares { self.memory_shares }
+
     /// Visible groups, retaining their scan order and fading state.
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 
