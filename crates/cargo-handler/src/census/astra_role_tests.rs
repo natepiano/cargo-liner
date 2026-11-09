@@ -296,7 +296,7 @@ fn astra_close_resume_release_and_work_updates_preserve_identity() -> TestResult
         edges
             .0
             .iter()
-            .any(|edge| edge.member == DESIGNER && edge.role == HierarchyRole::Worker)
+            .any(|edge| edge.member == DESIGNER && edge.role == HierarchyRole::Impl)
     );
     Ok(())
 }
@@ -322,7 +322,12 @@ fn astra_missing_home_and_unknown_role_keep_plain_staff_workers() -> TestResult 
             .0
             .iter()
             .filter(|edge| edge.member == DESIGNER || edge.member == REVIEWER)
-            .all(|edge| edge.role == HierarchyRole::Worker)
+            .all(|edge| edge.role
+                == if edge.member == DESIGNER {
+                    HierarchyRole::AstraDesigner
+                } else {
+                    HierarchyRole::Worker
+                })
     );
     let texts = draw_astra(rows, edges);
     assert!(

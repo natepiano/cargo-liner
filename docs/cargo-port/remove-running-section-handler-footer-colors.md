@@ -1848,9 +1848,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Mac:** The approved read-only staff copy uses the same path and atomic replacement by its producer. cargo-handler reads locally, without ssh.
 
-### Phase 57e — Worker roles come from the staff file  · status: todo
+### Phase 57e — Worker roles come from the staff file  · status: done
 
-**Depends on:** Phase 42, Phase 57c, Phase 62, Phase 67, Phase 21, Phase 71 and Phase 72 (`census/activity.rs`); models 3n on `~/.claude` main supplies each worker's staff role.
+**Depends on:** Phase 42, Phase 57c, Phase 62, Phase 67, Phase 21, Phase 71 and Phase 72 (`census/activity.rs`); agents Phase 17b (`~/.claude` branch `sdlc-agents`, 2c33c651f) adds the `role` field to each staff row. Build against it now; checkpoint only after 17b is on `~/.claude` main (the showrunner, 2026-11-09: it says when).
 
 #### Work Order
 
@@ -1869,7 +1869,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - Phase 72: compaction markers are read in `census/compaction_markers.rs` (`CompactionMarkers`). Their row state is `Activity::Compacting`. Keep the compaction regressions in `census/activity_regression_tests.rs` green. `scan_staged` stays nonblocking.
 
 **Spec:**
-1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈668) and the probe report (`census/probe.rs` ≈597, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
+1. Read each worker row's `role` field through the existing schema-2 `StaffFileReader`. The field is an optional string. One of `impl`, `test`, `review`, `fix`, `astra-designer` or `astra-reviewer` is a known role (`staff.KnownWorkerRole`). An absent field or any other value is `WorkerRoleUnknown`, and the row shows no role. `progress_history.begin_dispatch` writes the field; a one-off backfill fills old rows after the 17b merge. Ignore the new `home` field. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈668) and the probe report (`census/probe.rs` ≈597, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
 2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep the Phase 71 recorded-owner director source and the named-seat join when the roster reads go. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
@@ -1894,7 +1894,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live on natedev: every live worker shows the same unit and role as before.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live on natedev, after the 17b merge and backfill: every live worker shows the same unit and role as before.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
