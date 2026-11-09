@@ -1971,11 +1971,11 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 
 Another product file of a cause needs director routing.
 
-**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
+**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates. Phase 58a: merge its four registrations with `PREPARED_LOCK_REPOSITORIES` in `tests/recorded_templates.rs`. Keep both fixture module sets and `cold_single_target_setup_builds_every_recorded_template`.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58a.
+**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58b.
 
 ### Phase 58 — cargo-berth tests run under a second  · status: done
 
@@ -2000,53 +2000,27 @@ Another product file of a cause needs director routing.
 
 **Ruled out:** recurrence of the four earlier test-cost causes.
 
-### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: todo
+### Phase 58a — The remaining cargo-berth tests in Phase 58 files run under a second  · status: done
 
-**Depends on:** Phase 58 (same writer and the same files). Edits to `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` wait for Phase 57 to merge.
+#### As-built
 
-Phase 58 landed after three repair rounds under the round cap. The paired Mac package run (six test threads, loads 7.2 and 8.1) counted 168 Phase 58 tests at 1 s or more on its head and 217 on its base. No binary rose. The goal is not met yet. The landing is not a passing suite: the head run failed `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 57 item 1).
-
-The inventory has two sources, and each keeps its own revision, scope, thread count and load:
-- `round-3-next-phase-slow.txt` of the Phase 58 run (143 tests).
-- The paired head run in `after-report.md` of the Phase 58 run (168 tests; 45 are not in the first list).
-
-An Astra review of the approach (2026-11-09, `/tmp/claude/astra/20261109T094600Z-2066252/review.md`) found that the evidence does not prove Git startup as the cause. The spec below starts with a controlled measurement.
-
-#### Work Order
-
-**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. This includes the slow tests in the four Phase 57 files other than its six named tests (162 in the paired Mac run).
-
-**Spec:**
-1. **Measure first, on the unchanged tree.** Use the four slowest tests of the paired head run: `edges::witness_survives_pruning_and_controls_successors` (5.198 s), `edges::successor_round_robin_covers_every_head` (4.334 s), `compaction::compaction_changes_no_reader_output_and_a_second_run_finds_nothing` (4.172 s) and `gate::filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks`.
-   - Run each one serially and under normal workspace concurrency, on the Mac and on natedev.
-   - Record setup, fixture restore, live commands, output collection and teardown as separate spans.
-   - Count the Git processes, hook processes and runtime threads in each span. Record child CPU time where possible; a parent wait alone does not separate work from a scheduling delay.
-   - Compare one small Git read through direct execution and through the shared child runtime, with the same command, environment, streams and process group. On the Mac, `ExitNotification::new` (`src/git/child.rs:591`) starts a waiter thread when the child still runs; Linux uses a process descriptor. Treat this as a measurement target.
-   - Record the thread count and the fixture cache state of each run.
-2. **Let the measurement choose the repair.** A large restore cost goes to fixture work. A large shared-runtime cost goes to child-runtime work. A large direct launch cost goes to fewer processes. A cost that grows only under concurrency goes to a contention investigation. Quote the line that takes the time.
-3. **Split a test only with a map.** For each proposed split, write which original assertion and which live transition each new test keeps. Put the map in the reply.
-   - Rebase (`tests/gate.rs:4856`): prepare the history once. Give each hook mode its own test with a private copy. Keep each three-commit rebase live.
-   - Compaction (`tests/compaction.rs:63`): prepare the history before the test clock through a fixture helper that passes lint. Keep the compaction, the reader comparisons, the byte accounting and the second compaction live. The readers append records: split them into separate fixtures only after you prove they are independent. Otherwise keep the ordered reader sequence. A test that forbids `expect` gets a helper that returns `Result`.
-   - Successor rotation (`tests/edges.rs:2305`): keep the live progression of four unavailable attempts, four comparisons and two cached reads.
-   - Witness pruning (`prepare_pruned_witness`, `tests/edges.rs:617`): it asserts settlement and real object collection. It is not disposable setup.
-4. **A test that cannot split gets a shared-cost repair** chosen in item 2: fewer repeated Git reads, less trace-helper setup, or fewer runtime threads. Keep Git fallback, command deadlines, pipe draining and descendant cleanup. Keep separate CLI invocations where they prove durable state across processes.
-5. Do not replace a live rebase, proof rotation or witness-loss command with a recorded result.
-6. Fix each cause where it lives. Keep every assertion and every test case.
-7. Measure the same counts after the fix, on the final source revision, with the same method.
+- Four recorded histories prepare compaction, rebase, answer and orphan prerequisites before the tested operations.
+- The two rebase hook modes use separate tests and private history copies.
+- Compaction readers, byte accounting, both compactions, answer transitions, orphan recovery, successor rotation and witness loss remain live.
+- The under-one-second goal remains unmet.
+- Gate counts at 1 s or more are natedev package 188 (load 46.73), natedev workspace 158, Mac package 416 and Mac workspace 574 (loads 9.60 and 18.47).
+- A later natedev package run on the same tests has 18 tests at 1 s or more. That run did not record its load.
 
 **Files:**
-- `crates/cargo-berth/tests/` — the integration tests. `board.rs`, `hooks.rs`, `ledger.rs`, `lifecycle.rs` and `recorded_templates.rs` only after Phase 57 merges.
-- `crates/cargo-berth/tests/support/` — shared test fixtures.
-- `crates/cargo-berth-test-support/` — the shared fixtures and recorded templates.
-- `crates/cargo-berth/src/` — test modules only, for measured slow unit tests: `board/answers.rs` (`overlap_answers_preserve_typed_authorization_variants`, 1.362 s), `board/rows.rs` (`waiting_reasons_pair_typed_evidence_with_actions`, 1.200 s) and `git/read.rs`.
+- `crates/cargo-berth/tests/{answers,compaction,edges,gate}.rs` — private history restoration and live test operations.
+- `crates/cargo-berth/tests/support/{answers_fixtures,compaction_fixture,edges_fixtures,gate_fixtures}.rs` — prerequisite histories and shared command helpers.
+- `crates/cargo-berth/tests/recorded_templates.rs` — registration of the four histories.
 
-A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) needs director routing with the measurement that picks it.
+**Binds later work:** “Three cargo-berth lock tests pass under load” preserves both registration sets. “cargo-berth tests stay under a second when they run together” owns the remaining costs.
 
-**Constraints from prior phases:** Phase 58: reuse `LedgerTemplate::restore_into`, `history_restore` and `recorded_history`. Keep owner renewal, linked-worktree relocation and derived-cache removal. Keep `cold_single_target_setup_builds_every_recorded_template` and `stalled_template_build_fails_with_a_clear_deadline` green. Phase 56: shared merge coverage does not checkpoint a sibling; keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Claim a shared fixture file `--after` the Phase 57 reservation when its edits overlap. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates.
+**Gotchas:** Slow-test counts require load and concurrency records for comparison. The gate measurements do not separate cold and warm fixture-cache costs.
 
-**Workers:** 1 writer.
-
-**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test at 1 s or more; lint. Report the package and workspace counts apart. Report the setup duration and the complete-suite duration beside each count, with cold-cache and warm-cache runs apart.
+**Ruled out:** a product pipe-collection repair based on these measurements.
 
 ### Phase 59 — A reader scenario stops its processes and removes its folder on every exit path  · status: todo
 
@@ -2096,12 +2070,17 @@ Phase 58a landed its fixture repairs with its goal open. Its gate passed on both
 2. **Fix the cost per test:** fewer Git processes and shared fixtures. Keep the Phase 58a rules: no recorded result replaces a live rebase, proof rotation or witness-loss command.
 3. **Cover the four Phase 57 files:** `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs`.
 4. Keep every assertion and every test case. Split a test only with a map from each new test to the original assertions and live transitions.
-5. Measure the same counts after the fix, on the final source revision, with the same method as Phase 58a.
+5. Measure baseline and final gate counts at the same test concurrency and declared load range on each machine. Record revision, load, test threads, cache state, setup duration and complete-suite duration beside each package and workspace count.
 
 **Files:**
-- `crates/cargo-berth/tests/` and `crates/cargo-berth/tests/support/`.
-- `crates/cargo-berth-test-support/`.
-- A product change in `crates/cargo-berth/src/` needs director routing with the measurement that picks it.
+- `crates/cargo-berth/tests/` — the integration tests.
+- `crates/cargo-berth/tests/support/` — test fixtures.
+- `crates/cargo-berth-test-support/` — shared fixtures.
+- `crates/cargo-berth/src/board/{answers,rows}.rs` and `crates/cargo-berth/src/git/read.rs` — test modules only, for measured slow unit tests.
+
+A product change under `crates/cargo-berth/src/` needs director routing with the measurement that picks it.
+
+**Constraints from prior phases:** Phase 58a: preserve its four recorded histories, private restores, owner renewal, worktree relocation and derived-cache removal. Keep both rebase modes, ordered compaction readers, byte accounting, both compactions, answer transitions, orphan recovery, successor rotation and witness loss live.
 
 **Workers:** 1 writer.
 
@@ -3040,7 +3019,7 @@ New tests:
 Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `painting_twice_changes_no_layout_state`, `an_unchanged_scan_does_not_extend_travel`, and `claiming_an_entering_vacant_cell_preserves_its_identity_and_admission`.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid/{mod,demands,pieces,rows,heights,motion,arrangement,visual,selection,tile_grid,layout,allocation,bands}.rs`, their tests `grid/{allocation_tests,arrangement_tests,tile_grid_tests}.rs` and `grid/tests/{mod,motion,motion_rules,summary_depth}.rs`, `crates/tui_pane/src/tiles/draw/{mod,contents,fade,rows,foot,measurements,paint}.rs`, their tests `draw/{fade_tests,rows_tests,foot_tests,paint_tests}.rs` and `draw/tests/{mod,motion}.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code, the painter, `TileGroupTitle` and their tests.
+- `crates/tui_pane/src/tiles/grid/{mod,demands,pieces,rows,heights,motion,arrangement,visual,selection,tile_grid,layout,allocation,bands}.rs`, `crates/tui_pane/src/tiles/grid/{allocation_tests,arrangement_tests,tile_grid_tests}.rs`, `crates/tui_pane/src/tiles/grid/tests/{mod,motion,motion_rules,summary_depth}.rs`, `crates/tui_pane/src/tiles/draw/{mod,contents,fade,rows,foot,measurements,paint}.rs`, `crates/tui_pane/src/tiles/draw/{fade_tests,rows_tests,foot_tests,paint_tests}.rs`, `crates/tui_pane/src/tiles/draw/tests/{mod,motion}.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code, the painter, `TileGroupTitle` and their tests.
 - `crates/tui_pane/src/tiles/target_layout.rs`, `crates/tui_pane/src/tiles/motion.rs` — new: the pure target layout and the step.
 - `crates/tui_pane/src/tiles/settings.rs` — the ripple step settings, which the new model drops.
 - `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the additive preparation API and the `TileGroupTitle` export.
