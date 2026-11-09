@@ -269,7 +269,7 @@ impl ExpansionTree for HandlerTree {
 pub(crate) enum HandlerExpansionAction {
     Shared(ExpansionAction),
     Toggle,
-    Marker(SelectedRow),
+    Press(SelectedRow),
     Level(DepthDigit),
 }
 
@@ -277,7 +277,7 @@ pub(crate) enum HandlerExpansionAction {
 pub(crate) fn dispatch(app: &mut App, action: HandlerExpansionAction) {
     let surface = focused_surface(app);
     let (action, selected) = match action {
-        HandlerExpansionAction::Marker(identity) => {
+        HandlerExpansionAction::Press(identity) => {
             (HandlerExpansionAction::Toggle, TileSelection::Row(identity))
         },
         action => (
@@ -365,10 +365,8 @@ fn change_selected_row(
                 expansion.choices.expand(key, depth);
             }
         },
-        HandlerExpansionAction::Toggle | HandlerExpansionAction::Marker(_) => {
-            if let RowExpansion::Branch { key, depth } = tree.row_expansion_at(index) {
-                expansion.choices.toggle(key, depth);
-            }
+        HandlerExpansionAction::Toggle | HandlerExpansionAction::Press(_) => {
+            expansion.choices.press_row(tree, &index);
         },
         _ => {},
     }

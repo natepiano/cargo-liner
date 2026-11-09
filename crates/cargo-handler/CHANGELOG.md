@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+
+- A left press anywhere on an expandable row opens or closes it through the shared `tui_pane` rule.
 - Accounts show busy, idle, paused, exited and total counts in the accounts board's order, with no shell column.
 - Reset times use three clear color steps in every theme. The soonest resets use the strongest step.
 - `-` shows roots and the first level in every tile. `0` shows only roots in the focused tile.

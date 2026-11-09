@@ -260,6 +260,7 @@ pub use expansion::ExpansionState;
 pub use expansion::ExpansionTree;
 pub use expansion::RowExpansion;
 pub use expansion::RowParent;
+pub use expansion::RowPressResult;
 pub use external_editor::open_paths_in_editor;
 #[cfg(feature = "backdrop")]
 pub use favorites::Favorite;
