@@ -1172,7 +1172,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Ruled out:** a Codex home outside `~/.codex*` — every real home matches, so the single-user rule skips it.
 
-### Phase 75 — The nested Astra reviewer test finishes in under a second  · status: todo
+### Phase 75 — The nested Astra reviewer test finishes in under a second  · status: done
 
 **Depends on:** Phase 72 checkpoint. `census/astra_role_tests.rs` is outside every open phase; a fix in `census/scan.rs` waits for Phase 72.
 

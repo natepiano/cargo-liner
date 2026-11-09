@@ -56,6 +56,8 @@ impl AstraFixture {
         ]});
         std::fs::write(&staff, serde_json::to_vec(&document)?)?;
         let db = Connection::open(home.join("state_6.sqlite"))?;
+        // Disable durability waits for `AstraFixture`'s temporary SQLite connection.
+        db.pragma_update(None, "synchronous", "OFF")?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE threads (id TEXT PRIMARY KEY,cwd TEXT,created_at_ms INTEGER,name TEXT,first_user_message TEXT,rollout_path TEXT,originator TEXT,thread_source TEXT);")?;
         for (id, name) in [
             (DESIGNER, "named Astra designer"),
