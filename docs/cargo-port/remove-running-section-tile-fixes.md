@@ -1972,11 +1972,12 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". Find the wait that takes the time, quote its line, and fix it there.
 2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
 3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
-4. Reproduce each fault red first on the machine that showed it, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
-5. Do not loosen an assertion. Keep every existing assertion.
+4. Three `tests/board.rs` tests failed on the Mac in the Phase 30m round 3 workspace gate (2026-11-08 22:1x, load 16-40): `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` (`tests/board.rs:6989`, left `Null`, right `"protected_tip_ancestor"`), and `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` (`tests/board.rs:7070`, "ordinary reconciliation should settle the reachable checkpoint", left `"outstanding"`, right `"released"`). Find the cause, quote its line, and fix it there.
+5. Reproduce each fault red first on the machine that showed it, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
+6. Do not loosen an assertion. Keep every existing assertion.
 
 **Files:**
-- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs` — the three tests and their fixtures.
+- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/board.rs` — the tests and their fixtures.
 - `crates/cargo-berth-test-support/` — shared fixtures.
 
 The product file of each cause needs director routing.
