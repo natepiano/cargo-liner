@@ -79,15 +79,15 @@ pub(super) fn analyze_deep_super(
 
 fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
     let mut segments = Vec::new();
-    let mut cursor = tree;
+    let mut current_use_tree = tree;
     loop {
-        match cursor {
-            UseTree::Path(path) => {
-                segments.push(path.ident.to_string());
-                cursor = &path.tree;
+        match current_use_tree {
+            UseTree::Path(use_path) => {
+                segments.push(use_path.ident.to_string());
+                current_use_tree = &use_path.tree;
             },
-            UseTree::Name(name) => {
-                segments.push(name.ident.to_string());
+            UseTree::Name(use_name) => {
+                segments.push(use_name.ident.to_string());
                 let original = format_path(&segments, None);
                 break Some(FlattenedImport {
                     segments,
@@ -95,9 +95,9 @@ fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
                     rename: None,
                 });
             },
-            UseTree::Rename(rename_tree) => {
-                segments.push(rename_tree.ident.to_string());
-                let rename = rename_tree.rename.to_string();
+            UseTree::Rename(use_rename) => {
+                segments.push(use_rename.ident.to_string());
+                let rename = use_rename.rename.to_string();
                 let original = format_path(&segments, Some(&rename));
                 break Some(FlattenedImport {
                     segments,
@@ -124,7 +124,7 @@ impl<'a> LocalImportRelation<'a> {
             return Self::OutsideBoundary;
         }
         match current.len().saturating_sub(common) {
-            0 => Self::Descendant {
+            0 if common < target.len() => Self::Descendant {
                 suffix: &target[common..],
             },
             1 if common < target.len() => Self::ParentSibling {
@@ -315,7 +315,7 @@ mod tests {
                 "use crate::a::b::Item as Alias;",
                 Some("super::b::Item as Alias"),
             ),
-            ("a::b", "use crate::a::b;", Some("")),
+            ("a::b", "use crate::a::b;", None),
             ("a::b::c", "use crate::a::b;", None),
             ("a::b::c", "use crate::a::b as Parent;", None),
             ("a::b::c", "use crate::a::Item;", None),

@@ -1021,3 +1021,86 @@ fn claude_dispatch_work_draws_under_its_seat_session() {
         "the shell folds and its work appears once"
     );
 }
+
+#[test]
+fn a_selected_staff_worker_keeps_selection_after_rename_and_sort() {
+    use crate::interaction::RowSpan;
+    use crate::interaction::SelectionSurface;
+    use crate::interaction::Selections;
+    use crate::interaction::TileSelection;
+    use crate::sort::SortDirection;
+
+    let ordered = |name: &str| {
+        let mut root = agent(10, "director", 100, None);
+        root.children = [
+            (name, "worker-a", "thread-a"),
+            ("middle", "worker-b", "thread-b"),
+        ]
+        .into_iter()
+        .map(|(name, staff, thread)| {
+            let mut row = child(0, ChildKind::Thread, None, name, 80);
+            row.thread_id = CodexThreadId::Recorded(thread.into());
+            row.dispatch = serde_json::from_value(serde_json::json!({"worker":{
+                "seat":name,"staff_id":staff,"thread_id":thread,
+                "short_seat":name,"job":"","role":{"worker":"impl"}
+            }}))
+            .expect("staff worker dispatch");
+            row
+        })
+        .collect();
+        let state = MachineState::Answered(vec![root], HierarchyEdges::default().into());
+        let machines = [Machine {
+            name:  "natedev",
+            state: &state,
+        }];
+        let placement = AgentPlacement::from_machines(&machines);
+        let defaults = cell_order_placed(&placement);
+        let sorts = HashMap::from([(
+            defaults[0].id.clone(),
+            TreeSort {
+                column:    TreeColumn::Session,
+                direction: SortDirection::Ascending,
+            },
+        )]);
+        let cells = cell_order_sorted(&placement, &sorts, NOW);
+        cells[0]
+            .lines
+            .iter()
+            .map(|line| (line.name(), line.identity.clone()))
+            .collect::<Vec<_>>()
+    };
+    let before = ordered("alpha");
+    let selected = before
+        .iter()
+        .position(|(name, _)| name == "alpha")
+        .expect("selected worker");
+    let mut selections = Selections::default();
+    let resolve = |rows: &[(String, SelectedRow)]| {
+        vec![(
+            SelectionSurface::Summary,
+            rows.iter()
+                .enumerate()
+                .map(|(index, (_, id))| (id.clone(), RowSpan::single(index)))
+                .collect(),
+        )]
+    };
+    selections.resolve(resolve(&before));
+    selections
+        .surface_mut(&SelectionSurface::Summary)
+        .expect("selection surface")
+        .select(&before[selected].1);
+    let after = ordered("zeta");
+    let renamed = after
+        .iter()
+        .position(|(name, _)| name == "zeta")
+        .expect("renamed worker");
+    assert_ne!(selected, renamed, "the rename changes the sorted row index");
+    selections.resolve(resolve(&after));
+    assert_eq!(
+        selections
+            .surface(&SelectionSurface::Summary)
+            .expect("selection surface")
+            .selection(),
+        TileSelection::Row(after[renamed].1.clone())
+    );
+}

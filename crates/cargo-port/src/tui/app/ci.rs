@@ -31,14 +31,13 @@ impl App {
         runs: Vec<CiRun>,
         github_total: GithubRunCount,
     ) {
-        let ci_pagination = CiPagination::from(
-            self.project_list
-                .primary_url_for(path)
-                .and_then(ci::parse_owner_repo)
-                .is_some_and(|owner_repo| {
-                    scan::is_exhausted(owner_repo.owner(), owner_repo.repo())
-                }),
-        );
+        let ci_pagination = self
+            .project_list
+            .primary_url_for(path)
+            .and_then(ci::parse_owner_repo)
+            .map_or(CiPagination::HasMore, |owner_repo| {
+                scan::pagination(owner_repo.owner(), owner_repo.repo())
+            });
         if let Some(project_entry) = self.project_list.entry_containing_mut(path) {
             let repo = project_entry.git_repo.get_or_insert_with(Default::default);
             let github_total = repo.ci_data.github_total().retain_known(github_total);

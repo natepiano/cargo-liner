@@ -12,6 +12,8 @@ use std::io::Write;
 use super::activity_scan_tests;
 use super::*;
 use crate::census::account::ConfigHome;
+#[cfg(target_os = "linux")]
+use crate::census::worker_dispatch;
 
 const THREAD: &str = "01a1437d-1234-5678-9abc-0123456789ab";
 
@@ -126,12 +128,14 @@ fn app_server_open_thread_uses_its_second_codex_home() {
     let root = tempfile::tempdir().expect("isolated homes");
     let session = root.path().join("unit");
     fs::create_dir_all(&session).expect("unit directory");
-    fs::write(
-        session.join("mesh_roster.json"),
-        serde_json::json!({"fixture-impl":{"thread_id":THREAD,"role":"test"}}).to_string(),
-    )
-    .expect("roster");
+    worker_dispatch::write_worker_fixture(
+        &session,
+        &serde_json::json!({
+            "fixture-impl":{"current_session":THREAD,"role":"test"}
+        }),
+    );
     let mut scanner = LocalScanner::new(AccountLabels::default());
+    scanner.worker_names = worker_dispatch::fixture_names(&session);
     scanner.desktop_source = DesktopSource::Windows(Vec::new());
     scanner.session_roots = SessionRoots::new([root.path().to_owned()]);
     let second_home = root.path().join(".codex2");

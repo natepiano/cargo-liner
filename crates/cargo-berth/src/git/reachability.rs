@@ -507,14 +507,16 @@ pub(crate) struct ReservationCheckpointCommits {
 
 /// Resolve the checkpoint's known commit expressions through one object batch.
 pub(crate) fn reservation_checkpoint_commits(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     trunk_branch: &str,
 ) -> Result<ReservationCheckpointCommits, GitError> {
-    let proof =
-        super::refs::IntegrationProofRef::resolve(&repository.object_reader(), trunk_branch)?;
+    let proof = super::refs::IntegrationProofRef::resolve(
+        &repository_snapshot.object_reader(),
+        trunk_branch,
+    )?;
     let trunk_expression = proof.reference().as_str().to_owned();
     let expressions = [GIT_HEAD_REVISION.to_owned(), trunk_expression.clone()];
-    let [protected_tip, trunk] = repository
+    let [protected_tip, trunk] = repository_snapshot
         .resolve_commit_objects(&expressions)?
         .try_into()
         .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
@@ -529,9 +531,9 @@ pub(crate) fn reservation_checkpoint_commits(
 
 fn required_commit_expression(
     expression: &str,
-    resolution: CommitObjectResolution,
+    commit_object_resolution: CommitObjectResolution,
 ) -> Result<GitObjectId, GitError> {
-    match resolution {
+    match commit_object_resolution {
         CommitObjectResolution::Resolved(object_id) => Ok(object_id),
         CommitObjectResolution::Missing => Err(GitError::MissingCommitExpression {
             expression: expression.to_owned(),
@@ -550,19 +552,19 @@ fn required_commit_expression(
 
 /// Resolve `HEAD` and classify every candidate ancestor through one object batch.
 pub(crate) fn head_commit_reachability(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    commit_target_reachability(repository, GIT_HEAD_REVISION, candidate_ancestors)
+    commit_target_reachability(repository_snapshot, GIT_HEAD_REVISION, candidate_ancestors)
 }
 
 /// Classify candidate ancestors against the branch's upstream, or its local-only proof ref.
 pub(crate) fn branch_commit_reachability(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     branch: &str,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    let objects = repository.object_reader();
+    let objects = repository_snapshot.object_reader();
     let proof = super::refs::IntegrationProofRef::resolve(&objects, branch)?;
     // A missing configured upstream is unavailable proof, not a missing local target that
     // reconciliation may replace with the repository trunk. Pin the observed upstream tip.
@@ -570,7 +572,7 @@ pub(crate) fn branch_commit_reachability(
         IntegrationProofRef::Upstream(_) => proof.commit(&objects)?.to_string(),
         IntegrationProofRef::LocalOnly(reference) => reference.as_str().to_owned(),
     };
-    commit_target_reachability(repository, &target, candidate_ancestors)
+    commit_target_reachability(repository_snapshot, &target, candidate_ancestors)
 }
 
 /// The merge extent and the subprocess work actually required to obtain it.
@@ -1018,8 +1020,8 @@ enum SoleCommitTarget {
 }
 
 impl From<CommitObjectResolution> for SoleCommitTarget {
-    fn from(resolution: CommitObjectResolution) -> Self {
-        match resolution {
+    fn from(commit_object_resolution: CommitObjectResolution) -> Self {
+        match commit_object_resolution {
             CommitObjectResolution::Resolved(target) => Self::Resolved(target),
             CommitObjectResolution::Missing => Self::Unusable(UnusableCommitTarget::Missing),
             CommitObjectResolution::Ambiguous => Self::Unusable(UnusableCommitTarget::Ambiguous),
@@ -1040,25 +1042,25 @@ enum TargetHistoryRead {
 
 /// Resolve one target expression through an object batch of its own.
 fn sole_commit_target(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     target_expression: &str,
 ) -> Result<SoleCommitTarget, GitError> {
-    let [resolution] = repository
+    let [commit_object_resolution] = repository_snapshot
         .resolve_commit_objects(&[target_expression.to_owned()])?
         .try_into()
         .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
             expected: 1,
             actual:   resolutions.len(),
         })?;
-    Ok(SoleCommitTarget::from(resolution))
+    Ok(SoleCommitTarget::from(commit_object_resolution))
 }
 
 /// Answer for a target with no candidates, which needs no history walk at all.
 fn uncontested_commit_target_reachability(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     target_expression: &str,
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    let reachability = match sole_commit_target(repository, target_expression)? {
+    let reachability = match sole_commit_target(repository_snapshot, target_expression)? {
         SoleCommitTarget::Resolved(target) => CommitTargetReachability::Resolved {
             target,
             candidates: Vec::new(),
@@ -1074,15 +1076,16 @@ fn uncontested_commit_target_reachability(
 
 /// Read the target's ancestry graph and the candidate object batch at the same time.
 fn read_target_history_and_candidates(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     target_expression: &str,
     candidate_expressions: &[String],
 ) -> Result<(TargetHistoryRead, Vec<CommitObjectResolution>), GitError> {
     thread::scope(|scope| {
-        let target_history_worker =
-            scope.spawn(|| target_commit_history(repository.repository_root(), target_expression));
+        let target_history_worker = scope.spawn(|| {
+            target_commit_history(repository_snapshot.repository_root(), target_expression)
+        });
         let candidate_resolution_worker =
-            scope.spawn(|| repository.resolve_commit_objects(candidate_expressions));
+            scope.spawn(|| repository_snapshot.resolve_commit_objects(candidate_expressions));
         let target_history =
             target_history_worker
                 .join()
@@ -1096,7 +1099,7 @@ fn read_target_history_and_candidates(
         })??;
         let target_history = match target_history {
             Ok(target_history) => TargetHistoryRead::Walked(target_history),
-            Err(history_error) => TargetHistoryRead::Failed(history_error),
+            Err(git_error) => TargetHistoryRead::Failed(git_error),
         };
         Ok::<_, GitError>((target_history, candidate_resolutions))
     })
@@ -1104,17 +1107,17 @@ fn read_target_history_and_candidates(
 
 /// Decide whether a failed history walk is an error or an unusable target expression.
 fn diagnose_failed_target_history(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     target_expression: &str,
-    history_error: GitError,
-    resolved_candidates: ResolvedBatchCommitCandidates,
+    git_error: GitError,
+    resolved_batch_commit_candidates: ResolvedBatchCommitCandidates,
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    match sole_commit_target(repository, target_expression)? {
-        SoleCommitTarget::Resolved(_) => Err(history_error),
+    match sole_commit_target(repository_snapshot, target_expression)? {
+        SoleCommitTarget::Resolved(_) => Err(git_error),
         SoleCommitTarget::Unusable(unusable) => Ok(CommitTargetReachabilityObservation {
-            reachability: unusable.into_reachability(),
-            resolved_candidates,
-            target_histories: PhaseStartTargetFirstParentHistories::default(),
+            reachability:        unusable.into_reachability(),
+            resolved_candidates: resolved_batch_commit_candidates,
+            target_histories:    PhaseStartTargetFirstParentHistories::default(),
         }),
     }
 }
@@ -1132,7 +1135,7 @@ fn classify_candidates_against_target(
         target,
         candidate_resolutions
             .iter()
-            .filter_map(|resolution| match resolution {
+            .filter_map(|commit_object_resolution| match commit_object_resolution {
                 CommitObjectResolution::Resolved(candidate)
                     if target_history.contains(candidate) =>
                 {
@@ -1146,7 +1149,7 @@ fn classify_candidates_against_target(
     );
     let candidates = candidate_resolutions
         .into_iter()
-        .map(|resolution| match resolution {
+        .map(|commit_object_resolution| match commit_object_resolution {
             CommitObjectResolution::Resolved(candidate) if target_history.contains(&candidate) => {
                 CommitCandidateReachability::Ancestor
             },
@@ -1158,7 +1161,7 @@ fn classify_candidates_against_target(
             },
         })
         .collect();
-    let target_histories = PhaseStartTargetFirstParentHistories {
+    let phase_start_target_first_parent_histories = PhaseStartTargetFirstParentHistories {
         intervals,
         target_merge: OnceLock::new(),
         candidate_history: HistoricalCandidateHistory::Available(ResolvedTargetCommitHistory {
@@ -1166,11 +1169,11 @@ fn classify_candidates_against_target(
             graph:  target_history,
         }),
     };
-    (target_histories, candidates)
+    (phase_start_target_first_parent_histories, candidates)
 }
 
 fn commit_target_reachability(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     target_expression: &str,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
@@ -1179,14 +1182,17 @@ fn commit_target_reachability(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     if candidate_expressions.is_empty() {
-        return uncontested_commit_target_reachability(repository, target_expression);
+        return uncontested_commit_target_reachability(repository_snapshot, target_expression);
     }
-    let (target_history, candidate_resolutions) =
-        read_target_history_and_candidates(repository, target_expression, &candidate_expressions)?;
-    let resolved_candidates = ResolvedBatchCommitCandidates(
+    let (target_history, candidate_resolutions) = read_target_history_and_candidates(
+        repository_snapshot,
+        target_expression,
+        &candidate_expressions,
+    )?;
+    let resolved_batch_commit_candidates = ResolvedBatchCommitCandidates(
         candidate_resolutions
             .iter()
-            .filter_map(|resolution| match resolution {
+            .filter_map(|commit_object_resolution| match commit_object_resolution {
                 CommitObjectResolution::Resolved(candidate) => Some(candidate.clone()),
                 CommitObjectResolution::Missing
                 | CommitObjectResolution::Ambiguous
@@ -1199,31 +1205,31 @@ fn commit_target_reachability(
         graph: target_history,
     } = match target_history {
         TargetHistoryRead::Walked(target_history) => target_history,
-        TargetHistoryRead::Failed(history_error) => {
+        TargetHistoryRead::Failed(git_error) => {
             return diagnose_failed_target_history(
-                repository,
+                repository_snapshot,
                 target_expression,
-                history_error,
-                resolved_candidates,
+                git_error,
+                resolved_batch_commit_candidates,
             );
         },
     };
     if candidate_resolutions.is_empty() {
         return Ok(CommitTargetReachabilityObservation {
-            reachability: CommitTargetReachability::Resolved {
+            reachability:        CommitTargetReachability::Resolved {
                 target,
                 candidates: Vec::new(),
             },
-            resolved_candidates,
-            target_histories: PhaseStartTargetFirstParentHistories::default(),
+            resolved_candidates: resolved_batch_commit_candidates,
+            target_histories:    PhaseStartTargetFirstParentHistories::default(),
         });
     }
-    let (target_histories, candidates) =
+    let (phase_start_target_first_parent_histories, candidates) =
         classify_candidates_against_target(&target, target_history, candidate_resolutions);
     Ok(CommitTargetReachabilityObservation {
-        reachability: CommitTargetReachability::Resolved { target, candidates },
-        resolved_candidates,
-        target_histories,
+        reachability:        CommitTargetReachability::Resolved { target, candidates },
+        resolved_candidates: resolved_batch_commit_candidates,
+        target_histories:    phase_start_target_first_parent_histories,
     })
 }
 
@@ -1271,7 +1277,7 @@ fn target_commit_history(
 
 /// Classify every candidate ancestor against one target with a fixed number of git invocations.
 pub(crate) fn reachability_to_target(
-    repository: &RepositorySnapshot,
+    repository_snapshot: &RepositorySnapshot,
     candidate_ancestors: &[GitObjectId],
     target: &GitObjectId,
 ) -> Result<Vec<Reachability>, GitError> {
@@ -1281,15 +1287,19 @@ pub(crate) fn reachability_to_target(
     let mut queried_objects = Vec::with_capacity(candidate_ancestors.len() + 1);
     queried_objects.extend(candidate_ancestors.iter().cloned());
     queried_objects.push(target.clone());
-    let object_availability = repository.commit_availability(&queried_objects)?;
-    let Some((target_availability, candidate_availability)) = object_availability.split_last()
+    let object_availability = repository_snapshot.commit_availability(&queried_objects)?;
+    let Some((target_commit_availability, candidate_availability)) =
+        object_availability.split_last()
     else {
         return Err(GitError::InvalidBatchObjectCount {
             expected: queried_objects.len(),
             actual:   0,
         });
     };
-    if matches!(target_availability, CommitAvailability::ObjectUnknown) {
+    if matches!(
+        target_commit_availability,
+        CommitAvailability::ObjectUnknown
+    ) {
         return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
     }
     // `candidate_ancestors` all equal to `target` need no walk because a resolved commit contains
@@ -1302,7 +1312,7 @@ pub(crate) fn reachability_to_target(
         return Ok(vec![Reachability::Ancestor; candidate_ancestors.len()]);
     }
     let target_history =
-        target_commit_history(repository.repository_root(), &target.to_string())?.graph;
+        target_commit_history(repository_snapshot.repository_root(), &target.to_string())?.graph;
     Ok(candidate_ancestors
         .iter()
         .zip(candidate_availability)
@@ -1371,17 +1381,17 @@ pub(crate) fn commits_outside_origin_basis(
     repository_root: &Path,
     origin_basis: &GitObjectId,
     target: &GitObjectId,
-    upstream: &LocalTargetUpstream,
+    local_target_upstream: &LocalTargetUpstream,
 ) -> Result<HashSet<GitObjectId>, GitError> {
     let range = format!("{origin_basis}{GIT_ANCESTOR_RANGE_INFIX}{target}");
     let mut arguments = vec![GIT_REV_LIST_COMMAND.to_owned(), range];
-    if let LocalTargetUpstream::Available(upstream) = upstream {
+    if let LocalTargetUpstream::Available(upstream) = local_target_upstream {
         arguments.push(format!("{GIT_EXCLUDE_REVISION_PREFIX}{upstream}"));
     }
     let output = error::completed_git_command(
         command::git_output_dynamic(repository_root, &arguments).into(),
     )?;
-    match (output.status.success(), upstream) {
+    match (output.status.success(), local_target_upstream) {
         (true, _) => {},
         (false, LocalTargetUpstream::Available(_)) => {
             // `commits_outside_origin_basis` retries with `LocalTargetUpstream::Unavailable` to
@@ -1667,19 +1677,27 @@ mod tests {
     #[test]
     fn identical_reachability_candidates_still_require_an_available_target() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
-        let repository = crate::git::RepositorySnapshot::discover(fixture.root())?;
+        let repository_snapshot = crate::git::RepositorySnapshot::discover(fixture.root())?;
         let head = fixture.phase_start_head;
         let missing = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
         assert_eq!(
-            super::reachability_to_target(&repository, &[head.clone(), head.clone()], &head)?,
+            super::reachability_to_target(
+                &repository_snapshot,
+                &[head.clone(), head.clone()],
+                &head
+            )?,
             vec![Reachability::Ancestor, Reachability::Ancestor],
         );
         assert_eq!(
-            super::reachability_to_target(&repository, std::slice::from_ref(&missing), &missing)?,
+            super::reachability_to_target(
+                &repository_snapshot,
+                std::slice::from_ref(&missing),
+                &missing
+            )?,
             vec![Reachability::ObjectUnknown],
         );
         assert_eq!(
-            super::reachability_to_target(&repository, &[head.clone(), missing], &head)?,
+            super::reachability_to_target(&repository_snapshot, &[head.clone(), missing], &head)?,
             vec![Reachability::Ancestor, Reachability::ObjectUnknown],
         );
         Ok(())
@@ -1742,15 +1760,19 @@ mod tests {
                     },
                 ])
                 .collect();
-            let (histories, classified) = super::classify_candidates_against_target(
-                target,
-                super::CommitAncestryGraph {
-                    parents_by_commit: graph.parents_by_commit.clone(),
-                    ..super::CommitAncestryGraph::default()
-                },
-                resolutions,
+            let (phase_start_target_first_parent_histories, classified) =
+                super::classify_candidates_against_target(
+                    target,
+                    super::CommitAncestryGraph {
+                        parents_by_commit: graph.parents_by_commit.clone(),
+                        ..super::CommitAncestryGraph::default()
+                    },
+                    resolutions,
+                );
+            assert_eq!(
+                phase_start_target_first_parent_histories.intervals,
+                expected
             );
-            assert_eq!(histories.intervals, expected);
             let mut expected_classes = candidates
                 .iter()
                 .map(|candidate| {
@@ -1839,13 +1861,13 @@ mod tests {
         let candidate = fixture.commit("rebased later checkpoint")?;
         fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
         let trunk = fixture.commit("rewrite protected hunk")?;
-        let observation = super::branch_commit_reachability(
+        let commit_target_reachability_observation = super::branch_commit_reachability(
             &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;
         assert!(matches!(
-            observation
+            commit_target_reachability_observation
                 .target_histories
                 .after_phase_start(&fixture.phase_start_head),
             super::ScopedPatchTargetHistory::NeedsGitQueries
@@ -1853,12 +1875,14 @@ mod tests {
         // The invalid query directory proves `observation.target_histories` uses the retained
         // batch, including off-trunk starts.
         assert_eq!(
-            observation.target_histories.earliest_containing_matches(
-                &fixture.root().join("absent-directory"),
-                &fixture.phase_start_head,
-                &trunk,
-                std::slice::from_ref(&candidate),
-            ),
+            commit_target_reachability_observation
+                .target_histories
+                .earliest_containing_matches(
+                    &fixture.root().join("absent-directory"),
+                    &fixture.phase_start_head,
+                    &trunk,
+                    std::slice::from_ref(&candidate),
+                ),
             super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
         );
         assert_eq!(
@@ -1868,7 +1892,7 @@ mod tests {
                 &crate::git::fixture::file_scopes(&[PRIMARY_PATH])?,
                 &protected_tip,
                 &trunk,
-                &observation.target_histories,
+                &commit_target_reachability_observation.target_histories,
             ),
             super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
         );
@@ -1926,14 +1950,15 @@ mod tests {
         let candidate = crate::git::refs::head_object_id(fixture.root())?;
         fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
         let trunk = fixture.commit("rewrite phase after merge")?;
-        let observation = super::branch_commit_reachability(
+        let commit_target_reachability_observation = super::branch_commit_reachability(
             &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;
-        let super::ScopedPatchTargetHistory::ProvenFirstParentInterval { commits } = observation
-            .target_histories
-            .after_phase_start(&fixture.phase_start_head)
+        let super::ScopedPatchTargetHistory::ProvenFirstParentInterval { commits } =
+            commit_target_reachability_observation
+                .target_histories
+                .after_phase_start(&fixture.phase_start_head)
         else {
             return Err("expected retained first-parent interval".into());
         };
@@ -1941,12 +1966,14 @@ mod tests {
         assert!(!commits.contains(&other_parent_match));
         let matches = [first_match, other_parent_match];
         assert_eq!(
-            observation.target_histories.earliest_containing_matches(
-                &fixture.root().join("absent-directory"),
-                &fixture.phase_start_head,
-                &trunk,
-                &matches,
-            ),
+            commit_target_reachability_observation
+                .target_histories
+                .earliest_containing_matches(
+                    &fixture.root().join("absent-directory"),
+                    &fixture.phase_start_head,
+                    &trunk,
+                    &matches,
+                ),
             super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
         );
         assert_eq!(
@@ -1965,7 +1992,7 @@ mod tests {
                 &crate::git::fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &trunk,
-                &observation.target_histories,
+                &commit_target_reachability_observation.target_histories,
             ),
             super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate)
         );

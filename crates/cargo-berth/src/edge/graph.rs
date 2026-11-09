@@ -288,16 +288,19 @@ impl OrderingGraph {
     /// Build the gate-and-board projection without exposing graph internals.
     pub(crate) fn integration_constraints(
         &self,
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
         repository_snapshot: &RepositorySnapshot,
-        generation: ProjectionGeneration,
+        projection_generation: ProjectionGeneration,
     ) -> Result<IntegrationConstraintProjection, MissingReadinessFact> {
-        let reservation_facts = reservations
+        let reservation_facts = retained_reservation_set
             .iter()
             .map(|reservation| {
-                let snapshot = repository_snapshot.reservation(reservation.id())?;
-                let subject = match &snapshot.evidence {
-                    RepositoryReservationEvidence::Active => match &snapshot.worktree_head {
+                let repository_reservation_snapshot =
+                    repository_snapshot.reservation(reservation.id())?;
+                let integration_subject = match &repository_reservation_snapshot.evidence {
+                    RepositoryReservationEvidence::Active => match &repository_reservation_snapshot
+                        .worktree_head
+                    {
                         WorktreeHead::Resolved(object_id) => IntegrationSubject::Commit {
                             object_id: object_id.clone(),
                         },
@@ -315,39 +318,39 @@ impl OrderingGraph {
                 };
                 Ok(IntegrationReservationFacts {
                     reservation_id: reservation.id(),
-                    actor: reservation.actor().clone(),
-                    source: reservation.source().clone(),
-                    purpose: reservation.purpose().clone(),
-                    scopes: reservation.scopes().clone(),
-                    lifecycle: reservation.lifecycle().clone(),
-                    subject,
+                    actor:          reservation.actor().clone(),
+                    source:         reservation.source().clone(),
+                    purpose:        reservation.purpose().clone(),
+                    scopes:         reservation.scopes().clone(),
+                    lifecycle:      reservation.lifecycle().clone(),
+                    subject:        integration_subject,
                 })
             })
             .collect::<Result<Vec<_>, MissingReadinessFact>>()?;
         let mut holds = Vec::new();
         let mut ordering_constraints = Vec::new();
         for edge in &self.edges {
-            let readiness = edge.readiness(repository_snapshot)?;
+            let edge_readiness = edge.readiness(repository_snapshot)?;
             ordering_constraints.push(IntegrationOrderingConstraint {
-                edge_id: edge.edge_id,
-                predecessor: edge.before,
-                successor: edge.after,
-                ordering_target: edge.ordering_target(repository_snapshot),
-                scopes: edge.scopes.0.clone(),
-                reason: edge.reason.clone(),
-                readiness,
-                declaration: edge.declaration,
+                edge_id:              edge.edge_id,
+                predecessor:          edge.before,
+                successor:            edge.after,
+                ordering_target:      edge.ordering_target(repository_snapshot),
+                scopes:               edge.scopes.0.clone(),
+                reason:               edge.reason.clone(),
+                readiness:            edge_readiness,
+                declaration:          edge.declaration,
                 declaration_event_id: edge.declaration_event_id,
             });
-            if readiness.holds_successor() {
+            if edge_readiness.holds_successor() {
                 holds.push(IntegrationHold::OrderingEdge {
-                    edge_id: edge.edge_id,
-                    predecessor: edge.before,
-                    successor: edge.after,
+                    edge_id:         edge.edge_id,
+                    predecessor:     edge.before,
+                    successor:       edge.after,
                     ordering_target: edge.ordering_target(repository_snapshot),
-                    scopes: edge.scopes.0.clone(),
-                    reason: edge.reason.clone(),
-                    readiness,
+                    scopes:          edge.scopes.0.clone(),
+                    reason:          edge.reason.clone(),
+                    readiness:       edge_readiness,
                 });
             }
         }
@@ -380,7 +383,7 @@ impl OrderingGraph {
             })
             .collect();
         Ok(IntegrationConstraintProjection {
-            generation,
+            generation: projection_generation,
             reservations: reservation_facts,
             holds,
             ordering_constraints,
@@ -399,7 +402,7 @@ impl OrderingGraph {
         before: ReservationId,
         after: ReservationId,
         reason: OrderingReason,
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
     ) -> Result<PreparedOrderingEdge, EdgeDeclarationRejection> {
         if before == after {
             return Err(EdgeDeclarationRejection::SameEndpoint);
@@ -416,20 +419,21 @@ impl OrderingGraph {
         let mut proposed = self.adjacency.clone();
         proposed.entry(before).or_default().push(after);
         cycle::ensure_acyclic(&proposed).map_err(EdgeDeclarationRejection::Cycle)?;
-        let (scopes, declaration) =
-            if let Some(resolution) = self.deferred_overlap_between(before, after)? {
-                (
-                    resolution.scopes,
-                    PreparedEdgeDeclaration::DeferredResolution(resolution.endpoints),
-                )
-            } else {
-                let predecessor = live_reservation(reservations, before)?;
-                live_reservation(reservations, after)?;
-                let scopes = self
-                    .overridden_scopes_between(before, after)
-                    .unwrap_or_else(|| OrderingOverlapScopeSet(predecessor.scopes().clone()));
-                (scopes, PreparedEdgeDeclaration::Sequence)
-            };
+        let (scopes, declaration) = if let Some(deferred_overlap_resolution) =
+            self.deferred_overlap_between(before, after)?
+        {
+            (
+                deferred_overlap_resolution.scopes,
+                PreparedEdgeDeclaration::DeferredResolution(deferred_overlap_resolution.endpoints),
+            )
+        } else {
+            let predecessor = live_reservation(retained_reservation_set, before)?;
+            live_reservation(retained_reservation_set, after)?;
+            let scopes = self
+                .overridden_scopes_between(before, after)
+                .unwrap_or_else(|| OrderingOverlapScopeSet(predecessor.scopes().clone()));
+            (scopes, PreparedEdgeDeclaration::Sequence)
+        };
         Ok(PreparedOrderingEdge {
             edge_id: EdgeId::new(),
             before,
@@ -506,10 +510,10 @@ impl OrderingGraph {
     pub(crate) fn has_nonterminal_dependent(
         &self,
         predecessor: ReservationId,
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
     ) -> Result<bool, ReservationReplayError> {
         for successor in self.adjacency.get(&predecessor).into_iter().flatten() {
-            let reservation = reservations.reservation(*successor)?;
+            let reservation = retained_reservation_set.reservation(*successor)?;
             if !matches!(
                 reservation.lifecycle(),
                 ReservationLifecycle::Released { .. }
@@ -524,7 +528,7 @@ impl OrderingGraph {
     pub(crate) fn retention_refs_retired_by_terminal(
         &self,
         terminal_successor: ReservationId,
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
     ) -> Result<Vec<ReservationId>, ReservationReplayError> {
         let mut predecessors = Vec::new();
         'predecessors: for edge in self
@@ -532,7 +536,7 @@ impl OrderingGraph {
             .iter()
             .filter(|edge| edge.after == terminal_successor)
         {
-            let predecessor = reservations.reservation(edge.before)?;
+            let predecessor = retained_reservation_set.reservation(edge.before)?;
             if !matches!(
                 predecessor.lifecycle(),
                 ReservationLifecycle::Released { .. }
@@ -544,7 +548,9 @@ impl OrderingGraph {
                     continue;
                 }
                 if !matches!(
-                    reservations.reservation(*successor)?.lifecycle(),
+                    retained_reservation_set
+                        .reservation(*successor)?
+                        .lifecycle(),
                     ReservationLifecycle::Released { .. }
                 ) {
                     continue 'predecessors;
@@ -661,15 +667,18 @@ impl OrderingGraph {
     fn apply_enrollment_deferrals(
         &mut self,
         requester: ReservationId,
-        overlaps: &AuthorizedOverlapSet,
+        authorized_overlap_set: &AuthorizedOverlapSet,
         event_id: EventId,
     ) -> Result<(), EdgeReplayError> {
         let reason = OverlapAuthorizationReason::enrollment();
         let mut counterparts = HashSet::new();
-        for overlap in overlaps.as_slice() {
+        for overlap in authorized_overlap_set.as_slice() {
             let blocker = overlap.reservation_id;
             if counterparts.insert(blocker) {
-                let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(blocker, overlaps)?;
+                let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(
+                    blocker,
+                    authorized_overlap_set,
+                )?;
                 self.add_deferral(
                     requester,
                     blocker,
@@ -687,7 +696,7 @@ impl OrderingGraph {
     fn apply_claim_sequence_bindings(
         &mut self,
         requester: ReservationId,
-        overlaps: &AuthorizedOverlapSet,
+        authorized_overlap_set: &AuthorizedOverlapSet,
         holders: &[ClaimSequenceBinding],
         replaced: &[ContradictedOrdering],
         event_id: EventId,
@@ -696,8 +705,10 @@ impl OrderingGraph {
         for binding in holders {
             let holder = binding.holder();
             let (before, after) = directed_endpoints(requester, holder.blocker, holder.direction);
-            let scopes =
-                OrderingOverlapScopeSet::from_authorized_overlaps(holder.blocker, overlaps)?;
+            let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(
+                holder.blocker,
+                authorized_overlap_set,
+            )?;
             match binding {
                 ClaimSequenceBinding::NewEdge { reason, .. } => {
                     self.add_edge(OrderingEdge {
@@ -880,14 +891,17 @@ impl OrderingGraph {
             (false, true) => first_orientation,
             (true, false) => second_orientation,
         };
-        let endpoints = DeferredOverlapEndpoints {
+        let deferred_overlap_endpoints = DeferredOverlapEndpoints {
             deferred: matching[0].deferred,
             blocker:  matching[0].blocker,
         };
         Ok(
             OrderingOverlapScopeSet::combine(matching.into_iter().map(|deferral| &deferral.scopes))
                 .ok()
-                .map(|scopes| DeferredOverlapResolution { endpoints, scopes }),
+                .map(|scopes| DeferredOverlapResolution {
+                    endpoints: deferred_overlap_endpoints,
+                    scopes,
+                }),
         )
     }
 
@@ -1113,10 +1127,10 @@ impl Error for EdgeReplayError {}
 /// Borrow a nonterminal endpoint. A vertex the retained set no longer holds was pruned after it
 /// ended, so it is terminal too.
 fn live_reservation(
-    reservations: &RetainedReservationSet,
+    retained_reservation_set: &RetainedReservationSet,
     reservation_id: ReservationId,
 ) -> Result<&Reservation, EdgeDeclarationRejection> {
-    reservations
+    retained_reservation_set
         .reservation(reservation_id)
         .ok()
         .filter(|reservation| !reservation.is_terminal())
@@ -1234,7 +1248,7 @@ mod tests {
                 "changed reason".parse()?,
             ),
         ] {
-            let invalid = ConflictAuthorization::SequenceWithExistingEdges {
+            let invalid_conflict_authorization = ConflictAuthorization::SequenceWithExistingEdges {
                 overlaps: overlap.clone(),
                 holders:  vec![ClaimSequenceBinding::ExistingEdge {
                     holder: SequencedHolder {
@@ -1247,7 +1261,11 @@ mod tests {
                 replaced: Vec::new(),
             };
             assert!(matches!(
-                graph.apply_authorization(requester, &invalid, EventId::new()),
+                graph.apply_authorization(
+                    requester,
+                    &invalid_conflict_authorization,
+                    EventId::new()
+                ),
                 Err(EdgeReplayError::InvalidExistingEdge(_))
             ));
         }
@@ -1301,11 +1319,16 @@ mod tests {
             enrolled_claim(other_counterpart, &ConflictAuthorization::NoConflict)?,
             enrolled_claim(enrolled, &enrollment(&[counterpart, other_counterpart])?)?,
         ];
-        let reservations = RetainedReservationSet::replay(&events)?;
+        let retained_reservation_set = RetainedReservationSet::replay(&events)?;
         for (before, after) in [(enrolled, counterpart), (counterpart, enrolled)] {
             let mut graph = OrderingGraph::replay(&events)?;
-            let prepared = graph
-                .prepare_edge(before, after, "land in this order".parse()?, &reservations)
+            let prepared_ordering_edge = graph
+                .prepare_edge(
+                    before,
+                    after,
+                    "land in this order".parse()?,
+                    &retained_reservation_set,
+                )
                 .map_err(|error| io::Error::other(error.to_string()))?;
             let JournalOperation::ResolveDefer {
                 deferred_reservation_id,
@@ -1313,7 +1336,7 @@ mod tests {
                 edge_id,
                 direction,
                 reason,
-            } = prepared.operation()
+            } = prepared_ordering_edge.operation()
             else {
                 return Err(io::Error::other("expected a deferral resolution").into());
             };
@@ -1372,28 +1395,33 @@ mod tests {
             )?,
         ];
         let graph = OrderingGraph::replay(&events)?;
-        let reservations = RetainedReservationSet::replay(&events)?;
+        let retained_reservation_set = RetainedReservationSet::replay(&events)?;
 
         for (before, after, expected_scopes) in [
             (holder, requester, shared_scopes()?),
             (unanswered, holder, scopes_at("unanswered.rs")?),
         ] {
-            let prepared = graph
-                .prepare_edge(before, after, "hold the lane".parse()?, &reservations)
+            let prepared_ordering_edge = graph
+                .prepare_edge(
+                    before,
+                    after,
+                    "hold the lane".parse()?,
+                    &retained_reservation_set,
+                )
                 .map_err(|error| io::Error::other(error.to_string()))?;
             let JournalOperation::Sequence {
                 predecessor,
                 successor,
                 scopes,
                 ..
-            } = prepared.operation()
+            } = prepared_ordering_edge.operation()
             else {
                 return Err(io::Error::other("expected a sequence operation").into());
             };
             assert_eq!((predecessor, successor), (before, after));
             assert_eq!(scopes, expected_scopes);
             assert_eq!(
-                prepared.into_edge(EventId::new()).declaration,
+                prepared_ordering_edge.into_edge(EventId::new()).declaration,
                 EdgeDeclaration::Sequence
             );
         }

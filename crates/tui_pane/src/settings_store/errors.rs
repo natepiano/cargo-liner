@@ -82,11 +82,11 @@ mod tests {
     }
 
     fn set_items(value: &str, table: &mut Table) -> Result<(), super::super::SettingsError> {
-        let values = parse_list(value)
+        let toml_values = parse_list(value)
             .into_iter()
             .map(Value::String)
             .collect::<Vec<_>>();
-        super::super::write_value(table, "tui", "items", Value::Array(values))
+        super::super::write_value(table, "tui", "items", Value::Array(toml_values))
     }
 
     fn command(table: &Table) -> String {
@@ -110,39 +110,42 @@ mod tests {
 
     #[test]
     fn settings_row_payload_round_trips_typed_id() {
-        let row = SettingsRow::value(SettingsRowPayload::new(7), "Editor", "zed");
+        let settings_row = SettingsRow::value(SettingsRowPayload::new(7), "Editor", "zed");
 
         assert_eq!(
-            row.identity,
+            settings_row.identity,
             SettingsRowIdentity::Selectable(SettingsRowPayload::new(7))
         );
     }
 
     #[test]
     fn empty_registry_has_no_entries() {
-        let reg = SettingsRegistry::new();
-        assert!(reg.entries().is_empty());
+        let settings_registry = SettingsRegistry::new();
+        assert!(settings_registry.entries().is_empty());
     }
 
     #[test]
     fn add_settings_record_entries() {
-        let reg = SettingsRegistry::new()
+        let settings_registry = SettingsRegistry::new()
             .add_bool_in(SettingsSection::App("tui"), "enabled", enabled, set_enabled)
             .add_int_in(SettingsSection::App("tui"), "count", count, set_count)
             .with_bounds(0, 10)
             .add_string_in(SettingsSection::App("tui"), "name", name, set_name);
 
-        assert_eq!(reg.entries().len(), 3);
-        assert_eq!(reg.entries()[0].section, SettingsSection::App("tui"));
-        assert_eq!(reg.entries()[0].name, "enabled");
+        assert_eq!(settings_registry.entries().len(), 3);
+        assert_eq!(
+            settings_registry.entries()[0].section,
+            SettingsSection::App("tui")
+        );
+        assert_eq!(settings_registry.entries()[0].name, "enabled");
     }
 
     #[test]
     fn load_for_startup_reads_table_and_toasts() {
-        let dir = TempDir::new().expect("create temp settings dir");
-        let path = dir.path().join("startup.toml");
+        let temp_dir = TempDir::new().expect("create temp settings dir");
+        let path_buf = temp_dir.path().join("startup.toml");
         std::fs::write(
-            &path,
+            &path_buf,
             "[tui]\nenabled = true\ncount = 7\nname = \"hana\"\n\n[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
         )
         .expect("write settings");
@@ -151,33 +154,33 @@ mod tests {
             .add_int_in(SettingsSection::App("tui"), "count", count, set_count)
             .add_string_in(SettingsSection::App("tui"), "name", name, set_name);
 
-        let loaded = SettingsStore::load_for_startup(
-            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
+        let loaded_settings = SettingsStore::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&path_buf),
             registry,
         )
         .expect("load settings");
 
-        assert!(enabled(loaded.store.table()));
-        assert_eq!(count(loaded.store.table()), 7);
-        assert_eq!(name(loaded.store.table()), "hana");
+        assert!(enabled(loaded_settings.store.table()));
+        assert_eq!(count(loaded_settings.store.table()), 7);
+        assert_eq!(name(loaded_settings.store.table()), "hana");
         assert_eq!(
-            loaded.toast_settings.status_toast_visible.get(),
+            loaded_settings.toast_settings.status_toast_visible.get(),
             Duration::from_secs(9)
         );
         assert_eq!(
-            loaded.toast_settings.finished_task_visible.get(),
+            loaded_settings.toast_settings.finished_task_visible.get(),
             Duration::from_secs(2)
         );
     }
 
     #[test]
     fn load_from_path_retargets_store_path() {
-        let dir = TempDir::new().expect("create temp settings dir");
-        let initial_path = dir.path().join("initial.toml");
-        let reload_path = dir.path().join("reload.toml");
-        std::fs::write(&initial_path, "[tui]\nname = \"initial\"\n").expect("write initial");
+        let temp_dir = TempDir::new().expect("create temp settings dir");
+        let initial_path_buf = temp_dir.path().join("initial.toml");
+        let reload_path_buf = temp_dir.path().join("reload.toml");
+        std::fs::write(&initial_path_buf, "[tui]\nname = \"initial\"\n").expect("write initial");
         std::fs::write(
-            &reload_path,
+            &reload_path_buf,
             "[tui]\nname = \"reload\"\n\n[toasts]\ndefault_timeout = 6.0\n",
         )
         .expect("write reload");
@@ -187,23 +190,26 @@ mod tests {
             name,
             set_name,
         );
-        let mut loaded = SettingsStore::load_for_startup(
-            SettingsFileSpec::new("test", "settings.toml").with_path(&initial_path),
+        let mut loaded_settings = SettingsStore::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&initial_path_buf),
             registry,
         )
         .expect("load settings");
 
-        let reloaded = loaded
+        let reloaded_settings = loaded_settings
             .store
-            .load_from_path(&reload_path)
+            .load_from_path(&reload_path_buf)
             .expect("reload settings");
 
-        assert_eq!(name(loaded.store.table()), "reload");
+        assert_eq!(name(loaded_settings.store.table()), "reload");
         assert_eq!(
-            reloaded.toast_settings.status_toast_visible.get(),
+            reloaded_settings.toast_settings.status_toast_visible.get(),
             Duration::from_secs(6)
         );
-        assert_eq!(loaded.store.path(), Some(reload_path.as_path()));
+        assert_eq!(
+            loaded_settings.store.path(),
+            Some(reload_path_buf.as_path())
+        );
     }
 
     #[test]
@@ -229,26 +235,26 @@ mod tests {
                 },
             );
 
-        let items_entry = &registry.entries()[0];
-        let command_entry = &registry.entries()[1];
+        let items_setting_entry = &registry.entries()[0];
+        let command_setting_entry = &registry.entries()[1];
         let SettingKind::Custom {
-            codecs: items_codecs,
-        } = &items_entry.kind
+            codecs: items_setting_codecs,
+        } = &items_setting_entry.kind
         else {
             panic!("expected custom items entry");
         };
         let SettingKind::Custom {
-            codecs: command_codecs,
-        } = &command_entry.kind
+            codecs: command_setting_codecs,
+        } = &command_setting_entry.kind
         else {
             panic!("expected custom command entry");
         };
 
-        (items_codecs.parse)("alpha, beta", &mut table).expect("set items");
-        (command_codecs.parse)("cargo mend", &mut table).expect("set command");
+        (items_setting_codecs.parse)("alpha, beta", &mut table).expect("set items");
+        (command_setting_codecs.parse)("cargo mend", &mut table).expect("set command");
 
-        assert_eq!((items_codecs.format)(&table), "alpha, beta");
-        assert_eq!((command_codecs.format)(&table), "cargo mend");
+        assert_eq!((items_setting_codecs.format)(&table), "alpha, beta");
+        assert_eq!((command_setting_codecs.format)(&table), "cargo mend");
     }
 
     #[test]
@@ -287,29 +293,29 @@ mod tests {
 
     #[test]
     fn save_removes_legacy_default_timeout_and_task_linger_keys() {
-        let dir = TempDir::new().expect("create temp settings dir");
-        let path = dir.path().join("migrate.toml");
+        let temp_dir = TempDir::new().expect("create temp settings dir");
+        let path_buf = temp_dir.path().join("migrate.toml");
         // `std::fs::write` seeds the settings file's `[toasts]` table with the
         // legacy keys `default_timeout` and `task_linger`.
         std::fs::write(
-            &path,
+            &path_buf,
             "[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
         )
         .expect("write legacy");
         let registry = SettingsRegistry::new();
-        let mut loaded = SettingsStore::load_for_startup(
-            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
+        let mut loaded_settings = SettingsStore::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&path_buf),
             registry,
         )
         .expect("load settings");
 
         // `ToastSettings::write_to_table` and `SettingsStore::save` re-save the file;
         // confirm legacy keys are gone and new keys are written in their place.
-        loaded
+        loaded_settings
             .toast_settings
-            .write_to_table(loaded.store.table_mut());
-        loaded.store.save().expect("save settings");
-        let saved = std::fs::read_to_string(&path).expect("read saved");
+            .write_to_table(loaded_settings.store.table_mut());
+        loaded_settings.store.save().expect("save settings");
+        let saved = std::fs::read_to_string(&path_buf).expect("read saved");
 
         assert!(!saved.contains("default_timeout"));
         assert!(!saved.contains("task_linger"));
@@ -319,10 +325,10 @@ mod tests {
 
     #[test]
     fn save_writes_toasts_and_removes_legacy_keys() {
-        let dir = TempDir::new().expect("create temp settings dir");
-        let path = dir.path().join("save.toml");
+        let temp_dir = TempDir::new().expect("create temp settings dir");
+        let path_buf = temp_dir.path().join("save.toml");
         std::fs::write(
-            &path,
+            &path_buf,
             "[tui]\nstatus_flash_secs = 4.0\ntask_linger_secs = 3.0\n",
         )
         .expect("write legacy settings");
@@ -332,16 +338,16 @@ mod tests {
             enabled,
             set_enabled,
         );
-        let mut loaded = SettingsStore::load_for_startup(
-            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
+        let mut loaded_settings = SettingsStore::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&path_buf),
             registry,
         )
         .expect("load settings");
 
-        set_enabled(loaded.store.table_mut(), true).expect("set enabled");
-        ToastSettings::default().write_to_table(loaded.store.table_mut());
-        loaded.store.save().expect("save settings");
-        let saved = std::fs::read_to_string(&path).expect("read saved settings");
+        set_enabled(loaded_settings.store.table_mut(), true).expect("set enabled");
+        ToastSettings::default().write_to_table(loaded_settings.store.table_mut());
+        loaded_settings.store.save().expect("save settings");
+        let saved = std::fs::read_to_string(&path_buf).expect("read saved settings");
 
         assert!(saved.contains("enabled = true"));
         assert!(saved.contains("[toasts]"));

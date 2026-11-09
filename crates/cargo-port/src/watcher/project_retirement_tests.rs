@@ -9,6 +9,7 @@ use super::WatchRequest;
 use super::WatcherLoopState;
 use super::apply_watch_request;
 use crate::channel;
+use crate::config::WatcherConfig;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::watcher::events;
@@ -54,7 +55,12 @@ fn deleted_projects_release_tracking_and_disk_poll_entries() -> std::io::Result<
                 &mut watcher,
                 &mut registered,
             );
-            refresh::schedule_disk_refresh(&mut state.pending_disk, &label, Instant::now());
+            refresh::schedule_disk_refresh(
+                &mut state.pending_disk,
+                &label,
+                Instant::now(),
+                &WatcherConfig::default(),
+            );
         }
         for (index, path) in projects.iter().enumerate() {
             fs::remove_dir_all(path)?;

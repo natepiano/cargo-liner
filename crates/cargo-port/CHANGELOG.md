@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add file-only `[scan]`, `[watcher]`, `[http]` and `[lint]` operational timing, concurrency and storage thresholds; edit config and restart without rebuilding.
+
 ### Changed
 
+- Use the shared row press operation for project expansion. Preserve row selection and focus-only clicks.
 - Render each allowed frame once into the real terminal and reuse the retained screen buffer.
 - Draw a frame only when something visible changed; look up project paths through an index and recompute disk totals and column widths only when their inputs change, so an idle cargo-port uses about 0.2% of one core.
 - Use the shared `tui_pane` expansion model and keys for the project list; preserve its navigation and saved expansion state.

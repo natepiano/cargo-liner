@@ -38,6 +38,7 @@ use crate::tui::keymap::FinderAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
+use crate::tui::state::inflight::OwnedRunActivity;
 use crate::tui::terminal;
 use crate::tui::test_support;
 
@@ -218,7 +219,10 @@ fn a_queued_target_cannot_start_after_its_owner_becomes_deleted() -> anyhow::Res
         .expect_found("the owning package")
         .visibility = Visibility::Deleted;
     terminal::start_queued_target_for_test(&mut fixture.app);
-    assert!(!fixture.app.inflight.owned_run().is_running());
+    assert_eq!(
+        fixture.app.inflight.owned_run().activity(),
+        OwnedRunActivity::Inactive
+    );
     assert!(matches!(
         fixture.app.inflight.owned_run_termination(),
         crate::tui::state::OwnedRunTermination::NotRunning

@@ -29,7 +29,7 @@ pub(in crate::census) struct SessionRoots {
 
 /// `UnitDirectorSource` retains the unit's own director proof without a worker run.
 #[derive(Debug)]
-enum UnitDirectorSource {
+pub(super) enum UnitDirectorSource {
     Staff(WorkerReference),
     Session(String),
     Unrecorded,
@@ -62,6 +62,25 @@ impl From<UnitOwnerRecord> for UnitDirectorSource {
     }
 }
 
+impl UnitDirectorSource {
+    pub(super) fn read(directory: &Path) -> Self {
+        fs::read(directory.join("progress_history_state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<UnitOwnerRecord>(&bytes).ok())
+            .map_or(Self::Unrecorded, Self::from)
+    }
+
+    pub(super) fn session<'a>(&'a self, staff: &'a StaffRoster) -> RunDirector<'a> {
+        match self {
+            Self::Staff(reference) => reference
+                .session(staff)
+                .map_or(RunDirector::Unrecorded, RunDirector::Session),
+            Self::Session(id) => RunDirector::Session(id),
+            Self::Unrecorded => RunDirector::Unrecorded,
+        }
+    }
+}
+
 /// A live unit directory joined to its director's census row.
 pub(in crate::census) struct ManagedSession {
     pub(in crate::census) directory:    PathBuf,
@@ -81,7 +100,7 @@ impl SessionRoots {
 
     pub(in crate::census) fn production() -> Self { Self::new(SESSION_ROOTS.map(PathBuf::from)) }
 
-    /// Live supervisors prove their unit directories before roster resolution.
+    /// Live supervisors prove their unit directories before staff resolution.
     pub(in crate::census) fn live_directories(
         &self,
         processes: &[ProcessEntry],
@@ -118,22 +137,13 @@ impl SessionRoots {
             .get(directory)
             .is_none_or(|(old, _)| *old != revision)
         {
-            let owner = fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<UnitOwnerRecord>(&bytes).ok())
-                .map_or(UnitDirectorSource::Unrecorded, UnitDirectorSource::from);
+            let owner = UnitDirectorSource::read(directory);
             self.owners.insert(directory.to_owned(), (revision, owner));
         }
-        match &self.owners[directory].1 {
-            UnitDirectorSource::Staff(reference) => reference
-                .session(staff)
-                .map_or(RunDirector::Unrecorded, RunDirector::Session),
-            UnitDirectorSource::Session(id) => RunDirector::Session(id),
-            UnitDirectorSource::Unrecorded => RunDirector::Unrecorded,
-        }
+        self.owners[directory].1.session(staff)
     }
 
-    /// Only a live supervisor can request discovery of a unit's director and roster.
+    /// Only a live supervisor can request discovery of a unit's director.
     pub(in crate::census) fn managed_sessions(
         &mut self,
         sessions: &HashSet<PathBuf>,

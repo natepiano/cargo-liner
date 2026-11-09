@@ -60,6 +60,28 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
         .map(AbsolutePath::from)
 }
 
+/// `GitEntry` classifies a `.git` path without interpreting a gitfile's contents.
+enum GitEntry {
+    Directory,
+    GitFile,
+    Missing,
+}
+
+impl From<&Path> for GitEntry {
+    fn from(git_path: &Path) -> Self {
+        let Ok(metadata) = std::fs::metadata(git_path) else {
+            return Self::Missing;
+        };
+        if metadata.is_dir() {
+            Self::Directory
+        } else if metadata.is_file() {
+            Self::GitFile
+        } else {
+            Self::Missing
+        }
+    }
+}
+
 /// Resolve the on-disk git directory for a repo root.
 ///
 /// For normal repos, returns `repo_root/.git`.
@@ -67,15 +89,15 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
 /// function reads that file and returns the resolved path.
 pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_path = repo_root.join(GIT_DIR);
-    if git_path.is_dir() {
-        return Some(git_path.into());
+    match GitEntry::from(git_path.as_path()) {
+        GitEntry::Directory => Some(git_path.into()),
+        GitEntry::GitFile => {
+            let contents = std::fs::read_to_string(&git_path).ok()?;
+            let target = contents.strip_prefix("gitdir: ")?.trim();
+            Some(AbsolutePath::resolve(target, repo_root))
+        },
+        GitEntry::Missing => None,
     }
-    if git_path.is_file() {
-        let contents = std::fs::read_to_string(&git_path).ok()?;
-        let target = contents.strip_prefix("gitdir: ")?.trim();
-        return Some(AbsolutePath::resolve(target, repo_root));
-    }
-    None
 }
 
 /// Resolve the common git directory for a repo root.
@@ -99,8 +121,9 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 /// gitdir target does not exist on disk.
 pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
     let git_path = project_dir.join(GIT_DIR);
-    if !git_path.is_file() {
-        return WorktreeHealth::Normal;
+    match GitEntry::from(git_path.as_path()) {
+        GitEntry::Directory | GitEntry::Missing => return WorktreeHealth::Normal,
+        GitEntry::GitFile => {},
     }
     let Ok(contents) = std::fs::read_to_string(&git_path) else {
         return WorktreeHealth::Broken;
@@ -123,17 +146,18 @@ pub(crate) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(GIT_DIR);
-        if git_path.is_file() {
-            return linked_status_from_gitfile(&git_path, dir);
-        }
-        if git_path.is_dir() {
-            return dir
-                .canonicalize()
-                .map_or(WorktreeStatus::NotGit, |canonical| {
-                    WorktreeStatus::Primary {
-                        root: AbsolutePath::from(canonical),
-                    }
-                });
+        match GitEntry::from(git_path.as_path()) {
+            GitEntry::GitFile => return linked_status_from_gitfile(&git_path, dir),
+            GitEntry::Directory => {
+                return dir
+                    .canonicalize()
+                    .map_or(WorktreeStatus::NotGit, |canonical| {
+                        WorktreeStatus::Primary {
+                            root: AbsolutePath::from(canonical),
+                        }
+                    });
+            },
+            GitEntry::Missing => {},
         }
         let Some(parent) = dir.parent() else {
             return WorktreeStatus::NotGit;

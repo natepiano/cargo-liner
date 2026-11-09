@@ -370,6 +370,25 @@ members = ["suite-core", "suite-tools"]
 Each crate may belong to only one release group. `label` is optional and
 defaults to `representative`.
 
+## Operational configuration
+
+Edit `config.toml` and restart cargo-port to tune these file-only settings.
+Worker counts, timeouts and intervals must be positive; zero is a load error.
+Running workers and HTTP clients retain the values they started with.
+
+| Section | Keys (units) |
+| --- | --- |
+| `[scan]` | `disk_concurrency`, `metadata_concurrency`, `metadata_timeout_secs` (seconds), `storage_ample_free`, `storage_low_free` |
+| `[watcher]` | `disk_concurrency`, `git_concurrency`, `debounce_ms`, `max_wait_ms`, `new_project_debounce_ms`, `poll_interval_ms` (milliseconds) |
+| `[http]` | `timeout_secs`, `retry_secs`, `unavailable_grace_secs` (seconds) |
+| `[lint]` | `stale_timeout_mins` (minutes) |
+
+The generated default configuration lists the current defaults. Storage
+thresholds accept finite sizes such as `100 GiB` or `51200 MiB`, using the
+same units as the lint cache size. `storage_low_free` must be below
+`storage_ample_free`. Free space above the ample threshold is ample; the
+low threshold itself remains low headroom. These keys have no settings-pane rows.
+
 ## Where paths live
 
 cargo-port uses the platform directories provided by the `dirs` crate:

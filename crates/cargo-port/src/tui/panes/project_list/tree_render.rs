@@ -14,6 +14,7 @@ use tui_pane::label_color;
 
 use super::ProjectListPane;
 use super::disk;
+use crate::config;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan;
@@ -157,7 +158,10 @@ fn project_summary_lines(projects: &ProjectList, widths: &ProjectListWidths) -> 
         ProjectStorage::Unknown => {},
         ProjectStorage::Available(bytes) => {
             let available = render::format_bytes(bytes);
-            let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
+            let headroom_style = disk::headroom_style(StorageHeadroom::classify(
+                bytes,
+                &config::active_config().scan,
+            ));
             summaries.push(columns::build_available_line(
                 widths,
                 &available,

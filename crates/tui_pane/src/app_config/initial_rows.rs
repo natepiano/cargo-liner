@@ -57,17 +57,17 @@ mod tests {
 
     #[test]
     fn stepping_wraps_at_both_ends() {
-        let mut rows = InitialRows(8);
-        rows.step(SettingStep::Next);
-        assert_eq!(rows, InitialRows(1));
-        rows.step(SettingStep::Prev);
-        assert_eq!(rows, InitialRows(8));
+        let mut initial_rows = InitialRows(8);
+        initial_rows.step(SettingStep::Next);
+        assert_eq!(initial_rows, InitialRows(1));
+        initial_rows.step(SettingStep::Prev);
+        assert_eq!(initial_rows, InitialRows(8));
     }
 
     #[test]
     fn a_value_past_the_ceiling_steps_to_the_first_entry() {
-        let mut rows = InitialRows(100);
-        rows.step(SettingStep::Next);
-        assert_eq!(rows, InitialRows(1));
+        let mut initial_rows = InitialRows(100);
+        initial_rows.step(SettingStep::Next);
+        assert_eq!(initial_rows, InitialRows(1));
     }
 }

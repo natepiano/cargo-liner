@@ -357,11 +357,11 @@ fn build_ci_widths(
     }
     if show_durations {
         for (i, ci_display_column) in cols.iter().enumerate() {
-            let col_idx = 3 + i;
+            let column_index = 3 + i;
             for run in ci_runs {
                 if let Some(data) = ci_column_data(run, ci_display_column) {
                     column_widths.observe_cell_usize(
-                        col_idx,
+                        column_index,
                         ci_metric_content_width(data.duration.trim().width()),
                     );
                 }

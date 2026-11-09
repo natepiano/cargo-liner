@@ -1089,7 +1089,6 @@ mod tests {
     use crate::channel::Receiver;
     use crate::config::CargoPortConfig;
     use crate::config::LintIndicator;
-    use crate::constants::DEFAULT_IDLE_BEFORE_LINT_SECS;
     use crate::lint::LintRun;
     use crate::lint::constants::DEFER_EXIT_CODE;
     use crate::lint::history;
@@ -1227,14 +1226,14 @@ mod tests {
 
         assert_eq!(
             scheduled.deadline,
-            now + Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS)
+            now + Duration::from_secs(LintConfig::default().idle_before_lint_secs)
         );
     }
 
     #[test]
     fn edit_inside_the_wait_restarts_it() {
         let timing = LintTiming::from(&LintConfig::default());
-        let idle = Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS);
+        let idle = Duration::from_secs(LintConfig::default().idle_before_lint_secs);
         let first_edit = Instant::now();
         let second_edit = first_edit + idle / 2;
 
@@ -1266,7 +1265,7 @@ mod tests {
         );
         assert_eq!(
             longer_idle.debounce_for(&removal.event),
-            Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS)
+            Duration::from_secs(LintConfig::default().idle_before_lint_secs)
         );
     }
 

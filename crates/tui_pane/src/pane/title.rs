@@ -49,13 +49,13 @@ impl PaneTitleCount<'_> {
         match self {
             Self::None => String::new(),
             Self::Single { len, cursor } => format!("({})", Self::count_text(*len, *cursor)),
-            Self::Grouped(groups) => groups
+            Self::Grouped(pane_title_groups) => pane_title_groups
                 .iter()
-                .map(|group| {
+                .map(|pane_title_group| {
                     format!(
                         "{} ({})",
-                        group.label,
-                        Self::count_text(group.len, group.cursor)
+                        pane_title_group.label,
+                        Self::count_text(pane_title_group.len, pane_title_group.cursor)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -66,8 +66,8 @@ impl PaneTitleCount<'_> {
 
 /// Format `title` followed by `count` for use as a ratatui pane title.
 #[must_use]
-pub fn pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
-    let body = count.body();
+pub fn pane_title(title: &str, pane_title_count: &PaneTitleCount<'_>) -> String {
+    let body = pane_title_count.body();
     if body.is_empty() {
         format!(" {title} ")
     } else {
@@ -78,8 +78,8 @@ pub fn pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
 /// [`pane_title`] variant that separates `title` and `body` with `:` —
 /// used by panes that prefix the body with a category label.
 #[must_use]
-pub fn prefixed_pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
-    let body = count.body();
+pub fn prefixed_pane_title(title: &str, pane_title_count: &PaneTitleCount<'_>) -> String {
+    let body = pane_title_count.body();
     if body.is_empty() {
         format!(" {title} ")
     } else {

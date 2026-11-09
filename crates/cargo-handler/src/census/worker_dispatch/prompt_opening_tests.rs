@@ -29,7 +29,7 @@ const THREAD: &str = "01a14488-1234-5678-9abc-0123456789ab";
 #[derive(Clone, Copy, Debug)]
 enum NamingPath {
     RoleFallback,
-    SessionRoster,
+    StaffSnapshot,
     LiveDispatch,
 }
 
@@ -39,19 +39,19 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
     let session = root.path().join("session");
     fs::create_dir(&session).expect("isolated session");
     let seat = format!("fixture-{}", role.text());
-    fs::write(
-        session.as_path().join(ROSTER_FILE),
-        serde_json::json!({seat.clone():{"thread_id":THREAD,"role":role.text(),"launcher_pid":42}})
-            .to_string(),
-    )
-    .expect("roster writes");
+    write_worker_fixture(
+        &session,
+        &serde_json::json!({
+            seat.clone():{"current_session":THREAD,"role":role.text(),"launcher_pid":42}
+        }),
+    );
     let prompt = format!(
         "{prompt}\nSummary: {}/phases/5/summary.txt",
         session.as_path().display()
     );
     let dispatch = match path {
         NamingPath::RoleFallback => WorkerDispatch::Plain,
-        NamingPath::SessionRoster => WorkerNames::default().resolve(
+        NamingPath::StaffSnapshot => fixture_names(&session).resolve(
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
@@ -76,7 +76,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
             .map(String::from);
             ParsedDispatch::from_arguments(&argv)
                 .expect("live dispatch argv")
-                .resolve(&WorkerRoster::read(session.as_path()), 42)
+                .resolve(&FixtureWorkers::read(session.as_path()), 42)
         },
     };
     let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
@@ -137,7 +137,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
 fn assert_opening(prompt: &str, role: HierarchyRole, expected: &str) {
     for path in [
         NamingPath::RoleFallback,
-        NamingPath::SessionRoster,
+        NamingPath::StaffSnapshot,
         NamingPath::LiveDispatch,
     ] {
         let text = drawn_worker(prompt, role, path);
@@ -189,7 +189,7 @@ fn prompt_opening_headings_and_plain_jobs_keep_their_own_text() {
 fn prompt_opening_preamble_without_a_job_draws_the_role_alone() {
     for path in [
         NamingPath::RoleFallback,
-        NamingPath::SessionRoster,
+        NamingPath::StaffSnapshot,
         NamingPath::LiveDispatch,
     ] {
         let text = drawn_worker(
@@ -235,7 +235,7 @@ fn prompt_opening_missing_board_job_and_empty_heading_remain_role_only() {
         assert_eq!(WorkerTask::from_prompt(prompt), WorkerTask::RoleOnly);
         for path in [
             NamingPath::RoleFallback,
-            NamingPath::SessionRoster,
+            NamingPath::StaffSnapshot,
             NamingPath::LiveDispatch,
         ] {
             let text = drawn_worker(prompt, HierarchyRole::Fix, path);

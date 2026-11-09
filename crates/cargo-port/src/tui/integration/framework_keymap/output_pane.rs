@@ -12,6 +12,7 @@ use super::Shortcuts;
 use super::TabStop;
 use super::input;
 use super::output_is_tabbable;
+use crate::tui::state::inflight::OwnedRunActivity;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Output pane.
 ///
@@ -50,7 +51,10 @@ impl Shortcuts<App> for OutputPane {
                     // collapse the selection to the cursor row instead of stopping a run or
                     // closing the pane, matching the title's "(y copy · Esc done)".
                     "done"
-                } else if ctx.inflight.owned_run().is_running() {
+                } else if matches!(
+                    ctx.inflight.owned_run().activity(),
+                    OwnedRunActivity::Running
+                ) {
                     "stop"
                 } else {
                     "close"

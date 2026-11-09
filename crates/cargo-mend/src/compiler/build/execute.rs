@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
 #[cfg(not(target_os = "linux"))]
 use std::env;
@@ -30,7 +31,10 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
+#[cfg(target_os = "linux")]
+use rustix::fs::StatVfsMountFlags;
 use serde_json::to_string;
+use toml::Value;
 
 use super::cache;
 use super::cache::AnalysisCache;
@@ -67,7 +71,11 @@ use crate::compiler::constants::DRIVER_ENV;
 use crate::compiler::constants::DRIVER_ENV_ENABLED;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::constants::WRAPPER_ALIAS_STAGING_EXTENSION;
+use crate::compiler::constants::WRAPPER_CACHE_DIRECTORY_PREFIX;
+use crate::compiler::constants::WRAPPER_CACHE_PUBLICATION_LOCK_FILE;
+use crate::compiler::constants::WRAPPER_CACHE_RETENTION_LOCK_FILE;
 use crate::compiler::constants::WRAPPER_DIR_NAME;
+use crate::compiler::constants::WRAPPER_RETAINED_STAGING_PREFIX;
 use crate::compiler::persistence;
 use crate::compiler::persistence::AnalysisEvidence;
 use crate::compiler::settings;
@@ -83,6 +91,7 @@ use crate::reporting::CompilerFailureCause;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::FixValidationFailure;
 use crate::reporting::MendFailure;
+use crate::reporting::PassEdits;
 use crate::reporting::Report;
 use crate::reporting::RollbackStatus;
 use crate::selection::CargoCheckPlan;
@@ -99,6 +108,7 @@ pub(crate) enum BuildOutputMode {
 
 #[derive(Debug)]
 struct CommandOutcome {
+    error_files:            BTreeSet<PathBuf>,
     exit_status:            ExitStatus,
     compiler_warning_facts: CompilerWarningFacts,
     duration:               Duration,
@@ -148,7 +158,22 @@ impl RunningExecutable {
 
 /// The independent executable copy shared by every driver command in one run.
 pub(crate) struct RunWrapper {
-    path: PathBuf,
+    path:      PathBuf,
+    retention: WrapperRetention,
+}
+
+/// A shared lock protects a cached driver until its run ends.
+enum WrapperRetention {
+    ProjectLocal,
+    SharedCache(File),
+}
+
+impl Drop for RunWrapper {
+    fn drop(&mut self) {
+        if let WrapperRetention::SharedCache(lock) = &self.retention {
+            drop(lock.unlock());
+        }
+    }
 }
 
 impl RunWrapper {
@@ -156,13 +181,22 @@ impl RunWrapper {
         target_directory: &Path,
         executable: &mut RunningExecutable,
     ) -> Result<Self> {
-        let path = wrapper_alias(target_directory, executable).with_context(|| {
+        fs::create_dir_all(target_directory).with_context(|| {
+            format!(
+                "failed to create target directory {}",
+                target_directory.display()
+            )
+        })?;
+        let resolved = match dirs::cache_dir() {
+            Some(cache_root) => retained_wrapper_alias(target_directory, executable, &cache_root),
+            None => local_wrapper(target_directory, executable),
+        };
+        resolved.with_context(|| {
             format!(
                 "failed to retain the open mend executable in {}",
                 target_directory.display()
             )
-        })?;
-        Ok(Self { path })
+        })
     }
 
     fn configure(&self, command: &mut Command) -> Result<()> {
@@ -177,6 +211,162 @@ impl RunWrapper {
         compiler.configure(command, &self.path);
         Ok(())
     }
+}
+
+/// One immutable build copy serves all projects that run the same executable.
+fn retained_wrapper_alias(
+    target_directory: &Path,
+    executable: &mut RunningExecutable,
+    cache_root: &Path,
+) -> Result<RunWrapper> {
+    let target_alias = wrapper_alias_path(target_directory, executable)?;
+    let metadata = executable.file.metadata()?;
+    let mut identity = DefaultHasher::new();
+    #[cfg(unix)]
+    {
+        metadata.dev().hash(&mut identity);
+        metadata.ino().hash(&mut identity);
+    }
+    metadata.len().hash(&mut identity);
+    metadata.modified()?.hash(&mut identity);
+    let cache = cache_root.join(env!("CARGO_PKG_NAME")).join(format!(
+        "{WRAPPER_CACHE_DIRECTORY_PREFIX}{:x}",
+        identity.finish()
+    ));
+    let mut cached = || -> Result<RunWrapper> {
+        fs::create_dir_all(&cache)?;
+        #[cfg(target_os = "linux")]
+        require_executable_cache_mount(rustix::fs::statvfs(&cache)?.f_flag)?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(cache.join(WRAPPER_CACHE_RETENTION_LOCK_FILE))?;
+        lock.lock_shared()?;
+        require_current_cache_lock(&cache, &lock)?;
+        let alias = wrapper_alias_path(&cache, executable)?;
+        if wrapper_alias_resolution(&alias) != WrapperAliasResolution::Current {
+            let publication = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(cache.join(WRAPPER_CACHE_PUBLICATION_LOCK_FILE))?;
+            publication.lock()?;
+            if wrapper_alias_resolution(&alias) != WrapperAliasResolution::Current {
+                wrapper_alias(&cache, executable)?;
+            }
+            publication.unlock()?;
+            remove_unused_wrapper_caches(&cache);
+        }
+        let path = retained_wrapper_link(&target_alias, &alias)?;
+        Ok(RunWrapper {
+            path,
+            retention: WrapperRetention::SharedCache(lock),
+        })
+    };
+    cached().or_else(|_| local_wrapper(target_directory, executable))
+}
+
+fn local_wrapper(
+    target_directory: &Path,
+    executable: &mut RunningExecutable,
+) -> Result<RunWrapper> {
+    Ok(RunWrapper {
+        path:      wrapper_alias(target_directory, executable)?,
+        retention: WrapperRetention::ProjectLocal,
+    })
+}
+
+/// Reject a lock whose directory was removed before the lock was acquired.
+fn require_current_cache_lock(cache: &Path, lock: &File) -> Result<()> {
+    let published = fs::metadata(cache.join(WRAPPER_CACHE_RETENTION_LOCK_FILE))?;
+    let held = lock.metadata()?;
+    #[cfg(unix)]
+    ensure!(
+        published.dev() == held.dev() && published.ino() == held.ino(),
+        "the driver cache lock was replaced"
+    );
+    #[cfg(not(unix))]
+    ensure!(
+        published.is_file() && held.is_file(),
+        "the driver cache lock was removed"
+    );
+    Ok(())
+}
+
+/// A failed removal leaves the other cache entries available for collection.
+fn remove_unused_wrapper_caches(current: &Path) {
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current
+            || !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(WRAPPER_CACHE_DIRECTORY_PREFIX)
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            continue;
+        }
+        let Ok(lock) = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.join(WRAPPER_CACHE_RETENTION_LOCK_FILE))
+        else {
+            continue;
+        };
+        if lock.try_lock().is_ok() && require_current_cache_lock(&path, &lock).is_ok() {
+            drop(fs::remove_dir_all(path));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn require_executable_cache_mount(flags: StatVfsMountFlags) -> Result<()> {
+    ensure!(
+        !flags.contains(StatVfsMountFlags::NOEXEC),
+        "the driver cache mount prohibits execution"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn retained_wrapper_link(target_alias: &Path, shared: &Path) -> Result<PathBuf> {
+    if fs::read_link(target_alias).is_ok_and(|path| path == shared) {
+        return Ok(target_alias.to_path_buf());
+    }
+    let staging = target_alias.with_extension(format!(
+        "{WRAPPER_RETAINED_STAGING_PREFIX}{}",
+        process::id()
+    ));
+    match fs::remove_file(&staging) {
+        Ok(()) => {},
+        Err(error) if error.kind() == ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
+    }
+    std::os::unix::fs::symlink(shared, &staging)?;
+    fs::rename(&staging, target_alias).inspect_err(|_| drop(fs::remove_file(&staging)))?;
+    Ok(target_alias.to_path_buf())
+}
+
+#[cfg(not(unix))]
+fn retained_wrapper_link(target_alias: &Path, shared: &Path) -> Result<PathBuf> {
+    let staging = target_alias.with_extension(format!(
+        "{WRAPPER_RETAINED_STAGING_PREFIX}{}",
+        process::id()
+    ));
+    fs::copy(shared, &staging)?;
+    fs::rename(&staging, target_alias).inspect_err(|_| drop(fs::remove_file(&staging)))?;
+    Ok(target_alias.to_path_buf())
 }
 
 /// Explicit feature flags preserve the user's selection during the fix pass.
@@ -261,7 +451,9 @@ fn check_with_cache_recovery(
 
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
 
@@ -293,7 +485,9 @@ fn check_with_cache_recovery(
     command_outcome.duration += previous_duration;
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
     match AnalysisCache::inspect(
@@ -333,7 +527,7 @@ fn run_cargo_check(
     toolchain_probes: &ToolchainProbes,
     wrapper: &RunWrapper,
 ) -> Result<CommandOutcome> {
-    let mut command = Command::new(CARGO_BIN);
+    let mut command = cargo_command();
     command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
     command.arg(CARGO_FLAG_MESSAGE_FORMAT_JSON_RENDER_DIAGNOSTICS);
@@ -373,6 +567,16 @@ fn run_cargo_check(
 /// checks, not a read of the whole binary on every mend invocation.
 /// Report the cause when the executable copy cannot be created.
 fn wrapper_alias(target_directory: &Path, executable: &mut RunningExecutable) -> Result<PathBuf> {
+    let alias = wrapper_alias_path(target_directory, executable)?;
+    if wrapper_alias_resolution(&alias) == WrapperAliasResolution::Current {
+        return Ok(alias);
+    }
+    replace_wrapper_alias(executable, &alias)
+        .with_context(|| format!("failed to copy wrapper to {}", alias.display()))?;
+    Ok(alias)
+}
+
+fn wrapper_alias_path(target_directory: &Path, executable: &RunningExecutable) -> Result<PathBuf> {
     let revision = WrapperExecutableRevision::read(&executable.file)
         .context("failed to inspect the open mend executable")?;
     let alias_dir = target_directory
@@ -382,13 +586,7 @@ fn wrapper_alias(target_directory: &Path, executable: &mut RunningExecutable) ->
         .join(revision.directory_name());
     fs::create_dir_all(&alias_dir)
         .with_context(|| format!("failed to create wrapper directory {}", alias_dir.display()))?;
-    let alias = alias_dir.join(format!("{}{EXE_SUFFIX}", env!("CARGO_PKG_NAME")));
-    if wrapper_alias_resolution(&alias) == WrapperAliasResolution::Current {
-        return Ok(alias);
-    }
-    replace_wrapper_alias(executable, &alias)
-        .with_context(|| format!("failed to copy wrapper to {}", alias.display()))?;
-    Ok(alias)
+    Ok(alias_dir.join(format!("{}{EXE_SUFFIX}", env!("CARGO_PKG_NAME"))))
 }
 
 /// Identifies executable rebuilds from the open inode without hashing its bytes.
@@ -500,12 +698,18 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
     )
 }
 
+pub(crate) struct CompilerFixOutcome {
+    pub(crate) duration: Duration,
+    pub(crate) edits:    PassEdits,
+}
+
 pub(crate) fn run_cargo_fix(
     selection: &Selection,
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     all_features_coverage: AllFeaturesCoverage,
-) -> Result<Duration, MendFailure> {
+    validate: impl FnOnce() -> Result<(), MendFailure>,
+) -> Result<CompilerFixOutcome, MendFailure> {
     let start = Instant::now();
     let transaction =
         CompilerFixTransaction::capture(selection).map_err(MendFailure::Unexpected)?;
@@ -519,17 +723,86 @@ pub(crate) fn run_cargo_fix(
             ));
         },
     };
-    let validation = run_cargo_fix_validation(cargo_plan, color_mode, applied_features);
-    match validation {
-        Ok(status) if status.success() => Ok(start.elapsed()),
-        Ok(_) => Err(compiler_fix_failure(
-            &transaction,
-            CompilerFailureCause::CargoCheck,
-        )),
-        Err(error) => Err(compiler_fix_failure(
-            &transaction,
-            CompilerFailureCause::Unexpected(error),
-        )),
+    let changed = transaction.has_changes().map_err(|error| {
+        compiler_fix_failure(&transaction, CompilerFailureCause::Unexpected(error))
+    })?;
+    if changed == PassEdits::Unchanged {
+        return Ok(CompilerFixOutcome {
+            duration: start.elapsed(),
+            edits:    PassEdits::Unchanged,
+        });
+    }
+    // Feature expansion needs its own check before the original selection is analyzed.
+    if applied_features == CargoFixFeatures::All && has_feature_configuration(selection) {
+        let validation = run_cargo_fix_validation(cargo_plan, color_mode, applied_features);
+        match validation {
+            Ok(status) if status.success() => {},
+            Ok(_) => {
+                return Err(compiler_fix_failure(
+                    &transaction,
+                    CompilerFailureCause::CargoCheck {
+                        error_files: BTreeSet::new(),
+                    },
+                ));
+            },
+            Err(error) => {
+                return Err(compiler_fix_failure(
+                    &transaction,
+                    CompilerFailureCause::Unexpected(error),
+                ));
+            },
+        }
+    }
+    validate().map_err(|failure| {
+        let cause = match failure {
+            MendFailure::Analysis(failure) => failure.cause,
+            MendFailure::FixValidation(failure) => failure.cause,
+            MendFailure::Unexpected(error) => CompilerFailureCause::Unexpected(error),
+        };
+        compiler_fix_failure(&transaction, cause)
+    })?;
+    Ok(CompilerFixOutcome {
+        duration: start.elapsed(),
+        edits:    PassEdits::Written,
+    })
+}
+
+fn has_feature_configuration(selection: &Selection) -> bool {
+    selection.packages.iter().any(|package| {
+        FeatureValidation::for_manifest(&package.manifest_path) == FeatureValidation::Required
+    })
+}
+
+/// Unknown manifests require the same feature validation as configured manifests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureValidation {
+    Required,
+    Unnecessary,
+}
+
+impl FeatureValidation {
+    fn for_manifest(path: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(path) else {
+            return Self::Required;
+        };
+        let Ok(manifest) = toml::from_str::<Value>(&text) else {
+            return Self::Required;
+        };
+        if [
+            "features",
+            "dependencies",
+            "dev-dependencies",
+            "build-dependencies",
+            "target",
+            "workspace",
+        ]
+        .iter()
+        .any(|table| manifest.get(table).is_some())
+        {
+            Self::Required
+        } else {
+            Self::Unnecessary
+        }
     }
 }
 
@@ -561,7 +834,7 @@ fn run_cargo_fix_validation(
     color_mode: ColorMode,
     cargo_fix_features: CargoFixFeatures,
 ) -> Result<ExitStatus> {
-    let mut command = Command::new(CARGO_BIN);
+    let mut command = cargo_command();
     command
         .arg(CARGO_SUBCOMMAND_CHECK)
         .args(&cargo_plan.cargo_args);
@@ -612,7 +885,7 @@ fn run_cargo_fix_command(
     color_mode: ColorMode,
     cargo_fix_features: CargoFixFeatures,
 ) -> Result<ExitStatus> {
-    let mut command = Command::new(CARGO_BIN);
+    let mut command = cargo_command();
     command
         .arg(CARGO_SUBCOMMAND_FIX)
         .arg(CARGO_FLAG_ALLOW_DIRTY)
@@ -679,6 +952,15 @@ fn feature_selection(cargo_args: &[OsString]) -> FeatureSelection {
     }
 }
 
+/// Honor Cargo's selected executable before consulting PATH again.
+fn cargo_command() -> Command {
+    Command::new(
+        std::env::var_os("CARGO")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| CARGO_BIN.into()),
+    )
+}
+
 /// `configure_cargo_color` forces Cargo color only for `ColorMode::Enabled`.
 /// `ColorMode::Disabled` preserves the inherited environment and existing command overrides.
 fn configure_cargo_color(command: &mut Command, color_mode: ColorMode) {
@@ -733,6 +1015,7 @@ fn run_cargo_command(
     let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {
+        error_files: stderr_outcome.error_files,
         exit_status,
         compiler_warning_facts: stderr_outcome.compiler_warning_facts,
         duration,
@@ -765,6 +1048,9 @@ mod tests {
 
     use super::CargoFixFeatures;
     use super::FeatureSelection;
+    use super::FeatureValidation;
+    #[cfg(target_os = "linux")]
+    use super::StatVfsMountFlags;
     use super::WrapperAliasResolution;
     use super::cargo_fix_features_for;
     use super::configure_cargo_color;
@@ -1040,11 +1326,22 @@ mod tests {
         fs::write(&installed, b"running build")?;
         #[cfg(unix)]
         fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
-        let wrapper = super::RunWrapper::resolve(
+        let wrapper = super::retained_wrapper_alias(
             directory.path(),
             &mut super::RunningExecutable::open_path(&installed)?,
+            &directory.path().join("cache"),
         )?;
         let first = configured_wrapper_path(&wrapper)?;
+        let other_target = directory.path().join("other-target");
+        let reused = super::retained_wrapper_alias(
+            &other_target,
+            &mut super::RunningExecutable::open_path(&installed)?,
+            &directory.path().join("cache"),
+        )?;
+        assert_eq!(
+            configured_wrapper_path(&reused)?.canonicalize()?,
+            first.canonicalize()?
+        );
         let replacement = directory.path().join("replacement");
         fs::write(&replacement, b"replacement build")?;
         fs::rename(replacement, &installed)?;
@@ -1061,6 +1358,164 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_cache_removes_unused_copies_and_keeps_live_runs() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let cache_root = directory.path().join("cache");
+        let source = directory.path().join("cargo-mend");
+        fs::write(&source, b"unused build")?;
+        let unused = super::retained_wrapper_alias(
+            &directory.path().join("unused-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        let unused_path = unused.path.canonicalize()?;
+        fs::remove_file(&unused.path)?;
+        fs::copy(&unused_path, &unused.path)?;
+        assert_eq!(
+            super::wrapper_alias_resolution(&unused.path),
+            super::WrapperAliasResolution::Current
+        );
+        let reused = super::retained_wrapper_alias(
+            &directory.path().join("unused-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        drop(unused);
+        fs::write(&source, b"live build")?;
+        let live = super::retained_wrapper_alias(
+            &directory.path().join("live-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        let live_path = live.path.canonicalize()?;
+        assert!(matches!(
+            reused.retention,
+            super::WrapperRetention::SharedCache(_)
+        ));
+        assert!(unused_path.try_exists()?);
+        assert_eq!(fs::read(&reused.path)?, b"unused build");
+        drop(reused);
+        let orphan = cache_root.join(env!("CARGO_PKG_NAME")).join(format!(
+            "{}interrupted",
+            super::WRAPPER_CACHE_DIRECTORY_PREFIX
+        ));
+        fs::create_dir(&orphan)?;
+        fs::write(&source, b"published build")?;
+        let published = super::retained_wrapper_alias(
+            &directory.path().join("published-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        for (path, present) in [
+            (&unused_path, false),
+            (&orphan, false),
+            (&live_path, true),
+            (&published.path.canonicalize()?, true),
+        ] {
+            assert_eq!(path.try_exists()?, present, "{}", path.display());
+        }
+        assert_eq!(fs::read(&live.path)?, b"live build");
+        assert_eq!(fs::read(&published.path)?, b"published build");
+        drop(live);
+        fs::write(&source, b"last published build")?;
+        let next = super::retained_wrapper_alias(
+            &directory.path().join("next-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        assert!(!live_path.try_exists()?);
+        assert_eq!(fs::read(&published.path)?, b"published build");
+        assert_eq!(fs::read(&next.path)?, b"last published build");
+        Ok(())
+    }
+
+    #[test]
+    fn wrapper_publication_completes_while_another_run_retains_the_copy() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let cache_root = directory.path().join("cache");
+        let source = directory.path().join("cargo-mend");
+        fs::write(&source, b"shared build")?;
+        let first = super::retained_wrapper_alias(
+            &directory.path().join("first-target"),
+            &mut super::RunningExecutable::open_path(&source)?,
+            &cache_root,
+        )?;
+        let shared = first.path.canonicalize()?;
+        fs::remove_file(&shared)?;
+        let target = directory.path().join("second-target");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let publisher = std::thread::spawn(move || -> anyhow::Result<super::RunWrapper> {
+            let wrapper = super::retained_wrapper_alias(
+                &target,
+                &mut super::RunningExecutable::open_path(&source)?,
+                &cache_root,
+            )?;
+            sender.send(())?;
+            Ok(wrapper)
+        });
+        let completion = receiver.recv_timeout(std::time::Duration::from_millis(500));
+        drop(first);
+        let second = publisher
+            .join()
+            .map_err(|_| anyhow::anyhow!("the publisher panicked"))??;
+        assert!(
+            completion.is_ok(),
+            "publication waited for the first run: {completion:?}"
+        );
+        assert!(matches!(
+            second.retention,
+            super::WrapperRetention::SharedCache(_)
+        ));
+        assert_eq!(second.path.canonicalize()?, shared);
+        assert_eq!(fs::read(&second.path)?, b"shared build");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wrapper_cache_mount_requires_execution() {
+        for (flags, permitted) in [
+            (StatVfsMountFlags::empty(), true),
+            (StatVfsMountFlags::RDONLY, true),
+            (StatVfsMountFlags::NOEXEC, false),
+            (StatVfsMountFlags::NOEXEC | StatVfsMountFlags::RDONLY, false),
+        ] {
+            assert_eq!(
+                super::require_executable_cache_mount(flags).is_ok(),
+                permitted
+            );
+        }
+    }
+
+    #[test]
+    fn wrapper_feature_validation_requires_configured_or_unknown_manifests() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let manifest = directory.path().join("Cargo.toml");
+        assert_eq!(
+            FeatureValidation::for_manifest(&manifest),
+            FeatureValidation::Required
+        );
+        for (text, expected) in [
+            ("[package]\nname = 'simple'", FeatureValidation::Unnecessary),
+            ("invalid TOML [", FeatureValidation::Required),
+            ("[features]", FeatureValidation::Required),
+            ("[dependencies]", FeatureValidation::Required),
+            ("[dev-dependencies]", FeatureValidation::Required),
+            ("[build-dependencies]", FeatureValidation::Required),
+            ("[target]", FeatureValidation::Required),
+            ("[workspace]", FeatureValidation::Required),
+        ] {
+            fs::write(&manifest, text)?;
+            assert_eq!(
+                FeatureValidation::for_manifest(&manifest),
+                expected,
+                "{text}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn run_wrapper_resolves_open_executable_after_source_replacement_and_removal()
     -> anyhow::Result<()> {
         let directory = tempdir()?;
@@ -1071,7 +1526,11 @@ mod tests {
         fs::write(&replacement, b"replacement build")?;
         fs::rename(replacement, &installed)?;
         fs::remove_file(&installed)?;
-        let wrapper = super::RunWrapper::resolve(directory.path(), &mut executable)?;
+        let wrapper = super::retained_wrapper_alias(
+            directory.path(),
+            &mut executable,
+            &directory.path().join("cache"),
+        )?;
         assert_eq!(fs::read(&wrapper.path)?, b"running build");
         drop(executable);
         Ok(())
@@ -1108,6 +1567,22 @@ mod tests {
                 .err()
                 .context("an invalid copy directory must fail")?;
         assert!(format!("{blocked:#}").contains(&target.display().to_string()));
+        for (index, cache_root) in [&target, &target.join("cache")].into_iter().enumerate() {
+            let local_target = directory.path().join(format!("local-target-{index}"));
+            let wrapper = super::retained_wrapper_alias(
+                &local_target,
+                &mut super::RunningExecutable::open_path(&source)?,
+                cache_root,
+            )?;
+            let path = configured_wrapper_path(&wrapper)?;
+            assert!(path.starts_with(&local_target));
+            assert!(!fs::symlink_metadata(&path)?.file_type().is_symlink());
+            assert_eq!(fs::read(path)?, b"running build");
+            assert!(matches!(
+                wrapper.retention,
+                super::WrapperRetention::ProjectLocal
+            ));
+        }
         Ok(())
     }
 
@@ -1116,9 +1591,10 @@ mod tests {
         let directory = tempdir()?;
         let source = directory.path().join("cargo-mend");
         fs::write(&source, b"running build")?;
-        let wrapper = super::RunWrapper::resolve(
+        let wrapper = super::retained_wrapper_alias(
             directory.path(),
             &mut super::RunningExecutable::open_path(&source)?,
+            &directory.path().join("cache"),
         )?;
         fs::remove_file(&wrapper.path)?;
         let mut command = Command::new(CARGO_BIN);

@@ -55,6 +55,31 @@ pub(super) fn retained_cache_usage_under(
     }
 }
 
+/// `ArchiveDirectory` keeps `archive_run_output` lazy until a source log exists.
+enum ArchiveDirectory {
+    Uninitialized,
+    Ready,
+}
+
+/// `PruningProgress` selects the next batch or stops once both pruning goals are met.
+enum PruningProgress {
+    ContinueBatch,
+    AdvanceBatch,
+    Complete,
+}
+
+impl PruningProgress {
+    const fn classify(reclaimed: u64, target: u64, total_bytes: u64, cache_size: u64) -> Self {
+        if reclaimed < target {
+            Self::ContinueBatch
+        } else if total_bytes > cache_size {
+            Self::AdvanceBatch
+        } else {
+            Self::Complete
+        }
+    }
+}
+
 /// Archive command output from rolling `*-latest.log` files into a stable
 /// per-run directory: `runs/{run_id}/{command_name}.log`.
 ///
@@ -74,7 +99,7 @@ pub(super) fn archive_run_output(
     let run_dir = output_dir.join("runs").join(&run.run_id);
 
     let mut archived = run.clone();
-    let mut any_copied = false;
+    let mut archive_directory = ArchiveDirectory::Uninitialized;
 
     let mut archived_bytes: u64 = 0;
     for command in &mut archived.commands {
@@ -87,9 +112,12 @@ pub(super) fn archive_run_output(
         command.log_file = archived_rel;
 
         if source.exists() {
-            if !any_copied {
-                std::fs::create_dir_all(&run_dir)?;
-                any_copied = true;
+            match archive_directory {
+                ArchiveDirectory::Uninitialized => {
+                    std::fs::create_dir_all(&run_dir)?;
+                    archive_directory = ArchiveDirectory::Ready;
+                },
+                ArchiveDirectory::Ready => {},
             }
             let dest = run_dir.join(&archived_name);
             archived_bytes = archived_bytes.saturating_add(std::fs::copy(&source, &dest)?);
@@ -318,8 +346,9 @@ fn prune_runs_under(
     let mut runs_evicted: usize = 0;
 
     for run in &runs {
-        if reclaimed >= target && total_bytes <= cache_size {
-            break;
+        match PruningProgress::classify(reclaimed, target, total_bytes, cache_size) {
+            PruningProgress::Complete => break,
+            PruningProgress::ContinueBatch | PruningProgress::AdvanceBatch => {},
         }
 
         if let Some((protected_history, protected_id)) = protected
@@ -348,9 +377,12 @@ fn prune_runs_under(
         // When `reclaimed` reaches `target` but `total_bytes` exceeds `cache_size`,
         // advance `target` to the next `batch_bytes` multiple, preserving fixed
         // 5% batches.
-        if reclaimed >= target && total_bytes > cache_size {
-            let batches_done = reclaimed / batch_bytes;
-            target = batches_done.saturating_add(1).saturating_mul(batch_bytes);
+        match PruningProgress::classify(reclaimed, target, total_bytes, cache_size) {
+            PruningProgress::AdvanceBatch => {
+                let batches_done = reclaimed / batch_bytes;
+                target = batches_done.saturating_add(1).saturating_mul(batch_bytes);
+            },
+            PruningProgress::ContinueBatch | PruningProgress::Complete => {},
         }
     }
 

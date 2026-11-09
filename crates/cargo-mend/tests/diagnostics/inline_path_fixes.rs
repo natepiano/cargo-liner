@@ -2303,6 +2303,7 @@ fn rewrites_inline_paths_in_independent_modules() {
         external_crate_enum_variant_path_is_rewritten(&mut batch);
     let external_crate_path_in_argument_is_rewritten =
         external_crate_path_in_argument_is_rewritten(&mut batch);
+    batch.single_compile_targets();
     let output = batch.command().arg("--fix").output().expect("fix batch");
     assert!(
         output.status.success(),
@@ -2347,6 +2348,7 @@ fn preserves_colliding_and_non_type_paths_in_independent_modules() {
         generic_type_param_in_fn_body_is_not_flagged(&mut batch);
     let enum_variant_two_segment_path_is_not_flagged =
         enum_variant_two_segment_path_is_not_flagged(&mut batch);
+    batch.single_compile_targets();
     let report = batch.report();
     let output = batch.command().arg("--fix").output().expect("fix batch");
     assert!(

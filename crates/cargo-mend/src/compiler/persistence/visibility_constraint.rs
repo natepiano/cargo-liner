@@ -1699,7 +1699,7 @@ mod tests {
 
     #[test]
     fn sibling_requirements_join_to_crate_reach() {
-        let constraints = VisibilityConstraintSet::from_constraint(constraint(
+        let visibility_constraint_set = VisibilityConstraintSet::from_constraint(constraint(
             StoredFacadeConstraint::Resolved {
                 required: restricted("crate::left"),
             },
@@ -1713,7 +1713,7 @@ mod tests {
         )));
 
         assert_eq!(
-            constraints.required_reach(),
+            visibility_constraint_set.required_reach(),
             Some(StoredVisibilityReach::Crate)
         );
     }
@@ -1739,10 +1739,12 @@ mod tests {
                 group.include_constraint(0, constraint, Some(finding(message)));
             }
 
-            let rendered = group.render(&CallerMap::new(), "/package");
+            let rendered_finding = group.render(&CallerMap::new(), "/package");
 
             assert_eq!(
-                rendered.as_ref().map(|finding| finding.message.as_str()),
+                rendered_finding
+                    .as_ref()
+                    .map(|finding| finding.message.as_str()),
                 Some("public requirement")
             );
         }
@@ -1828,20 +1830,26 @@ mod tests {
         group.include_constraint(0, constraint.clone(), Some(candidate.clone()));
 
         let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
-        let rendered = group.render(&callers, "/package");
+        let rendered_finding = group.render(&callers, "/package");
         assert!(
-            rendered.is_some(),
+            rendered_finding.is_some(),
             "caller boundary must retain the finding"
         );
-        let Some(rendered) = rendered else {
+        let Some(rendered_finding) = rendered_finding else {
             return;
         };
         assert_eq!(
-            rendered.suggestion.as_deref(),
+            rendered_finding.suggestion.as_deref(),
             Some("consider using: `pub(in crate::a)`"),
         );
-        assert_eq!(rendered.narrower_scope_def_path.as_deref(), Some("a"),);
-        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
+        assert_eq!(
+            rendered_finding.narrower_scope_def_path.as_deref(),
+            Some("a"),
+        );
+        assert_eq!(
+            rendered_finding.fix_support,
+            FixSupport::RestrictedAnnotation
+        );
 
         let mut root_group = TestMount::default();
         root_group.include_constraint(0, constraint, Some(candidate));
@@ -1867,21 +1875,21 @@ mod tests {
         group.include_constraint(0, constraint, Some(finding(&structural_headline)));
 
         let callers = caller_map("crate::a::b::item", "crate::other");
-        let rendered = group.render(&callers, "/package");
+        let rendered_finding = group.render(&callers, "/package");
         assert!(
-            rendered.is_some(),
+            rendered_finding.is_some(),
             "a cross-scope caller retains the finding"
         );
-        let Some(rendered) = rendered else {
+        let Some(rendered_finding) = rendered_finding else {
             return;
         };
 
         assert_eq!(
-            rendered.suggestion.as_deref(),
+            rendered_finding.suggestion.as_deref(),
             Some("consider using: `pub(crate)`"),
         );
         assert_eq!(
-            rendered.message,
+            rendered_finding.message,
             "`pub(in crate::a)` is not the boundary this item's callers require",
         );
     }
@@ -1900,9 +1908,9 @@ mod tests {
         );
 
         let callers = caller_map("crate::a::b::item", "crate::other");
-        let rendered = group.render(&callers, "/package");
+        let rendered_finding = group.render(&callers, "/package");
         assert_eq!(
-            rendered.map(|finding| finding.message),
+            rendered_finding.map(|finding| finding.message),
             Some(String::from("parent facade caps reach at `pub(crate)`")),
         );
     }
@@ -1920,25 +1928,37 @@ mod tests {
         group.include_constraint(0, constraint, Some(candidate));
 
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
-        let rendered = group.render(&callers, "/package");
-        assert!(rendered.is_some(), "parent caller must retain the finding");
-        let Some(rendered) = rendered else {
+        let rendered_finding = group.render(&callers, "/package");
+        assert!(
+            rendered_finding.is_some(),
+            "parent caller must retain the finding"
+        );
+        let Some(rendered_finding) = rendered_finding else {
             return;
         };
 
         assert_eq!(
-            rendered.suggestion.as_deref(),
+            rendered_finding.suggestion.as_deref(),
             Some("consider using: `pub(super)`"),
         );
-        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
         assert_eq!(
-            rendered.visibility_annotation.as_deref(),
+            rendered_finding.fix_support,
+            FixSupport::RestrictedAnnotation
+        );
+        assert_eq!(
+            rendered_finding.visibility_annotation.as_deref(),
             Some("pub(crate)"),
         );
-        assert_eq!(rendered.item_def_path.as_deref(), Some("crate::a::b::item"));
-        assert_eq!(rendered.narrower_scope_def_path.as_deref(), Some("a"));
         assert_eq!(
-            rendered.exact_boundary_spelling,
+            rendered_finding.item_def_path.as_deref(),
+            Some("crate::a::b::item")
+        );
+        assert_eq!(
+            rendered_finding.narrower_scope_def_path.as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            rendered_finding.exact_boundary_spelling,
             ExactBoundarySpelling::Parent
         );
     }
@@ -1978,22 +1998,25 @@ mod tests {
         group.include_constraint(0, constraint, Some(candidate));
         let callers = caller_map("crate::a::b::item", "crate::other");
 
-        let rendered = group.render(&callers, "/package");
+        let rendered_finding = group.render(&callers, "/package");
         assert!(
-            rendered.is_some(),
+            rendered_finding.is_some(),
             "crate-wide callers must retain a narrowing finding"
         );
-        let Some(rendered) = rendered else {
+        let Some(rendered_finding) = rendered_finding else {
             return;
         };
 
         assert_eq!(
-            rendered.suggestion.as_deref(),
+            rendered_finding.suggestion.as_deref(),
             Some("consider using: `pub(crate)`"),
         );
-        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
         assert_eq!(
-            rendered.exact_boundary_spelling,
+            rendered_finding.fix_support,
+            FixSupport::RestrictedAnnotation
+        );
+        assert_eq!(
+            rendered_finding.exact_boundary_spelling,
             ExactBoundarySpelling::Crate
         );
     }
@@ -2013,20 +2036,23 @@ mod tests {
         group.include_constraint(0, constraint, Some(candidate));
         let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
 
-        let rendered = group.render(&callers, "/package");
+        let rendered_finding = group.render(&callers, "/package");
         assert!(
-            rendered.is_some(),
+            rendered_finding.is_some(),
             "sibling callers must retain a narrowing finding"
         );
-        let Some(rendered) = rendered else {
+        let Some(rendered_finding) = rendered_finding else {
             return;
         };
 
         assert_eq!(
-            rendered.suggestion.as_deref(),
+            rendered_finding.suggestion.as_deref(),
             Some("consider using: `pub(in crate::a)`"),
         );
-        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
+        assert_eq!(
+            rendered_finding.fix_support,
+            FixSupport::RestrictedAnnotation
+        );
     }
 
     fn caller_map(item_def_path: &str, caller_module_def_path: &str) -> CallerMap {
@@ -2368,7 +2394,7 @@ mod tests {
     }
 
     fn constraint(
-        facade: StoredFacadeConstraint,
+        stored_facade_constraint: StoredFacadeConstraint,
         signature_requirement: Option<StoredVisibilityReach>,
     ) -> StoredVisibilityConstraint {
         StoredVisibilityConstraint {
@@ -2388,7 +2414,7 @@ mod tests {
                 interface_ceiling: None,
                 spelling: StoredVisibilitySpelling::ExactPath,
                 signature_requirement,
-                facade,
+                facade: stored_facade_constraint,
                 exact_boundary_acceptance: StoredExactBoundaryAcceptance::Eligible,
                 annotation_edit_acceptance: StoredExactBoundaryAcceptance::Eligible,
                 exact_path_policy: StoredExactPathPolicy::Allowed,

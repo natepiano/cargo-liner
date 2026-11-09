@@ -1713,14 +1713,14 @@ pub_in_path = "permitted"
         ("private_parent", write_private_parent_facade(&mut batch), 2),
         ("super_parent", write_super_parent_facade(&mut batch), 1),
     ];
+    batch.single_compile_targets();
     let before = members
         .iter()
         .flat_map(|(_, root, _)| facade_source_bytes(&root.join("src")))
         .collect::<Vec<_>>();
-    let reports = batch.member_reports();
     let dry_run = batch
         .command()
-        .args(["--fix-pub-use", "--dry-run"])
+        .args(["--fix-pub-use", "--dry-run", "--json"])
         .output()
         .expect("dry-run grouped facades");
     assert!(
@@ -1729,6 +1729,7 @@ pub_in_path = "permitted"
         String::from_utf8_lossy(&dry_run.stdout),
         String::from_utf8_lossy(&dry_run.stderr)
     );
+    let reports = batch.partition_report(parse_mend_json_output(&dry_run.stdout));
     let stderr = String::from_utf8(dry_run.stderr).expect("decode dry-run stderr");
     assert!(stderr.contains("mend: would apply 20 `pub use` fix(es) in dry run"));
     assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
@@ -1786,13 +1787,9 @@ pub_in_path = "permitted"
     );
     let root = write_rename_facade(&mut batch);
     let before = facade_source_bytes(&root.join("src"));
-    let reports = batch.member_reports();
-    assert_eq!(reports["rename"].summary.fixable_with_fix_pub_use, 1);
-    assert_rename_facade_findings(&reports["rename"]);
-
     let dry_run = batch
         .command()
-        .args(["--fix-pub-use", "--dry-run"])
+        .args(["--fix-pub-use", "--dry-run", "--json"])
         .output()
         .expect("dry-run renamed facade");
     assert!(
@@ -1801,6 +1798,9 @@ pub_in_path = "permitted"
         String::from_utf8_lossy(&dry_run.stdout),
         String::from_utf8_lossy(&dry_run.stderr)
     );
+    let reports = batch.partition_report(report_from_mend_output(&dry_run));
+    assert_eq!(reports["rename"].summary.fixable_with_fix_pub_use, 1);
+    assert_rename_facade_findings(&reports["rename"]);
     let stderr = String::from_utf8(dry_run.stderr).expect("decode dry-run stderr");
     assert!(
         stderr.contains("mend: would apply 1 `pub use` fix(es) in dry run"),

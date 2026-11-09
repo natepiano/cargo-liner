@@ -78,10 +78,6 @@ enum CommandOutcome {
     Deferred,
 }
 
-impl CommandOutcome {
-    const fn succeeded(self) -> bool { matches!(self, Self::Passed) }
-}
-
 impl From<ExitStatus> for CommandOutcome {
     fn from(status: ExitStatus) -> Self {
         if status.success() {
@@ -240,6 +236,24 @@ impl Drop for RunFinalizeGuard<'_> {
     }
 }
 
+/// `CommandLabel` shares explicit or automatic naming between display and log paths.
+#[derive(Clone, Copy)]
+enum CommandLabel<'a> {
+    Explicit(&'a str),
+    Automatic,
+}
+
+impl<'a> From<&'a str> for CommandLabel<'a> {
+    fn from(name: &'a str) -> Self {
+        let name = name.trim();
+        if name.is_empty() {
+            Self::Automatic
+        } else {
+            Self::Explicit(name)
+        }
+    }
+}
+
 /// Build the initial `Running` run record with one `Pending` entry per
 /// command. The run id doubles as the `runs/{run_id}` archive directory name,
 /// so it is sanitized to be path-safe — the raw RFC3339 timestamp has `:`,
@@ -255,12 +269,12 @@ pub(super) fn build_pending_run(commands: &[LintCommandConfig], started_at_str: 
             .iter()
             .enumerate()
             .map(|(index, command)| {
-                let log_name = command_log_name(command, index);
+                let label = CommandLabel::from(command.name.as_str());
+                let log_name = command_log_name(label, index);
                 LintCommand {
-                    name:        if command.name.trim().is_empty() {
-                        log_name.clone()
-                    } else {
-                        command.name.trim().to_string()
+                    name:        match label {
+                        CommandLabel::Automatic => log_name.clone(),
+                        CommandLabel::Explicit(name) => name.to_string(),
                     },
                     command:     command.command.clone(),
                     status:      LintCommandStatus::Pending,
@@ -465,7 +479,7 @@ fn execute_commands(
         record_env_unavailable(run, project_root, &execution);
         return Ok(CommandsResult::EnvUnavailable);
     }
-    let mut failed = false;
+    let mut commands_result = CommandsResult::AllPassed;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
             return Ok(CommandsResult::ProjectRemoved);
@@ -479,13 +493,19 @@ fn execute_commands(
             target: PERF_LOG_TARGET,
             command = %command.name,
             duration_ms = tui_pane::perf_log_ms(cmd_started.elapsed().as_millis()),
-            success = execution.outcome.succeeded(),
+            success = match execution.outcome {
+                CommandOutcome::Passed => true,
+                CommandOutcome::Failed | CommandOutcome::Deferred => false,
+            },
             path = %project_root.display(),
             "lint_command_finished"
         );
         let command_status = match execution.outcome {
             CommandOutcome::Passed => LintCommandStatus::Passed,
-            CommandOutcome::Failed => LintCommandStatus::Failed,
+            CommandOutcome::Failed => {
+                commands_result = CommandsResult::SomeFailed;
+                LintCommandStatus::Failed
+            },
             CommandOutcome::Deferred => {
                 tracing::debug!(
                     command = %command.name,
@@ -501,9 +521,6 @@ fn execute_commands(
             command_run.exit_code = execution.exit_code;
         }
         read_write::write_latest_under(context.cache_root, project_root, run)?;
-        if !execution.outcome.succeeded() {
-            failed = true;
-        }
     }
     if !project_still_runnable(project_root) {
         return Ok(CommandsResult::ProjectRemoved);
@@ -511,11 +528,7 @@ fn execute_commands(
     if pause_state.is_project_paused(&AbsolutePath::from(project_root)) {
         return Ok(CommandsResult::Interrupted);
     }
-    if failed {
-        Ok(CommandsResult::SomeFailed)
-    } else {
-        Ok(CommandsResult::AllPassed)
-    }
+    Ok(commands_result)
 }
 
 pub(super) fn publish_status(
@@ -588,37 +601,59 @@ fn expand_lint_placeholders(
 /// cannot supply an environment the run stops at [`env_probe`] instead of
 /// reporting every command as a lint failure.
 #[cfg(windows)]
-fn lint_shell(command_line: &str, _project_root: &Path) -> Command {
-    let mut shell = Command::new("cmd");
-    shell.raw_arg(format!("/C \"{command_line}\""));
-    shell
-}
-
-#[cfg(not(windows))]
-fn lint_shell(command_line: &str, project_root: &Path) -> Command {
-    if uses_direnv(project_root) {
-        let mut direnv = Command::new("direnv");
-        direnv
-            .arg("exec")
-            .arg(project_root)
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(command_line);
-        return direnv;
+fn lint_shell(command_line: &str, environment: ShellEnvironment, _: &Path) -> Command {
+    match environment {
+        ShellEnvironment::Inherited => {
+            let mut shell = Command::new("cmd");
+            shell.raw_arg(format!("/C \"{command_line}\""));
+            shell
+        },
     }
-    let mut shell = Command::new("/bin/sh");
-    shell.arg("-c").arg(command_line);
-    shell
 }
 
-/// True when this project's lint commands will be wrapped in `direnv exec` —
-/// the one case where the environment can fail before any lint program runs.
+#[cfg(not(windows))]
+fn lint_shell(command_line: &str, environment: ShellEnvironment, project_root: &Path) -> Command {
+    match environment {
+        ShellEnvironment::Direnv => {
+            let mut direnv = Command::new("direnv");
+            direnv
+                .arg("exec")
+                .arg(project_root)
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(command_line);
+            direnv
+        },
+        ShellEnvironment::Inherited => {
+            let mut shell = Command::new("/bin/sh");
+            shell.arg("-c").arg(command_line);
+            shell
+        },
+    }
+}
+
+/// `shell_environment` returns `ShellEnvironment::Direnv` when lint commands
+/// need `direnv exec`, the one strategy whose environment can fail before any
+/// lint program runs. `ShellEnvironment::Inherited` uses the launching environment.
 /// `cmd.exe` has no direnv wrapper, so on Windows an `.envrc` changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellEnvironment {
+    Inherited,
+    #[cfg(not(windows))]
+    Direnv,
+}
+
 #[cfg(windows)]
-const fn uses_direnv(_project_root: &Path) -> bool { false }
+const fn shell_environment(_: &Path) -> ShellEnvironment { ShellEnvironment::Inherited }
 
 #[cfg(not(windows))]
-fn uses_direnv(project_root: &Path) -> bool { project_root.join(ENVRC).is_file() }
+fn shell_environment(project_root: &Path) -> ShellEnvironment {
+    if project_root.join(ENVRC).is_file() {
+        ShellEnvironment::Direnv
+    } else {
+        ShellEnvironment::Inherited
+    }
+}
 
 /// Name of the environment probe in the run record, and the shell no-op it
 /// runs. `:` exits 0 without doing anything, so the probe measures only
@@ -629,7 +664,7 @@ const ENV_PROBE_COMMAND: &str = ":";
 /// The command line as it is actually spawned, read back off the `Command`
 /// that [`lint_shell`] builds so the run record cannot drift from what ran.
 fn spawned_display(command_line: &str, project_root: &Path) -> String {
-    let shell = lint_shell(command_line, project_root);
+    let shell = lint_shell(command_line, shell_environment(project_root), project_root);
     std::iter::once(shell.get_program())
         .chain(shell.get_args())
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -650,16 +685,24 @@ fn spawned_display(command_line: &str, project_root: &Path) -> String {
 /// The probe goes through [`run_command`], so it shares the process group, the
 /// pause handling and the log file every other command gets; its log holds
 /// direnv's own error text under the name `direnv-latest.log`.
+#[cfg(windows)]
+fn env_probe(_: &CommandContext<'_>) -> io::Result<Option<CommandExecution>> { Ok(None) }
+
+#[cfg(not(windows))]
 fn env_probe(context: &CommandContext<'_>) -> io::Result<Option<CommandExecution>> {
-    if !uses_direnv(context.project_root) {
-        return Ok(None);
+    match shell_environment(context.project_root) {
+        ShellEnvironment::Inherited => return Ok(None),
+        ShellEnvironment::Direnv => {},
     }
     let probe = LintCommandConfig {
         name:    ENV_PROBE_NAME.to_string(),
         command: ENV_PROBE_COMMAND.to_string(),
     };
     let execution = run_command(context, &probe, 0)?;
-    Ok((!execution.outcome.succeeded()).then_some(execution))
+    Ok(match execution.outcome {
+        CommandOutcome::Passed => None,
+        CommandOutcome::Failed | CommandOutcome::Deferred => Some(execution),
+    })
 }
 
 /// Rewrite the run record for a project whose environment could not be loaded:
@@ -736,7 +779,7 @@ fn run_command(
     let project_root = context.project_root;
     let output_dir = context.output_dir;
     let child_slot = context.child_slot;
-    let log_name = command_log_name(command, index);
+    let log_name = command_log_name(CommandLabel::from(command.name.as_str()), index);
     let log_path = output_dir.join(format!("{log_name}-latest.log"));
     let tmp_path = output_dir.join(format!("{log_name}-latest.log.tmp"));
 
@@ -747,7 +790,7 @@ fn run_command(
         context.manifest_path,
         output_dir,
     );
-    let mut shell = lint_shell(&expanded, project_root);
+    let mut shell = lint_shell(&expanded, shell_environment(project_root), project_root);
     shell
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
@@ -823,11 +866,10 @@ fn run_command(
     })
 }
 
-fn command_log_name(command: &LintCommandConfig, index: usize) -> String {
-    let base = if command.name.trim().is_empty() {
-        format!("command-{}", index + 1)
-    } else {
-        command.name.trim().to_string()
+fn command_log_name(label: CommandLabel<'_>, index: usize) -> String {
+    let base = match label {
+        CommandLabel::Automatic => format!("command-{}", index + 1),
+        CommandLabel::Explicit(name) => name.to_string(),
     };
     let sanitized = sanitize_name(&base);
     if sanitized.is_empty() {
@@ -1258,9 +1300,15 @@ mod tests {
     #[test]
     fn a_project_without_an_envrc_skips_the_probe() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        assert!(!uses_direnv(project_dir.path()));
+        assert_eq!(
+            shell_environment(project_dir.path()),
+            ShellEnvironment::Inherited
+        );
         write_unloadable_envrc(project_dir.path());
-        assert!(uses_direnv(project_dir.path()));
+        assert_eq!(
+            shell_environment(project_dir.path()),
+            ShellEnvironment::Direnv
+        );
     }
 
     #[test]

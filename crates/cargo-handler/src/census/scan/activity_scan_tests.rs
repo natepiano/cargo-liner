@@ -11,11 +11,15 @@ use super::*;
 use crate::census::ChildRow;
 use crate::census::HierarchyRole;
 use crate::census::HierarchySource;
+use crate::census::ProvenCodexThread;
 use crate::census::RoleFallback;
 use crate::census::RowIdentity;
 use crate::census::StaffFileSetting;
 use crate::census::account::ConfigHome;
+use crate::census::hierarchy::WorkerReference;
 use crate::census::placement::DispatchWorker;
+use crate::census::tier::ThreadWorktree;
+use crate::census::worker_dispatch;
 use crate::census::worker_dispatch::DIRECTOR_FILE;
 
 const THREAD: &str = "01a1437d-1234-5678-9abc-0123456789ab";
@@ -33,18 +37,28 @@ impl DetachedWorkerFixture {
         let session = root.path().join("unit");
         fs::create_dir_all(session.join("mesh_runs")).expect("run directory");
         fs::write(session.join(DIRECTOR_FILE), "director-id\n").expect("director identity");
-        fs::write(
-            session.join("mesh_roster.json"),
-            serde_json::json!({
-                "fixture-impl": {"thread_id": THREAD, "role": "test", "status": "done"}
-            })
-            .to_string(),
-        )
-        .expect("worker roster");
+        worker_dispatch::write_worker_fixture(
+            &session,
+            &serde_json::json!({
+                "fixture-impl": {"current_session":THREAD,"role":"test"}
+            }),
+        );
+        fs::remove_file(session.join("progress_history_state.json"))
+            .expect("legacy director fixture");
         let mut scanner = LocalScanner::new(AccountLabels::default());
+        scanner.worker_names = worker_dispatch::fixture_names(&session);
         scanner.session_roots = SessionRoots::new([root.path().to_path_buf()]);
         scanner.run_records = activity::RunRecords::for_test();
         scanner.desktop_source = DesktopSource::Windows(Vec::new());
+        scanner = scanner.with_staff_file(
+            StaffFileSetting::new(HierarchySource::File(
+                session.join("staff.json").to_string_lossy().into_owned(),
+            )),
+            StaffFileReader::default(),
+        );
+        scanner
+            .worker_names
+            .set_staff(scanner.staff.snapshot().roster);
         Self {
             scanner,
             session,
@@ -169,7 +183,7 @@ fn write_staff_membership(fixture: &DetachedWorkerFixture, thread: &str) {
             {"id": "stable-unit", "kind": "unit", "name": "fixture",
              "parent": "boss", "current_session": "director-id"},
             {"id": "stable-worker", "kind": "worker", "name": "fixture-test",
-             "parent": "stable-unit", "current_session": thread}
+             "parent": "stable-unit", "current_session": thread, "role":"test"}
         ]})
         .to_string(),
     )
@@ -179,17 +193,6 @@ fn write_staff_membership(fixture: &DetachedWorkerFixture, thread: &str) {
 fn current_staff_fixture(thread: &str) -> DetachedWorkerFixture {
     let mut fixture = DetachedWorkerFixture::new();
     write_staff_membership(&fixture, thread);
-    fs::write(
-        fixture.session.join("mesh_roster.json"),
-        serde_json::json!({"fixture-test": {
-            "context_tokens": 0, "continuation_owed": false, "effort": "high",
-            "model": "fixture", "revision": 1, "staff_id": "stable-worker",
-            "status": "done", "task": "direct.test", "turn_effort": "high",
-            "turn_model": "fixture"
-        }})
-        .to_string(),
-    )
-    .expect("current roster");
     let setting = StaffFileSetting::new(HierarchySource::File(
         fixture
             .root
@@ -201,13 +204,17 @@ fn current_staff_fixture(thread: &str) -> DetachedWorkerFixture {
     fixture.scanner = fixture
         .scanner
         .with_staff_file(setting, StaffFileReader::default());
+    fixture
+        .scanner
+        .worker_names
+        .set_staff(fixture.scanner.staff.snapshot().roster);
     write_staff_run(&fixture, "running");
     fixture
 }
 
 #[test]
-fn staff_run_and_roster_keep_one_waiting_worker_without_a_launcher_or_open_thread()
--> Result<(), &'static str> {
+fn staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread() -> Result<(), &'static str>
+{
     let mut fixture = current_staff_fixture(THREAD);
     let processes = [claude(), fixture.supervisor()];
     let waiting = fixture.scan(&processes);
@@ -242,31 +249,41 @@ fn staff_run_and_roster_keep_one_waiting_worker_without_a_launcher_or_open_threa
 }
 
 #[test]
-fn supervisor_roster_stays_cached_without_a_live_director() {
+fn supervisor_keeps_the_staff_snapshot_without_a_live_director() {
     let mut fixture = DetachedWorkerFixture::new();
     fixture.write_run("running");
     let processes = [fixture.supervisor()];
+    let staff = fixture.scanner.worker_names.staff_snapshot();
     let mut rows = Vec::new();
     fixture
         .scanner
         .attach_details(&processes, &[], Some(fixture.root.path()), &mut rows);
     assert_eq!(rows, []);
-    assert_eq!(fixture.scanner.worker_names.roster_reads(), 1);
+    assert!(Arc::ptr_eq(
+        &staff,
+        &fixture.scanner.worker_names.staff_snapshot()
+    ));
     fixture
         .scanner
         .attach_details(&processes, &[], Some(fixture.root.path()), &mut rows);
     assert_eq!(rows, []);
-    assert_eq!(fixture.scanner.worker_names.roster_reads(), 1);
+    assert!(Arc::ptr_eq(
+        &staff,
+        &fixture.scanner.worker_names.staff_snapshot()
+    ));
 }
 
 #[test]
-fn staff_handoff_moves_run_activity_without_changing_run_or_roster_records() {
+fn staff_handoff_moves_run_activity_without_changing_run_records() {
     let mut fixture = current_staff_fixture(THREAD);
     let processes = [claude(), fixture.supervisor()];
+    let staff = fixture.scanner.worker_names.staff_snapshot();
     assert_eq!(fixture.scan(&processes)[0].children.len(), 1);
-    assert_eq!(fixture.scanner.worker_names.roster_reads(), 1);
+    assert!(Arc::ptr_eq(
+        &staff,
+        &fixture.scanner.worker_names.staff_snapshot()
+    ));
     let run = fs::read(fixture.session.join("mesh_runs/gate.json")).expect("run bytes");
-    let roster = fs::read(fixture.session.join("mesh_roster.json")).expect("roster bytes");
     write_staff_membership(&fixture, "replacement-thread");
     let changed = fixture.scan(&processes);
     assert_eq!(changed[0].children.len(), 1);
@@ -276,15 +293,50 @@ fn staff_handoff_moves_run_activity_without_changing_run_or_roster_records() {
     );
     assert_eq!(changed[0].children[0].activity.text(), "waiting");
     assert_eq!(changed[0].activity, AgentActivity::Idle);
-    assert_eq!(fixture.scanner.worker_names.roster_reads(), 1);
+    assert!(!Arc::ptr_eq(
+        &staff,
+        &fixture.scanner.worker_names.staff_snapshot()
+    ));
     assert_eq!(
         fs::read(fixture.session.join("mesh_runs/gate.json")).expect("run bytes"),
         run
     );
     assert_eq!(
-        fs::read(fixture.session.join("mesh_roster.json")).expect("roster bytes"),
-        roster
+        WorkerReference::Staff {
+            staff_id: "stable-worker".into(),
+        }
+        .session(&fixture.scanner.worker_names.staff_snapshot()),
+        Some("replacement-thread")
     );
+}
+
+#[test]
+fn a_staff_run_keeps_one_worker_under_a_codex_director() {
+    let mut fixture = current_staff_fixture(THREAD);
+    let mut rows = DetachedWorkerFixture::rows();
+    rows[0].agent = Agent::Codex;
+    rows[0].session_id =
+        SessionIdentity::Codex(ProvenCodexThread::OpenStaffRollout("director-id".into()));
+    let processes = [process(10, 1, &["codex"]), fixture.supervisor()];
+    fixture
+        .scanner
+        .attach_details(&processes, &[], Some(fixture.root.path()), &mut rows);
+    assert_eq!(rows[0].children.len(), 1);
+    assert_eq!(
+        rows[0].children[0].thread_id,
+        CodexThreadId::Recorded(THREAD.into())
+    );
+    assert_eq!(rows[0].children[0].activity.text(), "waiting");
+    assert_eq!(rows[0].activity, AgentActivity::Idle);
+    write_staff_run(&fixture, "finished");
+    fixture
+        .scanner
+        .run_records
+        .record_changed(&fixture.session, "gate.json".into());
+    fixture
+        .scanner
+        .attach_details(&processes, &[], Some(fixture.root.path()), &mut rows);
+    assert_eq!(rows[0].children, []);
 }
 
 #[test]
@@ -638,14 +690,13 @@ fn an_open_thread_without_a_prompt_dispatch_does_not_keep_a_launcher_label() {
     )
     .expect("thread prompt");
     fixture.scanner.rollouts.read(&rollout);
-    let roster = crate::census::worker_dispatch::WorkerRoster::parse(
-        &fs::read_to_string(fixture.session.join("mesh_roster.json")).expect("roster"),
-    );
-    let dispatch = roster
-        .workers()
-        .next()
-        .map(|(seat, worker)| worker.dispatch(seat, seat, JobText::Unrecorded))
-        .expect("worker dispatch");
+    let dispatch = ResolvedWorkerDispatch::for_run(
+        "fixture-impl",
+        WorkerIdentity::CodexThread(THREAD.to_owned()),
+        &fixture.scanner.worker_names.staff_snapshot(),
+        &ThreadWorktree::Unrecorded,
+    )
+    .expect("worker dispatch");
     let mut rows = DetachedWorkerFixture::rows();
     let mut child: ChildRow = serde_json::from_value(serde_json::json!({"kind":"thread", "thread_id":THREAD, "name":"worker", "started":20, "pid":null, "depth":0, "timer":null})).expect("thread row");
     child.dispatch = WorkerDispatch::Worker(dispatch);

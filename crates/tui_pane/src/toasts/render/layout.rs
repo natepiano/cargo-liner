@@ -23,7 +23,7 @@ pub(super) fn render_top_down(
     allocated: &[u16],
     layout: StackLayout,
 ) -> Vec<ToastHitbox> {
-    let mut hitboxes = Vec::with_capacity(toasts.len());
+    let mut toast_hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y.saturating_add(layout.edge_gap);
     for (toast, &alloc_height) in toasts.iter().zip(allocated) {
         if alloc_height == 0 {
@@ -45,14 +45,14 @@ pub(super) fn render_top_down(
             height: card_height,
         };
         let close_rect = card::render_toast(frame, area, card, toast, layout.focus, alloc_height);
-        hitboxes.push(ToastHitbox {
+        toast_hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,
             close_rect,
         });
         cursor_y = cursor_y.saturating_add(card_height + layout.gap);
     }
-    hitboxes
+    toast_hitboxes
 }
 
 pub(super) fn render_bottom_up(
@@ -62,7 +62,7 @@ pub(super) fn render_bottom_up(
     allocated: &[u16],
     layout: StackLayout,
 ) -> Vec<ToastHitbox> {
-    let mut hitboxes = Vec::with_capacity(toasts.len());
+    let mut toast_hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.bottom().saturating_sub(layout.edge_gap);
     for (toast, &alloc_height) in toasts.iter().zip(allocated).rev() {
         if alloc_height == 0 {
@@ -88,15 +88,15 @@ pub(super) fn render_bottom_up(
             height: card_height,
         };
         let close_rect = card::render_toast(frame, area, card, toast, layout.focus, alloc_height);
-        hitboxes.push(ToastHitbox {
+        toast_hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,
             close_rect,
         });
         cursor_y = cursor_y.saturating_sub(layout.gap);
     }
-    hitboxes.reverse();
-    hitboxes
+    toast_hitboxes.reverse();
+    toast_hitboxes
 }
 
 pub(super) fn allocate_toast_heights(toasts: &[ToastView], available: u16, gap: u16) -> Vec<u16> {

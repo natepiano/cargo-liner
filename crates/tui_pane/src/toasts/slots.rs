@@ -38,7 +38,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         ToastsAction::ALL
             .iter()
             .copied()
-            .map(|action| (BarRegion::PaneAction, BarSlot::Single(action)))
+            .map(|toasts_action| (BarRegion::PaneAction, BarSlot::Single(toasts_action)))
             .collect()
     }
 
@@ -52,29 +52,29 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Handle a key and return both key outcome and toast action command.
     pub fn handle_key_command(
         &mut self,
-        bind: &KeyBind,
-        pane: PaneFocusState,
+        key_bind: &KeyBind,
+        pane_focus_state: PaneFocusState,
     ) -> (KeyOutcome, ToastCommand<Ctx::ToastAction>) {
-        let scope = Self::defaults().into_scope_map();
-        if scope.action_for(bind) != Some(ToastsAction::Activate) {
+        let scope_map = Self::defaults().into_scope_map();
+        if scope_map.action_for(key_bind) != Some(ToastsAction::Activate) {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         }
 
-        let ToastFocus::PaneFocusedOn(id) = self.focused_toast_id(pane) else {
+        let ToastFocus::PaneFocusedOn(toast_id) = self.focused_toast_id(pane_focus_state) else {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         };
-        let Some(toast) = self.entries.iter().find(|toast| toast.id == id) else {
+        let Some(toast) = self.entries.iter().find(|toast| toast.id == toast_id) else {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         };
-        let ToastActivation::Opens(action) = toast.action.clone() else {
+        let ToastActivation::Opens(toast_action) = toast.action.clone() else {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         };
-        (KeyOutcome::Consumed, ToastCommand::Activate(action))
+        (KeyOutcome::Consumed, ToastCommand::Activate(toast_action))
     }
 
     /// Handle a key and return only the key outcome.
-    pub fn handle_key(&mut self, bind: &KeyBind, pane: PaneFocusState) -> KeyOutcome {
-        self.handle_key_command(bind, pane).0
+    pub fn handle_key(&mut self, key_bind: &KeyBind, pane: PaneFocusState) -> KeyOutcome {
+        self.handle_key_command(key_bind, pane).0
     }
 }
 
@@ -82,13 +82,13 @@ impl<Ctx: AppContext> Hittable<ToastHit> for Toasts<Ctx> {
     /// Walk hitboxes top-to-bottom (latest-rendered first) and return
     /// the matching toast hit. The close button takes priority over
     /// the card body within a single toast.
-    fn hit_test_at(&self, pos: Position) -> Option<ToastHit> {
-        for hit in self.hits.iter().rev() {
-            if hit.close_rect.contains(pos) {
-                return Some(ToastHit::Close(hit.id));
+    fn hit_test_at(&self, position: Position) -> Option<ToastHit> {
+        for toast_hitbox in self.hits.iter().rev() {
+            if toast_hitbox.close_rect.contains(position) {
+                return Some(ToastHit::Close(toast_hitbox.id));
             }
-            if hit.card_rect.contains(pos) {
-                return Some(ToastHit::Card(hit.id));
+            if toast_hitbox.card_rect.contains(position) {
+                return Some(ToastHit::Card(toast_hitbox.id));
             }
         }
         None

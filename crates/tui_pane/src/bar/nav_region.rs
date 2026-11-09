@@ -81,5 +81,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 }
 
 fn slot_by_label<'a>(slots: &'a [RenderedSlot], label: &str) -> Option<&'a RenderedSlot> {
-    slots.iter().find(|slot| slot.label == label)
+    slots
+        .iter()
+        .find(|rendered_slot| rendered_slot.label == label)
 }

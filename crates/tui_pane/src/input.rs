@@ -111,14 +111,17 @@ pub const fn overlay_is_in_text_mode<Ctx: AppContext>(
 /// caller continues the dispatch ladder. An emitted
 /// [`ToastCommand::Activate`] is routed through
 /// [`AppContext::handle_toast_action`].
-pub fn dispatch_focused_toasts<Ctx>(ctx: &mut Ctx, bind: &KeyBind) -> bool
+pub fn dispatch_focused_toasts<Ctx>(ctx: &mut Ctx, key_bind: &KeyBind) -> bool
 where
     Ctx: AppContext,
 {
-    let pane = ctx.framework().toast_pane_focus_state();
-    let (outcome, command) = ctx.framework_mut().toasts.handle_key_command(bind, pane);
+    let pane_focus_state = ctx.framework().toast_pane_focus_state();
+    let (key_outcome, command) = ctx
+        .framework_mut()
+        .toasts
+        .handle_key_command(key_bind, pane_focus_state);
     if let ToastCommand::Activate(action) = command {
         ctx.handle_toast_action(action);
     }
-    matches!(outcome, KeyOutcome::Consumed)
+    matches!(key_outcome, KeyOutcome::Consumed)
 }

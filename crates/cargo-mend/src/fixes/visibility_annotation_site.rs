@@ -50,7 +50,7 @@ impl VisibilityAnnotationSite {
         let line_text = &source[line_start..line_end];
         let column_offset = byte_offset_of_display_column(line_text, column)?;
         let annotation_text = &line_text[column_offset..];
-        let (form, byte_len) = annotation_form_and_byte_len(annotation_text)?;
+        let (visibility_annotation_form, byte_len) = annotation_form_and_byte_len(annotation_text)?;
         let start = line_start + column_offset;
         let end = start + byte_len;
         let separator_len = annotation_text[byte_len..]
@@ -59,7 +59,7 @@ impl VisibilityAnnotationSite {
             .map(char::len_utf8)
             .sum::<usize>();
         Some(Self {
-            form,
+            form: visibility_annotation_form,
             start,
             end,
             end_with_separator: end + separator_len,

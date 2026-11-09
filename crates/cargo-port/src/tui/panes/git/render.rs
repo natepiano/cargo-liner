@@ -72,9 +72,14 @@ use crate::tui::panes::constants::TRACKED_HEADER;
 use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
 use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::GitReadHealth;
+#[cfg(not(test))]
+use crate::tui::panes::pane_data::PullRequestPolling;
+use crate::tui::panes::pane_data::RemoteRows;
 use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
 
 static MIN_FITTED_TEXT_WIDTH: LazyLock<usize> = LazyLock::new(|| FIT_TEXT_ELLIPSIS.width() + 1);
@@ -138,10 +143,6 @@ pub(super) fn git_label_width(fields: &[DetailField]) -> usize {
 enum SectionFocus {
     Focused,
     Unfocused,
-}
-
-impl SectionFocus {
-    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
 }
 
 impl From<bool> for SectionFocus {
@@ -329,7 +330,7 @@ fn append_remotes_section(
     if ctx.data.remotes.listed().is_empty() {
         return;
     }
-    let focused = matches!(current_section, Some(Section::Remote(_)));
+    let section_focus = SectionFocus::from(matches!(current_section, Some(Section::Remote(_))));
     let cursor = match current_section {
         Some(Section::Remote(i)) => Some(i),
         _ => None,
@@ -341,10 +342,10 @@ fn append_remotes_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    render_remote_header(accum.lines, layout, focused);
+    render_remote_header(accum.lines, layout, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.listed().iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
@@ -377,7 +378,8 @@ fn append_pull_requests_section(
     {
         return;
     }
-    let focused = matches!(current_section, Some(Section::PullRequest(_)));
+    let section_focus =
+        SectionFocus::from(matches!(current_section, Some(Section::PullRequest(_))));
     let cursor = match current_section {
         Some(Section::PullRequest(i)) => Some(i),
         _ => None,
@@ -402,7 +404,7 @@ fn append_pull_requests_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
 
@@ -421,7 +423,7 @@ fn append_pull_requests_section(
     }
 
     let col_widths = pull_request_col_widths(&section.rows, area_width, ctx.animation_elapsed);
-    render_pull_request_header(accum.lines, &col_widths, focused);
+    render_pull_request_header(accum.lines, &col_widths, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, row) in section.rows.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + i;
@@ -478,6 +480,13 @@ struct PullRequestColWidths {
     title:  usize,
 }
 
+/// `pull_request_col_widths` allocates both columns from one `BranchTitleCapacity`.
+enum BranchTitleCapacity {
+    Preferred,
+    ReserveTitle,
+    BranchOnly,
+}
+
 fn pull_request_col_widths(
     rows: &[PullRequestRow],
     area_width: u16,
@@ -509,17 +518,23 @@ fn pull_request_col_widths(
         .max(PULL_REQUEST_TITLE_HEADER.width());
     let fixed_width = 1 + number + 2 + status + 2 + 2;
     let branch_title_width = usize::from(area_width).saturating_sub(fixed_width);
-    let branch = if branch_title_width >= branch_preferred + title_preferred {
-        branch_preferred
+    let branch_title_capacity = if branch_title_width >= branch_preferred + title_preferred {
+        BranchTitleCapacity::Preferred
     } else if branch_title_width > PULL_REQUEST_MIN_TITLE_WIDTH {
-        branch_preferred.min(branch_title_width - PULL_REQUEST_MIN_TITLE_WIDTH)
+        BranchTitleCapacity::ReserveTitle
     } else {
-        branch_preferred.min(branch_title_width)
+        BranchTitleCapacity::BranchOnly
     };
-    let title = if branch_title_width >= branch_preferred + title_preferred {
-        title_preferred
-    } else {
-        branch_title_width.saturating_sub(branch)
+    let (branch, title) = match branch_title_capacity {
+        BranchTitleCapacity::Preferred => (branch_preferred, title_preferred),
+        BranchTitleCapacity::ReserveTitle => {
+            let branch = branch_preferred.min(branch_title_width - PULL_REQUEST_MIN_TITLE_WIDTH);
+            (branch, branch_title_width.saturating_sub(branch))
+        },
+        BranchTitleCapacity::BranchOnly => {
+            let branch = branch_preferred.min(branch_title_width);
+            (branch, branch_title_width.saturating_sub(branch))
+        },
     };
     PullRequestColWidths {
         number,
@@ -529,21 +544,20 @@ fn pull_request_col_widths(
     }
 }
 
-fn column_header_style(focused: bool) -> Style {
+fn column_header_style(section_focus: SectionFocus) -> Style {
     let style = Style::default().fg(theme_roles::column_header_color());
-    if focused {
-        style.add_modifier(Modifier::BOLD)
-    } else {
-        style
+    match section_focus {
+        SectionFocus::Focused => style.add_modifier(Modifier::BOLD),
+        SectionFocus::Unfocused => style,
     }
 }
 
 fn render_pull_request_header(
     lines: &mut Vec<Line<'static>>,
     widths: &PullRequestColWidths,
-    focused: bool,
+    section_focus: SectionFocus,
 ) {
-    let style = column_header_style(focused);
+    let style = column_header_style(section_focus);
     let text = format!(
         " {:<number$}  {:<status$}  {:<branch$}  {}",
         fit_text(PULL_REQUEST_NUMBER_HEADER, widths.number),
@@ -565,19 +579,22 @@ fn pull_request_row_line(
     mode: ColorMode,
 ) -> Line<'static> {
     let style = selection.patch(Style::default().fg(inactive_title_color()), mode);
-    if !row.polling.is_polling() {
-        let state = pull_request_state_text(row, animation_elapsed);
-        let text = format!(
-            " {:<number$}  {:<status$}  {:<branch$}  {}",
-            fit_text(&format!("#{}", row.number), widths.number),
-            fit_text(&state, widths.status),
-            fit_text(&row.branch, widths.branch),
-            fit_text(&row.title, widths.title),
-            number = widths.number,
-            status = widths.status,
-            branch = widths.branch,
-        );
-        return Line::from(Span::styled(text, style));
+    match row.polling {
+        PullRequestPolling::Active => {},
+        PullRequestPolling::Idle => {
+            let state = pull_request_state_text(row, animation_elapsed);
+            let text = format!(
+                " {:<number$}  {:<status$}  {:<branch$}  {}",
+                fit_text(&format!("#{}", row.number), widths.number),
+                fit_text(&state, widths.status),
+                fit_text(&row.branch, widths.branch),
+                fit_text(&row.title, widths.title),
+                number = widths.number,
+                status = widths.status,
+                branch = widths.branch,
+            );
+            return Line::from(Span::styled(text, style));
+        },
     }
 
     let spinner = ACTIVITY_SPINNER.frame_at(animation_elapsed);
@@ -612,14 +629,13 @@ fn pull_request_row_line(
 }
 
 fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) -> String {
-    if row.polling.is_polling() {
-        format!(
+    match row.polling {
+        PullRequestPolling::Active => format!(
             "{} {}",
             row.state_label,
             ACTIVITY_SPINNER.frame_at(animation_elapsed)
-        )
-    } else {
-        row.state_label.to_string()
+        ),
+        PullRequestPolling::Idle => row.state_label.to_string(),
     }
 }
 
@@ -648,7 +664,7 @@ fn append_worktrees_section(
     if ctx.data.worktrees.is_empty() {
         return;
     }
-    let focused = matches!(current_section, Some(Section::Worktree(_)));
+    let section_focus = SectionFocus::from(matches!(current_section, Some(Section::Worktree(_))));
     let cursor = match current_section {
         Some(Section::Worktree(i)) => Some(i),
         _ => None,
@@ -658,10 +674,10 @@ fn append_worktrees_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    render_worktree_header(accum.lines, layout, focused);
+    render_worktree_header(accum.lines, layout, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
@@ -703,15 +719,12 @@ fn push_section_overlays(
         if abs_y < inner_area.y || abs_y >= inner_area.y.saturating_add(inner_area.height) {
             continue;
         }
-        let title_color = if rule.section_focus.is_focused() {
-            title_color()
-        } else {
-            inactive_title_color()
+        let title_style = match rule.section_focus {
+            SectionFocus::Focused => Style::default()
+                .fg(title_color())
+                .add_modifier(Modifier::BOLD),
+            SectionFocus::Unfocused => Style::default().fg(inactive_title_color()),
         };
-        let mut title_style = Style::default().fg(title_color);
-        if rule.section_focus.is_focused() {
-            title_style = title_style.add_modifier(Modifier::BOLD);
-        }
         let rule_area = Rect {
             x:      outer_area.x,
             y:      abs_y,
@@ -771,14 +784,17 @@ fn build_field_value(data: &GitData, field: DetailField) -> String {
     let raw = field.git_value(data);
     match field {
         DetailField::Head
-            if data.is_local()
+            if matches!(&data.remotes, RemoteRows::Listed(rows) if rows.is_empty())
                 && !raw.is_empty()
                 && !matches!(data.checkout, GitCheckout::UnreadableHead) =>
         {
             format!("{raw} ({GIT_LOCAL} local)")
         },
         DetailField::RateLimitCore | DetailField::RateLimitGraphQl
-            if data.github_status.is_unauthenticated() =>
+            if matches!(
+                data.github_status,
+                AvailabilityStatus::Unauthenticated | AvailabilityStatus::NotInstalled
+            ) =>
         {
             let hint = DetailField::GithubStatus.git_value(data);
             match raw.as_str() {
@@ -815,9 +831,13 @@ impl GitValueStyle {
 
 fn field_value_style(data: &GitData, field: DetailField) -> Style {
     let role = match field {
-        field if data.failed_reads.field_failed(field) => GitValueStyle::Error,
+        field if data.failed_reads.field_health(field) == GitReadHealth::Unreadable => {
+            GitValueStyle::Error
+        },
         DetailField::WorktreeError => GitValueStyle::Broken,
-        DetailField::Head if data.checkout.head_value_is_unreadable() => GitValueStyle::Error,
+        DetailField::Head if data.checkout.head_read_health() == GitReadHealth::Unreadable => {
+            GitValueStyle::Error
+        },
         DetailField::GitStatus if matches!(data.status, Some(GitStatus::Unreadable)) => {
             GitValueStyle::Error
         },
@@ -859,12 +879,14 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
         },
         DetailField::RemotesUnreadable => GitValueStyle::Error,
         DetailField::GithubStatus | DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
-            if data.github_status.is_unauthenticated() {
-                GitValueStyle::Warning
-            } else if !data.github_status.is_available() {
-                GitValueStyle::Error
-            } else {
-                GitValueStyle::Plain
+            match data.github_status {
+                AvailabilityStatus::Unauthenticated | AvailabilityStatus::NotInstalled => {
+                    GitValueStyle::Warning
+                },
+                AvailabilityStatus::Unreachable | AvailabilityStatus::RateLimited => {
+                    GitValueStyle::Error
+                },
+                AvailabilityStatus::Reachable => GitValueStyle::Plain,
             }
         },
         DetailField::Stars if panes::github_stars_is_unreachable_placeholder(data) => {
@@ -1066,7 +1088,7 @@ fn flat_field_lines(
         };
         let mut spans = vec![Span::styled(prefix, label_style)];
         if is_rate_limit_row
-            && args.data.github_status.is_available()
+            && args.data.github_status == AvailabilityStatus::Reachable
             && let Some(index) = value.find(" resets ")
         {
             let (base, reset) = value.split_at(index);
@@ -1393,8 +1415,12 @@ fn fit_table_line(mut line: Line<'static>, width: usize) -> Line<'static> {
     line
 }
 
-fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
-    let style = column_header_style(focused);
+fn render_remote_header(
+    lines: &mut Vec<Line<'static>>,
+    layout: &SyncColLayout,
+    section_focus: SectionFocus,
+) {
+    let style = column_header_style(section_focus);
     let name = left_column(REMOTES_NAME_HEADER, layout.remote_name);
     let leading = match layout.mode {
         SyncTableMode::Compact => format!(" {name}"),
@@ -1498,8 +1524,12 @@ fn remote_row_line(
 // `render_worktree_header` and `worktree_row_line` render Worktrees with the shared
 // `SyncColLayout`.
 
-fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
-    let style = column_header_style(focused);
+fn render_worktree_header(
+    lines: &mut Vec<Line<'static>>,
+    layout: &SyncColLayout,
+    section_focus: SectionFocus,
+) {
+    let style = column_header_style(section_focus);
     let leading = format!(
         " {}",
         left_column(WORKTREES_NAME_HEADER, layout.worktree_name)
@@ -1575,7 +1605,8 @@ pub(super) fn render_git_pane_body(
     };
 
     let flat_fields = panes::git_fields_from_data(&git_data);
-    let description_rows = usize::from(panes::git_has_description_row(&git_data));
+    let description = panes::git_has_description_row(&git_data);
+    let description_rows = description.row_count();
     let total_rows = description_rows
         + flat_fields.len()
         + git_data.pull_requests.rows.len()
@@ -1593,7 +1624,7 @@ pub(super) fn render_git_pane_body(
     // addressable `total_rows`, so the pager must use rendered height.
     pane.viewport.set_content_height(git_content_height(
         usize::from(ctx.synced_description_height.rows()),
-        description_rows > 0,
+        description,
         git_lower_content_height(&git_data, flat_fields.len()),
     ));
     let pane_focus_state = pane.focus.pane_focus_state;
@@ -1806,6 +1837,23 @@ pub(in crate::tui::panes) fn git_lower_content_height(
     flat_fields_len + pr_block + remotes_block + worktrees_block
 }
 
+/// `GitDescription::Present` includes the About section in `git_content_height`;
+/// `GitDescription::Absent` omits its description and separator rows.
+#[derive(Clone, Copy)]
+pub(in crate::tui) enum GitDescription {
+    Present,
+    Absent,
+}
+
+impl GitDescription {
+    pub(in crate::tui::panes) const fn row_count(self) -> usize {
+        match self {
+            Self::Present => 1,
+            Self::Absent => 0,
+        }
+    }
+}
+
 /// Total vertical rows the Git pane's content occupies. When the repo has a
 /// description the About section renders, contributing the synced description
 /// height plus the separator above the lower content; otherwise the section is
@@ -1814,13 +1862,12 @@ pub(in crate::tui::panes) fn git_lower_content_height(
 /// measurement so the pager and the row height agree on what renders.
 pub(in crate::tui::panes) const fn git_content_height(
     synced_description_height: usize,
-    has_description: bool,
+    description: GitDescription,
     lower_content_height: usize,
 ) -> usize {
-    if has_description {
-        synced_description_height + 1 + lower_content_height
-    } else {
-        lower_content_height
+    match description {
+        GitDescription::Present => synced_description_height + 1 + lower_content_height,
+        GitDescription::Absent => lower_content_height,
     }
 }
 
@@ -1893,7 +1940,7 @@ mod tests {
         let layout = sync_col_layout(&[], &[], WIDE_PANE);
         let mut lines = Vec::new();
 
-        render_remote_header(&mut lines, &layout, true);
+        render_remote_header(&mut lines, &layout, SectionFocus::Focused);
 
         let text = line_text(&lines[0]);
         assert!(text.contains("Branch"));
@@ -1916,7 +1963,7 @@ mod tests {
         let widths = pull_request_col_widths(&[row], 80, Duration::ZERO);
         let mut lines = Vec::new();
 
-        render_pull_request_header(&mut lines, &widths, true);
+        render_pull_request_header(&mut lines, &widths, SectionFocus::Focused);
 
         assert!(line_text(&lines[0]).contains("Status"));
         assert!(line_text(&lines[0]).contains("Branch"));
@@ -2108,9 +2155,9 @@ mod tests {
         );
 
         let mut remote_header = Vec::new();
-        render_remote_header(&mut remote_header, &layout, true);
+        render_remote_header(&mut remote_header, &layout, SectionFocus::Focused);
         let mut worktree_header = Vec::new();
-        render_worktree_header(&mut worktree_header, &layout, true);
+        render_worktree_header(&mut worktree_header, &layout, SectionFocus::Focused);
 
         let remote_text = line_text(&remote_header[0]);
         let worktree_text = line_text(&worktree_header[0]);

@@ -1,9 +1,11 @@
+use std::collections::BTreeSet;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::mem;
+use std::path::PathBuf;
 use std::process::ChildStderr;
 
 use anyhow::Result;
@@ -30,11 +32,53 @@ use crate::compiler::constants::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
 use crate::compiler::constants::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 use crate::reporting::CompilerWarningFacts;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct StderrObservation {
+    pub(super) error_files:            BTreeSet<PathBuf>,
     pub(super) compiler_warning_facts: CompilerWarningFacts,
     pub(super) warning_count:          usize,
     pub(super) fixable_count:          usize,
+}
+
+#[derive(Default)]
+enum DiagnosticLocationState {
+    Error,
+    #[default]
+    Other,
+}
+
+#[derive(Default)]
+struct ErrorLocations {
+    state: DiagnosticLocationState,
+    files: BTreeSet<PathBuf>,
+}
+
+impl ErrorLocations {
+    fn observe(&mut self, line: &str) {
+        let text = sanitize_for_match(line);
+        let text = text.trim();
+        if text.starts_with("error[") || text.starts_with("error:") {
+            self.state = DiagnosticLocationState::Error;
+        } else if text.is_empty() || text.starts_with("warning") {
+            self.state = DiagnosticLocationState::Other;
+        }
+        if matches!(self.state, DiagnosticLocationState::Error)
+            && let Some(location) = text.strip_prefix("--> ")
+        {
+            let mut parts = location.rsplitn(3, ':');
+            if parts
+                .next()
+                .is_some_and(|part| part.parse::<usize>().is_ok())
+                && parts
+                    .next()
+                    .is_some_and(|part| part.parse::<usize>().is_ok())
+                && let Some(file) = parts.next()
+                && !file.starts_with('<')
+            {
+                self.files.insert(PathBuf::from(file));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +174,7 @@ pub(super) fn stream_cargo_stderr(
     let mut compiler_warning_facts = CompilerWarningFacts::None;
     let mut compiler_warning_count: usize = 0;
     let mut compiler_fixable_count: usize = 0;
+    let mut error_locations = ErrorLocations::default();
 
     loop {
         let Some(line) = reader.next_line(&mut progress)? else {
@@ -146,6 +191,7 @@ pub(super) fn stream_cargo_stderr(
         };
 
         let current = collapse_carriage_returns(&line);
+        error_locations.observe(&current);
         // Cargo erases the progress frame it just drew and writes the next
         // diagnostic onto the same physical line, so one read can carry both.
         // Once the carriage returns are applied a frame may leave nothing
@@ -199,6 +245,7 @@ pub(super) fn stream_cargo_stderr(
     }
 
     Ok(StderrObservation {
+        error_files: error_locations.files,
         compiler_warning_facts,
         warning_count: compiler_warning_count,
         fixable_count: compiler_fixable_count,

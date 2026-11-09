@@ -1,9 +1,9 @@
 use super::MendRunner;
 use super::RunPlan;
+use super::chain::WrittenPass;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
-use crate::config::FixKind;
-use crate::fixes::imports;
+use crate::fixes::imports::FixSetPresence;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::AppliedFixes;
 use crate::reporting::CompilerFailureCause;
@@ -26,16 +26,13 @@ impl MendRunner<'_> {
             .map_or(0, |pub_use_fix_scan| pub_use_fix_scan.applied);
         let subtree_reexport_edits = fix_scans.subtree_reexports.map_or(
             SubtreeReexportEdits::Unchanged,
-            |subtree_reexport_scan| {
-                if subtree_reexport_scan.fixes.is_empty() {
-                    SubtreeReexportEdits::Unchanged
-                } else {
-                    SubtreeReexportEdits::Written
-                }
+            |subtree_reexport_scan| match subtree_reexport_scan.fixes.presence() {
+                FixSetPresence::Empty => SubtreeReexportEdits::Unchanged,
+                FixSetPresence::HasEdits => SubtreeReexportEdits::Written,
             },
         );
         let fixes = &planned.function_plan.fixes;
-        if fixes.is_empty() {
+        if fixes.presence() == FixSetPresence::Empty {
             let notice = Self::build_fix_notice(
                 planned.operation_mode.intent,
                 Some(&planned.report),
@@ -60,21 +57,15 @@ impl MendRunner<'_> {
         // `self.session_snapshot.record` runs before the write, into a snapshot the runner keeps
         // for the whole invocation: an earlier pass's edits are already on disk and
         // a rollback owes the user the tree they started with.
-        self.session_snapshot
-            .record(fixes)
-            .map_err(MendFailure::Unexpected)?;
-        let applied_fix_counts = imports::apply_fixes(fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
             BuildOutputMode::Validation
         };
-        let validation = self
-            .build_selection(validation_output_mode)
-            .and_then(|checked| {
-                let pub_use = planned.operation_mode.fixes.selection(FixKind::PubUse);
-                self.scan_fixes(planned.operation_mode.clone(), checked, pub_use)
-            });
+        let WrittenPass {
+            counts: applied_fix_counts,
+            validation,
+        } = self.write_chain_or_single(&planned, validation_output_mode)?;
         match validation {
             Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;

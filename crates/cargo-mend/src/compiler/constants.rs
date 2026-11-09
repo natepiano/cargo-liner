@@ -102,6 +102,10 @@ pub(super) const PROGRESS_BAR_WIDTH: usize = 25;
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 pub(super) const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
 
+// Source indexing.
+// `MIN_PARALLEL_SOURCE_FILES` sets the minimum file count for parallel lexical indexing.
+pub(super) const MIN_PARALLEL_SOURCE_FILES: usize = 32;
+
 // `SOURCE_DIR_BENCHES`, `SOURCE_DIR_EXAMPLES`, `SOURCE_DIR_SRC` and `SOURCE_DIR_TESTS` name
 // source-tree directories.
 pub(super) const SOURCE_DIR_BENCHES: &str = "benches";
@@ -110,9 +114,19 @@ pub(crate) const SOURCE_DIR_SRC: &str = "src";
 pub(super) const SOURCE_DIR_TESTS: &str = "tests";
 
 // `PRELUDE_MODULE_NAME` identifies the prelude module for visibility policy.
-pub(super) const PRELUDE_MODULE_NAME: &str = "prelude";
+// `pub use super::Item` there is the prelude's whole purpose, not a sideways facade.
+pub(crate) const PRELUDE_MODULE_NAME: &str = "prelude";
 
-// `WRAPPER_DIR_NAME` and `WRAPPER_ALIAS_STAGING_EXTENSION` name the wrapper alias directory and
-// staging extension.
-pub(super) const WRAPPER_DIR_NAME: &str = "mend-wrapper";
+// Wrapper cache and aliases.
+// `WRAPPER_ALIAS_STAGING_EXTENSION` identifies unpublished executable copies.
 pub(super) const WRAPPER_ALIAS_STAGING_EXTENSION: &str = "staging";
+// `WRAPPER_CACHE_DIRECTORY_PREFIX` identifies shared driver cache directories.
+pub(super) const WRAPPER_CACHE_DIRECTORY_PREFIX: &str = "driver-";
+// `WRAPPER_CACHE_RETENTION_LOCK_FILE` protects live driver copies from removal.
+pub(super) const WRAPPER_CACHE_RETENTION_LOCK_FILE: &str = "retention.lock";
+// `WRAPPER_CACHE_PUBLICATION_LOCK_FILE` serializes publication of a driver copy.
+pub(super) const WRAPPER_CACHE_PUBLICATION_LOCK_FILE: &str = "publication.lock";
+// `WRAPPER_DIR_NAME` names the wrapper alias directory.
+pub(super) const WRAPPER_DIR_NAME: &str = "mend-wrapper";
+// `WRAPPER_RETAINED_STAGING_PREFIX` identifies unpublished retained driver links.
+pub(super) const WRAPPER_RETAINED_STAGING_PREFIX: &str = "retained-";

@@ -47,15 +47,15 @@ thread_local! {
 
 #[cfg(all(test, feature = "test-counters"))]
 pub fn reset_performance_counters() {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        *counters.borrow_mut() = FacadePerformanceCounters::default();
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        *facade_performance_counters.borrow_mut() = FacadePerformanceCounters::default();
     });
 }
 
 #[cfg(feature = "test-counters")]
 pub fn record_facade_resolution(item_def_id: LocalDefId) {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        *counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        *facade_performance_counters
             .borrow_mut()
             .resolutions
             .entry(item_def_id)
@@ -65,8 +65,8 @@ pub fn record_facade_resolution(item_def_id: LocalDefId) {
 
 #[cfg(feature = "test-counters")]
 pub fn record_facade_resolution_request(item_def_id: LocalDefId) {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        *counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        *facade_performance_counters
             .borrow_mut()
             .resolution_requests
             .entry(item_def_id)
@@ -76,8 +76,8 @@ pub fn record_facade_resolution_request(item_def_id: LocalDefId) {
 
 #[cfg(feature = "test-counters")]
 pub fn record_facade_usage_scan(occurrence: LocalDefId) {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        *counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        *facade_performance_counters
             .borrow_mut()
             .usage_scans
             .entry(occurrence)
@@ -87,8 +87,8 @@ pub fn record_facade_usage_scan(occurrence: LocalDefId) {
 
 #[cfg(all(test, feature = "test-counters"))]
 pub fn facade_resolution_count(item_def_id: LocalDefId) -> usize {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        facade_performance_counters
             .borrow()
             .resolutions
             .get(&item_def_id)
@@ -99,8 +99,8 @@ pub fn facade_resolution_count(item_def_id: LocalDefId) -> usize {
 
 #[cfg(all(test, feature = "test-counters"))]
 pub fn facade_resolution_request_count(item_def_id: LocalDefId) -> usize {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        facade_performance_counters
             .borrow()
             .resolution_requests
             .get(&item_def_id)
@@ -111,8 +111,8 @@ pub fn facade_resolution_request_count(item_def_id: LocalDefId) -> usize {
 
 #[cfg(all(test, feature = "test-counters"))]
 pub fn facade_usage_scan_count(occurrence: LocalDefId) -> usize {
-    PERFORMANCE_COUNTERS.with(|counters| {
-        counters
+    PERFORMANCE_COUNTERS.with(|facade_performance_counters| {
+        facade_performance_counters
             .borrow()
             .usage_scans
             .get(&occurrence)
@@ -390,16 +390,21 @@ pub(super) fn exported_names_from_parent_boundary(
     child_module_name: &str,
     item_name: &str,
 ) -> ParentFacadeExports {
-    let mut exported = ParentFacadeExports::default();
+    let mut parent_facade_exports = ParentFacadeExports::default();
     for item in &file.items {
         let Item::Use(item_use) = item else {
             continue;
         };
-        collect_matching_pub_use_exports(item_use, child_module_name, item_name, &mut exported);
+        collect_matching_pub_use_exports(
+            item_use,
+            child_module_name,
+            item_name,
+            &mut parent_facade_exports,
+        );
     }
-    exported.explicit.sort();
-    exported.explicit.dedup();
-    exported
+    parent_facade_exports.explicit.sort();
+    parent_facade_exports.explicit.dedup();
+    parent_facade_exports
 }
 
 #[cfg(test)]
@@ -414,7 +419,7 @@ fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
     child_module_name: &str,
     item_name: &str,
-    exported: &mut ParentFacadeExports,
+    parent_facade_exports: &mut ParentFacadeExports,
 ) {
     let mut paths = Vec::new();
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
@@ -426,7 +431,7 @@ fn collect_matching_pub_use_exports(
             && normalized[1..].iter().any(|segment| segment == item_name)
             && let Some(export_name) = normalized.last()
         {
-            exported.explicit.push(export_name.clone());
+            parent_facade_exports.explicit.push(export_name.clone());
             matched = ExportMatch::Found;
         }
     }
@@ -435,7 +440,7 @@ fn collect_matching_pub_use_exports(
         && pub_use_fix_support(&item_use.tree, child_module_name, item_name)
             == ParentFacadeFixSupport::Supported
     {
-        exported.fix_support = ParentFacadeFixSupport::Supported;
+        parent_facade_exports.fix_support = ParentFacadeFixSupport::Supported;
     }
 }
 
@@ -449,21 +454,21 @@ fn pub_use_fix_support(
 
 fn pub_use_fix_support_with_prefix(
     prefix: Vec<String>,
-    tree: &UseTree,
+    use_tree: &UseTree,
     child_module_name: &str,
     item_name: &str,
 ) -> ParentFacadeFixSupport {
-    match tree {
+    match use_tree {
         UseTree::Path(path) => {
             let mut next = prefix;
             next.push(path.ident.to_string());
             pub_use_fix_support_with_prefix(next, &path.tree, child_module_name, item_name)
         },
-        UseTree::Name(name) => {
+        UseTree::Name(use_name) => {
             let normalized = rust_syntax::trim_leading_self(&prefix);
             if normalized.len() == 1
                 && normalized[0] == child_module_name
-                && name.ident == item_name
+                && use_name.ident == item_name
             {
                 ParentFacadeFixSupport::Supported
             } else {
@@ -665,10 +670,16 @@ mod tests {
     fn grouped_parent_pub_use_is_fix_supported() {
         let source = "pub use report_writer::{ReportDefinition, ReportWriter};\n";
         let file = parse_file(source).unwrap();
-        let exports =
+        let parent_facade_exports =
             exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
-        assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
-        assert_eq!(exports.fix_support, ParentFacadeFixSupport::Supported);
+        assert_eq!(
+            parent_facade_exports.explicit,
+            vec!["ReportDefinition".to_string()]
+        );
+        assert_eq!(
+            parent_facade_exports.fix_support,
+            ParentFacadeFixSupport::Supported
+        );
     }
 
     #[test]

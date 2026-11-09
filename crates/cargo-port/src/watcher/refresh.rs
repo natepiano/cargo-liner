@@ -17,8 +17,8 @@ use super::ProjectEntry;
 use super::WatchState;
 use super::events::EventContext;
 use crate::channel::Sender;
+use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
-use crate::constants::DEBOUNCE_DURATION;
 use crate::constants::GIT_DIR;
 use crate::constants::TARGET_DIR;
 use crate::lint;
@@ -36,11 +36,12 @@ pub(super) const DISK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Build trees have no watches. Reuse the bounded disk workers at a slow cadence.
 /// Running work is left alone so a slow walk cannot accumulate queued polls.
-pub(super) fn schedule_disk_poll(
+pub(super) fn schedule_disk_poll_with_config(
     now: Instant,
     last_poll: &mut Instant,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, WatchState>,
+    watcher_config: &WatcherConfig,
 ) {
     if now.saturating_duration_since(*last_poll) < DISK_POLL_INTERVAL {
         return;
@@ -51,9 +52,26 @@ pub(super) fn schedule_disk_poll(
             .entry(entry.label.clone())
             .or_insert(WatchState::Idle);
         if matches!(state, WatchState::Idle) {
-            *state = WatchState::pending(now, true);
+            *state = WatchState::pending(now, true, watcher_config);
         }
     }
+}
+
+/// Default-policy entry point for existing watcher test harnesses.
+#[cfg(test)]
+pub(super) fn schedule_disk_poll(
+    now: Instant,
+    last_poll: &mut Instant,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    pending_disk: &mut HashMap<String, WatchState>,
+) {
+    schedule_disk_poll_with_config(
+        now,
+        last_poll,
+        projects,
+        pending_disk,
+        &WatcherConfig::default(),
+    );
 }
 
 enum DiskProbeScope {
@@ -126,18 +144,19 @@ pub(super) fn schedule_disk_refresh(
     pending_disk: &mut HashMap<String, WatchState>,
     project_label: &str,
     now: Instant,
+    watcher_config: &WatcherConfig,
 ) {
     match pending_disk
         .entry(project_label.to_string())
         .or_insert(WatchState::Idle)
     {
         state @ WatchState::Idle => {
-            *state = WatchState::pending(now, false);
+            *state = WatchState::pending(now, false, watcher_config);
         },
         WatchState::Pending {
             debounce_deadline, ..
         } => {
-            *debounce_deadline = now + DEBOUNCE_DURATION;
+            *debounce_deadline = now + watcher_config.debounce();
         },
         state @ WatchState::Running => *state = WatchState::RunningDirty,
         WatchState::RunningDirty => {},
@@ -147,6 +166,7 @@ pub(super) fn schedule_disk_refresh(
 pub(super) fn handle_disk_completion(
     pending_disk: &mut HashMap<String, WatchState>,
     project_label: &str,
+    watcher_config: &WatcherConfig,
 ) {
     let now = Instant::now();
     let Some(state) = pending_disk.get_mut(project_label) else {
@@ -154,7 +174,7 @@ pub(super) fn handle_disk_completion(
     };
     *state = match *state {
         WatchState::Running => WatchState::Idle,
-        WatchState::RunningDirty => WatchState::pending(now, false),
+        WatchState::RunningDirty => WatchState::pending(now, false, watcher_config),
         WatchState::Idle | WatchState::Pending { .. } => return,
     };
 }
@@ -162,6 +182,7 @@ pub(super) fn handle_disk_completion(
 pub(super) fn handle_git_completion(
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     repo_root: &AbsolutePath,
+    watcher_config: &WatcherConfig,
 ) {
     let now = Instant::now();
     let Some(state) = pending_git.get_mut(repo_root) else {
@@ -169,7 +190,7 @@ pub(super) fn handle_git_completion(
     };
     *state = match *state {
         WatchState::Running => WatchState::Idle,
-        WatchState::RunningDirty => WatchState::pending(now, false),
+        WatchState::RunningDirty => WatchState::pending(now, false, watcher_config),
         WatchState::Idle | WatchState::Pending { .. } => return,
     };
 }
@@ -245,6 +266,7 @@ pub(super) fn enqueue_git_refresh(
     now: Instant,
     immediate: bool,
     cause: &str,
+    watcher_config: &WatcherConfig,
 ) {
     let pending_count = pending_git
         .iter()
@@ -264,14 +286,14 @@ pub(super) fn enqueue_git_refresh(
         "watcher_enqueue_git_refresh"
     );
     match pending_git.entry(repo_root).or_insert(WatchState::Idle) {
-        state @ WatchState::Idle => *state = WatchState::pending(now, immediate),
+        state @ WatchState::Idle => *state = WatchState::pending(now, immediate, watcher_config),
         WatchState::Pending {
             debounce_deadline, ..
         } => {
             *debounce_deadline = if immediate {
                 now
             } else {
-                now + DEBOUNCE_DURATION
+                now + watcher_config.debounce()
             };
         },
         state @ WatchState::Running => *state = WatchState::RunningDirty,

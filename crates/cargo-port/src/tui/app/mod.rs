@@ -19,9 +19,6 @@
 //!   and rebuilds [`crate::tui::project_list_state::ProjectList::recompute_visibility`].
 //!   `App::mutate_tree` constructs the guard via destructuring so the two subsystem borrows are
 //!   disjoint.
-//! - **Self-only flavor** — see `SelectionMutation` in the project-list module. Visibility-changing
-//!   mutations on `ProjectList` (`toggle_expand`, `apply_finder`) are only callable through the
-//!   guard; `Drop` recomputes `cached_visible_rows`.
 //!
 //! ## Cross-subsystem orchestrator on App
 //! Operations that touch multiple subsystems and have no single
@@ -208,7 +205,7 @@ use super::test_support::FixtureDirs;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
-use crate::constants::SCAN_METADATA_CONCURRENCY;
+use crate::config;
 use crate::constants::TARGET_DIR;
 use crate::lint;
 use crate::lint::LintRuns;
@@ -1013,7 +1010,9 @@ impl App {
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Bound by the scan-concurrency cap so these refreshes can't
             // monopolize the metadata blocking pool.
-            metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.metadata_concurrency.get(),
+            )),
         }
     }
 
@@ -5507,6 +5506,22 @@ mod tests {
             click(&mut app, x, y);
 
             assert_eq!(app.visible_rows().len(), 2);
+
+            for expected_rows in [2, 1] {
+                app.set_focus(FocusedPane::App(AppPaneId::Package));
+                render_ui(&mut app);
+                let (x, y) = row_body_point(&app, 0);
+                assert!(interaction::handle_click(
+                    &mut app,
+                    Position::new(x, y),
+                    interaction::ClickMode::FocusOnly,
+                ));
+
+                assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
+                assert_eq!(app.project_list.cursor(), 0);
+                assert_eq!(app.visible_rows().len(), expected_rows);
+                click(&mut app, x, y);
+            }
         }
 
         // The "overlay surface beats content surface" priority is now

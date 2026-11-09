@@ -307,10 +307,10 @@ pub(super) fn capture_display_bgra(
 
     // `reopen` requests a new `DisplayStream` when none exists, when its exclusions or output size
     // no longer match what is asked for, or when the system has stopped it.
-    let reopen = map.get(&display_id).is_none_or(|entry| {
-        entry.excluded != excluded
-            || entry.dimensions != output_size
-            || entry.stream.closed_reason().is_some()
+    let reopen = map.get(&display_id).is_none_or(|display_stream| {
+        display_stream.excluded != excluded
+            || display_stream.dimensions != output_size
+            || display_stream.stream.closed_reason().is_some()
     });
     if reopen {
         map.remove(&display_id);
@@ -334,7 +334,7 @@ pub(super) fn capture_display_bgra(
 
     // `entry` is present by construction -- just inserted, or the pre-existing entry that did not
     // reopen. The fallback keeps this lint-clean without an `expect`, and never triggers.
-    let Some(entry) = map.get_mut(&display_id) else {
+    let Some(display_stream) = map.get_mut(&display_id) else {
         return Err(CaptureFailure::DisplayCaptureFailed);
     };
 
@@ -343,22 +343,22 @@ pub(super) fn capture_display_bgra(
     // changes (or at the capped rate), so a later pull over a static desktop returns nothing
     // and `entry.last` stands in -- keeping every attempt a success while a genuine change
     // still refreshes it.
-    let fresh = entry.last.is_none();
-    let mut frame = try_frame(&entry.stream);
+    let fresh = display_stream.last.is_none();
+    let mut frame = try_frame(&display_stream.stream);
     if frame.is_none() && fresh {
         let deadline = Instant::now() + FIRST_FRAME_DEADLINE;
         while frame.is_none() && Instant::now() < deadline {
             park_timeout(FRAME_POLL_INTERVAL);
-            frame = try_frame(&entry.stream);
+            frame = try_frame(&display_stream.stream);
         }
     }
     if let Some(new_frame) = frame {
-        entry.last = Some(new_frame);
+        display_stream.last = Some(new_frame);
     }
 
     // `captured` clones the frame out of the guarded `map` into owned bytes, then the guard is
     // dropped before returning -- the registry mutex is held no longer than the copy needs it.
-    let captured = entry
+    let captured = display_stream
         .last
         .as_ref()
         .map(|(bytes, width, height)| (bytes.clone(), *width, *height, *width * BYTES_PER_PIXEL));

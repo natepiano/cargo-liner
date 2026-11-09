@@ -62,8 +62,7 @@ const WRITE_EXAMPLE_ROOT_EXPECTATION: &str = "write example root";
 const MEMBER_EXAMPLE_HELPER_PATH: &str = "member/examples/demo/helper.rs";
 const EXAMPLE_HELPER_SOURCE: &str = "pub fn example_only() {}\n";
 const WRITE_EXAMPLE_HELPER_EXPECTATION: &str = "write example helper";
-const SHARED_PATH_MANIFEST: &str =
-    "[package]\nname = \"cli_shared_path_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
+const SHARED_PATH_MANIFEST: &str = "[package]\nname = \"cli_shared_path_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ntest = false\nbench = false\n";
 const CREATE_TARGET_SOURCE_DIRECTORY_EXPECTATION: &str = "create target source dir";
 const SHARED_FIXTURE_PATH: &str = "fixtures.rs";
 const SHARED_FIXTURE_SOURCE: &str =

@@ -280,7 +280,7 @@ impl BackdropMonitor {
     pub fn new() -> Self { Self::with_capture_worker_launcher(CaptureWorkerLauncher::Threaded) }
     /// Build the monitor and launch its initial capture worker.
     fn with_capture_worker_launcher(capture_worker_launcher: CaptureWorkerLauncher) -> Self {
-        let (capture_worker, status) = match capture_worker_launcher.launch() {
+        let (capture_worker_availability, status) = match capture_worker_launcher.launch() {
             Ok(active_capture_worker) => (
                 CaptureWorkerAvailability::Active(active_capture_worker),
                 BackdropStatus::WaitingForFirstResult,
@@ -301,7 +301,7 @@ impl BackdropMonitor {
                 .spawn(move || position_loop(&asked, &located)),
         );
         Self {
-            capture_worker,
+            capture_worker: capture_worker_availability,
             capture_worker_launcher,
             worker_replacements: 0,
             capture_worker_responsiveness: CaptureWorkerResponsiveness::Answering,
@@ -682,17 +682,18 @@ mod tests {
     use crate::backdrop::desktop::CaptureAttemptTestCase;
     #[test]
     fn a_single_stalled_capture_is_recorded_without_replacing_the_worker() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
 
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Ok(()),
         );
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::AttemptStalled),
         );
-        let stalled_diagnostics: Vec<_> = monitor
+        let stalled_diagnostics: Vec<_> = backdrop_monitor
             .take_completed_capture_attempt_diagnostics()
             .collect();
         assert_eq!(stalled_diagnostics.len(), 1);
@@ -707,16 +708,16 @@ mod tests {
 
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
-                &mut monitor,
+                &mut backdrop_monitor,
                 CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
         );
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::DisplayCaptureFailed),
         );
-        let following_attempt_diagnostics: Vec<_> = monitor
+        let following_attempt_diagnostics: Vec<_> = backdrop_monitor
             .take_completed_capture_attempt_diagnostics()
             .collect();
         assert_eq!(following_attempt_diagnostics.len(), 1);
@@ -725,43 +726,45 @@ mod tests {
 
     #[test]
     fn a_worker_that_answers_between_stalls_is_never_replaced() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
 
         for _ in 0..=MAX_CAPTURE_WORKER_REPLACEMENTS {
             assert_eq!(
-                capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
                 Ok(()),
             );
             assert_ne!(
-                monitor.status(),
+                backdrop_monitor.status(),
                 BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
             );
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
-                    &mut monitor,
+                    &mut backdrop_monitor,
                     CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );
             assert_ne!(
-                monitor.status(),
+                backdrop_monitor.status(),
                 BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
             );
         }
 
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Ok(()),
         );
         assert_ne!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
         );
     }
 
     #[test]
     fn a_replaced_worker_that_answers_restores_the_replacement_allowance() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
 
         // Each `capture_test_driver` pass replaces the worker -- two stalls with nothing returned
         // in between -- and then has the replacement answer. More passes are made
@@ -770,17 +773,18 @@ mod tests {
         for _ in 0..=MAX_CAPTURE_WORKER_REPLACEMENTS {
             for _ in 0..2 {
                 assert_eq!(
-                    capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                    capture_test_driver
+                        .abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
                     Ok(()),
                 );
             }
             assert_ne!(
-                monitor.status(),
+                backdrop_monitor.status(),
                 BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
             );
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
-                    &mut monitor,
+                    &mut backdrop_monitor,
                     CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
@@ -788,38 +792,39 @@ mod tests {
         }
 
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Ok(()),
         );
         assert_ne!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
         );
     }
 
     #[test]
     fn two_consecutive_stalls_replace_the_worker() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
 
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Ok(()),
         );
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::AttemptStalled),
         );
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Ok(()),
         );
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplaced),
         );
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
-                &mut monitor,
+                &mut backdrop_monitor,
                 CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
@@ -828,19 +833,23 @@ mod tests {
 
     #[test]
     fn disconnected_capture_worker_completes_the_outstanding_attempt_as_failed() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
 
         assert_eq!(
-            capture_test_driver.disconnect_capture_worker_during_attempt(&mut monitor),
+            capture_test_driver.disconnect_capture_worker_during_attempt(&mut backdrop_monitor),
             Ok(()),
         );
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::WorkerDisconnected),
         );
-        assert_ne!(monitor.status(), BackdropStatus::WaitingForFirstResult);
+        assert_ne!(
+            backdrop_monitor.status(),
+            BackdropStatus::WaitingForFirstResult
+        );
 
-        let disconnected_diagnostics: Vec<_> = monitor
+        let disconnected_diagnostics: Vec<_> = backdrop_monitor
             .take_completed_capture_attempt_diagnostics()
             .collect();
         assert_eq!(disconnected_diagnostics.len(), 1);
@@ -857,46 +866,50 @@ mod tests {
 
     #[test]
     fn capture_worker_replacements_stop_at_the_process_bound() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
         let stalled_attempts = 2 * (MAX_CAPTURE_WORKER_REPLACEMENTS + 1);
 
         for _ in 0..stalled_attempts {
             assert_eq!(
-                capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
                 Ok(()),
             );
         }
 
         assert_eq!(
-            monitor.status(),
+            backdrop_monitor.status(),
             BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
         );
         assert_eq!(
-            monitor.take_completed_capture_attempt_diagnostics().count(),
+            backdrop_monitor
+                .take_completed_capture_attempt_diagnostics()
+                .count(),
             stalled_attempts,
         );
         assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut backdrop_monitor),
             Err(CaptureTestDriverError::RequestUnavailable),
         );
     }
 
     #[test]
     fn completed_attempt_diagnostics_retain_newest_attempts_within_bound() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let (mut backdrop_monitor, capture_test_driver) =
+            BackdropMonitor::with_capture_test_driver();
         let retention = MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
         let completed_attempts = retention + 1;
         for _ in 0..completed_attempts {
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
-                    &mut monitor,
+                    &mut backdrop_monitor,
                     CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );
         }
 
-        let retained_sequences: Vec<_> = monitor
+        let retained_sequences: Vec<_> = backdrop_monitor
             .take_completed_capture_attempt_diagnostics()
             .map(CompletedCaptureAttemptDiagnostic::sequence)
             .collect();
@@ -920,10 +933,10 @@ mod tests {
 
     #[test]
     fn monitor_without_a_completed_attempt_waits_for_its_first_selection_result() {
-        let monitor = BackdropMonitor::new();
+        let backdrop_monitor = BackdropMonitor::new();
 
         assert_eq!(
-            monitor.latest_capture_attempt_window_selection(),
+            backdrop_monitor.latest_capture_attempt_window_selection(),
             LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
         );
     }

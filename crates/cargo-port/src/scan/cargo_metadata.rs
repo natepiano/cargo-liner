@@ -32,11 +32,9 @@ use super::tree;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
+use crate::config;
 use crate::config::NonRustInclusion;
-use crate::constants::CARGO_METADATA_TIMEOUT;
 use crate::constants::CARGO_TOML;
-use crate::constants::SCAN_DISK_CONCURRENCY;
-use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
@@ -133,9 +131,13 @@ pub(crate) fn spawn_streaming_scan(
             source_measurements,
             client,
             sender: scan_sender.clone(),
-            disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
+            disk_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.disk_concurrency.get(),
+            )),
             metadata_store,
-            metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.metadata_concurrency.get(),
+            )),
         };
 
         let phase1_started = std::time::Instant::now();
@@ -313,6 +315,7 @@ struct MetadataRefresh {
 }
 
 async fn execute_metadata_refresh(workspace_root: &AbsolutePath, refresh: MetadataRefresh) {
+    let metadata_timeout = config::active_config().scan.metadata_timeout();
     let MetadataRefresh {
         dispatch,
         generation,
@@ -323,7 +326,7 @@ async fn execute_metadata_refresh(workspace_root: &AbsolutePath, refresh: Metada
             run_cargo_metadata_for_root(&workspace_root_for_task, generation)
         })
     });
-    let task_result = match tokio::time::timeout(CARGO_METADATA_TIMEOUT, blocking).await {
+    let task_result = match tokio::time::timeout(metadata_timeout, blocking).await {
         Ok(Ok(output)) => output,
         Ok(Err(_)) => {
             tracing::warn!(workspace_root = %workspace_root.display(), "cargo_metadata_task_join_failed");
@@ -337,7 +340,7 @@ async fn execute_metadata_refresh(workspace_root: &AbsolutePath, refresh: Metada
                 fingerprint,
                 result: Err(CargoMetadataError::Other(format!(
                     "cargo metadata timed out after {}s",
-                    CARGO_METADATA_TIMEOUT.as_secs()
+                    metadata_timeout.as_secs()
                 ))),
             }
         },
@@ -537,6 +540,7 @@ mod tests {
     use tokio::runtime::Runtime;
 
     use super::*;
+    use crate::constants::SCAN_METADATA_CONCURRENCY;
     use crate::project::Package;
     use crate::project::RustProject;
     use crate::project::Workspace;

@@ -1,5 +1,78 @@
 # Top-level application configuration.
 
+[scan]
+# Maximum simultaneous scan disk walks. Must be positive.
+#
+# Default value: 6
+#disk_concurrency = 6
+
+# Maximum simultaneous cargo metadata jobs. Must be positive.
+#
+# Default value: 4
+#metadata_concurrency = 4
+
+# Wall-clock timeout for cargo metadata, in seconds. Must be positive.
+#
+# Default value: 10
+#metadata_timeout_secs = 10
+
+# Free space above which storage headroom is ample. Finite size with units.
+#
+# Default value: "100 GiB"
+#storage_ample_free = "100 GiB"
+
+# Free space below which storage headroom is critical. Must be below `storage_ample_free`.
+#
+# Default value: "50 GiB"
+#storage_low_free = "50 GiB"
+
+[watcher]
+# Quiet time before recalculating after filesystem changes, in milliseconds.
+#
+# Default value: 500
+#debounce_ms = 500
+
+# Maximum delay before recalculating during continuous changes, in milliseconds.
+#
+# Default value: 1000
+#max_wait_ms = 1000
+
+# Settling time for new project directories, in milliseconds.
+#
+# Default value: 2000
+#new_project_debounce_ms = 2000
+
+# Interval between watcher timer checks, in milliseconds.
+#
+# Default value: 500
+#poll_interval_ms = 500
+
+# Maximum simultaneous watcher disk walks.
+#
+# Default value: 2
+#disk_concurrency = 2
+
+# Maximum simultaneous watcher Git probes.
+#
+# Default value: 2
+#git_concurrency = 2
+
+[http]
+# Request timeout, in seconds.
+#
+# Default value: 5
+#timeout_secs = 5
+
+# Recovery probe timeout and interval between retries, in seconds.
+#
+# Default value: 1
+#retry_secs = 1
+
+# Delay before confirming an unreachable service, in seconds.
+#
+# Default value: 3
+#unavailable_grace_secs = 3
+
 [cache]
 # Override the app cache root. Empty uses the system cache directory.
 #
@@ -168,6 +241,11 @@
 #
 # Default value: 120
 #idle_before_lint_secs = 120
+
+# A running lint older than this many minutes is considered stale.
+#
+# Default value: 30
+#stale_timeout_mins = 30
 
 [debug]
 # When true, all GitHub HTTP requests short-circuit to a synthetic
