@@ -663,38 +663,18 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash). It runs after Phase 4t (showrunner, 2026-11-09).
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-port project list toggles expand and collapse through the shared `tui_pane` row click toggle, and cargo-port's own copy is gone. The behavior does not change: a click anywhere on an expandable row toggles it.
-
-**Source:** user, 2026-11-08, via the showrunner: row click-to-toggle for expand and collapse is shared through `tui_pane`. Today cargo-port and cargo-handler each have their own copy. The handler unit builds the shared piece and moves cargo-handler onto it first.
-
-**Decision:** showrunner, 2026-11-08: add this phase after Phase 4p. It starts when the handler unit's `tui_pane` piece is on main.
-
-**Constraints:**
-- Change no behavior and no look. A left click on any expandable project row selects it and toggles it; a focus-only click (`ClickMode::FocusOnly`) does not toggle.
-- Use the shared piece as main has it. A change it needs goes to the handler unit through the showrunner, not into a cargo-port copy.
-- Delete cargo-port's own toggle path; leave no duplicate.
-- Keep the Phase 4p memory bounds: background work runs on the shared pool in `scan/background_workers.rs`, never a thread per call, and the 4p bound tests (`metadata_retention_tests`, `disk_burst_tests`, `skip_growth_tests`, `project_retirement_tests`) stay green.
-- Keep the Phase 4o layout: the five-cell Main reserve (`MAIN_COMPARISON_VALUE_RESERVE`, `tui/columns/constants.rs`), the `Projects` header on the name start cell, and one letter before `…` in a cut name.
-
-**Spec:**
-1. **Read the shared API.** Main at 92b1c9556 is merged and has the handler unit's piece: `tui_pane::ExpansionModel::press_row` and `RowPressResult` (`crates/tui_pane/src/expansion.rs`). Read its API.
-2. **Move the project list onto it.** `tui/interaction.rs::handle_click` (≈line 35) sets the cursor and calls `toggle_selected_project_expansion` (≈line 25), which calls `ProjectList::toggle_expand_for_row` (`tui/project_list/list.rs:2303`). Route the click through the shared piece. Keep `ProjectList` as the owner of the expansion state.
-3. **Delete the copy.** Remove the cargo-port click toggle code the shared piece replaces.
-4. **Tests.** Keep `expandable_project_row_click_toggles_children` (`tui/app/mod.rs:5432`) and `row_body_click_selects_clicked_project` green with no assertion change. Add a test that a focus-only click on an expandable row does not toggle it.
+A left click on a project row goes through `tui_pane::ExpansionModel::press_row`. `ProjectList` keeps the expansion state. `ProjectList::press_row(row, NonRustInclusion) -> RowPressResult` calls the shared model and runs `recompute_visibility` only after `RowPressResult::Toggled`. A focus-only click (`ClickMode::FocusOnly`) does not toggle, and a test in `tui/app/mod.rs` pins it. cargo-port has no click toggle of its own, and `tui/project_list/selection.rs` does not exist.
 
 **Files:**
-- `crates/cargo-port/src/tui/interaction.rs` and `crates/cargo-port/src/tui/input/dispatch.rs` — Spec 2
-- `crates/cargo-port/src/tui/project_list/` — Specs 2 and 3
-- `crates/cargo-port/src/tui/app/mod.rs` — Spec 4 tests
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/tui/project_list/list.rs` — `ProjectList::press_row`
+- `crates/cargo-port/src/tui/interaction.rs` — the click handler that calls it
+- `crates/cargo-port/src/tui/app/mod.rs` — the click tests
 
-**Workers:** 1 writer: Specs 1-4 and the changelog.
+**Gotchas:** `ProjectList::press_row` takes `expanded` out with `std::mem::take` for the call and puts it back, because the shared model borrows the model and the row source at once.
 
-**State:** none. The expansion state stays in `ProjectList`.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The click tests pass with no assertion change. No cargo-port click toggle code is left beside the shared piece. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** a cargo-port copy of the shared toggle; a change the shared piece needs goes to its owner.
 
 ### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: done
 
