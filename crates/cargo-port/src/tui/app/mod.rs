@@ -19,9 +19,6 @@
 //!   and rebuilds [`crate::tui::project_list_state::ProjectList::recompute_visibility`].
 //!   `App::mutate_tree` constructs the guard via destructuring so the two subsystem borrows are
 //!   disjoint.
-//! - **Self-only flavor** — see `SelectionMutation` in the project-list module. Visibility-changing
-//!   mutations on `ProjectList` (`toggle_expand`, `apply_finder`) are only callable through the
-//!   guard; `Drop` recomputes `cached_visible_rows`.
 //!
 //! ## Cross-subsystem orchestrator on App
 //! Operations that touch multiple subsystems and have no single
@@ -5509,6 +5506,22 @@ mod tests {
             click(&mut app, x, y);
 
             assert_eq!(app.visible_rows().len(), 2);
+
+            for expected_rows in [2, 1] {
+                app.set_focus(FocusedPane::App(AppPaneId::Package));
+                render_ui(&mut app);
+                let (x, y) = row_body_point(&app, 0);
+                assert!(interaction::handle_click(
+                    &mut app,
+                    Position::new(x, y),
+                    interaction::ClickMode::FocusOnly,
+                ));
+
+                assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
+                assert_eq!(app.project_list.cursor(), 0);
+                assert_eq!(app.visible_rows().len(), expected_rows);
+                click(&mut app, x, y);
+            }
         }
 
         // The "overlay surface beats content surface" priority is now

@@ -22,16 +22,6 @@ pub(super) enum ClickMode {
     Dispatch,
 }
 
-fn toggle_selected_project_expansion(app: &mut App) -> bool {
-    let selected = app.project_list.cursor();
-    let Some(row) = app.visible_rows().get(selected).copied() else {
-        return false;
-    };
-    let include_non_rust = app.config.include_non_rust().includes_non_rust();
-    app.project_list
-        .toggle_expand_for_row(row, include_non_rust)
-}
-
 pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> bool {
     let Some(hover_target) = hit_test_at(app, pos) else {
         return false;
@@ -41,8 +31,11 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
             app.set_focus_to_pane(pane);
             if pane == PaneId::ProjectList {
                 app.project_list.set_cursor(row);
-                if matches!(mode, ClickMode::Dispatch) {
-                    toggle_selected_project_expansion(app);
+                if matches!(mode, ClickMode::Dispatch)
+                    && let Some(row) = app.visible_rows().get(row).copied()
+                {
+                    let include_non_rust = app.config.include_non_rust();
+                    app.project_list.press_row(row, include_non_rust);
                 }
                 app.record_selection_choice();
             } else {

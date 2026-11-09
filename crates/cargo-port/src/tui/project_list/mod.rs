@@ -2,7 +2,6 @@ mod list;
 
 mod expand_state;
 mod grouping;
-mod selection;
 mod visible_rows;
 
 pub(super) use expand_state::ExpandTarget;

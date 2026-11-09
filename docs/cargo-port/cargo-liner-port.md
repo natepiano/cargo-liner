@@ -659,7 +659,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a size cap on a structure that should not grow; it hides the growth.
 
-### Phase 4q — The project list uses the shared row click toggle  · status: todo
+### Phase 4q — The project list uses the shared row click toggle  · status: done
 
 **Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash). It runs after Phase 4t (showrunner, 2026-11-09).
 
