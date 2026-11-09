@@ -661,7 +661,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4q — The project list uses the shared row click toggle  · status: todo
 
-**Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash).
+**Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash). It runs after Phase 4t (showrunner, 2026-11-09).
 
 #### Work Order
 
@@ -785,7 +785,41 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second. The fixture tests fail without the repair. `cargo mend --fix` on a copy of the Phase 31 tree reports no rollback. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no new test takes a second. The older `reexport_chain_collapses_in_one_run` moves to Phase 4t (showrunner, 2026-11-09). The fixture tests fail without the repair. `cargo mend --fix` on a copy of the Phase 31 tree reports no rollback. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4t — mend --fix collapses a re-export chain with fewer checks  · status: todo
+
+**Depends on:** Phase 4r (both edit `crates/cargo-mend/`). It runs next after 4r, before 4q and 4s (showrunner, 2026-11-09: CPU work ranks first).
+
+#### Work Order
+
+**Goal:** `reexport_chain_collapses_in_one_run` takes under 1 s in the full `verify.sh test cargo-mend` suite, because `cargo mend --fix` runs fewer `cargo check` commands for a re-export chain. Every mend user saves the same CPU.
+
+**Source:** Phase 4r review, 2026-11-09. The test (`crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs:814`) takes 0.678 s alone and 2.7-3.1 s in the full suite (runs `20261109T084559-2901945-e55e`, `20261109T084630-2944665-b824`). Phase 4r cut four of five `cargo metadata` runs (`ReexportMountInventory::collect`, `subtree_reexport/scan.rs`). The rest is five real `cargo check` runs, one per chain link: 0.2015, 0.1426, 0.1259, 0.1205 and 0.1265 s under `strace`. `runner/apply.rs:73` calls `build_selection(validation_output_mode)` after each edit, and `main.rs:217` starts each convergence pass.
+
+**Decision:** showrunner, 2026-11-09: land 4r without this work; run this phase next.
+
+**Constraints:**
+- Fix the cost in cargo-mend. Keep every fix mend applies today, and the final sources of the chain.
+- A fix mend cannot validate stays declined or rolled back, as today.
+- No test takes a second in the full suite.
+
+**Spec:**
+1. **Measure.** Count the `cargo check` and `cargo metadata` runs of the chain test, with the time of each. Quote the source lines that start each run.
+2. **Validate a chain with fewer checks.** Plan the chain links whose edits do not depend on a check result in one pass, and validate them with one check. A failed batch check falls back to the current one-link-at-a-time path, so no fix is lost.
+3. **Tests.** Lower the check budget in `fix_chain_with_check_budget` to the new count. Add a row where one link fails validation, so the fallback keeps the other fixes.
+4. **Changelog.** Add the entry to `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` and `crates/cargo-mend/src/main.rs` — fix planning and validation
+- `crates/cargo-mend/tests/diagnostics/` — the chain tests
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; `reexport_chain_collapses_in_one_run` under 1 s in the full suite, and no other test at a second or more. The fallback row fails without the fallback. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
