@@ -634,7 +634,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a title rule that always keeps a blank cell before the corner: a whole label stays whole (showrunner, 2026-11-07).
 
-### Phase 4p — cargo-port memory stays bounded over days  · status: todo
+### Phase 4p — cargo-port memory stays bounded over days  · status: done
 
 **Depends on:** none. It runs before Phase 4o (user, 2026-11-08: top priority).
 

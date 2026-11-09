@@ -31,7 +31,7 @@ impl App {
             .projects
             .replace_roots_from(projects, ReplacementExpansion::RestoreSavedTargets);
         self.restore_expanded(&expanded);
-        self.prune_inactive_project_state();
+        self.prune_inactive_project_state(&[]);
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
@@ -79,6 +79,7 @@ impl App {
         self.scan.state.phase = ScanPhase::Running;
         self.scan.state.started_at = Instant::now();
         self.scan.state.run_count += 1;
+        self.retire_startup_toast();
         self.startup.reset();
         tracing::trace!(
             target: PERF_LOG_TARGET,
@@ -107,6 +108,7 @@ impl App {
         let scan_start = self
             .startup_services
             .spawn_streaming_scan(StreamingScanStartup {
+                source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
                 scan_dirs,
                 inline_dirs: &self.config.current().tui.inline_dirs,
                 exclude_dirs: self.config.exclude_dirs(),

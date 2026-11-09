@@ -244,11 +244,20 @@ impl App {
         self.initialize_startup_phase_tracker_with_plan(&startup_plan);
     }
     pub(super) fn reset_startup_phase_state(&mut self, startup_plan: &StartupPlan) {
+        self.retire_startup_toast();
         self.startup.reset();
         self.startup.scan_complete_at = Some(Instant::now());
         self.startup.toast = None;
         if let Some(planning) = self.startup.take_planning() {
             planning.install(&mut self.startup, startup_plan);
+        }
+    }
+    pub(in crate::tui::app::async_tasks) fn retire_startup_toast(&mut self) {
+        if let Some(toast) = self.startup.toast.take() {
+            self.framework
+                .toasts
+                .start_colored_countdown(toast.id(), std::time::Duration::ZERO);
+            self.prune_toasts();
         }
     }
     pub(super) fn start_startup_toast(&mut self) {

@@ -70,7 +70,7 @@ impl App {
             ProjectList::new(projects),
             ReplacementExpansion::RestoreSavedTargets,
         );
-        self.prune_inactive_project_state();
+        self.prune_inactive_project_state(disk_entries);
         let lint_registered = self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();

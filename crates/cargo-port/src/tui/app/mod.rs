@@ -71,6 +71,8 @@ mod tree_mutation;
 #[cfg(test)]
 mod loading_layout_tests;
 #[cfg(test)]
+mod metadata_retention_tests;
+#[cfg(test)]
 mod quota_transition_tests;
 
 use std::collections::HashMap;
@@ -624,13 +626,20 @@ impl App {
         )
     }
 
-    pub(super) fn prune_inactive_project_state(&mut self) {
+    pub(super) fn prune_inactive_project_state(&mut self, disk_entries: &[(String, AbsolutePath)]) {
+        if let Ok(mut store) = self.scan.metadata_store().lock() {
+            store.retain_checkouts(|root| self.project_list.is_rust_at_path(root));
+        }
         self.scan
             .manifest_metadata
             .retain_rust_projects(&self.project_list);
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
         self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
+        });
+        let discovered: HashSet<_> = disk_entries.iter().map(|(_, path)| path).collect();
+        self.scan.source_measurements.retain_projects(|root| {
+            discovered.contains(root) || matches!(self.project_list.at_path(root), Found(_))
         });
         self.scan
             .pending_git_first_commit_mut()

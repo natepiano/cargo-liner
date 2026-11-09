@@ -7,7 +7,6 @@ use crate::project::WorkspaceMetadata;
 use crate::scan;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::App;
-use crate::tui::app::target_index::TargetDirMember;
 impl App {
     /// Merge a `cargo metadata` arrival back into the process-wide store and
     /// advance the startup metadata phase. The startup path drives the
@@ -21,6 +20,12 @@ impl App {
         fingerprint: &ManifestFingerprint,
         result: Result<WorkspaceMetadata, CargoMetadataError>,
     ) {
+        if !self.project_list.is_rust_at_path(&workspace_root) {
+            if let Ok(mut store) = self.scan.metadata_store().lock() {
+                store.remove_checkout(&workspace_root);
+            }
+            return;
+        }
         let Some(is_current) = self
             .scan
             .metadata_store()
@@ -177,16 +182,14 @@ impl App {
                 target_directory.clone(),
             );
         }
-        // `scan.target_dir_index.upsert` maps each `member_roots` entry through `TargetDirMember`
-        // to the shared `target_directory` for `append_sibling_lines` and
-        // `TargetDirIndex::siblings`. `Scan::resolve_target_dir` resolves that directory for a
-        // clean on any member from the metadata store. Members missing from new metadata linger in
-        // the index until a full scan restart (existing accepted staleness).
+        // Accepted metadata replaces this checkout's target-directory membership.
+        self.scan.target_dir_index.replace_checkout(
+            workspace_root,
+            &member_roots,
+            &target_directory,
+        );
         for project_root in member_roots {
             self.scan.manifest_metadata.record_success(&project_root);
-            self.scan
-                .target_dir_index
-                .upsert(TargetDirMember { project_root }, target_directory.clone());
         }
         tracing::trace!(
             target: PERF_LOG_TARGET,

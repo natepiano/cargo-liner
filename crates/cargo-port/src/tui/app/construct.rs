@@ -202,14 +202,16 @@ impl AppBuilder<Channeled> {
             .spawn_lint_runtime(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
         let watcher = startup_services.spawn_watcher(WatcherStartup {
-            watch_roots:    &watch_roots,
-            background_tx:  inputs.background_tx.clone(),
-            ci_run_count:   inputs.cargo_port_config.tui.ci_run_count,
-            non_rust:       inputs.cargo_port_config.tui.include_non_rust,
-            exclude_dirs:   ExcludeDirs::from(inputs.cargo_port_config.tui.exclude_dirs.as_slice()),
-            client:         inputs.startup_environment.http_client.clone(),
-            lint_runtime:   lint_spawn.handle.clone(),
-            metadata_store: Arc::clone(&inputs.startup_environment.metadata_store),
+            watch_roots:         &watch_roots,
+            background_tx:       inputs.background_tx.clone(),
+            source_measurements: Arc::clone(&inputs.startup_environment.source_measurements),
+            non_rust:            inputs.cargo_port_config.tui.include_non_rust,
+            exclude_dirs:        ExcludeDirs::from(
+                inputs.cargo_port_config.tui.exclude_dirs.as_slice(),
+            ),
+            client:              inputs.startup_environment.http_client.clone(),
+            lint_runtime:        lint_spawn.handle.clone(),
+            metadata_store:      Arc::clone(&inputs.startup_environment.metadata_store),
         });
         let built = scan::build_tree(
             &inputs.raw_projects,
@@ -240,6 +242,7 @@ impl AppBuilder<Started> {
             http_client,
             scan_started_at,
             metadata_store,
+            source_measurements,
             startup_services,
         } = inputs.startup_environment;
         let panes = Panes::new(&inputs.cargo_port_config.cpu, startup_services.clone());
@@ -263,7 +266,8 @@ impl AppBuilder<Started> {
             keymap::ResolvedKeymap::defaults(),
         );
         let themes = ThemeRuntime::new(started.themes_dir_resolution.into_external_path());
-        let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
+        let mut scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
+        scan.source_measurements = source_measurements;
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
@@ -353,7 +357,11 @@ impl App {
         }
         self.force_settings_if_unconfigured();
         self.restore_persisted_lint_pause();
-        self.prune_inactive_project_state();
+        // An empty startup tree has not received ScanResult yet. Its workers
+        // can already own measurements and dispatch stamps for incoming roots.
+        if !self.project_list.is_empty() {
+            self.prune_inactive_project_state(&[]);
+        }
         self.register_existing_projects();
         let lint_registered = self.register_lint_for_root_items();
         tracing::trace!(
