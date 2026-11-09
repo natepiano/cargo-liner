@@ -885,7 +885,7 @@ fn git_pages_keep_table_headers_with_the_first_worktree() -> anyhow::Result<()> 
             test_support::find_text_cell(
                 &buffer,
                 ratatui::layout::Rect::new(area.x, y + 1, area.width, 1),
-                "ma…",
+                "m…",
             )
             .context("first worktree below the header")?;
         }
@@ -1057,13 +1057,13 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
     app.panes.git.viewport.home();
     let first = draw_short_ui(&mut app)?;
     let area = app.panes.tiled_layout.area(PaneId::Git);
-    assert_eq!(area.width, 16, "the full UI keeps the narrow Git pane");
+    assert_eq!(area.width, 15, "the full UI keeps the after-data Git width");
     assert_pane_page(&first, area, "1 of 2 ▼");
     let first_worktree =
         panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
     app.panes.git.viewport.set_pos(first_worktree - 1);
     let second = draw_short_ui(&mut app)?;
-    let title = test_support::find_text_cell(&second, area, "Worktrees (3)")
+    let title = test_support::find_text_cell(&second, area, "Worktrees")
         .with_context(|| format!("worktree divider: {:?}", test_support::rows(&second)))?;
     assert_eq!(second[(area.x, title.1)].symbol(), "├");
     assert_eq!(second[(area.right() - 1, title.1)].symbol(), "┤");

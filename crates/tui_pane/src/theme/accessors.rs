@@ -12,6 +12,7 @@
 use ratatui::style::Color;
 use ratatui::style::Style;
 
+use super::DIM_VALUE_ROLE;
 use super::StyleSpec;
 use super::theme;
 
@@ -56,6 +57,10 @@ pub fn inline_error_color() -> Color { theme().semantic.inline_error.color }
 /// Unfocused pane borders.
 #[must_use]
 pub fn inactive_border_color() -> Color { theme().pane_chrome.inactive_border.color }
+
+/// Quiet value text uses its own role and falls back to secondary text.
+#[must_use]
+pub fn dim_value_color() -> Color { role_color(DIM_VALUE_ROLE, theme().text.secondary) }
 
 /// Unfocused pane titles for populated panes.
 #[must_use]

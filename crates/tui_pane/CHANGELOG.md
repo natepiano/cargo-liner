@@ -9,6 +9,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.
+
 - `TileGrid::cell_index` resolves current content identity without painted coordinates.
 
 - `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.

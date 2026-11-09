@@ -83,7 +83,8 @@ pub(super) const GIT_IGNORED: &str = "cargo-port.git.ignored";
 pub(super) const GIT_MODIFIED: &str = "cargo-port.git.modified";
 pub(super) const GIT_UNTRACKED: &str = "cargo-port.git.untracked";
 pub(super) const LANGUAGE_SUBTOTAL: &str = "cargo-port.language.subtotal";
-pub(super) const ROLE_KEYS: [&str; 9] = [
+pub(super) const ROLE_KEYS: [&str; 10] = [
+    tui_pane::DIM_VALUE_ROLE,
     COLUMN_HEADER,
     CPU_BAR_LABEL,
     DISCOVERY_SHIMMER,

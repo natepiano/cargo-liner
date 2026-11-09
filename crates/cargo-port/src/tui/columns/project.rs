@@ -20,6 +20,7 @@ use super::constants::COL_LINT;
 use super::constants::COL_MAIN;
 use super::constants::COL_NAME;
 use super::constants::COL_SYNC;
+use super::constants::MAIN_COMPARISON_VALUE_RESERVE;
 use super::constants::NUM_COLS;
 use crate::ci::CiStatus;
 use crate::config::LintIndicator;
@@ -165,7 +166,9 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
         // The Main column shows the local main comparison.
         ColumnDef {
             header_levels: &["Main"],
-            width:         ColumnWidth::Fit { min: 0 },
+            width:         ColumnWidth::Fit {
+                min: MAIN_COMPARISON_VALUE_RESERVE,
+            },
             align:         Align::Right,
             gap:           1,
             header_mode:   HeaderMode::Standard,
@@ -1118,7 +1121,7 @@ mod tests {
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Sync");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Main");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "     Disk");
         assert_eq!(line.width(), widths.total_width());
     }
@@ -1137,7 +1140,7 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 5);
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Sync");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Main");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
         assert_eq!(line.width(), widths.total_width());
     }
 
@@ -1193,7 +1196,7 @@ mod tests {
         let line = header_line(&widths, "Projects");
 
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), "   Sync");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Main");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
     }
 
     #[test]
@@ -1291,7 +1294,7 @@ mod tests {
             line.spans[COL_NAME].content.as_ref(),
             " ".repeat(widths.get(COL_NAME))
         );
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "    Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "     Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
     }
@@ -1370,7 +1373,7 @@ mod tests {
         assert_eq!(defs[COL_CI].header_max(), "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "    Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "     Σ");
     }
 
     #[test]

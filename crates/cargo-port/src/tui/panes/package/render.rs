@@ -22,7 +22,6 @@ use tui_pane::ViewportOverflow;
 use tui_pane::VisualRowSpan;
 use tui_pane::accent_color;
 use tui_pane::error_color;
-use tui_pane::inactive_border_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::secondary_text_color;
@@ -743,7 +742,10 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
         )));
         render.label = "";
     }
-    if render.field == DetailField::Ci && render.area_width <= support::NARROW_FIELD_INNER_WIDTH {
+    if render.field == DetailField::Ci
+        && render.area_width <= support::NARROW_FIELD_INNER_WIDTH
+        && package_field_prefix(&render).width() + render.value.width() + 1 > render.area_width
+    {
         lines.push(Line::from(Span::styled(
             format!(" {}", render.field.label()),
             render.label_style,
@@ -855,9 +857,9 @@ fn package_field_label_width(render: &PackageFieldRender) -> usize {
     let label_width = render.label_width.min(render.area_width.saturating_sub(3));
     match render.field {
         DetailField::Path => label_width.min(render.area_width.saturating_sub(PATH_VALUE_RESERVE)),
-        DetailField::Ci if !render.continuation.is_empty() => {
-            label_width.min(render.area_width.saturating_sub(render.value.width() + 3))
-        },
+        DetailField::Ci => label_width
+            .min(render.area_width.saturating_sub(render.value.width() + 3))
+            .max(render.label.trim().width()),
         _ => label_width,
     }
 }
@@ -1688,7 +1690,9 @@ fn render_stat_section(
 /// from the typed [`LintDisplay`].
 fn lint_display_style(display: &LintDisplay) -> Style {
     match display {
-        LintDisplay::NotRust | LintDisplay::NoRuns => Style::default().fg(inactive_border_color()),
+        LintDisplay::NotRust | LintDisplay::NoRuns => {
+            Style::default().fg(tui_pane::dim_value_color())
+        },
         LintDisplay::Runs { status, .. } => match status {
             LintStatus::Passed(_) => Style::default().fg(success_color()),
             LintStatus::Failed(_) => Style::default().fg(error_color()),
@@ -1738,7 +1742,7 @@ fn ci_display_style(display: &CiDisplay) -> Style {
     match display {
         CiDisplay::Unreadable => Style::default().fg(tui_pane::error_color()),
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
-            Style::default().fg(inactive_border_color())
+            Style::default().fg(tui_pane::dim_value_color())
         },
         CiDisplay::Runs { ci_status, .. } => render::ci_status_style(*ci_status),
     }

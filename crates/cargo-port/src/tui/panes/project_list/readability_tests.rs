@@ -5,6 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 use tui_pane::ColorMode;
 
+use crate::config::LintIndicator;
 use crate::project::AheadBehind;
 use crate::project::CheckoutInfo;
 use crate::project::CiPagination;
@@ -17,6 +18,10 @@ use crate::project::HeadState;
 use crate::project::LocalGitState;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
+use crate::project::PushState;
+use crate::project::RemoteInfo;
+use crate::project::RemoteKind;
+use crate::project::RemoteList;
 use crate::project::RepoInfo;
 use crate::project::RepositoryProbe;
 use crate::project::ResolvedBranch;
@@ -25,12 +30,159 @@ use crate::project::RustProject;
 use crate::project::TrackedRef;
 use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
+use crate::scan::ProjectStorage;
+use crate::tui::app::App;
+use crate::tui::columns::COL_MAIN;
+use crate::tui::columns::COL_SYNC;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
 use crate::tui::test_support::WIDTH;
+
+fn sync_width_app() -> anyhow::Result<(App, RemoteInfo)> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("project")
+        .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+        status:              GitStatus::Clean,
+        head:                HeadState::Branch("fleet".to_string()),
+        last_commit:         CommitDate::NoCommits,
+        ahead_behind_local:  Comparison::NotCompared,
+        primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
+        bisect:              None,
+    }));
+    let remote = RemoteInfo {
+        name:         "origin".to_string(),
+        url:          Some("https://github.com/acme/proof".to_string()),
+        owner:        Some("acme".to_string()),
+        repo:         Some("proof".to_string()),
+        tracked_ref:  TrackedRef::Named("origin/fleet".to_string()),
+        ahead_behind: Comparison::NotCompared,
+        kind:         RemoteKind::Clone,
+        push:         PushState::Enabled {
+            push_url: "https://github.com/acme/proof".to_string(),
+        },
+    };
+    set_sync_comparison(&mut app, &remote, Comparison::NotCompared)?;
+    app.panes.targets.set_content(test_support::target_data());
+    Ok((app, remote))
+}
+
+fn set_sync_comparison(
+    app: &mut App,
+    remote: &RemoteInfo,
+    comparison: Comparison,
+) -> anyhow::Result<()> {
+    let mut remote = remote.clone();
+    remote.ahead_behind = comparison;
+    app.project_list
+        .ensure_git_repo_for(Path::new(PROJECT_PATH))
+        .context("repo")?
+        .repo_info = RepositoryProbe::Repository(RepoInfo {
+        remotes: RemoteList::Listed(vec![remote]),
+        ..RepoInfo::default()
+    });
+    app.scan.bump_generation();
+    Ok(())
+}
+
+fn set_main_comparison(app: &mut App, comparison: Comparison) -> anyhow::Result<()> {
+    let path = Path::new(PROJECT_PATH);
+    let mut checkout = app
+        .project_list
+        .git_info_for(path)
+        .context("checkout")?
+        .clone();
+    checkout.ahead_behind_local = comparison;
+    app.project_list
+        .at_path_mut(path)
+        .expect_found("project")
+        .local_git_state = LocalGitState::Detected(Box::new(checkout));
+    app.scan.bump_generation();
+    Ok(())
+}
+
+#[test]
+fn projects_reserve_main_width_before_comparisons_arrive() -> anyhow::Result<()> {
+    for width in [80, 95, 160] {
+        let (mut app, remote) = sync_width_app()?;
+        set_sync_comparison(
+            &mut app,
+            &remote,
+            Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
+        )?;
+        if width == 80 {
+            app.config.current_mut().lint.enabled = LintIndicator::Disabled;
+            let paths = app.project_list.visible_project_storage_paths();
+            app.project_list
+                .set_project_storage(&paths, ProjectStorage::Available(306 << 30));
+        }
+        test_support::draw_ui(&mut app, width)?;
+        let before = [PaneId::ProjectList, PaneId::Git, PaneId::Targets]
+            .map(|pane| app.panes.tiled_layout.area(pane));
+        let reserved = app.project_list.cached_fit_widths.get(COL_MAIN);
+        let sync_reserved = app.project_list.cached_fit_widths.get(COL_SYNC);
+        if width == 80 {
+            assert_eq!(
+                before[0].width - 2,
+                45,
+                "live Projects inner width before data"
+            );
+        }
+        for (ahead, behind) in [(1, 1), (12, 3), (12, 3), (1, 17)] {
+            set_main_comparison(&mut app, Comparison::Counted(AheadBehind { ahead, behind }))?;
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            let after = [PaneId::ProjectList, PaneId::Git, PaneId::Targets]
+                .map(|pane| app.panes.tiled_layout.area(pane));
+            assert_eq!(after, before, "Main arrival at {width}");
+            assert_eq!(app.project_list.cached_fit_widths.get(COL_MAIN), reserved);
+            if width == 80 && (ahead, behind) == (1, 17) {
+                assert_eq!(
+                    after[0].width - 2,
+                    45,
+                    "live Projects inner width after data"
+                );
+                let live_values_share_row = (after[0].y..after[0].bottom()).any(|y| {
+                    let row: String = (after[0].x..after[0].right())
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    row.contains("☑️") && row.contains("↑1↓17")
+                });
+                assert!(
+                    live_values_share_row,
+                    "live Sync and Main values share one Projects row"
+                );
+            }
+        }
+        set_sync_comparison(
+            &mut app,
+            &remote,
+            Comparison::Counted(AheadBehind {
+                ahead:  1234,
+                behind: 5678,
+            }),
+        )?;
+        test_support::draw_ui(&mut app, width)?;
+        assert!(app.project_list.cached_fit_widths.get(COL_SYNC) > sync_reserved);
+        let grown = app.panes.tiled_layout.area(PaneId::ProjectList);
+        test_support::draw_ui(&mut app, width)?;
+        assert_eq!(app.panes.tiled_layout.area(PaneId::ProjectList), grown);
+        if width == 160 {
+            assert!(
+                app.panes.tiled_layout.area(PaneId::Targets).width
+                    >= app.panes.targets.preferred_width()
+            );
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Result<()> {

@@ -719,7 +719,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a live shot of `CI runs — on branch rows`: Cut values and dim text read clean in narrow panes removes that title.
 
-### Phase 4o — Cut values and dim text read clean in narrow panes  · status: todo
+### Phase 4o — Cut values and dim text read clean in narrow panes  · status: done
 
 **Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`) and Phase 4n (both edit `crates/tui_pane/CHANGELOG.md`, and Spec 5 records Phase 4n's Targets change), and Phase 4p (it runs first, and both edit `crates/cargo-port/src/` and `crates/cargo-port/CHANGELOG.md`)
 

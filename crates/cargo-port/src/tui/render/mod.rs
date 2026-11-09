@@ -756,10 +756,16 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     if text.width() <= max_width {
         return text.to_string();
     }
+    if ellipsis.is_empty() {
+        return truncate_to_width(text, max_width).to_string();
+    }
     if max_width <= ellipsis.width() {
         return truncate_to_width(ellipsis, max_width).to_string();
     }
-    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()));
+    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()))
+        .trim_end()
+        .trim_end_matches(" ·")
+        .trim_end();
     let mut shortened = String::with_capacity(prefix.len() + ellipsis.len());
     shortened.push_str(prefix);
     shortened.push_str(ellipsis);

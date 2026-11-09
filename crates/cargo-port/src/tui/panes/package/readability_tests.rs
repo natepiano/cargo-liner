@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use ratatui::layout::Position;
+use ratatui::style::Color;
 use tui_pane::ColorMode;
 use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
@@ -32,6 +33,121 @@ use crate::tui::state::LintDisplay;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
+use crate::tui::theme_roles;
+
+#[test]
+fn worktree_group_ci_keeps_its_empty_value_on_one_row() -> anyhow::Result<()> {
+    for width in [80, 95] {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = mode;
+            app.panes.package.set_content(PackageData {
+                title: "Worktree Group".to_string(),
+                name: "proof_crate".to_string(),
+                description: DescriptionState::KnownEmpty,
+                ci_display: CiDisplay::NoWorkflow,
+                worktree_group_summary: Some(WorktreeGroupSummary {
+                    worktrees: 2,
+                    deleted:   0,
+                }),
+                ..PackageData::default()
+            });
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            let area = app.panes.tiled_layout.area(PaneId::Package);
+            let label = test_support::find_text_cell(&buffer, area, "CI").context("CI label")?;
+            let value = test_support::find_text_cell(&buffer, area, "No CI")
+                .context("whole No CI value")?;
+            assert_eq!(
+                label.1,
+                value.1,
+                "{width}: {:?}",
+                test_support::rows(&buffer)
+            );
+            assert!(value.0 > label.0 + 2);
+            assert_eq!(buffer[(area.right() - 2, value.1)].symbol(), " ");
+        }
+    }
+    Ok(())
+}
+
+fn contrast_channels(color: Color) -> anyhow::Result<[f64; 3]> {
+    Ok(match color {
+        Color::Rgb(r, g, b) => [f64::from(r), f64::from(g), f64::from(b)],
+        Color::DarkGray => [127.0; 3],
+        Color::Gray => [229.0; 3],
+        Color::White => [255.0; 3],
+        Color::Black => [0.0; 3],
+        color => anyhow::bail!("unexpected dim value colour: {color:?}"),
+    })
+}
+
+fn dim_value_contrast(foreground: Color, background: [f64; 3]) -> anyhow::Result<f64> {
+    let foreground = contrast_channels(foreground)?;
+    let luminance = |channels: [f64; 3]| {
+        let [r, g, b] = channels.map(|channel| {
+            let value = channel / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126f64.mul_add(r, 0.7152f64.mul_add(g, 0.0722 * b))
+    };
+    let ink = luminance(foreground);
+    let ground = luminance(background);
+    Ok((ink.max(ground) + 0.05) / (ink.min(ground) + 0.05))
+}
+
+#[test]
+fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    for variant in crate::themes::builtins() {
+        let mut theme = variant.theme;
+        let border = theme.pane_chrome.inactive_border;
+        theme_roles::apply_role_defaults_to_theme(
+            &mut theme,
+            Some(&variant.id),
+            variant.appearance,
+        );
+        assert_eq!(theme.pane_chrome.inactive_border, border);
+        let _theme = test_support::ThemeOverride::install(theme);
+        tui_pane::set_focused_pane_tint(true);
+        tui_pane::set_transparent_background(false);
+        for focused in [false, true] {
+            app.set_focus_to_pane(if focused {
+                PaneId::Package
+            } else {
+                PaneId::Git
+            });
+            let background = contrast_channels(tui_pane::pane_background(focused))?;
+            for (ci, text) in [
+                (CiDisplay::NoWorkflow, "No CI"),
+                (CiDisplay::NoRuns, "No CI runs"),
+                (CiDisplay::UnpublishedBranch, "unpublished branch"),
+            ] {
+                app.panes.package.set_content(PackageData {
+                    description: DescriptionState::KnownEmpty,
+                    lint_display: LintDisplay::NoRuns,
+                    ci_display: ci,
+                    ..PackageData::default()
+                });
+                let buffer = test_support::draw_pane(&mut app, PaneId::Package, 70)?;
+                for value in [text, "—"] {
+                    let position = test_support::position(&buffer, value)?;
+                    assert_eq!(buffer[position].bg, tui_pane::pane_background(focused));
+                    let ratio = dim_value_contrast(buffer[position].fg, background)?;
+                    let normal =
+                        dim_value_contrast(tui_pane::theme().text.default.color, background)?;
+                    assert!(ratio < normal, "dim values stay below normal text");
+                    assert!(ratio >= 4.5, "{} {value}: {ratio}:1", variant.id.as_str());
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn cut_workspace_description_pane_title_keeps_a_blank_cell_before_the_corner() -> anyhow::Result<()>

@@ -8,7 +8,6 @@ use crate::tui::state::CiApplicability;
 
 #[derive(Clone)]
 pub enum CiEmptyState {
-    BranchScopedOnly,
     Fetching,
     Loading,
     NoRuns,
@@ -23,7 +22,6 @@ impl CiEmptyState {
     pub fn title(&self) -> String {
         match self {
             Self::Unreadable => format!(" CI runs — {GIT_UNREADABLE_LABEL} "),
-            Self::BranchScopedOnly => " CI runs — on branch rows ".to_string(),
             Self::Fetching | Self::Loading => " CI runs — loading… ".to_string(),
             Self::NoRuns => " No CI runs ".to_string(),
             Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
@@ -96,9 +94,7 @@ pub fn build_ci_data(app: &App) -> CiData {
             CiApplicability::Applies | CiApplicability::Unpublished,
         ) => runs,
     };
-    let empty_state = if selected_path.is_some() && !has_ci_owner {
-        CiEmptyState::BranchScopedOnly
-    } else if git_info.is_none() {
+    let empty_state = if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if matches!(remote_access, CiRemoteAccess::Unreadable)
         || applicability == CiApplicability::UnreadableEvidence

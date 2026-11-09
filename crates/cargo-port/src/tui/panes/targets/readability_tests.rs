@@ -122,7 +122,10 @@ fn binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()
     app.panes.targets.set_content(data.clone());
     let buffer = test_support::draw_ui(&mut app, 80)?;
     let area = app.panes.tiled_layout.area(PaneId::Targets);
-    for (whole, shortened) in [("cargo-berth", "cargo-b…"), ("cargo-handler", "cargo-h…")] {
+    for (whole, shortened) in [
+        ("cargo-berth", "cargo-b…"),
+        ("cargo-handler", "cargo-handl…"),
+    ] {
         assert!(
             test_support::find_text_cell(&buffer, area, whole).is_some()
                 || test_support::find_text_cell(&buffer, area, shortened).is_some(),

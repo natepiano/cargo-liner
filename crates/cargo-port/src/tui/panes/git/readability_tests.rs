@@ -3,6 +3,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use tui_pane::ColorMode;
 use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
@@ -23,6 +24,7 @@ use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::GithubStars;
 use crate::tui::panes::pane_data::PullRequestSection;
 use crate::tui::panes::pane_data::PullRequestSectionState;
 use crate::tui::panes::pane_data::QuotaObservation;
@@ -258,42 +260,77 @@ fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<
 
 #[test]
 fn narrow_git_fields_keep_labels_values_and_dates() -> anyhow::Result<()> {
-    let mut app = test_support::project_app();
-    app.framework.color_mode = ColorMode::Colored;
-    app.panes.git.set_content(GitData {
-        description: DescriptionState::KnownEmpty,
-        checkout: GitCheckout::Branch {
-            name:     "master".to_string(),
-            relation: HeadRelation::Default,
-        },
-        status: Some(GitStatus::Clean),
-        inception: FirstCommit::Probed(CommitDate::At("2026-11-06 08:21".to_string())),
-        last_commit: GitProbe::Probed(CommitDate::At("2026-11-06 15:13".to_string())),
-        rate_limit_graphql: QuotaObservation::Observed(RateLimitQuota {
-            used:      374,
-            remaining: 4626,
-            limit:     5000,
-            reset_at:  None,
-        }),
-        ..GitData::default()
-    });
-    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
-    for text in [
-        "Status",
-        "✨ clean",
-        "Branch",
-        "master",
-        "GraphQL",
-        "4626",
-        "Incept",
-        "Latest",
-        "2026-11-06",
+    for (pane_width, comparison) in [
+        (17, Comparison::NotCompared),
+        (16, Comparison::NotCompared),
+        (
+            16,
+            Comparison::Counted(AheadBehind {
+                ahead:  3,
+                behind: 2,
+            }),
+        ),
     ] {
-        test_support::position(&buffer, text)?;
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
+            checkout: GitCheckout::Branch {
+                name:     "master".to_string(),
+                relation: HeadRelation::Default,
+            },
+            status: Some(GitStatus::Clean),
+            vs_local: GitProbe::Probed(comparison),
+            stars: if pane_width == 16 {
+                GithubStars::Measured(1)
+            } else {
+                GithubStars::NotGithub
+            },
+            inception: FirstCommit::Probed(CommitDate::At("2026-11-06 08:21".to_string())),
+            last_commit: GitProbe::Probed(CommitDate::At("2026-11-06 15:13".to_string())),
+            rate_limit_graphql: QuotaObservation::Observed(RateLimitQuota {
+                used:      374,
+                remaining: 4626,
+                limit:     5000,
+                reset_at:  None,
+            }),
+            ..GitData::default()
+        });
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, pane_width)?;
+        for text in [
+            "Status",
+            "✨ clean",
+            "Branch",
+            "master",
+            "Incept",
+            "Latest",
+            "2026-11-06",
+        ] {
+            test_support::position(&buffer, text)?;
+        }
+        if pane_width == 17 {
+            test_support::position(&buffer, "GraphQL")?;
+            test_support::position(&buffer, "4626")?;
+        }
+        let status = test_support::position(&buffer, "Status")?;
+        let clean = test_support::position(&buffer, "✨ clean")?;
+        assert_eq!(clean.1, status.1 + 1);
+        if pane_width == 16 {
+            for label in ["Branch", "Stars"]
+                .into_iter()
+                .chain(matches!(comparison, Comparison::Counted(_)).then_some("Ahead/Behind"))
+            {
+                let (x, y) = test_support::position(&buffer, label)?;
+                assert_eq!(x, 2, "{label}: {:?}", test_support::rows(&buffer));
+                assert_eq!(buffer[(1, y)].symbol(), " ");
+                assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+            }
+            let stars = test_support::position(&buffer, "Stars")?;
+            let value = test_support::position(&buffer, "⭐ 1")?;
+            assert_eq!(value.0, 2);
+            assert_eq!(value.1, stars.1 + 1, "Stars stacks at inner width 14");
+        }
     }
-    let status = test_support::position(&buffer, "Status")?;
-    let clean = test_support::position(&buffer, "✨ clean")?;
-    assert_eq!(clean.1, status.1 + 1);
     Ok(())
 }
 
@@ -467,6 +504,48 @@ fn worktree_branches_keep_an_ellipsis_at_medium_widths() -> anyhow::Result<()> {
             assert!(values[1].ends_with('…'), "{row}");
             assert_eq!(&values[2..], &["──", "──"], "{row}");
             assert_eq!(buffer[(width - 2, y)].symbol(), " ");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cut_git_values_have_no_space_before_the_ellipsis() -> anyhow::Result<()> {
+    for (window, width) in [(80, 25), (95, 32), (95, 23)] {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = mode;
+            app.panes.git.set_content(GitData {
+                description: DescriptionState::KnownEmpty,
+                checkout: GitCheckout::Branch {
+                    name:     if width == 23 {
+                        "master".to_string()
+                    } else {
+                        "cargo tools phase ".repeat(8)
+                    },
+                    relation: if width == 23 {
+                        HeadRelation::Worktree
+                    } else {
+                        HeadRelation::Feature
+                    },
+                },
+                worktrees: vec![WorktreeInfo {
+                    name:         "cargo tools ".repeat(8),
+                    path:         "/tmp/worktree".to_string(),
+                    branch:       Some("phase cargo tools ".repeat(8)),
+                    tracked:      Some("phase cargo tools ".repeat(8)),
+                    ahead_behind: Comparison::NotCompared,
+                }],
+                ..GitData::default()
+            });
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, width)?;
+            test_support::assert_ellipses_follow_text(
+                &buffer,
+                Rect::new(0, 0, width, buffer.area.height),
+            );
+            if width == 23 {
+                test_support::position(&buffer, "master…")?;
+            }
         }
     }
     Ok(())
