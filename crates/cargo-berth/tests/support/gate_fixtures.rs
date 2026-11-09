@@ -2725,3 +2725,76 @@ pub(super) const HISTORY_PREPARED_SUBJECT_PASS_4: cargo_berth_test_support::Ledg
     recorded_history::template("gate-prepared-subject-pass-4", |destination| {
         build_prepared_subject_pass(destination, 4);
     });
+
+/// The source and upstream commits before either live three-commit rebase.
+pub(super) const THREE_COMMIT_REBASE: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("gate-three-commit-rebase", build_three_commit_rebase);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct ThreeCommitRebaseHistory {
+    pub(super) source_tip: String,
+}
+
+fn build_three_commit_rebase(destination: &Path) {
+    let repository = initialized_repository();
+
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "-b",
+            "rebase-source",
+        ],
+    );
+    for commit_index in 0..3 {
+        let path = format!("rebase-{commit_index}.txt");
+        fs::write(repository.path().join(&path), format!("{commit_index}\n"))
+            .expect("rebase source should write");
+        git(repository.path(), &["add", &path]);
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("rebase source {commit_index}"),
+            ],
+        );
+    }
+    let source_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    fs::write(repository.path().join("upstream-rebase.txt"), "upstream\n")
+        .expect("upstream source should write");
+    git(repository.path(), &["add", "upstream-rebase.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "upstream rebase base",
+        ],
+    );
+
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &ThreeCommitRebaseHistory { source_tip },
+    );
+}
