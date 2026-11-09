@@ -38,7 +38,7 @@ const NOW: u64 = 1_792_166_400;
 const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
 // Optional columns leave before layout selection. These widths force the kept
 // columns onto two lines or into stacked facts, including the pane frame.
-const TWO_LINE_ACCOUNTS_WIDTH: u16 = 60;
+const TWO_LINE_ACCOUNTS_WIDTH: u16 = 64;
 const STACKED_ACCOUNTS_WIDTH: u16 = 18;
 // The final account and its heading must fit the five-row viewport together.
 const COMPLETE_STACKED_ACCOUNT_WIDTH: u16 = 26;
@@ -262,8 +262,8 @@ pub(super) fn interactive_accounts() -> App {
                 "label":format!("account-{index}"), "tool":"codex",
                 "roles":["showrunners", "units"], "weekly_left_percent":60,
                 "role_counts":[
-                    {"busy":1,"shell":2,"idle":3,"total":6},
-                    {"busy":4,"shell":5,"idle":6,"total":15}
+                    {"busy":1,"idle":3,"paused":2,"exited":0,"total":6},
+                    {"busy":4,"idle":6,"paused":5,"exited":0,"total":15}
                 ],
                 "credits":13_446, "use_credits":true,
                 "read_ok":true, "read_at":"2026-10-16T15:57:53Z",
@@ -293,10 +293,13 @@ pub(super) fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) ->
     terminal
         .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
         .expect("initial frame");
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
-        .expect("settled frame");
+    // Only an active layout transition needs a second frame.
+    if app.tiles.has_pending_motion_for_test() {
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
+            .expect("settled frame");
+    }
     let summaries = app.tiles.painted_summary_frames();
     assert_eq!(summaries.len(), 1, "one summary surface");
     let inner = app
@@ -436,8 +439,10 @@ fn assert_account_continuations_select(width: u16) {
 
 #[test]
 fn two_line_accounts_end_reveals_the_final_continuation() {
-    // One account detail line follows the role counts.
-    assert_account_tail_reachable(TWO_LINE_ACCOUNTS_WIDTH, &local_account_reset("%a %H:%M"));
+    let reset = local_account_reset("%a %H:%M");
+    for (width, continuation) in [(60, "total 15"), (TWO_LINE_ACCOUNTS_WIDTH, reset.as_str())] {
+        assert_account_tail_reachable(width, continuation);
+    }
 }
 
 #[test]
@@ -448,7 +453,9 @@ fn stacked_accounts_end_reveals_the_final_fact() {
 
 #[test]
 fn two_line_account_continuation_clicks_select_the_account() {
-    assert_account_continuations_select(TWO_LINE_ACCOUNTS_WIDTH);
+    for width in [60, TWO_LINE_ACCOUNTS_WIDTH] {
+        assert_account_continuations_select(width);
+    }
 }
 
 #[test]
@@ -580,7 +587,9 @@ fn assert_middle_account_band(width: u16) -> u16 {
 
 #[test]
 fn two_line_account_selection_bands_cover_both_lines_and_stop_at_neighbors() {
-    assert_eq!(assert_middle_account_band(TWO_LINE_ACCOUNTS_WIDTH), 3);
+    for (width, rows) in [(60, 5), (TWO_LINE_ACCOUNTS_WIDTH, 3)] {
+        assert_eq!(assert_middle_account_band(width), rows);
+    }
 }
 
 #[test]
@@ -641,38 +650,77 @@ fn first_account_glyph(buffer: &Buffer, y: u16) -> u16 {
 
 #[test]
 fn two_line_account_continuations_and_headers_align_with_account_names() {
-    let mut app = interactive_accounts();
-    let buffer = paint_accounts_viewport(&mut app, TWO_LINE_ACCOUNTS_WIDTH, 64);
-    // Optional columns leave before the mandatory counts wrap.
-    for y in buffer.area.y..buffer.area.bottom() {
-        let line = account_line(&buffer, y);
-        for dropped in ["13,446", "2m"] {
-            assert!(!line.contains(dropped), "dropped {dropped}: {line}");
+    for width in [60, TWO_LINE_ACCOUNTS_WIDTH] {
+        let mut app = interactive_accounts();
+        let buffer = paint_accounts_viewport(&mut app, width, 64);
+        // Optional columns leave before the mandatory counts wrap.
+        for y in buffer.area.y..buffer.area.bottom() {
+            let line = account_line(&buffer, y);
+            for dropped in ["13,446", "2m"] {
+                assert!(!line.contains(dropped), "dropped {dropped}: {line}");
+            }
         }
-    }
-    let header = locate(&buffer, "account  ");
-    let resets = locate(&buffer, "resets");
-    assert_eq!(resets.row, header.row + 1, "two header lines");
-    let busy = locate(&buffer, "busy");
-    assert_eq!(busy.row, header.row, "counts stay on the role header line");
-    assert_eq!(
-        first_account_glyph(&buffer, resets.row)
-            + u16::try_from("resets".len()).expect("header width"),
-        header.column + u16::try_from(local_account_reset("%a %H:%M").len()).expect("reset width"),
-        "the reset header ends at the reset column edge"
-    );
-    for index in 0..6 {
-        let name = locate(&buffer, &format!("account-{index}"));
-        let continuation = name.row + 2;
-        assert!(
-            account_line(&buffer, continuation).contains(&local_account_reset("%a %H:%M")),
-            "the second line contains the kept reset fact"
-        );
+        if width == 60 {
+            let first = locate(&buffer, "account-0");
+            assert_eq!(
+                first.row,
+                locate(&buffer, "accounts").row + 1,
+                "stacked accounts follow the section heading"
+            );
+            for index in 0..6 {
+                let name = locate(&buffer, &format!("account-{index}"));
+                assert_eq!(
+                    name.row,
+                    first.row + index * 5,
+                    "five fitted rows per account"
+                );
+                let account = (name.row..name.row + 5)
+                    .map(|row| account_line(&buffer, row))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                for fact in [
+                    "60% left",
+                    "busy 1",
+                    "idle 3",
+                    "paused 2",
+                    "exited 0",
+                    "total 6",
+                    "busy 4",
+                    "idle 6",
+                    "paused 5",
+                    "total 15",
+                    &local_account_reset("%a %H:%M"),
+                ] {
+                    assert!(account.contains(fact), "missing fitted {fact}: {account}");
+                }
+            }
+            continue;
+        }
+        let header = locate(&buffer, "account  ");
+        let resets = locate(&buffer, "resets");
+        assert_eq!(resets.row, header.row + 1, "two header lines");
+        let busy = locate(&buffer, "busy");
+        assert_eq!(busy.row, header.row, "counts stay on the role header line");
         assert_eq!(
-            first_account_glyph(&buffer, continuation),
-            header.column,
-            "account-{index} reset ends at its header edge"
+            first_account_glyph(&buffer, resets.row)
+                + u16::try_from("resets".len()).expect("header width"),
+            header.column
+                + u16::try_from(local_account_reset("%a %H:%M").len()).expect("reset width"),
+            "the reset header ends at the reset column edge"
         );
+        for index in 0..6 {
+            let name = locate(&buffer, &format!("account-{index}"));
+            let continuation = name.row + 2;
+            assert!(
+                account_line(&buffer, continuation).contains(&local_account_reset("%a %H:%M")),
+                "the second line contains the kept reset fact"
+            );
+            assert_eq!(
+                first_account_glyph(&buffer, continuation),
+                header.column,
+                "account-{index} reset ends at its header edge"
+            );
+        }
     }
 }
 
@@ -866,60 +914,63 @@ fn accounts_summary_first_in_stacked_layout() {
 
 #[test]
 fn end_reveals_total_after_six_two_role_accounts_without_selecting_it() {
-    let mut app = interactive_accounts();
-    let width = TWO_LINE_ACCOUNTS_WIDTH;
-    let complete = paint_accounts_viewport(&mut app, width, 128);
-    let final_account = final_account_y(&complete);
-    let total_start = final_account + 1;
-    let total_end = {
-        let painted = app.painted_summary.borrow();
-        let crate::summary::PaintedSummary::Drawn(layout) = &*painted else {
-            panic!("drawn summary");
+    for width in [60, TWO_LINE_ACCOUNTS_WIDTH] {
+        let mut app = interactive_accounts();
+        let complete = paint_accounts_viewport(&mut app, width, 128);
+        let final_account = final_account_y(&complete);
+        let total_start = final_account + 1;
+        let total_end = {
+            let painted = app.painted_summary.borrow();
+            let crate::summary::PaintedSummary::Drawn(layout) = &*painted else {
+                panic!("drawn summary");
+            };
+            complete.area.y + u16::try_from(layout.height()).expect("table height")
         };
-        complete.area.y + u16::try_from(layout.height()).expect("table height")
-    };
-    let total_lines: Vec<_> = (total_start..total_end)
-        .map(|y| account_line(&complete, y))
-        .collect();
-    assert!(
-        total_lines[0].contains("total"),
-        "the total follows the last account"
-    );
-    let first = locate(&complete, "account-0");
-    app.click(Position::new(first.column, first.row));
-    let short = paint_accounts_viewport(&mut app, width, 8);
-    assert!(
-        total_end > short.area.bottom(),
-        "the viewport clips the total"
-    );
-    account_key(&mut app, KeyCode::End);
-    let end = paint_accounts_viewport(&mut app, width, 8);
-    for (offset, expected) in total_lines.iter().rev().enumerate() {
-        let y = end.area.bottom() - 1 - u16::try_from(offset).expect("total line");
-        assert_eq!(
-            account_line(&end, y),
-            *expected,
-            "End reveals the complete total"
+        let total_lines: Vec<_> = (total_start..total_end)
+            .map(|y| account_line(&complete, y))
+            .collect();
+        assert!(
+            total_lines[0].contains("total"),
+            "the total follows the last account"
         );
-    }
-    let selection = app
-        .selections
-        .surface(&SelectionSurface::Summary)
-        .expect("summary selection")
-        .selection();
-    assert_eq!(
-        selection,
-        crate::interaction::TileSelection::Row(crate::interaction::RowIdentity::SummaryAccount {
-            account: "account-5".to_owned(),
-        })
-    );
-    app.click(Position::new(end.area.x + 2, end.area.bottom() - 1));
-    assert_eq!(
-        app.selections
+        let first = locate(&complete, "account-0");
+        app.click(Position::new(first.column, first.row));
+        let short = paint_accounts_viewport(&mut app, width, 8);
+        assert!(
+            total_end > short.area.bottom(),
+            "the viewport clips the total"
+        );
+        account_key(&mut app, KeyCode::End);
+        let end = paint_accounts_viewport(&mut app, width, 8);
+        for (offset, expected) in total_lines.iter().rev().enumerate() {
+            let y = end.area.bottom() - 1 - u16::try_from(offset).expect("total line");
+            assert_eq!(
+                account_line(&end, y),
+                *expected,
+                "End reveals the complete total"
+            );
+        }
+        let selection = app
+            .selections
             .surface(&SelectionSurface::Summary)
             .expect("summary selection")
-            .selection(),
-        selection,
-        "the total is not selectable"
-    );
+            .selection();
+        assert_eq!(
+            selection,
+            crate::interaction::TileSelection::Row(
+                crate::interaction::RowIdentity::SummaryAccount {
+                    account: "account-5".to_owned(),
+                }
+            )
+        );
+        app.click(Position::new(end.area.x + 2, end.area.bottom() - 1));
+        assert_eq!(
+            app.selections
+                .surface(&SelectionSurface::Summary)
+                .expect("summary selection")
+                .selection(),
+            selection,
+            "the total is not selectable"
+        );
+    }
 }

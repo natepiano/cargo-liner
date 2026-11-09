@@ -46,6 +46,7 @@ use sysinfo::UpdateKind;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::AstraSessionMembership;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
@@ -57,8 +58,13 @@ use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::activity;
+use super::activity::LiveWorkerRun;
+use super::activity::RunDirector;
+use super::activity::RunDirectory;
 use super::activity::RunRecord;
 use super::activity::RunRecords;
+use super::activity::RunSeat;
+use super::activity::RunWorkerIdentity;
 use super::activity::TranscriptRead;
 use super::activity::VerificationProcesses;
 use super::activity::WorkerRun;
@@ -70,14 +76,21 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
 use super::codex::CodexLogs;
+use super::codex::CodexThread;
 use super::codex::OpenThreadRows;
+use super::codex::ResumeRequest;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
+use super::compaction_markers::CompactionFamily;
+use super::compaction_markers::CompactionMarkerStatus;
+use super::compaction_markers::CompactionMarkers;
+use super::compaction_markers::CompactionTranscript;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
+use super::herdr::HerdrNames;
+use super::hierarchy::AstraWorkerMembership;
 use super::hierarchy::StaffFileReader;
-#[cfg(test)]
 use super::hierarchy::StaffRoster;
 use super::hierarchy::StaffSnapshot;
 use super::model::ConversationModel;
@@ -97,10 +110,13 @@ use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
 use super::worker_dispatch::JobText;
+use super::worker_dispatch::ManagedSession;
 use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
+use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::SessionRoots;
 use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
@@ -136,6 +152,90 @@ struct WorkerRuns {
     sessions:   HashSet<PathBuf>,
     threads:    HashMap<u32, Vec<RunThread>>,
     activities: HashMap<String, WorkerRun>,
+    named:      HashMap<u32, Vec<ChildRow>>,
+    folded:     HashSet<u32>,
+}
+
+/// `RunManager` distinguishes a live unit director from an unlocated run.
+#[derive(Clone, Copy)]
+enum RunManager {
+    Director(u32),
+    Unlocated,
+}
+
+/// `ResolvedWorkerRun` shares one worker identity across all scan consumers.
+struct ResolvedWorkerRun<'a> {
+    run:     &'a LiveWorkerRun<'a>,
+    worker:  RunWorkerIdentity<'a>,
+    manager: RunManager,
+}
+
+fn resolved_worker_runs<'a>(
+    live: &'a [LiveWorkerRun<'a>],
+    sessions: &[ManagedSession],
+    directors: &BTreeMap<&str, u32>,
+    staff: &'a StaffRoster,
+) -> Vec<ResolvedWorkerRun<'a>> {
+    let units: HashMap<_, _> = sessions
+        .iter()
+        .map(|session| (session.directory.as_path(), session.director_pid))
+        .collect();
+    let identities: HashMap<_, _> = directors.iter().map(|(id, pid)| (*pid, *id)).collect();
+    live.iter()
+        .map(|run| {
+            let manager = match run.record.directory() {
+                RunDirectory::Unit(path) => units
+                    .get(path)
+                    .copied()
+                    .map_or(RunManager::Unlocated, RunManager::Director),
+                RunDirectory::Unlocated => RunManager::Unlocated,
+            };
+            let director = match manager {
+                RunManager::Director(pid) => identities
+                    .get(&pid)
+                    .map_or(RunDirector::Unrecorded, |id| RunDirector::Session(id)),
+                RunManager::Unlocated => RunDirector::Unrecorded,
+            };
+            ResolvedWorkerRun {
+                run,
+                worker: run.worker(staff, director),
+                manager,
+            }
+        })
+        .collect()
+}
+
+fn run_activities(sources: &[ResolvedWorkerRun<'_>]) -> HashMap<String, WorkerRun> {
+    let mut latest: HashMap<&str, &LiveWorkerRun<'_>> = HashMap::new();
+    for source in sources {
+        if let RunWorkerIdentity::Session(id) = source.worker {
+            let current = latest.entry(id).or_insert(source.run);
+            if source.run.newer_than(current) {
+                *current = source.run;
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(id, run)| (id.to_owned(), run.activity()))
+        .collect()
+}
+
+fn run_directors(
+    live: &[LiveWorkerRun<'_>],
+    staff: &StaffRoster,
+    directors: &BTreeMap<&str, u32>,
+) -> HashMap<PathBuf, HashSet<u32>> {
+    let mut owners: HashMap<PathBuf, HashSet<u32>> = HashMap::new();
+    for run in live {
+        if let (RunDirectory::Unit(directory), RunDirector::Session(id)) =
+            (run.record.directory(), run.record.director(staff))
+            && let Some(pid) = directors.get(id)
+        {
+            owners.entry(directory.to_owned()).or_default().insert(*pid);
+        }
+    }
+    owners
 }
 
 /// Shell argv flag whose next argument contains the command text.
@@ -175,12 +275,13 @@ pub(super) struct LocalScanner {
     open_thread_rows:    OpenThreadRows,
     /// Each Codex account log advances from its retained row id.
     codex_logs:          CodexLogs,
-    herdr:               super::herdr::HerdrNames,
+    herdr:               HerdrNames,
     codex_links:         HashMap<u32, CodexSessionLink>,
     staff:               super::hierarchy::StaffDiscovery,
     codex_start_window:  CodexStartWindow,
     herdr_probe_wait:    HerdrProbeWait,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    compactions:         CompactionMarkers,
     transcript_models:   TranscriptModels,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
@@ -260,6 +361,9 @@ impl LocalScanner {
         home: &Path,
     ) -> Vec<AgentRow> {
         self.desktop_source = DesktopSource::Windows(Vec::new());
+        self.compactions
+            .set_directory(home.join(".local/state/compaction"));
+        self.codex_logs.refresh(processes, Some(home));
         let mut answer = Vec::new();
         self.scan_stages(
             processes,
@@ -330,7 +434,15 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
+        include_astra_processes(
+            &mut rows,
+            processes,
+            home,
+            &staff.roster,
+            &self.account_labels,
+        );
         attach_pane_codex_identities(&mut rows, processes, home, &staff.roster);
+        attach_astra_memberships(&mut rows, &staff.roster, processes, home, &self.herdr);
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
             self.attach_codex_names(&mut rows);
             classify::attach_staff_names(&mut rows, &staff.roster);
@@ -339,6 +451,7 @@ impl LocalScanner {
         startup_log::startup_stage("details", || read_details(self, &mut rows));
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &staff.roster);
+        apply_astra_work(&mut rows, &self.herdr);
         publish(ScanStage::Completed, rows, &staff);
         self.publication = LocalPublication::CompletedAnswerPublished;
         staff
@@ -372,14 +485,15 @@ impl LocalScanner {
             open_thread_rows: OpenThreadRows::default(),
             codex_logs: codex::CodexLogs::default(),
             #[cfg(not(test))]
-            herdr: super::herdr::HerdrNames::default(),
+            herdr: HerdrNames::default(),
             #[cfg(test)]
-            herdr: super::herdr::HerdrNames::isolated(),
+            herdr: HerdrNames::isolated(),
             codex_links: HashMap::new(),
             staff: super::hierarchy::StaffDiscovery::Disabled,
             codex_start_window: crate::config::CodexStartWindow::default(),
             herdr_probe_wait: HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            compactions: CompactionMarkers::for_current_user(),
             transcript_models: super::transcript::TranscriptModels::default(),
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
@@ -437,6 +551,7 @@ impl LocalScanner {
         let mut rows = Vec::new();
         let snapshot = self.scan_staged(|_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links, deadline);
+        apply_astra_work(&mut rows, &self.herdr);
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &snapshot.roster);
         (rows, snapshot)
@@ -481,13 +596,8 @@ impl LocalScanner {
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
         let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
-            self.codex_tiers(processes, &pacer)
+            self.attach_codex_tiers(processes, &pacer, rows)
         });
-        for row in rows.iter_mut() {
-            if let Some(tier) = service_tiers.get(&row.pid) {
-                row.service_tier = *tier;
-            }
-        }
         let transcripts = startup_log::startup_stage("transcript_discovery", || {
             home.map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
                 .map(|projects| self.find_transcripts(&projects, processes, sessions))
@@ -504,9 +614,10 @@ impl LocalScanner {
         let shell_calls = startup_log::startup_stage("transcript_shell_calls", || {
             self.find_shell_calls(processes, &transcripts, &subagents, now)
         });
-        let threads = startup_log::startup_stage("codex_app_server_threads", || {
-            app_server_threads(
+        let codex = startup_log::startup_stage("codex_app_server_threads", || {
+            codex_threads(
                 processes,
+                rows,
                 &mut self.rollouts,
                 &mut self.open_thread_rows,
                 &pacer,
@@ -514,8 +625,10 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
+        self.attach_astra_threads(rows, &codex.accounts, &pacer);
         self.attach_codex_sessions(processes, home, rows);
-        let models = self.read_process_models(processes, &transcripts, rows, home);
+        let models = self.read_process_models(processes, &transcripts, rows, home, codex.panes);
+        let threads = codex.app_servers;
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
@@ -562,6 +675,7 @@ impl LocalScanner {
         let run_made = startup_log::startup_stage("attach_children", || {
             tree::attach_children(rows, processes, &sources)
         });
+        self.find_compaction_transcripts(processes, rows, home);
         self.attach_row_models(rows, &models, &sources.subagents, &transcripts);
         startup_log::startup_stage("transcript_activity_and_worker_names", || {
             self.attach_activity_with_runs(
@@ -571,10 +685,47 @@ impl LocalScanner {
                 &worker_runs.activities,
                 &run_made,
             );
+            tree::fold_run_processes(rows, &worker_runs.folded);
+            tree::append_named_run_workers(rows, &worker_runs.named);
             self.retain_session_caches(&transcripts, worker_runs.sessions);
         });
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
+    }
+
+    /// Find native completion files only for marked Codex sessions without retained rollouts.
+    fn find_compaction_transcripts(
+        &mut self,
+        processes: &[ProcessEntry],
+        rows: &[AgentRow],
+        home: Option<&Path>,
+    ) {
+        let ids: Vec<_> = rows
+            .iter()
+            .flat_map(|row| {
+                row.session_id
+                    .ids()
+                    .filter(|_| row.agent != Agent::Claude)
+                    .chain(
+                        row.children
+                            .iter()
+                            .filter_map(|child| match &child.thread_id {
+                                CodexThreadId::Recorded(id) => Some(id.as_str()),
+                                CodexThreadId::Unrecorded => None,
+                            }),
+                    )
+            })
+            .filter(|id| {
+                matches!(self.rollouts.thread(id), ThreadRollout::NotRetained)
+                    && matches!(
+                        self.compactions.marker_status(id, CompactionFamily::Codex),
+                        CompactionMarkerStatus::Open { .. }
+                    )
+            })
+            .map(str::to_owned)
+            .collect();
+        self.rollouts
+            .find_compaction_transcripts(processes, home, &ids);
     }
 
     /// `read_process_models` reads each process's own conversation without inheriting host values.
@@ -584,14 +735,12 @@ impl LocalScanner {
         transcripts: &HashMap<u32, PathBuf>,
         rows: &[AgentRow],
         home: Option<&Path>,
+        mut paths: HashMap<u32, PathBuf>,
     ) -> HashMap<u32, ConversationModel> {
         let mut models: HashMap<_, _> = transcripts
             .iter()
             .map(|(pid, path)| (*pid, self.transcript_models.read(path)))
             .collect();
-        let mut paths = self
-            .open_thread_rows
-            .process_rollouts(processes, rows, home);
         for process in processes
             .iter()
             .filter(|process| process.is_codex() && !process.is_app_server())
@@ -609,7 +758,12 @@ impl LocalScanner {
             let proven = rows
                 .iter()
                 .find(|row| row.pid == process.pid)
-                .filter(|row| matches!(row.session_id, SessionIdentity::Codex(_)));
+                .filter(|row| {
+                    matches!(
+                        row.session_id,
+                        SessionIdentity::Codex(_) | SessionIdentity::Astra(_)
+                    )
+                });
             if let Some(row) = proven {
                 for (id, path) in open_rollouts(process, home) {
                     if row.session_id.ids().any(|proven| proven == id) {
@@ -818,6 +972,7 @@ impl LocalScanner {
         runs: &HashMap<String, WorkerRun>,
         run_made: &HashSet<String>,
     ) {
+        self.compactions.begin_scan();
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
         let mut verification_activity = VerificationProcesses::new(processes);
@@ -847,6 +1002,22 @@ impl LocalScanner {
             {
                 row.activity = verification_activity.progress(verify.pid).activity();
             }
+            let live_run = row
+                .session_id
+                .ids()
+                .filter_map(|id| runs.get(id))
+                .find_map(|run| match run {
+                    WorkerRun::Running { activity, .. } => Some(*activity),
+                    WorkerRun::Inactive => None,
+                });
+            if let Some(activity) = live_run {
+                row.activity = activity;
+                if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
+                    let member = member.clone().with_run_activity(activity);
+                    row.session_id = std::mem::take(&mut row.session_id).with_astra(member);
+                }
+            }
+            self.apply_row_compaction(row, transcripts);
             for child in &mut row.children {
                 let CodexThreadId::Recorded(id) = &child.thread_id else {
                     continue;
@@ -881,10 +1052,39 @@ impl LocalScanner {
                         child.activity = *activity;
                     }
                 }
+                child.activity = self.compactions.activity(
+                    id,
+                    CompactionFamily::Codex,
+                    self.rollouts.transcript(id),
+                    child.activity,
+                );
             }
         }
+        self.compactions.finish_scan();
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
+    }
+
+    /// `apply_row_compaction` resolves the marker after transcript and run activity.
+    fn apply_row_compaction(&mut self, row: &mut AgentRow, transcripts: &HashMap<u32, PathBuf>) {
+        if let Some(id) = row.session_id.ids().next() {
+            let family = if row.agent == Agent::Claude {
+                CompactionFamily::Claude
+            } else {
+                CompactionFamily::Codex
+            };
+            let transcript = match family {
+                CompactionFamily::Claude => transcripts
+                    .get(&row.pid)
+                    .map_or(CompactionTranscript::Unavailable, |path| {
+                        CompactionTranscript::File(path)
+                    }),
+                CompactionFamily::Codex => self.rollouts.transcript(id),
+            };
+            row.activity = self
+                .compactions
+                .activity(id, family, transcript, row.activity);
+        }
     }
 
     /// Read every required run directory before selecting the latest run for each thread.
@@ -897,25 +1097,63 @@ impl LocalScanner {
         let live_processes = processes.iter().map(|process| process.pid).collect();
         let directors: BTreeMap<_, _> = rows
             .iter()
-            .filter(|row| row.agent == Agent::Claude)
             .filter_map(|row| row.session_id.claude_id().map(|id| (id, row.pid)))
+            .chain(
+                rows.iter()
+                    .filter(|row| row.agent != Agent::Claude)
+                    .flat_map(|row| row.session_id.ids().map(move |id| (id, row.pid))),
+            )
             .collect();
         let staff = self.worker_names.staff_snapshot();
+        let mut records = HashMap::new();
+        let active_units = self.session_roots.live_directories(processes);
+        for directory in &active_units {
+            self.read_run_session(directory, &live_processes, &mut records);
+        }
+        self.read_rollout_runs(thread_ids, rows, &live_processes, &mut records);
+        let live = VerificationProcesses::new(processes).live_runs(records.values().flatten());
+        let owners = run_directors(&live, &staff, &directors);
         let names = &mut self.worker_names;
         let mut roster_sessions = HashSet::new();
-        let sessions = self
-            .session_roots
-            .managed_sessions(processes, &directors, |directory| {
-                roster_sessions.insert(directory.to_path_buf());
-                names
-                    .roster(directory)
-                    .current_director(&staff)
-                    .and_then(|session| directors.get(session).copied())
-            });
-        let mut records = HashMap::new();
+        let sessions =
+            self.session_roots
+                .managed_sessions(&active_units, &directors, &staff, |directory| {
+                    roster_sessions.insert(directory.to_path_buf());
+                    if let Some(pids) = owners.get(directory)
+                        && pids.len() == 1
+                    {
+                        return pids.iter().next().copied();
+                    }
+                    names
+                        .roster(directory)
+                        .current_director(&staff)
+                        .and_then(|session| directors.get(session).copied())
+                });
+        let resolved = resolved_worker_runs(&live, &sessions, &directors, &staff);
+        let activities = run_activities(&resolved);
+        let mut answer = WorkerRuns {
+            sessions: roster_sessions,
+            threads: HashMap::new(),
+            activities,
+            named: HashMap::new(),
+            folded: HashSet::new(),
+        };
         for session in &sessions {
-            self.read_run_session(&session.directory, &live_processes, &mut records);
+            self.attach_roster_runs(session, &mut answer);
         }
+        Self::attach_record_runs(&resolved, &mut answer);
+        answer.sessions.extend(records.into_keys());
+        answer
+    }
+
+    /// `RunRecords` includes directories found through retained worker rollouts.
+    fn read_rollout_runs<'t>(
+        &mut self,
+        thread_ids: impl Iterator<Item = &'t str>,
+        rows: &'t [AgentRow],
+        live_processes: &HashSet<u32>,
+        records: &mut HashMap<PathBuf, Vec<RunRecord>>,
+    ) {
         let ids: HashSet<_> = thread_ids
             .chain(
                 rows.iter()
@@ -932,53 +1170,103 @@ impl LocalScanner {
                     self.worker_names
                         .directories(id, read.first_prompt.text(), &self.session_roots)
                 {
-                    self.read_run_session(&directory, &live_processes, &mut records);
+                    self.read_run_session(&directory, live_processes, records);
                 }
             }
         }
-        let activities =
-            VerificationProcesses::new(processes).worker_runs(records.values().flatten(), &staff);
-        let mut threads: HashMap<u32, Vec<RunThread>> = HashMap::new();
-        for session in sessions {
-            if records[&session.directory]
-                .iter()
-                .all(|record| record.session(&staff).is_none())
+    }
+
+    /// Preserve mesh roster names while pane records supply the same run source.
+    fn attach_roster_runs(&mut self, session: &ManagedSession, answer: &mut WorkerRuns) {
+        for (seat, worker) in self.worker_names.roster(&session.directory).workers() {
+            let id = worker.thread_id();
+            if let Some(WorkerRun::Running {
+                activity,
+                started,
+                worktree,
+            }) = answer.activities.get(id)
             {
-                continue;
-            }
-            for (seat, worker) in self.worker_names.roster(&session.directory).workers() {
-                let id = worker.thread_id();
-                if let Some(WorkerRun::Running {
-                    activity,
-                    started,
-                    worktree,
-                }) = activities.get(id)
-                {
-                    let prefix = match self.rollouts.thread(id) {
-                        ThreadRollout::Retained(read) => read.worktree.seat_prefix(),
-                        ThreadRollout::NotRetained => None,
-                    };
-                    let short = prefix
-                        .or_else(|| worktree.seat_prefix())
-                        .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
-                        .unwrap_or(seat);
-                    threads
-                        .entry(session.director_pid)
-                        .or_default()
-                        .push(RunThread {
-                            id:       id.to_owned(),
-                            dispatch: worker.dispatch(seat, short, JobText::Unrecorded),
-                            activity: *activity,
-                            started:  *started,
-                        });
-                }
+                let prefix = match self.rollouts.thread(id) {
+                    ThreadRollout::Retained(read) => read.worktree.seat_prefix(),
+                    ThreadRollout::NotRetained => None,
+                };
+                let short = prefix
+                    .or_else(|| worktree.seat_prefix())
+                    .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
+                    .unwrap_or(seat);
+                answer
+                    .threads
+                    .entry(session.director_pid)
+                    .or_default()
+                    .push(RunThread {
+                        id:       id.to_owned(),
+                        dispatch: worker.dispatch(seat, short, JobText::Unrecorded),
+                        activity: *activity,
+                        started:  *started,
+                    });
             }
         }
-        roster_sessions.extend(records.into_keys());
-        WorkerRuns {
-            sessions: roster_sessions,
-            threads,
-            activities,
+    }
+
+    /// `WorkerRuns` adds rows for `RunRecord` workers that have no visible process.
+    fn attach_record_runs(sources: &[ResolvedWorkerRun<'_>], answer: &mut WorkerRuns) {
+        let mut present: HashSet<_> = answer
+            .threads
+            .iter()
+            .flat_map(|(pid, threads)| threads.iter().map(move |thread| (*pid, thread.id.clone())))
+            .collect();
+        let mut named: HashMap<(u32, &str), &LiveWorkerRun<'_>> = HashMap::new();
+        for source in sources {
+            let RunManager::Director(pid) = source.manager else {
+                continue;
+            };
+            match source.worker {
+                RunWorkerIdentity::Session(id) => {
+                    if let RunSeat::Named(seat) = source.run.record.seat()
+                        && let Some(WorkerRun::Running {
+                            activity, started, ..
+                        }) = answer.activities.get(id)
+                        && present.insert((pid, id.to_owned()))
+                        && let Ok(dispatch) = ResolvedWorkerDispatch::for_run(
+                            seat,
+                            WorkerIdentity::CodexThread(id.to_owned()),
+                        )
+                    {
+                        answer.threads.entry(pid).or_default().push(RunThread {
+                            id: id.to_owned(),
+                            dispatch,
+                            activity: *activity,
+                            started: *started,
+                        });
+                    }
+                },
+                RunWorkerIdentity::NamedSeat(seat) => {
+                    let current = named.entry((pid, seat)).or_insert(source.run);
+                    if source.run.newer_than(current) {
+                        *current = source.run;
+                    }
+                },
+                RunWorkerIdentity::Unrecorded => continue,
+            }
+            answer.folded.extend(&source.run.processes);
+        }
+        for ((pid, seat), run) in named {
+            answer.named.entry(pid).or_default().push(ChildRow {
+                model:        super::model::ModelName::Unrecorded,
+                effort:       super::model::ReasoningEffort::Unrecorded,
+                work_id:      WorkIdentity::Legacy,
+                worker_task:  WorkerTask::RoleOnly,
+                activity:     run.activity,
+                dispatch:     WorkerDispatch::Plain,
+                thread_id:    CodexThreadId::Unrecorded,
+                depth:        0,
+                kind:         ChildKind::Thread,
+                service_tier: ServiceTier::Unrecorded,
+                account:      super::Account::Unrecorded,
+                pid:          Some(run.pid),
+                name:         seat.to_owned(),
+                started:      run.started,
+            });
         }
     }
 
@@ -1017,6 +1305,22 @@ impl LocalScanner {
         self.worker_names.retain_sessions(&sessions);
         self.subagent_reads
             .retain_sessions(&transcripts.values().cloned().collect());
+    }
+
+    /// `attach_codex_tiers` attaches each process's requested tier to its row.
+    fn attach_codex_tiers(
+        &mut self,
+        processes: &[ProcessEntry],
+        pacer: &PacerHistory,
+        rows: &mut [AgentRow],
+    ) -> HashMap<u32, ServiceTier> {
+        let tiers = self.codex_tiers(processes, pacer);
+        for row in rows {
+            if let Some(tier) = tiers.get(&row.pid) {
+                row.service_tier = *tier;
+            }
+        }
+        tiers
     }
 
     /// The tier each Codex among `processes` that is not an app server
@@ -1536,7 +1840,7 @@ fn attach_pane_codex_identities(
     rows: &mut [AgentRow],
     processes: &[ProcessEntry],
     home: Option<&Path>,
-    staff: &super::hierarchy::StaffRoster,
+    staff: &StaffRoster,
 ) {
     for row in rows {
         if row.agent != Agent::Codex || row.session_id != SessionIdentity::Unrecorded {
@@ -1564,21 +1868,23 @@ fn attach_pane_codex_identities(
     }
 }
 
-/// The threads each Codex app server in `processes` holds open, by its
-/// pid, named from each server's own account database, each with the
-/// tier its rollout in `rollouts` or `pacer` names. Only Linux lists a
-/// process's open files, so elsewhere there are none.
-fn app_server_threads(
+/// `CodexThreads` holds one scan's app-server children and pane rollout paths.
+struct CodexThreads {
+    app_servers: HashMap<u32, Vec<ThreadEntry>>,
+    panes:       HashMap<u32, PathBuf>,
+    accounts:    HashMap<PathBuf, HashMap<String, CodexThread>>,
+}
+
+/// `codex_threads` gathers both requester sets before reading their account answers.
+fn codex_threads(
     processes: &[ProcessEntry],
+    rows: &[AgentRow],
     rollouts: &mut Rollouts,
     thread_rows: &mut OpenThreadRows,
     pacer: &PacerHistory,
     home: Option<&Path>,
     account_labels: &AccountLabels,
-) -> HashMap<u32, Vec<ThreadEntry>> {
-    if !cfg!(target_os = "linux") {
-        return HashMap::new();
-    }
+) -> CodexThreads {
     let mut by_home: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let held: Vec<_> = processes
         .iter()
@@ -1594,33 +1900,26 @@ fn app_server_threads(
         })
         .filter(|(_, _, ids)| !ids.is_empty())
         .collect();
-    let live_homes: HashSet<_> = processes
-        .iter()
-        .filter(|process| process.is_codex())
-        .filter_map(|process| codex::session_home(process, home))
-        .collect();
-    thread_rows.retain_homes(live_homes.iter());
-    let named: HashMap<_, _> = by_home
+    let live = thread_rows.read_scan(processes, rows, home, &by_home);
+    let app_servers = held
         .into_iter()
-        .map(|(codex_home, ids)| {
-            let rows = thread_rows.read(&codex_home, &ids).clone();
-            (codex_home, rows)
-        })
-        .collect();
-    held.into_iter()
         .map(|(process, codex_home, ids)| {
             let threads = ids
                 .into_iter()
                 .map(|(id, rollout)| {
-                    let (name, started) = named[&codex_home].get(&id).map_or_else(
-                        || (WORKER_LABEL.to_owned(), process.started),
-                        |thread| {
-                            (
-                                thread.label().unwrap_or_else(|| WORKER_LABEL.to_owned()),
-                                thread.created_ms / 1_000,
-                            )
-                        },
-                    );
+                    let (name, started) = live
+                        .accounts
+                        .get(&codex_home)
+                        .and_then(|rows| rows.get(&id))
+                        .map_or_else(
+                            || (WORKER_LABEL.to_owned(), process.started),
+                            |thread| {
+                                (
+                                    thread.label().unwrap_or_else(|| WORKER_LABEL.to_owned()),
+                                    thread.created_ms / 1_000,
+                                )
+                            },
+                        );
                     let read = rollouts.read(&rollout);
                     rollouts.read_model(&rollout);
                     let service_tier = tier::requested(Some(read.clone()), &[], pacer, started);
@@ -1636,7 +1935,34 @@ fn app_server_threads(
                 .collect();
             (process.pid, threads)
         })
-        .collect()
+        .collect();
+    CodexThreads {
+        app_servers,
+        panes: live.panes,
+        accounts: live.accounts,
+    }
+}
+
+/// `app_server_threads` preserves the existing account-isolation test interface.
+#[cfg(all(test, target_os = "linux"))]
+fn app_server_threads(
+    processes: &[ProcessEntry],
+    rollouts: &mut Rollouts,
+    thread_rows: &mut OpenThreadRows,
+    pacer: &PacerHistory,
+    home: Option<&Path>,
+    account_labels: &AccountLabels,
+) -> HashMap<u32, Vec<ThreadEntry>> {
+    codex_threads(
+        processes,
+        &[],
+        rollouts,
+        thread_rows,
+        pacer,
+        home,
+        account_labels,
+    )
+    .app_servers
 }
 
 /// Every session record in `directory` that parses. The directory holds
@@ -2386,6 +2712,114 @@ fn detailed_pids(
     detailed.into_iter().collect()
 }
 
+/// `attach_astra_memberships` adds `AstraMembership` through `SessionIdentity::with_astra`.
+fn attach_astra_memberships(
+    rows: &mut [AgentRow],
+    staff: &StaffRoster,
+    processes: &[ProcessEntry],
+    home: Option<&Path>,
+    herdr: &HerdrNames,
+) {
+    for row in rows {
+        let member = row
+            .session_id
+            .ids()
+            .next()
+            .map(|id| staff.astra_membership(id));
+        if let Some(AstraWorkerMembership::Member(member)) = member
+            && processes
+                .iter()
+                .find(|process| process.pid == row.pid)
+                .and_then(|process| codex::session_home(process, home))
+                .is_some_and(|account| account == member.home())
+        {
+            row.session_id = std::mem::take(&mut row.session_id)
+                .with_astra(member.with_work(herdr.work(row.pid, row.process_started)));
+        }
+    }
+}
+
+fn apply_astra_work(rows: &mut [AgentRow], herdr: &HerdrNames) {
+    for row in rows {
+        if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
+            let member = member
+                .clone()
+                .with_work(herdr.work(row.pid, row.process_started));
+            row.activity = member.activity(row.activity);
+            row.session_id = std::mem::take(&mut row.session_id).with_astra(member);
+        }
+    }
+}
+
+/// A live Astra process remains a session even beneath another agent process.
+fn include_astra_processes(
+    rows: &mut Vec<AgentRow>,
+    processes: &[ProcessEntry],
+    home: Option<&Path>,
+    staff: &StaffRoster,
+    labels: &AccountLabels,
+) {
+    for process in processes
+        .iter()
+        .filter(|process| process.is_codex() && !process.is_app_server())
+    {
+        if rows.iter().any(|row| row.pid == process.pid) {
+            continue;
+        }
+        let ids: Vec<_> = match codex::resume_request(process) {
+            ResumeRequest::NamedId(id) => vec![id.to_owned()],
+            _ => open_rollouts(process, home)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+        };
+        let matched = ids.iter().any(|id| {
+            matches!(
+                staff.session_membership(id),
+                super::hierarchy::StaffSessionMembership::Listed
+            )
+        });
+        if matched {
+            rows.extend(classify::agent_rows_with_threads(
+                std::slice::from_ref(process),
+                &[],
+                &HashMap::new(),
+                home,
+                labels,
+            ));
+        }
+    }
+}
+
+impl LocalScanner {
+    /// The first explicit lookup supplies the thread link and its requested fast mark.
+    fn attach_astra_threads(
+        &mut self,
+        rows: &mut [AgentRow],
+        accounts: &HashMap<PathBuf, HashMap<String, CodexThread>>,
+        pacer: &PacerHistory,
+    ) {
+        for row in rows {
+            let AstraSessionMembership::Member(member) = row.session_id.astra_membership() else {
+                continue;
+            };
+            let Some(thread) = accounts
+                .get(member.home())
+                .and_then(|threads| threads.get(member.session()))
+            else {
+                continue;
+            };
+            self.codex_links
+                .insert(row.pid, CodexSessionLink::Named(thread.clone()));
+            let read = self.rollouts.read(&thread.rollout);
+            let tier = tier::requested(Some(read), &[], pacer, row.started);
+            if tier != ServiceTier::Unrecorded {
+                row.service_tier = tier;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -2406,12 +2840,142 @@ mod tests {
 
     use super::*;
     use crate::census::Account;
+    use crate::census::HierarchySource;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::herdr::HerdrNames;
     use crate::census::model::ModelName;
     use crate::census::model::ReasoningEffort;
+
+    const SCAN_REQUEST_IDS: [&str; 3] = [
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d80",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d81",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d82",
+    ];
+
+    struct LiveThreadScanFixture {
+        home: TempDir,
+    }
+
+    impl LiveThreadScanFixture {
+        fn new() -> Self {
+            let home = TempDir::new().expect("scan home");
+            let sessions = home.path().join(".codex/sessions");
+            fs::create_dir_all(&sessions).expect("rollout directory");
+            let database = rusqlite::Connection::open(home.path().join(".codex/state_6.sqlite"))
+                .expect("scan database");
+            database.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, cwd TEXT,
+                created_at_ms INTEGER, name TEXT, first_user_message TEXT, rollout_path TEXT, originator TEXT)")
+                .expect("thread schema");
+            for id in SCAN_REQUEST_IDS {
+                let path = sessions.join(format!("rollout-{id}.jsonl"));
+                fs::write(&path, format!("{}\n{}\n{}\n{}\n",
+                    json!({"type":"session_meta","payload":{"id":id,"cwd":"/work/fixture","timestamp":"2026-11-07T00:00:00Z"}}),
+                    json!({"type":"response_item","payload":{"role":"user","content":[{"text":"work"}]}}),
+                    json!({"type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"high"}}),
+                    json!({"type":"event_msg","payload":{"type":"task_started"}})))
+                    .expect("rollout records");
+                database.execute("INSERT INTO threads VALUES(?1,'/work/fixture',100000,?1,'work',?2,'codex-tui')",
+                    rusqlite::params![id,path.to_string_lossy()]).expect("thread row");
+            }
+            fs::write(
+                home.path().join("staff.json"),
+                json!({"schema":2,"rows":[]}).to_string(),
+            )
+            .expect("isolated staff file");
+            Self { home }
+        }
+
+        fn process(&self, pid: u32, arguments: &[&str]) -> ProcessEntry {
+            ProcessEntry {
+                pid,
+                parent: Some(1),
+                name: "codex".into(),
+                arguments: arguments.iter().map(|word| (*word).to_owned()).collect(),
+                started: 100,
+                directory: Some("/work/fixture".into()),
+                claude_pid: None,
+                config_home: ConfigHome::Named(self.home.path().join(".codex")),
+            }
+        }
+
+        fn scanner(&self) -> LocalScanner {
+            LocalScanner::new(AccountLabels::default()).with_staff_file(
+                crate::census::StaffFileSetting::new(HierarchySource::File(
+                    self.home
+                        .path()
+                        .join("staff.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                )),
+                StaffFileReader::default(),
+            )
+        }
+
+        fn revise(&self) {
+            rusqlite::Connection::open(self.home.path().join(".codex/state_6.sqlite"))
+                .expect("scan database")
+                .execute("UPDATE threads SET created_at_ms=created_at_ms+1", [])
+                .expect("new database revision");
+        }
+    }
+
+    #[test]
+    fn a_scan_revision_query_excludes_a_pane_that_closed_before_the_scan() {
+        let fixture = LiveThreadScanFixture::new();
+        let closed = fixture.process(40, &["codex", "resume", SCAN_REQUEST_IDS[0]]);
+        let live = fixture.process(41, &["codex", "resume", SCAN_REQUEST_IDS[1]]);
+        let mut scanner = fixture.scanner();
+        scanner.scan_details_for_test(&[closed, live.clone()], &[], fixture.home.path());
+        let reads = scanner.open_thread_rows.database_reads;
+        let queries = scanner.open_thread_rows.queried_ids.len();
+        fixture.revise();
+        let rows = scanner.scan_details_for_test(&[live], &[], fixture.home.path());
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.pid == 41)
+                .expect("live pane")
+                .model,
+            ModelName::Sol
+        );
+        assert_eq!(scanner.open_thread_rows.database_reads - reads, 1);
+        assert_eq!(
+            &scanner.open_thread_rows.queried_ids[queries..],
+            &[HashSet::from([SCAN_REQUEST_IDS[1].to_owned()])],
+            "the first query in the production scan excludes the departed pane"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cold_scan_queries_pane_and_app_server_requests_together() {
+        let fixture = LiveThreadScanFixture::new();
+        let held = fs::File::open(
+            fixture
+                .home
+                .path()
+                .join(".codex/sessions")
+                .join(format!("rollout-{}.jsonl", SCAN_REQUEST_IDS[2])),
+        )
+        .expect("held app-server rollout");
+        let pane = fixture.process(41, &["codex", "resume", SCAN_REQUEST_IDS[1]]);
+        let server = fixture.process(std::process::id(), &["codex", "app-server"]);
+        let mut scanner = fixture.scanner();
+        scanner.scan_details_for_test(&[pane, server], &[], fixture.home.path());
+        assert_eq!(
+            scanner.open_thread_rows.database_reads, 1,
+            "a cold production scan reads one complete account answer"
+        );
+        assert_eq!(
+            scanner.open_thread_rows.queried_ids.as_slice(),
+            &[HashSet::from([
+                SCAN_REQUEST_IDS[1].to_owned(),
+                SCAN_REQUEST_IDS[2].to_owned()
+            ])]
+        );
+        drop(held);
+    }
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
@@ -2693,6 +3257,7 @@ mod tests {
             codex_start_window:  crate::config::CodexStartWindow::default(),
             herdr_probe_wait:    HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            compactions:         CompactionMarkers::default(),
             transcript_models:   super::transcript::TranscriptModels::default(),
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
@@ -3400,5 +3965,40 @@ mod process_cache_tests {
         );
         assert!(rows.iter().any(|row| row.pid == std::process::id()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl LocalScanner {
+    pub(super) fn set_herdr_for_test(&mut self, herdr: HerdrNames) { self.herdr = herdr; }
+
+    pub(super) fn use_fixture_run_events(&mut self) {
+        self.run_records = activity::RunRecords::for_test();
+    }
+
+    pub(super) fn scan_astra_for_test(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        home: &Path,
+    ) -> (Vec<AgentRow>, super::HierarchyEdges) {
+        self.desktop_source = DesktopSource::Windows(Vec::new());
+        let mut rows = Vec::new();
+        let snapshot = self.scan_with_staff(
+            processes,
+            sessions,
+            Some(home),
+            |_, answer, _| rows = answer,
+            |scanner, rows| scanner.attach_details(processes, sessions, Some(home), rows),
+        );
+        let edges = snapshot.publication().edges.with_worker_roles(&rows);
+        (rows, edges)
+    }
+}
+
+#[cfg(test)]
+impl LocalScanner {
+    pub(super) const fn astra_database_reads_for_test(&self) -> usize {
+        self.open_thread_rows.database_reads
     }
 }

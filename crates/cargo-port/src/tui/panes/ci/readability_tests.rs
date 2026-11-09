@@ -52,7 +52,7 @@ fn ci_placeholder_marks_its_cut_text() -> anyhow::Result<()> {
     let buffer = test_support::draw_pane(&mut app, PaneId::CiRuns, 18)?;
     let text = test_support::rows(&buffer).join("\n");
     assert!(
-        text.contains("No CI workflow configured") || text.contains("No CI workflow…"),
+        text.contains("No CI workflow configured") || text.contains("No CI workflo… "),
         "{text}"
     );
     Ok(())
@@ -205,13 +205,14 @@ fn assert_total_header_edge(buffer: &Buffer, area: Rect) -> anyhow::Result<()> {
 
 #[test]
 fn ci_total_header_aligns_with_duration_and_status_at_eighty_and_wide() -> anyhow::Result<()> {
-    for width in [80, 160] {
+    for width in [80, 95, 160] {
         for mode in ["branch", "all"] {
             let mut app = test_support::project_app();
             app.framework.color_mode = ColorMode::Colored;
             let mut run = display_run("fleet")?;
             run.wall_clock_secs = Some(297);
             run.ci_status = CiStatus::Failed;
+            run.commit_title = Some("phase cargo tools ".repeat(12));
             app.ci.set_content(CiData {
                 runs:           vec![run],
                 mode_label:     Some(mode.to_string()),
@@ -220,6 +221,8 @@ fn ci_total_header_aligns_with_duration_and_status_at_eighty_and_wide() -> anyho
             });
             let buffer = test_support::draw_ui(&mut app, width)?;
             assert_total_header_edge(&buffer, app.panes.tiled_layout.area(PaneId::CiRuns))?;
+            let area = app.panes.tiled_layout.area(PaneId::CiRuns);
+            test_support::assert_ellipses_follow_text(&buffer, area);
         }
     }
     Ok(())

@@ -20,6 +20,7 @@ use crate::project::AbsolutePath;
 use crate::project::CommitDate;
 use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadataStore;
+use crate::scan::SourceMeasurements;
 use crate::tui::app::DiscoveryShimmer;
 use crate::tui::app::ManifestMetadataStates;
 #[cfg(test)]
@@ -28,16 +29,17 @@ use crate::tui::app::ScanState;
 use crate::tui::app::TargetDirIndex;
 
 pub(crate) struct Scan {
-    pub(in crate::tui) state:             ScanState,
-    data_generation:                      u64,
-    discovery_shimmers:                   HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit:             HashMap<AbsolutePath, CommitDate>,
-    metadata_store:                       Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(in crate::tui) manifest_metadata: ManifestMetadataStates,
-    pub(in crate::tui) target_dir_index:  TargetDirIndex,
-    priority_fetch_path:                  Option<AbsolutePath>,
+    pub(in crate::tui) source_measurements: Arc<SourceMeasurements>,
+    pub(in crate::tui) state:               ScanState,
+    data_generation:                        u64,
+    discovery_shimmers:                     HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit:               HashMap<AbsolutePath, CommitDate>,
+    metadata_store:                         Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(in crate::tui) manifest_metadata:   ManifestMetadataStates,
+    pub(in crate::tui) target_dir_index:    TargetDirIndex,
+    priority_fetch_path:                    Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:                     RetrySpawnMode,
+    retry_spawn_mode:                       RetrySpawnMode,
 }
 
 impl Scan {
@@ -47,6 +49,7 @@ impl Scan {
     ) -> Self {
         Self {
             state,
+            source_measurements: Arc::default(),
             data_generation: 0,
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),

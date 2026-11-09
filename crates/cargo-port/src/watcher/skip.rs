@@ -11,7 +11,28 @@ pub(super) struct WatchSkipSet {
     target_directories: HashSet<AbsolutePath>,
 }
 
+/// The subscription changes between two exclusion policies.
+#[derive(Clone, Copy)]
+pub(super) enum ExclusionTransition {
+    Equivalent,
+    TreesExcluded,
+    TreesRestored,
+    TreesExcludedAndRestored,
+}
+
 impl WatchSkipSet {
+    /// Describe the watch changes needed for the next policy.
+    pub(super) fn transition_to(&self, next: &Self) -> ExclusionTransition {
+        let restores = self.target_directories.iter().any(|root| !next.skips(root));
+        let excludes = next.target_directories.iter().any(|root| !self.skips(root));
+        match (excludes, restores) {
+            (false, false) => ExclusionTransition::Equivalent,
+            (true, false) => ExclusionTransition::TreesExcluded,
+            (false, true) => ExclusionTransition::TreesRestored,
+            (true, true) => ExclusionTransition::TreesExcludedAndRestored,
+        }
+    }
+
     pub(super) fn add_target_directory(&mut self, path: AbsolutePath) {
         if let Ok(resolved) = path.canonicalize() {
             self.target_directories.insert(AbsolutePath::from(resolved));

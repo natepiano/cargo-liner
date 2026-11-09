@@ -18,7 +18,6 @@ use crate::interaction::SelectableSurface;
 use crate::interaction::SelectionSurface;
 use crate::interaction::SurfaceLookup;
 use crate::interaction::SurfaceSelection;
-use crate::interaction::TileSelection;
 use crate::interaction::ViewportLine;
 use crate::sort;
 use crate::sort::AccountsColumn;
@@ -129,15 +128,12 @@ fn tree_pressed(
         painted.area.x.saturating_add(point.column),
         painted.area.y.saturating_add(point.row),
     ));
-    if let TileSelection::Row(identity) = rows.selection()
-        && !matches!(hit, RowClick::Missed)
+    if let RowClick::Selected(identity) = hit
         && tile.row_identities().contains(&identity)
         && let SurfaceLookup::Current(state) = app.selections.surface_mut(&painted.surface())
     {
         state.select(&identity);
-        if let RowClick::Toggled(identity) = hit {
-            expansion::dispatch(app, HandlerExpansionAction::Marker(identity));
-        }
+        expansion::dispatch(app, HandlerExpansionAction::Press(identity));
     }
 }
 
@@ -169,14 +165,10 @@ fn summary_pressed(
         return;
     }
     let mut rows = painted.rows.clone();
-    if !matches!(
-        rows.click(ratatui::layout::Position::new(
-            painted.area.x.saturating_add(point.column),
-            painted.area.y.saturating_add(point.row),
-        )),
-        RowClick::Missed
-    ) && let TileSelection::Row(identity) = rows.selection()
-        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&painted.surface())
+    if let RowClick::Selected(identity) = rows.click(ratatui::layout::Position::new(
+        painted.area.x.saturating_add(point.column),
+        painted.area.y.saturating_add(point.row),
+    )) && let SurfaceLookup::Current(state) = app.selections.surface_mut(&painted.surface())
     {
         state.select(&identity);
     }

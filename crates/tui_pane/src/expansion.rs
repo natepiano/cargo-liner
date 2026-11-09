@@ -39,6 +39,15 @@ pub enum RowExpansion<K> {
     },
 }
 
+/// The press result for a `RowExpansion`, with the new `ExpansionState` for a branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowPressResult {
+    /// `RowExpansion::Leaf` has no `ExpansionState` to change.
+    Leaf,
+    /// `RowExpansion::Branch` changes to this `ExpansionState`.
+    Toggled(ExpansionState),
+}
+
 /// The parent row, or the absence of a parent at a forest root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RowParent<R> {
@@ -172,6 +181,19 @@ impl<K: Eq + Hash + Clone> ExpansionModel<K> {
     /// Remove overrides whose keys no longer occur in the tree.
     pub fn retain(&mut self, mut exists: impl FnMut(&K) -> bool) {
         self.overrides.retain(|key, _| exists(key));
+    }
+
+    /// Toggle `RowExpansion::Branch` through `ExpansionModel::toggle`. Leave `RowExpansion::Leaf`
+    /// unchanged.
+    pub fn press_row<T: ExpansionTree<Key = K>>(
+        &mut self,
+        tree: &T,
+        row: &T::Row,
+    ) -> RowPressResult {
+        match tree.row_expansion(row) {
+            RowExpansion::Branch { key, depth } => RowPressResult::Toggled(self.toggle(key, depth)),
+            RowExpansion::Leaf => RowPressResult::Leaf,
+        }
     }
 
     /// Close an open row, or select and close its parent for a closed row or leaf.
@@ -364,5 +386,44 @@ mod tests {
                 changed:  ExpansionChange::Unchanged,
             }
         );
+    }
+
+    #[test]
+    fn row_press_opens_a_closed_branch() {
+        let mut model = ExpansionModel::default();
+        assert_eq!(
+            model.press_row(&Tree, &"child"),
+            RowPressResult::Toggled(ExpansionState::Open)
+        );
+        assert!(model.is_open(&"child", 1));
+    }
+
+    #[test]
+    fn row_press_closes_an_open_branch() {
+        let mut model = ExpansionModel::from_open_keys(["child"]);
+        assert_eq!(
+            model.press_row(&Tree, &"child"),
+            RowPressResult::Toggled(ExpansionState::Closed)
+        );
+        assert!(!model.is_open(&"child", 1));
+    }
+
+    #[test]
+    fn row_press_leaves_a_leaf_and_other_choices_unchanged() {
+        let mut model = ExpansionModel::from_open_keys(["root"]);
+        assert_eq!(model.press_row(&Tree, &"leaf"), RowPressResult::Leaf);
+        assert_eq!(model.open_keys().copied().collect::<Vec<_>>(), ["root"]);
+        assert!(!model.is_open(&"leaf", 2));
+    }
+
+    #[test]
+    fn row_press_closes_a_branch_open_by_depth() {
+        let mut model = ExpansionModel::new(|depth| depth == 0);
+        assert_eq!(
+            model.press_row(&Tree, &"root"),
+            RowPressResult::Toggled(ExpansionState::Closed)
+        );
+        assert!(!model.is_open(&"root", 0));
+        assert!(model.is_open(&"other", 0));
     }
 }

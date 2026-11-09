@@ -197,11 +197,10 @@ pub(crate) enum TileSelection {
     Row(RowIdentity),
 }
 
-/// The selected row and the requested marker operation.
+/// The selected row from one press, or a press outside the rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RowClick {
-    Toggled(RowIdentity),
-    Selected,
+    Selected(RowIdentity),
     Missed,
 }
 
@@ -292,49 +291,11 @@ impl ViewportMapping {
     }
 }
 
-/// A branch marker occupies two cells within its row's painted lead.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) enum MarkerCells {
-    #[default]
-    Absent,
-    Branch {
-        column: u16,
-    },
-    Clipped {
-        column: u16,
-    },
-}
-
-impl MarkerCells {
-    const fn contains(self, column: u16) -> bool {
-        match self {
-            Self::Absent => false,
-            Self::Branch { column: first } => first <= column && column < first.saturating_add(2),
-            Self::Clipped { column: first } => column == first,
-        }
-    }
-
-    fn clipped(self, columns: &Range<u16>) -> Self {
-        let (first, end) = match self {
-            Self::Absent => return Self::Absent,
-            Self::Branch { column } => (column, column.saturating_add(2)),
-            Self::Clipped { column } => (column, column.saturating_add(1)),
-        };
-        let first = first.max(columns.start);
-        match end.min(columns.end).saturating_sub(first) {
-            2 => Self::Branch { column: first },
-            1 => Self::Clipped { column: first },
-            _ => Self::Absent,
-        }
-    }
-}
-
 /// A selectable item always occupies its first line, with zero or more continuations.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowSpan {
     first:              usize,
     continuation_lines: usize,
-    marker:             MarkerCells,
 }
 
 impl RowSpan {
@@ -342,11 +303,8 @@ impl RowSpan {
         Self {
             first,
             continuation_lines: 0,
-            marker: MarkerCells::Absent,
         }
     }
-
-    pub(crate) const fn with_marker(self, marker: MarkerCells) -> Self { Self { marker, ..self } }
 
     pub(crate) const fn with_continuations(self, continuation_lines: usize) -> Self {
         Self {
@@ -542,13 +500,6 @@ impl SurfaceSelection {
         self.painted = self.mapping();
     }
 
-    /// Retain only marker cells inside the painted table columns.
-    pub(crate) fn clip_markers(&mut self, columns: Range<u16>) {
-        for (_, span) in &mut self.rows {
-            span.marker = span.marker.clipped(&columns);
-        }
-    }
-
     pub(crate) fn click(&mut self, position: Position) -> RowClick {
         if !self.viewport.content_area().contains(position) {
             return RowClick::Missed;
@@ -560,16 +511,7 @@ impl SurfaceSelection {
             return RowClick::Missed;
         };
         if let Some(index) = self.rows.iter().position(|(_, span)| span.contains(line)) {
-            let (identity, span) = &self.rows[index];
-            let hit = if line == span.start()
-                && span
-                    .marker
-                    .contains(position.x - self.viewport.content_area().x)
-            {
-                RowClick::Toggled(identity.clone())
-            } else {
-                RowClick::Selected
-            };
+            let hit = RowClick::Selected(self.rows[index].0.clone());
             self.viewport.set_pos(index);
             self.keep_visible();
             hit
@@ -911,33 +853,35 @@ mod tests {
     }
 
     #[test]
-    fn marker_targets_clip_to_the_painted_row_rectangle() {
+    fn row_body_presses_resolve_once_within_the_painted_rectangle() {
         let identity = RowIdentity::Shell {
             machine: "local".into(),
             pid:     10,
             started: 100,
         };
         let mut state = SurfaceSelection::default();
-        state.resolve(vec![(
-            identity.clone(),
-            RowSpan::single(0).with_marker(MarkerCells::Branch { column: 4 }),
-        )]);
+        state.resolve(vec![(identity.clone(), RowSpan::single(0))]);
         state.set_area(Rect::new(10, 20, 5, 1));
         assert_eq!(
             state.click(Position::new(14, 20)),
-            RowClick::Toggled(identity.clone())
+            RowClick::Selected(identity.clone())
         );
         assert_eq!(state.click(Position::new(15, 20)), RowClick::Missed);
-        state.clip_markers(0..4);
-        assert_eq!(state.click(Position::new(14, 20)), RowClick::Selected);
+        assert_eq!(
+            state.click(Position::new(10, 20)),
+            RowClick::Selected(identity.clone())
+        );
         state.set_area(Rect::new(10, 20, 4, 1));
-        assert_eq!(state.click(Position::new(13, 20)), RowClick::Selected);
+        assert_eq!(
+            state.click(Position::new(13, 20)),
+            RowClick::Selected(identity.clone())
+        );
         assert_eq!(state.click(Position::new(14, 20)), RowClick::Missed);
         assert_eq!(state.selection(), TileSelection::Row(identity));
     }
 
     #[test]
-    fn continuation_lines_do_not_reuse_the_first_lines_marker() {
+    fn continuation_presses_resolve_the_same_row_as_the_first_line() {
         let identity = RowIdentity::Shell {
             machine: "local".into(),
             pid:     10,
@@ -946,15 +890,16 @@ mod tests {
         let mut state = SurfaceSelection::default();
         state.resolve(vec![(
             identity.clone(),
-            RowSpan::single(0)
-                .with_continuations(1)
-                .with_marker(MarkerCells::Branch { column: 0 }),
+            RowSpan::single(0).with_continuations(1),
         )]);
         state.set_area(Rect::new(10, 20, 8, 2));
-        assert_eq!(state.click(Position::new(10, 21)), RowClick::Selected);
+        assert_eq!(
+            state.click(Position::new(17, 21)),
+            RowClick::Selected(identity.clone())
+        );
         assert_eq!(
             state.click(Position::new(10, 20)),
-            RowClick::Toggled(identity)
+            RowClick::Selected(identity)
         );
     }
 }

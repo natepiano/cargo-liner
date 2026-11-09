@@ -13,6 +13,7 @@ use std::io::Read;
 use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
@@ -30,8 +31,12 @@ pub(super) use command_inputs::FileRevision;
 pub(super) use command_inputs::InputDrivenCommand;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 
+use super::Activity;
+use super::AgentActivity;
 use super::AgentRow;
+use super::AstraSessionMembership;
 use super::CodexThreadId;
 use super::HierarchyEdge;
 use super::HierarchyEdges;
@@ -40,6 +45,7 @@ use super::HierarchySource;
 use super::RoleFallback;
 #[cfg(test)]
 use super::SessionIdentity;
+use super::herdr::PaneWork;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
@@ -124,7 +130,9 @@ impl HierarchyEdges {
     pub(super) fn with_worker_roles(mut self, rows: &[AgentRow]) -> Self {
         let mut roles = BTreeMap::new();
         for row in rows {
-            if let Some(session) = row.session_id.ids().next()
+            if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
+                roles.insert(member.session(), member.role().hierarchy());
+            } else if let Some(session) = row.session_id.ids().next()
                 && let RoleFallback::Worker(role) = row.role_fallback
             {
                 roles.insert(session, role);
@@ -418,21 +426,22 @@ fn read_output(stdout: impl Read) -> Result<Vec<u8>, HierarchyError> {
 }
 
 /// The staff file owns names and links, while the census owns liveness.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct StaffRoster {
     pub(super) edges: HierarchyEdges,
     names:            BTreeMap<String, String>,
+    astra:            BTreeMap<String, AstraWorkerMembership>,
     members:          BTreeMap<String, StaffMembership>,
 }
 
 /// A checked member retains its current session and its current manager.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct StaffMembership {
     session: String,
     parent:  StaffManager,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum StaffManager {
     Root,
     Session(String),
@@ -501,6 +510,10 @@ struct StaffFields {
     name:            String,
     parent:          StaffParent,
     current_session: String,
+    #[serde(default)]
+    role:            Option<Value>,
+    #[serde(default)]
+    home:            Option<Value>,
 }
 
 struct StaffRow {
@@ -571,7 +584,7 @@ impl<'a> ValidatedStaffForest<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum StaffKind {
     Showrunner,
     Unit,
@@ -663,6 +676,12 @@ impl StaffRoster {
                     parent,
                 },
             );
+            if matches!(member.kind, StaffKind::Worker) {
+                roster.astra.insert(
+                    member.current_session.clone(),
+                    AstraMembership::from_staff(member),
+                );
+            }
             let role = member.kind.role();
             if !member.name.is_empty() {
                 roster
@@ -1041,6 +1060,166 @@ impl HierarchyCache {
             edges,
             notice: self.notice,
         }
+    }
+}
+
+/// The staff file names the supported Astra responsibilities.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub(super) enum AstraRole {
+    #[serde(rename = "astra-designer")]
+    Designer,
+    #[serde(rename = "astra-reviewer")]
+    Reviewer,
+}
+
+impl AstraRole {
+    pub(super) const fn hierarchy(self) -> HierarchyRole {
+        match self {
+            Self::Designer => HierarchyRole::AstraDesigner,
+            Self::Reviewer => HierarchyRole::AstraReviewer,
+        }
+    }
+}
+
+/// `AstraRunActivity` keeps live detached work separate from the pane's turn state.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AstraRunActivity {
+    #[default]
+    Inactive,
+    Live(Activity),
+}
+
+impl AstraRunActivity {
+    const fn is_inactive(&self) -> bool { matches!(self, Self::Inactive) }
+}
+
+/// A checked Astra member always has a staff identity and an absolute account home.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(try_from = "AstraMemberWire")]
+pub(crate) struct AstraMembership {
+    staff_id: String,
+    session:  String,
+    home:     PathBuf,
+    role:     AstraRole,
+    work:     PaneWork,
+    #[serde(default, skip_serializing_if = "AstraRunActivity::is_inactive")]
+    run:      AstraRunActivity,
+}
+
+/// Probe fields are unchecked until the membership constructor accepts them.
+#[derive(Deserialize)]
+struct AstraMemberWire {
+    staff_id: String,
+    session:  String,
+    home:     PathBuf,
+    role:     AstraRole,
+    work:     PaneWork,
+    #[serde(default)]
+    run:      AstraRunActivity,
+}
+
+impl TryFrom<AstraMemberWire> for AstraMembership {
+    type Error = &'static str;
+
+    fn try_from(wire: AstraMemberWire) -> Result<Self, Self::Error> {
+        if wire.staff_id.trim().is_empty()
+            || wire.session.trim().is_empty()
+            || !wire.home.is_absolute()
+        {
+            return Err("Astra membership requires an identity and an absolute account home");
+        }
+        Ok(Self {
+            staff_id: wire.staff_id,
+            session:  wire.session,
+            home:     wire.home,
+            role:     wire.role,
+            work:     wire.work,
+            run:      wire.run,
+        })
+    }
+}
+
+impl AstraMembership {
+    pub(super) fn session(&self) -> &str { &self.session }
+    pub(super) fn home(&self) -> &Path { &self.home }
+    const fn role(&self) -> AstraRole { self.role }
+    pub(crate) const fn work(&self) -> PaneWork { self.work }
+
+    pub(crate) const fn has_live_run(&self) -> bool {
+        matches!(self.run, AstraRunActivity::Live(_))
+    }
+
+    pub(super) const fn with_run_activity(mut self, observed: AgentActivity) -> Self {
+        if matches!(observed, AgentActivity::Active(Activity::Compacting)) {
+            return self;
+        }
+        self.run = match observed {
+            AgentActivity::Active(activity) => AstraRunActivity::Live(activity),
+            AgentActivity::Idle | AgentActivity::Unreported => AstraRunActivity::Inactive,
+        };
+        self
+    }
+
+    pub(super) const fn activity(&self, observed: super::AgentActivity) -> super::AgentActivity {
+        if matches!(observed, AgentActivity::Active(Activity::Compacting)) {
+            return observed;
+        }
+        if let AstraRunActivity::Live(activity) = self.run {
+            return AgentActivity::Active(activity);
+        }
+        match self.work {
+            PaneWork::Idle => AgentActivity::Idle,
+            PaneWork::Busy => match observed {
+                AgentActivity::Active(_) => observed,
+                _ => AgentActivity::Active(Activity::Thinking),
+            },
+            PaneWork::Unknown => AgentActivity::Unreported,
+        }
+    }
+}
+
+/// Only complete staff fields establish Astra membership.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum AstraWorkerMembership {
+    #[default]
+    Ordinary,
+    Member(AstraMembership),
+}
+
+impl AstraMembership {
+    fn from_staff(row: &StaffRow) -> AstraWorkerMembership {
+        let role = match row.role.as_ref().and_then(Value::as_str) {
+            Some("astra-designer") => AstraRole::Designer,
+            Some("astra-reviewer") => AstraRole::Reviewer,
+            _ => return AstraWorkerMembership::Ordinary,
+        };
+        let Some(home) = row.home.as_ref().and_then(Value::as_str) else {
+            return AstraWorkerMembership::Ordinary;
+        };
+        Self::try_from(AstraMemberWire {
+            staff_id: row.id.clone(),
+            session: row.current_session.clone(),
+            home: PathBuf::from(home),
+            role,
+            work: PaneWork::Unknown,
+            run: AstraRunActivity::Inactive,
+        })
+        .map_or(
+            AstraWorkerMembership::Ordinary,
+            AstraWorkerMembership::Member,
+        )
+    }
+
+    pub(super) const fn with_work(mut self, work: PaneWork) -> Self {
+        self.work = work;
+        self
+    }
+}
+
+impl StaffRoster {
+    pub(super) fn astra_membership(&self, session: &str) -> AstraWorkerMembership {
+        self.astra.get(session).cloned().unwrap_or_default()
     }
 }
 

@@ -39,6 +39,51 @@ use crate::theme::SessionHue;
 const JOB: &str = "fix the slow saved-scene handover";
 const SEAT: &str = "cargo-liner-handler-enh-impl7";
 
+#[test]
+fn captured_tile_detached_dispatch_folds_into_its_codex_pane()
+-> Result<(), Box<dyn std::error::Error>> {
+    let captured: Value =
+        serde_json::from_str(include_str!("../fixtures/pane_detached_tile.json"))?;
+    let id = captured["pane_session"]
+        .as_str()
+        .ok_or("captured pane session")?;
+    let run = &captured["runs"][0];
+    let mut director: AgentRow = serde_json::from_value(serde_json::json!({
+        "agent":"claude", "pid":captured["director_pid"],
+        "session_id":captured["director_session"], "name":"tile", "started":100,
+        "directory":captured["processes"][0]["directory"],
+        "children":[{"kind":"shell", "pid":run["pid"], "depth":0,
+            "name":run["label"], "started":100}]
+    }))?;
+    director.children[0].dispatch = WorkerDispatch::Worker(ResolvedWorkerDispatch {
+        seat:       "impl".into(),
+        identity:   WorkerIdentity::CodexThread(id.to_owned()),
+        job:        JobText::Recorded(run["label"].as_str().ok_or("captured run label")?.into()),
+        short_seat: "impl".into(),
+        role:       DispatchRole::Worker(WorkerRole::Impl),
+    });
+    let pane: AgentRow = serde_json::from_value(serde_json::json!({
+        "agent":"codex", "pid":captured["pane_pid"], "name":"impl", "started":100,
+        "directory":captured["processes"][0]["directory"],
+        "codex_session":{"open_staff_rollout":id}, "children":[]
+    }))?;
+    let edges: HierarchyEdges = serde_json::from_value(serde_json::json!([{
+        "manager":captured["director_session"], "member":id, "role":"worker"
+    }]))?;
+    let state = MachineState::Answered(vec![director, pane], edges.into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let shell = &state.rows()[0].children[0];
+    assert!(
+        placement.folds_dispatch(shell),
+        "the captured detached dispatch must share its Codex pane worker row"
+    );
+    Ok(())
+}
+
 /// A real roster file in an isolated session directory.
 fn roster_fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary session directory");

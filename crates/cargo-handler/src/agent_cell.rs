@@ -12,7 +12,6 @@ use std::iter;
 use std::num::NonZeroU64;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::ops::Range;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -42,10 +41,12 @@ use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
+use crate::census::AstraSessionMembership;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyRole;
+use crate::census::PaneWork;
 use crate::census::Placement;
 use crate::census::RoleFallback;
 use crate::census::RoleLabel;
@@ -57,6 +58,8 @@ use crate::census::StaffRowName;
 #[cfg(test)]
 use crate::census::Timer;
 use crate::census::WorkIdentity;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::transcript::SubagentRole;
 use crate::census::worker_dispatch::DispatchLabel;
 use crate::census::worker_dispatch::WorkerDispatch;
@@ -77,7 +80,9 @@ use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH;
 use crate::constants::TREE_BRANCH_HEADER;
 use crate::constants::TREE_DIRECTORY_HEADER;
+use crate::constants::TREE_EFFORT_HEADER;
 use crate::constants::TREE_LAST_BRANCH;
+use crate::constants::TREE_MODEL_HEADER;
 use crate::constants::TREE_RAIL;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
@@ -87,7 +92,6 @@ use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
-use crate::interaction::MarkerCells;
 use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
 use crate::interaction::RowSpan;
@@ -385,6 +389,8 @@ pub(crate) enum TreeColumn {
     Session,
     Type,
     Role,
+    Model,
+    Effort,
     Status,
     Account,
     Branch,
@@ -403,6 +409,8 @@ impl TreeColumn {
             Self::Session
             | Self::Type
             | Self::Role
+            | Self::Model
+            | Self::Effort
             | Self::Status
             | Self::Account
             | Self::Branch
@@ -416,6 +424,8 @@ impl TreeColumn {
             Self::Session => TREE_SESSION_HEADER,
             Self::Type => TREE_TYPE_HEADER,
             Self::Role => TREE_ROLE_HEADER,
+            Self::Model => TREE_MODEL_HEADER,
+            Self::Effort => TREE_EFFORT_HEADER,
             Self::Status => TREE_STATUS_HEADER,
             Self::Account => TREE_ACCOUNT_HEADER,
             Self::Branch => TREE_BRANCH_HEADER,
@@ -573,9 +583,11 @@ impl PermittedTreeColumns {
     const fn remove(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = false; }
 }
 
-/// A finite fitting pass can discard only these three optional columns.
+/// `ColumnDrop::ORDER` defines the order for removing optional columns.
 #[derive(Clone, Copy)]
 enum ColumnDrop {
+    Effort,
+    Model,
     Directory,
     Branch,
     Type,
@@ -584,7 +596,9 @@ enum ColumnDrop {
 }
 
 impl ColumnDrop {
-    const ORDER: [Self; 5] = [
+    const ORDER: [Self; 7] = [
+        Self::Effort,
+        Self::Model,
         Self::Directory,
         Self::Branch,
         Self::Type,
@@ -594,6 +608,8 @@ impl ColumnDrop {
 
     const fn column(self) -> TreeColumn {
         match self {
+            Self::Effort => TreeColumn::Effort,
+            Self::Model => TreeColumn::Model,
             Self::Directory => TreeColumn::Directory,
             Self::Branch => TreeColumn::Branch,
             Self::Type => TreeColumn::Type,
@@ -696,7 +712,9 @@ impl TreeMetrics {
         let role_clipped =
             role_width.is_some_and(|(index, original)| minimum_widths[index] < original);
         let drop = match step {
-            ColumnDrop::Directory | ColumnDrop::Branch => !full_fits,
+            ColumnDrop::Effort | ColumnDrop::Model | ColumnDrop::Directory | ColumnDrop::Branch => {
+                !full_fits
+            },
             ColumnDrop::Type | ColumnDrop::Age | ColumnDrop::Account => {
                 minimum > usize::from(width)
                     || session_clipped
@@ -1001,26 +1019,13 @@ impl AgentTile<'_> {
         lines.iter().map(|line| line.identity.clone()).collect()
     }
 
-    /// Store marker columns from the same lead that the session column paints.
+    /// Return a `RowSpan` for each visible row.
     pub(crate) fn row_spans(&self) -> Vec<RowSpan> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
             Self::Unassigned(entry) => &entry.lines,
         };
-        lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let marker = match line.expansion {
-                    TreeMarker::Leaf => MarkerCells::Absent,
-                    TreeMarker::Open | TreeMarker::Closed => MarkerCells::Branch {
-                        column: summary::cell_width(SECTION_HEADER_INDENT)
-                            .saturating_add(summary::cell_width(&line.lead()).saturating_sub(2)),
-                    },
-                };
-                crate::interaction::RowSpan::single(index).with_marker(marker)
-            })
-            .collect()
+        (0..lines.len()).map(RowSpan::single).collect()
     }
 
     pub(crate) fn set_viewport(&self, viewport: &Viewport) {
@@ -1070,7 +1075,9 @@ enum GroupFitStep {
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 6] = [
+    const ORDER: [Self; 8] = [
+        Self::Drop(ColumnDrop::Effort),
+        Self::Drop(ColumnDrop::Model),
         Self::Drop(ColumnDrop::Directory),
         Self::Drop(ColumnDrop::Branch),
         Self::Drop(ColumnDrop::Type),
@@ -1561,6 +1568,8 @@ impl TreeLine<'_> {
         match column {
             TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
             TreeColumn::Role => self.role_text().to_string(),
+            TreeColumn::Model => self.model().display_text().to_owned(),
+            TreeColumn::Effort => self.effort().display_text().to_owned(),
             TreeColumn::Type => match self.subject {
                 LineSubject::Work(Work {
                     kind: WorkKind::Shell(_),
@@ -1606,6 +1615,30 @@ impl TreeLine<'_> {
         }
     }
 
+    /// Use the conversation's model without inheriting its owner's metadata.
+    fn model(&self) -> &ModelName {
+        match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                &self.row.model
+            },
+            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+                &child.model
+            },
+        }
+    }
+
+    /// Use the conversation's effort without inheriting its owner's metadata.
+    fn effort(&self) -> ReasoningEffort {
+        match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                self.row.effort
+            },
+            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+                child.effort
+            },
+        }
+    }
+
     /// Text written into a tree cell, with the shared age width.
     fn cell_text(&self, column: TreeColumn, now: u64, ages: &AgeLayout) -> String {
         match column {
@@ -1613,6 +1646,8 @@ impl TreeLine<'_> {
             TreeColumn::Session
             | TreeColumn::Type
             | TreeColumn::Role
+            | TreeColumn::Model
+            | TreeColumn::Effort
             | TreeColumn::Status
             | TreeColumn::Account
             | TreeColumn::Branch
@@ -1622,6 +1657,27 @@ impl TreeLine<'_> {
 
     /// Resolve a shell's clock once so text and ink cannot disagree.
     fn status(&self, now: u64) -> ResolvedStatus {
+        if matches!(
+            self.subject,
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
+        ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
+        {
+            let text = if self.row.activity == AgentActivity::Active(Activity::Compacting)
+                || member.has_live_run()
+            {
+                summary::status_text(self.row)
+            } else {
+                match member.work() {
+                    PaneWork::Idle => "idle",
+                    PaneWork::Busy => summary::status_text(self.row),
+                    PaneWork::Unknown => "unknown",
+                }
+            };
+            return ResolvedStatus {
+                text: text.to_owned(),
+                role: summary::status_role(self.row),
+            };
+        }
         let (text, role) = match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => (
                 summary::status_text(self.row).to_owned(),
@@ -2400,6 +2456,8 @@ const FULL_ACCOUNTS: &[TreeColumn] = &[
     TreeColumn::Session,
     TreeColumn::Type,
     TreeColumn::Role,
+    TreeColumn::Model,
+    TreeColumn::Effort,
     TreeColumn::Status,
     TreeColumn::Account,
     TreeColumn::Branch,
@@ -3324,12 +3382,6 @@ fn place_line(row: &AgentRow) -> Line<'static> {
 /// `width` cells across: what equal left and right indents leave.
 fn header_width(width: u16) -> u16 {
     width.saturating_sub(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
-}
-
-/// Painted table columns relative to the tile content, with both heading insets removed.
-pub(crate) fn tree_marker_columns(area: Rect) -> Range<u16> {
-    let tree = header_indented(area);
-    tree.x.saturating_sub(area.x)..tree.right().saturating_sub(area.x)
 }
 
 /// The tree area with the heading indent reserved on both sides.

@@ -217,8 +217,13 @@ fn resolve_tiled_layout(
             + panes::PROJECT_LIST_RIGHT_PADDING,
     )
     .unwrap_or(u16::MAX);
-    let (package_width, git_width) =
-        panes::top_pane_widths(top_area, left_width, minimum_left_width);
+    let targets_preferred_width = app.panes.targets.preferred_width();
+    let (package_width, git_width) = panes::top_pane_widths(
+        top_area,
+        left_width,
+        minimum_left_width,
+        targets_preferred_width,
+    );
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
         height
@@ -234,6 +239,7 @@ fn resolve_tiled_layout(
         core_count,
         bottom_row,
         top_required_inner,
+        targets_preferred_width,
     )
 }
 
@@ -750,10 +756,16 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     if text.width() <= max_width {
         return text.to_string();
     }
+    if ellipsis.is_empty() {
+        return truncate_to_width(text, max_width).to_string();
+    }
     if max_width <= ellipsis.width() {
         return truncate_to_width(ellipsis, max_width).to_string();
     }
-    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()));
+    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()))
+        .trim_end()
+        .trim_end_matches(" ·")
+        .trim_end();
     let mut shortened = String::with_capacity(prefix.len() + ellipsis.len());
     shortened.push_str(prefix);
     shortened.push_str(ellipsis);
@@ -852,7 +864,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         },
         &notes,
         &globals,
-    );
+    )
+    .with_individual_note_hints();
     render_framework_status_line::<App, AppGlobalAction>(
         frame,
         area,
@@ -953,6 +966,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             20,
+            18,
         );
         let wide = panes::resolve_layout(
             Rect::new(0, 0, 150, 30),
@@ -961,6 +975,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             20,
+            18,
         );
 
         assert_eq!(narrow.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
@@ -976,6 +991,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             20,
+            18,
         );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
@@ -1006,6 +1022,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             4,
+            18,
         );
 
         assert!(layout.area(PaneId::Cpu).height > super::panes::cpu_required_pane_height(12));

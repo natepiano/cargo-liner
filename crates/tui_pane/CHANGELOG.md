@@ -9,6 +9,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.
+- `ExpansionModel::press_row` and `RowPressResult` share branch toggling and leaf handling across applications.
 - `TileGrid::cell_index` resolves current content identity without painted coordinates.
 
 - `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.
@@ -42,6 +44,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Cut pane titles keep a blank cell before the corner or joint.
+- Status lines keep whole hint groups by default. `StatusLine::with_individual_note_hints` enables individual hint fitting and a three-cell gap before notes. With this policy, narrow rows drop whole hints from the right. Rows without notes keep whole hint groups.
 
 - Pane titles use their trailing padding cell before they cut text.
 - Progress rows keep whole labels and reduce bars or counts first.

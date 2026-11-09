@@ -37,12 +37,12 @@ fn source_accounts() -> TestResult<AccountsTable> {
         json!({"label":"claude1","tool":"claude","weekly_left_percent":0,"roles":[]}),
         json!({"label":"claude2","tool":"claude","weekly_left_percent":1,"roles":[]}),
         json!({"label":"claude3","tool":"claude","weekly_left_percent":89,"roles":["units"],
-            "role_counts":[{"busy":3,"shell":0,"idle":41,"total":44}]}),
+            "role_counts":[{"busy":3,"idle":41,"paused":0,"exited":0,"total":44}]}),
         json!({"label":"claude4","tool":"claude","weekly_left_percent":1,"roles":[]}),
         json!({"label":"claude5","tool":"claude","weekly_left_percent":63,"roles":["showrunners","units"],
-            "role_counts":[{"busy":1,"shell":0,"idle":6,"total":7},{"busy":0,"shell":4,"idle":0,"total":4}]}),
+            "role_counts":[{"busy":1,"idle":6,"paused":0,"exited":0,"total":7},{"busy":0,"idle":0,"paused":4,"exited":0,"total":4}]}),
         json!({"label":"codex1","tool":"codex","weekly_left_percent":90,"roles":["workers"],
-            "role_counts":[{"busy":0,"idle":0,"total":0}],"credits":0}),
+            "role_counts":[{"busy":0,"idle":0,"paused":0,"exited":0,"total":0}],"credits":0}),
         json!({"label":"codex2","tool":"codex","weekly_left_percent":0,"roles":["spare"],"credits":781}),
     ];
     for account in &mut accounts {
@@ -226,9 +226,13 @@ fn frame_text(buffer: &Buffer) -> String {
 fn paint(app: &mut App, width: u16, height: u16) -> TestResult<DrawnLayout> {
     let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     let keymap = app.keymap();
-    for _ in 0..4 {
+    // Check one unchanged frame after the initial allocation settles.
+    for sample in 0..4 {
         app.tiles.settle_for_test();
         terminal.draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))?;
+        if sample > 0 && !app.tiles.has_pending_motion_for_test() {
+            break;
+        }
     }
     assert!(
         !app.tiles.has_pending_motion_for_test(),

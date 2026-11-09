@@ -8,3 +8,7 @@ pub(in crate::tui) const COL_MAIN: usize = 6;
 pub(in crate::tui) const COL_NAME: usize = 0;
 pub(in crate::tui) const COL_SYNC: usize = 5;
 pub(super) const NUM_COLS: usize = 8;
+
+// main comparison width
+/// Reserve the common Main value before its comparison arrives.
+pub(super) const MAIN_COMPARISON_VALUE_RESERVE: usize = 5;

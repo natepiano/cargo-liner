@@ -85,8 +85,13 @@ fn target_names_take_width_before_the_source_at_eighty_columns() -> anyhow::Resu
                 text.contains("binary").then_some(text)
             })
             .context("Target row")?;
+        let source_header = if name == "proof_crate" {
+            "Source"
+        } else {
+            "S…"
+        };
         let (source_x, _) =
-            test_support::find_text_cell(&buffer, area, "Source").context("Source header")?;
+            test_support::find_text_cell(&buffer, area, source_header).context("Source header")?;
         let target: String = row
             .chars()
             .take(usize::from(source_x - area.x - 1))
@@ -117,7 +122,10 @@ fn binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()
     app.panes.targets.set_content(data.clone());
     let buffer = test_support::draw_ui(&mut app, 80)?;
     let area = app.panes.tiled_layout.area(PaneId::Targets);
-    for (whole, shortened) in [("cargo-berth", "cargo-b…"), ("cargo-handler", "cargo-h…")] {
+    for (whole, shortened) in [
+        ("cargo-berth", "cargo-b…"),
+        ("cargo-handler", "cargo-handl…"),
+    ] {
         assert!(
             test_support::find_text_cell(&buffer, area, whole).is_some()
                 || test_support::find_text_cell(&buffer, area, shortened).is_some(),
@@ -162,7 +170,7 @@ fn workspace_sources_keep_their_column_at_ninety_five_columns() -> anyhow::Resul
     }
     app.panes.targets.set_content(data);
     let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Targets, 95, 29)?;
-    let source = test_support::position(&buffer, "Source")?;
+    let source = test_support::position(&buffer, "S…")?;
     let kind = test_support::position(&buffer, "Kind")?;
     for y in source.1 + 1..=source.1 + 2 {
         let name: String = (1..source.0).map(|x| buffer[(x, y)].symbol()).collect();

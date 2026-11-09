@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep pane workers visible and show their detached run activity without separate dispatch rows.
+
 - Codex remote option values cannot supply resume proof for staff placement.
 
 - Unknown Codex switches preserve resume proof when the census places workers under their staff manager.
@@ -25,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
+
+- Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.
+
+- Agent tiles show each conversation's model and reasoning effort in separate columns.
+
 - The census retains each conversation's model and reasoning effort for local and probe rows.
 
 - Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.
@@ -40,8 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+
+- A left press anywhere on an expandable row opens or closes it through the shared `tui_pane` rule.
+- Accounts show busy, idle, paused, exited and total counts in the accounts board's order, with no shell column.
+- Reset times use three clear color steps in every theme. The soonest resets use the strongest step.
 - `-` shows roots and the first level in every tile. `0` shows only roots in the focused tile.
-- Match the accounts board: remove the read-age and in-use columns, show each role with busy, shell, idle and total counts, and add a total row.
+- Match the accounts board: remove the read-age and in-use columns, show each role's session counts, and add a total row.
 - Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
 - Read managers, members and staff names directly from the staff file (`staff_file` setting, schema 2), and reread it only when it changes. A missing staff file shows no staff names and no error. Remove the `hierarchy_command` setting and the review pool reader.
 - Idle CPU drops: the census watches its inputs, refreshes only changed process rows, reuses parsed worker data, and redraws body text only when it changes.

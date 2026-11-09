@@ -18,6 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remove spaces and trailing middle-dot separators before cut-value ellipses. Keep the Tracked header and short Worktree Group CI values whole.
+- Give quiet CI and lint values a separate theme role with readable contrast on focused and unfocused panes.
+- Deliver pull-request results to submodules. Keep cached rows when the remote list cannot be read. Hide empty loading sections without a fetch.
+- Keep narrow Git field labels inset and Stars values on their own row.
+- Reserve Main comparison width before git data arrives, and reserve pull-request loading rows before their fetch starts.
+- Remove the unused on-branch-rows CI state.
+- Reserve preferred Targets width before Projects expands. Cut Source text before target names.
+
+- Release each metadata permit after one refresh so other checkouts can run during continuous edits.
+- Capture submodule language caches before detail work starts so delayed enrichment cannot restore retired owners.
+
+- Limit GNU/Linux allocator arenas at startup so freed scan buffers do not remain spread across many arenas.
+
+- Reuse the shared source cache for runtime enrichment. Retain submodule counts through rescans until their parent reports removed submodules.
+
+- Release retired watcher projects and their pending disk work.
+- Replace each checkout's target-directory membership when metadata removes or changes its members.
+
+- Merge pending metadata refreshes and rescans by owner. Keep the latest metadata generation and release pending work when its worker stops.
+- Capture test-count caches before dispatch so a late job cannot restore a removed owner.
+
+- Dismiss the previous Startup toast before a rescan resets its owner.
+- Reuse source counts for unchanged files across rescans. Skip Markdown parser buffers for prose-only doc comments, and release removed projects' source and Cargo metadata caches.
+- Reuse six file-measurement workers for source counts, rescans and disk polls. Avoid project-tree walks when target exclusions only grow.
+- Reuse discovery, watcher and metadata workers across rescans so whole-tree allocations return to the same workers.
 - Resolve empty descriptions after a Git probe finds no repository. Add a margin after label-only Package titles when it fits.
 - Keep descriptions pending until each source resolves. Keep a blank cell after cut Package titles.
 - Hide unknown descriptions until Cargo or GitHub supplies data. Keep known-empty descriptions distinct from pending descriptions.

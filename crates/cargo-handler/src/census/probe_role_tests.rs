@@ -5,6 +5,8 @@
     reason = "tests should panic on unexpected values"
 )]
 
+use serde_json::Value;
+
 use super::*;
 use crate::census::WorkIdentity;
 use crate::census::model::ModelName;
@@ -219,4 +221,62 @@ fn current_role_reports_keep_the_checkpoint_role_wire_vocabulary() {
         };
         assert_eq!(restored, word, "new report uses a role word for {word}");
     }
+}
+
+#[test]
+fn astra_probe_extension_preserves_the_legacy_role_vocabulary()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyRole;
+    use crate::census::hierarchy::AstraMembership;
+    use crate::census::probe;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum OldRole {
+        Worker,
+    }
+    #[derive(serde::Deserialize)]
+    struct OldEdge {
+        role: OldRole,
+    }
+    #[derive(serde::Deserialize)]
+    struct OldReport {
+        edges: Vec<OldEdge>,
+    }
+    let member: AstraMembership = serde_json::from_value(serde_json::json!({
+        "staff_id":"designer","session":"astra-thread","home":"/fixture/codex","account":"codex1","role":"astra-designer","work":"busy"
+    }))?;
+    let mut row: AgentRow = serde_json::from_value(
+        serde_json::json!({"agent":"codex","pid":30,"name":"Astra","started":100,"directory":"/fixture","children":[],"codex_session":{"resume_argument":"astra-thread"}}),
+    )?;
+    row.session_id = row.session_id.with_astra(member);
+    let edges = HierarchyEdges(vec![HierarchyEdge {
+        manager: "boss".into(),
+        member:  "astra-thread".into(),
+        role:    HierarchyRole::AstraDesigner,
+    }]);
+    let output = probe::encode_astra_test_report(vec![row.clone()], edges.clone())?;
+    let old: OldReport = serde_json::from_slice(&output)?;
+    assert!(matches!(old.edges[0].role, OldRole::Worker));
+    let (rows, restored) = probe::parse_report(&output)?;
+    assert_eq!(rows, vec![row]);
+    assert_eq!(restored, edges);
+    Ok(())
+}
+
+#[test]
+fn astra_probe_rejects_incomplete_membership_and_keeps_unrelated_threads_plain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut value = serde_json::json!({"agent":"codex","pid":30,"name":"Astra","started":100,"directory":"/fixture","children":[],
+        "codex_session":{"resume_argument":"thread-a"},"astra_member":{"staff_id":"worker","session":"thread-b","home":"/fixture/codex","account":"codex1","role":"astra-reviewer","work":"unknown"}});
+    let plain: AgentRow = serde_json::from_value(value.clone())?;
+    assert!(!plain.session_id.astra_membership().is_member());
+    for bad in [Value::Null, serde_json::json!("relative/home")] {
+        value["astra_member"]["home"] = bad;
+        assert!(serde_json::from_value::<AgentRow>(value.clone()).is_err());
+    }
+    value["astra_member"]["home"] = serde_json::json!("/fixture/codex");
+    value["astra_member"]["role"] = serde_json::json!("unannounced-role");
+    assert!(serde_json::from_value::<AgentRow>(value).is_err());
+    Ok(())
 }

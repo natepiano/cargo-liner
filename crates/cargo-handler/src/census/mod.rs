@@ -17,6 +17,8 @@
 pub(crate) mod account;
 pub(crate) mod accounts;
 pub(crate) mod activity;
+#[cfg(test)]
+mod astra_role_tests;
 mod branch;
 #[cfg(test)]
 mod catch_up_hierarchy_tests;
@@ -25,6 +27,7 @@ pub(crate) mod classify;
 mod claude_seat_tests;
 pub(crate) mod codex;
 mod codex_names;
+mod compaction_markers;
 pub(crate) mod desktop;
 mod herdr;
 pub(crate) mod hierarchy;
@@ -66,6 +69,7 @@ pub(crate) use activity::AgentActivity;
 pub(crate) use activity::RunLocation;
 #[cfg(test)]
 pub(crate) use activity::VerifyStep;
+pub(crate) use herdr::PaneWork;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
@@ -83,6 +87,7 @@ pub(crate) use placement::mesh_worker_fixture;
 use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
+pub(crate) use session_identity::AstraSessionMembership;
 pub(crate) use session_identity::ProvenCodexThread;
 pub(crate) use session_identity::SessionIdentity;
 use sysinfo::System;
@@ -193,6 +198,12 @@ pub(crate) enum HierarchyRole {
     Review,
     /// Repairs a defect.
     Fix,
+    /// Designs for a manager through Astra.
+    #[serde(rename = "astra-designer")]
+    AstraDesigner,
+    /// Reviews for a manager through Astra.
+    #[serde(rename = "astra-reviewer")]
+    AstraReviewer,
 }
 
 impl HierarchyRole {
@@ -207,6 +218,8 @@ impl HierarchyRole {
             Self::Test => "test",
             Self::Review => "review",
             Self::Fix => "fix",
+            Self::AstraDesigner => "astra designer",
+            Self::AstraReviewer => "astra reviewer",
         }
     }
 }

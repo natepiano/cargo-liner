@@ -1383,7 +1383,6 @@ mod margin_title_tests {
             let mut app = test_support::project_app();
             app.framework.color_mode = ColorMode::Colored;
             for (state, expected) in [
-                (CiEmptyState::BranchScopedOnly, "CI runs — on branch rows"),
                 (CiEmptyState::Fetching, "CI runs — loading…"),
                 (CiEmptyState::Loading, "CI runs — loading…"),
                 (CiEmptyState::NoRuns, "No CI runs"),

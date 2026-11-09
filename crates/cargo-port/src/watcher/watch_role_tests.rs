@@ -224,48 +224,91 @@ fn startup_reconciliation_finds_project_created_after_scan_before_watches() {
 
 #[test]
 fn discovery_child_becomes_candidate_then_project_with_source_watches() {
-    let scratch = tempfile::tempdir().expect("scratch root");
-    let known = workspace(&scratch.path().join("group/known"));
-    let (mut watcher, mut registered) = discovery_root(scratch.path());
-    assert!(roots::register_project_root(&mut watcher, &mut registered, &known).is_empty());
-    let new = AbsolutePath::from(scratch.path().join("group/new"));
-    std::fs::create_dir(&new).expect("new discovery child");
-    let (sender, receiver) = channel::unbounded();
-    let mut state = watcher_state();
+    for previously_removed in [false, true] {
+        let scratch = tempfile::tempdir().expect("scratch root");
+        let known = workspace(&scratch.path().join("group/known"));
+        let (mut watcher, mut registered) = discovery_root(scratch.path());
+        assert!(roots::register_project_root(&mut watcher, &mut registered, &known).is_empty());
+        let new = AbsolutePath::from(scratch.path().join("group/new"));
+        let mut state = watcher_state();
+        if previously_removed {
+            workspace(&new);
+            promote_probed_project(&mut watcher, &mut registered, &mut state, &new);
+            std::fs::remove_dir_all(&new).expect("remove discovered project");
+            let (retirement_sender, retirement_receiver) = channel::unbounded();
+            let removal =
+                Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(new.to_path_buf());
+            events::route_folder_event(
+                &mut watcher,
+                &mut registered,
+                &removal,
+                &mut state,
+                &retirement_sender,
+            );
+            assert!(retirement_receiver.try_iter().any(|message| matches!(message, BackgroundMsg::DiskUsage { path, bytes: 0 } if path == new)));
+        }
+        std::fs::create_dir(&new).expect("new discovery child");
+        let (sender, receiver) = channel::unbounded();
 
-    assert_eq!(
+        let created = created_folder(&new);
+        let routed = events::route_folder_event(
+            &mut watcher,
+            &mut registered,
+            &created,
+            &mut state,
+            &sender,
+        );
+        if previously_removed {
+            assert_eq!(routed, vec![created]);
+            assert_eq!(
+                registered.role(&new),
+                Subscription::Watched(WatchedFolderRole::Project)
+            );
+        } else {
+            assert_eq!(routed, [] as [notify::Event; 0]);
+            assert_eq!(
+                registered.role(&new),
+                Subscription::Watched(WatchedFolderRole::Candidate)
+            );
+            assert!(state.pending_new.contains_key(&new));
+        }
+        workspace(&new);
+        let manifest =
+            Event::new(EventKind::Create(CreateKind::File)).add_path(new.join("Cargo.toml"));
         events::route_folder_event(
             &mut watcher,
             &mut registered,
-            &created_folder(&new),
+            &manifest,
             &mut state,
-            &sender
-        ),
-        [] as [notify::Event; 0]
-    );
-    assert_eq!(
-        registered.role(&new),
-        Subscription::Watched(WatchedFolderRole::Candidate)
-    );
-    assert!(state.pending_new.contains_key(&new));
-    workspace(&new);
-    let manifest = Event::new(EventKind::Create(CreateKind::File)).add_path(new.join("Cargo.toml"));
-    events::route_folder_event(
-        &mut watcher,
-        &mut registered,
-        &manifest,
-        &mut state,
-        &sender,
-    );
-    assert!(
-        !state
-            .pending_new
-            .contains_key(&AbsolutePath::from(new.join("Cargo.toml")))
-    );
+            &sender,
+        );
+        if previously_removed {
+            let context = EventContext {
+                watch_roots:     registered.dirs(),
+                projects:        &state.projects,
+                project_parents: &state.project_parents,
+                discovered:      &state.discovered,
+            };
+            events::handle_event(
+                &new.join("Cargo.toml"),
+                &context,
+                &sender,
+                &mut state.pending_disk,
+                &mut state.pending_git,
+                &mut state.pending_new,
+            );
+            assert!(state.pending_new.contains_key(&new));
+        }
+        assert!(
+            !state
+                .pending_new
+                .contains_key(&AbsolutePath::from(new.join("Cargo.toml")))
+        );
 
-    promote_probed_project(&mut watcher, &mut registered, &mut state, &new);
-    assert_eq!(registered.dirs(), &[AbsolutePath::from(scratch.path())]);
-    assert!(receiver.is_empty());
+        promote_probed_project(&mut watcher, &mut registered, &mut state, &new);
+        assert_eq!(registered.dirs(), &[AbsolutePath::from(scratch.path())]);
+        assert!(receiver.is_empty());
+    }
 }
 
 #[test]
@@ -527,11 +570,11 @@ fn assert_removal_replies(removed_tree: RemovedTree) {
     };
     assert_eq!(deleted, expected);
     assert!(!watcher.active.iter().any(|path| path.starts_with(&removed)));
-    assert!(
-        state.projects.contains_key(&first),
-        "retain project for Deleted row"
+    assert!(!state.projects.contains_key(&first));
+    assert_eq!(
+        state.projects.contains_key(&second),
+        matches!(removed_tree, RemovedTree::Project)
     );
-    assert!(state.projects.contains_key(&second));
     if matches!(removed_tree, RemovedTree::Project) {
         assert!(watcher.active.contains(second.as_path()));
     }

@@ -501,12 +501,12 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
 }
 
 #[test]
-fn marker_clicks_open_close_and_select_the_painted_branch() {
+fn body_clicks_open_close_and_select_the_painted_branch() {
     let mut app = application();
     let before = paint_buffer(&mut app, 180, 48);
     let point = marker(&before, "child");
     assert_eq!(before[(point.x, point.y)].symbol(), "▶");
-    app.click(Position::new(point.x + 1, point.y));
+    app.click(locate(&before, "child"));
     let open = paint_buffer(&mut app, 180, 48);
     assert!(buffer_text(&open).contains("grandchild"));
     let SelectableSurface::Surface(surface) = focused_surface(&app) else {
@@ -521,15 +521,15 @@ fn marker_clicks_open_close_and_select_the_painted_branch() {
     ));
     let point = marker(&open, "child");
     assert_eq!(open[(point.x, point.y)].symbol(), "▼");
-    app.click(point);
+    app.click(locate(&open, "child"));
     assert!(!paint(&mut app).contains("grandchild"));
 }
 
 #[test]
-fn name_and_leaf_lead_clicks_only_select_the_row() {
+fn leaf_body_clicks_only_select_the_row() {
     let mut app = application();
     let before = paint_buffer(&mut app, 180, 48);
-    app.click(locate(&before, "child"));
+    app.click(locate(&before, "other"));
     assert!(!paint(&mut app).contains("grandchild"));
     let SelectableSurface::Surface(surface) = focused_surface(&app) else {
         panic!("the name must focus its tile");
@@ -539,7 +539,7 @@ fn name_and_leaf_lead_clicks_only_select_the_row() {
             .surface(&surface)
             .expect("selected tile")
             .selection(),
-        TileSelection::Row(SelectedRow::Session { pid: 20, .. })
+        TileSelection::Row(SelectedRow::Session { pid: 40, .. })
     ));
     dispatch(
         &mut app,
@@ -547,8 +547,11 @@ fn name_and_leaf_lead_clicks_only_select_the_row() {
     );
     let open = paint_buffer(&mut app, 180, 48);
     let leaf = locate(&open, "grandchild");
-    app.click(Position::new(leaf.x - 1, leaf.y));
+    app.click(leaf);
     assert!(paint(&mut app).contains("grandchild"));
+    let SelectableSurface::Surface(surface) = focused_surface(&app) else {
+        panic!("the leaf must focus its tile");
+    };
     assert!(matches!(
         app.selections
             .surface(&surface)
@@ -559,7 +562,7 @@ fn name_and_leaf_lead_clicks_only_select_the_row() {
 }
 
 #[test]
-fn a_scrolled_marker_toggles_the_row_in_the_painted_viewport() {
+fn a_scrolled_body_click_toggles_the_row_in_the_painted_viewport() {
     let children: Vec<_> = (0..30)
         .flat_map(|index| {
             [
@@ -579,14 +582,14 @@ fn a_scrolled_marker_toggles_the_row_in_the_painted_viewport() {
     );
     let scrolled = paint_buffer(&mut app, 100, 14);
     assert!(!buffer_text(&scrolled).contains("branch-00"));
-    app.click(marker(&scrolled, "branch-29"));
+    app.click(locate(&scrolled, "branch-29"));
     let after = paint_buffer(&mut app, 100, 48);
     assert!(buffer_text(&after).contains("nested-29"));
     assert!(!buffer_text(&after).contains("nested-28"));
 }
 
 #[test]
-fn a_narrow_tile_keeps_its_marker_click_target() {
+fn a_narrow_tile_keeps_its_body_click_target() {
     let mut app = application_with_work(&serde_json::json!([
         {"depth":0,"kind":"subagent","pid":101,"name":"a-long-branch-name","started":110},
         {"depth":1,"kind":"shell","pid":201,"name":"opened-work","started":120}
@@ -594,15 +597,15 @@ fn a_narrow_tile_keeps_its_marker_click_target() {
     let before = paint_buffer(&mut app, 32, 24);
     let point = marker(&before, "a-long");
     assert_eq!(before[(point.x, point.y)].symbol(), "▶");
-    app.click(point);
+    app.click(locate(&before, "a-long"));
     assert!(paint(&mut app).contains("opened-work"));
 }
 
 #[test]
-fn a_marker_for_a_departed_row_does_not_toggle_its_replacement() {
+fn a_body_click_for_a_departed_row_does_not_toggle_its_replacement() {
     let mut app = application();
     let before = paint_buffer(&mut app, 180, 48);
-    let point = marker(&before, "child");
+    let point = locate(&before, "child");
     let replacement = application_with_work(&serde_json::json!([
         {"depth":0,"kind":"subagent","pid":101,"name":"replacement","started":110},
         {"depth":1,"kind":"shell","pid":201,"name":"replacement-work","started":120}
@@ -741,8 +744,8 @@ fn row_choices_override_the_level_until_the_next_digit() {
 #[test]
 fn depth_digits_do_not_change_a_tile_covered_by_the_attract_screen() {
     let mut app = two_depth_tiles();
-    let before = paint_buffer(&mut app, 180, 60);
-    app.click(locate(&before, "near-level-01"));
+    paint_buffer(&mut app, 180, 60);
+    app.tiles.focus_cell(tui_pane::TABLE_CELL + 1);
     app.attract.request_show();
     press(&mut app, '9');
     app.attract.toggle();

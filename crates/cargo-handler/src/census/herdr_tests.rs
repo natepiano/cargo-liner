@@ -84,7 +84,7 @@ fn a_proven_thread_name_precedes_the_herdr_name() {
     names.refresh(&processes, &mut links);
     assert!(
         names.memberships.is_empty(),
-        "proven links need no herdr read"
+        "an absent socket has no pane membership"
     );
     names.refresh_from(&processes, &mut links, &sockets, answer);
     assert_eq!(name(&links[&2]), "proven thread");
@@ -227,6 +227,7 @@ fn a_scan_uses_cached_names_without_waiting_for_the_api() {
     let generation = names.generation;
     answers
         .send(NameAnswer {
+            work: HashMap::new(),
             generation,
             names: vec![(
                 PaneProcess {
@@ -307,6 +308,7 @@ fn the_initial_probe_uses_the_background_answer() {
     let generation = names.generation;
     answers
         .send(NameAnswer {
+            work: HashMap::new(),
             generation,
             names: vec![(
                 PaneProcess {
@@ -337,37 +339,39 @@ fn the_initial_probe_uses_the_background_answer() {
 
 #[test]
 fn an_initial_probe_finishes_when_the_worker_never_answers() {
-    let (processes, mut links, _) = fixture();
-    let (send, work) = mpsc::sync_channel(1);
-    let (answers, receive) = mpsc::channel();
-    let mut names = HerdrNames {
-        worker: NameWorker::Running {
-            send,
-            receive,
-            inputs: Arc::default(),
-        },
-        ..HerdrNames::default()
-    };
-    names.refresh(&processes, &mut links);
+    let mut probe = ProbeAnswers::new();
+    let budgets = probe.finish(
+        HerdrProbeWait::try_from(100).expect("probe wait"),
+        &[Duration::from_millis(101)],
+    );
+    assert_eq!(budgets, vec![Duration::from_millis(100)]);
+    assert_eq!(name(&probe.links[&2]), "pid 2");
+    assert!(matches!(probe.names.initial, InitialAnswer::Pending));
+    let ProbeAnswers {
+        mut names,
+        answers,
+        work,
+        mut links,
+    } = ProbeAnswers::new();
     let (finished, result) = mpsc::channel();
+    let deadline = HerdrProbeDeadline::from_scan_start(
+        Instant::now(),
+        HerdrProbeWait::try_from(20).expect("short probe wait"),
+    );
     let worker = thread::spawn(move || {
-        names.finish_initial(
-            &mut links,
-            HerdrProbeDeadline::from_scan_start(
-                Instant::now(),
-                HerdrProbeWait::try_from(100).expect("probe wait"),
-            ),
-        );
-        finished.send(name(&links[&2])).expect("probe result");
+        names.finish_initial(&mut links, deadline);
+        finished
+            .send((name(&links[&2]), names.initial))
+            .expect("production probe result");
     });
-    let received = result.recv_timeout(Duration::from_millis(250));
+    let received = result.recv_timeout(Duration::from_millis(400));
     drop(answers);
     drop(work);
-    worker.join().expect("probe thread");
-    assert_eq!(
-        received.expect("a stalled worker cannot stop the probe"),
-        "pid 2"
-    );
+    worker.join().expect("production probe thread");
+    let (label, initial) =
+        received.expect("the production deadline must end a silent connected receive");
+    assert_eq!(label, "pid 2");
+    assert!(matches!(initial, InitialAnswer::Pending));
 }
 
 /// The service thread stops before its socket directory is removed.
@@ -597,6 +601,7 @@ impl ProbeAnswers {
     fn answer(&self, generation: u64, label: &str) {
         self.answers
             .send(NameAnswer {
+                work: HashMap::new(),
                 generation,
                 names: vec![(
                     PaneProcess {
@@ -701,6 +706,7 @@ fn an_absent_herdr_answer_ends_the_probe_wait_immediately() {
     probe
         .answers
         .send(NameAnswer {
+            work:       HashMap::new(),
             generation: probe.names.generation,
             names:      Vec::new(),
         })
@@ -791,4 +797,69 @@ fn a_scan_past_the_deadline_keeps_names_that_already_arrived() {
         &[Duration::ZERO],
     );
     assert_eq!(name(&probe.links[&2]), "morty");
+}
+
+#[test]
+fn raw_pane_states_apply_to_proven_and_nested_codex_processes() {
+    let (mut processes, mut links, sockets) = fixture();
+    processes[0].name = "claude".into();
+    processes[0].arguments = vec!["claude".into()];
+    links.insert(
+        2,
+        CodexSessionLink::Named(CodexThread {
+            account_home: Path::new("/fixture/account").into(),
+            cwd:          PathBuf::new(),
+            created_ms:   0,
+            name:         SessionName::Named("proven thread".into()),
+            first_prompt: String::new(),
+            rollout:      PathBuf::new(),
+        }),
+    );
+    let mut reader = HerdrReader::default();
+    for (raw, expected) in [
+        (json!("working"), PaneWork::Busy),
+        (json!("idle"), PaneWork::Idle),
+        (json!("done"), PaneWork::Idle),
+        (json!("future-state"), PaneWork::Unknown),
+        (Value::Null, PaneWork::Unknown),
+        (json!({"future":"shape"}), PaneWork::Unknown),
+    ] {
+        let mut snapshots = 0;
+        reader.refresh_from(&processes, &mut links, &sockets, |path, method, params| {
+            let mut value = answer(path, method, params)?;
+            if method == "session.snapshot" {
+                snapshots += 1;
+                value["snapshot"]["panes"][0]["agent_status"] = raw.clone();
+            }
+            Ok(value)
+        });
+        assert_eq!(snapshots, 1, "names and state share one snapshot");
+        assert_eq!(reader.work.get(&(2, 20)), Some(&expected));
+        assert_eq!(name(&links[&2]), "proven thread");
+    }
+    reader.refresh_from(&processes, &mut links, &sockets, |_, _, _| Err(()));
+    assert!(
+        reader.work.is_empty(),
+        "a failed read cannot keep an old work state"
+    );
+}
+
+#[test]
+fn a_completed_snapshot_delivers_work_with_the_same_generation() {
+    let mut probe = ProbeAnswers::new();
+    probe
+        .answers
+        .send(NameAnswer {
+            generation: probe.names.generation,
+            names:      Vec::new(),
+            work:       HashMap::from([((2, 20), PaneWork::Busy)]),
+        })
+        .expect("completed pane state");
+    probe.finish(HerdrProbeWait::default(), &[Duration::ZERO]);
+    assert_eq!(probe.names.work(2, 20), PaneWork::Busy);
+    assert_eq!(
+        probe.names.work(2, 21),
+        PaneWork::Unknown,
+        "pid reuse cannot retain a work state"
+    );
 }

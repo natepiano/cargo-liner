@@ -50,6 +50,7 @@ mod sessions;
 
 use options::DispatchOptions;
 use options::DispatchPositionals;
+pub(super) use sessions::ManagedSession;
 pub(super) use sessions::SessionRoots;
 
 /// The roster filename inside a dispatch's session directory.
@@ -356,6 +357,21 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
 }
 
 impl ResolvedWorkerDispatch {
+    /// A live record supplies the seat when a pane worker has no mesh roster.
+    pub(super) fn for_run(seat: &str, identity: WorkerIdentity) -> Result<Self, NotWorkerDispatch> {
+        let seat = seat.trim();
+        if seat.is_empty() {
+            return Err(NotWorkerDispatch);
+        }
+        Ok(Self {
+            seat: seat.to_owned(),
+            identity,
+            job: JobText::Unrecorded,
+            short_seat: seat.to_owned(),
+            role: DispatchRole::from_short_seat(seat),
+        })
+    }
+
     /// The roster seat survives replacement of its current worker process or thread.
     pub(crate) fn seat(&self) -> &str { &self.seat }
 

@@ -21,6 +21,7 @@ use tui_pane::ViewportOverflow;
 use tui_pane::label_color;
 
 use super::constants::SOURCE_HEADER;
+use super::constants::SOURCE_MIN_WIDTH;
 use super::constants::TABLE_BOX;
 use super::constants::TARGET_HEADER;
 use super::constants::TARGET_LEADING_PAD;
@@ -226,7 +227,7 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
 
 fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout {
     let kind = if usize::from(content_width)
-        < target_col_width_from(target_entries)
+        < target_col_width_from(target_entries.iter())
             + source_col_width_from(target_entries)
             + panes::RunTargetKind::padded_label_width()
             + 2
@@ -244,9 +245,9 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     let source = source_col_width_from(target_entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
-    let target_wanted = target_col_width_from(target_entries);
+    let target_wanted = target_col_width_from(target_entries.iter());
     let target_min = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
-    let source_min = columns::display_width(SOURCE_HEADER);
+    let source_min = SOURCE_MIN_WIDTH;
     let target_budget = if text_budget >= source_min + target_min {
         text_budget.saturating_sub(source_min)
     } else {
@@ -254,11 +255,7 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     };
     let target = target_wanted.min(target_budget);
     let source = source.min(text_budget.saturating_sub(target));
-    let source = if source >= columns::display_width(SOURCE_HEADER) {
-        source
-    } else {
-        0
-    };
+    let source = if source >= source_min { source } else { 0 };
     let target = text_budget.saturating_sub(source)
         + usize::from(source == 0) * usize::from(TARGET_TABLE_COLUMN_SPACING);
     Layout {
@@ -359,7 +356,10 @@ fn build_header_row(layout: &Layout) -> Row<'static> {
         header_style,
     ))];
     if layout.source > 0 {
-        cells.push(Cell::from(Span::styled(SOURCE_HEADER, header_style)));
+        cells.push(Cell::from(Span::styled(
+            render::truncate_with_ellipsis(SOURCE_HEADER, layout.source, "…"),
+            header_style,
+        )));
     }
     cells.push(Cell::from(
         Line::from(Span::styled("Kind ", header_style)).alignment(Alignment::Right),
@@ -372,7 +372,28 @@ pub(in crate::tui::panes) fn minimum_width() -> u16 {
         columns::display_width(TARGET_HEADER)
             + TARGET_LEADING_PAD
             + panes::RunTargetKind::padded_label_width()
-            + usize::from(TARGET_TABLE_COLUMN_SPACING)
+            + SOURCE_MIN_WIDTH
+            + usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT
+            + tui_pane::BLOCK_BORDER_WIDTH,
+    )
+    .unwrap_or(u16::MAX)
+}
+
+/// Pane width for whole target names and the Source and Kind headers.
+pub(super) fn preferred_width(data: &TargetsData) -> u16 {
+    if data.binaries.is_empty() && data.examples.is_empty() && data.benches.is_empty() {
+        return minimum_width();
+    }
+    let entries = data
+        .binaries
+        .iter()
+        .chain(&data.examples)
+        .chain(&data.benches);
+    u16::try_from(
+        target_col_width_from(entries)
+            + columns::display_width(SOURCE_HEADER)
+            + panes::RunTargetKind::padded_label_width()
+            + usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT
             + tui_pane::BLOCK_BORDER_WIDTH,
     )
     .unwrap_or(u16::MAX)
@@ -380,9 +401,8 @@ pub(in crate::tui::panes) fn minimum_width() -> u16 {
 
 /// Width of the Target column: the longest visible target label plus the
 /// leading pad, or the header if it is wider.
-fn target_col_width_from(target_entries: &[TargetEntry]) -> usize {
+fn target_col_width_from<'a>(target_entries: impl Iterator<Item = &'a TargetEntry>) -> usize {
     let max_entry_width = target_entries
-        .iter()
         .map(|entry| columns::display_width(&entry.display_name))
         .max()
         .unwrap_or(0);
@@ -464,7 +484,7 @@ mod tests {
 
         let layout = compute_layout(&target_entries, content_width);
 
-        assert!(layout.target > target_col_width_from(&target_entries));
+        assert!(layout.target > target_col_width_from(target_entries.iter()));
         assert_eq!(layout.source, source);
         assert_eq!(
             layout.target + layout.source + layout.kind + gaps,
@@ -489,12 +509,12 @@ mod tests {
         let kind = RunTargetKind::padded_label_width();
         let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
         let source = source_col_width_from(&target_entries);
-        let target_budget = target_col_width_from(&target_entries).saturating_sub(6);
+        let target_budget = target_col_width_from(target_entries.iter()).saturating_sub(6);
         let content_width = u16::try_from(kind + gaps + source + target_budget).unwrap_or(u16::MAX);
 
         let layout = compute_layout(&target_entries, content_width);
 
-        let target = target_col_width_from(&target_entries);
+        let target = target_col_width_from(target_entries.iter());
         assert_eq!(layout.target, target);
         assert_eq!(layout.source, source + target_budget - target);
         assert_eq!(layout.name_max, target.saturating_sub(TARGET_LEADING_PAD));

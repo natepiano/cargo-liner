@@ -16,6 +16,7 @@ use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
+use crate::census::accounts::AccountsReading;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
 use crate::census::scan::ScanStage;
@@ -24,6 +25,52 @@ use crate::sort::AccountsColumn;
 
 const DAY_SECONDS: i64 = 86_400;
 const SOURCE_ORDER: [&str; 4] = ["gamma", "alpha", "beta", "delta"];
+
+#[test]
+fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
+    for (name, ascending, descending) in [
+        (
+            "paused",
+            ["alpha", "beta", "gamma"],
+            ["gamma", "beta", "alpha"],
+        ),
+        (
+            "exited",
+            ["gamma", "beta", "alpha"],
+            ["alpha", "beta", "gamma"],
+        ),
+    ] {
+        let rows: Vec<_> = [("gamma",5,1), ("alpha",1,8), ("beta",3,4)].into_iter().map(|(label,paused,exited)| serde_json::json!({
+            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"idle":3,"paused":paused,"exited":exited,"total":5+paused+exited},null],
+            "weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null
+        })).collect();
+        let reading = AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({"accounts":rows,"problems":[]}))
+                .expect("board JSON"),
+        )
+        .expect("board counts");
+        let column = AccountsColumn::ALL
+            .into_iter()
+            .find(|column| column.header() == name)
+            .expect("board count column");
+        let mut app = app_with_accounts(reading.accounts);
+        let before = drawn(&mut app);
+        click_header(&mut app, &before, column);
+        let first = drawn(&mut app);
+        assert_order(&first, &ascending);
+        click_header(&mut app, &first, column);
+        let second = drawn(&mut app);
+        assert_order(&second, &descending);
+        let positions: Vec<_> = descending
+            .iter()
+            .map(|label| accounts_gradient_tests::locate(&second, label).row)
+            .collect();
+        assert!(
+            positions.windows(2).all(|rows| rows[1] >= rows[0] + 2),
+            "role rows remain with their account: {positions:?}"
+        );
+    }
+}
 
 fn app_with_accounts(mut accounts: Vec<AccountUsage>) -> App {
     // Unread fixtures keep header widths equal at fixture time and click time.

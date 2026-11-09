@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -10,12 +11,21 @@ use walkdir::DirEntry;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
+use super::SourceMeasurements;
+use super::background_workers;
 use super::cargo_metadata::StreamingScanContext;
 use super::constants::TEST_ATTRIBUTES;
 use super::disk_usage;
 use super::disk_usage::DiskUsageTree;
+use super::source_measurements::SourceFileMeasurements;
 use crate::project::AbsolutePath;
 use crate::project::TestCounts;
+
+#[derive(Default)]
+pub(super) struct TestMeasurements {
+    source:      SourceFileMeasurements<SrcCounts>,
+    integration: SourceFileMeasurements<usize>,
+}
 
 /// Spawn the initial bulk test-count scan, batched per disk-usage tree to
 /// mirror the language-stats fan-out.
@@ -31,10 +41,10 @@ pub(super) fn spawn_initial_test_counts(
 fn spawn_test_counts_tree(streaming_scan_context: &StreamingScanContext, tree: DiskUsageTree) {
     let handle = streaming_scan_context.client.handle.clone();
     let sender = streaming_scan_context.sender.clone();
-
+    let job = test_counts_job(tree, &streaming_scan_context.source_measurements);
     handle.spawn(async move {
         let Ok(results) =
-            tokio::task::spawn_blocking(move || collect_test_counts_for_tree(&tree)).await
+            tokio::task::spawn_blocking(move || background_workers::measure_files(job)).await
         else {
             return;
         };
@@ -44,14 +54,30 @@ fn spawn_test_counts_tree(streaming_scan_context: &StreamingScanContext, tree: D
     });
 }
 
-fn collect_test_counts_for_tree(
-    disk_usage_tree: &DiskUsageTree,
-) -> Vec<(AbsolutePath, TestCounts)> {
-    disk_usage_tree
+fn test_counts_job(
+    tree: DiskUsageTree,
+    measurements: &SourceMeasurements,
+) -> impl FnOnce() -> Vec<(AbsolutePath, TestCounts)> + use<> {
+    let entries: Vec<_> = tree
         .entries
-        .iter()
-        .map(|entry| (entry.clone(), collect_test_counts_single(entry.as_path())))
-        .collect()
+        .into_iter()
+        .map(|entry| {
+            let cache = measurements.tests(&entry);
+            (entry, cache)
+        })
+        .collect();
+    move || {
+        entries
+            .into_iter()
+            .map(|(entry, cache)| {
+                let counts = cache.lock().map_or_else(
+                    |_| collect_test_counts_single(entry.as_path()),
+                    |mut cache| collect_test_counts_with_measurements(entry.as_path(), &mut cache),
+                );
+                (entry, counts)
+            })
+            .collect()
+    }
 }
 
 /// Count tests for a single project root: `#[test]`-family functions
@@ -62,10 +88,19 @@ fn collect_test_counts_for_tree(
 /// roots). Doctests live only with the library source, so `tests/` is
 /// scanned for attributes alone.
 pub(crate) fn collect_test_counts_single(root: &Path) -> TestCounts {
-    let src = count_src_dir(&root.join("src"));
+    background_workers::measure_files(|| {
+        collect_test_counts_with_measurements(root, &mut TestMeasurements::default())
+    })
+}
+
+fn collect_test_counts_with_measurements(
+    root: &Path,
+    measurements: &mut TestMeasurements,
+) -> TestCounts {
+    let src = count_src_dir(&root.join("src"), &mut measurements.source);
     TestCounts {
         unit:        src.attributes,
-        integration: count_attribute_dir(&root.join("tests")),
+        integration: count_attribute_dir(&root.join("tests"), &mut measurements.integration),
         doc:         src.doc.runnable,
         doc_ignored: src.doc.ignored,
     }
@@ -73,30 +108,49 @@ pub(crate) fn collect_test_counts_single(root: &Path) -> TestCounts {
 
 /// `#[test]`-family attribute count and doctest counts for one `src/`
 /// directory, accumulated from a single read of each `.rs` file.
+#[derive(Clone, Copy)]
 struct SrcCounts {
     attributes: usize,
     doc:        DocCounts,
 }
 
-fn count_src_dir(dir: &Path) -> SrcCounts {
-    rust_files(dir)
-        .filter_map(|path| fs::read_to_string(path).ok())
+fn count_src_dir(dir: &Path, measurements: &mut SourceFileMeasurements<SrcCounts>) -> SrcCounts {
+    let seen: HashSet<_> = rust_files(dir).collect();
+    measurements.retain_seen(&seen);
+    seen.iter()
+        .filter_map(|path| {
+            measurements
+                .measure(path, || {
+                    fs::read_to_string(path).map(|source| SrcCounts {
+                        attributes: count_test_attributes(&source),
+                        doc:        count_doctests(&source),
+                    })
+                })
+                .ok()
+        })
         .fold(
             SrcCounts {
                 attributes: 0,
                 doc:        DocCounts::default(),
             },
-            |acc, source| SrcCounts {
-                attributes: acc.attributes + count_test_attributes(&source),
-                doc:        acc.doc.merged(count_doctests(&source)),
+            |acc, counts| SrcCounts {
+                attributes: acc.attributes + counts.attributes,
+                doc:        acc.doc.merged(counts.doc),
             },
         )
 }
 
-fn count_attribute_dir(dir: &Path) -> usize {
-    rust_files(dir)
-        .filter_map(|path| fs::read_to_string(path).ok())
-        .map(|source| count_test_attributes(&source))
+fn count_attribute_dir(dir: &Path, measurements: &mut SourceFileMeasurements<usize>) -> usize {
+    let seen: HashSet<_> = rust_files(dir).collect();
+    measurements.retain_seen(&seen);
+    seen.iter()
+        .filter_map(|path| {
+            measurements
+                .measure(path, || {
+                    fs::read_to_string(path).map(|source| count_test_attributes(&source))
+                })
+                .ok()
+        })
         .sum()
 }
 
@@ -262,6 +316,15 @@ fn strip_block_star(line: &str) -> &str {
 /// Tally the code blocks in one doc-comment markdown document by how
 /// rustdoc would treat them.
 fn count_doctest_fences(markdown: &str) -> DocCounts {
+    // CommonMark code blocks need a three-character fence or indentation.
+    // Inline code and links alone do not justify the parser's scratch buffers.
+    if !markdown.contains("```")
+        && !markdown.contains("~~~")
+        && !markdown.contains("    ")
+        && !markdown.contains('\t')
+    {
+        return DocCounts::default();
+    }
     let mut doc_counts = DocCounts::default();
     for event in Parser::new(markdown) {
         if let Event::Start(Tag::CodeBlock(code_block_kind)) = event {
@@ -327,6 +390,111 @@ fn is_rust_directive(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn late_test_count_job_does_not_restore_a_retired_owner() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("src"))?;
+        std::fs::write(
+            directory.path().join("src/lib.rs"),
+            "#[test] fn counted() {}",
+        )?;
+        let root = crate::project::AbsolutePath::from(directory.path());
+        let measurements = std::sync::Arc::new(super::SourceMeasurements::default());
+        let job = super::test_counts_job(
+            super::DiskUsageTree {
+                root_abs_path: root.clone(),
+                entries:       vec![root.clone()],
+            },
+            &measurements,
+        );
+        measurements.retain_projects(|_| false);
+        let result = job();
+        assert_eq!(result[0].1.unit, 1);
+        assert!(
+            !measurements.has_test_owner_for_test(&root),
+            "a late result must not restore a retired owner"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prose_guard_preserves_fenced_indented_and_nested_doctests() {
+        for markdown in [
+            "```rust\nlet value = 1;\n```",
+            "~~~rust\nlet value = 1;\n~~~",
+            "    let value = 1;",
+            "\tlet value = 1;",
+            "> ```rust\n> let value = 1;\n> ```",
+            "- example\n\n      let value = 1;",
+        ] {
+            assert_eq!(
+                super::count_doctest_fences(markdown),
+                super::DocCounts {
+                    runnable: 1,
+                    ignored:  0,
+                },
+                "{markdown}"
+            );
+        }
+        assert_eq!(
+            super::count_doctest_fences("```ignore\nlet value = 1;\n```"),
+            super::DocCounts {
+                runnable: 0,
+                ignored:  1,
+            }
+        );
+        assert_eq!(
+            super::count_doctest_fences("```python\nvalue = 1\n```"),
+            super::DocCounts::default()
+        );
+    }
+
+    #[test]
+    fn repeated_test_scans_read_only_changed_files() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("src"))?;
+        let path = directory.path().join("src/lib.rs");
+        std::fs::write(
+            &path,
+            "/// ```rust\n/// assert!(true);\n/// ```\n#[test]\nfn unit() {}\n",
+        )?;
+        let mut cache = super::TestMeasurements::default();
+        for _ in 0..128 {
+            let counts = super::collect_test_counts_with_measurements(directory.path(), &mut cache);
+            assert_eq!(counts.unit, 1);
+            assert_eq!(counts.doc, 1);
+        }
+        assert_eq!(cache.source.reads, 1);
+        assert_eq!(cache.source.reuses, 127);
+        std::fs::write(&path, "#[test]\nfn other() {}\n#[test]\nfn added() {}\n")?;
+        let counts = super::collect_test_counts_with_measurements(directory.path(), &mut cache);
+        assert_eq!(counts.unit, 2);
+        assert_eq!(counts.doc, 0);
+        assert_eq!(cache.source.reads, 2);
+        std::fs::remove_file(path)?;
+        assert_eq!(
+            super::collect_test_counts_with_measurements(directory.path(), &mut cache).unit,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_prose_doc_blocks_do_not_allocate_parser_buffers() {
+        let markdown =
+            "Inspect `ProjectInfo` and [the guide](https://example.invalid).\nA second prose line.";
+        let (counts, allocations) = crate::test_support::count_allocations(|| {
+            (0..2_000).fold(super::DocCounts::default(), |counts, _| {
+                counts.merged(super::count_doctest_fences(markdown))
+            })
+        });
+        assert_eq!(counts, super::DocCounts::default());
+        assert_eq!(
+            allocations, 0,
+            "prose blocks must not allocate Markdown parser buffers"
+        );
+    }
+
     use super::DocCounts;
     use super::count_doctests;
     use super::count_test_attributes;

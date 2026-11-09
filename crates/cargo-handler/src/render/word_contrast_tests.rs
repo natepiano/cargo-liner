@@ -2,23 +2,32 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ratatui::buffer::Cell;
 use ratatui::layout::Position;
 use tui_pane::TerminalApp;
+use tui_pane::TileView;
 
+use super::selection_tests;
 use super::word_click_tests;
 use super::word_click_tests::Renderer;
 use super::word_click_tests::TestResult;
 use super::*;
 use crate::footer_colors;
 use crate::theme;
+use crate::theme::ResetThemeFixture;
+use crate::theme::SessionHue;
 use crate::theme::WordMatchLimit;
 use crate::word_highlight::HighlightWord;
+use crate::word_highlight::PaintedWords;
 use crate::word_highlight::WordHighlight;
 use crate::word_highlight::WordHit;
 
 const MINIMUM_CONTRAST: f64 = 4.5;
+// The `palette_application` sessions set `started` to 100; at `BEFORE_AGE_STEP`, their age is four
+// minutes.
+const BEFORE_AGE_STEP: u64 = 399;
 const DEFAULT_DARK_FOCUSED_SELECTION: Color = Color::Rgb(86, 86, 86);
 const DEFAULT_DARK_FOCUSED_MATCH_CAP: Color = Color::Rgb(101, 101, 101);
 // The CIEDE2000 distance retains a floor of three for every theme.
@@ -27,7 +36,8 @@ const LOW_CAPACITY_FOCUSED_SELECTION: Color = Color::Rgb(112, 112, 112);
 const LOW_CAPACITY_UNFOCUSED_SELECTION: Color = Color::Rgb(113, 113, 113);
 const DARK_CUSTOM_FOCUS_GROUND: Color = Color::Rgb(100, 100, 100);
 const LIGHT_CUSTOM_FOCUS_GROUND: Color = Color::Rgb(180, 180, 180);
-const WIDTH: u16 = 200;
+// This width keeps every fixture word visible without unused columns.
+const WIDTH: u16 = 100;
 const HEIGHT: u16 = 70;
 const FOOTER: &str = "role.showrunner=purple\nrole.unit-director=yellow\naccount.claude1=brown\naccount.claude2=magenta\naccount.claude3=blue\naccount.claude4=orange\naccount.codex1=pink\naccount.codex2=teal\n";
 const ACCOUNTS: [&str; 6] = [
@@ -79,6 +89,7 @@ enum SelectionDistanceLimit {
 /// `UnmatchedFrame` keeps the unmarked background for one `MatchGround`.
 struct UnmatchedFrame {
     buffer:      Buffer,
+    words:       PaintedWords,
     ground:      MatchGround,
     tile_ground: Color,
 }
@@ -239,13 +250,25 @@ fn assert_matched_ink(before: &Cell, after: &Cell, word: &str, point: Position) 
             "{word}: insufficient ink lifts at {point:?}"
         );
         assert_lift_keeps_hue(before.fg, after.fg)?;
-        let ratio_on_match = glyph_contrast(after.fg, after.bg)?;
-        eprintln!(
-            "WORD_INK_LIFT word={word} old={:?} new={:?} unmatched_ground={:?} match_ground={:?} bound={match_readability_bound:.9} ratio={ratio_on_match:.9}",
-            before.fg, after.fg, before.bg, after.bg
-        );
     }
     Ok(())
+}
+
+/// Resolve each matching token once before inspecting its glyph cells.
+fn matching_word_cells(
+    painted: &PaintedWords,
+    buffer: &Buffer,
+    word: &str,
+) -> TestResult<Vec<Position>> {
+    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(word))?;
+    let mut cells = Vec::new();
+    for start in word_click_tests::positions(buffer, word) {
+        if matches!(painted.hit(start), WordHit::Word(token) if token.text() == word) {
+            let end = start.x.saturating_add(width).min(buffer.area.right());
+            cells.extend((start.x..end).map(|x| Position::new(x, start.y)));
+        }
+    }
+    Ok(cells)
 }
 
 fn measure_matches(
@@ -262,18 +285,27 @@ fn measure_matches(
         return Err(format!("drawn token {word} must be nonempty").into());
     };
     app.word_highlight = WordHighlight::Word(token);
-    let after = renderer.paint(app)?;
     let background = word_click_tests::match_background()?;
+    // Draw the first match through App. Reuse its unchanged text for later words.
+    let (after, painted) = if app.painted_words.is_uncaptured() {
+        let after = renderer.paint(app)?;
+        (after, &app.painted_words)
+    } else {
+        let mut after = before.clone();
+        reference.words.apply_with_inks(
+            &app.word_highlight,
+            &mut after,
+            background,
+            &mut app.match_inks,
+        );
+        (after, &reference.words)
+    };
     let mut count = 0;
     let mut minimum = f64::INFINITY;
     let mut selected_grounds = Vec::new();
-    for point in after.area.positions() {
+    for point in matching_word_cells(painted, &after, word)? {
         let cell = &after[(point.x, point.y)];
-        if cell.symbol().chars().any(char::is_alphanumeric)
-            && word.contains(cell.symbol())
-            && let WordHit::Word(painted) = app.painted_words.hit(point)
-            && painted.text() == word
-        {
+        if cell.symbol().chars().any(char::is_alphanumeric) && word.contains(cell.symbol()) {
             let unmatched = &before[(point.x, point.y)];
             if unmatched.bg == tui_pane::active_focus_color()
                 || unmatched.bg == tui_pane::remembered_focus_color()
@@ -359,9 +391,17 @@ fn measure_theme(
         },
     }
     app.word_highlight.clear();
-    renderer.paint(&mut app)?;
-    app.tiles.settle_for_test();
-    let baseline = renderer.paint(&mut app)?;
+    let baseline = if matches!(ground, MatchGround::Base) {
+        initial
+    } else {
+        renderer.paint(&mut app)?
+    };
+    let baseline = if app.tiles.has_pending_motion_for_test() {
+        app.tiles.settle_for_test();
+        renderer.paint(&mut app)?
+    } else {
+        baseline
+    };
     match ground {
         MatchGround::Base => {
             assert_ne!(
@@ -392,10 +432,15 @@ fn measure_theme(
             words.push((text.to_owned(), word_click_tests::locate(&baseline, text)?));
         }
     }
+    // `measure_matches` checks every occurrence, so each word needs one frame.
+    words.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    words.dedup_by(|left, right| left.0 == right.0);
     // `WordMatchGrounds` uses the theme ground for tinted and untinted frames.
     let tile_ground = tui_pane::theme().text.bg_focus.color;
+    let words_in_frame = PaintedWords::capture(&baseline, app.tiles.pointer_regions());
     let reference = UnmatchedFrame {
         buffer: baseline,
+        words: words_in_frame,
         ground,
         tile_ground,
     };
@@ -429,8 +474,12 @@ fn single_word_frames(name: &str, word: &str) -> TestResult<MatchedInkFrames> {
     let result = (|| {
         let directory = tempfile::tempdir()?;
         let mut app = palette_application(&directory.path().join("statusline.conf"))?;
-        let mut renderer = word_click_tests::Renderer::new(&mut app, WIDTH, HEIGHT)?;
+        let mut renderer = Renderer::with_fixed_time(&mut app, WIDTH, HEIGHT, BEFORE_AGE_STEP)?;
         let before = renderer.paint(&mut app)?;
+        app.started = app
+            .started
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("the fixture start must support a one-second uptime step")?;
         let WordHit::Word(token) = HighlightWord::from_token(word) else {
             return Err("the fixture word must be nonempty".into());
         };
@@ -634,7 +683,7 @@ fn matched_inks_keep_glyph_contrast_in_default_dark_selected_focused_account_wor
 }
 
 #[test]
-fn matched_inks_keep_glyph_contrast_in_default_dark_selected_unfocused() -> TestResult {
+fn matched_inks_keep_glyph_contrast_in_default_dark_selected_unfocused_table_words() -> TestResult {
     check_theme(
         "Default Dark",
         PaneTint::Disabled,
@@ -1727,4 +1776,318 @@ fn a_dark_appearance_lightens_matches_despite_a_light_focus_ground() -> TestResu
         );
     }
     Ok(())
+}
+
+fn reset_step_application() -> TestResult<App> {
+    use crate::census::accounts::AccountsReading;
+    use crate::census::accounts::AccountsTable;
+
+    let mut app = App::new_for_test()?;
+    app.loaded_config.config.tiles.view = TileView::Summary;
+    let now = chrono::Utc::now();
+    let accounts: Vec<_> = (0..6)
+        .map(|rank| {
+            serde_json::json!({
+                "label":format!("reset-step-{rank}"),
+                "roles":[], "use_credits":false,
+                "weekly_left_percent":50,
+                "resets_at":(now + chrono::Duration::minutes(10 + rank * 10)).to_rfc3339(),
+                "read_ok":true,
+                "read_at":now.to_rfc3339()
+            })
+        })
+        .collect();
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(&serde_json::to_vec(
+            &serde_json::json!({"accounts":accounts,"problems":[]}),
+        )?)
+        .map_err(|error| error.to_string())?,
+    );
+    Ok(app)
+}
+
+fn reset_step_cell(buffer: &Buffer, rank: usize) -> TestResult<Position> {
+    let heading = word_click_tests::locate(buffer, "resets")?;
+    let account = word_click_tests::locate(buffer, &format!("reset-step-{rank}"))?;
+    let point = Position::new(heading.x + 5, account.y);
+    assert!(
+        buffer[(point.x, point.y)]
+            .symbol()
+            .chars()
+            .any(|glyph| glyph.is_ascii_digit())
+    );
+    Ok(point)
+}
+
+fn assert_reset_ink_separation(ink: Color, description: &str) -> TestResult {
+    assert_ne!(
+        ink,
+        tui_pane::error_color(),
+        "{description} cannot use error red"
+    );
+    for hue in SessionHue::ALL {
+        assert_ne!(
+            ink,
+            Role::Session(hue).style().fg.ok_or("session ink")?,
+            "{description} differs from every session ink"
+        );
+    }
+    Ok(())
+}
+
+fn check_reset_step_match(
+    app: &mut App,
+    renderer: &mut Renderer,
+    baseline: &Buffer,
+    point: Position,
+) -> TestResult {
+    let WordHit::Word(word) =
+        crate::word_highlight::PaintedWords::word_at(baseline, app.tiles.pointer_regions(), point)
+    else {
+        return Err("the drawn reset must provide a word".into());
+    };
+    let before = &baseline[(point.x, point.y)];
+    assert!(
+        glyph_contrast(before.fg, before.bg)? >= MINIMUM_CONTRAST,
+        "the drawn reset step meets the text bound: {before:?}"
+    );
+    assert_reset_ink_separation(before.fg, "a reset step")?;
+    let text = word.text().to_owned();
+    app.word_highlight = WordHighlight::Word(word);
+    let matched = renderer.paint(app)?;
+    let after = &matched[(point.x, point.y)];
+    assert_ne!(
+        after.bg, before.bg,
+        "the reset word receives a match ground"
+    );
+    assert_reset_ink_separation(after.fg, "a matched reset")?;
+    assert_matched_ink(before, after, &text, point)?;
+    let bound = MINIMUM_CONTRAST.min(glyph_contrast(before.fg, before.bg)?);
+    assert!(
+        glyph_contrast(after.fg, after.bg)? >= bound,
+        "the match never makes reset text less readable: {before:?} -> {after:?}, bound={bound}"
+    );
+    app.word_highlight.clear();
+    Ok(())
+}
+
+fn measure_reset_steps() -> TestResult {
+    for tint in [PaneTint::Disabled, PaneTint::Enabled] {
+        tui_pane::set_focused_pane_tint(tint.enabled());
+        let mut app = reset_step_application()?;
+        let mut renderer = Renderer::new(&mut app, 100, 22)?;
+        let initial = renderer.paint(&mut app)?;
+        app.click(word_click_tests::locate(&initial, "reset-step-0")?);
+        app.word_highlight.clear();
+        let colors: Vec<_> = (0..6)
+            .map(|rank| {
+                let point = reset_step_cell(&initial, rank)?;
+                Ok(initial[(point.x, point.y)].fg)
+            })
+            .collect::<TestResult<_>>()?;
+        let mut steps = colors.clone();
+        steps.dedup();
+        assert!(
+            (3..=4).contains(&steps.len()),
+            "the drawn reset ramp has three or four steps: {colors:?}"
+        );
+        for rank in [0, 2, 5] {
+            let point = reset_step_cell(&initial, rank)?;
+            app.click(word_click_tests::locate(&initial, "reset-step-1")?);
+            app.word_highlight.clear();
+            let baseline = renderer.paint(&mut app)?;
+            assert_eq!(
+                baseline[(point.x, point.y)].bg,
+                tui_pane::pane_background(true),
+                "the plain reset measurement uses the plain focused pane ground"
+            );
+            check_reset_step_match(&mut app, &mut renderer, &baseline, point)?;
+            app.click(word_click_tests::locate(
+                &initial,
+                &format!("reset-step-{rank}"),
+            )?);
+            app.word_highlight.clear();
+            let selected = renderer.paint(&mut app)?;
+            assert_eq!(
+                selected[(point.x, point.y)].bg,
+                tui_pane::active_focus_color()
+            );
+            check_reset_step_match(&mut app, &mut renderer, &selected, point)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_reset_steps(name: &str) -> TestResult {
+    let variant = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("reset theme")?;
+    let fixture = ResetThemeFixture::with_theme(variant.theme);
+    tui_pane::set_transparent_background(false);
+    let result = measure_reset_steps();
+    drop(fixture);
+    result
+}
+
+#[test]
+fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_default_dark() -> TestResult {
+    check_reset_steps("Default Dark")
+}
+
+#[test]
+fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_default_light() -> TestResult {
+    check_reset_steps("Default Light")
+}
+
+#[test]
+fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast_dark() -> TestResult
+{
+    check_reset_steps("High Contrast Dark")
+}
+
+#[test]
+fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast_light()
+-> TestResult {
+    check_reset_steps("High Contrast Light")
+}
+
+#[derive(Clone, Copy)]
+enum AstraWordRole {
+    Designer,
+    Reviewer,
+}
+
+impl AstraWordRole {
+    const fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Designer => ("designer-session", "designer"),
+            Self::Reviewer => ("reviewer-session", "reviewer"),
+        }
+    }
+}
+
+fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
+    let builtin = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("theme")?;
+    let theme_reset = ResetThemeFixture::with_theme(builtin.theme);
+    tui_pane::set_transparent_background(false);
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("footer.conf");
+    std::fs::write(
+        &path,
+        include_str!("../footer_colors/fixtures/statusline_astra.conf"),
+    )?;
+    let mut failures = Vec::new();
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let mut app = selection_tests::astra_application();
+        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.clone());
+        app.footer_colors.refresh();
+        let mut renderer = Renderer::new(&mut app, 180, 60)?;
+        let initial = renderer.paint(&mut app)?;
+        {
+            let (label, word) = role.words();
+            let at = word_click_tests::locate(&initial, label)?;
+            let role_word = word_click_tests::locate(&initial, &format!("astra {word}"))?;
+            for ground in [
+                MatchGround::Base,
+                MatchGround::SelectedFocused,
+                MatchGround::SelectedUnfocused,
+            ] {
+                app.word_highlight.clear();
+                app.click(word_click_tests::locate(&initial, "astra-focus-away")?);
+                if !matches!(ground, MatchGround::Base) {
+                    app.click(at);
+                }
+                if matches!(ground, MatchGround::SelectedUnfocused) {
+                    app.click(word_click_tests::locate(&initial, "build-for-50")?);
+                }
+                let before = renderer.paint(&mut app)?;
+                let x = role_word.x + 6;
+                let selection = before[(x, role_word.y)].bg;
+                match ground {
+                    MatchGround::Base => {
+                        assert_ne!(selection, tui_pane::active_focus_color());
+                        assert_ne!(selection, tui_pane::remembered_focus_color());
+                    },
+                    MatchGround::SelectedFocused => {
+                        assert_eq!(selection, tui_pane::active_focus_color());
+                    },
+                    MatchGround::SelectedUnfocused => {
+                        assert_eq!(selection, tui_pane::remembered_focus_color());
+                    },
+                }
+                let WordHit::Word(token) = HighlightWord::from_token(word) else {
+                    return Err("Astra role token".into());
+                };
+                app.word_highlight = WordHighlight::Word(token);
+                let buffer = renderer.paint(&mut app)?;
+                let cell = &buffer[(x, role_word.y)];
+                let plain_match = word_click_tests::match_background()?;
+                let grounds = theme::WordMatchGrounds::new(plain_match);
+                let expected = match ground {
+                    MatchGround::Base => plain_match,
+                    _ => grounds.background(grounds.surface(selection)),
+                };
+                assert_eq!(
+                    cell.bg, expected,
+                    "{name} {word} {ground:?}: the match must paint its ground"
+                );
+                assert_ne!(
+                    cell.bg, selection,
+                    "the match must change the previous ground"
+                );
+                let ratio = glyph_contrast(cell.fg, cell.bg)?;
+                if ratio < 4.5 {
+                    failures.push(format!(
+                        "{name} {word} tint={tint} {ground:?} ratio={ratio:.9}"
+                    ));
+                }
+                assert_ne!(cell.symbol(), " ", "matched role glyph");
+            }
+        }
+    }
+    drop(theme_reset);
+    assert!(failures.is_empty(), "Astra match contrast: {failures:?}");
+    Ok(())
+}
+
+#[test]
+fn astra_word_matches_keep_coverage_in_default_dark() -> TestResult {
+    check_astra_word_matches("Default Dark", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_default_light() -> TestResult {
+    check_astra_word_matches("Default Light", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_high_contrast_dark() -> TestResult {
+    check_astra_word_matches("High Contrast Dark", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_high_contrast_light() -> TestResult {
+    check_astra_word_matches("High Contrast Light", AstraWordRole::Designer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_default_dark() -> TestResult {
+    check_astra_word_matches("Default Dark", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_default_light() -> TestResult {
+    check_astra_word_matches("Default Light", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_dark() -> TestResult {
+    check_astra_word_matches("High Contrast Dark", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_light() -> TestResult {
+    check_astra_word_matches("High Contrast Light", AstraWordRole::Reviewer)
 }
