@@ -1640,37 +1640,23 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 ### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: done
 
-**Depends on:** Phase 43g
+#### As-built
 
-Phase 43g (director, 2026-11-07) could not find three intermittent faults: none recurred in its four final suites. Its review findings F006, F007 and F008 move here. Its final gate (run 20261107T203938, natedev load 66-73) also timed two tests outside its Work Order at 1 s or more.
-
-Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader scenario tests at 1 s or more) and landed by the showrunner's ruling (A, 2026-11-08) under the user's 3-round cap rule: head 4cccc49 against main 4729a19b5 in the same hour had 1, 6 and 6 tests at 1 s or more against main's 4, 18 and 12. F004 and F005 move here as the first item, owner tile, due at this phase's checkpoint.
-
-#### Work Order
-
-**Goal:** each named fault has its owner or cause on record and is fixed by that cause, and no named test takes 1 s or more.
-
-**Spec:**
-0. **43g F004 and F005, first.** `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.082 s on natedev (load 68) and `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.049 s and 1.190 s on the Mac (load 7-17) in the 43g round 3 suites (`phases/43g/fix3_summary.md`). Diagnose on the current code before any cut: split native scan, rendering and scheduling time. The 43g round 2 stage times (Mac scan gap 865 ms, CPU baselines 671 ms, required frame 1173 ms) are observations from reverted code, not a proven cause. Do not add the kernel-worker and frame-observer durations; they overlap. Keep the nested commands' `CARGOTILE_NESTED` from the product shim, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace. The 43g attempts (rounds 1-3) are in `phases/43g/fix1_summary.md`, `fix2_summary.md` and `fix3_summary.md`.
-1. `reader_keeps_parent_family_across_its_only_childs_source_switch` (`shim_registration/reader_scenarios.rs:359`) took 1.029 s on natedev in the 43g gate and 1.900 s on the Mac in the Phase 35m gate. Measure its stages, then fix the cause. Keep every assertion and readiness wait.
-1a. **One more slow reader test from the 43g round 3 head suites** (`phases/43g/fix3_summary.md`): `reader_opens_settings_when_resize_and_key_are_pending_together` (1.004-1.174 s). Measure its stages, then fix the cause. Keep every assertion. The six slow `installed.rs` tests from the same suites (five `darwin_birth_conversion` tests and `same_pid_and_calendar_second_receive_different_generations`) belong to Phase 30m, whose native capture entry replaces the shell birth conversion.
-2. `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (`shim_registration/shared_capture.rs:111`) took 1.634 s on natedev in the 43g gate. Measure its stages, then fix the cause. Keep every assertion.
-3. Leak owners (43g F006; items 1, 4 and 7 of Phase 43g): nextest marked `install_prints_a_completed_toolchain_before_a_later_lock_finishes`, `control_s_saves_a_favorite` and `caller_descriptors_reach_captured_cargo` leaky on the Mac in earlier gates. Run the Mac suite with Phase 43g's process observer (`phases/43g/measure_baseline.py`; its driver names an old scratch path, so point it at this phase's copy) until one of them leaks again, at most six suites. Record the owner's pid, command and parent, then fix it by its cause. If none leaks in six suites, report the six results and change no code.
-4. Interrupt race (43g F007; Phase 43g item 5): `interrupt_to_the_process_group_lets_cargo_finish_first` failed "the shim returned before cargo finished stopping" twice on natedev under load 37-44. Run it alone under comparable natedev load until it fails, at most 200 runs. Record the order of the shim's return and cargo's stop, then fix the cause. If it does not fail, report the counts and change no code. Keep the cargo-finished assertion.
-5. CLI startup (43g F008; Phase 43g item 6): on the Mac a test's CLI spent 0.387 s before `main.rs:36`, in a dyld wait that the sampler itself can cause. Measure the startup with a method that does not attach to the process (for example, the parent's spawn time against the first line of `main`), then cut the cost. Keep the product lock retry budget unless the showrunner approves a change.
+- `NextRefresh::deadline(pace)` in `census/scan.rs` returns the active or idle refresh instant, and `NextRefresh::start` uses it. While it waits for a refresh, `ScanWorker::scan` sleeps until `min(next refresh deadline, now + poll)`. The scan pace, the readings and the shown values do not change; only idle wakeups drop.
+- The Darwin membership fixture's `observe-account` in `shared_capture.rs` is a bash script with no Python process. It records uid, gid, arguments and environment, and forwards both output streams and the exit status.
+- The `settings-scroll-burst` reader scenario uses the native `/bin/bash` symlink on Darwin, as `excluded` and `quiet-json-long` do.
+- natedev full suites have no cargo-tile test at 1 s or more. On the Mac, `reader_keeps_parent_family_across_its_only_childs_source_switch` stays at 1.2-1.7 s under load; that test is not met here.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — items 0 and 1.
-- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 2.
-- `crates/cargo-tile/src/shim_registration/installed.rs` — item 1a's six install tests; `reader_opens_settings_when_resize_and_key_are_pending_together` is in `reader_scenarios.rs`. Phase 30m landed at 354ba054 and released its reservation; it put the six `installed.rs` tests under 1 s. Repair round 2 starts from a copy that holds 354ba054, so the `census/scan.rs` wait cut sits on 30m's `scan.rs`.
-- `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`, `crates/cargo-tile/src/app_global_action.rs` — items 3 and 4 (in `app_global_action.rs`, only its test module).
-- `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 5's measured cause. Other product files need director routing.
+- `crates/cargo-tile/src/census/scan.rs` — the refresh deadline and the scan worker's wait.
+- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — the membership fixture observer.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the Darwin native shell for the settings scroll scenario.
 
-**Workers:** 1 writer — `test`.
+**Binds later work:** a `census/scan.rs` change keeps the deadline sleep in `ScanWorker::scan` through `NextRefresh::deadline`.
 
-**Constraints from prior phases:** the Phase 43g constraints hold. The reader fixtures keep each file subscription through one wait, renew retired watches, and close subscriptions on every exit. Keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. No assertion is weakened. No test takes 1 s or more. Add no cleanup without ownership evidence.
-
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 0, 1, 1a and 2 tests below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
+**Gotchas:**
+- The Mac source-switch fixture's readiness cost (about 400 ms) is outside the files above: native capture exec to constructor, and native fixture preparation on first use.
+- A probe that writes a log before its timestamp, or injects a library, adds its own cost; its startup number is not a product number.
 
 ### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: todo
 
@@ -1691,10 +1677,10 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
    - Split preparation into receipt hit, artifact cache hit, lock wait, strip and sign. Later preparations in the same file took 0.380 ms and 0.166 ms, so 168 ms may be a first-use cost only.
    - Record the full source-switch timeline in loaded suites, with an empty and a populated fixture cache.
    Then fix the largest measured cost at its cause.
-5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
-6. `reader_scenario_cases.py:178` copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
 3. Keep every assertion and readiness wait. Keep the product `CARGOTILE_NESTED`, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace.
 4. `progress::capture::tests::unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` took 1.009 s on the Mac in a 43i round 2 suite. Its largest stage starts at `progress/capture.rs:2088` (`phases/43i/fix3_stages.md`). Measure it again; if it is at 1 s or more in a gate suite, fix its cause.
+5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
+6. `reader_scenario_cases.py:178` copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
 
 **Files:**
 - `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
@@ -1777,11 +1763,10 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 - `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/roster.rs` — carry the shares from each scan to the summary (added at impl's request).
 - `crates/cargo-tile/src/render/frame_preparation.rs` — `SummaryFootPreparation` inputs carry the shared and unattributed memory.
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — owns `scan.rs`, `invocation_cpu_accounting.rs`, the `mod` line, `terminal.rs` and `roster.rs` share transport, `render/frame_preparation.rs` foot inputs, and `render.rs` if needed.
-- `test` — owns `compile_memory_tests.rs`: one test per case (two cargos on one target directory; no target directory; no `--out-dir`; no uid; no request; sccache server counted once; totals add up), each with exact RSS values and red on main first. Then the live check below.
+**Workers:** 1 writer — `impl`. The `test` worker runs Phase 43j beside this phase, and no new worker opens (showrunner, 2026-11-08).
+- `impl` — owns `scan.rs`, `invocation_cpu_accounting.rs`, the `mod` line, `terminal.rs` and `roster.rs` share transport, `render/frame_preparation.rs` foot inputs, and `render.rs` if needed. It also owns `compile_memory_tests.rs`: one test per case (two cargos on one target directory; no target directory; no `--out-dir`; no uid; no request; sccache server counted once; totals add up), each with exact RSS values and red on main first. Then the live check below.
 
-**Constraints from prior phases:** stack on phase 38 and phase 30m (30m changes `scan.rs`): work in an isolated copy made from the current branch checkpoint at dispatch, which holds Phases 38 and 30m. Every assertion on main stays. No test of 1 s or more. No new allow or expect. Include shared and unattributed memory shares in summary preparation and repaint decisions.
+**Constraints from prior phases:** stack on phase 38 and phase 30m (30m changes `scan.rs`): work in an isolated copy made from the current branch checkpoint at dispatch, which holds Phases 38, 30m and 43i. Phase 43i made `ScanWorker::scan` sleep until `min(next refresh deadline, now + poll)` through `NextRefresh::deadline`; keep that wait. Every assertion on main stays. No test of 1 s or more. No new allow or expect. Include shared and unattributed memory shares in summary preparation and repaint decisions.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
