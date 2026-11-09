@@ -86,8 +86,9 @@ fn assert_fixed_without_warnings(root: &Path, expected: &[(&str, &str)]) {
 /// `cargo check --all-targets`.
 fn fixed_check_stderr(root: &Path, expected: &[(&str, &str)]) -> String {
     fixed_check_stderr_after(root, expected, || {
-        run_fix(root);
-        run_mend_json(&root.join("Cargo.toml"))
+        let mut command = mend_command_for(&root.join("Cargo.toml"));
+        command.args(["--fix", "--json"]);
+        report_from_mend_output(&run_fix_output(&mut command))
     })
 }
 
@@ -823,7 +824,7 @@ fn reexport_chain_collapses_in_one_run() {
     pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
-        "[package]\nname = \"chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+        "[package]\nname = \"chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\nbench = false\n",
     );
     pub_use_outside_subtree::write(
         root,
@@ -877,7 +878,7 @@ fn failed_chain_link_keeps_the_other_validated_fixes() {
     pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
-        "[package]\nname = \"macro_chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+        "[package]\nname = \"macro_chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\nbench = false\n",
     );
     let sources = [
         (
@@ -951,7 +952,7 @@ fn failed_chain_link_keeps_an_independent_chain() {
     pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
-        "[package]\nname = \"independent_chains_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+        "[package]\nname = \"independent_chains_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\nbench = false\n",
     );
     for (path, source) in sources {
         pub_use_outside_subtree::write(root, path, source);

@@ -13,6 +13,7 @@ mod toolchain_probes;
 mod visibility;
 
 pub(crate) use build::BuildOutputMode;
+pub(crate) use build::CompilerFixOutcome;
 pub(crate) use build::RunWrapper;
 pub(crate) use build::RunningExecutable;
 pub(crate) use build::SelectionResult;

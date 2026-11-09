@@ -772,7 +772,7 @@ A left click on a project row goes through `tui_pane::ExpansionModel::press_row`
 
 **Ruled out:** named eligibility states for `public_use` and `use_path`, which are private syntax-match helpers where `None` means no match.
 
-### Phase 4u — Every cargo-mend test runs under a second  · status: todo
+### Phase 4u — Every cargo-mend test runs under a second  · status: done
 
 **Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q, which edits `crates/cargo-port/`, and beside 4s, which edits `crates/cargo-port/` and `crates/tui_pane/`, when berth fences its files (showrunner, 2026-11-09).
 

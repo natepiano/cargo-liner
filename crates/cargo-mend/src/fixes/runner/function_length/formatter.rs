@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
 use std::process::Stdio;
 use std::sync::OnceLock;
 
@@ -12,6 +14,7 @@ use toml::Value;
 use super::constants::CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD;
 use super::constants::DEFAULT_EDITION;
 use super::constants::NIGHTLY_RUSTFMT_ARGUMENTS;
+use super::constants::NIGHTLY_RUSTFMT_LOOKUP_ARGUMENTS;
 use super::constants::RUSTFMT_ARGUMENTS;
 use super::constants::RUSTFMT_COMMAND;
 use super::constants::RUSTFMT_LOCAL_FILE_ARGUMENTS;
@@ -32,15 +35,20 @@ pub(super) enum FormatterProbe {
     Unavailable(String),
 }
 
+enum NightlyExecutable {
+    Direct(PathBuf),
+    Rustup,
+}
+
 impl Formatter {
     pub(super) fn detect() -> Self {
         static DETECTED: OnceLock<Formatter> = OnceLock::new();
         DETECTED
-            .get_or_init(|| {
-                Self::from_probes(
-                    probe(RUSTUP_COMMAND, NIGHTLY_RUSTFMT_ARGUMENTS),
-                    probe(RUSTFMT_COMMAND, &[]),
-                )
+            .get_or_init(|| match nightly_probe() {
+                FormatterProbe::Available => Self::Nightly,
+                unavailable @ FormatterProbe::Unavailable(_) => {
+                    Self::from_probes(unavailable, probe(RUSTFMT_COMMAND, &[]))
+                },
             })
             .clone()
     }
@@ -61,11 +69,7 @@ impl Formatter {
     pub(super) fn formatted(&self, text: &str, path: &Path, workspace: &Path) -> Result<String> {
         let directory = path.parent().context("source has no parent directory")?;
         let mut command = match self {
-            Self::Nightly => {
-                let mut command = Command::new(RUSTUP_COMMAND);
-                command.args(NIGHTLY_RUSTFMT_ARGUMENTS);
-                command
-            },
+            Self::Nightly => nightly_command(),
             Self::Path => Command::new(RUSTFMT_COMMAND),
             Self::Unavailable { cause } => anyhow::bail!("formatter unavailable: {cause}"),
         };
@@ -96,19 +100,64 @@ impl Formatter {
     }
 }
 
+fn nightly_command() -> Command {
+    static EXECUTABLE: OnceLock<NightlyExecutable> = OnceLock::new();
+    match EXECUTABLE.get_or_init(|| {
+        match Command::new(RUSTUP_COMMAND)
+            .args(NIGHTLY_RUSTFMT_LOOKUP_ARGUMENTS)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let path = String::from_utf8_lossy(&output.stdout);
+                if path.trim().is_empty() {
+                    NightlyExecutable::Rustup
+                } else {
+                    NightlyExecutable::Direct(PathBuf::from(path.trim()))
+                }
+            },
+            _ => NightlyExecutable::Rustup,
+        }
+    }) {
+        NightlyExecutable::Direct(path) => Command::new(path),
+        NightlyExecutable::Rustup => {
+            let mut command = Command::new(RUSTUP_COMMAND);
+            command.args(NIGHTLY_RUSTFMT_ARGUMENTS);
+            command
+        },
+    }
+}
+
+fn nightly_probe() -> FormatterProbe {
+    probe_result(
+        nightly_command().arg(VERSION_ARGUMENT).output(),
+        "nightly rustfmt",
+        "nightly rustfmt",
+    )
+}
+
 fn probe(program: &str, arguments: &[&str]) -> FormatterProbe {
-    match Command::new(program)
-        .args(arguments)
-        .arg(VERSION_ARGUMENT)
-        .output()
-    {
+    probe_result(
+        Command::new(program)
+            .args(arguments)
+            .arg(VERSION_ARGUMENT)
+            .output(),
+        &format!("{program} {}", arguments.join(" ")),
+        program,
+    )
+}
+
+fn probe_result(
+    output: std::io::Result<Output>,
+    failure_label: &str,
+    error_label: &str,
+) -> FormatterProbe {
+    match output {
         Ok(output) if output.status.success() => FormatterProbe::Available,
         Ok(output) => FormatterProbe::Unavailable(format!(
-            "{program} {}: {}",
-            arguments.join(" "),
+            "{failure_label}: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )),
-        Err(error) => FormatterProbe::Unavailable(format!("{program}: {error}")),
+        Err(error) => FormatterProbe::Unavailable(format!("{error_label}: {error}")),
     }
 }
 

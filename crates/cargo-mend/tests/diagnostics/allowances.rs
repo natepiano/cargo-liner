@@ -2123,6 +2123,10 @@ fn wider_signature_exposure_names_why_an_exact_facade_annotation_must_change() {
 name = "wider_signature_exact_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2172,6 +2176,10 @@ fn wider_signature_with_nonmatching_facade_keeps_boundary_mismatch_advice() {
 name = "wider_signature_nonmatching_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2567,6 +2575,10 @@ fn parent_boundary_impl_surfaces_preserve_method_self_and_trait_caps() {
 name = "parent_boundary_impl_surface_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2839,6 +2851,10 @@ fn named_exported_module_gives_only_its_public_descendants_external_reach() {
 name = "exported_ancestor_module_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2984,6 +3000,10 @@ fn restricted_glob_child_does_not_give_signature_type_public_reach() {
 name = "restricted_glob_child_signature_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3028,6 +3048,10 @@ fn direct_public_glob_uses_each_exact_childs_effective_reach() {
 name = "direct_public_glob_child_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3247,6 +3271,10 @@ fn public_signature_exposure_still_requires_bare_pub() {
 name = "public_signature_exposure_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3289,6 +3317,10 @@ fn resolved_facade_requirements_with_and_without_signature_are_persisted() {
 name = "resolved_facade_persistence_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3380,6 +3412,10 @@ fn public_signature_precedes_an_unresolvable_parent_facade_blocker() {
 name = "public_signature_blocked_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3451,6 +3487,10 @@ fn restricted_signature_accepts_exact_crate_reach_despite_an_unresolvable_facade
 name = "restricted_signature_blocked_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3823,6 +3863,10 @@ fn stale_public_facade_is_reviewed_when_joined_reach_equals_public() {
 name = "stale_facade_equal_joined_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4046,6 +4090,10 @@ fn stale_restricted_facade_without_remaining_reach_keeps_safe_cleanup_advice() {
 name = "stale_restricted_cleanup_control_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4189,6 +4237,10 @@ fn same_module_parent_visible_signature_sets_the_parent_floor() {
 name = "same_module_parent_signature_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4243,6 +4295,10 @@ fn trait_impl_signature_reach_is_capped_by_trait_visibility() {
 name = "trait_impl_reach_cap_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4385,6 +4441,10 @@ fn local_trait_reexports_set_associated_signature_reach() {
 name = "trait_reexport_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4460,6 +4520,10 @@ fn private_equivalent_inherent_items_do_not_expose_signature_types() {
 name = "inherent_item_private_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4680,6 +4744,10 @@ fn struct_and_union_field_signature_exposure_uses_each_field_reach() {
 name = "field_signature_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),

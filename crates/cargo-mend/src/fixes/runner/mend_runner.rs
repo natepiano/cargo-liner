@@ -6,8 +6,11 @@ use super::chain::ChainValidation;
 use super::function_length::FunctionLengthPlan;
 use super::session_snapshot::SessionSnapshot;
 use crate::compiler;
+use crate::compiler::BuildOutputMode;
+use crate::compiler::CompilerFixOutcome;
 use crate::compiler::RunWrapper;
 use crate::compiler::ToolchainProbes;
+use crate::config::FixKind;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility::FieldVisibilityFixScan;
@@ -25,6 +28,7 @@ use crate::reporting::ColorMode;
 use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
+use crate::reporting::PassEdits;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
 use crate::selection::CargoCheckPlan;
@@ -80,11 +84,29 @@ impl<'a> MendRunner<'a> {
     pub(crate) fn fix_compiler(
         &mut self,
         coverage: AllFeaturesCoverage,
-    ) -> Result<Duration, MendFailure> {
-        let duration =
-            compiler::run_cargo_fix(self.selection, self.cargo_plan, self.color_mode, coverage)?;
-        self.next_analysis = NextAnalysis::Required;
-        Ok(duration)
+        operation_mode: &OperationMode,
+    ) -> Result<CompilerFixOutcome, MendFailure> {
+        let mut next_analysis = NextAnalysis::Required;
+        let outcome = compiler::run_cargo_fix(
+            self.selection,
+            self.cargo_plan,
+            self.color_mode,
+            coverage,
+            || {
+                let checked = self.build_selection(BuildOutputMode::Validation)?;
+                let planned = self.scan_fixes(
+                    operation_mode.clone(),
+                    checked,
+                    operation_mode.fixes.selection(FixKind::PubUse),
+                )?;
+                next_analysis = NextAnalysis::Validated(Box::new(planned));
+                Ok(())
+            },
+        )?;
+        if outcome.edits == PassEdits::Written {
+            self.next_analysis = next_analysis;
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn run(

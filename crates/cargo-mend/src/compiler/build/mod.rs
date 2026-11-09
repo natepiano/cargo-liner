@@ -7,6 +7,7 @@ mod stderr;
 mod stdout;
 
 pub(crate) use execute::BuildOutputMode;
+pub(crate) use execute::CompilerFixOutcome;
 pub(crate) use execute::RunWrapper;
 pub(crate) use execute::RunningExecutable;
 pub(crate) use execute::SelectionResult;

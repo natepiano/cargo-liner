@@ -34,6 +34,7 @@ use syn::parse_file;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::constants::MIN_PARALLEL_SOURCE_FILES;
 use super::constants::SOURCE_DIR_BENCHES;
 use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
@@ -210,13 +211,16 @@ impl SourceCache {
         // The Vec snapshot preserves the original hash iteration order, and Rayon's
         // indexed collection keeps it when the results are inserted below.
         let content_entries: Vec<(PathBuf, String)> = contents.into_iter().collect();
-        let scans: Vec<(PathBuf, FxHashSet<u64>, LexicalRegions)> = content_entries
-            .into_par_iter()
-            .map(|(path, source)| {
-                let names = mentionable_names_in(&source);
-                (path, names, LexicalRegions::from(source))
-            })
-            .collect();
+        let index = |(path, source): (PathBuf, String)| {
+            let names = mentionable_names_in(&source);
+            (path, names, LexicalRegions::from(source))
+        };
+        let scans: Vec<(PathBuf, FxHashSet<u64>, LexicalRegions)> =
+            if content_entries.len() < MIN_PARALLEL_SOURCE_FILES {
+                content_entries.into_iter().map(index).collect()
+            } else {
+                content_entries.into_par_iter().map(index).collect()
+            };
         let mut contents = FxHashMap::default();
         let mut mentionable_names = FxHashMap::default();
         for (path, names, regions) in scans {
