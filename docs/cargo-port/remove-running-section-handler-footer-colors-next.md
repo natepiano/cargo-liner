@@ -1,6 +1,8 @@
 # remove-running-section-handler-footer-colors-next
 
-Approved next items from `remove-running-section-handler-footer-colors.md`. Each item becomes a phase when the showrunner places it.
+Approved next items for [cargo-handler](../cargo-handler/as-built/hierarchy.md).
+The [as-built docs](../cargo-handler/as-built/tile-layout.md) describe the current implementation.
+Each item becomes a phase when the showrunner places it.
 
 
 ## Items
