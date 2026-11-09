@@ -1326,7 +1326,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Workers:** as Phase 25.
 
-### Phase 29 — Move-only splits  · status: todo
+### Phase 29 — Move-only splits  · status: done
 
 **Depends on:** none. Phase 28 was dropped, 2026-10-29. The `census/scan.rs` split moved to Phase 29a, after Phase 39 (director, 2026-11-09: both change `census/scan.rs`; items 2 and 3 run beside Phase 39).
 

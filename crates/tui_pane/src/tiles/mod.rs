@@ -18,6 +18,13 @@ mod action;
 mod constants;
 mod draw;
 mod flow_layout;
+#[cfg_attr(
+    test,
+    expect(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )
+)]
 mod grid;
 mod growth;
 mod host;
