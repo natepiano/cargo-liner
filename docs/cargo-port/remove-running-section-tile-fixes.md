@@ -2399,6 +2399,36 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 - The fixed capture shows no frame over 4 ms at 24, 40 and 80 rows on the final release build, beside the same script's result on the parent tree.
 - Change-Review: none — draw time only, with no visible change.
 
+### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: todo
+
+**Depends on:** Phase 32 (it adds the compiler wrapper layout and the toggle state). Phase 32b measures the same files, so this phase starts after it.
+
+#### Work Order
+
+**Goal:** Two defects from Phase 32's design check (2026-11-09, `S/phases/32/review3_reply_ux_1.txt`) moved here under the hard landing. With `h` on, compiler rows in a narrow column read `clippy-driver ~/.rustup/toolchai…`, so every row is the same and no row names its crate. The status bar still says `tree` for the key named `processes`, and it draws the mode words in the version's ink.
+
+**Spec:**
+
+1. **A compiler row keeps its crate with all arguments on.** For `CommandLayout::CompilerWrapper`, the words with `h` on are the frontend name, then `--crate-name <crate>`, then every other argument in argv order. The compiler path argument moves after the crate and stays visible when the row has room. Wrapping, flag binding and the `…` rule do not change. A wrapper call with no `--crate-name` keeps argv order. Test, red first: add rows to `a_rustc_wrapper_row_shows_rustc_and_its_crate` that read the crate from a narrow column with `h` on.
+2. **Status words use the key names.** `PROCESS_TREE_NOTE_LABEL` reads `processes`. The `processes` and `all arguments` notes use the bar's hint ink from `bar/support.rs`, not the version's ink. Other notes (`attract`, `frozen`) do not change. Test, red first: extend the status-line test that reads these notes from the buffer, for both text and ink.
+
+**Files:**
+- `crates/cargo-tile/src/census/command_text.rs` — item 1 and its parser cases.
+- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/render.rs` — item 2, and item 1's render test.
+- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/support.rs` — item 2's note ink, only if the note style has no hint ink today. `crates/tui_pane/CHANGELOG.md` — one line if `tui_pane` changes.
+- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 35m: a summary command shows its arguments only when the whole command fits one line, also with `h` on; otherwise it shows the named words. This phase does not change that rule. Phase 48 removed the `p` and `h` status-bar hints: the status bar keeps the mode words, and the on state of a key shows in the shortcuts surface. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
+- Shots of a live tile with a `cargo clippy` whose children run as the compiler wrapper, with `h` off and on, at 24 and 40 rows; a fresh helper's design check passes.
+- Change-review line: with all arguments on, a compiler row names its crate on its first row.
+- Change-review line: the status bar says `processes` when the process tree is on.
+
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 
 **Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 43i
