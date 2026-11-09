@@ -1742,7 +1742,7 @@ Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m'
 
 User report (2026-10-29, via the showrunner): a new cell's text fades in from black and then goes away so fast that it cannot be read. The first frame of a new cell's text is drawn near its final color, not near the ground. Exact-color test red on main first. Work order: phases/38/implementation_prompt.md.
 
-### Phase 39 — The mem value counts every compile's memory  · status: todo
+### Phase 39 — The mem value counts every compile's memory  · status: done
 **Depends on:** Phase 30m (`census/scan.rs`) and Phase 35m (the rendering baseline required by Spec 6).
 
 

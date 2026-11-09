@@ -25,6 +25,7 @@ use crate::census::CensusScope;
 use crate::census::ExcludedCommands;
 #[cfg(test)]
 use crate::census::cpu_observation::CpuScanPublication;
+use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 use crate::census::scan::FreeDiskSpace;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
@@ -32,6 +33,7 @@ use crate::constants::CAPTURE_ROOT;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render::SummaryDiskSpace;
 use crate::root_scan::SharedCaptureDirectory;
+use crate::roster::MemorySharesChange;
 use crate::sccache;
 use crate::sccache::SccacheServer;
 use crate::sccache::SccacheSummary;
@@ -51,6 +53,8 @@ pub(crate) struct Scan {
     pub(crate) cpu_scan_publication: CpuScanPublication,
     /// The commands running, newest first.
     pub(crate) groups:               Vec<CargoGroup>,
+    /// Compiler memory published beside the cargo rows.
+    pub(crate) memory_shares:        CompileMemoryShares,
     /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
     pub(crate) sccache:              SccacheServer,
     /// Available disk bytes read with this census.
@@ -296,6 +300,7 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         return false;
     };
     app.sccache.observe_server(scan.sccache);
+    let memory_changed = app.roster.observe_memory_shares(scan.memory_shares);
     let disk_changed =
         SummaryDiskSpace::from(app.free_disk_space) != SummaryDiskSpace::from(scan.free_disk_space);
     app.free_disk_space = scan.free_disk_space;
@@ -305,7 +310,10 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
     app.root_status = scan.root_status;
     #[cfg(test)]
     census::cpu_observation::accept(scan.cpu_scan_publication);
-    app.roster.observe(scan.groups, Instant::now()) || status_changed || disk_changed
+    app.roster.observe(scan.groups, Instant::now())
+        || status_changed
+        || disk_changed
+        || memory_changed == MemorySharesChange::Changed
 }
 
 /// Take whatever the sccache workers have replied, reporting whether the
@@ -437,6 +445,7 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                memory_shares:        CompileMemoryShares::default(),
                 free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               Vec::new(),
@@ -546,6 +555,7 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
+                    memory_shares:        CompileMemoryShares::default(),
                     free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
@@ -585,6 +595,7 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
+                    memory_shares: CompileMemoryShares::default(),
                     free_disk_space,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups: Vec::new(),
@@ -628,6 +639,7 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
+                    memory_shares:        CompileMemoryShares::default(),
                     free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
@@ -811,6 +823,7 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                memory_shares:        CompileMemoryShares::default(),
                 free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               vec![CargoGroup {
