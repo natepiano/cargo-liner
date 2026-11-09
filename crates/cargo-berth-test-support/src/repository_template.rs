@@ -248,7 +248,11 @@ impl LedgerTemplate {
         repository
     }
 
-    fn restore_into(self, root: &Path) {
+    /// Restore this history into an existing directory with fresh owners.
+    ///
+    /// # Panics
+    /// Panics when the template cannot be built, copied, or relocated.
+    pub fn restore_into(self, root: &Path) {
         let template_root = self.built_root();
         let repository_root =
             fs::canonicalize(root).expect("destination repository should canonicalize");

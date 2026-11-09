@@ -5,6 +5,9 @@
 
 //! A director can coordinate parallel phases without combining their reservations.
 
+#[path = "support/parallel_templates.rs"]
+mod parallel_templates;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -17,6 +20,7 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
+use parallel_templates::Phase16InitialCoverage;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -1025,7 +1029,7 @@ fn named_claim_counts_only_new_holder_edges_toward_the_limit() {
     assert_success(&fixture.answer(&fixture.r16, "--before", &[]));
     let initial = phase_board(root);
     let original_edge = initial["payload"]["data"]["waiting"]["entries"][0]["edge_id"].clone();
-    let second_root = fixture.worktrees.path().join("second-holder");
+    let second_root = fixture.worktrees.as_path().join("second-holder");
     GIT.add_worktree_without_hooks(root, &second_root, "second-holder", "HEAD");
     let second = run_berth_with_session(
         &second_root,
@@ -1224,7 +1228,7 @@ fn named_claim_foreign_worktree_selection_is_mutation_free() {
             .as_str()
             .expect("director run")
             .to_owned();
-    let foreign_root = fixture.worktrees.path().join("same-run");
+    let foreign_root = fixture.worktrees.as_path().join("same-run");
     GIT.run_without_hooks(
         fixture.root(),
         [
@@ -1352,47 +1356,14 @@ fn named_claim_replace_keeps_the_siblings_ordering_edge() {
 
 #[test]
 fn named_claim_preserves_the_selected_target_baseline_purpose_and_plan() {
-    let repository = initialized_repository();
+    let repository = parallel_templates::NAMED_METADATA.instantiate();
+    let parallel_templates::NamedPhaseMetadata {
+        r16,
+        baseline,
+        original,
+    } = recorded_history::read(repository.path());
+    let r16 = r16.as_str();
     let root = repository.path();
-    let r15 = open_phase(root, "file:a.rs", "dir-sid.phase-15");
-    let baseline = GIT.stdout(root, ["rev-parse", "HEAD"]);
-    GIT.run(root, ["branch", "phase-target"]);
-    let claimed = run_berth_with_session(
-        root,
-        &[
-            "claim",
-            "file:b.rs",
-            "--target",
-            "phase-target",
-            "--head",
-            &baseline,
-            "--why",
-            "phase 16 purpose",
-            "--plan",
-            "docs/plan.md",
-            "--phase",
-            "16",
-            "--json",
-        ],
-        "dir-sid.phase-16",
-    );
-    assert_success(&claimed);
-    let claimed = json(&claimed);
-    let r16 = claimed["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("phase 16");
-    let original = reservation_row(&phase_board(root), r16).clone();
-    fs::write(root.join("a.rs"), "// keep phase 15 active\n").expect("phase 15 work");
-    fs::write(root.join("b.rs"), "// keep phase 16 active\n").expect("phase 16 work");
-    fs::write(root.join("later.txt"), "later head\n").expect("new commit");
-    GIT.run(root, ["add", "later.txt"]);
-    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "advance caller head"]);
-    assert_ne!(GIT.stdout(root, ["rev-parse", "HEAD"]), baseline);
-    assert_success(&run_berth_with_session(
-        root,
-        &["check", "--reservation", &r15, "file:a.rs", "--json"],
-        DIRECTOR_SESSION,
-    ));
     let selected = run_berth_with_session(
         root,
         &["claim", "file:extra.rs", "--reservation", r16, "--json"],
@@ -1578,17 +1549,10 @@ fn ordinary_claim_still_appends_and_legacy_defer_uses_the_oldest_phase() {
 /// Two active phases and a real foreign holder, with the director selecting phase 15.
 struct NamedPhaseOverlap {
     repository: TempDir,
-    worktrees:  TempDir,
+    worktrees:  std::path::PathBuf,
     r15:        String,
     r16:        String,
     holder:     String,
-}
-
-/// Whether phase 16 already owns the requested overlap before the answer under test.
-#[derive(Clone, Copy)]
-enum Phase16InitialCoverage {
-    SeedOnly,
-    SeedAndOverlap,
 }
 
 impl NamedPhaseOverlap {
@@ -1599,67 +1563,25 @@ impl NamedPhaseOverlap {
     }
 
     fn with_coverage(coverage: Phase16InitialCoverage) -> Self {
-        let repository = initialized_repository();
-        let root = repository.path();
-        let r15 = open_phase(root, "file:a.rs", "dir-sid.phase-15");
-        let worktrees = tempfile::tempdir().expect("worktree parent");
-        let holder_root = worktrees.path().join("holder");
-        GIT.run_without_hooks(
-            root,
-            [
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                "holder",
-                holder_root.to_str().expect("worktree path"),
-            ],
-        );
-        let claimed = run_berth_with_session(
-            &holder_root,
-            &["claim", "file:shared.rs", "--json"],
-            "holder-session",
-        );
-        assert_success(&claimed);
-        let holder = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("holder id")
-            .to_owned();
-        fs::write(holder_root.join("shared.rs"), "// foreign holder work\n")
-            .expect("holder's real overlap");
-        let _ = phase_board(root);
-        let r16 = match coverage {
-            Phase16InitialCoverage::SeedOnly => open_phase(root, "file:b.rs", "dir-sid.phase-16"),
-            Phase16InitialCoverage::SeedAndOverlap => {
-                let claimed = run_berth_with_session(
-                    root,
-                    &[
-                        "claim",
-                        "file:b.rs",
-                        "file:shared.rs",
-                        "--override",
-                        &holder,
-                        "--overlap-why",
-                        "seed phase 16 overlap",
-                        "--json",
-                    ],
-                    "dir-sid.phase-16",
-                );
-                assert_success(&claimed);
-                json(&claimed)["payload"]["data"]["reservation_id"]
-                    .as_str()
-                    .expect("phase 16 id")
-                    .to_owned()
-            },
+        let template = match coverage {
+            Phase16InitialCoverage::SeedOnly => parallel_templates::NAMED_SEED,
+            Phase16InitialCoverage::SeedAndOverlap => parallel_templates::NAMED_OVERLAP,
         };
+        let repository = template.instantiate();
+        let state: parallel_templates::NamedPhaseState = serde_json::from_slice(
+            &fs::read(repository.path().join(parallel_templates::STATE))
+                .expect("named phase state should read"),
+        )
+        .expect("named phase state should decode");
+        let worktrees = repository.path().join(".git/fixture-worktrees");
         let fixture = Self {
             repository,
             worktrees,
-            r15,
-            r16,
-            holder,
+            r15: state.r15,
+            r16: state.r16,
+            holder: state.holder,
         };
-        fixture.map_director_to_r15();
+        assert_director_mapping(fixture.root(), &fixture.r15);
         fixture
     }
 
@@ -1691,7 +1613,7 @@ impl NamedPhaseOverlap {
     }
 
     fn hold_extra_path(&self) {
-        let holder_root = self.worktrees.path().join("holder");
+        let holder_root = self.worktrees.as_path().join("holder");
         assert_success(&run_berth_with_session(
             &holder_root,
             &[
@@ -1926,22 +1848,7 @@ fn session_mappings(root: &Path) -> Value {
     .expect("session mappings should be JSON")
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempfile::tempdir().expect("temporary repository should exist");
-    let root = repository.path();
-    GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-    GIT.run(root, ["config", "user.name", "Berth Test"]);
-    GIT.run(root, ["config", "user.email", "berth@example.invalid"]);
-    fs::write(root.join("README.md"), "parallel phase fixture\n")
-        .expect("initial file should write");
-    GIT.run(root, ["add", "README.md"]);
-    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "initial"]);
-    let initialized = run_berth_with_session(root, &["init", "--json"], DIRECTOR_SESSION);
-    assert_success(&initialized);
-    GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
-    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "configure berth"]);
-    repository
-}
+fn initialized_repository() -> TempDir { parallel_templates::INITIALIZED.instantiate() }
 
 fn run_berth_with_session(root: &Path, arguments: &[&str], session_id: &str) -> Output {
     berth_command(BERTH_EXECUTABLE)
@@ -1987,3 +1894,6 @@ fn journal_events(root: &Path) -> Vec<Value> {
         .map(|line| serde_json::from_str(line).expect("journal event should be JSON"))
         .collect()
 }
+
+#[path = "support/recorded_history.rs"]
+mod recorded_history;

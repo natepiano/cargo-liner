@@ -128,6 +128,34 @@ pub(super) const SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING: LedgerTemplate = Ledger
     ..TWO_REBASE_HISTORY
 };
 
+/// A lower checkpoint before the issuing checkout changes branches during the split.
+pub(super) const SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "split-lower-checkpoint-switched-checkout",
+        build: build_switched_checkout,
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+fn build_switched_checkout(root: &Path) {
+    build_split_phase(root, SplitReservationStage::Outstanding);
+    let state: SplitPhaseState = serde_json::from_slice(
+        &fs::read(root.join(STATE_PATH)).expect("split phase state should read"),
+    )
+    .expect("split phase state should decode");
+    write_state(
+        root,
+        &SplitLowerCheckpointState {
+            trunk:         GIT.stdout(root, ["rev-parse", "main"]),
+            lower:         state.id,
+            old_upper:     state.old_tip.clone(),
+            old_lower:     state.old_tip,
+            active_phases: Vec::new(),
+        },
+    );
+}
+
 /// Reservation identities and final interval tips left by the two-rebase prefix.
 #[derive(Serialize, Deserialize)]
 pub(super) struct TwoRebaseHistoryState {
