@@ -636,37 +636,28 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4p — cargo-port memory stays bounded over days  · status: done
 
-**Depends on:** none. It runs before Phase 4o (user, 2026-11-08: top priority).
+#### As-built
 
-#### Work Order
-
-**Goal:** a cargo-port process that runs for days keeps its memory bounded. Resident plus swap memory does not grow with uptime, refreshes, watcher events or CI polls.
-
-**Source:** user, 2026-11-08, via accounts-unit and the showrunner: "tell cargo-liner it needs to prioritize fixing the cargo-port memory leak". On natedev one `cargo-port port` process (pid 3539446, now gone) ran for 1 day 19 hours and held 8.8 GB in swap and about 190 MB resident; swap was 36 of 38 GB in use. It ran the build from before `~/.cargo/bin/cargo-port` was replaced on 2026-11-07 21:18 EST, so the leak can be in that build, the current build, or both.
-
-**Decision:** showrunner, 2026-11-08: this phase is the unit's top priority, before Phases 4n and 4o.
-
-**Constraints:**
-- Never stop or signal a cargo-port process the worker did not start. Take the pid from the worker's own launch chain, never from `pgrep` by name.
-- Measure the current build. Sample `VmRSS` and `VmSwap` from `/proc/<pid>/status` over time.
-- Fix the cause where it lives. A cap that hides growth in a structure that should not grow is not a fix.
-- No test takes a second.
-
-**Spec:**
-1. **Measure the growth.** Launch the current build in a terminal the worker owns, with the user's real config read-only or a scratch config that scans `~/rust`. Drive the events a long run sees (watcher events from file changes in a scratch project, refreshes, CI and GitHub polls, CPU samples) at a fast rate. Record memory at fixed times. Name the event kind whose count tracks the growth.
-2. **Find the cause.** Find the structure that grows without a bound: for example a cache keyed by a value that never repeats, a history buffer, a watcher or subscription list, a channel with no reader, or a task handle list. Check `crates/cargo-port/src/watcher/`, `crates/cargo-port/src/scan/`, `crates/cargo-port/src/tui/app/async_tasks/`, `crates/cargo-port/src/tui/state/`, `crates/cargo-port/src/http/`, `crates/cargo-port/src/ci.rs` and `crates/cargo-port/src/lint/` first.
-3. **Fix it.** Remove the growth at its cause: drop entries when their owner goes, keep one entry per key, or bound a history by its use.
-4. **Hold the bound.** Add a test that drives the growing event many times and asserts the structure's size stays at its bound. Then measure the fixed build again with the Spec 1 driver and show memory flat over the same time.
+- Source measurement caches (`scan/source_measurements.rs`) parse each file once, skip unchanged files and drop retired owners. A late job captures its cache before its async work, so it cannot restore a retired owner.
+- `WorkspaceMetadataStore` and its dispatch generations drop retired checkouts. `TargetDirIndex` replaces a checkout's members on each metadata result.
+- A metadata refresh keeps one pending refresh per checkout (`scan/pending_work.rs`) and takes a run permit per refresh. Rescans for one root merge.
+- One shared worker pool (`scan/background_workers.rs`) runs background work. Callers run `rayon::spawn(scan::project_detail_job(&request))`; `enrichment_job` and `language_enrichment_job` build the enrichment work.
+- The watcher removes retired projects from `projects`, `project_parents` and `pending_disk`. `WatchSkipSet` returns an exclusion-transition enum.
+- On GNU/Linux, `main.rs` calls `mallopt(M_ARENA_MAX, 2)` at startup, so freed scan buffers return to use.
+- A driven 600 s run holds 192-194 MB, flat after warm-up; before this phase the same run reached 1.43 GB.
 
 **Files:**
-- `crates/cargo-port/src/` — the cause, its fix and its test; the exact files come from Spec 2
-- `crates/cargo-port/CHANGELOG.md` — the fix entry
+- `crates/cargo-port/src/scan/` — caches, pending work, worker pool, detail and enrichment jobs
+- `crates/cargo-port/src/watcher/` — project retirement and skip transitions
+- `crates/cargo-port/src/main.rs`, `crates/cargo-port/src/constants.rs` — arena limit
 
-**Workers:** 1 writer: Specs 1-4, the test and the changelog.
+**Binds later work:** background work runs on the shared pool in `scan/background_workers.rs`, never a thread per call. The bound tests `metadata_retention_tests`, `disk_burst_tests`, `skip_growth_tests` and `project_retirement_tests` stay green.
 
-**State:** none.
+**Gotchas:**
+- Live heap stays flat while glibc arenas grow the total; measure `VmRSS` plus `VmSwap`, and split live heap from allocator pages before a hunt for a growing structure.
+- Startup project-detail jobs read `.gitmodules` (and run `git ls-tree` for a submodule project) on the caller thread, so caches are captured before dispatch. This costs about 6 ms per submodule project.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A bound test fails before the fix. Two memory measures of the same driven run, before and after the fix, with times, `VmRSS` and `VmSwap`. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** a size cap on a structure that should not grow; it hides the growth.
 
 ### Phase 4q — The project list uses the shared row click toggle  · status: todo
 
@@ -684,12 +675,13 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Change no behavior and no look. A left click on any expandable project row selects it and toggles it; a focus-only click (`ClickMode::FocusOnly`) does not toggle.
 - Use the shared piece as main has it. A change it needs goes to the handler unit through the showrunner, not into a cargo-port copy.
 - Delete cargo-port's own toggle path; leave no duplicate.
+- Keep the Phase 4p memory bounds: background work runs on the shared pool in `scan/background_workers.rs`, never a thread per call, and the 4p bound tests (`metadata_retention_tests`, `disk_burst_tests`, `skip_growth_tests`, `project_retirement_tests`) stay green.
 
 **Spec:**
 1. **Merge main.** Merge main with the handler unit's `tui_pane` piece and read its API.
 2. **Move the project list onto it.** `tui/interaction.rs::handle_click` (≈line 35) sets the cursor and calls `toggle_selected_project_expansion` (≈line 25), which calls `ProjectList::toggle_expand_for_row` (`tui/project_list/list.rs:2295`). Route the click through the shared piece. Keep `ProjectList` as the owner of the expansion state.
 3. **Delete the copy.** Remove the cargo-port click toggle code the shared piece replaces.
-4. **Tests.** Keep `expandable_project_row_click_toggles_children` (`tui/app/mod.rs:5423`) and `row_body_click_selects_clicked_project` green with no assertion change. Add a test that a focus-only click on an expandable row does not toggle it.
+4. **Tests.** Keep `expandable_project_row_click_toggles_children` (`tui/app/mod.rs:5432`) and `row_body_click_selects_clicked_project` green with no assertion change. Add a test that a focus-only click on an expandable row does not toggle it.
 
 **Files:**
 - `crates/cargo-port/src/tui/interaction.rs` and `crates/cargo-port/src/tui/input/dispatch.rs` — Spec 2
@@ -765,6 +757,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Keep the Phase 4l rules: every Package and Workspace row keeps one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the `Structure` divider; section titles cut the count before the label; at 80 columns all four Worktrees and Remotes columns stay; a short Tracked value draws whole.
 - Keep the Phase 4m description states (`DescriptionState::{Pending, Known, KnownEmpty}`), the git probe's `RepositoryProbe::NoRepository` result and the Structure width. A Package title cut to fit keeps one blank cell before its corner; a whole label that fills the inner width may touch the corner (`package/render.rs::fit_package_title`).
 - Keep the Phase 4n rules: `panes/layout.rs` reserves the preferred Targets width before Projects grows; Source shrinks before a target name; a cut pane title keeps one blank cell before its corner or joint (`GridLines::write_overlay`); footer hints drop from the right at whole hint boundaries and keep a gap of at least 3 cells before a note (`tui_pane/src/bar/status_line.rs`).
+- Keep the Phase 4p memory bounds: background work runs on the shared pool in `scan/background_workers.rs`, never a thread per call, and the 4p bound tests (`metadata_retention_tests`, `disk_burst_tests`, `skip_growth_tests`, `project_retirement_tests`) stay green.
 - New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
 
 **Files:**
