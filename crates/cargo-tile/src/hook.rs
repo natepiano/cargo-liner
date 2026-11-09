@@ -41,6 +41,7 @@ use std::io::IsTerminal;
 use std::io::PipeReader;
 use std::io::Read;
 use std::io::Write;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -63,6 +64,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::thread;
+use std::thread::JoinHandle;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -84,6 +86,7 @@ use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_EXECUTABLE;
 use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_VERSION;
+use crate::constants::CAPTURE_STDERR_PUMP_BUFFER_BYTES;
 use crate::constants::CARGO_NAME;
 use crate::constants::COMMAND_VALUED_OPTIONS;
 use crate::constants::REAL_CARGO_NAME;
@@ -831,7 +834,7 @@ fn copy_command_context(original: &Command, child: &mut Command) {
 /// Once cargo starts, wait errors cannot cause a second invocation.
 struct RunningCapture {
     cargo:  Child,
-    mirror: ReadyCaptureMirror,
+    mirror: NativeStderrPump,
 }
 
 impl RunningCapture {
@@ -888,11 +891,15 @@ fn capture_piped(
             .unwrap_or_else(|| "100".into()),
     );
     let (reader, writer) = std::io::pipe()?;
-    let mut tee = ReadyCaptureMirror::start(reader, log, after_readiness)?;
+    let mirror = NativeStderrPump::start(reader, log)?;
+    if let Err(error) = after_readiness() {
+        drop(writer);
+        let _ = mirror.wait();
+        return Err(error);
+    }
     if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
         drop(writer);
-        let _ = tee.child.kill();
-        let _ = tee.wait();
+        let _ = mirror.wait();
         return Ok(CaptureStartup::Interrupted(status));
     }
     let result = cargo.stderr(Stdio::from(writer)).spawn();
@@ -900,59 +907,52 @@ fn capture_piped(
     match result {
         Ok(cargo) => Ok(CaptureStartup::CargoStarted(RunningCapture {
             cargo,
-            mirror: tee,
+            mirror,
         })),
         Err(error) => {
-            let _ = tee.wait();
+            let _ = mirror.wait();
             Err(error)
         },
     }
 }
 
-/// Cargo can start only after the mirror has installed its process-group signal policy.
-struct ReadyCaptureMirror {
-    child: Child,
+/// An open log and caller stream belong to a started pump before cargo can write.
+struct NativeStderrPump {
+    worker: JoinHandle<()>,
 }
 
-impl ReadyCaptureMirror {
-    fn start(
-        reader: PipeReader,
-        log: &Path,
-        after_readiness: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Self> {
-        let mut child = Command::new("sh")
-            .args([
-                "-c",
-                "trap '' INT QUIT; printf r; exec tee -a \"$1\" >&2",
-                "cargo-tile-tee",
-            ])
-            .arg(log)
-            .stdin(Stdio::from(reader))
-            .stdout(Stdio::piped())
-            .spawn()?;
-        let readiness = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("mirror readiness pipe is unavailable"))
-            .and_then(|mut stdout| {
-                let mut byte = [0];
-                stdout.read_exact(&mut byte)?;
-                if byte == *b"r" {
-                    Ok(())
-                } else {
-                    Err(io::Error::other("mirror did not report readiness"))
-                }
-            })
-            .and_then(|()| after_readiness());
-        if let Err(error) = readiness {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-        Ok(Self { child })
+impl NativeStderrPump {
+    fn start(reader: PipeReader, log: &Path) -> io::Result<Self> {
+        let log = OpenOptions::new().append(true).open(log)?;
+        let stderr = File::from(io::stderr().as_fd().try_clone_to_owned()?);
+        let worker = thread::Builder::new()
+            .name("cargo-stderr".into())
+            .spawn(move || Self::drain(reader, log, stderr))?;
+        Ok(Self { worker })
     }
 
-    fn wait(&mut self) -> io::Result<ExitStatus> { self.child.wait() }
+    /// A failed log file or caller stderr cannot close cargo's pipe.
+    /// The other output still receives bytes.
+    fn drain(mut reader: PipeReader, mut log: File, mut stderr: File) {
+        let mut bytes = [0; CAPTURE_STDERR_PUMP_BUFFER_BYTES];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(length) => {
+                    let _ = log.write_all(&bytes[..length]);
+                    let _ = stderr.write_all(&bytes[..length]);
+                },
+                Err(error) if error.kind() == ErrorKind::Interrupted => {},
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn wait(self) -> io::Result<()> {
+        self.worker
+            .join()
+            .map_err(|_| io::Error::other("stderr pump failed"))
+    }
 }
 
 /// A helper's exit is separate from an acknowledged cargo execution.

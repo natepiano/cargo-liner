@@ -955,10 +955,20 @@ fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize
     } else {
         args.label_width
     };
+    if field == DetailField::Head && width <= support::NARROW_FIELD_INNER_WIDTH {
+        let value_width = build_field_value(args.data, field).width();
+        if field.label().width() + value_width + 3 <= width {
+            return desired
+                .min(width - value_width - 3)
+                .max(field.label().width());
+        }
+    }
     if width >= field.label().width() + 2 && width > *SPLIT_ROW_MIN_INNER_WIDTH {
         desired
             .min(width.saturating_sub(2))
             .max(field.label().width())
+    } else if width == field.label().width() + 1 && width > *SPLIT_ROW_MIN_INNER_WIDTH {
+        field.label().width()
     } else {
         flat_field_label_width(
             args.area_width,
@@ -990,7 +1000,9 @@ fn flat_field_lines(
     let one_row = args.area_height < 2
         && usize::from(args.area_width) <= support::NARROW_FIELD_INNER_WIDTH
         && usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH;
-    let compact_prefix = one_row && label_width + 2 >= usize::from(args.area_width);
+    let value = build_field_value(args.data, field);
+    let compact_prefix = usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH
+        && field.label().width() + 1 == usize::from(args.area_width);
     let padding = if compact_prefix {
         1
     } else if one_row {
@@ -1017,7 +1029,6 @@ fn flat_field_lines(
         format!(" {label:<label_width$} ")
     };
     let wraps = matches!(field, DetailField::WorktreeError | DetailField::Bisect);
-    let value = build_field_value(args.data, field);
     let value = if is_rate_limit_row {
         fit_rate_limit_value(args.data, field, value, available)
     } else {
@@ -1272,15 +1283,45 @@ fn fit_sync_trio(layout: &mut SyncColLayout, values: (usize, usize, usize)) {
     let mut excess =
         (layout.lead + layout.branch + layout.tracked + layout.sync + 2 * layout.column_gap())
             .saturating_sub(layout.available);
-    // Cut header padding before values. Keep one letter and an ellipsis in each column.
-    for (width, value) in [
-        (&mut layout.tracked, values.1),
-        (&mut layout.branch, values.0),
-        (&mut layout.sync, values.2),
-    ] {
-        let cut = excess.min(width.saturating_sub(value.max(*MIN_FITTED_TEXT_WIDTH)));
-        *width -= cut;
-        excess -= cut;
+    // Take spare header cells before cutting the Branch or Tracked labels.
+    while excess > 0 {
+        let spare = [
+            (layout.branch, "Branch".width()),
+            (layout.tracked, "Tracked".width()),
+            (layout.sync, "Sync".width()),
+        ];
+        let Some((index, _)) = spare
+            .iter()
+            .enumerate()
+            .filter(|(_, (width, header))| width > header)
+            .max_by_key(|(_, (width, _))| *width)
+        else {
+            break;
+        };
+        match index {
+            0 => layout.branch -= 1,
+            1 => layout.tracked -= 1,
+            _ => layout.sync -= 1,
+        }
+        excess -= 1;
+    }
+    let sync_padding = excess.min(
+        layout
+            .sync
+            .saturating_sub(values.2.max(*MIN_FITTED_TEXT_WIDTH)),
+    );
+    layout.sync -= sync_padding;
+    excess -= sync_padding;
+    if excess > 0 {
+        for (width, value) in [
+            (&mut layout.tracked, values.1),
+            (&mut layout.branch, values.0),
+            (&mut layout.sync, values.2),
+        ] {
+            let cut = excess.min(width.saturating_sub(value.max(*MIN_FITTED_TEXT_WIDTH)));
+            *width -= cut;
+            excess -= cut;
+        }
     }
     while excess > 0
         && (layout.branch > *MIN_FITTED_TEXT_WIDTH || layout.tracked > *MIN_FITTED_TEXT_WIDTH)

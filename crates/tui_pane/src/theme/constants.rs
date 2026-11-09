@@ -1,6 +1,35 @@
 use std::time::Duration;
 
-// Colour arithmetic for `super::blend`: `ANSI_BASE_PALETTE` through `COLOR_DISTANCE_GREEN_WEIGHT`.
+// appearance tracking
+/// The portal namespace carrying the desktop appearance preference.
+#[cfg(target_os = "linux")]
+pub(super) const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
+/// Repeated connection failures retry slowly without losing eventual recovery.
+pub(super) const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);
+/// Preserve the former detector's ten-failure threshold for slow retries.
+pub(super) const BACKOFF_THRESHOLD: u32 = 10;
+/// Portal color-scheme wire values: one requests dark and two requests light.
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_DARK: u32 = 1;
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_KEY: &str = "color-scheme";
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_LIGHT: u32 = 2;
+/// Linux retries failed subscriptions at the former polling cadence; other
+/// platforms keep using this interval for detection.
+pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(1500);
+#[cfg(target_os = "linux")]
+pub(super) const PORTAL_DESTINATION: &str = "org.freedesktop.portal.Desktop";
+#[cfg(target_os = "linux")]
+pub(super) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_CHANGED: &str = "SettingChanged";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_READ: &str = "ReadOne";
+
+// colour arithmetic
 /// The xterm palette for ANSI 0-15, which is what a named
 /// [`Color`](ratatui::style::Color) and the first sixteen entries of
 /// [`Color::Indexed`](ratatui::style::Color::Indexed) both stand for.
@@ -37,6 +66,11 @@ pub(super) const ANSI_GRAYSCALE_BASE: u8 = 232;
 pub(super) const ANSI_GRAYSCALE_START: u8 = 8;
 /// How far each entry of the grayscale ramp stands above the last.
 pub(super) const ANSI_GRAYSCALE_STEP: u8 = 10;
+/// The redmean weight on green, which is the same at every point of
+/// the scale -- green is where the eye reads most of a difference, and
+/// it reads it the same however red the pair is.
+pub(super) const COLOR_DISTANCE_GREEN_WEIGHT: u32 = 4 * COLOR_DISTANCE_SCALE;
+
 /// Fixed point the redmean weights are carried in, so
 /// [`color_distance`](super::color_distance) reaches its answer without
 /// a float anywhere.
@@ -44,36 +78,7 @@ pub(super) const COLOR_DISTANCE_SCALE: u32 = 256;
 /// The redmean weight red and blue start from, before the shift that
 /// adds to one of them whatever it takes from the other.
 pub(super) const COLOR_DISTANCE_SIDE_WEIGHT: u32 = 2 * COLOR_DISTANCE_SCALE;
-/// The redmean weight on green, which is the same at every point of
-/// the scale -- green is where the eye reads most of a difference, and
-/// it reads it the same however red the pair is.
-pub(super) const COLOR_DISTANCE_GREEN_WEIGHT: u32 = 4 * COLOR_DISTANCE_SCALE;
 
-// Appearance tracking for `super::poller`: `APPEARANCE_NAMESPACE` through `SETTINGS_READ`.
-/// The portal namespace carrying the desktop appearance preference.
-#[cfg(target_os = "linux")]
-pub(super) const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
-/// Repeated connection failures retry slowly without losing eventual recovery.
-pub(super) const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);
-/// Preserve the former detector's ten-failure threshold for slow retries.
-pub(super) const BACKOFF_THRESHOLD: u32 = 10;
-/// Portal color-scheme wire values: one requests dark and two requests light.
-#[cfg(target_os = "linux")]
-pub(super) const COLOR_SCHEME_DARK: u32 = 1;
-#[cfg(target_os = "linux")]
-pub(super) const COLOR_SCHEME_KEY: &str = "color-scheme";
-#[cfg(target_os = "linux")]
-pub(super) const COLOR_SCHEME_LIGHT: u32 = 2;
-/// Linux retries failed subscriptions at the former polling cadence; other
-/// platforms keep using this interval for detection.
-pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(1500);
-#[cfg(target_os = "linux")]
-pub(super) const PORTAL_DESTINATION: &str = "org.freedesktop.portal.Desktop";
-#[cfg(target_os = "linux")]
-pub(super) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-#[cfg(target_os = "linux")]
-pub(super) const SETTINGS_CHANGED: &str = "SettingChanged";
-#[cfg(target_os = "linux")]
-pub(super) const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
-#[cfg(target_os = "linux")]
-pub(super) const SETTINGS_READ: &str = "ReadOne";
+// value roles
+/// Optional foreground role for quiet values, independent of pane borders.
+pub const DIM_VALUE_ROLE: &str = "text.dim_value";

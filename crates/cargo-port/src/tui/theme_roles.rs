@@ -4,6 +4,7 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use tui_pane::Appearance;
 use tui_pane::ColorMode;
+use tui_pane::DIM_VALUE_ROLE;
 use tui_pane::PaneSelectionState;
 use tui_pane::StyleSpec;
 use tui_pane::Theme;
@@ -108,6 +109,18 @@ fn palette_for(theme_id: Option<&ThemeId>, appearance: Appearance) -> RolePalett
 
 fn default_role(role: &str, role_palette: RolePalette) -> StyleSpec {
     match (role, role_palette) {
+        (DIM_VALUE_ROLE, RolePalette::DefaultDark) => {
+            StyleSpec::from_color(Color::Rgb(160, 160, 160))
+        },
+        (DIM_VALUE_ROLE, RolePalette::DefaultLight) => {
+            StyleSpec::from_color(Color::Rgb(98, 98, 98))
+        },
+        (DIM_VALUE_ROLE, RolePalette::HighContrastDark) => {
+            StyleSpec::from_color(Color::Rgb(229, 229, 229))
+        },
+        (DIM_VALUE_ROLE, RolePalette::HighContrastLight) => {
+            StyleSpec::from_color(Color::Rgb(90, 90, 90))
+        },
         (SELECTION_TEXT, RolePalette::DefaultDark | RolePalette::HighContrastDark) => {
             StyleSpec::from_color(Color::Rgb(255, 255, 255))
         },

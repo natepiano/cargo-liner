@@ -1,5 +1,7 @@
 //! The sizes and timings a tile grid is laid out and animated with.
 
+use std::num::NonZeroU16;
+
 use super::constants::FOCUS_ANIMATION_MILLIS;
 use super::constants::MAX_PENDING_STEPS;
 use super::constants::MIN_STEP_MILLIS;
@@ -74,7 +76,7 @@ pub(super) struct TileSettings {
     /// Whether the summary reserves its measured rows before tile sharing.
     pub(super) summary_row_allocation: SummaryRowAllocation,
     /// Rows one cell standing alone needs; see [`MIN_TILE_HEIGHT`].
-    pub(super) min_tile_height:        u16,
+    pub(super) min_tile_height:        NonZeroU16,
     /// Columns one cell standing alone needs; see [`MIN_TILE_WIDTH`].
     pub(super) min_tile_width:         u16,
     /// Whether one column can use the content's below-core presentation.
@@ -102,7 +104,7 @@ impl Default for TileSettings {
         Self {
             view:                   TileView::Cells,
             summary_row_allocation: SummaryRowAllocation::Shared,
-            min_tile_height:        MIN_TILE_HEIGHT,
+            min_tile_height:        NonZeroU16::MIN.saturating_add(MIN_TILE_HEIGHT - 1),
             min_tile_width:         MIN_TILE_WIDTH,
             tile_width_floor:       TileWidthFloor::Required,
             border_rows:            TILE_BORDER_ROWS,

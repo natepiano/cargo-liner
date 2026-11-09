@@ -787,6 +787,7 @@ fn append_enrollment_answer(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::io;
 
     use super::AnswerAcquisition;
@@ -810,8 +811,10 @@ mod tests {
     use crate::config::Enrollment;
     use crate::ids::EdgeId;
     use crate::ids::ReservationId;
+    use crate::ledger::CommittedActionValidation;
     use crate::ledger::JournalOperation;
     use crate::ledger::Ledger;
+    use crate::ledger::LedgerCommittedActionOutcome;
     use crate::ledger::OrderingCycleRepair;
     use crate::ledger::OrderingDirection;
     use crate::ledger::ReservationScope;
@@ -1202,20 +1205,41 @@ mod tests {
             overlaps: overlaps.clone(),
         };
         let requester = fixture.claim(&actor, "shared.rs", defer)?;
-        for index in 0..WIDENS_WITHOUT_FOREIGN_OVERLAP {
-            fixture.append_as(
-                &actor,
+        let prerequisites = (0..WIDENS_WITHOUT_FOREIGN_OVERLAP)
+            .map(|index| {
                 drift_widen(
                     requester.reservation_id,
                     &format!("grown_{index}.rs"),
                     ConflictAuthorization::NoConflict,
-                )?,
+                )
+            })
+            .collect::<FixtureResult<Vec<_>>>()?;
+        let operation = drift_widen(requester.reservation_id, "covered.rs", covered)?;
+        let ledger = Ledger::open(fixture.repository.path())?;
+        let author = ledger
+            .read_validated_journal()?
+            .into_coordination_events()
+            .pop()
+            .ok_or_else(|| io::Error::other("requester claim should record its actor"))?
+            .actor;
+        let outcome: LedgerCommittedActionOutcome<Infallible, ()> = ledger
+            .transact_with_committed_action(
+                author.worktree,
+                author.run,
+                |_| CommittedActionValidation::AppendWithPrerequisites {
+                    prerequisites: prerequisites.clone(),
+                    operation:     Box::new(operation.clone()),
+                    action:        (),
+                },
+                |()| Ok::<(), std::convert::Infallible>(()),
             )?;
+        match outcome {
+            LedgerCommittedActionOutcome::Appended { .. } => {},
+            LedgerCommittedActionOutcome::AlreadySatisfied { .. } => {
+                return Err(io::Error::other("widening setup must append every event").into());
+            },
+            LedgerCommittedActionOutcome::Rejected(impossible) => match impossible {},
         }
-        fixture.append_as(
-            &actor,
-            drift_widen(requester.reservation_id, "covered.rs", covered)?,
-        )?;
 
         let model = fixture.model()?;
         assert!(matches!(

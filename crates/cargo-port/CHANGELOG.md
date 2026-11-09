@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remove spaces and trailing middle-dot separators before cut-value ellipses. Keep the Tracked header and short Worktree Group CI values whole.
+- Give quiet CI and lint values a separate theme role with readable contrast on focused and unfocused panes.
+- Deliver pull-request results to submodules. Keep cached rows when the remote list cannot be read. Hide empty loading sections without a fetch.
+- Keep narrow Git field labels inset and Stars values on their own row.
+- Reserve Main comparison width before git data arrives, and reserve pull-request loading rows before their fetch starts.
+- Remove the unused on-branch-rows CI state.
+- Reserve preferred Targets width before Projects expands. Cut Source text before target names.
+
 - Release each metadata permit after one refresh so other checkouts can run during continuous edits.
 - Capture submodule language caches before detail work starts so delayed enrichment cannot restore retired owners.
 

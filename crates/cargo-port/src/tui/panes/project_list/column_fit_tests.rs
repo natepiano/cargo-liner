@@ -207,7 +207,7 @@ fn narrow_project_columns_drop_in_order_after_the_name_floor() -> anyhow::Result
     let scratch = tempfile::tempdir()?;
     let mut app = app_with_names(scratch.path(), LONG_NAME)?;
     for (width, last, removed) in [
-        (43, "Sync", "Main"),
+        (44, "Sync", "Main"),
         (38, "Git", "Sync"),
         (34, "Type", "Git"),
         (29, "CI", "Type"),
@@ -387,7 +387,7 @@ fn assert_drawn_pane_widths(app: &App, width: u16) {
         return;
     }
     let projects = app.panes.tiled_layout.area(PaneId::ProjectList);
-    let expected_projects = if width == 67 { 37 } else { 48 };
+    let expected_projects = if width == 67 { 37 } else { 49 };
     assert_eq!(projects.width, expected_projects);
     assert_eq!(
         app.panes.tiled_layout.area(PaneId::CiRuns).width,
@@ -398,13 +398,13 @@ fn assert_drawn_pane_widths(app: &App, width: u16) {
     let targets = app.panes.tiled_layout.area(PaneId::Targets);
     match width {
         95 => {
-            assert_eq!((package.width, git.width), (24, 23));
+            assert_eq!((package.width, git.width), (23, 23));
             assert_eq!(app.panes.tiled_layout.area(PaneId::Cpu).width, 19);
-            assert_eq!(targets.width, 28);
+            assert_eq!(targets.width, 27);
         },
         80 => {
-            assert_eq!((package.width, git.width), (16, 16));
-            assert_eq!(targets.width, 32);
+            assert_eq!((package.width, git.width), (16, 15));
+            assert_eq!(targets.width, 31);
         },
         _ => {
             assert_eq!(width, 67);
@@ -602,6 +602,82 @@ fn same_named_roots_remove_shared_folder_words() -> anyhow::Result<()> {
                 assert!(names.iter().any(|row| row.contains(label)), "{names:?}");
             }
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let mut groups = Vec::new();
+    for (folder, count) in [("alpha-team", 3), ("workspaces", 2)] {
+        let mut entries = (0..count)
+            .map(|index| {
+                package(
+                    &scratch
+                        .path()
+                        .join(folder)
+                        .join(index.to_string())
+                        .join("proof_crate"),
+                    "proof_crate",
+                    79,
+                )
+                .map(RustProject::Package)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter();
+        groups.push(RootItem::Worktrees(WorktreeGroup::new(
+            entries.next().context("primary")?,
+            entries.collect(),
+        )));
+    }
+    let mut app = test_support::make_app(&[]);
+    app.framework.color_mode = ColorMode::NoColor;
+    app.config.current_mut().lint.enabled = LintIndicator::Disabled;
+    app.project_list = ProjectList::new(
+        std::iter::once(RootItem::Rust(RustProject::Package(package(
+            &scratch.path().join("alpha"),
+            "alpha",
+            32 << 30,
+        )?)))
+        .chain(groups)
+        .collect(),
+    );
+    app.project_list.expanded.expand(ExpandKey::Node(1), 0);
+    app.ensure_visible_rows_cached();
+    let paths = app.project_list.visible_project_storage_paths();
+    app.project_list
+        .set_project_storage(&paths, ProjectStorage::Available(295 << 30));
+    let buffer = test_support::draw_ui(&mut app, 80)?;
+    let area = app.panes.project_list.body_rect;
+    let header = test_support::find_text_cell(
+        &buffer,
+        Rect::new(area.x, area.y - 1, area.width, 1),
+        "Projects",
+    )
+    .context("Projects heading")?;
+    let alpha =
+        test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "alpha")
+            .context("root name")?;
+    assert_eq!(header.0, alpha.0, "the header starts at the name column");
+    let ci =
+        test_support::find_text_cell(&buffer, Rect::new(area.x, area.y - 1, area.width, 1), "CI")
+            .context("next column")?
+            .0;
+    for y in area.y + 1..area.y + 5 {
+        let name = text_row(&buffer, Rect::new(area.x, y, ci - area.x, 1), y);
+        let cut = name
+            .find('…')
+            .with_context(|| format!("cut tree name: {name}: {:?}", test_support::rows(&buffer)))?;
+        assert!(name[..cut].chars().any(char::is_alphabetic), "{name}");
+    }
+    for (offset, text) in [(1, "[a… 🌲:3"), (2, "p… (p)"), (5, "[w… 🌲:2")] {
+        test_support::find_text_cell(
+            &buffer,
+            Rect::new(area.x, area.y + offset, area.width, 1),
+            text,
+        )
+        .with_context(|| format!("whole tree label {text}: {:?}", test_support::rows(&buffer)))?;
     }
     Ok(())
 }

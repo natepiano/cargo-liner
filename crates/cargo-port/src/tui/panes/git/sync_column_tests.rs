@@ -418,3 +418,59 @@ fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Res
     }
     Ok(())
 }
+
+#[test]
+fn worktree_tracked_header_uses_a_spare_branch_cell_at_ninety_five_columns() -> anyhow::Result<()> {
+    for (pane_width, tracked_header) in [
+        (23, "Track…"),
+        (24, "Tracked"),
+        (27, "Tracked"),
+        (28, "Tracked"),
+        (29, "Tracked"),
+    ] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
+            worktrees: ["master", "verify-run-place", "sdlc-merge-gate"]
+                .into_iter()
+                .map(|branch| WorktreeInfo {
+                    name:         "proof_crate".to_string(),
+                    path:         format!("/tmp/{branch}/proof_crate"),
+                    branch:       Some(branch.to_string()),
+                    tracked:      (branch != "master").then(|| "master".to_string()),
+                    ahead_behind: if branch == "master" {
+                        Comparison::NotCompared
+                    } else {
+                        Comparison::Counted(AheadBehind {
+                            ahead:  0,
+                            behind: 0,
+                        })
+                    },
+                })
+                .collect(),
+            ..GitData::default()
+        });
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, 95, pane_width)?;
+        let title = test_support::position(&buffer, "Worktrees")?;
+        let row = Rect::new(0, title.1 + 1, pane_width, 1);
+        test_support::find_text_cell(&buffer, row, "Branch").context("whole Branch header")?;
+        test_support::find_text_cell(&buffer, row, tracked_header)
+            .with_context(|| format!("{pane_width}: {:?}", test_support::rows(&buffer)))?;
+        if pane_width == 23 {
+            for labels in ["N…", "Branch", "Track…", "S…"].windows(2) {
+                let left =
+                    test_support::find_text_cell(&buffer, row, labels[0]).context("left header")?;
+                let right = test_support::find_text_cell(&buffer, row, labels[1])
+                    .context("right header")?;
+                assert_eq!(
+                    usize::from(right.0 - left.0),
+                    labels[0].width() + 1,
+                    "one gap, with no spare Branch cell: {:?}",
+                    test_support::rows(&buffer)
+                );
+            }
+        }
+    }
+    Ok(())
+}

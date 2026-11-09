@@ -869,7 +869,8 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
         let tools = tempdir().expect("create check counter directory");
         let cargo = tools.path().join("cargo");
         let count = tools.path().join("checks");
-        fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = check ]; then printf x >> \"$MEND_TEST_CHECK_STARTS\"; fi\nexec \"$MEND_TEST_REAL_CARGO\" \"$@\"\n")
+        let metadata_count = tools.path().join("metadata");
+        fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = check ]; then printf x >> \"$MEND_TEST_CHECK_STARTS\"; fi\nif [ \"$1\" = metadata ]; then printf x >> \"$MEND_TEST_METADATA_STARTS\"; fi\nexec \"$MEND_TEST_REAL_CARGO\" \"$@\"\n")
             .expect("write counting cargo entry");
         fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700))
             .expect("make counting cargo entry executable");
@@ -881,8 +882,10 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
         .expect("prepend counting cargo entry");
         command
             .env("PATH", path)
+            .env("CARGO", &cargo)
             .env("MEND_TEST_REAL_CARGO", env!("CARGO"))
-            .env("MEND_TEST_CHECK_STARTS", &count);
+            .env("MEND_TEST_CHECK_STARTS", &count)
+            .env("MEND_TEST_METADATA_STARTS", &metadata_count);
         let stderr = run_fix_command(&mut command);
         let starts = fs::read(&count)
             .expect("read real cargo check starts")
@@ -890,6 +893,13 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
         assert!(
             starts <= 5,
             "four edited trees need at most five checks, observed {starts}"
+        );
+        let metadata_starts = fs::read(&metadata_count)
+            .expect("read workspace metadata starts")
+            .len();
+        assert_eq!(
+            metadata_starts, 1,
+            "the workspace inventory must be resolved once"
         );
         stderr
     }

@@ -417,6 +417,39 @@ pub(crate) const ROOT_PROCESS_PID: u32 = 1;
 pub(crate) const RUSTC_BINARY: &str = "rustc";
 /// Both rustc and its cache client carry the destination of a compilation.
 pub(crate) const RUSTC_OUT_DIR_FLAG: &str = "--out-dir";
+/// The compiler selects its output kinds with this option.
+pub(crate) const RUSTC_EMIT_FLAG: &str = "--emit";
+/// The cache directs dependency discovery to one temporary file.
+pub(crate) const RUSTC_OUTPUT_FLAG: &str = "-o";
+/// The compiler can report its output names without compiling.
+pub(crate) const RUSTC_PRINT_FLAG: &str = "--print";
+/// The cache requests only dependency information during discovery.
+pub(crate) const RUSTC_DEPENDENCY_EMIT: &str = "dep-info";
+/// The cache asks the compiler for these output names.
+pub(crate) const RUSTC_OUTPUT_NAMES_PRINT: &str = "file-names";
+/// The cache writes dependency discovery to this file.
+pub(crate) const SCCACHE_DEPENDENCY_FILENAME: &str = "deps.d";
+/// Diagnostic options that do not identify a compile request.
+pub(crate) const RUSTC_DIAGNOSTIC_FLAGS: &[&[u8]] = &[b"--error-format", b"--json"];
+/// The crate type option can use split or joined spelling.
+pub(crate) const RUSTC_CRATE_TYPE_FLAG: &str = "--crate-type";
+/// Cargo's library crate type before the cache rewrites it.
+pub(crate) const RUSTC_LIBRARY_CRATE_TYPE: &str = "lib";
+/// The equivalent library crate type used by the cache server.
+pub(crate) const RUSTC_RLIB_CRATE_TYPE: &str = "rlib";
+/// Request options whose values remain exact across split and joined spelling.
+pub(crate) const RUSTC_REQUEST_VALUE_FLAGS: &[&[u8]] = &[
+    b"--crate-name",
+    b"--edition",
+    RUSTC_CRATE_TYPE_FLAG.as_bytes(),
+    b"--check-cfg",
+    RUSTC_OUT_DIR_FLAG.as_bytes(),
+    RUSTC_EMIT_FLAG.as_bytes(),
+    RUSTC_OUTPUT_FLAG.as_bytes(),
+    RUSTC_PRINT_FLAG.as_bytes(),
+];
+/// This option starts a cache server rather than requesting a compile.
+pub(crate) const SCCACHE_START_SERVER_FLAG: &str = "--start-server";
 /// Seconds in an hour, past which `dur` widens to `hh:mm:ss`.
 pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 /// Seconds in a minute, for splitting a run time into its parts.
@@ -456,6 +489,10 @@ pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
     [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
 /// Label before the summary's total resident memory.
 pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
+/// The cache servers' resident memory has no cargo owner.
+pub(crate) const SUMMARY_SHARED_COMPILER_CACHE_LABEL: &str = "shared compiler cache";
+/// Detached compiler memory can lack a proven cargo owner.
+pub(crate) const SUMMARY_UNATTRIBUTED_MEMORY_LABEL: &str = "unattributed";
 /// Separator before the optional summary disk reading.
 pub(crate) const SUMMARY_DISK_SEPARATOR: &str = "  ";
 /// Label before the summary disk reading.
@@ -786,6 +823,8 @@ pub(crate) const CAPTURE_ENTRY_NAME_BYTES: usize = 255;
 /// names. A directory record that cannot fit fails enumeration conservatively.
 #[cfg(target_os = "linux")]
 pub(crate) const CAPTURE_DIRECTORY_BUFFER_BYTES: usize = 8192;
+/// Bytes read per transfer from cargo stderr to the log and caller stderr.
+pub(crate) const CAPTURE_STDERR_PUMP_BUFFER_BYTES: usize = 8192;
 /// Registration metadata is small; 64 KiB accommodates long command and cwd
 /// fields. Reads allow one extra byte solely to detect and reject larger files.
 pub(crate) const CAPTURE_REGISTRATION_BYTES: u64 = 64 * 1024;

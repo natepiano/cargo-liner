@@ -230,6 +230,8 @@ use crate::constants::SUMMARY_HIDDEN_COLUMNS;
 use crate::constants::SUMMARY_LABEL_BORDER_RESERVE;
 use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::SUMMARY_MEMORY_LABEL;
+use crate::constants::SUMMARY_SHARED_COMPILER_CACHE_LABEL;
+use crate::constants::SUMMARY_UNATTRIBUTED_MEMORY_LABEL;
 use crate::constants::TABLE_COLUMN_DROP_ORDER;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_CONTINUATION_CLEARANCE;
@@ -368,7 +370,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 
     let prepared = prepare_panes(app, body.height);
     #[cfg(feature = "attract")]
-    let work = if prepared.tables.roster.groups().is_empty() {
+    let work = if prepared.tables.roster.groups().is_empty()
+        && prepared.tables.roster.memory_shares().unattributed == 0
+    {
         AttractWork::Idle
     } else {
         AttractWork::Running
@@ -738,6 +742,7 @@ mod expanded_view_tests {
     use super::tests;
     use crate::app::GridView;
     use crate::census::Measurement;
+    use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 
     fn app() -> Result<App, Box<dyn Error>> {
         let mut app = App::new_for_test()?;
@@ -1265,6 +1270,25 @@ mod expanded_view_tests {
         assert!(end[11].contains("cargo nextest run"), "{}", end[11]);
         assert!(!end[11].contains("--config"), "{}", end[11]);
         assert!(end[12].contains("22–31 of 31"), "{}", end[12]);
+        app.roster.observe_memory_shares(CompileMemoryShares {
+            shared_compiler_cache: super::BYTES_PER_GIBIBYTE,
+            unattributed:          super::BYTES_PER_GIBIBYTE * 2,
+        });
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        press(&mut app, KeyCode::End);
+        let shared = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let shared = tests::buffer_rows(&shared);
+        assert_eq!(shared[1], header);
+        assert!(shared[9].contains("4129"), "{}", shared[9]);
+        assert!(shared[9].contains("cargo nextest run"), "{}", shared[9]);
+        assert!(!shared[9].contains("--config"), "{}", shared[9]);
+        assert!(
+            shared[10].contains("shared compiler cache 1.0G"),
+            "{}",
+            shared[10]
+        );
+        assert!(shared[11].contains("unattributed 2.0G"), "{}", shared[11]);
+        assert!(shared[12].contains("24–33 of 33"), "{}", shared[12]);
         Ok(())
     }
 
@@ -1299,6 +1323,19 @@ mod expanded_view_tests {
         assert_eq!(end[1], header);
         assert!(end[11].contains("4129"), "{}", end[11]);
         assert!(end[12].contains("22–31 of 31"), "{}", end[12]);
+        app.roster.observe_memory_shares(CompileMemoryShares {
+            shared_compiler_cache: super::BYTES_PER_GIBIBYTE,
+            unattributed:          super::BYTES_PER_GIBIBYTE * 2,
+        });
+        press(&mut app, KeyCode::Home);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        let shared = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let shared = tests::buffer_rows(&shared);
+        assert_eq!(shared[1], header);
+        assert!(shared[12].contains("6–15 of 33"), "{}", shared[12]);
         Ok(())
     }
 }
@@ -1601,7 +1638,8 @@ impl TileCells<InvocationId> for Cells<'_> {
                 width_of(&TileContent::Summary),
                 PreparedCellRows::demand,
             ),
-            summary_width: frame_summary_width(&summary, &self.grids.summary.0),
+            summary_width: frame_summary_width(&summary, &self.grids.summary.0)
+                .max(summary_memory_width(&self.roster)),
             groups:        self
                 .roster
                 .tiled_ids()
@@ -1783,8 +1821,10 @@ fn frame_tile_demands(
             width_of(TileContent::Summary),
             PinnedGroup::Unpinned,
             &grids.summary.0,
-        ),
-        summary_width: frame_summary_width(&summary, &grids.summary.0),
+        )
+        .saturating_add(summary_memory_rows(roster).count()),
+        summary_width: frame_summary_width(&summary, &grids.summary.0)
+            .max(summary_memory_width(roster)),
         groups:        roster
             .tiled_ids()
             .into_iter()
@@ -2115,7 +2155,80 @@ fn frame_draw_summary(
     grid: &FrameTableColumnGrid,
 ) -> CellPaintReach {
     let rows = summary_rows(roster);
-    frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid)
+    if summary_memory_rows(roster).next().is_none() {
+        return frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid);
+    }
+    let table_rows = u16::try_from(frame_table_height(
+        &rows,
+        inner.width,
+        PinnedGroup::Unpinned,
+        grid,
+    ))
+    .unwrap_or(u16::MAX);
+    let mut reach = if rows.is_empty() {
+        CellPaintReach {
+            rows:     0,
+            commands: Vec::new(),
+            header:   CellColumnHeader::Absent,
+        }
+    } else {
+        frame_draw_process_table(
+            buffer,
+            Rect {
+                height: inner.height.min(table_rows),
+                ..inner
+            },
+            &rows,
+            ground,
+            PinnedGroup::Unpinned,
+            grid,
+        )
+    };
+    for (offset, (label, bytes)) in summary_memory_rows(roster).enumerate() {
+        let y = inner
+            .y
+            .saturating_add(table_rows)
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        if y >= inner.bottom() {
+            break;
+        }
+        let line = Line::from(vec![
+            Span::raw(SECTION_HEADER_INDENT),
+            Span::styled(label, Style::default().fg(label_color())),
+            Span::raw(" "),
+            Span::styled(memory_label(bytes), Style::default().fg(text_default())),
+        ]);
+        Paragraph::new(line).render(Rect::new(inner.x, y, inner.width, 1), buffer);
+        reach.rows = reach.rows.saturating_add(1);
+    }
+    reach
+}
+
+/// Each nonzero compiler share uses one short summary row.
+fn summary_memory_rows(roster: &VisibleRoster) -> impl Iterator<Item = (&'static str, u64)> {
+    let shares = roster.memory_shares();
+    [
+        (
+            SUMMARY_SHARED_COMPILER_CACHE_LABEL,
+            shares.shared_compiler_cache,
+        ),
+        (SUMMARY_UNATTRIBUTED_MEMORY_LABEL, shares.unattributed),
+    ]
+    .into_iter()
+    .filter(|(_, bytes)| *bytes > 0)
+}
+
+/// The short rows retain enough width for both their label and memory value.
+fn summary_memory_width(roster: &VisibleRoster) -> u16 {
+    summary_memory_rows(roster)
+        .map(|(label, bytes)| {
+            cell_width(SECTION_HEADER_INDENT)
+                .saturating_add(cell_width(label))
+                .saturating_add(1)
+                .saturating_add(cell_width(&memory_label(bytes)))
+        })
+        .max()
+        .unwrap_or_default()
 }
 
 /// One lead per visible command group, shared by measurement and drawing.
@@ -2127,7 +2240,10 @@ fn summary_rows(roster: &VisibleRoster) -> Vec<&TrackedRow> {
 fn memory_total(roster: &VisibleRoster) -> SummaryMemoryTotal {
     let mut running_groups = 0usize;
     let mut unreadable_groups = 0usize;
-    let mut bytes = 0u64;
+    let shares = roster.memory_shares();
+    let mut bytes = shares
+        .shared_compiler_cache
+        .saturating_add(shares.unattributed);
     for group in roster
         .groups()
         .iter()
@@ -2142,8 +2258,11 @@ fn memory_total(roster: &VisibleRoster) -> SummaryMemoryTotal {
         }
     }
     match (running_groups, unreadable_groups) {
-        (0, _) => SummaryMemoryTotal::NoRunningCommands,
-        (running, unreadable) if running == unreadable => SummaryMemoryTotal::NoReadableCommands,
+        (0, _) if bytes == 0 => SummaryMemoryTotal::NoRunningCommands,
+        (0, _) => SummaryMemoryTotal::Complete(bytes),
+        (running, unreadable) if running == unreadable && bytes == 0 => {
+            SummaryMemoryTotal::NoReadableCommands
+        },
         (_, 0) => SummaryMemoryTotal::Complete(bytes),
         _ => SummaryMemoryTotal::AtLeast(bytes),
     }
@@ -7646,6 +7765,7 @@ mod tests {
     use crate::census::InvocationId;
     use crate::census::VisibleParent;
     use crate::census::command_text::CommandText;
+    use crate::census::invocation_cpu_accounting::CompileMemoryShares;
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::RunId;
@@ -14902,6 +15022,48 @@ mod tests {
             summary_foot_text(memory_total(&roster.visible(&[])).foot()),
             "mem 2.5G"
         );
+        for view in [TileView::Summary, TileView::Cells] {
+            let mut app = App::new_for_test().expect("memory footer app");
+            app.roster = roster.clone();
+            app.loaded_config.config.tiles.view = view;
+            app.free_disk_space = FreeDiskSpace::Available(BYTES_PER_GIBIBYTE);
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(240, 40))
+                .expect("memory footer terminal");
+            for (shared, unattributed, expected) in [
+                (0, 0, "mem 2.5G  disk 1.0G"),
+                (BYTES_PER_GIBIBYTE / 2, 0, "mem 3.0G  disk 1.0G"),
+                (
+                    BYTES_PER_GIBIBYTE / 2,
+                    BYTES_PER_GIBIBYTE / 2,
+                    "mem 3.5G  disk 1.0G",
+                ),
+            ] {
+                app.roster.observe_memory_shares(CompileMemoryShares {
+                    shared_compiler_cache: shared,
+                    unattributed,
+                });
+                for _ in 0..2 {
+                    terminal
+                        .draw(|frame| {
+                            draw_panes(frame, &mut app, frame.area(), TileGridContents::Shown);
+                        })
+                        .expect("memory footer draw");
+                    app.tiles.settle_for_test();
+                }
+                let text = buffer_rows(terminal.backend().buffer()).join("\n");
+                assert!(text.contains(expected), "{view:?}: {text}");
+                assert_eq!(
+                    text.matches("shared compiler cache").count(),
+                    usize::from(shared > 0),
+                    "{text}"
+                );
+                assert_eq!(
+                    text.matches("unattributed").count(),
+                    usize::from(unattributed > 0),
+                    "{text}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -20559,6 +20721,29 @@ mod tests {
                 "{rows:?}"
             );
         }
+    }
+
+    #[test]
+    #[cfg(feature = "attract")]
+    fn unattributed_compiler_memory_keeps_the_summary_visible_through_draw() {
+        let mut app = App::new_for_test().expect("the test app builds");
+        app.roster.observe_memory_shares(CompileMemoryShares {
+            shared_compiler_cache: 0,
+            unattributed:          BYTES_PER_GIBIBYTE,
+        });
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal =
+            Terminal::new(TestBackend::new(160, 40)).expect("the test terminal opens");
+        for _ in 0..3 {
+            terminal
+                .draw(|frame| draw(frame, &mut app, &keymap))
+                .expect("the test terminal draws");
+            app.tiles.settle_for_test();
+        }
+        assert!(!app.attract.showing(), "compiler memory is running work");
+        let text = buffer_rows(terminal.backend().buffer()).join("\n");
+        assert!(text.contains("unattributed 1.0G"), "{text}");
+        assert!(text.contains("mem 1.0G"), "{text}");
     }
 
     /// A whole frame three frames after the attract screen is asked for

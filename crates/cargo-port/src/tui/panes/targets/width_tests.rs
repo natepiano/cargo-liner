@@ -75,15 +75,15 @@ fn targets_show_whole_names_at_ninety_five_and_one_hundred_sixty_columns() -> an
 
 #[test]
 fn every_source_kind_reaches_two_cells_before_target_names_are_cut() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
         for source in [
             TargetSource::workspace_root("workspace_root".into()),
             TargetSource::member("workspace_member".into()),
             TargetSource::worktree("worktree_checkout".into()),
         ] {
             for (pane_width, expected_name) in [(27, "cargo-handler"), (26, "cargo-handl…")] {
-                let mut app = test_support::project_app();
-                app.framework.color_mode = mode;
                 let mut data = test_support::target_data();
                 data.binaries.truncate(1);
                 data.binaries[0].display_name = "cargo-handler".into();

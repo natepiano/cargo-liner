@@ -569,8 +569,8 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         None => GithubStars::NotGithub,
     };
     let repository_probe = git_repo.map_or(&RepositoryProbe::Awaiting, |repo| &repo.repo_info);
-    let description =
-        GithubDescriptionSource::from_repository(repository_probe, github).description();
+    let source = GithubDescriptionSource::from_repository(repository_probe, github);
+    let description = source.description();
     let inception = repo_info.map_or(FirstCommit::AwaitingProbe, |repo| repo.first_commit.clone());
     let last_commit = checkout.map_or(GitProbe::Awaiting, |info| {
         GitProbe::Probed(info.last_commit.clone())
@@ -585,15 +585,6 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     let remotes = repo_info.map_or_else(RemoteRows::default, |repo| {
         build_remote_rows(repo, &default_host, current_branch)
     });
-    let pr_check_polls = app
-        .project_list
-        .fetch_url_for(abs_path)
-        .and_then(|url| ci::parse_owner_repo(&url))
-        .map(|repo| app.net.github.pr_check_poll_numbers(&repo))
-        .unwrap_or_default();
-    let pull_requests = git_repo
-        .map(|repo| build_pull_request_section(&repo.pr_data, &pr_check_polls))
-        .unwrap_or_default();
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
         failed_reads: GitReadFailures::of(checkout, repo_info),
@@ -622,9 +613,45 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
             .graphql
             .map_or(QuotaObservation::Unobserved, QuotaObservation::Observed),
         github_status: app.net.github_status(),
-        pull_requests,
+        pull_requests: project_pull_request_section(app, abs_path),
         remotes,
     }
+}
+
+fn project_pull_request_section(app: &App, path: &Path) -> PullRequestSection {
+    let repository = app.project_list.git_repo_for(path);
+    let can_fetch = match repository.map_or(&RepositoryProbe::Awaiting, |repo| &repo.repo_info) {
+        RepositoryProbe::Awaiting => true,
+        RepositoryProbe::NoRepository => false,
+        RepositoryProbe::Repository(repo) => repo.remotes.listed().iter().any(|remote| {
+            remote
+                .url
+                .as_deref()
+                .and_then(ci::parse_owner_repo)
+                .is_some()
+        }),
+    };
+    if !can_fetch && repository.is_none_or(|repo| repo.pr_data.info().is_none()) {
+        return PullRequestSection::default();
+    }
+    let check_polls = app
+        .project_list
+        .fetch_url_for(path)
+        .and_then(|url| ci::parse_owner_repo(&url))
+        .map(|repo| app.net.github.pr_check_poll_numbers(&repo))
+        .unwrap_or_default();
+    repository.map_or_else(
+        || PullRequestSection {
+            state: PullRequestSectionState::Loading,
+            ..PullRequestSection::default()
+        },
+        |repo| match &repo.pr_data {
+            ProjectPrData::Loading(Some(info)) if !can_fetch => {
+                section_from_pr_info(info, PullRequestSectionState::Stale, &check_polls)
+            },
+            data => build_pull_request_section(data, &check_polls),
+        },
+    )
 }
 
 fn build_pull_request_section(
@@ -632,8 +659,7 @@ fn build_pull_request_section(
     pr_check_polls: &HashSet<u32>,
 ) -> PullRequestSection {
     match data {
-        ProjectPrData::Unfetched => PullRequestSection::default(),
-        ProjectPrData::Loading(_) => PullRequestSection {
+        ProjectPrData::Unfetched | ProjectPrData::Loading(_) => PullRequestSection {
             state: PullRequestSectionState::Loading,
             ..PullRequestSection::default()
         },
@@ -865,12 +891,289 @@ mod git_field_tests {
     use crate::project::CommitDate;
     use crate::project::Comparison;
     use crate::project::FirstCommit;
+    use crate::project::ProjectPrUnavailable;
     use crate::project::ResolvedBranch;
     use crate::tui::panes::DescriptionState;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::DetailField;
     use crate::tui::panes::pane_data::constants::HEAD_UNREADABLE_LABEL;
     use crate::tui::state::AvailabilityStatus;
+
+    fn pull_request_fixture() -> ProjectPrInfo {
+        ProjectPrInfo {
+            open:           vec![PullRequestInfo {
+                number:     7,
+                title:      "Keep the page stable".to_string(),
+                url:        "https://github.com/acme/proof/pull/7".to_string(),
+                state:      crate::project::PullRequestState::Ready,
+                head:       "topic".to_string(),
+                head_owner: None,
+                head_repo:  None,
+                base:       "main".to_string(),
+            }],
+            default_branch: "main".to_string(),
+            fetched_at:     "2026-11-08T12:00:00Z".to_string(),
+            completeness:   PullRequestCompleteness::Complete,
+            viewer_login:   "viewer".to_string(),
+            owner_repo:     crate::ci::OwnerRepo::new("acme", "proof"),
+        }
+    }
+
+    fn completed_pull_requests() -> [(ProjectPrData, PullRequestSectionState); 4] {
+        let info = pull_request_fixture();
+        let empty = ProjectPrInfo {
+            open: Vec::new(),
+            ..info.clone()
+        };
+        let unavailable = ProjectPrUnavailable {
+            reason:     PullRequestUnavailableReason::Network,
+            stale:      None,
+            fetched_at: None,
+        };
+        [
+            (
+                ProjectPrData::Loaded(empty),
+                PullRequestSectionState::HiddenConfirmedEmpty,
+            ),
+            (
+                ProjectPrData::Loaded(info.clone()),
+                PullRequestSectionState::Loaded,
+            ),
+            (
+                ProjectPrData::Unavailable(unavailable.clone()),
+                PullRequestSectionState::Unavailable,
+            ),
+            (
+                ProjectPrData::Unavailable(ProjectPrUnavailable {
+                    stale: Some(info),
+                    ..unavailable
+                }),
+                PullRequestSectionState::Stale,
+            ),
+        ]
+    }
+
+    fn pull_request_app(mode: tui_pane::ColorMode) -> anyhow::Result<App> {
+        use anyhow::Context;
+
+        use crate::tui::test_support;
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        app.project_list
+            .ensure_git_repo_for(Path::new(test_support::PROJECT_PATH))
+            .context("repo")?
+            .repo_info = RepositoryProbe::Repository(RepoInfo {
+            remotes: RemoteList::Listed(vec![crate::project::RemoteInfo {
+                name:         "origin".to_string(),
+                url:          Some("https://github.com/acme/proof".to_string()),
+                owner:        Some("acme".to_string()),
+                repo:         Some("proof".to_string()),
+                tracked_ref:  TrackedRef::Untracked,
+                ahead_behind: Comparison::NotCompared,
+                kind:         RemoteKind::Clone,
+                push:         PushState::Enabled {
+                    push_url: "https://github.com/acme/proof".to_string(),
+                },
+            }]),
+            ..RepoInfo::default()
+        });
+        Ok(app)
+    }
+
+    fn draw_pull_request_frame(
+        app: &mut App,
+        state: ProjectPrData,
+        expected: PullRequestSectionState,
+        dimensions: (u16, u16),
+    ) -> anyhow::Result<(usize, String)> {
+        use anyhow::Context;
+
+        use crate::tui::panes::PaneId;
+        use crate::tui::test_support;
+        let path = Path::new(test_support::PROJECT_PATH);
+        app.project_list
+            .ensure_git_repo_for(path)
+            .context("repo")?
+            .pr_data = state;
+        let section = build_git_detail_fields(app, path).pull_requests;
+        assert_eq!(section.state, expected);
+        app.panes.git.set_content(GitData {
+            pull_requests: section,
+            checkout: GitCheckout::Branch {
+                name:     "main".to_string(),
+                relation: HeadRelation::Default,
+            },
+            ..git_data()
+        });
+        let buffer = test_support::draw_pane_in_window_at_size(
+            app,
+            PaneId::Git,
+            dimensions.0,
+            dimensions.1,
+            12,
+        )?;
+        if expected == PullRequestSectionState::HiddenConfirmedEmpty {
+            assert!(
+                !test_support::rows(&buffer)
+                    .join("\n")
+                    .contains("Pull Requests")
+            );
+        }
+        Ok((
+            app.panes.git.viewport.content_height(),
+            test_support::rows(&buffer)
+                .last()
+                .cloned()
+                .context("bottom border")?,
+        ))
+    }
+
+    #[test]
+    fn pull_request_loading_keeps_the_first_frame_height_and_page_count() -> anyhow::Result<()> {
+        use anyhow::Context;
+        use tui_pane::ColorMode;
+
+        use crate::tui::test_support;
+        for dimensions in [(80, 17), (95, 24)] {
+            for mode in [ColorMode::Colored, ColorMode::NoColor] {
+                for (finished, expected) in completed_pull_requests() {
+                    let mut app = pull_request_app(mode)?;
+                    let mut frames = Vec::new();
+                    for (state, section_state) in [
+                        (ProjectPrData::Unfetched, PullRequestSectionState::Loading),
+                        (
+                            ProjectPrData::Loading(None),
+                            PullRequestSectionState::Loading,
+                        ),
+                        (finished.clone(), expected),
+                    ] {
+                        frames.push(draw_pull_request_frame(
+                            &mut app,
+                            state,
+                            section_state,
+                            dimensions,
+                        )?);
+                    }
+                    assert_eq!(
+                        frames[0], frames[1],
+                        "{dimensions:?}: unfetched and loading pages"
+                    );
+                    if matches!(
+                        expected,
+                        PullRequestSectionState::Loaded | PullRequestSectionState::Stale
+                    ) {
+                        app.project_list
+                            .ensure_git_repo_for(Path::new(test_support::PROJECT_PATH))
+                            .context("repo")?
+                            .repo_info = RepositoryProbe::Repository(RepoInfo {
+                            remotes: RemoteList::Unreadable,
+                            ..RepoInfo::default()
+                        });
+                        let after = draw_pull_request_frame(
+                            &mut app,
+                            finished.clone(),
+                            expected,
+                            dimensions,
+                        )?;
+                        assert_eq!(
+                            frames.last().context("finished frame")?,
+                            &after,
+                            "unreadable remotes retain the finished frame"
+                        );
+                        let buffer =
+                            test_support::draw_pane(&mut app, crate::tui::panes::PaneId::Git, 70)?;
+                        test_support::position(&buffer, "Keep the page stable")?;
+                    }
+                    for remotes in [RemoteList::Listed(Vec::new()), RemoteList::Unreadable] {
+                        app.project_list
+                            .ensure_git_repo_for(Path::new(test_support::PROJECT_PATH))
+                            .context("repo")?
+                            .repo_info = RepositoryProbe::Repository(RepoInfo {
+                            remotes,
+                            ..RepoInfo::default()
+                        });
+                        for state in [ProjectPrData::Unfetched, ProjectPrData::Loading(None)] {
+                            draw_pull_request_frame(
+                                &mut app,
+                                state,
+                                PullRequestSectionState::HiddenConfirmedEmpty,
+                                dimensions,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn submodule_pull_requests_finish_in_the_submodule_pane() -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        use crate::project::AbsolutePath;
+        use crate::project::GitRepo;
+        use crate::project::PinnedCommit;
+        use crate::project::ProjectInfo;
+        use crate::project::Submodule;
+        use crate::tui::panes::PaneId;
+        use crate::tui::test_support;
+        let mut app = pull_request_app(tui_pane::ColorMode::Colored)?;
+        let parent = Path::new(test_support::PROJECT_PATH);
+        let path = AbsolutePath::from(parent.join("vendor/child"));
+        let repository = app
+            .project_list
+            .git_repo_for(parent)
+            .context("parent repository")?
+            .repo_info
+            .clone();
+        app.project_list.replace_submodules(
+            parent,
+            vec![Submodule {
+                name:          "child".to_string(),
+                path:          path.clone(),
+                relative_path: "vendor/child".to_string(),
+                url:           Some("https://github.com/acme/proof".to_string()),
+                branch:        None,
+                commit:        PinnedCommit::Absent,
+                project_info:  ProjectInfo::default(),
+                git_repo:      Some(GitRepo {
+                    repo_info: repository,
+                    ..GitRepo::default()
+                }),
+            }],
+        );
+        app.project_list.rebuild_path_index();
+        let owner =
+            crate::ci::parse_owner_repo("https://github.com/acme/proof").context("owner")?;
+        for (state, expected, visible) in [
+            (
+                ProjectPrData::Unfetched,
+                PullRequestSectionState::Loading,
+                "loading pull requests",
+            ),
+            (
+                ProjectPrData::Loaded(pull_request_fixture()),
+                PullRequestSectionState::Loaded,
+                "Keep the page stable",
+            ),
+        ] {
+            app.project_list.replace_pr_data_for_repo(&owner, &state);
+            let section = build_git_detail_fields(&app, path.as_path()).pull_requests;
+            assert_eq!(section.state, expected);
+            app.panes.git.set_content(GitData {
+                pull_requests: section,
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
+                },
+                ..git_data()
+            });
+            let buffer = test_support::draw_pane(&mut app, PaneId::Git, 70)?;
+            test_support::position(&buffer, visible)?;
+        }
+        Ok(())
+    }
 
     fn git_data() -> GitData {
         GitData {
