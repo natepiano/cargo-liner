@@ -1757,7 +1757,7 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 - `cargo nextest run -p cargo-tile -p tui_pane`, workspace clippy with `-D warnings`, and `cargo +nightly fmt --check` green on the Mac on the stacked tree.
 - Live on natedev: two cargos build on one target directory under sccache; a capture shows each cargo's mem includes its own rustc memory, and the cargo mems plus the shared and unattributed shares match the processes' RSS sum from `ps` within one scan interval.
 
-### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: todo
+### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: done
 
 **Depends on:** Phase 30m
 

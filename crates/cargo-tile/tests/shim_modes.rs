@@ -55,6 +55,12 @@ true > "$SHIM_TEST_OBSERVATIONS/cargo-output"
 if [ -d "$SHIM_TEST_DEFAULT_ROOT" ]; then
     cp -pR "$SHIM_TEST_DEFAULT_ROOT" "$SHIM_TEST_OBSERVATIONS/root"
 fi
+if [ -f "$SHIM_TEST_OBSERVATIONS/retain-log" ]; then
+    for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
+        [ -f "$log" ] || continue
+        ln "$log" "$SHIM_TEST_OBSERVATIONS/written-log"
+    done
+fi
 if [ -n "${SHIM_TEST_WRITE_DESCRIPTOR-}" ]; then
     printf 'through the descriptor\n' >&"$SHIM_TEST_WRITE_DESCRIPTOR"
 fi
@@ -110,9 +116,7 @@ esac
 printf '%s\n' cargo-stderr >&2 || true
 exit "$SHIM_TEST_EXIT_STATUS"
 "#;
-    /// Defines `record_descriptors <observation>`, which writes which of descriptors 3
-    /// through 9 the calling shell holds open, so the caller's set can be compared with
-    /// the sets cargo and tee inherit.
+    /// Record descriptors 3 through 9 so the test can compare cargo with its caller.
     const DESCRIPTOR_PROBE: &str = r#"record_descriptors() {
     descriptors=
     for descriptor in 3 4 5 6 7 8 9; do
@@ -134,7 +138,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
     enum CapturePath {
         /// The system `script` command supplies all three terminal streams.
         Pty,
-        /// Piped output and null input select stderr mirroring through a pipe to tee.
+        /// Piped output and null input select the native stderr pump.
         NoTerminal,
     }
 
@@ -400,37 +404,13 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             }
         }
 
-        /// Stand a `tee` in front of the system one that records the descriptors it
-        /// inherits and, once the system tee has drained stderr, copies the log while
-        /// the shim still owns it.
-        fn install_tee_recorder(&self) {
-            let tee = Command::new("sh")
-                .args(["-c", "command -v tee"])
-                .output()
-                .expect("locate system tee before installing the recorder");
-            assert!(tee.status.success());
-            let tee = String::from_utf8(tee.stdout).expect("UTF-8 tee path");
-            write_executable(
-                &self.directory.path().join("toolchain/bin/tee"),
-                &[
-                    "#!/bin/sh\nset -eu\n",
-                    DESCRIPTOR_PROBE,
-                    &format!(
-                        r#"record_descriptors tee-descriptors
-{} "$@"
-for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
-    [ -f "$log" ] || continue
-    cp -p "$log" "$SHIM_TEST_OBSERVATIONS/written-log"
-done
-"#,
-                        shell_word(tee.trim_end())
-                    ),
-                ]
-                .concat(),
-            );
+        /// Retain the live log's inode so assertions can read every byte after the pump drains.
+        fn retain_capture_log(&self) {
+            fs::write(self.observations.join("retain-log"), b"")
+                .expect("request the live log link");
         }
 
-        /// Read one file cargo, tee, or the launcher left in the observations directory.
+        /// Read one observation from cargo or the launcher.
         /// A missing file is reported at the caller's line.
         #[track_caller]
         fn observed(&self, name: &str) -> Vec<u8> {
@@ -651,14 +631,14 @@ done
     /// This models a sweep at ln, not an earlier pid snapshot used after publication.
     fn assert_log_mode_after_sweep(capture_path: CapturePath) {
         let toolchain = InstalledToolchain::for_live_capture();
-        // Copy the log after tee drains stderr, while the runner still owns it.
-        toolchain.install_tee_recorder();
+        // Retain the log inode before cargo writes stderr.
+        toolchain.retain_capture_log();
         let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
         toolchain.assert_cargo(&output, 0o066, &["build"]);
         if matches!(capture_path, CapturePath::NoTerminal) {
             let log = toolchain.observations.join("written-log");
             assert_eq!(
-                fs::read(&log).expect("tee captures cargo stderr"),
+                fs::read(&log).expect("the pump captures cargo stderr"),
                 b"cargo-stderr\n"
             );
             assert_mode(&log, 0o644);
@@ -674,7 +654,7 @@ done
         assert_log_mode_after_sweep(CapturePath::Pty);
     }
 
-    /// F001: tee must retain world-readable output after a sweep before publication.
+    /// F001: the pump retains world-readable output after publication.
     #[test]
     fn no_terminal_log_stays_world_readable_after_publication_boundary_sweep() {
         assert_log_mode_after_sweep(CapturePath::NoTerminal);
@@ -940,14 +920,12 @@ done
         }
     }
 
-    /// A caller's descriptor reaches captured cargo, 8 and 9 included, since the shim
-    /// borrows only closed ones, and neither cargo nor tee inherits a descriptor the
-    /// caller did not hand down.
+    /// Captured cargo inherits only the caller's descriptors, including 8 and 9.
     #[test]
     fn caller_descriptors_reach_captured_cargo() {
         parallel_cases::run(["4", "8", "9"], |descriptor| {
             let toolchain = InstalledToolchain::new();
-            toolchain.install_tee_recorder();
+            toolchain.retain_capture_log();
             let mut command = toolchain.no_terminal(&["build"]);
             command
                 .env(
@@ -970,7 +948,6 @@ done
                     .any(|open| open == descriptor)
             );
             assert_eq!(toolchain.observed("descriptors"), caller);
-            assert_eq!(toolchain.observed("tee-descriptors"), caller);
             assert_eq!(
                 toolchain.observed(&format!("descriptor-{descriptor}")),
                 b"through the descriptor\n"
@@ -983,7 +960,7 @@ done
     #[test]
     fn no_terminal_streams_keep_their_bytes_and_the_log_matches_stderr() {
         let toolchain = InstalledToolchain::new();
-        toolchain.install_tee_recorder();
+        toolchain.retain_capture_log();
         let mut command = toolchain.no_terminal(&["build"]);
         command.env("SHIM_TEST_SCENARIO", "bytes");
         let output = command.output().expect("run installed shim to completion");
@@ -996,11 +973,6 @@ done
             toolchain.observed("descriptors"),
             caller,
             "cargo holds neither descriptor the shim routes the pipe around on"
-        );
-        assert_eq!(
-            toolchain.observed("tee-descriptors"),
-            caller,
-            "tee holds neither descriptor the shim routes the pipe around on"
         );
         toolchain.assert_capture_modes(CapturePath::NoTerminal);
     }
@@ -1235,25 +1207,44 @@ done
     }
     #[derive(Clone, Copy)]
     enum MirrorStartup {
-        Missing,
-        ExitsBeforeReady,
+        MissingShell,
+        MissingTee,
+        FailedShell,
+        DescriptorLimit,
     }
 
     #[test]
-    fn a_missing_mirror_shell_runs_original_cargo_without_capture_artifacts() {
-        assert_mirror_setup_failure(MirrorStartup::Missing);
+    fn a_native_mirror_keeps_cargo_streams_without_shell_utilities() {
+        parallel_cases::run(
+            [
+                MirrorStartup::MissingShell,
+                MirrorStartup::MissingTee,
+                MirrorStartup::FailedShell,
+            ],
+            |startup| assert_mirror_startup(startup, &["build", "--", "a b", ""]),
+        );
     }
 
     #[test]
-    fn a_mirror_shell_that_exits_before_ready_runs_original_cargo_without_artifacts() {
-        assert_mirror_setup_failure(MirrorStartup::ExitsBeforeReady);
+    fn a_native_mirror_setup_failure_runs_original_cargo_without_artifacts() {
+        parallel_cases::run(
+            [
+                vec!["build", "--", "a b", ""],
+                vec!["build", "--quiet", "--message-format=json", "--", "a b", ""],
+            ],
+            |arguments| assert_mirror_startup(MirrorStartup::DescriptorLimit, &arguments),
+        );
     }
 
-    fn assert_mirror_setup_failure(startup: MirrorStartup) {
+    fn assert_mirror_startup(startup: MirrorStartup, arguments: &[&str]) {
         let fixture = InstalledToolchain::for_live_capture();
         write_executable(
             &fixture.bin.join("cargo-tile-real"),
             r#"#!/bin/sh
+if [ -n "${SHIM_TEST_DESCRIPTOR_LIMIT-}" ]; then
+    ulimit -Sn "$SHIM_TEST_DESCRIPTOR_LIMIT"
+fi
+printf 'call\n' >> "$SHIM_TEST_OBSERVATIONS/calls"
 printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
 printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
 printf 'original stdout\n'
@@ -1261,12 +1252,28 @@ printf 'original stderr\n' >&2
 exit 43
 "#,
         );
-        if matches!(startup, MirrorStartup::ExitsBeforeReady) {
+        if matches!(startup, MirrorStartup::FailedShell) {
             write_executable(&fixture.bin.join("sh"), "#!/bin/sh\nexit 19\n");
         }
-        let arguments = ["build", "--quiet", "--message-format=json", "--", "a b", ""];
-        let output = Command::new("/bin/sh")
-            .arg(fixture.bin.join("cargo"))
+        if matches!(startup, MirrorStartup::MissingTee) {
+            symlink("/bin/sh", fixture.bin.join("sh")).expect("provide sh without tee");
+        }
+        let mut command = Command::new("/bin/sh");
+        if matches!(startup, MirrorStartup::DescriptorLimit) {
+            command
+                .args([
+                    "-c",
+                    "export SHIM_TEST_DESCRIPTOR_LIMIT=$(ulimit -Sn); ulimit -Sn 6; exec \"$@\"",
+                    "pump-limit",
+                ])
+                .arg(env!("CARGO_BIN_EXE_cargo-tile"))
+                .arg("--capture-shim")
+                .arg(fixture.bin.join("cargo"))
+                .arg(&fixture.parent);
+        } else {
+            command.arg(fixture.bin.join("cargo"));
+        }
+        let child = command
             .args(arguments)
             .env("PATH", &fixture.bin)
             .env("HOME", fixture.directory.path().join("home"))
@@ -1275,8 +1282,14 @@ exit 43
             .env_remove("CARGO_TERM_PROGRESS_WHEN")
             .env_remove("CARGO_TERM_PROGRESS_WIDTH")
             .stdin(Stdio::null())
-            .output()
-            .expect("run capture without a mirror shell");
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start cargo with the selected pump startup condition");
+        let native_pid = child.id();
+        let output = child
+            .wait_with_output()
+            .expect("run cargo with the selected pump startup condition");
         assert_eq!(output.status.code(), Some(43), "{output:?}");
         assert_eq!(output.stdout, b"original stdout\n");
         assert_eq!(output.stderr, b"original stderr\n");
@@ -1285,7 +1298,20 @@ exit 43
             .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
             .collect();
         assert_eq!(fixture.observed("arguments"), expected);
-        assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+        assert_eq!(
+            fixture.observed("calls"),
+            b"call\n",
+            "cargo runs exactly once"
+        );
+        if matches!(startup, MirrorStartup::DescriptorLimit) {
+            assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+        } else {
+            assert_eq!(
+                fixture.observed("environment"),
+                format!("{native_pid}\0always\x00100\0").as_bytes(),
+                "the utility row must run native capture"
+            );
+        }
         fixture.assert_cleaned_up();
     }
 
