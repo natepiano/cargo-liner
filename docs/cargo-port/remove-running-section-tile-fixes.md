@@ -1638,7 +1638,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** overlapping the serial scenario waits by setting `CARGOTILE_NESTED` in the fixture and timing from an earlier native origin; it lets the reading span fall to 100 ms and hides a broken product export.
 
-### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: todo
+### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: done
 
 **Depends on:** Phase 43g
 
@@ -1671,6 +1671,43 @@ Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader sce
 **Constraints from prior phases:** the Phase 43g constraints hold. The reader fixtures keep each file subscription through one wait, renew retired watches, and close subscriptions on every exit. Keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. No assertion is weakened. No test takes 1 s or more. Add no cleanup without ownership evidence.
 
 **Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 0, 1, 1a and 2 tests below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
+
+### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: todo
+
+**Depends on:** Phase 43i
+
+Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). Its round 3 head had 0, 1 and 1 cargo-tile tests at 1 s or more (natedev, Mac, Mac). The same-hour base had 0 and 5 (natedev, Mac; `phases/43i/base_compare.txt`, Mac suite 1; Mac suite 2 was cancelled). Its finding F001 stays open and moves here, owner tile, due at this phase's checkpoint.
+
+#### Work Order
+
+**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` runs under 1 s in a loaded Mac full suite.
+
+**Spec:**
+1. The test took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
+   - Native capture exec call to constructor: 238 ms.
+   - Native fixture preparation: 168 ms, on the path `hook::fixture_runner` → `native_fixture::executable` → `setup_reader.py native-fixture`. `native_fixture.rs:31` reads the receipt; its cold branch starts `setup_reader.py` at line 38, which strips and signs the fixture on a cache miss (`setup_reader.py:87`).
+2. Measure first. The 43i probe does not isolate either cost: it logs before its constructor timestamp and injects a library (Astra review, `/tmp/claude/astra/20261109T072032Z-2693821/review.md`).
+   - Compare launches with and without the probe, at the same executable and load. Take monotonic timestamps before any log write. Time first and repeated launches apart.
+   - Split preparation into receipt hit, artifact cache hit, lock wait, strip and sign. Later preparations in the same file took 0.380 ms and 0.166 ms, so 168 ms may be a first-use cost only.
+   - Record the full source-switch timeline in loaded suites, with an empty and a populated fixture cache.
+   Then fix the largest measured cost at its cause.
+5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
+6. `reader_scenario_cases.py:178` copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
+3. Keep every assertion and readiness wait. Keep the product `CARGOTILE_NESTED`, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace.
+4. `progress::capture::tests::unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` took 1.009 s on the Mac in a 43i round 2 suite. Its largest stage starts at `progress/capture.rs:2088` (`phases/43i/fix3_stages.md`). Measure it again; if it is at 1 s or more in a gate suite, fix its cause.
+
+**Files:**
+- `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — item 6, the named-shell preparation.
+- `crates/cargo-tile/src/progress/capture.rs` — item 4, test module only.
+
+**Workers:** 1 writer — `test`.
+
+**Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it.
+
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1 and item 4 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -1759,24 +1796,19 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 
 ### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: done
 
-**Depends on:** Phase 30m
+#### As-built
 
-#### Work Order
-
-**Goal:** when the capture stderr mirror cannot run, cargo runs plain with its own arguments, streams and status.
-
-From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim had the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it. Since Phase 30m (354ba054) the shim script starts no mirror: the native capture entry starts `sh -c 'printf r; exec tee'` in `ReadyCaptureMirror::start` (`hook.rs`), and the defect is there.
-
-**Spec:** replace the shell/tee mirror with a native stderr pump made by a fallible constructor before cargo spawns. If the constructor fails: close what it opened, remove the capture publication, and exec the original cargo with its own arguments, streams and status. Keep helper diagnostics private until the capture commits. The guarantee is bounded: an exec acknowledgement followed by EOF is uncertain, and cargo never runs twice. (Astra review, phase 30m F001.)
-
-**Workers:** 1 writer — `impl`: the pump, the shim fallback, and the `shim_modes` regression tests.
-
-**Acceptance gate:** a regression with `sh` present and `tee` absent gives exact cargo status, stdout, stderr and arguments, and leaves no capture artifacts; red on main first, under 1 s; the per-call process count does not grow.
+- The native capture entry copies cargo's stderr through `NativeStderrPump` in `hook.rs`, a thread named `cargo-stderr`. It writes each read to the live log and to the caller's stderr. A failed log file or caller stderr does not close cargo's pipe; the other output still receives the bytes.
+- `NativeStderrPump::start` is a fallible constructor that runs before cargo spawns. If it fails, the capture closes what it opened, removes its publication and execs the original cargo with its own arguments, streams and status. Cargo never runs twice.
+- No `sh` or `tee` process runs for capture. A captured call starts two processes.
 
 **Files:**
-- `crates/cargo-tile/src/hook.rs`
-- `crates/cargo-tile/src/cargo-capture-shim.sh` — only if the fallback needs a script change; the mirror is in `hook.rs` since Phase 30m.
-- `crates/cargo-tile/tests/shim_modes.rs`
+- `crates/cargo-tile/src/hook.rs` — `NativeStderrPump` and the fallback to plain cargo.
+- `crates/cargo-tile/src/constants.rs` — `CAPTURE_STDERR_PUMP_BUFFER_BYTES` (8192).
+- `crates/cargo-tile/tests/shim_modes.rs` — rows with `sh` present and `tee` absent (native capture runs) and with a descriptor limit (the pump fails and cargo runs plain, with no capture artifacts).
+- `crates/cargo-tile/src/shim_registration/installed.rs` — the live log handshake test expects status 37 with the live marker while cargo runs.
+
+**Gotchas:** an exec acknowledgement followed by EOF is uncertain; the fallback never retries cargo.
 
 ### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: done (merged c1efe2543)
 

@@ -197,7 +197,7 @@ environment: dict[str, str] = {}
 def prepare_fixture() -> None:
     global environment, writer_locale
     bin_directory.mkdir(parents=True)
-    if sys.platform == 'darwin' and scenario in ('excluded', 'quiet-json-long'):
+    if sys.platform == 'darwin' and scenario in ('excluded', 'quiet-json-long', 'settings-scroll-burst'):
         # The executable spelling preserves cargo discovery through this native shell symlink.
         (bin_directory / 'cargo-tile-real').symlink_to('/bin/bash')
     else:
