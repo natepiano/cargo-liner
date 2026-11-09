@@ -24,6 +24,9 @@ use serde_json::Value;
 
 use super::classify::ProcessEntry;
 use super::hierarchy::FileRevision;
+use super::hierarchy::StaffRoster;
+use super::hierarchy::WorkerReference;
+use super::tier::ThreadWorktree;
 use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
@@ -35,8 +38,7 @@ use crate::constants::VERIFY_SCRIPT;
 use crate::theme::Role;
 
 /// One activity, with no contradictory separate turn state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum AgentActivity {
     /// No activity source reports this row.
     #[default]
@@ -48,10 +50,11 @@ pub(crate) enum AgentActivity {
 }
 
 /// A worker's current work.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Activity {
     Thinking,
+    Compacting,
     Writing,
     Reading,
     Git,
@@ -68,7 +71,7 @@ pub(crate) enum Activity {
 }
 
 /// Supported cargo and formatting gates.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum VerifyStep {
     Fmt,
@@ -82,7 +85,7 @@ pub(crate) enum VerifyStep {
 }
 
 /// Where the selected verification executes.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RunLocation {
     Local,
@@ -102,6 +105,7 @@ impl AgentActivity {
             Self::Idle => "idle",
             Self::Active(activity) => match activity {
                 Activity::Thinking => "thinking",
+                Activity::Compacting => "compacting",
                 Activity::Writing => "writing",
                 Activity::Reading => "reading",
                 Activity::Git => "git",
@@ -167,12 +171,9 @@ impl<'de> Deserialize<'de> for AgentActivity {
         match value {
             Value::String(ref text) => Ok(Self::from(Some(text.as_str()))),
             Value::Null => Ok(Self::Unreported),
-            Value::Object(mut fields) => {
-                let active = fields
-                    .remove("active")
-                    .ok_or_else(|| serde::de::Error::custom("missing active activity"))?;
-                serde_json::from_value(active)
-                    .map(Self::Active)
+            Value::Object(fields) => {
+                serde_json::from_value::<super::probe::ProbeActivity>(Value::Object(fields))
+                    .map(Self::from)
                     .map_err(serde::de::Error::custom)
             },
             _ => Err(serde::de::Error::custom("invalid activity")),
@@ -409,54 +410,210 @@ impl TranscriptRead {
     }
 }
 
-/// A record at the file boundary; incomplete identity never enters a live run.
+/// A record at the file boundary carries a native identity or a named seat.
 #[derive(Deserialize)]
 struct RunPayload {
-    thread_id:  Option<String>,
-    pid:        u32,
-    command:    Vec<String>,
-    status:     RunStatus,
-    started_at: Option<f64>,
+    #[serde(flatten)]
+    worker:      Option<WorkerReference>,
+    #[serde(rename = "worker")]
+    worker_name: Option<String>,
+    pid:         u32,
+    command:     Vec<String>,
+    status:      RunStatus,
+    started_at:  Option<f64>,
+    cwd:         Option<PathBuf>,
 }
 
-/// Only validated, running verification records may compete for a worker's activity.
+/// Only validated, running detached records may compete for a worker's activity.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(from = "RunPayload")]
 pub(super) enum RunRecord {
     Ignored,
-    Verify(VerificationRun),
+    Running(DetachedRun),
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct VerificationRun {
-    thread_id:  String,
+pub(super) struct DetachedRun {
+    worker:     RunWorkerReference,
     pid:        u32,
     requested:  RequestedStep,
     started_at: f64,
+    record:     RunRecordPath,
+    worktree:   ThreadWorktree,
+}
+
+/// A decoded record gains its file identity at the reader boundary.
+#[derive(Clone, Debug)]
+enum RunRecordPath {
+    Unlocated,
+    File(PathBuf),
+}
+
+/// A named pane seat need not carry a native conversation identity.
+#[derive(Clone, Debug)]
+enum RunWorkerReference {
+    Identified {
+        reference: WorkerReference,
+        seat:      RecordedRunSeat,
+    },
+    NamedSeat(RunSeatName),
+}
+
+/// Only the record boundary can construct a nonempty seat name.
+#[derive(Clone, Debug)]
+struct RunSeatName(String);
+
+#[derive(Clone, Debug)]
+enum RecordedRunSeat {
+    Named(RunSeatName),
+    Unrecorded,
+}
+
+/// The worker name recorded by the detached run's producer.
+pub(super) enum RunSeat<'a> {
+    Named(&'a str),
+    Unrecorded,
+}
+
+/// The file named by the live supervisor proves its unit directory.
+pub(super) enum RunDirectory<'a> {
+    Unit(&'a Path),
+    Unlocated,
+}
+
+/// A checked staff relationship can name the worker's unit director.
+#[derive(Clone, Copy)]
+pub(super) enum RunDirector<'a> {
+    Session(&'a str),
+    Unrecorded,
+}
+
+impl RunRecord {
+    /// Bind the decoded record to the file that supplied it.
+    pub(super) fn at_file(mut self, path: &Path) -> Self {
+        if let Self::Running(run) = &mut self {
+            run.record = RunRecordPath::File(path.to_owned());
+        }
+        self
+    }
+
+    pub(super) fn session<'a>(&'a self, staff: &'a StaffRoster) -> Option<&'a str> {
+        match self {
+            Self::Running(DetachedRun {
+                worker:
+                    RunWorkerReference::Identified {
+                        reference: worker, ..
+                    },
+                ..
+            }) => worker.session(staff),
+            Self::Running(_) | Self::Ignored => None,
+        }
+    }
+
+    pub(super) fn seat(&self) -> RunSeat<'_> {
+        match self {
+            Self::Running(DetachedRun {
+                worker:
+                    RunWorkerReference::Identified {
+                        seat: RecordedRunSeat::Named(name),
+                        ..
+                    }
+                    | RunWorkerReference::NamedSeat(name),
+                ..
+            }) => RunSeat::Named(&name.0),
+            Self::Running(_) | Self::Ignored => RunSeat::Unrecorded,
+        }
+    }
+
+    pub(super) fn directory(&self) -> RunDirectory<'_> {
+        if let Self::Running(DetachedRun {
+            record: RunRecordPath::File(path),
+            ..
+        }) = self
+            && let Some(runs) = path.parent()
+            && runs.file_name().is_some_and(|name| name == "mesh_runs")
+            && let Some(unit) = runs.parent()
+        {
+            return RunDirectory::Unit(unit);
+        }
+        RunDirectory::Unlocated
+    }
+
+    pub(super) fn director<'a>(&self, staff: &'a StaffRoster) -> RunDirector<'a> {
+        match self {
+            Self::Running(DetachedRun {
+                worker:
+                    RunWorkerReference::Identified {
+                        reference: worker, ..
+                    },
+                ..
+            }) => worker
+                .parent_session(staff)
+                .map_or(RunDirector::Unrecorded, RunDirector::Session),
+            Self::Running(_) | Self::Ignored => RunDirector::Unrecorded,
+        }
+    }
+}
+
+/// The exact record named by a mesh supervisor's command line.
+pub(super) fn supervisor_record(process: &ProcessEntry) -> Option<&Path> {
+    let args = &process.arguments;
+    let script = args.iter().position(|word| {
+        Path::new(word)
+            .file_name()
+            .is_some_and(|name| name == "mesh_runs.py")
+    })?;
+    let program = Path::new(args.first()?).file_name()?.to_str()?;
+    if script > 1 || (script == 1 && !program.starts_with("python") && program != "py") {
+        return None;
+    }
+    if args.get(script + 1)?.as_str() != "supervise" || args.len() != script + 3 {
+        return None;
+    }
+    let record = Path::new(args.get(script + 2)?);
+    record.is_absolute().then_some(record)
 }
 
 impl From<RunPayload> for RunRecord {
     fn from(payload: RunPayload) -> Self {
-        let Some(thread_id) = payload.thread_id.filter(|id| !id.is_empty()) else {
-            return Self::Ignored;
+        let seat = payload
+            .worker_name
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .map_or(RecordedRunSeat::Unrecorded, |name| {
+                RecordedRunSeat::Named(RunSeatName(name))
+            });
+        let worker = match payload.worker.filter(|worker| match worker {
+            WorkerReference::Staff { staff_id } => !staff_id.trim().is_empty(),
+            WorkerReference::LegacyThread { thread_id } => !thread_id.trim().is_empty(),
+        }) {
+            Some(reference) => RunWorkerReference::Identified { reference, seat },
+            None => match seat {
+                RecordedRunSeat::Named(name) => RunWorkerReference::NamedSeat(name),
+                RecordedRunSeat::Unrecorded => return Self::Ignored,
+            },
         };
         let Some(started_at) = payload.started_at.filter(|at| at.is_finite()) else {
-            return Self::Ignored;
-        };
-        let Some(arguments) = verification_arguments(&payload.command) else {
             return Self::Ignored;
         };
         if payload.status != RunStatus::Running {
             return Self::Ignored;
         }
-        Self::Verify(VerificationRun {
-            thread_id,
+        Self::Running(DetachedRun {
+            worker,
             pid: payload.pid,
-            requested: arguments
-                .iter()
-                .find_map(|word| VerifyStep::from_word(word))
+            requested: verification_arguments(&payload.command)
+                .and_then(|arguments| {
+                    arguments
+                        .iter()
+                        .find_map(|word| VerifyStep::from_word(word))
+                })
                 .map_or(RequestedStep::Unknown, RequestedStep::Step),
             started_at,
+            record: RunRecordPath::Unlocated,
+            worktree: payload
+                .cwd
+                .map_or(ThreadWorktree::Unrecorded, ThreadWorktree::Recorded),
         })
     }
 }
@@ -543,12 +700,82 @@ impl VerificationProgress {
     }
 }
 
+/// The latest live detached run for one worker thread.
+#[derive(Clone, Debug)]
+pub(super) enum WorkerRun {
+    Inactive,
+    Running {
+        activity: AgentActivity,
+        started:  u64,
+        worktree: ThreadWorktree,
+    },
+}
+
+/// `LiveWorkerRun` holds one supervised record and its activity for this scan.
+pub(super) struct LiveWorkerRun<'a> {
+    pub(super) record:    &'a RunRecord,
+    pub(super) activity:  AgentActivity,
+    pub(super) started:   u64,
+    pub(super) worktree:  ThreadWorktree,
+    pub(super) pid:       u32,
+    pub(super) processes: Vec<u32>,
+    order:                f64,
+}
+
+/// `RunWorkerIdentity` distinguishes a native session from a seat without native proof.
+pub(super) enum RunWorkerIdentity<'a> {
+    Session(&'a str),
+    NamedSeat(&'a str),
+    Unrecorded,
+}
+
+impl LiveWorkerRun<'_> {
+    pub(super) fn newer_than(&self, other: &Self) -> bool {
+        self.order
+            .total_cmp(&other.order)
+            .then(self.pid.cmp(&other.pid))
+            .is_gt()
+    }
+
+    /// Resolve the record once against its unit's checked staff edges.
+    pub(super) fn worker<'a>(
+        &'a self,
+        staff: &'a StaffRoster,
+        director: RunDirector<'_>,
+    ) -> RunWorkerIdentity<'a> {
+        if let Some(id) = self.record.session(staff) {
+            return RunWorkerIdentity::Session(id);
+        }
+        let RunSeat::Named(seat) = self.record.seat() else {
+            return RunWorkerIdentity::Unrecorded;
+        };
+        if let RunDirector::Session(manager) = director {
+            let mut candidates = staff.workers(manager).filter(|member| member.name == seat);
+            if let Some(candidate) = candidates.next()
+                && candidates.next().is_none()
+            {
+                return RunWorkerIdentity::Session(candidate.session);
+            }
+        }
+        RunWorkerIdentity::NamedSeat(seat)
+    }
+
+    pub(super) fn activity(&self) -> WorkerRun {
+        WorkerRun::Running {
+            activity: self.activity,
+            started:  self.started,
+            worktree: self.worktree.clone(),
+        }
+    }
+}
+
 /// Verification progress for the process rows in one census answer.
 pub(super) struct VerificationProcesses<'a> {
     processes:      &'a [ProcessEntry],
     by_pid:         HashMap<u32, usize>,
     children:       HashMap<u32, Vec<usize>>,
     progress:       HashMap<u32, VerificationProgress>,
+    descendants:    HashMap<u32, Vec<usize>>,
     #[cfg(test)]
     process_visits: usize,
 }
@@ -568,6 +795,7 @@ impl<'a> VerificationProcesses<'a> {
             by_pid,
             children,
             progress: HashMap::new(),
+            descendants: HashMap::new(),
             #[cfg(test)]
             process_visits: 0,
         }
@@ -577,56 +805,109 @@ impl<'a> VerificationProcesses<'a> {
         if let Some(progress) = self.progress.get(&root) {
             return *progress;
         }
-        // Resolve descendants without assuming detachment ancestry.
-        let mut pending = vec![root];
-        let mut seen = HashSet::new();
-        let mut indices = Vec::new();
-        while let Some(pid) = pending.pop() {
-            if !seen.insert(pid) {
-                continue;
-            }
-            if let Some(index) = self.by_pid.get(&pid) {
-                indices.push(*index);
-            }
-            #[cfg(test)]
-            {
-                self.process_visits += 1;
-            }
-            if let Some(children) = self.children.get(&pid) {
-                pending.extend(children.iter().map(|index| self.processes[*index].pid));
-            }
-        }
-        // Keep the original table order used to select the last matching step.
-        indices.sort_unstable();
-        let tree: Vec<_> = indices
-            .into_iter()
-            .map(|index| &self.processes[index])
+        self.descendant_indices(root);
+        let tree: Vec<_> = self.descendants[&root]
+            .iter()
+            .map(|index| &self.processes[*index])
             .collect();
         let progress = verification_progress(&tree);
         self.progress.insert(root, progress);
         progress
     }
 
-    /// Latest eligible live verification wins for this worker.
-    pub(super) fn run(&mut self, records: &[RunRecord], thread_id: &str) -> AgentActivity {
-        let latest = records
-            .iter()
-            .filter_map(|record| match record {
-                RunRecord::Verify(run)
-                    if run.thread_id == thread_id && self.by_pid.contains_key(&run.pid) =>
+    /// `VerificationProcesses` walks each requested process subtree once per scan.
+    fn descendant_indices(&mut self, root: u32) -> &[usize] {
+        if !self.descendants.contains_key(&root) {
+            // Resolve descendants without assuming detachment ancestry.
+            let mut pending = vec![root];
+            let mut seen = HashSet::new();
+            let mut indices = Vec::new();
+            while let Some(pid) = pending.pop() {
+                if !seen.insert(pid) {
+                    continue;
+                }
+                if let Some(index) = self.by_pid.get(&pid) {
+                    indices.push(*index);
+                }
+                #[cfg(test)]
                 {
-                    Some(run)
-                },
-                _ => None,
+                    self.process_visits += 1;
+                }
+                if let Some(children) = self.children.get(&pid) {
+                    pending.extend(children.iter().map(|index| self.processes[*index].pid));
+                }
+            }
+            // Keep the original table order used to select the last matching step.
+            indices.sort_unstable();
+            self.descendants.insert(root, indices);
+        }
+        &self.descendants[&root]
+    }
+
+    /// Return the latest run whose supervisor still names the same record file.
+    pub(super) fn worker_run<'r>(
+        &mut self,
+        records: impl IntoIterator<Item = &'r RunRecord>,
+    ) -> WorkerRun {
+        let latest = records
+            .into_iter()
+            .filter_map(|record| {
+                let RunRecord::Running(run) = record else {
+                    return None;
+                };
+                let process = self.processes.get(*self.by_pid.get(&run.pid)?)?;
+                let RunRecordPath::File(path) = &run.record else {
+                    return None;
+                };
+                (supervisor_record(process) == Some(path.as_path())).then_some(run)
             })
             .max_by(|left, right| {
                 left.started_at
                     .total_cmp(&right.started_at)
                     .then(left.pid.cmp(&right.pid))
             });
-        latest.map_or(AgentActivity::Unreported, |run| {
-            self.progress(run.pid).with_requested(run.requested)
+        latest.map_or(WorkerRun::Inactive, |run| WorkerRun::Running {
+            activity: self.progress(run.pid).with_requested(run.requested),
+            started:  self.processes[self.by_pid[&run.pid]].started,
+            worktree: run.worktree.clone(),
         })
+    }
+
+    /// `LiveWorkerRun` validates each record once before the scanner resolves its worker.
+    pub(super) fn live_runs<'r>(
+        &mut self,
+        records: impl IntoIterator<Item = &'r RunRecord>,
+    ) -> Vec<LiveWorkerRun<'r>> {
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let WorkerRun::Running {
+                    activity,
+                    started,
+                    worktree,
+                } = self.worker_run([record])
+                else {
+                    return None;
+                };
+                let RunRecord::Running(run) = record else {
+                    return None;
+                };
+                self.descendant_indices(run.pid);
+                let processes = self.descendants[&run.pid]
+                    .iter()
+                    .map(|index| self.processes[*index].pid)
+                    .collect();
+                Some(LiveWorkerRun {
+                    record,
+                    activity,
+                    started,
+                    worktree,
+                    pid: run.pid,
+                    processes,
+                    order: run.started_at,
+                })
+            })
+            .collect()
     }
 }
 
@@ -698,7 +979,14 @@ pub(super) fn run_activity(
     processes: &[ProcessEntry],
     thread_id: &str,
 ) -> AgentActivity {
-    VerificationProcesses::new(processes).run(records, thread_id)
+    match VerificationProcesses::new(processes).worker_run(
+        records
+            .iter()
+            .filter(|record| record.session(&StaffRoster::default()) == Some(thread_id)),
+    ) {
+        WorkerRun::Inactive => AgentActivity::Unreported,
+        WorkerRun::Running { activity, .. } => activity,
+    }
 }
 
 /// Parsed detached-run records retained by one local census scanner.
@@ -927,7 +1215,7 @@ impl RunRecords {
 
     /// Count cache work with explicit event delivery, without OS service startup time.
     #[cfg(test)]
-    fn for_test() -> Self {
+    pub(super) fn for_test() -> Self {
         Self {
             install_watch: |session, _, _| {
                 if session.join("mesh_runs").is_dir() {
@@ -948,7 +1236,7 @@ impl RunRecords {
             session,
             |bytes| serde_json::from_slice(bytes).ok(),
             |path| fs::read(path),
-            |record| matches!(record, RunRecord::Verify(run) if live.contains(&run.pid)),
+            |record| matches!(record, RunRecord::Running(run) if live.contains(&run.pid)),
         )
     }
 
@@ -1041,7 +1329,9 @@ impl RunRecords {
                 continue;
             }
             let content = read(&path).map_or(RunFileContent::ReadFailed, |bytes| {
-                parse(&bytes).map_or(RunFileContent::MalformedJson, RunFileContent::Parsed)
+                parse(&bytes).map_or(RunFileContent::MalformedJson, |record| {
+                    RunFileContent::Parsed(record.at_file(&path))
+                })
             });
             if matches!(content, RunFileContent::ReadFailed) {
                 watch.record_changed(name.clone());

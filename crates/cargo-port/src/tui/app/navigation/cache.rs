@@ -8,7 +8,9 @@ use crate::tui::columns::COL_DISK;
 use crate::tui::columns::LintColumnStatus;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
+use crate::tui::panes::DetailCacheState;
 use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list_state::FitWidthsCacheKey;
 use crate::tui::render;
 
 impl App {
@@ -21,6 +23,17 @@ impl App {
     pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
 
     pub(in crate::tui) fn ensure_fit_widths_cached(&mut self) {
+        let desired = FitWidthsCacheKey {
+            presentation:     self.project_row_presentation().width_inputs(),
+            summary_bytes:    self.project_list.visible_disk_total(),
+            visible_rows:     self.visible_rows().to_vec(),
+            include_non_rust: self.config.include_non_rust().includes_non_rust(),
+            lint_enabled:     self.config.lint_enabled().into(),
+            storage:          self.project_list.project_storage(),
+        };
+        if self.project_list.fit_widths_state.is_current(&desired) {
+            return;
+        }
         let root_labels = self
             .project_list
             .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
@@ -32,23 +45,28 @@ impl App {
             0,
         );
         let mut widths = widths;
-        let total = self.project_list.visible_project_disk_usage();
-        widths.observe(
-            COL_DISK,
-            columns::display_width(&render::format_bytes(total)),
-        );
+        let total = self
+            .project_list
+            .visible_disk_total()
+            .total()
+            .map_or_else(|| "…".to_string(), render::format_bytes);
+        widths.observe(COL_DISK, columns::display_width(&total));
         if let ProjectStorage::Available(bytes) = self.project_list.project_storage() {
             widths.observe(
                 COL_DISK,
                 columns::display_width(&render::format_bytes(bytes)),
             );
         }
-        self.project_list.set_fit_widths(widths);
+        self.project_list.set_fit_widths(desired, widths);
     }
 
     pub(in crate::tui) fn ensure_disk_cache(&mut self) {
-        let (root_sorted, child_sorted) = panes::compute_disk_cache(&self.project_list);
-        self.project_list.set_disk_caches(root_sorted, child_sorted);
+        let desired = self.project_list.disk_cache_key();
+        if self.project_list.disk_cache_state.is_current(&desired) {
+            return;
+        }
+        let sorted = panes::compute_disk_cache(&desired);
+        self.project_list.set_disk_cache(desired, sorted);
     }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected
@@ -57,18 +75,24 @@ impl App {
     /// inputs to `build_selected_pane_data`, so a matching stamp means the
     /// stored detail is still correct.
     pub(in crate::tui) fn ensure_detail_cached(&mut self) {
-        let desired = self.project_list.selected_row().map(|row| DetailCacheKey {
-            visible_row: row,
-            generation:  self.scan.generation(),
-        });
+        let desired = match self.project_list.selected_row() {
+            Some(row) => DetailCacheState::Current(DetailCacheKey {
+                visible_row: row,
+                generation:  self.scan.generation(),
+            }),
+            None => DetailCacheState::Cleared,
+        };
         if self.panes.pane_data.detail_is_current(desired) {
             return;
         }
         let started = std::time::Instant::now();
         let pane_started = std::time::Instant::now();
-        let pane = desired.zip(self.build_selected_pane_data());
+        let pane = match desired {
+            DetailCacheState::Current(key) => self.build_selected_pane_data(key.visible_row),
+            DetailCacheState::Cleared => None,
+        };
         let pane_ms = tui_pane::perf_log_ms(pane_started.elapsed().as_millis());
-        if let Some((key, data)) = pane {
+        if let (DetailCacheState::Current(key), Some(data)) = (desired, pane) {
             let ci_started = std::time::Instant::now();
             let ci = tui::panes::build_ci_data(self);
             let ci_ms = tui_pane::perf_log_ms(ci_started.elapsed().as_millis());

@@ -42,6 +42,13 @@ impl ViewportOverflow {
         }
     }
 
+    /// Use the drawn line offset for a pane with fixed pages.
+    /// `len` includes page padding. `visible_rows` excludes fixed headers and descriptions.
+    #[must_use]
+    pub const fn for_paged_content(len: usize, scroll_offset: usize, visible_rows: usize) -> Self {
+        Self::new(len, scroll_offset, visible_rows, scroll_offset)
+    }
+
     /// Return the overflow label for the current position. The label
     /// pairs scroll arrows with an `N of M` indicator. `M` is
     /// `len.div_ceil(visible_rows)`; `N` is the page containing the
@@ -411,9 +418,14 @@ pub fn overflow_affordance_label(
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Style;
+
     use super::Viewport;
     use super::ViewportOverflow;
     use super::keep_visible_scroll_offset;
+    use crate::ColorMode;
+    use crate::PaneBorders;
 
     #[test]
     fn keep_visible_offset_is_zero_when_all_rows_fit() {
@@ -489,6 +501,31 @@ mod tests {
         let overflow = ViewportOverflow::new(5, 2, 3, 4);
 
         assert_eq!(overflow.label().as_deref(), Some("▲ 2 of 2"));
+    }
+
+    #[test]
+    fn paged_overflow_uses_drawn_lines_in_both_directions() {
+        let area = ratatui::layout::Rect::new(0, 0, 20, 3);
+        let pane = crate::PaneFrame::new(area);
+        for (offset, expected) in [(0, "1 of 2 ▼"), (10, "▲ 2 of 2"), (0, "1 of 2 ▼")] {
+            let mut grid = crate::GridLines::new(area);
+            grid.add(pane);
+            if let Some(label) = super::overflow_affordance_label(
+                area,
+                ViewportOverflow::for_paged_content(15, offset, 10),
+                Style::default(),
+            ) {
+                grid.add_label(pane, label);
+            }
+            let mut buffer = Buffer::empty(area);
+            grid.render(
+                &mut buffer,
+                crate::default_pane_chrome(ColorMode::Colored),
+                PaneBorders::Separate,
+            );
+            let row: String = (0..area.width).map(|x| buffer[(x, 2)].symbol()).collect();
+            assert!(row.contains(expected), "{row}");
+        }
     }
 
     #[test]

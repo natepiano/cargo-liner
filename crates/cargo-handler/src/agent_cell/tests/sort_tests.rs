@@ -5,7 +5,6 @@ use tui_pane::CellPoint;
 use super::*;
 use crate::census::Activity;
 use crate::census::RoleFallback;
-use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -68,16 +67,14 @@ fn sorting_forest() -> MachineState {
         vec![root, older, younger, nested],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "older-id".into(),
-                role:     HierarchyRole::Fix,
+                manager: "root-id".into(),
+                member:  "older-id".into(),
+                role:    HierarchyRole::Fix,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "younger-id".into(),
-                role:     HierarchyRole::Impl,
+                manager: "root-id".into(),
+                member:  "younger-id".into(),
+                role:    HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -144,18 +141,18 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "├─ zeta fix idle z-account z-branch /z-directory 8:00",
+            "├── zeta fix idle z-account z-branch /z-directory 8:00",
         ),
         (
             "nested",
-            "│ └─ nested session thinking — — ~/rust/nested 5:00",
+            "│ └── nested session thinking — — ~/rust/nested 5:00",
         ),
-        ("z-thread", "│ └─ z-thread worker idle — — — 3:00"),
+        ("z-thread", "│ └── z-thread worker idle — — — 3:00"),
         (
             "alpha",
-            "└─ alpha impl thinking a-account a-branch /a-directory 4:00",
+            "└── alpha impl thinking a-account a-branch /a-directory 4:00",
         ),
-        ("a-shell", "└─ a-shell shell running a-account — — 2:00"),
+        ("a-shell", "└── a-shell shell running a-account — — 2:00"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -186,8 +183,8 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     );
     assert_eq!(name_color(&buffer, "a-shell"), text_default());
     let drawn = lines(&buffer);
-    assert!(drawn[usize::from(find(&buffer, "zeta").expect("zeta").1)].contains("├─ zeta"));
-    assert!(drawn[usize::from(find(&buffer, "alpha").expect("alpha").1)].contains("└─ alpha"));
+    assert!(drawn[usize::from(find(&buffer, "zeta").expect("zeta").1)].contains("├── zeta"));
+    assert!(drawn[usize::from(find(&buffer, "alpha").expect("alpha").1)].contains("└── alpha"));
 }
 
 /// Check one column independently so each regression stays below one second.
@@ -224,11 +221,11 @@ fn assert_column_keeps_subtrees_and_hues(column: TreeColumn) {
         let drawn = lines(&buffer);
         assert!(
             drawn[usize::from(find(&buffer, first).expect("first sibling").1)]
-                .contains(&format!("├─ {first}"))
+                .contains(&format!("├── {first}"))
         );
         assert!(
             drawn[usize::from(find(&buffer, last).expect("last sibling").1)]
-                .contains(&format!("└─ {last}"))
+                .contains(&format!("└── {last}"))
         );
     }
 }
@@ -445,7 +442,10 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
                 TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
                     direction == SortDirection::Ascending
                 },
-                TreeColumn::Type
+                // Both values are blank, so both directions keep the census order.
+                TreeColumn::Model
+                | TreeColumn::Effort
+                | TreeColumn::Type
                 | TreeColumn::Role
                 | TreeColumn::Branch
                 | TreeColumn::Directory => false,
@@ -612,7 +612,6 @@ fn independent_sort_forest() -> MachineState {
             ..agent(pid, name, age, Some(10))
         });
         edges.push(HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
             manager: "root-id".into(),
             member: id,
             role,
@@ -693,10 +692,9 @@ fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
     let edges = rows
         .iter()
         .map(|row| HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
-            manager:  "case-director".into(),
-            member:   format!("case-id-{}", row.pid),
-            role:     HierarchyRole::Unit,
+            manager: "case-director".into(),
+            member:  format!("case-id-{}", row.pid),
+            role:    HierarchyRole::Unit,
         })
         .collect();
     rows.push(AgentRow {

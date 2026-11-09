@@ -1,9 +1,12 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::Path;
+use std::collections::HashSet;
 
 use indexmap::IndexMap;
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
+use super::list;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::Package;
@@ -15,6 +18,7 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan;
+use crate::tui::render;
 
 pub(super) fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
     let segments: Vec<Vec<&str>> = paths
@@ -54,6 +58,132 @@ pub(super) fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Remove shared path ends and shared words within each prefix group.
+pub(in crate::tui) fn differing_path_labels(paths: &[String]) -> Vec<String> {
+    let labels = shortest_unique_suffixes(paths);
+    let mut segments: Vec<Vec<&str>> = labels
+        .iter()
+        .map(|label| display_path_segments(label))
+        .collect();
+    while segments.len() > 1
+        && segments
+            .iter()
+            .all(|parts| parts.len() > 1 && parts.last() == segments[0].last())
+    {
+        for parts in &mut segments {
+            parts.pop();
+        }
+    }
+    let labels: Vec<String> = segments.iter().map(|parts| parts.join("/")).collect();
+    let words: Vec<Vec<&str>> = labels
+        .iter()
+        .map(|label| label.split_inclusive(['-', '_', '.', '/']).collect())
+        .collect();
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, parts) in words.iter().enumerate() {
+        groups
+            .entry(parts.first().copied().unwrap_or_default())
+            .or_default()
+            .push(index);
+    }
+    let mut shortened = labels.clone();
+    for indices in groups.into_values().filter(|indices| indices.len() > 1) {
+        let first = &words[indices[0]];
+        let mut start = 0;
+        while indices
+            .iter()
+            .all(|&index| words[index].len() > start + 1 && words[index][start] == first[start])
+        {
+            start += 1;
+        }
+        let mut end = 0;
+        while indices.iter().all(|&index| {
+            let parts = &words[index];
+            parts.len() > start + end + 1
+                && parts[parts.len() - end - 1] == first[first.len() - end - 1]
+        }) {
+            end += 1;
+        }
+        let candidates: Vec<String> = indices
+            .iter()
+            .map(|&index| {
+                let parts = &words[index];
+                parts[start..parts.len() - end]
+                    .concat()
+                    .trim_matches(['-', '_', '.', '/'])
+                    .to_string()
+            })
+            .collect();
+        let unique: HashSet<_> = candidates.iter().collect();
+        let keep_suffix = unique.len() < candidates.len();
+        for (index, candidate) in indices.into_iter().zip(candidates) {
+            shortened[index] = if keep_suffix {
+                words[index][start..]
+                    .concat()
+                    .trim_matches(['-', '_', '.', '/'])
+                    .to_string()
+            } else {
+                candidate
+            };
+        }
+    }
+    let unique: HashSet<_> = shortened.iter().collect();
+    if unique.len() < shortened.len() {
+        labels
+    } else {
+        shortened
+    }
+}
+
+/// Keep different label ends when an end cut makes the cells equal.
+pub(in crate::tui) fn fit_distinct_path_labels(labels: &[String], width: usize) -> Vec<String> {
+    let mut fitted: Vec<String> = labels
+        .iter()
+        .map(|label| render::truncate_with_ellipsis(label, width, "…"))
+        .collect();
+    let mut collisions: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, label) in fitted.iter().enumerate() {
+        collisions.entry(label.clone()).or_default().push(index);
+    }
+    for indices in collisions.into_values().filter(|indices| indices.len() > 1) {
+        if indices
+            .iter()
+            .all(|&index| labels[index] == labels[indices[0]])
+        {
+            continue;
+        }
+        for suffix_width in 1..width.saturating_sub(1) {
+            let candidates: Vec<String> = indices
+                .iter()
+                .map(|&index| {
+                    let label = &labels[index];
+                    let mut suffix = String::new();
+                    for ch in label.chars().rev() {
+                        if suffix.width() + ch.width().unwrap_or(0) > suffix_width {
+                            break;
+                        }
+                        suffix.insert(0, ch);
+                    }
+                    let prefix = render::truncate_with_ellipsis(
+                        label,
+                        width.saturating_sub(1 + suffix.width()),
+                        "",
+                    );
+                    format!("{prefix}…{suffix}")
+                })
+                .collect();
+            let unique: HashSet<_> = candidates.iter().collect();
+            if unique.len() == candidates.len() {
+                for (index, candidate) in indices.iter().zip(candidates) {
+                    fitted[*index] = candidate;
+                }
+                break;
+            }
+        }
+    }
+    fitted
+}
+
 fn display_path_segments(path: &str) -> Vec<&str> {
     path.split('/')
         .filter(|segment| !segment.is_empty())
@@ -65,32 +195,41 @@ fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
     segments[segments.len().saturating_sub(len)..].join("/")
 }
 
-pub(super) fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
-    let RootItem::Rust(linked_rust_project) = item else {
-        return false;
-    };
-    if !linked_rust_project.worktree_status().is_linked_worktree() {
-        return false;
-    }
-    let existing_identity = item_worktree_identity(existing).cloned();
-    if linked_rust_project.worktree_status().primary_root() != existing_identity.as_ref() {
-        return false;
-    }
+pub(super) enum ProjectPlacement {
+    Inserted,
+    Unplaced(Box<RootItem>),
+}
 
-    match existing {
-        RootItem::Rust(primary_rust_project) => {
-            let primary = primary_rust_project.clone();
-            *existing = RootItem::Worktrees(WorktreeGroup::new(
-                primary,
-                vec![linked_rust_project.clone()],
-            ));
-            true
+pub(super) fn try_attach_worktree(
+    existing: &mut RootItem,
+    item: Box<RootItem>,
+) -> ProjectPlacement {
+    let RootItem::Rust(linked) = &*item else {
+        return ProjectPlacement::Unplaced(item);
+    };
+    if !linked.worktree_status().is_linked_worktree()
+        || linked.worktree_status().primary_root() != item_worktree_identity(existing)
+    {
+        return ProjectPlacement::Unplaced(item);
+    }
+    match (existing, *item) {
+        (existing @ RootItem::Rust(_), RootItem::Rust(linked)) => {
+            let mut group = WorktreeGroup::new(linked, Vec::new());
+            if let RootItem::Rust(primary) = existing {
+                std::mem::swap(primary, &mut group.primary);
+            }
+            if let RootItem::Rust(linked) = std::mem::replace(existing, RootItem::Worktrees(group))
+                && let RootItem::Worktrees(group) = existing
+            {
+                group.linked.push(linked);
+            }
+            ProjectPlacement::Inserted
         },
-        RootItem::Worktrees(group) => {
-            group.linked.push(linked_rust_project.clone());
-            true
+        (RootItem::Worktrees(group), RootItem::Rust(linked)) => {
+            group.linked.push(linked);
+            ProjectPlacement::Inserted
         },
-        RootItem::NonRust(_) => false,
+        (_, item) => ProjectPlacement::Unplaced(Box::new(item)),
     }
 }
 
@@ -131,7 +270,7 @@ pub(super) fn find_matching_worktree_container(
 }
 
 pub(super) fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
-    // Drain every `ws.groups_mut()` group into `members` using `MemberGroup::into_members`.
+    // Drain each workspace group into `packages` with `MemberGroup::into_members`.
     let packages: Vec<Package> = ws
         .groups_mut()
         .drain(..)
@@ -193,25 +332,70 @@ pub(super) fn replace_workspace_members(
     *ws.groups_mut() = member_groups;
 }
 
-pub(super) fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &RootItem) -> bool {
-    if !item_path.starts_with(ws.path()) || item_path == ws.path() {
-        return false;
+pub(super) fn try_insert_member(ws: &mut Workspace, item: Box<RootItem>) -> ProjectPlacement {
+    if !item.path().starts_with(ws.path()) || item.path() == ws.path() {
+        return ProjectPlacement::Unplaced(item);
     }
-    let RootItem::Rust(RustProject::Package(pkg)) = item else {
-        return false;
+    let RootItem::Rust(RustProject::Package(pkg)) = *item else {
+        return ProjectPlacement::Unplaced(item);
     };
-    // Push `pkg` into the first inline `MemberGroup`, or create `MemberGroup::Inline` when none
-    // exists.
-    let inline_member_group = ws.groups_mut().iter_mut().find(|g| g.is_inline());
-    if let Some(member_group) = inline_member_group {
-        member_group.members_mut().push(pkg.clone());
-        member_group
+    if let Some(current) = ws
+        .groups_mut()
+        .iter_mut()
+        .flat_map(MemberGroup::members_mut)
+        .find(|member| member.path() == pkg.path())
+    {
+        list::merge_retained_rust_info(&mut current.rust, pkg.rust);
+        return ProjectPlacement::Inserted;
+    }
+    let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
+    if let Some(group) = inline {
+        group.members_mut().push(pkg);
+        group
             .members_mut()
             .sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
     } else {
-        ws.groups_mut().push(MemberGroup::Inline {
-            members: vec![pkg.clone()],
-        });
+        ws.groups_mut()
+            .push(MemberGroup::Inline { members: vec![pkg] });
     }
-    true
+    ProjectPlacement::Inserted
+}
+
+#[cfg(test)]
+mod label_tests {
+    use tui_pane::ColorMode;
+
+    use super::differing_path_labels;
+    use crate::tui::test_support;
+
+    #[test]
+    fn projects_keep_distinct_path_labels_after_the_width_cut() -> anyhow::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let paths =
+            ["work-a", "work_a"].map(|parent| scratch.path().join(parent).join("proof_crate"));
+        let items = paths
+            .each_ref()
+            .map(|path| test_support::make_package("proof_crate", path));
+        for width in [80, 95] {
+            let mut app = test_support::make_app_with_color_mode(&items, ColorMode::Colored);
+            app.ensure_visible_rows_cached();
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            let first = test_support::position(&buffer, "work-a")?;
+            let second = test_support::position(&buffer, "work_a")?;
+            assert_ne!(
+                first.1,
+                second.1,
+                "{width}: {:?}",
+                test_support::rows(&buffer)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn path_labels_keep_delimiters_that_distinguish_checkouts() {
+        let paths = ["/tmp/work-a/proof_crate", "/tmp/work_a/proof_crate"].map(str::to_string);
+        let labels = differing_path_labels(&paths);
+        assert_eq!(labels, ["work-a", "work_a"]);
+    }
 }

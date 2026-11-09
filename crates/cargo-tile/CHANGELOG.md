@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Shim version 4 uses native capture setup to reduce the cost of each cargo call.
+
 ### Added
 
+- Enter expands the focused cell over the grid. Esc returns it with focus kept. Navigation keys scroll its rows.
+
+- The `attract` feature enables the attract screen and desktop capture by default.
 - The mouse wheel scrolls the global shortcuts, keymap and settings overlays; the tiles behind an open overlay stay still.
 - `commands.default_arguments` selects the flags shown beside each subcommand, with a sorted list in Settings; defaults are `all-targets`, `fix`, and `workspace`.
 - `h` independently shows or hides all command arguments.
@@ -62,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+
+- Command cells use a plain border. The account and directory occupy body row 1. The optional progress reading follows.
+- A command cell names only its account and directory in its top border, as in `┌ [natepiano] ~/rust/hana ─`; its build or test progress is the first body row, above its process table.
+- Skip equal tile frames while preserving content fades and appearance changes.
 - Hidden cargo commands stay hidden while busy, including nested subtrees and their readings; the setting is renamed to `commands.hidden`, with `hidden_when_idle` accepted as a fallback.
 - A nested cargo borrowing an unverified driver capture leaves the reading in the driver's cell heading and on its summary row, once per invocation.
 - Command tables choose one column set per frame, reserving any state slot in every table so `cpu`, `mem` and `runs` stay aligned. Optional columns leave before a subcommand is cut, including blocked commands, release profiles and Long view; argument tails yield before resource columns, `start` and `dur` leave together, and state leaves before parent. Short command words and their argument marks wrap within the column, including when the mark needs its own line.
@@ -115,6 +124,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+
+- Expanded cells keep their column header above scrolled rows. The row range excludes the pinned header.
+
+- Moving command cells keep toast cards clear of the visible summary footer. Global keys work before the first expanded frame.
+
+- Expanded cells retain focus and live commands during resize. The mouse wheel scrolls the expanded cell. Status hints keep their colours and spacing.
 
 - Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hidden arguments no longer produce `…`; only a real text cut does.

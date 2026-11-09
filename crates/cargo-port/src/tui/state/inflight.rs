@@ -1263,6 +1263,7 @@ pub(crate) struct Inflight {
 fn pending_run_for_test() -> PendingExampleRun {
     PendingExampleRun {
         abs_path:                 "/tmp/demo".to_string(),
+        package_path:             AbsolutePath::from(std::path::Path::new("/tmp/demo")),
         target_name:              "demo".to_string(),
         display_path:             "demo".to_string(),
         cargo_package_invocation: CargoPackageInvocation::WorkspaceDefault,

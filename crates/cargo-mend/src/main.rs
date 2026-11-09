@@ -56,6 +56,7 @@ use reporting::ExecutionOutcome;
 use reporting::MendFailure;
 use reporting::OutputFormat;
 use reporting::PassEdits;
+use reporting::Report;
 use reporting::SubtreeReexportEdits;
 use reporting::WarningPresence;
 use selection::DisplayFilter;
@@ -134,6 +135,7 @@ const fn compiler_fix_execution(
 }
 
 fn run() -> Result<ExitCode, MendFailure> {
+    let mut executable = compiler::RunningExecutable::open().map_err(MendFailure::Unexpected)?;
     let global = config::load_global_config();
     let after_help = build_diagnostics_help(&global.diagnostics);
     let cli = config::parse(&after_help);
@@ -156,6 +158,9 @@ fn run() -> Result<ExitCode, MendFailure> {
     let output_format = cli.output_format;
     let start = Instant::now();
     let toolchain_probes = compiler::ToolchainProbes::new().map_err(MendFailure::Unexpected)?;
+    let wrapper =
+        compiler::RunWrapper::resolve(cargo_plan.target_directory.as_path(), &mut executable)
+            .map_err(MendFailure::Unexpected)?;
     let mut runner = MendRunner::new(
         &selection,
         &cargo_plan,
@@ -163,6 +168,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         color_mode,
         output_format,
         &toolchain_probes,
+        wrapper,
     );
     let mut outcome = runner.run(operation_mode.clone())?;
     let mut accumulated_notice = outcome.notice.take();
@@ -250,13 +256,17 @@ fn run() -> Result<ExitCode, MendFailure> {
         check_duration,
     )?;
 
-    if outcome.report.outcome() == BuildOutcome::Failed {
-        return Ok(ExitCode::from(EXIT_CODE_ERROR));
+    Ok(report_exit_code(&outcome.report, cli.warning_policy))
+}
+
+fn report_exit_code(report: &Report, warning_policy: WarningPolicy) -> ExitCode {
+    if report.outcome() == BuildOutcome::Failed {
+        return ExitCode::from(EXIT_CODE_ERROR);
     }
-    match (cli.warning_policy, outcome.report.warning_presence()) {
-        (WarningPolicy::Fail, WarningPresence::Present) => Ok(ExitCode::from(EXIT_CODE_WARNING)),
+    match (warning_policy, report.warning_presence()) {
+        (WarningPolicy::Fail, WarningPresence::Present) => ExitCode::from(EXIT_CODE_WARNING),
         (WarningPolicy::Allow, WarningPresence::Present | WarningPresence::Absent)
-        | (WarningPolicy::Fail, WarningPresence::Absent) => Ok(ExitCode::SUCCESS),
+        | (WarningPolicy::Fail, WarningPresence::Absent) => ExitCode::SUCCESS,
     }
 }
 

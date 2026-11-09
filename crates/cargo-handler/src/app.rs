@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use expansion::HandlerExpansion;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -19,7 +20,9 @@ use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
-use tui_pane::CellClick;
+use tui_pane::CellPointer;
+use tui_pane::CellPress;
+use tui_pane::ColorMode;
 use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
@@ -31,6 +34,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::Repaint;
 use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
@@ -40,17 +44,16 @@ use tui_pane::ToastVisualDeadline;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
-use crate::agent_cell::TreeMetrics;
 use crate::census;
 use crate::census::AgentPlacement;
 use crate::census::Census;
 #[cfg(test)]
 use crate::census::CensusUpdate;
-use crate::census::HierarchyCommand;
 #[cfg(test)]
 use crate::census::HierarchyEdges;
 use crate::census::HierarchySource;
 use crate::census::RemoteMachines;
+use crate::census::StaffFileSetting;
 use crate::census::accounts::AccountsMonitor;
 #[cfg(test)]
 use crate::census::scan::ScanStage;
@@ -62,6 +65,7 @@ use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
 use crate::keymap;
 use crate::render;
+use crate::render::PaintedSurface;
 use crate::settings;
 use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
@@ -74,6 +78,13 @@ use crate::theme::StartupThemeNotes;
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
+use crate::word_highlight::MatchInkCache;
+use crate::word_highlight::PaintedWords;
+use crate::word_highlight::WordHighlight;
+use crate::word_highlight::WordHit;
+
+#[path = "expansion.rs"]
+pub(crate) mod expansion;
 
 /// The attract screen, sharing the handler's optional startup timing log.
 pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
@@ -111,7 +122,14 @@ enum FrameRequest {
     StatusClock,
 }
 
-/// Geometry and toast timing belong to the retained body they validate.
+/// `BodyReuse` controls repaint reuse without removing input pixels.
+#[derive(Clone, Copy)]
+enum BodyReuse {
+    Reusable,
+    Invalidated,
+}
+
+/// `PaintedFrame` retains the last painted pixels and toast timing.
 #[derive(Default)]
 enum PaintedFrame {
     #[default]
@@ -119,7 +137,14 @@ enum PaintedFrame {
     Current {
         buffer:       Box<Buffer>,
         toast_change: ToastVisualDeadline,
+        reuse:        BodyReuse,
     },
+}
+
+/// A missing retained frame cannot clear or replace the highlighted word.
+enum PaintedWordLookup {
+    Unavailable,
+    Hit(WordHit),
 }
 
 /// Top-level application state.
@@ -147,8 +172,12 @@ pub(crate) struct App {
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) selection_area:    Rect,
     pub(crate) selections:        Selections,
+    pub(crate) word_highlight:    WordHighlight,
+    pub(crate) painted_words:     PaintedWords,
+    pub(crate) match_inks:        MatchInkCache,
+    pub(crate) expansion:         HandlerExpansion,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
-    pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
+    pub(crate) painted_surfaces:  Vec<PaintedSurface>,
     /// The summary allocation retained for header clicks until the next paint.
     pub(crate) painted_summary:   RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
@@ -174,22 +203,38 @@ pub(crate) struct App {
     pub(crate) footer_colors:     FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
     pub(crate) remote_machines:   RemoteMachines,
-    /// `census.hierarchy_command` as the census scheduler reads it.
-    pub(crate) hierarchy_command: HierarchyCommand,
+    /// `census.staff_file` as the census scheduler reads it.
+    pub(crate) staff_file:        StaffFileSetting,
 }
 
 impl App {
     #[cfg(test)]
     pub(crate) const fn full_frame_count(&self) -> usize { self.full_frames }
 
+    /// Resolve a tile press before its row action invalidates the retained frame.
+    pub(crate) fn press_word(&mut self, position: Position) {
+        let lookup =
+            match &self.painted_frame {
+                PaintedFrame::Absent => PaintedWordLookup::Unavailable,
+                PaintedFrame::Current { buffer, .. } => PaintedWordLookup::Hit(
+                    PaintedWords::word_at(buffer, self.tiles.pointer_regions(), position),
+                ),
+            };
+        if let PaintedWordLookup::Hit(hit) = lookup {
+            self.word_highlight.press(hit);
+        }
+    }
+
     /// Request the status clock without changing the tile body.
     pub(crate) const fn request_clock_frame(&mut self) {
         self.frame_request = FrameRequest::StatusClock;
     }
 
-    /// Events and changed data require a new body, including selection hit geometry.
-    pub(crate) fn invalidate_body(&mut self) {
-        self.painted_frame = PaintedFrame::Absent;
+    /// `invalidate_body` requires a repaint and preserves the last painted input pixels.
+    pub(crate) const fn invalidate_body(&mut self) {
+        if let PaintedFrame::Current { reuse, .. } = &mut self.painted_frame {
+            *reuse = BodyReuse::Invalidated;
+        }
         self.frame_request = FrameRequest::Full;
     }
 
@@ -204,6 +249,7 @@ impl App {
         let placement = AgentPlacement::from_machines(&machines);
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
+        self.expansion.retain(&placement);
     }
 
     /// Build the app with the grid focused and the keymap loaded.
@@ -217,6 +263,7 @@ impl App {
             startup_note,
             CargoHandler::keymap_path(),
             census,
+            ColorMode::from_environment(),
         )?;
         app.footer_colors = FooterColorFile::load();
         Ok(app)
@@ -236,15 +283,17 @@ impl App {
         startup_note: StartupThemeNotes,
         keymap_path: Option<PathBuf>,
         census: Census,
+        color_mode: ColorMode,
     ) -> Result<Self, KeymapError> {
         let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
-        let hierarchy_command = HierarchyCommand::new(HierarchySource::from(
-            loaded_config.config.census.hierarchy_command.clone(),
+        let staff_file = StaffFileSetting::new(HierarchySource::from(
+            loaded_config.config.census.staff_file.0.clone(),
         ));
         let accounts = census::accounts::AccountsMonitor::new(
             loaded_config.config.census.accounts_command.clone(),
         );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        framework.color_mode = color_mode;
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
             #[cfg(test)]
@@ -257,9 +306,13 @@ impl App {
             startup_note,
             tiles: TileGrid::new(),
             selections: crate::interaction::Selections::default(),
+            word_highlight: crate::word_highlight::WordHighlight::default(),
+            painted_words: crate::word_highlight::PaintedWords::default(),
+            match_inks: crate::word_highlight::MatchInkCache::default(),
             selection_area: Rect::ZERO,
+            expansion: expansion::HandlerExpansion::default(),
             tree_sorts: HashMap::new(),
-            tree_layouts: HashMap::new(),
+            painted_surfaces: Vec::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
@@ -270,7 +323,7 @@ impl App {
             census,
             accounts,
             remote_machines,
-            hierarchy_command,
+            staff_file,
             footer_colors: FooterColorFile::default(),
         })
     }
@@ -295,15 +348,21 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: StartupThemeNotes,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, None, {
-            let mut census = Census::new("natedev".to_string());
-            census.apply(CensusUpdate::Local {
-                rows:      Vec::new(),
-                hierarchy: HierarchyEdges::default().into(),
-                stage:     ScanStage::Classified,
-            });
-            census
-        })
+        Self::new_with_keymap_path(
+            loaded_config,
+            startup_note,
+            None,
+            {
+                let mut census = Census::new("natedev".to_string());
+                census.apply(CensusUpdate::Local {
+                    rows:      Vec::new(),
+                    hierarchy: HierarchyEdges::default().into(),
+                    stage:     ScanStage::Classified,
+                });
+                census
+            },
+            ColorMode::Colored,
+        )
     }
 }
 
@@ -369,9 +428,11 @@ impl TerminalApp for App {
             && self.framework.overlay().is_none();
         if matches!(self.frame_request, FrameRequest::StatusClock)
             && stable_layers
+            && self.tiles.visual_repaint() == Repaint::NotNeeded
             && let PaintedFrame::Current {
                 buffer,
                 toast_change: painted_toast_change,
+                reuse: BodyReuse::Reusable,
             } = &self.painted_frame
             && buffer.area == frame.area()
             && *painted_toast_change == toast_change
@@ -384,6 +445,7 @@ impl TerminalApp for App {
             ])
             .areas(frame.area());
             render::draw_status_line(frame, self, keymap, status);
+            self.framework.color_mode.clear_colors(frame.buffer_mut());
             self.frame_request = FrameRequest::Full;
             return;
         }
@@ -392,10 +454,12 @@ impl TerminalApp for App {
             self.full_frames += 1;
         }
         render::draw(frame, self, keymap);
+        self.framework.color_mode.clear_colors(frame.buffer_mut());
         self.painted_frame = if stable_layers {
             PaintedFrame::Current {
                 buffer: Box::new(frame.buffer_mut().clone()),
                 toast_change,
+                reuse: BodyReuse::Reusable,
             }
         } else {
             PaintedFrame::Absent
@@ -409,8 +473,8 @@ impl TerminalApp for App {
     }
 
     fn click(&mut self, position: Position) {
-        self.invalidate_body();
         tui_pane::handle_tile_click(self, position);
+        self.invalidate_body();
     }
 
     /// Settling the window costs several round trips to the window
@@ -473,11 +537,13 @@ impl TileGridHost for App {
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 
-    fn cell_scrolled(&mut self, cell: CellClick<TileKey>, direction: ScrollDirection) {
+    fn cell_scrolled(&mut self, cell: CellPointer<TileKey>, direction: ScrollDirection) {
         render::cell_scrolled(self, &cell, direction);
     }
 
-    fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
+    fn cell_clicked(&mut self, click: CellPointer<TileKey>) { render::cell_clicked(self, click); }
+
+    fn cell_pressed(&mut self, press: CellPress<TileKey>) { render::cell_pressed(self, press); }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of
@@ -507,6 +573,44 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crate::config::StaffFilePath;
+
+    #[test]
+    fn no_color_full_and_status_frames_keep_the_focused_title_bold() {
+        let mut app = App::new_for_test().expect("test app");
+        app.framework.color_mode = ColorMode::NoColor;
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        for expected_full_frames in [1, 1] {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("app frame");
+            let buffer = terminal.backend().buffer();
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| cell.fg == ratatui::style::Color::Reset
+                        && cell.bg == ratatui::style::Color::Reset),
+                "every frame clears colours"
+            );
+            let title = (0..buffer.area.width)
+                .map(|x| &buffer[(x, 0)])
+                .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+                .expect("focused title");
+            assert!(
+                title.modifier.contains(ratatui::style::Modifier::BOLD),
+                "the focused title stays bold"
+            );
+            assert_eq!(
+                app.full_frames, expected_full_frames,
+                "the status frame uses the cached body"
+            );
+            app.request_clock_frame();
+        }
+    }
+
     fn wheel_test_app_with_agents() -> App {
         let mut app = App::new_for_test().expect("test app");
         let rows = (1..=4)
@@ -559,7 +663,8 @@ mod tests {
     fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
         let mut app = wheel_test_app_with_agents();
         let keymap = std::rc::Rc::clone(&app.keymap);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16))
+        // Keep every scroll redraw in a smaller composed grid.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10))
             .expect("test terminal");
         draw_settled_wheel_frame(&mut app, &mut terminal);
         let summary = SelectionSurface::Summary;
@@ -685,6 +790,40 @@ mod tests {
     }
 
     #[test]
+    fn idle_visual_status_frames_leave_the_grid_paint_record_unchanged() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("body");
+        for _ in 0..4 {
+            app.request_clock_frame();
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("status");
+            assert_eq!(app.tiles.visual_repaint(), tui_pane::Repaint::NotNeeded);
+        }
+        assert_eq!(app.full_frames, 1, "status draws reuse the body");
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        app.request_clock_frame();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("appearance body");
+        let frames = app.full_frames;
+        let current = app.tiles.visual_repaint();
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(frames, 2, "a clock request cannot hide a body change");
+        assert_eq!(
+            current,
+            tui_pane::Repaint::NotNeeded,
+            "body paint commits appearance"
+        );
+    }
+
+    #[test]
     fn idle_status_frames_repaint_the_body_after_input_or_geometry_changes() {
         let mut app = App::new_for_test().expect("test app");
         let keymap = std::rc::Rc::clone(&app.keymap);
@@ -719,6 +858,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use tui_pane::ColorMode;
     use tui_pane::GlobalAction;
     use tui_pane::Hittable;
     use tui_pane::ScrollDirection;
@@ -732,7 +872,6 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsFailure;
     use crate::census::accounts::AccountsTable;
-    use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
     use crate::interaction::SelectionSurface;
@@ -759,7 +898,6 @@ mod tests {
                 let mut child = row(root.pid + 1000, root.started + 1);
                 child.session_id = SessionIdentity::Claude(member.clone());
                 edges.push(HierarchyEdge {
-                    reviewer: ReviewerState::NotPool,
                     manager,
                     member,
                     role: HierarchyRole::Impl,
@@ -829,7 +967,7 @@ mod tests {
     #[test]
     fn the_hierarchy_handle_starts_with_the_loaded_command() {
         let mut config = Config::default();
-        config.census.hierarchy_command = "production_tree --json".to_string();
+        config.census.staff_file = StaffFilePath("/fixture/staff.json".to_string());
         let app = App::new_with_keymap_path(
             LoadedConfig {
                 config,
@@ -838,12 +976,13 @@ mod tests {
             StartupThemeNotes::default(),
             None,
             Census::new("natedev".to_string()),
+            ColorMode::Colored,
         )
         .expect("test app should build");
 
         assert_eq!(
-            app.hierarchy_command.snapshot(),
-            HierarchySource::Command("production_tree --json".to_string())
+            app.staff_file.snapshot(),
+            HierarchySource::File("/fixture/staff.json".to_string())
         );
     }
 }

@@ -11,10 +11,12 @@ use super::package_data::PackageData;
 use super::package_data::PackageRow;
 use super::package_data::PackageVersion;
 use crate::constants::GIT_UNREADABLE_LABEL;
+use crate::project::DiskMeasurement;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::PinnedCommit;
 use crate::project::ResolvedBranch;
+use crate::tui::panes::GithubStars;
 use crate::tui::render;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +49,7 @@ pub enum DetailField {
     GitStatus,
     VsLocal,
     Stars,
+    GithubStatus,
     Inception,
     LastCommit,
     LastFetched,
@@ -70,7 +73,7 @@ impl DetailField {
             Self::Targets => "Type",
             Self::Disk => "Disk",
             Self::DiskTarget => "  target/",
-            Self::DiskNonTarget => "  other",
+            Self::DiskNonTarget => "  Other",
             Self::DiskOutOfTreeTarget => "  target/ (out of tree)",
             Self::Lint => "Lint",
             Self::Ci => "CI",
@@ -81,12 +84,13 @@ impl DetailField {
             Self::GitStatus => "Status",
             Self::VsLocal => "Ahead/Behind",
             Self::Stars => "Stars",
+            Self::GithubStatus => "",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::LastFetched => "Fetched",
             Self::RemotesUnreadable => "Remotes",
-            Self::RateLimitCore => "Rate limit core",
-            Self::RateLimitGraphQl => "Rate limit GraphQL",
+            Self::RateLimitCore => "Core",
+            Self::RateLimitGraphQl => "GraphQL",
             Self::WorktreeError => "Error",
             Self::Version => "Version",
             Self::Edition => "Edition",
@@ -113,7 +117,12 @@ impl DetailField {
                 .as_ref()
                 .map_or_else(String::new, |summary| summary.deleted.to_string()),
             Self::Path => data.path.clone(),
-            Self::Disk => data.disk.map_or_else(String::new, render::format_bytes),
+            Self::Disk => match data.disk {
+                DiskMeasurement::NotMeasured => "…".to_string(),
+                DiskMeasurement::TotalOnly(total) | DiskMeasurement::Measured { total, .. } => {
+                    render::format_bytes(total)
+                },
+            },
             Self::Targets => match &data.types {
                 None => String::new(),
                 Some(types) if types.is_empty() => "-".to_string(),
@@ -132,12 +141,14 @@ impl DetailField {
                 PackageVersion::AwaitingMetadata
                 | PackageVersion::Submodule(PinnedCommit::Absent) => "-".to_string(),
             },
-            Self::DiskTarget => data
-                .in_project_target
-                .map_or_else(String::new, render::format_bytes),
-            Self::DiskNonTarget => data
-                .in_project_non_target
-                .map_or_else(String::new, render::format_bytes),
+            Self::DiskTarget => match data.disk {
+                DiskMeasurement::Measured { target, .. } => render::format_bytes(target),
+                _ => "…".to_string(),
+            },
+            Self::DiskNonTarget => match data.disk {
+                DiskMeasurement::Measured { other, .. } => render::format_bytes(other),
+                _ => "…".to_string(),
+            },
             Self::DiskOutOfTreeTarget => data
                 .out_of_tree_target_bytes
                 .map_or_else(String::new, render::format_bytes),
@@ -156,6 +167,7 @@ impl DetailField {
             | Self::Pinned
             | Self::GitStatus
             | Self::VsLocal
+            | Self::GithubStatus
             | Self::Stars
             | Self::Inception
             | Self::LastCommit
@@ -215,9 +227,13 @@ impl DetailField {
                     },
                 }
             },
-            Self::Stars => data
-                .stars
-                .map_or_else(String::new, |count| format!("⭐ {count}")),
+            Self::Stars => match data.stars {
+                GithubStars::Measured(count) => format!("⭐ {count}"),
+                GithubStars::NotGithub | GithubStars::Pending | GithubStars::Unreachable => {
+                    String::new()
+                },
+            },
+            Self::GithubStatus => formatting::github_status_text(data.github_status).to_string(),
             Self::Inception => match &data.inception {
                 FirstCommit::AwaitingProbe => String::new(),
                 FirstCommit::Probed(commit_date) => formatting::format_commit_date(commit_date),
@@ -228,8 +244,8 @@ impl DetailField {
             },
             Self::RemotesUnreadable => GIT_UNREADABLE_LABEL.to_string(),
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
-            Self::RateLimitCore => formatting::format_rate_limit_bucket(data.rate_limit_core),
-            Self::RateLimitGraphQl => formatting::format_rate_limit_bucket(data.rate_limit_graphql),
+            Self::RateLimitCore => quota_value(data.rate_limit_core),
+            Self::RateLimitGraphQl => quota_value(data.rate_limit_graphql),
             Self::Tracks => data
                 .submodule_ctx
                 .as_ref()
@@ -261,6 +277,13 @@ impl DetailField {
             | Self::Homepage
             | Self::Repository => String::new(),
         }
+    }
+}
+
+fn quota_value(observation: super::QuotaObservation) -> String {
+    match observation {
+        super::QuotaObservation::Unobserved => String::new(),
+        super::QuotaObservation::Observed(quota) => formatting::format_rate_limit_bucket(quota),
     }
 }
 
@@ -310,7 +333,9 @@ mod tests {
 
     #[test]
     fn rate_limit_bucket_empty_without_quota() {
-        assert_eq!(formatting::format_rate_limit_bucket(None), "");
+        let data = super::GitData::default();
+        assert_eq!(super::DetailField::RateLimitCore.git_value(&data), "");
+        assert_eq!(super::DetailField::RateLimitGraphQl.git_value(&data), "");
     }
 
     #[test]
@@ -321,10 +346,7 @@ mod tests {
             remaining: 4958,
             reset_at:  None,
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "4958/5000"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "4958/5000");
     }
 
     #[test]
@@ -335,24 +357,18 @@ mod tests {
             remaining: 5000,
             reset_at:  Some(u64::MAX),
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "5000/5000"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "5000/5000");
     }
 
     #[test]
-    fn rate_limit_bucket_with_past_reset_renders_zero_countdown() {
+    fn rate_limit_bucket_with_past_reset_omits_countdown() {
         let quota = RateLimitQuota {
             limit:     5000,
             used:      100,
             remaining: 4900,
             reset_at:  Some(0),
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "4900/5000 resets 0s"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "4900/5000");
     }
 }
 
@@ -366,6 +382,8 @@ mod git_detail_field_tests {
     use crate::project::FirstCommit;
     use crate::project::GitStatus;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::DescriptionState;
+    use crate::tui::panes::GithubStars;
     use crate::tui::panes::pane_data::GitData;
     use crate::tui::panes::pane_data::PullRequestSection;
     use crate::tui::panes::pane_data::formatting::GitReadFailures;
@@ -380,13 +398,13 @@ mod git_detail_field_tests {
             status:             None,
             vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
-            description:        None,
+            stars:              GithubStars::NotGithub,
+            description:        DescriptionState::KnownEmpty,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    crate::tui::panes::pane_data::QuotaObservation::Unobserved,
+            rate_limit_graphql: crate::tui::panes::pane_data::QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            super::super::git_data::RemoteRows::default(),

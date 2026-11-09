@@ -14,6 +14,7 @@ use notify::event::ModifyKind;
 use notify::event::RenameMode;
 use walkdir::WalkDir;
 
+use super::skip::ExclusionTransition;
 use super::skip::WatchSkipSet;
 use crate::constants::DOT_CARGO_DIR;
 use crate::project::AbsolutePath;
@@ -589,17 +590,32 @@ pub(super) fn replace_skip_set(
     if registered.skips == skips {
         return;
     }
-    let removed: Vec<_> = registered
-        .watched
-        .keys()
-        .filter(|dir| skips.skips_resolved(dir))
-        .cloned()
-        .collect();
+    let transition = registered.skips.transition_to(&skips);
+    let removed: Vec<_> = match transition {
+        ExclusionTransition::TreesExcluded | ExclusionTransition::TreesExcludedAndRestored => {
+            registered
+                .watched
+                .keys()
+                .filter(|dir| skips.skips_resolved(dir))
+                .cloned()
+                .collect()
+        },
+        ExclusionTransition::Equivalent | ExclusionTransition::TreesRestored => Vec::new(),
+    };
     for dir in removed {
         let _ = watcher.unwatch(&dir);
         registered.watched.remove(&dir);
     }
     registered.skips = skips;
+    // New exclusions only remove subscriptions. Existing folders already have
+    // watches; their create events handle new children without another walk.
+    match transition {
+        ExclusionTransition::Equivalent | ExclusionTransition::TreesExcluded => {
+            register_cargo_home_watch(watcher, registered, cargo_home);
+            return;
+        },
+        ExclusionTransition::TreesRestored | ExclusionTransition::TreesExcludedAndRestored => {},
+    }
     for root in registered.project_roots.clone() {
         log_failures(register_directory_tree(
             watcher,
@@ -738,3 +754,7 @@ pub(super) fn register_cargo_home_directory(
 #[cfg(test)]
 #[path = "cargo_home_watch_tests.rs"]
 mod folder_tests;
+
+#[cfg(test)]
+#[path = "skip_growth_tests.rs"]
+mod skip_growth_tests;

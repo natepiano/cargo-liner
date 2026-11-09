@@ -14,6 +14,8 @@ use std::time::Instant;
 use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
+use serde::Deserializer;
+use serde::de::Error;
 
 use super::hierarchy;
 use super::hierarchy::HierarchyError;
@@ -42,7 +44,7 @@ pub(crate) enum AccountRole {
 }
 
 impl AccountRole {
-    pub(crate) const fn text(self) -> &'static str {
+    const fn text(self) -> &'static str {
         match self {
             Self::Units => "units",
             Self::Showrunners => "showrunners",
@@ -50,6 +52,62 @@ impl AccountRole {
             Self::Spare => "spare",
         }
     }
+}
+
+/// Source counts for one role across the reported machines.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RoleSessionCounts {
+    pub(crate) busy:   u64,
+    pub(crate) idle:   u64,
+    pub(crate) paused: u64,
+    pub(crate) exited: u64,
+    pub(crate) total:  u64,
+}
+
+/// One source count exceeds the range of a combined count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RoleCountOverflow;
+
+impl From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionCounts> {
+    fn from(value: Result<RoleSessionCounts, RoleCountOverflow>) -> Self {
+        match value {
+            Ok(counts) => Self::Known(counts),
+            Err(RoleCountOverflow) => Self::Unavailable,
+        }
+    }
+}
+
+impl RoleSessionCounts {
+    /// `RoleSessionCounts::checked_add` sums all five source counts without overflow.
+    pub(crate) fn checked_add(self, other: &Self) -> Result<Self, RoleCountOverflow> {
+        Ok(Self {
+            busy:   self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
+            idle:   self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
+            paused: self
+                .paused
+                .checked_add(other.paused)
+                .ok_or(RoleCountOverflow)?,
+            exited: self
+                .exited
+                .checked_add(other.exited)
+                .ok_or(RoleCountOverflow)?,
+            total:  self
+                .total
+                .checked_add(other.total)
+                .ok_or(RoleCountOverflow)?,
+        })
+    }
+}
+
+/// `AccountRoleUsage` associates role with its counts.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AccountRoleUsage {
+    pub(crate) role:   AccountRole,
+    pub(crate) counts: Reading<RoleSessionCounts>,
+}
+
+impl AccountRoleUsage {
+    pub(crate) const fn text(&self) -> &'static str { self.role.text() }
 }
 
 /// Credit balances have three distinct source meanings.
@@ -67,13 +125,6 @@ pub(crate) enum CreditPermission {
     Disabled,
 }
 
-/// Whether the source reports that credits are currently being spent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CreditActivity {
-    InUse,
-    Idle,
-}
-
 /// Whether the latest usage read succeeded and a stored reading exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AccountReadStatus {
@@ -85,12 +136,11 @@ pub(crate) enum AccountReadStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AccountUsage {
     pub(crate) label:               String,
-    pub(crate) roles:               Vec<AccountRole>,
+    pub(crate) roles:               Vec<AccountRoleUsage>,
     pub(crate) weekly_left_percent: Reading<f64>,
     pub(crate) resets_at:           Reading<DateTime<Utc>>,
     pub(crate) credits:             Credits,
     pub(crate) credit_permission:   CreditPermission,
-    pub(crate) credit_activity:     CreditActivity,
     pub(crate) read_status:         AccountReadStatus,
     pub(crate) read_at:             Reading<DateTime<Utc>>,
 }
@@ -112,15 +162,74 @@ struct AccountsReport {
 struct AccountWire {
     label:               String,
     roles:               Vec<AccountRole>,
+    #[serde(default)]
+    role_counts:         Vec<Option<RoleCountsWire>>,
     weekly_left_percent: Option<f64>,
     resets_at:           Option<String>,
     credits:             Option<CreditWire>,
     use_credits:         bool,
     #[serde(default)]
-    credits_in_use:      bool,
-    #[serde(default)]
     read_ok:             bool,
     read_at:             Option<String>,
+}
+
+/// The wire reader constructs this proof only when the retired key is absent.
+#[derive(Default)]
+struct RetiredShellAbsent;
+
+impl<'de> Deserialize<'de> for RetiredShellAbsent {
+    fn deserialize<D>(_: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(D::Error::custom("the shell count is retired"))
+    }
+}
+
+#[derive(Deserialize)]
+struct RoleCountsWire {
+    busy:          u64,
+    idle:          u64,
+    paused:        u64,
+    exited:        u64,
+    total:         u64,
+    #[serde(default, rename = "shell")]
+    retired_shell: RetiredShellAbsent,
+}
+
+impl From<RoleCountsWire> for RoleSessionCounts {
+    fn from(counts: RoleCountsWire) -> Self {
+        let RoleCountsWire {
+            busy,
+            idle,
+            paused,
+            exited,
+            total,
+            retired_shell: RetiredShellAbsent,
+        } = counts;
+        Self {
+            busy,
+            idle,
+            paused,
+            exited,
+            total,
+        }
+    }
+}
+
+/// Pair each role with its combined source count.
+fn role_usages(
+    roles: Vec<AccountRole>,
+    combined_counts: Vec<Option<RoleCountsWire>>,
+) -> Vec<AccountRoleUsage> {
+    let mut counts = combined_counts.into_iter();
+    roles
+        .into_iter()
+        .map(|role| AccountRoleUsage {
+            role,
+            counts: counts.next().flatten().map(RoleSessionCounts::from).into(),
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -146,32 +255,28 @@ impl AccountsReading {
                 .accounts
                 .into_iter()
                 .map(|row| {
+                    let roles = role_usages(row.roles, row.role_counts);
                     Ok(AccountUsage {
-                        label:               row.label,
-                        roles:               row.roles,
+                        label: row.label,
+                        roles,
                         weekly_left_percent: row.weekly_left_percent.into(),
-                        resets_at:           timestamp(row.resets_at.as_deref())?,
-                        credits:             match row.credits {
+                        resets_at: timestamp(row.resets_at.as_deref())?,
+                        credits: match row.credits {
                             Some(CreditWire::Amount(amount)) => Credits::Amount(amount),
                             Some(CreditWire::Word(Unlimited::Unlimited)) => Credits::Unlimited,
                             None => Credits::Unavailable,
                         },
-                        credit_permission:   if row.use_credits {
+                        credit_permission: if row.use_credits {
                             CreditPermission::Enabled
                         } else {
                             CreditPermission::Disabled
                         },
-                        credit_activity:     if row.credits_in_use {
-                            CreditActivity::InUse
-                        } else {
-                            CreditActivity::Idle
-                        },
-                        read_status:         if row.read_ok {
+                        read_status: if row.read_ok {
                             AccountReadStatus::Ok
                         } else {
                             AccountReadStatus::Failed
                         },
-                        read_at:             timestamp(row.read_at.as_deref())?,
+                        read_at: timestamp(row.read_at.as_deref())?,
                     })
                 })
                 .collect::<Result<_, AccountsFailure>>()?,

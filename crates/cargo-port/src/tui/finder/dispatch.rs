@@ -203,6 +203,7 @@ fn confirm_finder(app: &mut App) {
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
     app.project_list
         .select_project_in_tree(finder_item.project_path.as_path(), include_non_rust);
+    app.record_selection_choice();
 
     match finder_item.kind {
         FinderKind::Project => {
@@ -223,23 +224,14 @@ fn confirm_finder(app: &mut App) {
 /// here to land the cursor on a specific row.
 fn repopulate_selected_detail_panes(app: &mut App) {
     app.sync_selected_project();
-    if let Some(detail_pane_data) = app
-        .project_list
-        .selected_project_path()
-        .and_then(|path| app.project_list.entry_containing(path))
-        .map(|entry| panes::build_pane_data(app, &entry.root_item))
-    {
-        app.panes.package.set_content(detail_pane_data.package);
-        app.panes.git.set_content(detail_pane_data.git);
-        app.panes.targets.set_content(detail_pane_data.targets);
-    }
+    app.ensure_detail_cached();
 }
 
 /// After selecting the parent project, focus the targets column and scroll
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     repopulate_selected_detail_panes(app);
-    let Some(targets_data) = app.panes.targets.content().cloned() else {
+    let Some(targets_data) = app.panes.targets.available_content(&app.project_list) else {
         return;
     };
     if !targets_data.has_targets() {
@@ -340,6 +332,7 @@ pub(in crate::tui) fn render_finder_pane_body(
     };
 
     let popup = PopupFrame {
+        color_mode:   pane_render_ctx.color_mode,
         title:        Some(title),
         border_color: title_color(),
         width:        popup_width,
@@ -500,6 +493,7 @@ fn render_finder_results(
     area: Rect,
     popup_area: Rect,
 ) {
+    let mode = pane_render_ctx.color_mode;
     if pane_render_ctx.project_list.finder.results.is_empty() {
         let msg = if pane_render_ctx.project_list.finder.query.is_empty() {
             "Type to search projects, PRs, examples, benches..."
@@ -549,7 +543,7 @@ fn render_finder_results(
             ])
             .style(
                 tui_pane::selection_state(&pane.viewport, row_index, pane.focus.pane_focus_state)
-                    .overlay_style(),
+                    .overlay_style(mode),
             )
         })
         .collect();

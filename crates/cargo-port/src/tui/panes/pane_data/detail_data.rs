@@ -10,7 +10,6 @@ use super::NonRustProject;
 use super::Package;
 use super::PackageRecord;
 use super::Path;
-use super::ProjectList;
 use super::ProjectType;
 use super::Rect;
 use super::RootItem;
@@ -22,6 +21,12 @@ use super::TargetsData;
 use super::VendoredPackage;
 use super::Visibility;
 use super::Workspace;
+use super::constants::CRATES_IO_ALPHA_LABEL;
+use super::constants::CRATES_IO_BETA_LABEL;
+use super::constants::CRATES_IO_DOWNLOADS_LABEL;
+use super::constants::CRATES_IO_PRE_LABEL;
+use super::constants::CRATES_IO_RC_LABEL;
+use super::constants::CRATES_IO_VERSION_LABEL;
 use super::git;
 use super::git::GitDescription;
 use super::git_data;
@@ -31,6 +36,7 @@ use super::git_data::WorktreeInfo;
 use super::package;
 use super::package_data;
 use super::package_data::PackageData;
+use super::package_data::PackageDeletion;
 use super::package_data::PackagePresence;
 use super::package_data::PackageSection;
 use super::package_data::PackageVersion;
@@ -39,10 +45,15 @@ use super::package_data::WorktreeGroupSummary;
 use super::project;
 use crate::project::CratesIoRelease;
 use crate::project::CratesIoReleaseState;
+use crate::project::DiskMeasurement;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::tui::panes::DescriptionBlock;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::targets;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::Lint;
 use crate::tui::state::LintDisplay;
@@ -124,24 +135,40 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
         git::git_lower_content_height(&data.git, git_data::git_fields_from_data(&data.git).len());
 
     let package_desc = description_natural_rows(
-        data.package.description.as_deref(),
+        &data.package.description,
         package_width,
-        EmptyDescriptionBehavior::ShowPlaceholder,
+        if matches!(
+            data.git.description,
+            crate::tui::panes::DescriptionState::KnownEmpty
+        ) {
+            EmptyDescriptionBehavior::ShowPlaceholder
+        } else {
+            EmptyDescriptionBehavior::RenderNothing
+        },
     );
     let git_desc = description_natural_rows(
-        data.git.description.as_deref(),
+        &data.git.description,
         git_width,
         EmptyDescriptionBehavior::RenderNothing,
     );
-    // Both panes sync their description blocks to the taller of the two, so a
-    // pane with the shorter description still reserves the shared height.
-    let synced_desc = package_desc.max(git_desc);
+    // Only real text sets a shared height. Unknown and empty descriptions keep their own height.
+    let synced_desc = if matches!(
+        data.package.description,
+        crate::tui::panes::DescriptionState::Known(_)
+    ) && matches!(
+        data.git.description,
+        crate::tui::panes::DescriptionState::Known(_)
+    ) {
+        package_desc.max(git_desc)
+    } else {
+        0
+    };
 
     // Both panes compute their rendered height via the same helpers the
     // render path feeds to each viewport, so the measured row height and the
     // per-pane scroll pager agree on what renders. The Package About section
-    // always renders (a placeholder when the crate has no description); the Git
-    // About section renders only when the repo has a description of its own.
+    // renders text or a known-empty message. Unknown descriptions add no rows.
+    // The Git About section renders only the repository's real description.
     let error_height = scan::cargo_metadata_roots_for_item(item)
         .iter()
         .map(|root| {
@@ -154,13 +181,14 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
         .max()
         .unwrap_or(0);
     let package_total =
-        package::package_content_height(synced_desc, package_lower).saturating_add(error_height);
+        package::package_content_height(package_desc.max(synced_desc), package_lower)
+            .saturating_add(error_height);
     let description = if git_desc > 0 {
         GitDescription::Present
     } else {
         GitDescription::Absent
     };
-    let git_total = git::git_content_height(synced_desc, description, git_lower);
+    let git_total = git::git_content_height(git_desc.max(synced_desc), description, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
 }
@@ -170,7 +198,7 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
 /// the measured height matches what renders; a tall synthetic area lifts the
 /// height cap so the full wrapped text is counted.
 fn description_natural_rows(
-    text: Option<&str>,
+    text: &DescriptionState,
     pane_width: u16,
     behavior: super::EmptyDescriptionBehavior,
 ) -> usize {
@@ -180,7 +208,7 @@ fn description_natural_rows(
         width:  pane_width,
         height: u16::MAX,
     };
-    usize::from(DescriptionBlock::for_pane(text, area, behavior).natural_sync_height())
+    usize::from(DescriptionBlock::for_pane(text, area, behavior).natural_height())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,16 +331,21 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
 
     DetailPaneData {
         package: PackageData {
+            deletion:                 if app.project_list.is_deleted(abs_path) {
+                PackageDeletion::Deleted
+            } else {
+                PackageDeletion::Present
+            },
             title:                    "Submodule".to_string(),
             name:                     submodule.name.clone(),
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     display_path,
             version:                  PackageVersion::Submodule(submodule.commit.clone()),
-            description:              submodule.url.clone(),
+            description:              DescriptionState::from(submodule.url.clone()),
             crates_io_rows:           Vec::new(),
             types:                    None,
-            disk:                     submodule.project_info.disk_usage_bytes,
+            disk:                     submodule.project_info.disk,
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Missing,
@@ -320,8 +353,6 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             // Submodules don't render the Lint/Ci fields; the
             // `package_fields_from_data` filter excludes them when
@@ -452,7 +483,7 @@ fn build_pane_data_non_rust(
     let mut counts = StructureCounts::default();
     counts.add_non_rust(nr);
 
-    build_pane_data_common(
+    let mut data = build_pane_data_common(
         app,
         PaneDataSource {
             abs_path,
@@ -467,7 +498,9 @@ fn build_pane_data_non_rust(
             fallback_type: None,
             title: "Project".to_string(),
         },
-    )
+    );
+    data.package.description = DescriptionState::KnownEmpty;
+    data
 }
 
 pub(super) struct PaneDataSource<'a> {
@@ -547,7 +580,7 @@ pub(super) struct ManifestFields {
     homepage:    Option<String>,
     repository:  Option<String>,
     version:     Option<String>,
-    description: Option<String>,
+    description: DescriptionState,
 }
 
 fn manifest_fields_from(package_record: Option<&PackageRecord>) -> ManifestFields {
@@ -577,9 +610,7 @@ pub(super) struct BuildPackageDataArgs {
     manifest:                 ManifestFields,
     crates_io_rows:           Vec<(&'static str, String)>,
     types:                    Option<Vec<ProjectType>>,
-    disk:                     Option<u64>,
-    in_project_target:        Option<u64>,
-    in_project_non_target:    Option<u64>,
+    disk:                     DiskMeasurement,
     out_of_tree_target_bytes: Option<u64>,
     lint_display:             LintDisplay,
     ci_display:               CiDisplay,
@@ -598,6 +629,7 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         description,
     } = args.manifest;
     PackageData {
+        deletion: PackageDeletion::Present,
         title: args.title,
         name: args.name,
         worktree_group_summary: args.worktree_group_summary,
@@ -615,8 +647,6 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         license,
         homepage,
         repository,
-        in_project_target: args.in_project_target,
-        in_project_non_target: args.in_project_non_target,
         out_of_tree_target_bytes: args.out_of_tree_target_bytes,
         lint_display: args.lint_display,
         ci_display: args.ci_display,
@@ -633,12 +663,6 @@ pub(super) fn worktree_group_summary_for(item: &RootItem) -> Option<WorktreeGrou
             .iter_entries()
             .filter(|entry| entry.visibility() == Visibility::Deleted)
             .count(),
-    })
-}
-
-fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, Option<u64>) {
-    pl.at_path(abs_path).map_or((None, None), |pi| {
-        (pi.in_project_target, pi.in_project_non_target)
     })
 }
 
@@ -687,14 +711,13 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let abs_path_owned = AbsolutePath::from(abs_path);
 
     let runtime = collect_runtime_fields(app, abs_path, src.worktree_item);
-    let metadata =
-        collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo, src.fallback_type);
+    let metadata = collect_metadata_fields(app, &abs_path_owned, src.cargo, src.fallback_type);
     log_pane_common_breakdown(abs_path, &runtime, &metadata);
 
     let (lint_display, ci_display) =
         compute_package_displays(app, &abs_path_owned, runtime.ci, &src.title);
 
-    let package = build_package_data(BuildPackageDataArgs {
+    let mut package = build_package_data(BuildPackageDataArgs {
         title: src.title,
         name: src.name,
         display_path: src.display_path.to_owned(),
@@ -707,12 +730,19 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         crates_io_rows: build_crates_io_rows(&runtime.crates_io),
         types: metadata.types,
         disk: runtime.disk,
-        in_project_target: metadata.in_project_target,
-        in_project_non_target: metadata.in_project_non_target,
         out_of_tree_target_bytes: metadata.out_of_tree_target_bytes,
         lint_display,
         ci_display,
     });
+
+    if app.project_list.is_deleted(abs_path) {
+        package.deletion = PackageDeletion::Deleted;
+        package.disk = DiskMeasurement::Measured {
+            total:  0,
+            target: 0,
+            other:  0,
+        };
+    }
 
     let targets = targets::lookup_targets_data(app, &abs_path_owned, src.worktree_item);
     assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
@@ -726,7 +756,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 pub(super) struct RuntimeFields {
     git_detail:             GitDetailFields,
     crates_io:              CratesIoSection,
-    disk:                   Option<u64>,
+    disk:                   DiskMeasurement,
     worktree_group_summary: Option<WorktreeGroupSummary>,
     ci:                     Option<CiStatus>,
     worktrees:              Vec<WorktreeInfo>,
@@ -741,8 +771,6 @@ pub(super) struct RuntimeFields {
 pub(super) struct MetadataFields {
     types:                    Option<Vec<ProjectType>>,
     manifest:                 ManifestFields,
-    in_project_target:        Option<u64>,
-    in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
     metadata_ms:              u64,
     out_of_tree_ms:           u64,
@@ -763,10 +791,10 @@ pub(super) fn collect_runtime_fields(
     let crates_io = resolve_crates_io_section(app, abs_path);
 
     let t_disk = std::time::Instant::now();
-    let disk = app
-        .project_list
-        .at_path(abs_path)
-        .and_then(|project| project.disk_usage_bytes);
+    let disk = match app.project_list.at_path(abs_path) {
+        Found(project) => project.disk,
+        UnknownPath | StaleRoute => DiskMeasurement::NotMeasured,
+    };
     let worktree_group_summary = worktree_item.and_then(worktree_group_summary_for);
     let ci = compute_ci_status(app, abs_path, worktree_item);
     let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
@@ -793,11 +821,11 @@ pub(super) fn collect_runtime_fields(
 /// the cargo target-kind list into a comma-separated label.
 pub(super) fn collect_metadata_fields(
     app: &App,
-    abs_path: &Path,
     abs_path_owned: &AbsolutePath,
     cargo: Option<&Cargo>,
     fallback_type: Option<ProjectType>,
 ) -> MetadataFields {
+    let is_workspace = matches!(fallback_type, Some(ProjectType::Workspace));
     // `None` for non-Rust projects (no cargo). For Rust projects the
     // resolved target kinds, falling back to the project's own
     // identity (e.g. `Workspace`) when metadata has not yet supplied
@@ -815,10 +843,20 @@ pub(super) fn collect_metadata_fields(
     let t_meta = std::time::Instant::now();
     let package_record = lookup_package_record(app, abs_path_owned);
     let metadata_ms = tui_pane::perf_log_ms(t_meta.elapsed().as_millis());
-    let manifest = manifest_fields_from(package_record.as_ref());
+    let mut manifest = manifest_fields_from(package_record.as_ref());
+    if matches!(
+        manifest.description,
+        crate::tui::panes::DescriptionState::Pending
+    ) && is_workspace
+        && app
+            .scan
+            .metadata_store_handle()
+            .lock()
+            .is_ok_and(|store| store.get(abs_path_owned).is_some())
+    {
+        manifest.description = DescriptionState::KnownEmpty;
+    }
 
-    let (in_project_target, in_project_non_target) =
-        compute_in_project_bytes(&app.project_list, abs_path);
     let t_out_of_tree = std::time::Instant::now();
     let out_of_tree_target_bytes =
         package_data::lookup_out_of_tree_target_bytes(app, abs_path_owned);
@@ -827,8 +865,6 @@ pub(super) fn collect_metadata_fields(
     MetadataFields {
         types,
         manifest,
-        in_project_target,
-        in_project_non_target,
         out_of_tree_target_bytes,
         metadata_ms,
         out_of_tree_ms,
@@ -839,13 +875,18 @@ pub(super) fn collect_metadata_fields(
 pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static str, String)> {
     match section {
         CratesIoSection::NotPublishable | CratesIoSection::AwaitingRelease => Vec::new(),
-        CratesIoSection::Unreachable => vec![("version", CRATES_IO_UNREACHABLE.to_string())],
+        CratesIoSection::Unreachable => {
+            vec![(CRATES_IO_VERSION_LABEL, CRATES_IO_UNREACHABLE.to_string())]
+        },
         CratesIoSection::Released(release) => {
-            let mut rows = vec![("version", release.version.clone())];
+            let mut rows = vec![(CRATES_IO_VERSION_LABEL, release.version.clone())];
             if let Some(prerelease) = &release.prerelease {
                 rows.push((prerelease_label(prerelease), prerelease.clone()));
             }
-            rows.push(("downloads", tui_pane::format_number(release.downloads)));
+            rows.push((
+                CRATES_IO_DOWNLOADS_LABEL,
+                tui_pane::format_number(release.downloads),
+            ));
             rows
         },
     }
@@ -861,10 +902,10 @@ pub(super) fn prerelease_label(prerelease: &str) -> &'static str {
         .next()
         .unwrap_or_default();
     match token {
-        "rc" => "rc",
-        "beta" => "beta",
-        "alpha" => "alpha",
-        _ => "pre",
+        CRATES_IO_RC_LABEL => CRATES_IO_RC_LABEL,
+        CRATES_IO_BETA_LABEL => CRATES_IO_BETA_LABEL,
+        CRATES_IO_ALPHA_LABEL => CRATES_IO_ALPHA_LABEL,
+        _ => CRATES_IO_PRE_LABEL,
     }
 }
 
@@ -945,9 +986,9 @@ mod tests {
         assert_eq!(
             build_crates_io_rows(&section),
             vec![
-                ("version", "0.20.2".to_string()),
+                ("Version", "0.20.2".to_string()),
                 ("rc", "0.21.0-rc.2".to_string()),
-                ("downloads", "663".to_string()),
+                ("Downloads", "663".to_string()),
             ],
         );
     }
@@ -958,8 +999,8 @@ mod tests {
         assert_eq!(
             build_crates_io_rows(&section),
             vec![
-                ("version", "1.0.0".to_string()),
-                ("downloads", "10".to_string())
+                ("Version", "1.0.0".to_string()),
+                ("Downloads", "10".to_string())
             ],
         );
     }
@@ -988,7 +1029,7 @@ mod tests {
         }
         assert_eq!(
             build_crates_io_rows(&CratesIoSection::Unreachable),
-            vec![("version", CRATES_IO_UNREACHABLE.to_string())]
+            vec![("Version", CRATES_IO_UNREACHABLE.to_string())]
         );
     }
 
@@ -1013,8 +1054,8 @@ mod tests {
             assert_eq!(
                 build_crates_io_rows(&section),
                 vec![
-                    ("version", "1.0.0".to_string()),
-                    ("downloads", "10".to_string())
+                    ("Version", "1.0.0".to_string()),
+                    ("Downloads", "10".to_string())
                 ]
             );
         }

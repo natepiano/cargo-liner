@@ -77,7 +77,7 @@ In every section, file paths are relative to crates/cargo-port/src unless they s
 3. Git index/HEAD/refs/ignore events → `enqueue_git_refresh` / `fire_git_updates` in `watcher/refresh.rs` → `BackgroundMsg::RepoInfo` and `CheckoutInfo` → repo handlers update project Git state. Shared Git directories combine worktree refreshes; each checkout gets its own status probe.
 4. Ordinary project events → `schedule_disk_refresh` / `fire_disk_updates` → `BackgroundMsg::DiskUsage`. Build-directory events update disk usage without scheduling ordinary Git refreshes. New or missing root candidates → `probe_new_projects` → `ProjectDiscovered`, `ProjectRefreshed`, `DiskUsageBatch` or zero-byte `DiskUsage`.
 5. `handle_disk_usage_msg` → `apply_disk_usage` in `tui/app/async_tasks/disk_handlers.rs` updates `ProjectInfo`: zero bytes plus a missing path sets `Visibility::Deleted` and unregisters lint; positive bytes restore `Visibility::Visible`. Disk caches and storage totals refresh.
-6. `Visibility::Deleted` stays in `compute_visible_rows`; project drawing strikes it through. A deleted project's row does not leave the list on a watcher event. One exception: `App::rescan` in `tui/app/async_tasks/tree.rs` clears every root (a config reload that asks for a full rescan calls it), and discovery cannot restore a missing project, so its row is gone. The user dismisses it with default `x` or its close box → `App::dismiss` in `tui/app/dismiss.rs` → `Visibility::Dismissed`, lint-cache reclamation and row-cache refresh. `Dismissed` rows are filtered out.
+6. Deleted projects "stay on the list till i either dismiss them or i rescan" (user, 2026-11-05). `Visibility::Deleted` stays in `compute_visible_rows`; project drawing strikes it through. Watcher events keep the row. Default `x` or the close box calls `App::dismiss` in `tui/app/dismiss.rs`. Dismissal sets `Visibility::Dismissed`, reclaims the lint cache, and refreshes the row cache. `Dismissed` rows do not appear. A full rescan clears the old roots and installs the discovered roots without previous deletion states. `App::rescan` in `tui/app/async_tasks/tree.rs` starts this replacement. A config reload can also request it. The rescan restores the saved selection when selectable. Otherwise, it selects the first visible row without saving that fallback.
 
 ### Async dispatch and services
 
@@ -118,6 +118,10 @@ Sections are cache (root), crates_io (release groups), cpu (sampling/thresholds)
 Theme templates are `crates/cargo-port/themes/default_dark.toml`, `crates/cargo-port/themes/default_light.toml` and `crates/cargo-port/themes/high_contrast.toml`. `themes/builtins.rs` compiles the palettes; user TOML files under the resolved configuration root's themes directory replace matching names. The app does not seed that directory.
 
 The same root holds keymap.toml. `tui/keymap/load.rs` loads defaults, migrations and user bindings; actions, canonical keys, resolved bindings and scopes are in adjacent files. `crates/cargo-port/tests/assets/default-keymap.toml` and `crates/cargo-port/tests/assets/default-config.toml` record defaults.
+
+## Idle CPU measure
+
+Launch the binary and sample its CPU use once a second, with 100% meaning one fully used core. First wait until the startup panel shows every startup row complete and the project count stops changing, so a walk that waits on disk is not mistaken for idle. Then start each 60 s measurement window only after ten consecutive one-second samples are each below 5% of one core. If that does not happen within five minutes after startup completes, the measure fails: record it as a failure with the CPU samples, not as a result. Any work still running after that point counts against the measure, so its cost cannot make the result artificially low.
 
 ## Tests and live check
 

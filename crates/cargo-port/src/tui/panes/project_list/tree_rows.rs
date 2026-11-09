@@ -1,8 +1,6 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use ratatui::style::Style;
-use ratatui::text::Line;
 use ratatui::widgets::ListItem;
 use tui_pane::Viewport;
 
@@ -25,6 +23,7 @@ use crate::tui::columns;
 use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::columns::ProjectRow;
+use crate::tui::columns::RowCells;
 use crate::tui::columns::RowLifecycle;
 use crate::tui::columns::StyledSegment;
 use crate::tui::panes::constants;
@@ -32,6 +31,7 @@ use crate::tui::panes::constants::DiskCell;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
 use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
+use crate::tui::panes::constants::PROJECT_LIST_LEFT_PADDING;
 use crate::tui::panes::constants::TREE_PREFIX_BLANK;
 use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
 use crate::tui::panes::constants::TreeRowDepth;
@@ -40,11 +40,15 @@ use crate::tui::panes::lang;
 use crate::tui::panes::widths;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
 use crate::tui::state::Lint;
+use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TreeSegment {
@@ -337,7 +341,7 @@ fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[Tre
 
     let row_segment_index = lineage.len() - 1;
     let expansion = match project_list.expand_key_for_row(*row) {
-        Some(key) if project_list.expanded.contains(&key) => TreeRowExpansion::Expanded,
+        Some(key) if project_list.expanded.is_open(&key, 0) => TreeRowExpansion::Expanded,
         Some(_) => TreeRowExpansion::Collapsed,
         None => TreeRowExpansion::Leaf,
     };
@@ -355,7 +359,10 @@ fn root_prefix(project_list: &ProjectList, row: VisibleRow) -> &'static str {
     if !item.has_children() {
         return PREFIX_ROOT_LEAF;
     }
-    if project_list.expanded.contains(&ExpandKey::Node(node_index)) {
+    if project_list
+        .expanded
+        .is_open(&ExpandKey::Node(node_index), 0)
+    {
         PREFIX_ROOT_EXPANDED
     } else {
         PREFIX_ROOT_COLLAPSED
@@ -427,31 +434,99 @@ fn row_metadata_state<'a>(
     ctx.scan.manifest_metadata.for_project(path)
 }
 
+/// Unpadded row content shared by rendering and message change detection.
+#[derive(PartialEq)]
+pub(in crate::tui) struct ProjectRowPresentation {
+    cells:           RowCells,
+    name_decoration: NameDecoration,
+}
+
+#[derive(PartialEq)]
+enum NameDecoration {
+    Plain,
+    MetadataError,
+}
+
+/// Raw content read by width fitting, without styles or measured widths.
+#[derive(PartialEq, Eq)]
+pub(in crate::tui) struct ProjectRowWidthInput {
+    prefix: String,
+    cells:  Vec<String>,
+}
+
+impl ProjectRowPresentation {
+    const fn plain(cells: RowCells) -> Self {
+        Self {
+            cells,
+            name_decoration: NameDecoration::Plain,
+        }
+    }
+
+    pub(in crate::tui) fn into_width_input(self) -> ProjectRowWidthInput {
+        let cells = self
+            .cells
+            .cells
+            .into_iter()
+            .map(|cell| {
+                let mut text = cell.segments.map_or(cell.text, |segments| {
+                    segments
+                        .into_iter()
+                        .map(|segment| segment.text)
+                        .collect::<String>()
+                });
+                if let Some(suffix) = cell.suffix {
+                    text.push_str(&suffix);
+                }
+                text
+            })
+            .collect();
+        ProjectRowWidthInput {
+            prefix: self.cells.prefix,
+            cells,
+        }
+    }
+
+    fn into_item(self, widths: &ProjectListWidths, selection: Style) -> ListItem<'static> {
+        let mut line = columns::row_to_line(&self.cells, widths);
+        if self.name_decoration == NameDecoration::MetadataError {
+            // Preserve deletion strike-through while keeping the error role
+            // on the name and marker, including the name column's padding.
+            let mut x = 0;
+            for (index, span) in line.spans.iter_mut().enumerate() {
+                if x >= widths.get(columns::COL_NAME) {
+                    break;
+                }
+                if index > 0 {
+                    span.style = span.style.fg(tui_pane::error_color());
+                }
+                x += columns::display_width(&span.content);
+            }
+        }
+        for span in &mut line.spans {
+            span.style = span.style.patch(selection);
+        }
+        ListItem::new(line).style(selection)
+    }
+}
+
 fn project_row_item(
     ctx: &PaneRenderCtx<'_>,
     path: &Path,
-    mut line: Line<'static>,
+    cells: RowCells,
     row_kind: DiscoveryRowKind,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
-    if !row_metadata_state(ctx, path, row_kind)
+) -> ProjectRowPresentation {
+    let name_decoration = if row_metadata_state(ctx, path, row_kind)
         .name_marker()
         .is_empty()
     {
-        // Deleted-row styling is applied by row_to_line. Preserve its strike
-        // through while retaining the error role on the name and marker.
-        let mut x = 0;
-        for (index, span) in line.spans.iter_mut().enumerate() {
-            if x >= widths.get(columns::COL_NAME) {
-                break;
-            }
-            if index > 0 {
-                span.style = span.style.fg(tui_pane::error_color());
-            }
-            x += columns::display_width(&span.content);
-        }
+        NameDecoration::Plain
+    } else {
+        NameDecoration::MetadataError
+    };
+    ProjectRowPresentation {
+        cells,
+        name_decoration,
     }
-    ListItem::new(line)
 }
 
 fn render_root_item(
@@ -459,25 +534,25 @@ fn render_root_item(
     node_index: usize,
     prefix: &str,
     root_labels: &[String],
-    root_sorted: &[u64],
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
     let name = &root_labels[node_index];
     let disk = disk::formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
-    let ds = disk::disk_style(disk_bytes, root_sorted);
+    let ds = disk::disk_style(disk_bytes, sorted);
     let ci = ctx
         .project_list
         .ci_status_for_root_item_using_lookup(&item.root_item, ctx.ci_status_lookup);
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
-        ctx.project_list
-            .at_path(item.path())
-            .and_then(|p| p.language_stats.as_ref())
-            .and_then(|ls| ls.entries.first())
-            .map_or("  ", |e| lang::language_icon(&e.language))
+        (match ctx.project_list.at_path(item.path()) {
+            Found(p) => p.language_stats.as_ref(),
+            UnknownPath | StaleRoute => None,
+        })
+        .and_then(|ls| ls.entries.first())
+        .map_or("  ", |e| lang::language_icon(&e.language))
     };
     let lint_cell = state::lint_cell_for(
         &Lint::status_for_root(&item.root_item),
@@ -513,13 +588,7 @@ fn render_root_item(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health,
     });
-    project_row_item(
-        ctx,
-        item.path(),
-        columns::row_to_line(&row, widths),
-        DiscoveryRowKind::Root,
-        widths,
-    )
+    project_row_item(ctx, item.path(), row, DiscoveryRowKind::Root)
 }
 
 /// Build a `ListItem` for a child project (workspace member, vendored crate,
@@ -528,15 +597,14 @@ fn render_child_item<P: project::ProjectFields>(
     ctx: &PaneRenderCtx<'_>,
     project: &P,
     name: &str,
-    child_sorted: &[u64],
+    sorted: &[u64],
     prefix: &str,
     inherited_deleted: bool,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+) -> ProjectRowPresentation {
     let path = project.path();
     let disk = disk::formatted_disk(ctx.project_list, path);
     let disk_bytes = project.disk_usage_bytes();
-    let ds = disk::disk_style(disk_bytes, child_sorted);
+    let ds = disk::disk_style(disk_bytes, sorted);
     let lang = project::Package::lang_icon();
     let is_workspace_member = ctx.project_list.is_workspace_member_path(path);
     let is_vendored = ctx.project_list.is_vendored_path(path);
@@ -604,23 +672,16 @@ fn render_child_item<P: project::ProjectFields>(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health: project.worktree_health(),
     });
-    project_row_item(
-        ctx,
-        path,
-        columns::row_to_line(&row, widths),
-        DiscoveryRowKind::PathOnly,
-        widths,
-    )
+    project_row_item(ctx, path, row, DiscoveryRowKind::PathOnly)
 }
 
-fn render_worktree_entry<'a>(
+fn render_worktree_entry(
     ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'a> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[ni];
     let display_path = ctx
         .project_list
@@ -638,8 +699,6 @@ fn render_worktree_entry<'a>(
             node_index:     ni,
             worktree_index: wi,
         });
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let worktree_name = match &item.root_item {
         RootItem::Worktrees(group) => widths::worktree_entry_label(
@@ -691,13 +750,7 @@ fn render_worktree_entry<'a>(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health,
     });
-    project_row_item(
-        ctx,
-        worktree_path,
-        columns::row_to_line(&row, widths),
-        DiscoveryRowKind::WorktreeEntry,
-        widths,
-    )
+    project_row_item(ctx, worktree_path, row, DiscoveryRowKind::WorktreeEntry)
 }
 
 fn worktree_entry_disk_bytes(item: &RootItem, wi: usize) -> Option<u64> {
@@ -716,14 +769,13 @@ fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
         .map_or(Normal, ProjectFields::worktree_health)
 }
 
-fn render_wt_group_header<'a>(
+fn render_wt_group_header(
     ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
     gi: usize,
     prefix: &str,
-    widths: &ProjectListWidths,
-) -> ListItem<'a> {
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[ni];
     let (group_name, member_count) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
@@ -737,16 +789,15 @@ fn render_wt_group_header<'a>(
     };
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
-    ListItem::new(columns::row_to_line(&row, widths))
+    ProjectRowPresentation::plain(row)
 }
 
-fn render_wt_member<'a>(
+fn render_wt_member(
     ctx: &PaneRenderCtx<'_>,
     row: WorktreeMemberRow,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'a> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let WorktreeMemberRow {
         node: ni,
         worktree: wi,
@@ -754,8 +805,6 @@ fn render_wt_member<'a>(
         member: mi,
     } = row;
     let item = &ctx.project_list[ni];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let (member, member_name) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
@@ -771,7 +820,7 @@ fn render_wt_member<'a>(
     member.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &member_name);
-            ListItem::new(columns::row_to_line(&row, widths))
+            ProjectRowPresentation::plain(row)
         },
         |m| {
             let inherited_deleted = match &item.root_item {
@@ -780,15 +829,7 @@ fn render_wt_member<'a>(
                     .is_deleted(group.entry(wi).unwrap_or(&group.primary).path()),
                 _ => false,
             };
-            render_child_item(
-                ctx,
-                m,
-                &member_name,
-                sorted,
-                prefix,
-                inherited_deleted,
-                widths,
-            )
+            render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted)
         },
     )
 }
@@ -799,12 +840,9 @@ fn render_member_item(
     group_index: usize,
     member_index: usize,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
@@ -813,9 +851,8 @@ fn render_member_item(
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
-                return ListItem::new(columns::row_to_line(
-                    &columns::build_group_header_cells(prefix, ""),
-                    widths,
+                return ProjectRowPresentation::plain(columns::build_group_header_cells(
+                    prefix, "",
                 ));
             };
             let group = &ws.groups()[group_index];
@@ -827,19 +864,11 @@ fn render_member_item(
     member.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &member_name);
-            ListItem::new(columns::row_to_line(&row, widths))
+            ProjectRowPresentation::plain(row)
         },
         |m| {
             let inherited_deleted = ctx.project_list.is_deleted(item.path());
-            render_child_item(
-                ctx,
-                m,
-                &member_name,
-                sorted,
-                prefix,
-                inherited_deleted,
-                widths,
-            )
+            render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted)
         },
     )
 }
@@ -848,9 +877,8 @@ fn render_member_vendored_item(
     ctx: &PaneRenderCtx<'_>,
     row: MemberVendoredRow,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let MemberVendoredRow {
         node: node_index,
         group: group_index,
@@ -858,8 +886,6 @@ fn render_member_vendored_item(
         vendored: vendored_index,
     } = row;
     let item = &ctx.project_list[node_index];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
@@ -868,7 +894,7 @@ fn render_member_vendored_item(
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
-                return render_missing_vendored(prefix, widths);
+                return render_missing_vendored(prefix);
             };
             let group = &ws.groups()[group_index];
             let member = &group.members()[member_index];
@@ -876,7 +902,7 @@ fn render_member_vendored_item(
         },
         _ => None,
     };
-    render_vendored_child(ctx, item.path(), vendored, prefix, sorted, widths)
+    render_vendored_child(ctx, item.path(), vendored, prefix, sorted)
 }
 
 fn render_vendored_item(
@@ -884,12 +910,9 @@ fn render_vendored_item(
     node_index: usize,
     vendored_index: usize,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let v = &ws.vendored()[vendored_index];
@@ -912,18 +935,18 @@ fn render_vendored_item(
     vendored.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);
-            ListItem::new(columns::row_to_line(&row, widths))
+            ProjectRowPresentation::plain(row)
         },
         |v| {
             let inherited_deleted = ctx.project_list.is_deleted(item.path());
-            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted, widths)
+            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted)
         },
     )
 }
 
-fn render_missing_vendored(prefix: &str, widths: &ProjectListWidths) -> ListItem<'static> {
+fn render_missing_vendored(prefix: &str) -> ProjectRowPresentation {
     let row = columns::build_group_header_cells(prefix, "");
-    ListItem::new(columns::row_to_line(&row, widths))
+    ProjectRowPresentation::plain(row)
 }
 
 fn render_vendored_child(
@@ -932,22 +955,13 @@ fn render_vendored_child(
     vendored: Option<&VendoredPackage>,
     prefix: &str,
     sorted: &[u64],
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+) -> ProjectRowPresentation {
     let Some(vendored) = vendored else {
-        return render_missing_vendored(prefix, widths);
+        return render_missing_vendored(prefix);
     };
     let name = constants::vendored_row_label(vendored.package_name().as_str());
     let inherited_deleted = ctx.project_list.is_deleted(inherited_deleted_path);
-    render_child_item(
-        ctx,
-        vendored,
-        &name,
-        sorted,
-        prefix,
-        inherited_deleted,
-        widths,
-    )
+    render_child_item(ctx, vendored, &name, sorted, prefix, inherited_deleted)
 }
 
 fn render_submodule_item(
@@ -955,17 +969,15 @@ fn render_submodule_item(
     node_index: usize,
     submodule_index: usize,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
         let row = columns::build_group_header_cells(prefix, "");
-        return ListItem::new(columns::row_to_line(&row, widths));
+        return ProjectRowPresentation::plain(row);
     };
     let name = format!("{} (s)", submodule.name);
-    let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
-    render_path_only_entry(ctx, submodule, item.path(), prefix, &name, sorted, widths)
+    render_path_only_entry(ctx, submodule, item.path(), prefix, &name, sorted)
 }
 
 fn render_path_only_entry(
@@ -975,11 +987,10 @@ fn render_path_only_entry(
     prefix: &str,
     name: &str,
     sorted: &[u64],
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+) -> ProjectRowPresentation {
     let path = entry.path().as_path();
     let disk = disk::formatted_disk(ctx.project_list, path);
-    let ds = disk::disk_style(entry.info().disk_usage_bytes, sorted);
+    let ds = disk::disk_style(entry.info().disk.total(), sorted);
     let git_status = ctx.project_list.git_row_status_for(path);
     let deleted =
         ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
@@ -1011,13 +1022,7 @@ fn render_path_only_entry(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health: entry.info().worktree_health,
     });
-    project_row_item(
-        ctx,
-        path,
-        columns::row_to_line(&row, widths),
-        DiscoveryRowKind::PathOnly,
-        widths,
-    )
+    project_row_item(ctx, path, row, DiscoveryRowKind::PathOnly)
 }
 
 fn render_wt_vendored_item(
@@ -1026,12 +1031,9 @@ fn render_wt_vendored_item(
     worktree_index: usize,
     vendored_index: usize,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match &item.root_item {
         RootItem::Worktrees(group) => group
             .entry(worktree_index)
@@ -1047,7 +1049,7 @@ fn render_wt_vendored_item(
     vendored_pkg.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);
-            ListItem::new(columns::row_to_line(&row, widths))
+            ProjectRowPresentation::plain(row)
         },
         |v| {
             let inherited_deleted = match &item.root_item {
@@ -1056,7 +1058,7 @@ fn render_wt_vendored_item(
                     .is_deleted(group.entry(worktree_index).unwrap_or(&group.primary).path()),
                 _ => false,
             };
-            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted, widths)
+            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted)
         },
     )
 }
@@ -1065,9 +1067,8 @@ fn render_wt_member_vendored_item(
     ctx: &PaneRenderCtx<'_>,
     row: WorktreeMemberVendoredRow,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     let WorktreeMemberVendoredRow {
         node,
         worktree,
@@ -1076,15 +1077,13 @@ fn render_wt_member_vendored_item(
         vendored,
     } = row;
     let item = &ctx.project_list[node];
-    let empty = Vec::new();
-    let sorted = child_sorted.get(&node).unwrap_or(&empty);
     let (vendored, inherited_deleted_path) = match &item.root_item {
         RootItem::Worktrees(worktree_group) => {
             let entry = worktree_group
                 .entry(worktree)
                 .unwrap_or(&worktree_group.primary);
             let RustProject::Workspace(ws) = entry else {
-                return render_missing_vendored(prefix, widths);
+                return render_missing_vendored(prefix);
             };
             let member_group = &ws.groups()[group_index];
             let member = &member_group.members()[member_index];
@@ -1092,14 +1091,7 @@ fn render_wt_member_vendored_item(
         },
         _ => (None, item.path()),
     };
-    render_vendored_child(
-        ctx,
-        inherited_deleted_path,
-        vendored,
-        prefix,
-        sorted,
-        widths,
-    )
+    render_vendored_child(ctx, inherited_deleted_path, vendored, prefix, sorted)
 }
 
 #[derive(Clone, Copy)]
@@ -1298,17 +1290,45 @@ pub(super) fn render_tree_items(
     viewport: &Viewport,
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
-    let root_sorted = &ctx.project_list.cached_root_sorted;
-    let child_sorted = &ctx.project_list.cached_child_sorted;
+    let mode = ctx.color_mode;
+    let cursor = ctx.project_list.cursor();
+    project_row_presentations(ctx)
+        .into_iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let selection = theme_roles::selection_style(
+                tui_pane::selection_state_for(
+                    viewport,
+                    cursor,
+                    row_index,
+                    pane.focus.pane_focus_state,
+                ),
+                mode,
+            );
+            row.into_item(widths, selection)
+        })
+        .collect()
+}
+
+fn project_row_presentations(ctx: &PaneRenderCtx<'_>) -> Vec<ProjectRowPresentation> {
+    project_row_presentations_for(ctx, ctx.project_list.visible_rows())
+}
+
+pub(in crate::tui) fn project_width_presentations(
+    ctx: &PaneRenderCtx<'_>,
+) -> Vec<ProjectRowPresentation> {
+    project_row_presentations_for(ctx, &ctx.project_list.width_input_rows())
+}
+
+fn project_row_presentations_for(
+    ctx: &PaneRenderCtx<'_>,
+    visible_rows: &[VisibleRow],
+) -> Vec<ProjectRowPresentation> {
+    let sorted = &ctx.project_list.cached_root_sorted;
     let root_labels = ctx
         .project_list
         .resolved_root_labels(ctx.config.include_non_rust().includes_non_rust());
-    let pane_focus_state = pane.focus.pane_focus_state;
-    let cursor = ctx.project_list.cursor();
-
-    let rows: Vec<_> = ctx
-        .project_list
-        .visible_rows()
+    let rows: Vec<_> = visible_rows
         .iter()
         .copied()
         .map(|row| TreeRow::new(ctx.project_list, row))
@@ -1316,20 +1336,13 @@ pub(super) fn render_tree_items(
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let prefix = tree_prefix(ctx.project_list, row, &rows[row_index + 1..]);
-            let item = render_tree_item(
-                ctx,
-                row.row,
-                &prefix,
-                &root_labels,
-                root_sorted,
-                child_sorted,
-                widths,
+            let prefix = format!(
+                "{:padding$}{}",
+                "",
+                tree_prefix(ctx.project_list, row, &rows[row_index + 1..]),
+                padding = PROJECT_LIST_LEFT_PADDING,
             );
-            item.style(
-                tui_pane::selection_state_for(viewport, cursor, row_index, pane_focus_state)
-                    .overlay_style(),
-            )
+            render_tree_item(ctx, row.row, &prefix, &root_labels, sorted)
         })
         .collect()
 }
@@ -1339,23 +1352,13 @@ fn render_tree_item(
     row: VisibleRow,
     prefix: &str,
     root_labels: &[String],
-    root_sorted: &[u64],
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     match TreeRenderRow::from(row) {
-        TreeRenderRow::Project(row) => render_project_tree_item(
-            ctx,
-            row,
-            prefix,
-            root_labels,
-            root_sorted,
-            child_sorted,
-            widths,
-        ),
-        TreeRenderRow::Worktree(row) => {
-            render_worktree_tree_item(ctx, row, prefix, child_sorted, widths)
+        TreeRenderRow::Project(row) => {
+            render_project_tree_item(ctx, row, prefix, root_labels, sorted)
         },
+        TreeRenderRow::Worktree(row) => render_worktree_tree_item(ctx, row, prefix, sorted),
     }
 }
 
@@ -1364,31 +1367,21 @@ fn render_project_tree_item(
     row: ProjectTreeRow,
     prefix: &str,
     root_labels: &[String],
-    root_sorted: &[u64],
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     match row {
         ProjectTreeRow::Root { node_index } => {
-            render_root_item(ctx, node_index, prefix, root_labels, root_sorted, widths)
+            render_root_item(ctx, node_index, prefix, root_labels, sorted)
         },
         ProjectTreeRow::GroupHeader {
             node_index,
             group_index,
-        } => render_group_header(ctx, node_index, group_index, prefix, widths),
+        } => render_group_header(ctx, node_index, group_index, prefix),
         ProjectTreeRow::Member {
             node_index,
             group_index,
             member_index,
-        } => render_member_item(
-            ctx,
-            node_index,
-            group_index,
-            member_index,
-            prefix,
-            child_sorted,
-            widths,
-        ),
+        } => render_member_item(ctx, node_index, group_index, member_index, prefix, sorted),
         ProjectTreeRow::MemberVendored {
             node_index,
             group_index,
@@ -1403,31 +1396,16 @@ fn render_project_tree_item(
                 vendored: vendored_index,
             },
             prefix,
-            child_sorted,
-            widths,
+            sorted,
         ),
         ProjectTreeRow::Vendored {
             node_index,
             vendored_index,
-        } => render_vendored_item(
-            ctx,
-            node_index,
-            vendored_index,
-            prefix,
-            child_sorted,
-            widths,
-        ),
+        } => render_vendored_item(ctx, node_index, vendored_index, prefix, sorted),
         ProjectTreeRow::Submodule {
             node_index,
             submodule_index,
-        } => render_submodule_item(
-            ctx,
-            node_index,
-            submodule_index,
-            prefix,
-            child_sorted,
-            widths,
-        ),
+        } => render_submodule_item(ctx, node_index, submodule_index, prefix, sorted),
     }
 }
 
@@ -1435,26 +1413,18 @@ fn render_worktree_tree_item(
     ctx: &PaneRenderCtx<'_>,
     row: WorktreeTreeRow,
     prefix: &str,
-    child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+    sorted: &[u64],
+) -> ProjectRowPresentation {
     match row {
         WorktreeTreeRow::Entry {
             node_index,
             worktree_index,
-        } => render_worktree_entry(
-            ctx,
-            node_index,
-            worktree_index,
-            prefix,
-            child_sorted,
-            widths,
-        ),
+        } => render_worktree_entry(ctx, node_index, worktree_index, prefix, sorted),
         WorktreeTreeRow::GroupHeader {
             node_index,
             worktree_index,
             group_index,
-        } => render_wt_group_header(ctx, node_index, worktree_index, group_index, prefix, widths),
+        } => render_wt_group_header(ctx, node_index, worktree_index, group_index, prefix),
         WorktreeTreeRow::Member {
             node_index,
             worktree_index,
@@ -1469,8 +1439,7 @@ fn render_worktree_tree_item(
                 member:   member_index,
             },
             prefix,
-            child_sorted,
-            widths,
+            sorted,
         ),
         WorktreeTreeRow::MemberVendored {
             node_index,
@@ -1488,8 +1457,7 @@ fn render_worktree_tree_item(
                 vendored: vendored_index,
             },
             prefix,
-            child_sorted,
-            widths,
+            sorted,
         ),
         WorktreeTreeRow::Vendored {
             node_index,
@@ -1501,8 +1469,7 @@ fn render_worktree_tree_item(
             worktree_index,
             vendored_index,
             prefix,
-            child_sorted,
-            widths,
+            sorted,
         ),
     }
 }
@@ -1512,8 +1479,7 @@ fn render_group_header(
     node_index: usize,
     group_index: usize,
     prefix: &str,
-    widths: &ProjectListWidths,
-) -> ListItem<'static> {
+) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
     let (group_name, member_count) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -1522,9 +1488,8 @@ fn render_group_header(
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
-                return ListItem::new(columns::row_to_line(
-                    &columns::build_group_header_cells(prefix, ""),
-                    widths,
+                return ProjectRowPresentation::plain(columns::build_group_header_cells(
+                    prefix, "",
                 ));
             };
             let group = &ws.groups()[group_index];
@@ -1534,13 +1499,14 @@ fn render_group_header(
     };
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
-    ListItem::new(columns::row_to_line(&row, widths))
+    ProjectRowPresentation::plain(row)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::project::AbsolutePath;
+    use crate::project::DiskMeasurement;
     use crate::project::Package;
     use crate::project::ProjectInfo;
     use crate::project::RustInfo;
@@ -1557,7 +1523,7 @@ mod tests {
             worktree_status,
             rust: RustInfo {
                 project_info: ProjectInfo {
-                    disk_usage_bytes: Some(bytes),
+                    disk: DiskMeasurement::TotalOnly(bytes),
                     ..ProjectInfo::default()
                 },
                 ..RustInfo::default()
@@ -1595,7 +1561,7 @@ mod tests {
         ));
         let mut list = ProjectList::new(vec![peer, group.clone()]);
         list.recompute_visibility(true);
-        let (collapsed, _) = disk::compute_disk_cache(&list);
+        let collapsed = disk::compute_disk_cache(&list.disk_cache_key());
 
         assert_eq!(
             collapsed,
@@ -1605,9 +1571,9 @@ mod tests {
         assert_eq!(worktree_entry_disk_bytes(&group, 1), Some(linked_bytes));
         assert_eq!(group.disk_usage_bytes(), Some(primary_bytes + linked_bytes));
 
-        list.expanded.insert(ExpandKey::Node(1));
+        list.expanded.expand(ExpandKey::Node(1), 0);
         list.recompute_visibility(true);
-        let (expanded, _) = disk::compute_disk_cache(&list);
+        let expanded = disk::compute_disk_cache(&list.disk_cache_key());
 
         assert!(
             expanded.contains(&linked_bytes),

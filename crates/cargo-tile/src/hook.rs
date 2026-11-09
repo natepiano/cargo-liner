@@ -26,26 +26,54 @@ use std::env;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write as _;
 use std::fs;
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Error;
 use std::io::ErrorKind;
+use std::io::IsTerminal;
+use std::io::PipeReader;
 use std::io::Read;
 use std::io::Write;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
+#[cfg(not(test))]
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Output;
+use std::process::Stdio;
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::thread;
+use std::thread::JoinHandle;
 
+use chrono::DateTime;
+use chrono::Utc;
+use sysinfo::ProcessesToUpdate;
+use tempfile::TempDir;
+
+use crate::birth_stamp;
+use crate::birth_stamp::KernelObservation;
+use crate::birth_stamp::Observation;
 use crate::constants::ACCOUNT_EXECUTABLE_MODE;
 use crate::constants::ACCOUNT_EXECUTABLE_PREFIX;
 use crate::constants::ACCOUNT_GROUPS_GROWTH_FACTOR;
@@ -53,7 +81,14 @@ use crate::constants::ACCOUNT_GROUPS_INITIAL_CAPACITY;
 use crate::constants::ACCOUNT_GROUPS_MAX_CAPACITY;
 use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
+use crate::constants::CAPTURE_RUNNER_NAME;
+use crate::constants::CAPTURE_SHIM_ARGUMENT;
+use crate::constants::CAPTURE_SHIM_EXECUTABLE;
+use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
+use crate::constants::CAPTURE_SHIM_VERSION;
+use crate::constants::CAPTURE_STDERR_PUMP_BUFFER_BYTES;
 use crate::constants::CARGO_NAME;
+use crate::constants::COMMAND_VALUED_OPTIONS;
 use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
 use crate::constants::RUSTUP_HOME_ENV;
@@ -66,13 +101,974 @@ use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_MODE;
 use crate::constants::SHIM_STAGING_NAME;
 use crate::constants::SHIM_VERSION_PREFIX;
-use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::constants::TOOLCHAIN_BIN_DIR;
 use crate::constants::TOOLCHAINS_DIR;
+use crate::constants::ValuedOptionScope;
+#[cfg(test)]
+use crate::shim_registration::native_fixture;
 
 /// The shim script, compiled in so the binary carries everything it
 /// installs and a copy on disk can never drift from it.
+#[cfg(test)]
 const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
+/// The shim script, compiled in so the binary carries everything it
+/// installs and a copy on disk can never drift from it.
+#[cfg(test)]
+pub(crate) fn shim_source() -> &'static str {
+    static SOURCE: LazyLock<String> = LazyLock::new(|| {
+        let executable = fixture_runner();
+        shim_source_for(&executable)
+    });
+    SOURCE.as_str()
+}
+
+/// Keep one named native runner for all capture fixtures in this test process.
+#[cfg(test)]
+pub(crate) fn fixture_runner() -> PathBuf { tests::fixture_runner() }
+
+/// Render a UTF-8 fixture entry; production publishes raw shell bytes.
+#[cfg(test)]
+pub(crate) fn shim_source_for(executable: &Path) -> String { tests::utf8_shell_source(executable) }
+
+/// The executable entry preserves every Unix path byte through shell parsing.
+fn capture_shell_source(executable: &Path) -> Vec<u8> {
+    let source = include_str!("cargo-capture-shim.sh")
+        .replace("@CAPTURE_SHIM_ARGUMENT@", CAPTURE_SHIM_ARGUMENT)
+        .replace(
+            "@CAPTURE_SHIM_PASSTHROUGH_ARGUMENT@",
+            CAPTURE_SHIM_PASSTHROUGH_ARGUMENT,
+        );
+    let quoted = capture_shell_word(executable.as_os_str());
+    let mut bytes = Vec::new();
+    for (index, part) in source.split(CAPTURE_SHIM_EXECUTABLE).enumerate() {
+        if index > 0 {
+            bytes.extend_from_slice(&quoted);
+        }
+        bytes.extend_from_slice(part.as_bytes());
+    }
+    bytes
+}
+
+/// Enter capture before CLI parsing or worker threads start.
+/// Ordinary cargo-tile calls do not inspect or alter capture state.
+#[cfg(not(test))]
+pub(crate) fn capture_shim_entry() {
+    let mut arguments = env::args_os().skip(1);
+    let mode = match arguments.next().as_deref() {
+        Some(argument) if argument == CAPTURE_SHIM_ARGUMENT => CaptureEntry::Captured,
+        Some(argument) if argument == CAPTURE_SHIM_PASSTHROUGH_ARGUMENT => {
+            CaptureEntry::Passthrough
+        },
+        _ => return,
+    };
+    let (Some(shim), Some(parent)) = (arguments.next(), arguments.next()) else {
+        std::process::exit(127);
+    };
+    let result = NativeCargoCall::new(Path::new(&shim), PathBuf::from(parent), arguments.collect())
+        .and_then(|call| match mode {
+            CaptureEntry::Captured => match env::var_os("CARGO_TILE_PTY_START_SOCKET") {
+                Some(socket) => call.exec_with_acknowledgement(Path::new(&socket)),
+                None => call.run(),
+            },
+            CaptureEntry::Passthrough => Err(call.command().exec()),
+        });
+    std::process::exit(result.unwrap_or(127));
+}
+
+/// The shell records stream availability before Rust initializes standard descriptors.
+#[cfg(not(test))]
+enum CaptureEntry {
+    Captured,
+    Passthrough,
+}
+
+/// Quote one Unix word without decoding its path or argument bytes.
+fn capture_shell_word(word: &OsStr) -> Vec<u8> {
+    let mut quoted = vec![b'\''];
+    for byte in word.as_bytes() {
+        if *byte == b'\'' {
+            quoted.extend_from_slice(b"'\\''");
+        } else {
+            quoted.push(*byte);
+        }
+    }
+    quoted.push(b'\'');
+    quoted
+}
+
+/// One resolved toolchain call, before it acquires any capture artifacts.
+struct NativeCargoCall {
+    real:      PathBuf,
+    shim:      PathBuf,
+    parent:    PathBuf,
+    arguments: Vec<OsString>,
+}
+
+impl NativeCargoCall {
+    /// Resolve symlinks without starting readlink, dirname, or an identity utility.
+    fn new(shim: &Path, parent: PathBuf, arguments: Vec<OsString>) -> io::Result<Self> {
+        let shim = fs::canonicalize(shim)?;
+        let directory = shim
+            .parent()
+            .ok_or_else(|| io::Error::other("shim has no directory"))?;
+        Ok(Self {
+            real: directory.join(REAL_CARGO_NAME),
+            shim,
+            parent,
+            arguments,
+        })
+    }
+
+    /// Every path, including capture failure, retains cargo's arguments and status.
+    #[cfg(not(test))]
+    fn run(self) -> io::Result<i32> {
+        let cargo = self.command();
+        self.run_with_publication(cargo, CapturePublication::prepare, || Ok(()))
+    }
+
+    /// EOF on this close-on-exec connection confirms that exec accepted cargo.
+    #[cfg(not(test))]
+    fn exec_with_acknowledgement(self, socket: &Path) -> io::Result<i32> {
+        let mut acknowledgement = UnixStream::connect(socket)?;
+        acknowledgement.write_all(b"exec")?;
+        let error = self
+            .command()
+            .env_remove("CARGO_TILE_PTY_START_SOCKET")
+            .exec();
+        let _ = acknowledgement.write_all(b"failed");
+        Err(error)
+    }
+
+    fn command(&self) -> Command {
+        let mut cargo = Command::new(&self.real);
+        cargo.args(&self.arguments).env("CARGO", &self.shim);
+        cargo
+    }
+
+    /// The publication boundary supplies either owned artifacts or unchanged cargo.
+    fn run_with_publication(
+        self,
+        mut cargo: Command,
+        publish: impl FnOnce(&Path, &[OsString]) -> io::Result<CapturePublication>,
+        after_readiness: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<i32> {
+        if !capture_requested(&self.arguments) || capture_is_nested() {
+            return Err(cargo.exec());
+        }
+        let Ok(terminal) = capture_terminal() else {
+            return Err(cargo.exec());
+        };
+        let Ok(signals) = DeferredCaptureSignals::new() else {
+            return Err(cargo.exec());
+        };
+        let Ok(publication) = publish(&self.parent, &self.arguments) else {
+            if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
+                return Ok(status);
+            }
+            return Err(cargo.exec());
+        };
+        if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
+            return Ok(status);
+        }
+        let completion = match CaptureStartup::start(
+            &cargo,
+            terminal,
+            &self.arguments,
+            &publication.log.0,
+            &signals,
+            after_readiness,
+        ) {
+            CaptureStartup::Interrupted(status) => {
+                publication.finish();
+                return Ok(status);
+            },
+            CaptureStartup::CargoStarted(running) => CargoCompletion::Finished(running.wait()?),
+            CaptureStartup::HelperStarted(helper) => helper.wait()?,
+            CaptureStartup::PlainCargo => CargoCompletion::NotStarted,
+        };
+        let status = match completion {
+            CargoCompletion::Finished(status) => status,
+            CargoCompletion::NotStarted => {
+                publication.finish();
+                return Err(cargo.exec());
+            },
+        };
+        publication.finish();
+        Ok(signals.exit_status(status))
+    }
+}
+
+/// Query commands have no compilation output to capture.
+fn capture_requested(arguments: &[OsString]) -> bool {
+    let mut words = arguments.iter();
+    while let Some(word) = words.next() {
+        if COMMAND_VALUED_OPTIONS.iter().any(|(option, scope)| {
+            matches!(scope, ValuedOptionScope::Global) && word == OsStr::new(option)
+        }) {
+            words.next();
+            continue;
+        }
+        let bytes = word.as_bytes();
+        if matches!(bytes, b"-V" | b"--version" | b"-vV" | b"--list") {
+            return false;
+        }
+        if bytes.starts_with(b"-") || bytes.starts_with(b"+") {
+            continue;
+        }
+        return !matches!(
+            bytes,
+            b"metadata"
+                | b"pkgid"
+                | b"locate-project"
+                | b"read-manifest"
+                | b"config"
+                | b"tile"
+                | b"port"
+                | b"handler"
+                | b"berth"
+        );
+    }
+    false
+}
+
+/// Resolve an inherited enclosing pid through kernel parent links, without ps.
+fn capture_is_nested() -> bool {
+    let Ok(enclosing) = env::var("CARGOTILE_NESTED")
+        .unwrap_or_default()
+        .parse::<u32>()
+    else {
+        return false;
+    };
+    let Some(parent) = rustix::process::getppid() else {
+        return false;
+    };
+    let mut parent = sysinfo::Pid::from_u32(parent.as_raw_nonzero().get().cast_unsigned());
+    let mut system = sysinfo::System::new();
+    for _ in 0..32 {
+        if parent.as_u32() == enclosing {
+            return true;
+        }
+        if parent.as_u32() <= 1 {
+            break;
+        }
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[parent]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let Some(next) = system.process(parent).and_then(sysinfo::Process::parent) else {
+            break;
+        };
+        parent = next;
+    }
+    false
+}
+
+/// Capture may borrow streams only when the caller supplied them.
+#[derive(Clone, Copy)]
+enum CaptureTerminal {
+    Pty,
+    Piped,
+}
+
+fn capture_terminal() -> io::Result<CaptureTerminal> {
+    let script_available =
+        env::split_paths(&env::var_os("PATH").unwrap_or_default()).any(|directory| {
+            fs::metadata(directory.join("script"))
+                .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        });
+    if script_available
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        return Ok(CaptureTerminal::Pty);
+    }
+    let descriptor_open = |descriptor| fs::metadata(format!("/dev/fd/{descriptor}")).is_ok();
+    if !descriptor_open(1)
+        || !descriptor_open(2)
+        || (3..=9)
+            .filter(|descriptor| !descriptor_open(*descriptor))
+            .count()
+            < 2
+    {
+        Err(io::Error::other(
+            "caller streams or spare descriptors unavailable",
+        ))
+    } else {
+        Ok(CaptureTerminal::Piped)
+    }
+}
+
+/// Only successful exclusive creation grants cleanup ownership of an artifact.
+struct CapturePublication {
+    registration: OwnedCaptureFile,
+    log:          OwnedCaptureFile,
+}
+
+/// Convert a native observation to registration fields, retaining boot without birth.
+pub(crate) fn capture_identity_fields(pid: u32, identity: KernelObservation) -> (String, String) {
+    match identity.into_capture_observation(pid) {
+        Observation::Present(stamp) => {
+            let (boot, birth) = stamp.registration_fields();
+            (boot.to_owned(), birth.to_string())
+        },
+        Observation::Ended | Observation::Unknown => {
+            (birth_stamp::capture_boot().to_owned(), String::new())
+        },
+    }
+}
+
+/// Exclusive creation or publication supplies the only cleanup authority.
+struct OwnedCaptureFile(PathBuf);
+
+impl Drop for OwnedCaptureFile {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+}
+
+impl CapturePublication {
+    /// Remove the registration before its log after cargo and its output have ended.
+    fn finish(self) {
+        drop(self.registration);
+        drop(self.log);
+    }
+
+    /// Identity is sampled once and reused for setup and registration publication.
+    fn prepare(parent: &Path, arguments: &[OsString]) -> io::Result<Self> {
+        Self::prepare_at_publication(parent, arguments, |_, _| Ok(()))
+    }
+
+    /// Tests can supply a filesystem change at the exact staging/publication boundary.
+    fn prepare_at_publication(
+        parent: &Path,
+        arguments: &[OsString],
+        boundary: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let pid = std::process::id();
+        let (boot, birth) = capture_identity_fields(pid, birth_stamp::observe(pid));
+        let directories = CaptureDirectories::prepare(parent, &boot)?;
+        directories.remove_dead_publications()?;
+        let generation = capture_generation_at(chrono::Utc::now());
+        Self::publish(
+            &directories,
+            &generation,
+            &boot,
+            &birth,
+            arguments,
+            boundary,
+        )
+    }
+
+    fn publish(
+        directories: &CaptureDirectories,
+        generation: &str,
+        boot: &str,
+        birth: &str,
+        arguments: &[OsString],
+        boundary: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let pid = std::process::id();
+        let name = format!("run-{generation}-{pid}.log");
+        let registration = directories.pids.join(format!("{pid}.{generation}"));
+        let log = directories.root.join(&name);
+        let staging = registration.with_extension(format!("{generation}.tmp"));
+        let bytes = capture_registration(generation, boot, birth, &name, arguments)?;
+        let mut staged = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging)?;
+        let result = (|| {
+            staged.write_all(&bytes)?;
+            staged.set_permissions(fs::Permissions::from_mode(0o644))?;
+            boundary(&staging, &registration)?;
+            fs::hard_link(&staging, &registration)
+        })();
+        let _ = fs::remove_file(&staging);
+        result?;
+        // Registration precedes the log, so a reader sweep cannot remove an orphan log.
+        let registration = OwnedCaptureFile(registration);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&log)?;
+        let publication = Self {
+            registration,
+            log: OwnedCaptureFile(log),
+        };
+        file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        Ok(publication)
+    }
+}
+
+/// Supplied wire fields exercise publication failures without a product fault flag.
+#[cfg(test)]
+pub(crate) struct CaptureTestPublication<'a> {
+    pub(crate) boot:            &'a str,
+    pub(crate) birth:           &'a str,
+    pub(crate) generation:      &'a str,
+    pub(crate) environment:     &'a [(&'a str, &'a OsStr)],
+    pub(crate) after_readiness: fn() -> io::Result<()>,
+}
+
+#[cfg(test)]
+impl CaptureTestPublication<'_> {
+    /// Run the production call and filesystem publication with controlled boundary work.
+    fn run(
+        self,
+        shim: &Path,
+        parent: PathBuf,
+        arguments: Vec<OsString>,
+        before: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        after: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<i32> {
+        self.run_for_account(
+            shim,
+            parent,
+            arguments,
+            rustix::process::getuid().as_raw(),
+            before,
+            after,
+        )
+    }
+
+    /// Supply an account identity to test refusal of directories owned by another uid.
+    pub(crate) fn run_for_account(
+        self,
+        shim: &Path,
+        parent: PathBuf,
+        arguments: Vec<OsString>,
+        uid: u32,
+        before: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        after: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<i32> {
+        let call = NativeCargoCall::new(shim, parent, arguments)?;
+        let mut cargo = call.command();
+        for (key, value) in self.environment {
+            cargo.env(key, value);
+        }
+        call.run_with_publication(
+            cargo,
+            |parent, arguments| {
+                let directories = CaptureDirectories::prepare_for_account(parent, self.boot, uid)?;
+                directories.remove_dead_publications()?;
+                let publication = CapturePublication::publish(
+                    &directories,
+                    self.generation,
+                    self.boot,
+                    self.birth,
+                    arguments,
+                    before,
+                )?;
+                after()?;
+                Ok(publication)
+            },
+            self.after_readiness,
+        )
+    }
+}
+
+/// A supplied calendar reading cannot make two calls share a publication name.
+pub(crate) fn capture_generation_at(now: DateTime<Utc>) -> String {
+    format!("{}-{}", now.format("%Y%m%d-%H%M%S"), uuid::Uuid::now_v7())
+}
+
+/// Checked account directories and their once-per-boot setup receipt.
+struct CaptureDirectories {
+    root: PathBuf,
+    pids: PathBuf,
+}
+
+impl CaptureDirectories {
+    fn prepare(parent: &Path, boot: &str) -> io::Result<Self> {
+        Self::prepare_for_account(parent, boot, rustix::process::getuid().as_raw())
+    }
+
+    fn prepare_for_account(parent: &Path, boot: &str, uid: u32) -> io::Result<Self> {
+        capture_directory(parent, CaptureDirectoryOwner::Shared)?;
+        let root = parent.join(uid.to_string());
+        let state = root.join("state");
+        let pids = state.join("pids");
+        let mut receipt = boot.to_owned();
+        let parent_metadata = fs::symlink_metadata(parent)?;
+        let _ = write!(
+            receipt,
+            ":{}:{}",
+            parent_metadata.dev(),
+            parent_metadata.ino()
+        );
+        for path in [&root, &state, &pids] {
+            capture_directory(path, CaptureDirectoryOwner::Account(uid))?;
+            let metadata = fs::symlink_metadata(path)?;
+            let _ = write!(receipt, ":{}:{}", metadata.dev(), metadata.ino());
+        }
+        let cache = parent.join(format!(".setup-v4-{uid}"));
+        let current = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&cache)
+            .and_then(|file| {
+                let metadata = file.metadata()?;
+                if metadata.uid() != uid || !metadata.is_file() {
+                    return Err(io::Error::other("foreign setup receipt"));
+                }
+                let mut value = String::new();
+                file.take(4096).read_to_string(&mut value)?;
+                Ok(value)
+            });
+        if current.as_deref().ok() != Some(receipt.as_str()) {
+            if fs::symlink_metadata(parent)?.uid() == uid {
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o1777))?;
+            }
+            for path in [&root, &state, &pids] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+            }
+            let mut cache = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .mode(0o600)
+                .open(cache)?;
+            let metadata = cache.metadata()?;
+            if metadata.uid() != uid || !metadata.is_file() {
+                return Err(io::Error::other("foreign setup receipt"));
+            }
+            cache.set_len(0)?;
+            cache.write_all(receipt.as_bytes())?;
+        }
+        Ok(Self { root, pids })
+    }
+
+    /// A killed writer cannot clean itself up; its next account call removes exact names.
+    fn remove_dead_publications(&self) -> io::Result<()> {
+        for entry in fs::read_dir(&self.pids)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some((pid, generation)) = name.trim_end_matches(".tmp").split_once('.') else {
+                continue;
+            };
+            let Ok(pid) = pid.parse::<i32>() else {
+                continue;
+            };
+            let Some(subject) = rustix::process::Pid::from_raw(pid) else {
+                continue;
+            };
+            if pid.cast_unsigned() != std::process::id()
+                && rustix::process::test_kill_process(subject) != Err(rustix::io::Errno::SRCH)
+            {
+                continue;
+            }
+            let _ = fs::remove_file(self.root.join(format!("run-{generation}-{pid}.log")));
+            let _ = fs::remove_file(self.pids.join(format!("{pid}.{generation}")));
+            let _ = fs::remove_file(self.pids.join(format!("{pid}.{generation}.tmp")));
+        }
+        Ok(())
+    }
+}
+
+/// Refuse symlinks and foreign account ownership before any permission change.
+#[derive(Clone, Copy)]
+enum CaptureDirectoryOwner {
+    Shared,
+    Account(u32),
+}
+
+fn capture_directory(path: &Path, owner: CaptureDirectoryOwner) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {},
+        Err(error) if error.kind() == ErrorKind::NotFound => match fs::create_dir(path) {
+            Ok(()) => {},
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
+            Err(error) => return Err(error),
+        },
+        Err(error) => return Err(error),
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir()
+        || matches!(owner, CaptureDirectoryOwner::Account(uid) if metadata.uid() != uid)
+    {
+        return Err(io::Error::other(
+            "capture directory has an invalid owner or type",
+        ));
+    }
+    Ok(())
+}
+
+/// Keep the v3 framing, raw argv bytes, physical cwd and absolute-home rule.
+fn capture_registration(
+    generation: &str,
+    boot: &str,
+    birth: &str,
+    log: &str,
+    arguments: &[OsString],
+) -> io::Result<Vec<u8>> {
+    let directory = env::current_dir()?;
+    let home = env::var_os("HOME")
+        .filter(|home| Path::new(home).is_absolute())
+        .unwrap_or_default();
+    let count = arguments.len().to_string();
+    let mut bytes = Vec::new();
+    for field in [
+        OsStr::new("cargo-tile-v3"),
+        OsStr::new(generation),
+        OsStr::new(boot),
+        OsStr::new(birth),
+        OsStr::new(log),
+        directory.as_os_str(),
+        &home,
+        OsStr::new(&count),
+    ]
+    .into_iter()
+    .chain(arguments.iter().map(std::ffi::OsString::as_os_str))
+    {
+        bytes.extend_from_slice(field.as_bytes());
+        bytes.push(0);
+    }
+    Ok(bytes)
+}
+
+/// A completed signal sample either permits cargo or supplies the deferred exit status.
+enum CaptureInterruption {
+    Uninterrupted,
+    Signaled(i32),
+}
+
+/// A shim-only signal waits for cargo and for the last mirrored byte.
+struct DeferredCaptureSignals {
+    received: Arc<AtomicUsize>,
+}
+
+impl DeferredCaptureSignals {
+    fn new() -> io::Result<Self> {
+        let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for signal in [
+            signal_hook::consts::SIGHUP,
+            signal_hook::consts::SIGINT,
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGQUIT,
+        ] {
+            signal_hook::flag::register_usize(
+                signal,
+                std::sync::Arc::clone(&received),
+                signal.cast_unsigned() as usize,
+            )?;
+        }
+        Ok(Self { received })
+    }
+    fn before_cargo(&self) -> CaptureInterruption {
+        let signal = self.received.load(Ordering::Relaxed);
+        if signal == 0 {
+            CaptureInterruption::Uninterrupted
+        } else {
+            CaptureInterruption::Signaled(128 + i32::try_from(signal).unwrap_or(0))
+        }
+    }
+    fn exit_status(&self, status: ExitStatus) -> i32 {
+        let signal = self.received.load(Ordering::Relaxed);
+        if signal != 0 {
+            return 128 + i32::try_from(signal).unwrap_or(0);
+        }
+        status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+    }
+}
+
+/// Startup failure permits passthrough only while cargo has not started.
+enum CaptureStartup {
+    PlainCargo,
+    Interrupted(i32),
+    CargoStarted(RunningCapture),
+    HelperStarted(PtyCaptureHelper),
+}
+
+impl CaptureStartup {
+    fn start(
+        cargo: &Command,
+        terminal: CaptureTerminal,
+        arguments: &[OsString],
+        log: &Path,
+        signals: &DeferredCaptureSignals,
+        after_readiness: impl FnOnce() -> io::Result<()>,
+    ) -> Self {
+        let captured = capture_child_command(cargo);
+        match terminal {
+            CaptureTerminal::Piped => {
+                capture_piped(captured, arguments, log, signals, after_readiness)
+                    .unwrap_or(Self::PlainCargo)
+            },
+            CaptureTerminal::Pty => {
+                capture_pty(&captured, log).map_or(Self::PlainCargo, Self::HelperStarted)
+            },
+        }
+    }
+}
+
+/// The original command retains its arguments, environment and inherited streams for fallback.
+fn capture_child_command(original: &Command) -> Command {
+    let mut cargo = Command::new(original.get_program());
+    cargo.args(original.get_args());
+    copy_command_context(original, &mut cargo);
+    cargo.env("CARGOTILE_NESTED", std::process::id().to_string());
+    cargo
+}
+
+/// Preserve explicit environment values, removals, and the working directory.
+fn copy_command_context(original: &Command, child: &mut Command) {
+    for (key, value) in original.get_envs() {
+        if let Some(value) = value {
+            child.env(key, value);
+        } else {
+            child.env_remove(key);
+        }
+    }
+    if let Some(directory) = original.get_current_dir() {
+        child.current_dir(directory);
+    }
+}
+
+/// Once cargo starts, wait errors cannot cause a second invocation.
+struct RunningCapture {
+    cargo:  Child,
+    mirror: NativeStderrPump,
+}
+
+impl RunningCapture {
+    fn wait(mut self) -> io::Result<ExitStatus> {
+        let status = self.cargo.wait();
+        let mirrored = self.mirror.wait();
+        let status = status?;
+        mirrored?;
+        Ok(status)
+    }
+}
+
+/// Machine-readable stdout is untouched; only JSON cargo's quiet flag is removed.
+fn capture_piped(
+    mut cargo: Command,
+    arguments: &[OsString],
+    log: &Path,
+    signals: &DeferredCaptureSignals,
+    after_readiness: impl FnOnce() -> io::Result<()>,
+) -> io::Result<CaptureStartup> {
+    let json = arguments
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg.as_bytes().starts_with(b"--message-format=json"))
+        || arguments
+            .windows(2)
+            .take_while(|pair| pair[0] != "--")
+            .any(|pair| pair[0] == "--message-format" && pair[1].as_bytes().starts_with(b"json"));
+    if json {
+        let mut filtered = Command::new(cargo.get_program());
+        copy_command_context(&cargo, &mut filtered);
+        let mut passthrough = false;
+        for argument in arguments {
+            if argument == "--" {
+                passthrough = true;
+            }
+            if !passthrough && (argument == "--quiet" || argument == "-q") {
+                continue;
+            }
+            filtered.arg(argument);
+        }
+        cargo = filtered;
+    }
+    cargo.env(
+        "CARGO_TERM_PROGRESS_WHEN",
+        env::var_os("CARGO_TERM_PROGRESS_WHEN")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "always".into()),
+    );
+    cargo.env(
+        "CARGO_TERM_PROGRESS_WIDTH",
+        env::var_os("CARGO_TERM_PROGRESS_WIDTH")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "100".into()),
+    );
+    let (reader, writer) = std::io::pipe()?;
+    let mirror = NativeStderrPump::start(reader, log)?;
+    if let Err(error) = after_readiness() {
+        drop(writer);
+        let _ = mirror.wait();
+        return Err(error);
+    }
+    if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
+        drop(writer);
+        let _ = mirror.wait();
+        return Ok(CaptureStartup::Interrupted(status));
+    }
+    let result = cargo.stderr(Stdio::from(writer)).spawn();
+    drop(cargo);
+    match result {
+        Ok(cargo) => Ok(CaptureStartup::CargoStarted(RunningCapture {
+            cargo,
+            mirror,
+        })),
+        Err(error) => {
+            let _ = mirror.wait();
+            Err(error)
+        },
+    }
+}
+
+/// An open log and caller stream belong to a started pump before cargo can write.
+struct NativeStderrPump {
+    worker: JoinHandle<()>,
+}
+
+impl NativeStderrPump {
+    fn start(reader: PipeReader, log: &Path) -> io::Result<Self> {
+        let log = OpenOptions::new().append(true).open(log)?;
+        let stderr = File::from(io::stderr().as_fd().try_clone_to_owned()?);
+        let worker = thread::Builder::new()
+            .name("cargo-stderr".into())
+            .spawn(move || Self::drain(reader, log, stderr))?;
+        Ok(Self { worker })
+    }
+
+    /// A failed log file or caller stderr cannot close cargo's pipe.
+    /// The other output still receives bytes.
+    fn drain(mut reader: PipeReader, mut log: File, mut stderr: File) {
+        let mut bytes = [0; CAPTURE_STDERR_PUMP_BUFFER_BYTES];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(length) => {
+                    let _ = log.write_all(&bytes[..length]);
+                    let _ = stderr.write_all(&bytes[..length]);
+                },
+                Err(error) if error.kind() == ErrorKind::Interrupted => {},
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn wait(self) -> io::Result<()> {
+        self.worker
+            .join()
+            .map_err(|_| io::Error::other("stderr pump failed"))
+    }
+}
+
+/// A helper's exit is separate from an acknowledged cargo execution.
+enum CargoCompletion {
+    NotStarted,
+    Finished(ExitStatus),
+}
+
+/// The script child cannot establish that cargo started without its exec acknowledgement.
+struct PtyCaptureHelper {
+    child:    Child,
+    listener: UnixListener,
+    socket:   OwnedCaptureFile,
+}
+
+impl PtyCaptureHelper {
+    fn wait(mut self) -> io::Result<CargoCompletion> {
+        let status = self.child.wait()?;
+        let completion = match self.listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut acknowledgement = Vec::new();
+                stream.read_to_end(&mut acknowledgement)?;
+                if acknowledgement == b"exec" {
+                    CargoCompletion::Finished(status)
+                } else {
+                    CargoCompletion::NotStarted
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::WouldBlock => CargoCompletion::NotStarted,
+            Err(error) => return Err(error),
+        };
+        drop(self.socket);
+        Ok(completion)
+    }
+}
+
+/// script remains the only helper process; the native child execs cargo in its own pid.
+fn capture_pty(cargo: &Command, log: &Path) -> io::Result<PtyCaptureHelper> {
+    let (_, random) = uuid::Uuid::now_v7().as_u64_pair();
+    let socket_path = env::temp_dir().join(format!("tile-start-{random:016x}"));
+    let listener = UnixListener::bind(&socket_path)?;
+    let socket = OwnedCaptureFile(socket_path);
+    fs::set_permissions(&socket.0, fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    #[cfg(not(test))]
+    let runner = env::current_exe()?;
+    #[cfg(test)]
+    let runner = native_fixture::executable()?.to_owned();
+    let mut acknowledged = pty_cargo_command(cargo, log, &runner);
+    acknowledged.env("CARGO_TILE_PTY_START_SOCKET", &socket.0);
+    #[cfg(target_os = "linux")]
+    let implementation = CaptureScript::UtilLinux;
+    #[cfg(target_os = "macos")]
+    let implementation = CaptureScript::Bsd;
+    let child = implementation.command(&acknowledged, log).spawn()?;
+    Ok(PtyCaptureHelper {
+        child,
+        listener,
+        socket,
+    })
+}
+
+/// Reuse the native transport; its socket entry execs cargo without a second publication.
+fn pty_cargo_command(cargo: &Command, log: &Path, runner: &Path) -> Command {
+    let mut acknowledged = Command::new(runner);
+    acknowledged
+        .arg(CAPTURE_SHIM_ARGUMENT)
+        .arg(Path::new(cargo.get_program()).with_file_name(CARGO_NAME))
+        .arg(log.parent().unwrap_or_else(|| Path::new(".")))
+        .args(cargo.get_args());
+    copy_command_context(cargo, &mut acknowledged);
+    acknowledged
+}
+
+/// Each platform's command preserves cargo's exit status and flushes its log.
+enum CaptureScript {
+    #[cfg(any(target_os = "linux", test))]
+    UtilLinux,
+    #[cfg(any(target_os = "macos", test))]
+    Bsd,
+}
+
+impl CaptureScript {
+    fn command(self, cargo: &Command, log: &Path) -> Command {
+        let mut script = Command::new("script");
+        match self {
+            #[cfg(any(target_os = "linux", test))]
+            Self::UtilLinux => {
+                let mut command = b"exec ".to_vec();
+                for (index, word) in std::iter::once(cargo.get_program())
+                    .chain(cargo.get_args())
+                    .enumerate()
+                {
+                    if index > 0 {
+                        command.push(b' ');
+                    }
+                    command.extend_from_slice(&capture_shell_word(word));
+                }
+                script
+                    .args(["-q", "-e", "-f", "-c"])
+                    .arg(OsStr::from_bytes(&command))
+                    .arg(log);
+            },
+            #[cfg(any(target_os = "macos", test))]
+            Self::Bsd => {
+                script
+                    .args(["-q", "-t", "0"])
+                    .arg(log)
+                    .arg(cargo.get_program())
+                    .args(cargo.get_args());
+            },
+        }
+        copy_command_context(cargo, &mut script);
+        script
+    }
+}
 
 /// The account database identity whose default rustup home is inspected.
 #[derive(Debug)]
@@ -743,29 +1739,64 @@ impl Hook {
     /// Writing the shim is the last step, so a failure part way through
     /// can leave `cargo` missing. Retrying writes the shim directly and
     /// leaves the saved real binary in place. The per-toolchain lock
-    /// covers state inspection and every write, including repair.
+    /// covers state inspection and publication, including repair.
     fn install(&self) -> io::Result<HookOperationOutcome> {
+        #[cfg(not(test))]
+        let source = env::current_exe()?;
+        #[cfg(test)]
+        let source = native_fixture::executable()?.to_owned();
+        {
+            let _inspection_lock =
+                HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
+            match self.state()? {
+                HookState::Orphaned => return Ok(HookOperationOutcome::Orphaned),
+                HookState::Installed => {
+                    let contents = fs::read(&self.cargo)?;
+                    if let ShimVersion::Versioned(installed) = shim_version(&contents)?
+                        && installed > CAPTURE_SHIM_VERSION
+                    {
+                        return Ok(HookOperationOutcome::DowngradeRefused {
+                            installed,
+                            supported: CAPTURE_SHIM_VERSION,
+                        });
+                    }
+                    if contents == self.installed_bytes() && self.runner_is_current(&source)? {
+                        return Ok(HookOperationOutcome::AlreadyCurrent);
+                    }
+                },
+                HookState::Repairable if self.runner_is_current(&source)? => {
+                    self.write_shim()?;
+                    return Ok(HookOperationOutcome::Installed);
+                },
+                HookState::Absent | HookState::Repairable => {},
+            }
+            CaptureRunnerDestination::inspect(self.runner_path())?.for_install()?;
+        }
+        let prepared = PreparedCaptureRunner::new(&self.cargo, &source)?;
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
             HookState::Installed => {
                 let contents = fs::read(&self.cargo)?;
-                if contents == SHIM_SOURCE.as_bytes() {
+                if contents == self.installed_bytes() {
+                    self.write_runner(&source, &prepared)?;
                     return Ok(HookOperationOutcome::AlreadyCurrent);
                 }
                 if let ShimVersion::Versioned(installed) = shim_version(&contents)?
-                    && installed > SUPPORTED_REGISTRATION_VERSION
+                    && installed > CAPTURE_SHIM_VERSION
                 {
                     return Ok(HookOperationOutcome::DowngradeRefused {
                         installed,
-                        supported: SUPPORTED_REGISTRATION_VERSION,
+                        supported: CAPTURE_SHIM_VERSION,
                     });
                 }
+                self.write_runner(&source, &prepared)?;
                 self.write_shim()?;
                 return Ok(HookOperationOutcome::Refreshed);
             },
             HookState::Orphaned => return Ok(HookOperationOutcome::Orphaned),
             HookState::Repairable => {
+                self.write_runner(&source, &prepared)?;
                 self.write_shim()?;
                 return Ok(HookOperationOutcome::Installed);
             },
@@ -773,6 +1804,7 @@ impl Hook {
         }
         // Keep an unmarked first install or the fresh cargo that
         // `rustup update` put back over the shim.
+        self.write_runner(&source, &prepared)?;
         fs::rename(&self.cargo, &self.real)?;
         self.write_shim()?;
         Ok(HookOperationOutcome::Installed)
@@ -785,14 +1817,41 @@ impl Hook {
     /// shim writes: repeated launches and CI job hooks leave it untouched.
     fn ensure(&self) -> io::Result<HookOperationOutcome> { self.install() }
 
-    /// Write the shim as `cargo`, executable, without ever writing the
-    /// file already there in place.
-    ///
-    /// A shim that is mid-run is still being read by its `sh`, which
-    /// waits on the real cargo rather than `exec`ing it. Writing over it
-    /// would hand that `sh` a half-written script. So the shim goes in
-    /// beside it and is renamed across: the running `sh` keeps the inode
-    /// it opened, and the name changes hands in one step.
+    /// Each installed shell names an executable that outlives an account staging guard.
+    fn runner_path(&self) -> PathBuf { self.cargo.with_file_name(CAPTURE_RUNNER_NAME) }
+
+    fn installed_bytes(&self) -> Vec<u8> { capture_shell_source(&self.runner_path()) }
+
+    #[cfg(test)]
+    fn installed_source(&self) -> String { shim_source_for(&self.runner_path()) }
+
+    /// A current runner has independent storage, exact permissions, and equal bytes.
+    fn runner_is_current(&self, source: &Path) -> io::Result<bool> {
+        let source_metadata = fs::metadata(source)?;
+        let destination = self.runner_path();
+        let Ok(destination_metadata) = fs::metadata(&destination) else {
+            return Ok(false);
+        };
+        Ok(
+            destination_metadata.permissions().mode() & 0o7777 == SHIM_MODE
+                && (destination_metadata.dev(), destination_metadata.ino())
+                    != (source_metadata.dev(), source_metadata.ino())
+                && capture_runner_matches(source, &destination)?,
+        )
+    }
+
+    /// Publish the prepared inode while the toolchain lock owns the destination.
+    fn write_runner(&self, source: &Path, prepared: &PreparedCaptureRunner) -> io::Result<()> {
+        if self.runner_is_current(source)? {
+            return Ok(());
+        }
+        CaptureRunnerDestination::inspect(self.runner_path())?
+            .for_install()?
+            .publish(&prepared.path())
+    }
+
+    /// Publish a complete executable entry through a new inode.
+    /// Rename preserves any process that still reads the previous entry.
     fn write_shim(&self) -> io::Result<()> {
         let mut staging = OpenOptions::new()
             .write(true)
@@ -800,7 +1859,7 @@ impl Hook {
             .create(true)
             .truncate(true)
             .open(&self.staging)?;
-        staging.write_all(SHIM_SOURCE.as_bytes())?;
+        staging.write_all(&self.installed_bytes())?;
         staging.set_permissions(fs::Permissions::from_mode(SHIM_MODE))?;
         fs::rename(&self.staging, &self.cargo)
     }
@@ -810,13 +1869,164 @@ impl Hook {
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
-            HookState::Absent => Ok(HookOperationOutcome::AlreadyAbsent),
+            HookState::Absent => {
+                CaptureRunnerDestination::inspect(self.runner_path())?.remove_owned()?;
+                Ok(HookOperationOutcome::AlreadyAbsent)
+            },
             HookState::Orphaned => Ok(HookOperationOutcome::Orphaned),
             HookState::Installed | HookState::Repairable => {
                 fs::rename(&self.real, &self.cargo)?;
+                CaptureRunnerDestination::inspect(self.runner_path())?.remove_owned()?;
                 Ok(HookOperationOutcome::Removed)
             },
         }
+    }
+}
+
+/// Compare runner bytes without allocating both executable images.
+fn capture_runner_matches(source: &Path, destination: &Path) -> io::Result<bool> {
+    let mut source = fs::File::open(source)?;
+    let mut destination = fs::File::open(destination)?;
+    if source.metadata()?.len() != destination.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut source_bytes = vec![0; 65_536];
+    let mut destination_bytes = vec![0; 65_536];
+    loop {
+        let count = source.read(&mut source_bytes)?;
+        destination.read_exact(&mut destination_bytes[..count])?;
+        if source_bytes[..count] != destination_bytes[..count] {
+            return Ok(false);
+        }
+        if count == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Complete executable bytes prepared without holding a toolchain publication lock.
+struct PreparedCaptureRunner {
+    directory: TempDir,
+}
+
+impl PreparedCaptureRunner {
+    fn new(cargo: &Path, source: &Path) -> io::Result<Self> {
+        let parent = cargo
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::other("toolchain has no preparation directory"))?;
+        let directory = tempfile::Builder::new()
+            .prefix(".cargo-tile-runner-")
+            .tempdir_in(parent)?;
+        let executable = directory.path().join(CAPTURE_RUNNER_NAME);
+        fs::copy(source, &executable)?;
+        fs::set_permissions(executable, fs::Permissions::from_mode(SHIM_MODE))?;
+        Ok(Self { directory })
+    }
+
+    fn path(&self) -> PathBuf { self.directory.path().join(CAPTURE_RUNNER_NAME) }
+}
+
+/// Find the ownership marker without reading executable debug sections into memory.
+fn capture_runner_has_marker(file: &mut File) -> io::Result<bool> {
+    let mut buffer = [0; 8192];
+    let mut window = Vec::with_capacity(buffer.len() + SHIM_MARKER.len());
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(false);
+        }
+        window.extend_from_slice(&buffer[..count]);
+        // Invalid UTF-8 bytes cannot form the ASCII ownership marker.
+        if String::from_utf8_lossy(&window).contains(SHIM_MARKER) {
+            return Ok(true);
+        }
+        let retained = window.len().saturating_sub(SHIM_MARKER.len() - 1);
+        window.drain(..retained);
+    }
+}
+
+/// Ownership established before publication or removal of the native runner.
+enum CaptureRunnerDestination {
+    Absent(PathBuf),
+    Owned(OwnedCaptureRunner),
+    Foreign,
+}
+
+impl CaptureRunnerDestination {
+    fn inspect(path: PathBuf) -> io::Result<Self> {
+        match fs::File::open(&path) {
+            Ok(mut file) => {
+                if capture_runner_has_marker(&mut file)? {
+                    Ok(Self::Owned(OwnedCaptureRunner { path }))
+                } else {
+                    Ok(Self::Foreign)
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::Absent(path)),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn remove_owned(self) -> io::Result<()> {
+        match self {
+            Self::Owned(runner) => runner.remove(),
+            Self::Absent(_) | Self::Foreign => Ok(()),
+        }
+    }
+
+    fn for_install(self) -> io::Result<WritableCaptureRunner> {
+        match self {
+            Self::Absent(path) => Ok(WritableCaptureRunner { path }),
+            Self::Owned(runner) => Ok(WritableCaptureRunner { path: runner.path }),
+            Self::Foreign => Err(io::Error::new(
+                ErrorKind::AlreadyExists,
+                "native runner name belongs to another file",
+            )),
+        }
+    }
+}
+
+/// Only a checked owned runner has a removal operation.
+struct OwnedCaptureRunner {
+    path: PathBuf,
+}
+
+impl OwnedCaptureRunner {
+    fn remove(self) -> io::Result<()> { fs::remove_file(self.path) }
+}
+
+/// An absent or owned destination can accept a runner on its own executable inode.
+struct WritableCaptureRunner {
+    path: PathBuf,
+}
+
+impl WritableCaptureRunner {
+    fn publish(self, source: &Path) -> io::Result<()> {
+        let staging = self.path.with_extension("staging");
+        match fs::remove_file(&staging) {
+            Ok(()) => {},
+            Err(error) if error.kind() == ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
+        match fs::hard_link(source, &staging) {
+            Ok(()) => {},
+            Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+                let mut source = fs::File::open(source)?;
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(SHIM_MODE)
+                    .open(&staging)?;
+                let owned = OwnedCaptureFile(staging);
+                io::copy(&mut source, &mut file)?;
+                file.set_permissions(fs::Permissions::from_mode(SHIM_MODE))?;
+                return fs::rename(&owned.0, &self.path);
+            },
+            Err(error) => return Err(error),
+        }
+        let owned = OwnedCaptureFile(staging);
+        fs::rename(&owned.0, &self.path)
     }
 }
 
@@ -831,13 +2041,24 @@ impl HookInstallationLock {
     /// Wait briefly for another installer, then fail without touching
     /// cargo if exclusive creation remains unavailable.
     fn acquire(path: PathBuf) -> io::Result<Self> {
+        let started = std::time::Instant::now();
+        let wait_budget = SHIM_LOCK_RETRY_DELAY
+            .saturating_mul(u32::try_from(SHIM_LOCK_RETRY_ATTEMPTS).map_err(io::Error::other)?);
         let mut retries_remaining = SHIM_LOCK_RETRY_ATTEMPTS;
         loop {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self { path }),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists && retries_remaining > 0 => {
+                Err(error)
+                    if error.kind() == ErrorKind::AlreadyExists
+                        && retries_remaining > 0
+                        && started.elapsed() < wait_budget
+                        && fs::symlink_metadata(&path)
+                            .map_or(true, |metadata| metadata.is_file()) =>
+                {
                     retries_remaining -= 1;
-                    thread::sleep(SHIM_LOCK_RETRY_DELAY);
+                    thread::sleep(
+                        SHIM_LOCK_RETRY_DELAY.min(wait_budget.saturating_sub(started.elapsed())),
+                    );
                 },
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     return Err(io::Error::new(
@@ -1287,9 +2508,28 @@ fn inspect_shim(path: &Path) -> io::Result<CargoContents> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    /// Retain a named runner symlink for the test process.
+    pub(super) fn fixture_runner() -> PathBuf {
+        static DIRECTORY: LazyLock<TempDir> = std::sync::LazyLock::new(|| {
+            let directory = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(
+                native_fixture::executable().unwrap(),
+                directory.path().join(crate::constants::CAPTURE_RUNNER_NAME),
+            )
+            .unwrap();
+            directory
+        });
+        DIRECTORY.path().join(crate::constants::CAPTURE_RUNNER_NAME)
+    }
+    pub(super) fn utf8_shell_source(executable: &Path) -> String {
+        String::from_utf8(super::capture_shell_source(executable)).unwrap()
+    }
     use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Barrier;
+    use std::sync::LazyLock;
     use std::time::SystemTime;
 
     use tempfile::TempDir;
@@ -1298,7 +2538,6 @@ mod tests {
     use super::*;
     use crate::constants::HANDLER_SUBCOMMAND_NAME;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_CARGO;
-    use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_LINK;
     use crate::constants::HOOK_TEST_REAL_CARGO;
     use crate::constants::HOOK_TEST_VERSION_ARGUMENT;
     use crate::constants::LOCK_WAIT_MARKER;
@@ -1309,7 +2548,7 @@ mod tests {
     fn embedded_shim_declares_the_supported_framing_version() {
         assert!(matches!(
             shim_version(SHIM_SOURCE.as_bytes()).unwrap(),
-            ShimVersion::Versioned(version) if version == SUPPORTED_REGISTRATION_VERSION
+            ShimVersion::Versioned(version) if version == CAPTURE_SHIM_VERSION
         ));
     }
 
@@ -1342,9 +2581,9 @@ mod tests {
     #[test]
     fn version_lines_crossing_the_opening_preserve_installed_files() {
         let (_home, hook) = toolchain(CARGO_NAME);
-        hook.install().unwrap();
+        fs::rename(&hook.cargo, &hook.real).unwrap();
         let header = format!("#!/bin/sh\n# {SHIM_MARKER}\n#");
-        let future_version = format!("{SUPPORTED_REGISTRATION_VERSION}0");
+        let future_version = format!("{CAPTURE_SHIM_VERSION}0");
         for ending in ["\n", "\r\n"] {
             let declaration = format!("{SHIM_VERSION_PREFIX}{future_version}{ending}");
             for visible in 1..=declaration.len() {
@@ -1370,7 +2609,7 @@ mod tests {
                             install(&hook).unwrap(),
                             HookOperationOutcome::DowngradeRefused {
                                 installed: future_version.parse().unwrap(),
-                                supported: SUPPORTED_REGISTRATION_VERSION,
+                                supported: CAPTURE_SHIM_VERSION,
                             }
                         );
                     } else {
@@ -1394,7 +2633,7 @@ mod tests {
     #[test]
     fn version_lines_without_a_final_newline_are_invalid() {
         for ending in ["", "\r"] {
-            let contents = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}{ending}");
+            let contents = format!("{SHIM_VERSION_PREFIX}{CAPTURE_SHIM_VERSION}{ending}");
             assert!(matches!(
                 shim_version(contents.as_bytes()),
                 Err(error) if error.kind() == ErrorKind::InvalidData
@@ -1405,12 +2644,12 @@ mod tests {
     #[test]
     fn incomplete_script_lines_do_not_invalidate_complete_version_declarations() {
         let contents = format!(
-            "{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}\n{}",
+            "{SHIM_VERSION_PREFIX}{CAPTURE_SHIM_VERSION}\n{}",
             "exec cargo-real ".repeat(SHIM_MARKER_SEARCH_BYTES)
         );
         assert!(matches!(
             shim_version(contents.as_bytes()).unwrap(),
-            ShimVersion::Versioned(version) if version == SUPPORTED_REGISTRATION_VERSION
+            ShimVersion::Versioned(version) if version == CAPTURE_SHIM_VERSION
         ));
         assert!(matches!(
             shim_version(b"#!/bin/sh\nexec cargo-real").unwrap(),
@@ -1563,14 +2802,26 @@ mod tests {
             hook.perform(HookOperation::Status),
             ToolchainHookOutcome::Status(HookState::Orphaned)
         );
-        for operation in [HookOperation::Install, HookOperation::Uninstall] {
-            let outcome = hook.perform(operation);
-            assert!(
-                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
-                "{outcome:?}"
-            );
-        }
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        thread::scope(|scope| {
+            let operations = [HookOperation::Install, HookOperation::Uninstall].map(|operation| {
+                let hook = &hook;
+                let lock_path = &lock_path;
+                scope.spawn(move || {
+                    let outcome = hook.perform(operation);
+                    assert!(
+                        matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                        "{outcome:?}"
+                    );
+                })
+            });
+            for operation in operations {
+                operation.join().unwrap();
+            }
+        });
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert!(!hook.real.exists());
         assert!(lock_path.exists());
     }
@@ -1587,13 +2838,22 @@ mod tests {
             hook.perform(HookOperation::Status),
             ToolchainHookOutcome::Unreadable(_)
         ));
-        for operation in [HookOperation::Install, HookOperation::Uninstall] {
-            let outcome = hook.perform(operation);
-            assert!(
-                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
-                "{outcome:?}"
-            );
-        }
+        thread::scope(|scope| {
+            let operations = [HookOperation::Install, HookOperation::Uninstall].map(|operation| {
+                let hook = &hook;
+                let lock_path = &lock_path;
+                scope.spawn(move || {
+                    let outcome = hook.perform(operation);
+                    assert!(
+                        matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                        "{outcome:?}"
+                    );
+                })
+            });
+            for operation in operations {
+                operation.join().unwrap();
+            }
+        });
         assert!(hook.cargo.is_dir());
         assert!(!hook.real.exists());
         assert!(lock_path.exists());
@@ -1830,6 +3090,9 @@ mod tests {
         fs::create_dir_all(&binaries).unwrap();
         fs::write(binaries.join(CARGO_NAME), contents).unwrap();
         let hook = discovered_hook(&home.path().join(TOOLCHAINS_DIR).join("stable-test"));
+        if contents == SHIM_SOURCE {
+            fs::write(&hook.cargo, hook.installed_source()).unwrap();
+        }
         (home, hook)
     }
 
@@ -1842,17 +3105,29 @@ mod tests {
     /// systems, where the only shell that can be counted on is `sh`.
     #[test]
     fn the_shim_is_posix_sh_and_calls_both_script_implementations() {
-        assert!(SHIM_SOURCE.starts_with("#!/bin/sh\n"));
-        assert!(SHIM_SOURCE.contains("util-linux"));
-        // util-linux exits with its own status without `-e`, which would
-        // report every failed build as a success.
-        assert!(SHIM_SOURCE.contains("script -q -e -f -c"));
-        // Neither implementation flushes the log per write on its own,
-        // and the BSD one holds output for thirty seconds at a time --
-        // longer than many runs last, and long enough that the single
-        // line a blocked run prints reaches the grid after the wait it
-        // announced is over.
-        assert!(SHIM_SOURCE.contains("script -q -t 0"));
+        assert!(shim_source().starts_with("#!/bin/sh\n"));
+        let cargo = || {
+            let mut command = Command::new("cargo-real");
+            command.args(["build", "a b", ""]);
+            command
+        };
+        let linux = CaptureScript::UtilLinux.command(&cargo(), Path::new("run.log"));
+        assert_eq!(
+            linux.get_args().collect::<Vec<_>>(),
+            [
+                "-q",
+                "-e",
+                "-f",
+                "-c",
+                "exec 'cargo-real' 'build' 'a b' ''",
+                "run.log"
+            ]
+        );
+        let bsd = CaptureScript::Bsd.command(&cargo(), Path::new("run.log"));
+        assert_eq!(
+            bsd.get_args().collect::<Vec<_>>(),
+            ["-q", "-t", "0", "run.log", "cargo-real", "build", "a b", ""]
+        );
     }
 
     /// A log is read only while the run writing it is alive, so the run
@@ -1861,66 +3136,90 @@ mod tests {
     /// what freed it from spelling out the reader's markers to answer.
     #[test]
     fn the_shim_retires_its_log_when_its_run_ends() {
-        let cleanup = SHIM_SOURCE
-            .split_once("cleanup() {")
-            .unwrap()
-            .1
-            .split_once("\n}")
-            .unwrap()
-            .0;
-        assert!(cleanup.lines().any(|line| {
-            line.trim_start().starts_with("rm -f ")
-                && line.split_whitespace().any(|word| word == r#""$log""#)
-        }));
-        assert!(SHIM_SOURCE.contains("trap cleanup 0"));
-        assert!(
-            !SHIM_SOURCE.contains(LOCK_WAIT_MARKER),
-            "and no longer carries a copy of a marker the reader owns"
-        );
+        let directory = tempfile::tempdir().unwrap();
+        let publication =
+            CapturePublication::prepare(&directory.path().join("capture"), &["build".into()])
+                .unwrap();
+        let registration = publication.registration.0.clone();
+        let log = publication.log.0.clone();
+        assert!(registration.exists());
+        assert!(log.exists());
+        publication.finish();
+        assert!(!registration.exists());
+        assert!(!log.exists());
+        assert!(!shim_source().contains(LOCK_WAIT_MARKER));
     }
 
     /// A directory can win the name after setup checks it; POSIX ln
     /// then succeeds inside it, which must still cause uncaptured cargo.
     #[test]
     fn a_directory_arriving_at_publication_preserves_original_cargo() {
+        if let Some(shim) = env::var_os("HOOK_TEST_NATIVE_SHIM") {
+            let parent = PathBuf::from(env::var_os("HOOK_TEST_NATIVE_PARENT").unwrap());
+            let observations = PathBuf::from(env::var_os("HOOK_TEST_OBSERVATIONS").unwrap());
+            let output = fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/fd/9")
+                .unwrap();
+            rustix::stdio::dup2_stdout(&output).unwrap();
+            let status = CaptureTestPublication {
+                boot:            "test-boot",
+                birth:           "1",
+                generation:      "collision",
+                environment:     &[],
+                after_readiness: || Ok(()),
+            }
+            .run(
+                Path::new(&shim),
+                parent,
+                ["check", "--quiet", "--message-format=json", "--", "a b", ""]
+                    .map(Into::into)
+                    .to_vec(),
+                |_, registration| {
+                    fs::create_dir(registration)?;
+                    fs::write(registration.join("keep"), b"preserved\n")?;
+                    fs::write(
+                        observations.join("registration-path"),
+                        registration.as_os_str().as_bytes(),
+                    )
+                },
+                || Ok(()),
+            )
+            .unwrap();
+            std::process::exit(status);
+        }
         let (home, hook) = toolchain(HOOK_TEST_DIRECTORY_COLLISION_CARGO);
         fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
         hook.install().unwrap();
         let observations = home.path().join("observations");
-        let tools = home.path().join("tools");
         let parent = home.path().join("capture");
         let root = parent.join(rustix::process::getuid().as_raw().to_string());
         fs::write(
             &hook.cargo,
-            SHIM_SOURCE.replace(
+            shim_source().replace(
                 "capture_parent=/tmp/cargo-tile",
                 &format!("capture_parent='{}'", parent.display()),
             ),
         )
         .unwrap();
         fs::create_dir(&observations).unwrap();
-        fs::create_dir(&tools).unwrap();
-        let link = tools.join("ln");
-        fs::write(&link, HOOK_TEST_DIRECTORY_COLLISION_LINK).unwrap();
-        fs::set_permissions(&link, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
-        let real_link = Command::new("sh")
-            .args(["-c", "command -v ln"])
-            .output()
-            .unwrap();
-        assert!(real_link.status.success());
-        let real_link = String::from_utf8(real_link.stdout).unwrap();
-        let search_path = env::var_os("PATH").unwrap();
-        let search_path =
-            env::join_paths(std::iter::once(tools).chain(env::split_paths(&search_path))).unwrap();
         let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
         let output = Command::new("sh")
-            .args(["-c", "umask 0066; exec sh \"$@\"", "publication-test"])
-            .arg(&hook.cargo)
-            .args(arguments)
-            .env("PATH", search_path)
+            .args([
+                "-c",
+                "umask 0066; exec \"$@\" 9>&1 >/dev/null",
+                "publication-test",
+            ])
+            .arg(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "hook::tests::a_directory_arriving_at_publication_preserves_original_cargo",
+                "--nocapture",
+            ])
+            .env("HOOK_TEST_NATIVE_SHIM", &hook.cargo)
+            .env("HOOK_TEST_NATIVE_PARENT", &parent)
             .env("POSIXLY_CORRECT", "1")
             .env("HOOK_TEST_OBSERVATIONS", &observations)
-            .env("HOOK_TEST_REAL_LINK", real_link.trim_end())
             .env_remove("CARGOTILE_NESTED")
             .env_remove("CARGO_TERM_PROGRESS_WHEN")
             .env_remove("CARGO_TERM_PROGRESS_WIDTH")
@@ -1958,13 +3257,7 @@ mod tests {
     /// Whether the shim's exemption arm names this subcommand. The arm
     /// lists several, so what matters is that this one is among them
     /// rather than what the whole line reads.
-    fn shim_passes_through(subcommand: &str) -> bool {
-        SHIM_SOURCE.lines().any(|line| {
-            line.strip_prefix("    ")
-                .and_then(|arm| arm.strip_suffix(')'))
-                .is_some_and(|arm| arm.split('|').any(|name| name.trim() == subcommand))
-        })
-    }
+    fn shim_passes_through(subcommand: &str) -> bool { !capture_requested(&[subcommand.into()]) }
 
     /// The grid is reachable as `cargo tile`, which puts it in front of
     /// the shim like anything else. Capturing it would run a terminal UI
@@ -2072,7 +3365,10 @@ mod tests {
             ]
         ));
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
         assert!(matches!(
             inspect_shim(&hook.real).unwrap(),
@@ -2119,7 +3415,10 @@ mod tests {
             fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
             written
         );
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
     }
 
@@ -2131,7 +3430,7 @@ mod tests {
         hook.install().unwrap();
         let written = mark_old_mtime(&hook.cargo);
         let length = fs::metadata(&hook.cargo).unwrap().len();
-        let mut stale = SHIM_SOURCE.as_bytes().to_vec();
+        let mut stale = hook.installed_bytes();
         stale.rotate_right(1);
         fs::write(&hook.cargo, &stale).unwrap();
         assert_eq!(mark_old_mtime(&hook.cargo), written);
@@ -2139,7 +3438,10 @@ mod tests {
 
         assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Refreshed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
 
@@ -2158,7 +3460,10 @@ mod tests {
     /// and retain the saved binary's contents.
     fn assert_working_install(hook: &Hook) {
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert_eq!(
             fs::read_to_string(&hook.real).unwrap(),
             HOOK_TEST_REAL_CARGO
@@ -2230,7 +3535,10 @@ mod tests {
         fs::remove_dir(&hook.staging).unwrap();
         assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
 
@@ -2258,37 +3566,48 @@ mod tests {
     /// untouched while another operation owns their installation lock.
     #[test]
     fn removing_with_a_held_lock_leaves_the_toolchain_untouched() {
-        for state in [HookState::Installed, HookState::Repairable] {
-            let (_home, hook) = interrupted_toolchain();
-            if state == HookState::Installed {
-                hook.install().unwrap();
-            }
-            let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-            let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+        thread::scope(|scope| {
+            let cases = [HookState::Installed, HookState::Repairable].map(|state| {
+                scope.spawn(move || {
+                    let (_home, hook) = interrupted_toolchain();
+                    if state == HookState::Installed {
+                        hook.install().unwrap();
+                    }
+                    let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+                    let installation_lock =
+                        HookInstallationLock::acquire(lock_path.clone()).unwrap();
 
-            assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
-            assert_eq!(hook.state().unwrap(), state);
-            assert_eq!(
-                fs::read_to_string(&hook.real).unwrap(),
-                HOOK_TEST_REAL_CARGO
-            );
-            if state == HookState::Installed {
-                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
-            } else {
-                assert!(!hook.cargo.exists());
-            }
-            assert!(!hook.staging.exists());
-            assert!(lock_path.exists());
+                    assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
+                    assert_eq!(hook.state().unwrap(), state);
+                    assert_eq!(
+                        fs::read_to_string(&hook.real).unwrap(),
+                        HOOK_TEST_REAL_CARGO
+                    );
+                    if state == HookState::Installed {
+                        assert_eq!(
+                            fs::read_to_string(&hook.cargo).unwrap(),
+                            hook.installed_source()
+                        );
+                    } else {
+                        assert!(!hook.cargo.exists());
+                    }
+                    assert!(!hook.staging.exists());
+                    assert!(lock_path.exists());
 
-            drop(installation_lock);
-            assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
-            assert_eq!(
-                fs::read_to_string(&hook.cargo).unwrap(),
-                HOOK_TEST_REAL_CARGO
-            );
-            assert!(!hook.real.exists());
-            assert!(!lock_path.exists());
-        }
+                    drop(installation_lock);
+                    assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+                    assert_eq!(
+                        fs::read_to_string(&hook.cargo).unwrap(),
+                        HOOK_TEST_REAL_CARGO
+                    );
+                    assert!(!hook.real.exists());
+                    assert!(!lock_path.exists());
+                })
+            });
+            for case in cases {
+                case.join().unwrap();
+            }
+        });
     }
 
     /// Starting from the interrupted-install state must preserve an
@@ -2328,7 +3647,10 @@ mod tests {
             HookState::Installed | HookState::Absent
         ));
         if hook.real.exists() {
-            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+            assert_eq!(
+                fs::read_to_string(&hook.cargo).unwrap(),
+                hook.installed_source()
+            );
             assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
         } else {
             assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
@@ -2379,14 +3701,22 @@ mod tests {
 
     #[test]
     fn removing_gives_the_real_cargo_its_name_back() {
-        let real = "\u{7f}ELF the one and only real cargo";
-        let (_home, hook) = toolchain(real);
-        hook.install().unwrap();
+        for interrupted in [false, true] {
+            let real = "\u{7f}ELF the one and only real cargo";
+            let (_home, hook) = toolchain(real);
+            hook.install().unwrap();
 
-        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
-        assert_eq!(hook.state().unwrap(), HookState::Absent);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
-        assert!(!hook.real.exists());
+            if interrupted {
+                fs::rename(&hook.real, &hook.cargo).unwrap();
+                assert_eq!(hook.remove().unwrap(), HookOperationOutcome::AlreadyAbsent);
+            } else {
+                assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+            }
+            assert!(!hook.runner_path().exists());
+            assert_eq!(hook.state().unwrap(), HookState::Absent);
+            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
+            assert!(!hook.real.exists());
+        }
     }
 
     #[test]
@@ -2408,7 +3738,10 @@ mod tests {
 
         assert_eq!(hook.state().unwrap(), HookState::Orphaned);
         assert_eq!(hook.install().unwrap(), HookOperationOutcome::Orphaned);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
         assert!(!hook.real.exists());
         assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Orphaned);
     }
@@ -2422,7 +3755,10 @@ mod tests {
         hook.install().unwrap();
 
         assert!(!hook.staging.exists());
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
     }
 
     /// A rustup home holding one toolchain per entry, each with a cargo
@@ -2472,7 +3808,7 @@ mod tests {
     /// Preserve the filesystem assertions from the three startup reader scenarios.
     #[test]
     fn startup_preserves_newer_and_truncated_shims_with_separate_failures() {
-        let newer = SUPPORTED_REGISTRATION_VERSION + 1;
+        let newer = CAPTURE_SHIM_VERSION + 1;
         let header = format!("#!/bin/sh\n# {SHIM_MARKER}\n{SHIM_VERSION_PREFIX}{newer}");
         for (contents, failures) in [
             (format!("{header}\n"), Vec::new()),
@@ -2513,7 +3849,7 @@ mod tests {
                     vec![NewerShim {
                         toolchain: "a-newer".into(),
                         installed: newer,
-                        supported: SUPPORTED_REGISTRATION_VERSION,
+                        supported: CAPTURE_SHIM_VERSION,
                     }]
                 );
                 assert_eq!(startup.failed.len(), hooks.len() - 1);
@@ -2593,7 +3929,10 @@ mod tests {
         let startup = stand_up(&hooks);
 
         assert_eq!(startup.refreshed, vec!["stable-test".to_owned()]);
-        assert_eq!(fs::read_to_string(&hooks[0].cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hooks[0].cargo).unwrap(),
+            hooks[0].installed_source()
+        );
         assert_eq!(
             fs::read_to_string(&hooks[0].real).unwrap(),
             "\u{7f}ELF stable"
@@ -2644,5 +3983,405 @@ mod tests {
         fs::create_dir_all(toolchain.join(TOOLCHAIN_BIN_DIR)).unwrap();
 
         assert!(matches!(Hook::at(&toolchain), HookDiscovery::AbsentCargo));
+    }
+    #[test]
+    fn an_installed_runner_has_an_inode_separate_from_its_installer() {
+        for stale_staging in [false, true] {
+            let (_home, hook) = toolchain(CARGO_NAME);
+            if stale_staging {
+                fs::write(
+                    hook.runner_path().with_extension("staging"),
+                    b"interrupted runner",
+                )
+                .unwrap();
+            }
+            hook.install().unwrap();
+            assert!(!hook.runner_path().with_extension("staging").exists());
+            let installer = fs::metadata(native_fixture::executable().unwrap()).unwrap();
+            let runner = fs::metadata(hook.cargo.with_file_name("cargo-tile-capture")).unwrap();
+            assert_ne!(
+                (runner.dev(), runner.ino()),
+                (installer.dev(), installer.ino()),
+                "temporary toolchain paths must not alias the installer's executable vnode"
+            );
+            let output = Command::new(hook.cargo.with_file_name("cargo-tile-capture"))
+                .arg("--version")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stdout.starts_with(b"cargo-tile "));
+            assert!(output.stderr.is_empty(), "{output:?}");
+        }
+    }
+
+    #[test]
+    fn installing_repairs_a_runner_without_execute_permissions() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        let previous = fs::metadata(hook.cargo.with_file_name("cargo-tile-capture")).unwrap();
+        fs::set_permissions(
+            hook.cargo.with_file_name("cargo-tile-capture"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert_eq!(
+            hook.install().unwrap(),
+            HookOperationOutcome::AlreadyCurrent
+        );
+        let output = Command::new(hook.cargo.with_file_name("cargo-tile-capture"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.starts_with(b"cargo-tile "));
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let repaired = fs::metadata(hook.cargo.with_file_name("cargo-tile-capture")).unwrap();
+        assert_ne!(
+            (previous.dev(), previous.ino()),
+            (repaired.dev(), repaired.ino())
+        );
+        assert_eq!(repaired.mode() & 0o777, SHIM_MODE);
+    }
+
+    #[test]
+    fn installing_repairs_runner_modes_that_differ_from_the_installed_mode() {
+        assert_install_repairs_runner_mode(0o645);
+    }
+
+    #[test]
+    fn installing_repairs_a_runner_missing_group_and_other_execution() {
+        assert_install_repairs_runner_mode(0o744);
+    }
+
+    fn assert_install_repairs_runner_mode(mode: u32) {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        let previous = fs::metadata(hook.cargo.with_file_name("cargo-tile-capture")).unwrap();
+        fs::set_permissions(
+            hook.cargo.with_file_name("cargo-tile-capture"),
+            fs::Permissions::from_mode(mode),
+        )
+        .unwrap();
+        assert_eq!(
+            hook.install().unwrap(),
+            HookOperationOutcome::AlreadyCurrent
+        );
+        let repaired = fs::metadata(hook.cargo.with_file_name("cargo-tile-capture")).unwrap();
+        assert_eq!(repaired.mode() & 0o7777, SHIM_MODE, "repair {mode:o}");
+        assert_ne!(
+            (previous.dev(), previous.ino()),
+            (repaired.dev(), repaired.ino())
+        );
+        let output = Command::new(hook.cargo.with_file_name("cargo-tile-capture"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{mode:o}: {output:?}");
+        assert_eq!(
+            output.stdout,
+            format!("cargo-tile {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+        );
+        assert_eq!(output.stderr, b"");
+    }
+
+    #[test]
+    fn a_foreign_runner_refuses_install_before_cargo_moves() {
+        let (_home, hook) = toolchain("original cargo");
+        fs::write(
+            hook.cargo.with_file_name("cargo-tile-capture"),
+            b"foreign runner",
+        )
+        .unwrap();
+        assert_eq!(hook.install().unwrap_err().kind(), ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&hook.cargo).unwrap(), b"original cargo");
+        assert!(!hook.real.exists());
+        assert_eq!(
+            fs::read(hook.cargo.with_file_name("cargo-tile-capture")).unwrap(),
+            b"foreign runner"
+        );
+    }
+
+    #[test]
+    fn uninstall_keeps_a_foreign_runner_beside_a_version_three_shim() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        fs::rename(&hook.cargo, &hook.real).unwrap();
+        fs::write(
+            &hook.cargo,
+            "#!/bin/sh\n# cargo-tile-capture-shim\n# cargo-tile-shim-version: 3\n",
+        )
+        .unwrap();
+        fs::write(
+            hook.cargo.with_file_name("cargo-tile-capture"),
+            b"foreign runner",
+        )
+        .unwrap();
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+        assert_eq!(fs::read(&hook.cargo).unwrap(), CARGO_NAME.as_bytes());
+        assert_eq!(
+            fs::read(hook.cargo.with_file_name("cargo-tile-capture")).unwrap(),
+            b"foreign runner"
+        );
+    }
+
+    #[test]
+    fn installing_version_four_updates_a_version_three_shim() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        fs::write(
+            &hook.cargo,
+            "#!/bin/sh\n# cargo-tile-capture-shim\n# cargo-tile-shim-version: 3\n",
+        )
+        .unwrap();
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Refreshed);
+        assert_eq!(
+            fs::read_to_string(&hook.cargo).unwrap(),
+            hook.installed_source()
+        );
+        assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+        assert!(matches!(
+            shim_version(&fs::read(&hook.cargo).unwrap()).unwrap(),
+            ShimVersion::Versioned(4)
+        ));
+    }
+
+    /// Execute both entry paths and check their protocol arguments.
+    #[test]
+    fn the_capture_script_uses_the_native_entry_protocol_words() {
+        use crate::constants::CAPTURE_ROOT;
+        use crate::constants::CAPTURE_RUNNER_NAME;
+        use crate::constants::CAPTURE_SHIM_ARGUMENT;
+        use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
+
+        let (_home, hook) = toolchain("#!/bin/sh\nprintf original >&2\nexit 37\n");
+        fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        hook.install().unwrap();
+        let runner = hook.cargo.with_file_name(CAPTURE_RUNNER_NAME);
+        fs::write(&runner, "#!/bin/sh\nprintf '%s\\000' \"$@\" >&2\nexit 43\n").unwrap();
+        fs::set_permissions(&runner, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        for (command, flag) in [
+            ("exec \"$@\"", CAPTURE_SHIM_ARGUMENT),
+            ("exec \"$@\" 1>&-", CAPTURE_SHIM_PASSTHROUGH_ARGUMENT),
+        ] {
+            let output = Command::new("/bin/sh")
+                .args(["-c", command, "entry-protocol"])
+                .arg(&hook.cargo)
+                .args(["build", "a b", ""])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(43), "{output:?}");
+            let expected: Vec<u8> = [
+                OsStr::new(flag),
+                hook.cargo.as_os_str(),
+                OsStr::new(CAPTURE_ROOT),
+                OsStr::new("build"),
+                OsStr::new("a b"),
+                OsStr::new(""),
+            ]
+            .into_iter()
+            .flat_map(|word| word.as_bytes().iter().copied().chain([0]))
+            .collect();
+            assert_eq!(output.stderr, expected);
+            assert_eq!(output.stdout, b"");
+        }
+    }
+
+    #[test]
+    fn a_replaced_shared_parent_invalidates_the_setup_receipt() {
+        let directory = tempdir().unwrap();
+        let parent = directory.path().join("capture");
+        CaptureDirectories::prepare(&parent, "boot-a").unwrap();
+        let prior = directory.path().join("prior");
+        fs::rename(&parent, &prior).unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        for entry in fs::read_dir(&prior).unwrap() {
+            let entry = entry.unwrap();
+            fs::rename(entry.path(), parent.join(entry.file_name())).unwrap();
+        }
+        CaptureDirectories::prepare(&parent, "boot-a").unwrap();
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o7777,
+            0o1777
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_non_utf8_install_path_executes_the_installed_runner() {
+        let home = tempdir().unwrap();
+        let toolchain = home.path().join(OsStr::from_bytes(b"toolchain-\xff-'"));
+        let binaries = toolchain.join("bin");
+        fs::create_dir_all(&binaries).unwrap();
+        fs::write(
+            binaries.join("cargo"),
+            b"#!/bin/sh\nprintf 'cargo version\n'\nexit 37\n",
+        )
+        .unwrap();
+        fs::set_permissions(binaries.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
+        let hook = discovered_hook(&toolchain);
+        hook.install().unwrap();
+        let output = Command::new(&hook.cargo).arg("--version").output().unwrap();
+        assert_eq!(output.status.code(), Some(37), "{output:?}");
+        assert_eq!(output.stdout, b"cargo version\n");
+    }
+
+    #[test]
+    fn a_non_utf8_runner_path_is_preserved_in_the_installed_entry() {
+        let path = Path::new(OsStr::from_bytes(b"/toolchain-\xff-'/cargo-tile-capture"));
+        let source = capture_shell_source(path);
+        let entry = source
+            .split(|byte| *byte == b'\n')
+            .find(|line| line.starts_with(b"exec "))
+            .unwrap();
+        let mut script = b"set -- ".to_vec();
+        script.extend_from_slice(&entry[b"exec ".len()..]);
+        script.extend_from_slice(b"\nprintf '%s' \"$1\"\n");
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(OsStr::from_bytes(&script))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, path.as_os_str().as_bytes());
+    }
+
+    #[test]
+    fn the_linux_pty_command_passes_non_utf8_arguments_to_cargo() {
+        let home = tempdir().unwrap();
+        let executable = home.path().join(OsStr::from_bytes(b"cargo-'"));
+        fs::write(&executable, b"#!/bin/sh\nprintf '%s' \"$1\"\nprintf '%s\\000%s\\000%s' \"$PWD\" \"${HOME-unset}\" \"$CAPTURE_CONTEXT_VALUE\" > \"$CAPTURE_CONTEXT_FILE\"\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let argument = OsStr::from_bytes(b"argument-\xff-' with space");
+        let mut cargo = Command::new(&executable);
+        cargo
+            .arg(argument)
+            .env_remove("HOME")
+            .env("CAPTURE_CONTEXT_VALUE", "retained value")
+            .env("CAPTURE_CONTEXT_FILE", home.path().join("context"))
+            .current_dir(home.path());
+        let script = CaptureScript::UtilLinux.command(&cargo, &home.path().join("capture.log"));
+        let command = script.get_args().nth(4).unwrap();
+        let mut shell = Command::new("sh");
+        copy_command_context(&script, &mut shell);
+        let output = shell.arg("-c").arg(command).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, argument.as_bytes());
+        let mut expected = home
+            .path()
+            .canonicalize()
+            .unwrap()
+            .as_os_str()
+            .as_bytes()
+            .to_vec();
+        expected.extend_from_slice(b"\0unset\0retained value");
+        assert_eq!(fs::read(home.path().join("context")).unwrap(), expected);
+    }
+
+    #[test]
+    fn native_publication_preserves_a_directory_that_wins_the_registration_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("capture");
+        let mut collision = PathBuf::new();
+        let result = CapturePublication::prepare_at_publication(
+            &parent,
+            &["build".into()],
+            |staging, registration| {
+                assert_eq!(fs::metadata(staging)?.permissions().mode() & 0o777, 0o644);
+                fs::create_dir(registration)?;
+                fs::write(registration.join("keep"), b"preserved")?;
+                collision = registration.to_owned();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(collision.join("keep")).unwrap(), b"preserved");
+        assert_eq!(fs::read_dir(collision).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn native_publication_keeps_complete_readable_staging_after_a_boundary_sweep() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("capture");
+        let mut staged_bytes = Vec::new();
+        let publication = CapturePublication::prepare_at_publication(
+            &parent,
+            &["build".into(), "a b".into(), "".into()],
+            |staging, registration| {
+                assert_eq!(fs::metadata(staging)?.permissions().mode() & 0o7777, 0o644);
+                staged_bytes = fs::read(staging)?;
+                assert!(!registration.exists());
+                // A sweep at this boundary sees no published log to preserve.
+                let root = registration
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap();
+                for entry in fs::read_dir(root)? {
+                    let entry = entry?;
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "log")
+                    {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(&publication.registration.0).unwrap(), staged_bytes);
+        assert_eq!(
+            fs::metadata(&publication.log.0)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o644
+        );
+    }
+
+    #[test]
+    fn native_setup_reuses_its_boot_receipt_and_rechecks_replaced_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("capture");
+        let first = CaptureDirectories::prepare(&parent, "boot-a").unwrap();
+        let receipt = parent.join(format!(".setup-v4-{}", rustix::process::getuid().as_raw()));
+        let past = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&receipt)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .unwrap();
+        let written = fs::metadata(&receipt).unwrap().modified().unwrap();
+        CaptureDirectories::prepare(&parent, "boot-a").unwrap();
+        assert_eq!(fs::metadata(&receipt).unwrap().modified().unwrap(), written);
+        let old = fs::read(&receipt).unwrap();
+        CaptureDirectories::prepare(&parent, "boot-b").unwrap();
+        assert_ne!(fs::read(&receipt).unwrap(), old);
+        fs::remove_dir(&first.pids).unwrap();
+        std::os::unix::fs::symlink(directory.path(), &first.pids).unwrap();
+        assert!(CaptureDirectories::prepare(&parent, "boot-b").is_err());
+    }
+
+    #[test]
+    fn the_installed_shim_skips_every_valued_global_option() {
+        for (option, scope) in COMMAND_VALUED_OPTIONS {
+            if matches!(scope, ValuedOptionScope::Global) {
+                assert!(!capture_requested(&[
+                    (*option).into(),
+                    "build".into(),
+                    "metadata".into()
+                ]));
+                assert!(capture_requested(&[
+                    (*option).into(),
+                    "metadata".into(),
+                    "build".into()
+                ]));
+            }
+        }
     }
 }

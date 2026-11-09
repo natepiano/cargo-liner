@@ -158,13 +158,6 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn lint_owner_path(&self, path: &Path) -> Option<&AbsolutePath> {
-        match self {
-            Self::Workspace(ws) => lint_owner_in_workspace(ws, path),
-            Self::Package(pkg) => lint_owner_in_package(pkg, path),
-        }
-    }
-
     pub(crate) fn vendored_at_path(&self, path: &Path) -> Option<&VendoredPackage> {
         match self {
             Self::Workspace(ws) => vendored_in_workspace(ws, path),
@@ -510,17 +503,6 @@ pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
 
 pub(super) fn lint_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a LintRuns> {
     (pkg.path() == path).then_some(&pkg.rust.lint_runs)
-}
-
-pub(super) fn lint_owner_in_workspace<'a>(
-    ws: &'a Workspace,
-    path: &Path,
-) -> Option<&'a AbsolutePath> {
-    lint_in_workspace(ws, path).map(|_| ws.path())
-}
-
-pub(super) fn lint_owner_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a AbsolutePath> {
-    lint_in_package(pkg, path).map(|_| pkg.path())
 }
 
 pub(super) fn lint_in_workspace_mut<'a>(

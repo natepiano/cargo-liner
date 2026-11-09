@@ -213,21 +213,22 @@ impl ModuleDirectories {
         }
     }
 
-    /// Every file `declaration` could name, most specific first.
-    ///
-    /// `#[path]` wins over the directory default; `#[cfg_attr(_, path = ...)]`
-    /// adds a candidate per configuration, since this walk does not evaluate
-    /// `cfg` predicates. Candidates that do not exist are the caller's to drop.
+    /// Files that `declaration` can name, with explicit paths first.
+    /// The default prefers an existing sibling file over a directory module.
+    /// Conditional attributes retain every candidate because this walk does not evaluate `cfg`
+    /// predicates. The caller discards files that do not exist.
     pub(crate) fn declared_module_files(&self, declaration: &ItemMod) -> Vec<PathBuf> {
         let module_name = declaration.ident.unraw().to_string();
         let (mut candidates, conditional) = match ModuleMountPaths::from(declaration) {
-            ModuleMountPaths::Default { conditional } => (
-                vec![
-                    self.module.join(format!("{module_name}.rs")),
-                    self.module.join(module_name).join("mod.rs"),
-                ],
-                conditional,
-            ),
+            ModuleMountPaths::Default { conditional } => {
+                let file = self.module.join(format!("{module_name}.rs"));
+                let candidates = if file.is_file() {
+                    vec![file]
+                } else {
+                    vec![file, self.module.join(module_name).join("mod.rs")]
+                };
+                (candidates, conditional)
+            },
             ModuleMountPaths::Explicit {
                 direct,
                 conditional,
@@ -378,6 +379,19 @@ impl ModuleMap {
         self.declarations
             .iter()
             .map(|(file, declared)| (file.as_path(), declared.mounts.module_path()))
+    }
+
+    /// Files that declare an ancestor of `module_path`, with each declared mount.
+    pub(crate) fn module_ancestors<'a>(
+        &'a self,
+        module_path: &'a [String],
+    ) -> impl Iterator<Item = (&'a Path, &'a [String])> {
+        self.declarations.iter().flat_map(move |(file, declared)| {
+            std::iter::once(&declared.mounts.first)
+                .chain(&declared.mounts.additional)
+                .filter(move |mount| module_path.starts_with(mount))
+                .map(move |mount| (file.as_path(), mount.as_slice()))
+        })
     }
 
     /// Whether every `mod` declaration chain reaching `file` carries

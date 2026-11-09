@@ -46,12 +46,14 @@ pub use git_data::GitCheckout;
 pub use git_data::GitData;
 pub(in crate::tui) use git_data::GitProbe;
 pub use git_data::GitRow;
+pub use git_data::GithubStars;
 #[cfg(test)]
 pub use git_data::HeadRelation;
 pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
 pub use git_data::PullRequestSectionState;
+pub use git_data::QuotaObservation;
 pub use git_data::RemoteRow;
 pub(in crate::tui) use git_data::RemoteRows;
 pub use git_data::WorktreeInfo;
@@ -59,11 +61,14 @@ pub use git_data::git_fields_from_data;
 pub use git_data::git_has_description_row;
 pub use git_data::git_row_at;
 pub use package_data::PackageData;
+pub use package_data::PackageDeletion;
 #[cfg(test)]
 pub use package_data::PackagePresence;
 pub use package_data::PackageRow;
 pub use package_data::PackageSection;
 pub(in crate::tui) use package_data::PackageVersion;
+#[cfg(test)]
+pub use package_data::WorktreeGroupSummary;
 pub use pending::CargoPackageInvocation;
 pub use pending::CiFetchKind;
 pub use pending::PendingCiFetch;
@@ -73,6 +78,7 @@ use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
+pub(super) use self::constants::CRATES_IO_LABELS;
 pub(super) use self::constants::CRATES_IO_UNREACHABLE;
 #[cfg(test)]
 pub(in crate::tui) use self::constants::HEAD_UNREADABLE_LABEL;
@@ -140,6 +146,8 @@ use crate::tui::app::App;
 use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
-use crate::tui::project_list_state::ProjectList;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::ServiceStatus;
+
+#[cfg(test)]
+mod rate_limit_tests;

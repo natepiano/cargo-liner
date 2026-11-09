@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `--fix` reuses workspace metadata during re-export convergence instead of starting another Cargo metadata command for each changed tree.
+- `--fix` keeps imports that name their own module instead of writing an empty `use` path. Nested modules and root re-exports remain valid.
+- `--fix` keeps a parent import when a child module uses its binding through a qualified path, including `super::` paths in macro arguments.
+- `--fix` keeps a function and its imports when formatted edits would exceed Clippy's function length limit.
+- `--fix` keeps a local import when a glob in its destination scope can supply the same binding or trait.
+- `--fix` preserves imports used by macro fields, macro bindings, field shorthand, and child modules, so rewritten code keeps its field syntax and bindings.
+- `--fix` preserves enclosing cfg conditions when it moves imports from associated functions and expressions to module scope.
+- On Linux, build scripts use the selected compiler's matching libraries, so compiler probes read stdin when a project pins another toolchain.
+- Keep one independent compiler wrapper copy for each mend run, so a reinstall cannot interrupt fix validation.
+- `--fix` removes the leading `::` when it shortens an absolute path to an imported name, so the path still resolves.
 - Use the rustc in mend's build sysroot for analysis and fix validation, including dependency builds. Projects can pin another Rust release without E0514. Different compiler versions keep separate artifact hashes in the same target directory, which increases initial build time and disk use.
+- Fixed cargo mend --fix removing module imports from files mounted with #[path].
 - `--fix` never writes the same import twice: every fixer's imports go through one owner, which keeps equal paths to one module as one binding, keeps a public or cfg-gated re-export, and declines a whole re-export change when any of its edits cannot be placed. Raw identifier spellings (`r#include!`, `#[r#path]`, `#[r#cfg_attr]`) now count as module mounts.
 - Keep mend’s progress counter running after forwarded compiler diagnostics.
 - Keep a shared source’s re-export when another package mounts it without authorizing the same rewrite; report the kept re-export as a skipped manual rewrite.

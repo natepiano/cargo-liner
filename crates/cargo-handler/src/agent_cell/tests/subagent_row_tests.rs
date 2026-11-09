@@ -357,7 +357,8 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         LineSubject::Agent(RoleLabel::Stated(HierarchyRole::Impl)),
         LineSubject::Agent(RoleLabel::ReviewFallback),
     ]) {
-        cell.lines.push(TreeLine {
+        cell.lines.push(TreeLine::new(TreeLineContent {
+            expansion: TreeMarker::Leaf,
             dispatch_label: DispatchLabel::Original,
             machine: "natedev",
             location: SessionLocation::SameMachine,
@@ -366,10 +367,11 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
             rails: Vec::new(),
             branch: Branch::Last,
             subject,
-        });
+        }));
     }
     let thread = child(0, ChildKind::Thread, None, "managed worker", MINUTE);
-    cell.lines.push(TreeLine {
+    cell.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -378,7 +380,7 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::ManagedThread(&thread, HierarchyRole::Test),
-    });
+    }));
     let rect = area(104, 12);
     let colors = FooterColors::parse("role.unassigned=purple\nrole.worker=bright-cyan");
     let mut buffer = Buffer::empty(rect);
@@ -432,10 +434,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
                 MINUTE,
             ),
             ChildRow {
-                kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::from_record(
-                    "general-purpose",
-                    "Review source changes",
-                )),
+                kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::Reviewer),
                 ..child(
                     0,
                     ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
@@ -474,7 +473,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
     assert_eq!(&words[..3], &["session", "type", "role"], "{headers}");
     for (name, expected_type, expected_role) in [
         ("cargo test", "shell", ""),
-        ("Review source changes", "subagent", "review"),
+        ("Review source changes", "subagent", "reviewer"),
         ("Do the requested work", "subagent", ""),
         ("seat task", "", "worker"),
         ("director", "", ""),

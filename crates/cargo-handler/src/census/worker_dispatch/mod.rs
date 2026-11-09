@@ -1,13 +1,15 @@
-//! Literal worker launcher commands and their roster-backed thread identities.
+//! Literal worker launchers and their checked staff identities.
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::collections::btree_map::Entry;
 use std::fs;
 use std::iter::Peekable;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Chars;
+use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -19,18 +21,44 @@ use serde::ser::SerializeStruct;
 
 use super::HierarchyRole;
 use super::RoleFallback;
+use super::activity::RunDirector;
 use super::classify::ProcessEntry;
+use super::hierarchy::FileRevision;
+use super::hierarchy::StaffMemberLookup;
+use super::hierarchy::StaffRoster;
+use super::hierarchy::StaffWorkerRole;
+use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
 use super::transcript::DirectoryChange;
 use super::transcript::InputDirectoryWatch;
+use crate::constants::DISPATCH_ASSIGN_PYTHON_SCRIPT;
+use crate::constants::DISPATCH_ASSIGN_SHELL_SCRIPT;
+use crate::constants::DISPATCH_CWD_FLAG;
+use crate::constants::DISPATCH_LEASE_FLAG;
+use crate::constants::DISPATCH_NAME_FLAG;
+use crate::constants::DISPATCH_POOL_FLAG;
+use crate::constants::DISPATCH_PROMPT_FILE_FLAG;
+use crate::constants::DISPATCH_PROMPT_FLAG;
+use crate::constants::DISPATCH_SLOT_FLAG;
+use crate::constants::MESSAGE_FILE_FLAG;
+use crate::constants::MESSAGE_FLAG;
 use crate::constants::REVIEW_JOB_HEADING;
-use crate::constants::SESSION_ROOTS;
+use crate::constants::SEAT_FLAG;
+use crate::constants::SESSION_DIRECTORY_FLAG;
 use crate::constants::UUID_TEXT_LENGTH;
 use crate::constants::WORKER_DOCUMENT_EXTENSION;
 use crate::constants::WORKER_LABEL;
 
-/// The roster filename inside a dispatch's session directory.
-const ROSTER_FILE: &str = "mesh_roster.json";
+mod options;
+mod sessions;
+
+use options::DispatchOptions;
+use options::DispatchPositionals;
+pub(super) use sessions::ManagedSession;
+pub(super) use sessions::SessionRoots;
+
+/// The legacy director identity inside a unit directory.
+pub(super) const DIRECTOR_FILE: &str = "director";
 const WORKER_FILE_PREFIX: &str = "impl_worker_";
 const CLAIM_FILE_PREFIX: &str = "impl_claim_";
 const POOL_PREAMBLE: &str = "You are a pooled reviewer for ";
@@ -48,11 +76,6 @@ const REVIEW_SCRIPTS: [&str; 2] = [
 ];
 const MESSENGER_SCRIPT: &str = ".claude/scripts/agents/codex_mesh.py";
 const PYTHON_INTERPRETERS: [&str; 3] = ["python", "python3", "py"];
-const MESSENGER_SEND: &str = "send";
-const SESSION_DIRECTORY_FLAG: &str = "--session-dir";
-const SEAT_FLAG: &str = "--to";
-const MESSAGE_FLAG: &str = "--message";
-const MESSAGE_FILE_FLAG: &str = "--message-file";
 const PROMPT_HEREDOC: &str = "cat <<";
 const PROMPT_CAT: &str = "cat";
 const PROMPT_SED: &str = "sed";
@@ -65,6 +88,7 @@ enum SeatSender {
     Implement,
     Review,
     Message,
+    Assign,
 }
 
 impl SeatSender {
@@ -73,8 +97,23 @@ impl SeatSender {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        let script = Path::new(script);
-        if program == LAUNCHER_INTERPRETER
+        let mut normalized = PathBuf::new();
+        for component in Path::new(script).components() {
+            match component {
+                Component::ParentDir => {
+                    normalized.pop();
+                },
+                Component::CurDir => {},
+                component => normalized.push(component.as_os_str()),
+            }
+        }
+        let script = normalized.as_path();
+        if (program == LAUNCHER_INTERPRETER && script.ends_with(DISPATCH_ASSIGN_SHELL_SCRIPT))
+            || (PYTHON_INTERPRETERS.contains(&program)
+                && script.ends_with(DISPATCH_ASSIGN_PYTHON_SCRIPT))
+        {
+            Ok(Self::Assign)
+        } else if program == LAUNCHER_INTERPRETER
             && LAUNCHER_SCRIPTS
                 .iter()
                 .any(|suffix| script.ends_with(suffix))
@@ -110,9 +149,22 @@ pub(crate) enum WorkerRole {
     Review,
     /// Repair a finding.
     Fix,
+    AstraDesigner,
+    AstraReviewer,
 }
 
 impl WorkerRole {
+    pub(super) const fn hierarchy(self) -> HierarchyRole {
+        match self {
+            Self::Impl => HierarchyRole::Impl,
+            Self::Test => HierarchyRole::Test,
+            Self::Review => HierarchyRole::Review,
+            Self::Fix => HierarchyRole::Fix,
+            Self::AstraDesigner => HierarchyRole::AstraDesigner,
+            Self::AstraReviewer => HierarchyRole::AstraReviewer,
+        }
+    }
+
     /// The role text shared by folded and managed worker rows.
     const fn text(self) -> &'static str {
         match self {
@@ -120,6 +172,8 @@ impl WorkerRole {
             Self::Test => "test",
             Self::Review => "review",
             Self::Fix => "fix",
+            Self::AstraDesigner => "astra-designer",
+            Self::AstraReviewer => "astra-reviewer",
         }
     }
 }
@@ -128,14 +182,28 @@ impl WorkerRole {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DispatchRole {
-    /// The roster or short seat name identifies a worker role.
+    /// The staff snapshot identifies a worker role.
     Worker(WorkerRole),
-    /// No supported worker role was recorded or inferred.
+    /// The staff row has no known role.
     #[default]
     Unroled,
 }
 
 impl DispatchRole {
+    const fn from_staff(role: StaffWorkerRole) -> Self {
+        match role {
+            StaffWorkerRole::Known(role) => Self::Worker(role),
+            StaffWorkerRole::Unknown => Self::Unroled,
+        }
+    }
+
+    const fn legacy(self) -> Self {
+        match self {
+            Self::Worker(WorkerRole::AstraDesigner | WorkerRole::AstraReviewer) => Self::Unroled,
+            role => role,
+        }
+    }
+
     /// The first role token wins after removing each token's trailing seat digits.
     fn from_short_seat(seat: &str) -> Self {
         seat.split(['-', '_'])
@@ -170,28 +238,21 @@ pub(crate) enum WorkerRoleSource {
     ReviewerLease,
     /// A management edge outranks every seat source.
     Hierarchy(HierarchyRole),
-    /// The session roster or its seat token resolved the dispatch's role.
+    /// The staff snapshot supplies the dispatch role.
     Dispatch(WorkerRole),
-    /// An unroled dispatch still has a recognizable seat token.
-    SeatToken(WorkerRole),
     /// No hierarchy or dispatch seat names a supported role.
     Unroled,
 }
 
 impl WorkerRoleSource {
-    /// Resolve hierarchy first, then the session's dispatch role and seat token.
-    pub(crate) fn resolve(input: WorkerRoleInput<'_>) -> Self {
+    /// Resolve hierarchy first, then the staff role on the dispatch.
+    pub(crate) const fn resolve(input: WorkerRoleInput<'_>) -> Self {
         match input {
             WorkerRoleInput::ReviewerLease => Self::ReviewerLease,
             WorkerRoleInput::Hierarchy(role) => Self::Hierarchy(role),
             WorkerRoleInput::Dispatch(DispatchLabel::Worker(dispatch)) => match dispatch.role {
                 DispatchRole::Worker(role) => Self::Dispatch(role),
-                DispatchRole::Unroled => {
-                    match DispatchRole::from_short_seat(&dispatch.short_seat) {
-                        DispatchRole::Worker(role) => Self::SeatToken(role),
-                        DispatchRole::Unroled => Self::Unroled,
-                    }
-                },
+                DispatchRole::Unroled => Self::Unroled,
             },
             WorkerRoleInput::Dispatch(DispatchLabel::Original) => Self::Unroled,
         }
@@ -202,20 +263,20 @@ impl WorkerRoleSource {
         match self {
             Self::ReviewerLease => WorkerRole::Review.text(),
             Self::Hierarchy(role) => role.text(),
-            Self::SeatToken(role) | Self::Dispatch(role) => role.text(),
+            Self::Dispatch(role) => role.text(),
             Self::Unroled => WORKER_LABEL,
         }
     }
 }
 
-/// A shell either remains ordinary work or names a roster-backed worker.
+/// A shell either remains ordinary work or names a checked worker.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkerDispatch {
     /// No worker identity could be established at scan time.
     #[default]
     Plain,
-    /// The launcher's seat and thread were found in its roster.
+    /// The staff snapshot identifies the launcher's worker.
     Worker(ResolvedWorkerDispatch),
 }
 
@@ -225,32 +286,48 @@ impl WorkerDispatch {
 }
 
 /// The agent family is part of the worker identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkerIdentity {
     CodexThread(String),
     ClaudeSession(String),
 }
 
+/// A checked staff ID stays stable when the worker name or current session changes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum DispatchStaffMembership {
+    Member(String),
+    #[default]
+    Unlisted,
+}
+
+impl From<Option<String>> for DispatchStaffMembership {
+    fn from(id: Option<String>) -> Self {
+        id.filter(|id| !id.trim().is_empty())
+            .map_or(Self::Unlisted, Self::Member)
+    }
+}
+
 /// A worker seat with the thread identity needed to join its shell and row.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(from = "ProbedWorkerDispatch")]
 pub(crate) struct ResolvedWorkerDispatch {
-    /// The complete seat key in the mesh roster.
+    /// The selected staff name or worker seat.
     seat:                String,
+    staff_member:        DispatchStaffMembership,
     /// The recorded thread belonging to that seat.
     pub(super) identity: WorkerIdentity,
     /// The extracted responsibility, or a preamble with no usable job.
     job:                 JobText,
     /// The seat with its worktree directory prefix removed.
     short_seat:          String,
-    /// The roster responsibility, falling back to the short seat's role stem.
+    /// The staff role for the current worker session.
     role:                DispatchRole,
 }
 
 impl Serialize for ResolvedWorkerDispatch {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut record = serializer.serialize_struct("ResolvedWorkerDispatch", 6)?;
+        let mut record = serializer.serialize_struct("ResolvedWorkerDispatch", 8)?;
         record.serialize_field("seat", &self.seat)?;
         record.serialize_field(
             "thread_id",
@@ -262,7 +339,13 @@ impl Serialize for ResolvedWorkerDispatch {
         record.serialize_field("identity", &self.identity)?;
         record.serialize_field("job", &self.job)?;
         record.serialize_field("short_seat", &self.short_seat)?;
-        record.serialize_field("role", &self.role)?;
+        record.serialize_field("role", &self.role.legacy())?;
+        record.serialize_field("staff_role", &self.role)?;
+        let staff_id = match &self.staff_member {
+            DispatchStaffMembership::Member(id) => Some(id),
+            DispatchStaffMembership::Unlisted => None,
+        };
+        record.serialize_field("staff_id", &staff_id)?;
         record.end()
     }
 }
@@ -284,6 +367,10 @@ struct ProbedWorkerDispatch {
     /// Absence exists only at this external boundary; explicit unroled stays unroled.
     #[serde(default)]
     role:       ProbedRole,
+    #[serde(default)]
+    staff_role: ProbedRole,
+    #[serde(default)]
+    staff_id:   Option<String>,
 }
 
 /// Only an omitted probe field triggers inference; explicit values must parse.
@@ -304,12 +391,16 @@ impl<'de> Deserialize<'de> for ProbedRole {
 
 impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
     fn from(probe: ProbedWorkerDispatch) -> Self {
-        let role = match probe.role {
-            ProbedRole::Unrecorded => DispatchRole::from_short_seat(&probe.short_seat),
+        let role = match probe.staff_role {
             ProbedRole::Recorded(role) => role,
+            ProbedRole::Unrecorded => match probe.role {
+                ProbedRole::Unrecorded => DispatchRole::from_short_seat(&probe.short_seat),
+                ProbedRole::Recorded(role) => role,
+            },
         };
         Self {
             seat: probe.seat,
+            staff_member: DispatchStaffMembership::from(probe.staff_id),
             identity: probe
                 .identity
                 .unwrap_or(WorkerIdentity::CodexThread(probe.thread_id)),
@@ -321,20 +412,63 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
 }
 
 impl ResolvedWorkerDispatch {
-    /// The roster seat survives replacement of its current worker process or thread.
-    pub(crate) fn seat(&self) -> &str { &self.seat }
+    /// A live record or staff member supplies the worker seat.
+    pub(super) fn for_run(
+        seat: &str,
+        identity: WorkerIdentity,
+        staff: &StaffRoster,
+        worktree: &ThreadWorktree,
+    ) -> Result<Self, NotWorkerDispatch> {
+        let seat = seat.trim();
+        if seat.is_empty() {
+            return Err(NotWorkerDispatch);
+        }
+        let (role, staff_member) = match &identity {
+            WorkerIdentity::ClaudeSession(id) | WorkerIdentity::CodexThread(id) => {
+                match staff.member(id) {
+                    StaffMemberLookup::Managed { member, .. } | StaffMemberLookup::Root(member) => {
+                        (
+                            DispatchRole::from_staff(member.role),
+                            DispatchStaffMembership::Member(member.id.to_owned()),
+                        )
+                    },
+                    StaffMemberLookup::Unavailable => {
+                        (DispatchRole::Unroled, DispatchStaffMembership::Unlisted)
+                    },
+                }
+            },
+        };
+        Ok(Self {
+            seat: seat.to_owned(),
+            staff_member,
+            identity,
+            job: JobText::Unrecorded,
+            short_seat: worktree
+                .seat_prefix()
+                .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
+                .unwrap_or(seat)
+                .to_owned(),
+            role,
+        })
+    }
+
+    /// The worker seat survives replacement of its current session.
+    pub(super) fn seat(&self) -> &str { &self.seat }
+
+    /// Selection uses the checked staff ID; older probes retain their seat key.
+    pub(crate) fn selection_key(&self) -> &str {
+        match &self.staff_member {
+            DispatchStaffMembership::Member(id) => id,
+            DispatchStaffMembership::Unlisted => self.seat(),
+        }
+    }
 
     /// The worker row's display name, on one line however the job was written.
     pub(crate) fn label(&self) -> String { self.job.label(&self.short_seat) }
     pub(super) const fn fallback(&self) -> super::RoleFallback {
         match self.role {
             DispatchRole::Unroled => RoleFallback::None,
-            DispatchRole::Worker(role) => RoleFallback::Worker(match role {
-                WorkerRole::Impl => HierarchyRole::Impl,
-                WorkerRole::Test => HierarchyRole::Test,
-                WorkerRole::Review => HierarchyRole::Review,
-                WorkerRole::Fix => HierarchyRole::Fix,
-            }),
+            DispatchRole::Worker(role) => RoleFallback::Worker(role.hierarchy()),
         }
     }
 }
@@ -354,13 +488,6 @@ pub(crate) enum WorkerTask {
     Reviewer { name: String, job: JobText },
 }
 impl WorkerTask {
-    /// Resolve a task line once at the rollout boundary.
-    pub(crate) fn from_prompt(prompt: &str) -> Self {
-        match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
-            JobText::Unrecorded => Self::RoleOnly,
-            JobText::Recorded(job) => Self::Task(job),
-        }
-    }
     /// A final role names every thread, including unreadable or old raw-id rows.
     pub(crate) fn label(&self, role: WorkerRoleSource, original: &str) -> String {
         match self {
@@ -376,6 +503,17 @@ impl WorkerTask {
                     original.to_owned()
                 }
             },
+        }
+    }
+}
+
+#[cfg(test)]
+impl WorkerTask {
+    /// Build task fixtures with the prompt parser used by `WorkerNames`.
+    pub(crate) fn from_prompt(prompt: &str) -> Self {
+        match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
+            JobText::Unrecorded => Self::RoleOnly,
+            JobText::Recorded(job) => Self::Task(job),
         }
     }
 }
@@ -412,42 +550,28 @@ struct SeatClaim {
     worker: String,
 }
 
-/// The directories under which task prompts can identify worker sessions.
-#[derive(Debug)]
-pub(super) struct SessionRoots {
-    directories: Vec<PathBuf>,
-}
-
-impl SessionRoots {
-    pub(super) fn new(directories: impl IntoIterator<Item = PathBuf>) -> Self {
-        Self {
-            directories: directories.into_iter().collect(),
-        }
-    }
-
-    /// Production discovery keeps the configured unit and delegate roots in order.
-    pub(super) fn production() -> Self { Self::new(SESSION_ROOTS.map(PathBuf::from)) }
-}
-
-/// A roster cached by its file modification time, never searched globally.
+/// One shared staff snapshot and the current prompt and seat documents.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
+    staff:            Arc<StaffRoster>,
+    unit_workers:     BTreeMap<PathBuf, UnitWorkerCandidates>,
     #[cfg(test)]
-    prompt_parses:   usize,
-    prompts:         BTreeMap<String, WorkerPrompt>,
-    directories:     BTreeMap<PathBuf, SeatDirectory>,
-    jobs:            BTreeMap<String, JobText>,
+    candidate_builds: usize,
     #[cfg(test)]
-    directory_reads: usize,
-    rosters:         BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
-    seats:           BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
+    prompt_parses:    usize,
+    prompts:          BTreeMap<String, WorkerPrompt>,
+    directories:      BTreeMap<PathBuf, SeatDirectory>,
+    jobs:             BTreeMap<String, JobText>,
+    #[cfg(test)]
+    directory_reads:  usize,
+    seats:            BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
 }
 
 /// A watch owns the identity documents currently present in one session.
 #[derive(Debug)]
 struct SeatDirectory {
     watch:     InputDirectoryWatch,
-    documents: BTreeMap<PathBuf, SeatDocument>,
+    documents: Arc<BTreeMap<PathBuf, SeatDocument>>,
 }
 
 /// A prompt revision owns both its session paths and its parsed task.
@@ -460,9 +584,19 @@ struct WorkerPrompt {
 }
 
 impl WorkerNames {
+    /// Use the staff snapshot from this scan.
+    pub(super) fn set_staff(&mut self, staff: Arc<StaffRoster>) {
+        if !Arc::ptr_eq(&self.staff, &staff) {
+            self.unit_workers.clear();
+            self.staff = staff;
+        }
+    }
+
+    pub(super) fn staff_snapshot(&self) -> Arc<StaffRoster> { Arc::clone(&self.staff) }
     /// Drop watches and identity documents for sessions the census no longer sees.
     pub(super) fn retain_sessions(&mut self, sessions: &HashSet<PathBuf>) {
         self.directories.retain(|path, _| sessions.contains(path));
+        self.unit_workers.retain(|path, _| sessions.contains(path));
         self.seats.retain(|path, _| {
             path.parent()
                 .is_some_and(|parent| sessions.contains(parent))
@@ -496,6 +630,22 @@ impl WorkerNames {
         &cached.1
     }
 
+    /// Resolve only dispatches with a known session directory.
+    pub(super) fn resolve_dispatch(
+        &mut self,
+        dispatch: &ParsedDispatch,
+        processes: &[ProcessEntry],
+        pid: u32,
+    ) -> WorkerDispatch {
+        let Ok(directory) = dispatch.session_directory() else {
+            return WorkerDispatch::Plain;
+        };
+        match self.resolve_claude(dispatch, processes, pid) {
+            WorkerDispatch::Plain => dispatch.resolve_staff(self.staff_workers(directory), pid),
+            worker @ WorkerDispatch::Worker(_) => worker,
+        }
+    }
+
     /// Join a durable Claude seat only while its named claim process is live.
     pub(super) fn resolve_claude(
         &mut self,
@@ -503,14 +653,17 @@ impl WorkerNames {
         processes: &[ProcessEntry],
         dispatch_pid: u32,
     ) -> WorkerDispatch {
-        let documents = self.seat_documents(&dispatch.session_dir);
+        let Ok(session_dir) = dispatch.session_directory() else {
+            return WorkerDispatch::Plain;
+        };
+        let documents = self.seat_documents(session_dir);
         let job = self
             .jobs
             .entry(dispatch.job.clone())
             .or_insert_with(|| JobText::parse(&dispatch.job, JobSource::DispatchJob))
             .clone();
         let mut found = Vec::new();
-        for (path, document) in &documents {
+        for (path, document) in documents.iter() {
             if !path
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with(WORKER_FILE_PREFIX))
@@ -523,12 +676,10 @@ impl WorkerNames {
             if !matches!(seat.family, SeatFamily::Claude) || seat.worker_id.is_empty() {
                 continue;
             }
-            let Some(SeatDocument::Claim(claim)) =
-                documents.get(&dispatch.session_dir.join(format!(
-                    "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
-                    seat.slot
-                )))
-            else {
+            let Some(SeatDocument::Claim(claim)) = documents.get(&session_dir.join(format!(
+                "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
+                seat.slot
+            ))) else {
                 continue;
             };
             if claim.worker != seat.name
@@ -537,18 +688,32 @@ impl WorkerNames {
                 continue;
             }
             let selected = match &dispatch.seat {
-                SeatSelection::Named(name) => name == &seat.name,
+                SeatSelection::Named(name) => {
+                    name == &seat.name
+                        || matches!(self.staff.member(&seat.worker_id), StaffMemberLookup::Managed { member, .. } if member.id == name)
+                },
                 SeatSelection::Launcher => claim.pid == dispatch_pid,
             };
             if selected {
                 found.push(ResolvedWorkerDispatch {
-                    seat:       seat.name.clone(),
-                    identity:   WorkerIdentity::ClaudeSession(seat.worker_id.clone()),
-                    job:        job.clone(),
-                    short_seat: seat.slot.clone(),
-                    role:       match dispatch.pass_role {
-                        DispatchRole::Worker(role) => DispatchRole::Worker(role),
-                        DispatchRole::Unroled => DispatchRole::from_short_seat(&seat.slot),
+                    seat:         seat.name.clone(),
+                    staff_member: match self.staff.member(&seat.worker_id) {
+                        StaffMemberLookup::Managed { member, .. }
+                        | StaffMemberLookup::Root(member) => {
+                            DispatchStaffMembership::Member(member.id.to_owned())
+                        },
+                        StaffMemberLookup::Unavailable => DispatchStaffMembership::Unlisted,
+                    },
+                    identity:     WorkerIdentity::ClaudeSession(seat.worker_id.clone()),
+                    job:          job.clone(),
+                    short_seat:   seat.slot.clone(),
+                    role:         match self.staff.member(&seat.worker_id) {
+                        StaffMemberLookup::Managed { member, .. } => {
+                            DispatchRole::from_staff(member.role)
+                        },
+                        StaffMemberLookup::Root(_) | StaffMemberLookup::Unavailable => {
+                            dispatch.pass_role
+                        },
                     },
                 });
             }
@@ -560,14 +725,14 @@ impl WorkerNames {
         }
     }
 
-    fn seat_documents(&mut self, directory: &Path) -> BTreeMap<PathBuf, SeatDocument> {
+    fn seat_documents(&mut self, directory: &Path) -> Arc<BTreeMap<PathBuf, SeatDocument>> {
         let now = Instant::now();
         let changed = self
             .directories
             .entry(directory.to_path_buf())
             .or_insert_with(|| SeatDirectory {
                 watch:     InputDirectoryWatch::new(directory, now),
-                documents: BTreeMap::new(),
+                documents: Arc::default(),
             })
             .watch
             .take_changed(directory, now);
@@ -597,12 +762,12 @@ impl WorkerNames {
                 })
                 .collect();
             if let Some(cached) = self.directories.get_mut(directory) {
-                cached.documents = documents;
+                cached.documents = Arc::new(documents);
             }
         }
         self.directories
             .get(directory)
-            .map_or_else(BTreeMap::new, |cached| cached.documents.clone())
+            .map_or_else(Arc::default, |cached| Arc::clone(&cached.documents))
     }
 
     /// Session paths mentioned by the first task prompt under the supplied roots.
@@ -673,28 +838,42 @@ impl WorkerNames {
         }
     }
 
-    /// Read a discovered roster only when its modification time changes.
-    pub(super) fn roster(&mut self, directory: &Path) -> &WorkerRoster {
-        &self.roster_snapshot(directory).1
-    }
-
-    /// The roster and its timestamp come from the same metadata observation.
-    fn roster_snapshot(&mut self, directory: &Path) -> &(SystemTime, WorkerRoster) {
-        let path = directory.join(ROSTER_FILE);
-        let modified = fs::metadata(&path)
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        let cached = self
-            .rosters
-            .entry(path)
-            .or_insert_with(|| (modified, WorkerRoster::read(directory)));
-        if cached.0 != modified {
-            *cached = (modified, WorkerRoster::read(directory));
+    /// `StaffRoster` supplies unit candidates; `SeatClaim` supplies each launcher identity.
+    fn staff_workers(&mut self, directory: &Path) -> &StaffWorkers {
+        let claims = self.seat_documents(directory);
+        let ownership = UnitOwnershipRevision::read(directory);
+        let entry = self.unit_workers.entry(directory.to_path_buf());
+        let cached = match entry {
+            Entry::Vacant(entry) => {
+                #[cfg(test)]
+                {
+                    self.candidate_builds += 1;
+                }
+                entry.insert(UnitWorkerCandidates {
+                    workers:   StaffWorkers::for_directory(&self.staff, directory),
+                    ownership: ownership.clone(),
+                    claims:    Arc::default(),
+                })
+            },
+            Entry::Occupied(entry) => entry.into_mut(),
+        };
+        if cached.ownership != ownership {
+            #[cfg(test)]
+            {
+                self.candidate_builds += 1;
+            }
+            cached.workers = StaffWorkers::for_directory(&self.staff, directory);
+            cached.ownership = ownership;
+            cached.claims = Arc::default();
         }
-        cached
+        if !Arc::ptr_eq(&cached.claims, &claims) {
+            cached.workers.attach_claims(&claims);
+            cached.claims = claims;
+        }
+        &cached.workers
     }
 
-    /// Find this thread only in rosters its own task names; newest match wins.
+    /// Resolve the current worker from this scan's shared staff snapshot.
     pub(super) fn resolve(
         &mut self,
         thread_id: &str,
@@ -702,39 +881,24 @@ impl WorkerNames {
         worktree: &ThreadWorktree,
         roots: &SessionRoots,
     ) -> WorkerDispatch {
-        let mut selected = None;
         let (directories, job) = self.prompt_inputs(thread_id, prompt, roots);
-        for directory in directories {
-            let (modified, roster) = self.roster_snapshot(&directory);
-            let modified = *modified;
-            for (seat, worker) in &roster.seats {
-                if worker.thread_id != thread_id {
-                    continue;
-                }
-                if selected.as_ref().is_some_and(|(at, _)| *at >= modified) {
-                    continue;
-                }
-                let short = worktree
-                    .seat_prefix()
-                    .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
-                    .unwrap_or(seat);
-                selected = Some((
-                    modified,
-                    ResolvedWorkerDispatch {
-                        seat:       seat.clone(),
-                        identity:   WorkerIdentity::CodexThread(thread_id.to_owned()),
-                        job:        job.clone(),
-                        short_seat: short.to_owned(),
-                        role:       match worker.role {
-                            DispatchRole::Unroled => DispatchRole::from_short_seat(short),
-                            role @ DispatchRole::Worker(_) => role,
-                        },
-                    },
-                ));
-            }
+        if directories.is_empty() {
+            return WorkerDispatch::Plain;
         }
-        selected.map_or(WorkerDispatch::Plain, |(_, dispatch)| {
-            WorkerDispatch::Worker(dispatch)
+        let StaffMemberLookup::Managed { member, .. } = self.staff.member(thread_id) else {
+            return WorkerDispatch::Plain;
+        };
+        let short = worktree
+            .seat_prefix()
+            .and_then(|prefix| member.name.strip_prefix(&format!("{prefix}-")))
+            .unwrap_or(member.name);
+        WorkerDispatch::Worker(ResolvedWorkerDispatch {
+            seat: member.name.to_owned(),
+            staff_member: DispatchStaffMembership::Member(member.id.to_owned()),
+            identity: WorkerIdentity::CodexThread(member.session.to_owned()),
+            short_seat: short.to_owned(),
+            job,
+            role: DispatchRole::from_staff(member.role),
         })
     }
 
@@ -874,7 +1038,7 @@ impl JobText {
         }
     }
 
-    /// One extraction serves roster, fallback and dispatch names.
+    /// One extraction serves staff, fallback, and dispatch names.
     fn parse(prompt: &str, source: JobSource) -> Self {
         let prompt = PromptOpening::read(prompt).0;
         if let Some((opening, review)) = prompt.split_once(POOL_PREAMBLE) {
@@ -986,20 +1150,20 @@ impl Serialize for JobText {
     }
 }
 
-/// How the launcher selects its seat before its roster is read.
+/// How the launcher selects a checked worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SeatSelection {
-    /// An explicit `--to` names the roster entry.
+    /// An explicit `--to` names the worker or its staff ID.
     Named(String),
     /// A new dispatch is the entry bearing its launcher pid.
     Launcher,
 }
 
-/// Launchers know their checkout; messages select directly from the named roster.
+/// Launchers know their checkout; messages select a named worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SeatCheckout {
     Launcher(PathBuf),
-    RosterOnly,
+    WorkerName,
 }
 
 impl SeatCheckout {
@@ -1010,24 +1174,31 @@ impl SeatCheckout {
                 .and_then(|name| name.to_str())
                 .and_then(|name| seat.strip_prefix(&format!("{name}-")))
                 .unwrap_or(seat),
-            Self::RosterOnly => seat,
+            Self::WorkerName => seat,
         }
     }
 }
 
-/// A literal implement.sh invocation, before roster resolution.
+/// An assign launcher can defer its session directory to its child dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DispatchDirectory {
+    Recorded(PathBuf),
+    FromChild,
+}
+
+/// A literal worker invocation before staff resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ParsedDispatch {
-    /// The directory containing `mesh_roster.json`.
-    pub(super) session_dir: PathBuf,
+    /// The unit directory with launcher claims and run records.
+    session_dir: DispatchDirectory,
     /// The worktree whose basename prefixes its seat.
-    worktree:               SeatCheckout,
-    /// How this invocation locates its roster entry.
-    seat:                   SeatSelection,
+    worktree:    SeatCheckout,
+    /// How this invocation selects its checked worker.
+    seat:        SeatSelection,
     /// The launcher's responsibility argument.
-    job:                    String,
+    job:         String,
     /// The pass role can differ from the durable seat slot.
-    pass_role:              DispatchRole,
+    pass_role:   DispatchRole,
 }
 
 /// The command cannot safely be interpreted as one worker invocation.
@@ -1035,8 +1206,25 @@ pub(super) struct ParsedDispatch {
 pub(super) struct NotWorkerDispatch;
 
 impl ParsedDispatch {
-    /// The live mesh child names a fresh or follow-up seat authoritatively.
+    /// The live mesh child names the seat authoritatively.
     pub(super) fn select_seat(&mut self, seat: String) { self.seat = SeatSelection::Named(seat); }
+
+    /// Resolve an omitted assign directory from its live child dispatch.
+    pub(super) fn select_session_directory(&mut self, child: &Self) {
+        if let (DispatchDirectory::FromChild, DispatchDirectory::Recorded(directory)) =
+            (&self.session_dir, &child.session_dir)
+        {
+            self.session_dir = DispatchDirectory::Recorded(directory.clone());
+        }
+    }
+
+    /// Only a recorded directory can supply seat files.
+    pub(super) fn session_directory(&self) -> Result<&Path, NotWorkerDispatch> {
+        match &self.session_dir {
+            DispatchDirectory::Recorded(directory) => Ok(directory),
+            DispatchDirectory::FromChild => Err(NotWorkerDispatch),
+        }
+    }
 
     /// A live launcher's wrapper may set variables before its final dispatch.
     /// Commands following the dispatch still belong to the shell and must stay visible.
@@ -1085,25 +1273,12 @@ impl ParsedDispatch {
         if matches!(sender, SeatSender::Review) {
             return Self::review(args.collect());
         }
-        let mut args = args.peekable();
-        let mut seat = SeatSelection::Launcher;
-        while args.peek().is_some_and(|word| word.starts_with("--")) {
-            match args.next() {
-                Some(SEAT_FLAG) => {
-                    let name = args
-                        .next()
-                        .filter(|name| !name.is_empty())
-                        .ok_or(NotWorkerDispatch)?;
-                    seat = SeatSelection::Named(name.to_owned());
-                },
-                Some("--phase") => {
-                    args.next()
-                        .filter(|phase| !phase.is_empty())
-                        .ok_or(NotWorkerDispatch)?;
-                },
-                _ => return Err(NotWorkerDispatch),
-            }
+        if matches!(sender, SeatSender::Assign) {
+            return Self::assignment(args.collect());
         }
+        let options = DispatchOptions::read(args, DispatchPositionals::Implement)?;
+        let seat = options.seat();
+        let mut args = options.positional.into_iter();
         let session_dir = args
             .next()
             .filter(|dir| !dir.is_empty())
@@ -1139,7 +1314,7 @@ impl ParsedDispatch {
             _ => return Err(NotWorkerDispatch),
         };
         Ok(Self {
-            session_dir: PathBuf::from(session_dir),
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(session_dir)),
             worktree: SeatCheckout::Launcher(PathBuf::from(worktree)),
             seat,
             job: job.to_owned(),
@@ -1149,33 +1324,21 @@ impl ParsedDispatch {
 
     /// review.sh defaults its trailing arguments and accepts named, new-slot and pooled seats.
     fn review(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
-        let mut args = words.into_iter().peekable();
+        let options = DispatchOptions::read(words, DispatchPositionals::Review)?;
         let mut selection = ReviewSelection::Automatic;
-        let mut lease = None;
-        while args.peek().is_some_and(|word| word.starts_with("--")) {
-            let flag = args.next().ok_or(NotWorkerDispatch)?;
-            let value = args
-                .next()
-                .filter(|value| !value.is_empty())
-                .ok_or(NotWorkerDispatch)?;
-            match flag {
-                "--phase" => {},
-                SEAT_FLAG if matches!(selection, ReviewSelection::Automatic) => {
-                    selection = ReviewSelection::Existing(value.to_owned());
+        let lease = options.values.get(DISPATCH_LEASE_FLAG).copied();
+        for (flag, value) in &options.values {
+            let candidate = match *flag {
+                SEAT_FLAG => ReviewSelection::Existing((*value).to_owned()),
+                DISPATCH_SLOT_FLAG if shell_identifier(value) => {
+                    ReviewSelection::NewSlot((*value).to_owned())
                 },
-                "--slot"
-                    if matches!(selection, ReviewSelection::Automatic)
-                        && shell_identifier(value) =>
-                {
-                    selection = ReviewSelection::NewSlot(value.to_owned());
-                },
-                "--pool"
-                    if matches!(selection, ReviewSelection::Automatic)
-                        && matches!(value, "code" | "ui") =>
-                {
-                    selection = ReviewSelection::Pool;
-                },
-                "--lease" if lease.is_none() => lease = Some(value),
+                DISPATCH_POOL_FLAG if matches!(*value, "code" | "ui") => ReviewSelection::Pool,
+                DISPATCH_SLOT_FLAG | DISPATCH_POOL_FLAG => return Err(NotWorkerDispatch),
+                _ => continue,
+            };
+            match selection {
+                ReviewSelection::Automatic => selection = candidate,
                 _ => return Err(NotWorkerDispatch),
             }
         }
@@ -1186,7 +1349,7 @@ impl ParsedDispatch {
             (ReviewSelection::Pool, _) | (_, Some(_)) => return Err(NotWorkerDispatch),
             _ => {},
         }
-        let positional: Vec<_> = args.collect();
+        let positional = options.positional;
         let Some(session_dir) = positional.first().filter(|value| !value.is_empty()) else {
             return Err(NotWorkerDispatch);
         };
@@ -1196,7 +1359,7 @@ impl ParsedDispatch {
         let worktree = positional
             .get(1)
             .filter(|value| !value.is_empty())
-            .map_or(SeatCheckout::RosterOnly, |path| {
+            .map_or(SeatCheckout::WorkerName, |path| {
                 SeatCheckout::Launcher(PathBuf::from(path))
             });
         let seat = match selection {
@@ -1209,12 +1372,12 @@ impl ParsedDispatch {
                         .ok_or(NotWorkerDispatch)?;
                     SeatSelection::Named(format!("{checkout}-{slot}"))
                 },
-                SeatCheckout::RosterOnly => SeatSelection::Launcher,
+                SeatCheckout::WorkerName => SeatSelection::Launcher,
             },
             ReviewSelection::Automatic | ReviewSelection::Pool => SeatSelection::Launcher,
         };
         Ok(Self {
-            session_dir: PathBuf::from(session_dir),
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(session_dir)),
             worktree,
             seat,
             job: positional
@@ -1227,69 +1390,91 @@ impl ParsedDispatch {
         })
     }
 
-    /// Messenger flags name a roster and one exact seat; no shell operators are accepted.
-    fn message(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
-        let mut words = words.into_iter();
-        if words.next() != Some(MESSENGER_SEND) {
-            return Err(NotWorkerDispatch);
-        }
-        let mut directory = None;
-        let mut seat = None;
-        let mut job = None;
-        while let Some(flag) = words.next() {
-            let value = words
-                .next()
-                .filter(|value| !value.is_empty())
-                .ok_or(NotWorkerDispatch)?;
-            match flag {
-                SESSION_DIRECTORY_FLAG if directory.is_none() => directory = Some(value),
-                SEAT_FLAG if seat.is_none() => seat = Some(value),
-                MESSAGE_FLAG if job.is_none() => job = Some(value.to_owned()),
-                MESSAGE_FILE_FLAG if job.is_none() => {
-                    job = Some(fs::read_to_string(value).map_err(|_| NotWorkerDispatch)?);
-                },
-                _ => return Err(NotWorkerDispatch),
-            }
-        }
+    /// Assign launchers select a unit and worker through value flags.
+    fn assignment(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
+        let options = DispatchOptions::read(words, DispatchPositionals::None)?;
         Ok(Self {
-            session_dir: PathBuf::from(directory.ok_or(NotWorkerDispatch)?),
-            worktree:    SeatCheckout::RosterOnly,
-            seat:        SeatSelection::Named(seat.ok_or(NotWorkerDispatch)?.to_owned()),
-            job:         job.ok_or(NotWorkerDispatch)?,
-            pass_role:   DispatchRole::Unroled,
+            session_dir: options
+                .values
+                .get(SESSION_DIRECTORY_FLAG)
+                .filter(|path| !path.is_empty())
+                .map_or(DispatchDirectory::FromChild, |path| {
+                    DispatchDirectory::Recorded(PathBuf::from(path))
+                }),
+            worktree:    options
+                .values
+                .get(DISPATCH_CWD_FLAG)
+                .map_or(SeatCheckout::WorkerName, |path| {
+                    SeatCheckout::Launcher(PathBuf::from(path))
+                }),
+            seat:        options.seat(),
+            job:         options.prompt_job(DISPATCH_PROMPT_FLAG),
+            pass_role:   options.role(),
         })
     }
 
-    /// Join the explicit seat, or this dispatch's pid, to a recorded thread.
-    pub(super) fn resolve(&self, roster: &WorkerRoster, dispatch_pid: u32) -> WorkerDispatch {
-        let entry = match &self.seat {
-            SeatSelection::Named(seat) => roster.seats.get_key_value(seat),
-            SeatSelection::Launcher => {
-                let mut matches = roster.seats.iter().filter(|(_, value)| {
-                    value.launcher == LauncherIdentity::Recorded(dispatch_pid)
-                });
-                let first = matches.next();
-                if matches.next().is_some() {
-                    return WorkerDispatch::Plain;
-                }
-                first
-            },
+    /// Mesh verbs share exact worker identities across normalized script paths.
+    fn message(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
+        let mut words = words.into_iter();
+        let verb = words.next().ok_or(NotWorkerDispatch)?;
+        if !matches!(verb, "send" | "follow" | "start") {
+            return Err(NotWorkerDispatch);
+        }
+        let options = DispatchOptions::read(words, DispatchPositionals::None)?;
+        let seat = match options.seat() {
+            SeatSelection::Launcher => options
+                .values
+                .get(DISPATCH_NAME_FLAG)
+                .map_or(SeatSelection::Launcher, |name| {
+                    SeatSelection::Named((*name).to_owned())
+                }),
+            named @ SeatSelection::Named(_) => named,
         };
-        let Some((seat, entry)) = entry else {
+        let job = match options.values.get(MESSAGE_FLAG) {
+            Some(message) => (*message).to_owned(),
+            None if verb == "send" => fs::read_to_string(options.required(MESSAGE_FILE_FLAG)?)
+                .map_err(|_| NotWorkerDispatch)?,
+            None => options.prompt_job(if verb == "start" {
+                DISPATCH_PROMPT_FILE_FLAG
+            } else {
+                MESSAGE_FILE_FLAG
+            }),
+        };
+        Ok(Self {
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(
+                options.required(SESSION_DIRECTORY_FLAG)?,
+            )),
+            worktree: SeatCheckout::WorkerName,
+            seat,
+            job,
+            pass_role: options.role(),
+        })
+    }
+
+    fn resolve_staff(&self, workers: &StaffWorkers, dispatch_pid: u32) -> WorkerDispatch {
+        let mut matches = workers.seats.values().filter(|worker| match &self.seat {
+            SeatSelection::Named(seat) => seat == &worker.name || seat == &worker.id,
+            SeatSelection::Launcher => worker.launcher == LauncherIdentity::Recorded(dispatch_pid),
+        });
+        let Some(worker) = matches.next() else {
             return WorkerDispatch::Plain;
         };
-
-        let short_seat = self.worktree.short_seat(seat).to_owned();
+        if matches.next().is_some() {
+            return WorkerDispatch::Plain;
+        }
         WorkerDispatch::Worker(ResolvedWorkerDispatch {
-            seat: seat.clone(),
-            identity: WorkerIdentity::CodexThread(entry.thread_id.clone()),
-            job: JobText::parse(&self.job, JobSource::DispatchJob),
-            role: match entry.role {
-                DispatchRole::Unroled => DispatchRole::from_short_seat(&short_seat),
-                role @ DispatchRole::Worker(_) => role,
-            },
-            short_seat,
+            seat:         worker.name.clone(),
+            staff_member: DispatchStaffMembership::Member(worker.id.clone()),
+            identity:     WorkerIdentity::CodexThread(worker.session.clone()),
+            short_seat:   self.worktree.short_seat(&worker.name).to_owned(),
+            job:          JobText::parse(&self.job, JobSource::DispatchJob),
+            role:         worker.role,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn resolve(&self, workers: &FixtureWorkers, dispatch_pid: u32) -> WorkerDispatch {
+        self.resolve_staff(&workers.workers, dispatch_pid)
     }
 }
 
@@ -1717,7 +1902,7 @@ fn expand_bindings(
     Ok(result)
 }
 
-/// Whether a roster entry records its launcher's process identity.
+/// Whether a launcher claim records a process identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LauncherIdentity {
     /// Finished seats may no longer have a launcher pid.
@@ -1726,101 +1911,112 @@ enum LauncherIdentity {
     Recorded(u32),
 }
 
-/// A roster entry with a usable thread identity.
+/// A checked staff worker and the claim that can identify its launcher.
 #[derive(Clone, Debug)]
-struct RosterWorker {
-    /// The nonempty thread id to join to the census.
-    thread_id: String,
-    /// The dispatch pid, where the roster records it.
-    launcher:  LauncherIdentity,
-    /// The supported worker responsibility, if the roster records one.
-    role:      DispatchRole,
+struct StaffDispatchWorker {
+    id:       String,
+    name:     String,
+    session:  String,
+    launcher: LauncherIdentity,
+    role:     DispatchRole,
 }
 
-/// A typed JSON boundary that ignores an absent or malformed field.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum RosterField<T> {
-    /// A field with the type expected by this reader.
-    Recorded(T),
-    /// Unknown values do not invalidate the seat's other fields.
-    Unrecorded(IgnoredAny),
+/// The checked director limits the staff candidates for one unit directory.
+struct UnitStaff<'a> {
+    roster:   &'a StaffRoster,
+    director: &'a str,
 }
 
-impl<T> Default for RosterField<T> {
-    fn default() -> Self { Self::Unrecorded(IgnoredAny) }
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UnitOwnershipRevision {
+    record: FileRevision,
+    legacy: FileRevision,
 }
 
-/// The fields read from a seat, independent of unrelated roster metadata.
-#[derive(Debug, Deserialize)]
-struct RosterRecord {
-    /// A thread is required before the seat can participate in a fold.
-    thread_id:    String,
-    /// Some completed seats no longer have a launcher process.
-    #[serde(default)]
-    launcher_pid: RosterField<u32>,
-    /// Older rosters may omit a worker responsibility.
-    #[serde(default)]
-    role:         RosterField<WorkerRole>,
+impl UnitOwnershipRevision {
+    fn read(directory: &Path) -> Self {
+        let revision = |name| {
+            fs::metadata(directory.join(name)).map_or(FileRevision::Missing, |metadata| {
+                FileRevision::of(&metadata)
+            })
+        };
+        Self {
+            record: revision("progress_history_state.json"),
+            legacy: revision(DIRECTOR_FILE),
+        }
+    }
 }
 
-/// A malformed seat must not hide valid neighbours in the same roster.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum RosterEntry {
-    /// A seat with the expected thread identity field.
-    Worker(RosterRecord),
-    /// Unrelated or malformed entries contribute no worker identity.
-    Invalid(IgnoredAny),
+#[derive(Debug)]
+struct UnitWorkerCandidates {
+    ownership: UnitOwnershipRevision,
+    workers:   StaffWorkers,
+    claims:    Arc<BTreeMap<PathBuf, SeatDocument>>,
 }
 
-/// The seat entries read once per session directory during a scan.
 #[derive(Clone, Debug, Default)]
-pub(super) struct WorkerRoster {
-    /// Entries whose thread identity was validated at the JSON boundary.
-    seats: BTreeMap<String, RosterWorker>,
+struct StaffWorkers {
+    seats: BTreeMap<String, StaffDispatchWorker>,
 }
 
-impl WorkerRoster {
-    /// Malformed or unavailable rosters provide no worker identities.
-    pub(super) fn parse(text: &str) -> Self {
-        let entries: BTreeMap<String, RosterEntry> = serde_json::from_str(text).unwrap_or_default();
-        let seats = entries
-            .into_iter()
-            .filter_map(|(seat, entry)| {
-                let RosterEntry::Worker(record) = entry else {
-                    return None;
-                };
-                let thread_id = record.thread_id.trim();
-                if seat.is_empty() || thread_id.is_empty() {
-                    return None;
-                }
-                let launcher = match record.launcher_pid {
-                    RosterField::Recorded(pid) => LauncherIdentity::Recorded(pid),
-                    RosterField::Unrecorded(_) => LauncherIdentity::Unrecorded,
-                };
-                let role = match record.role {
-                    RosterField::Recorded(role) => DispatchRole::Worker(role),
-                    RosterField::Unrecorded(_) => DispatchRole::Unroled,
-                };
-                Some((
-                    seat,
-                    RosterWorker {
-                        thread_id: thread_id.to_owned(),
-                        launcher,
-                        role,
+impl From<UnitStaff<'_>> for StaffWorkers {
+    fn from(unit: UnitStaff<'_>) -> Self {
+        let seats = unit
+            .roster
+            .workers(unit.director)
+            .map(|member| {
+                (
+                    member.id.to_owned(),
+                    StaffDispatchWorker {
+                        id:       member.id.to_owned(),
+                        name:     member.name.to_owned(),
+                        session:  member.session.to_owned(),
+                        launcher: LauncherIdentity::Unrecorded,
+                        role:     DispatchRole::from_staff(member.role),
                     },
-                ))
+                )
             })
             .collect();
         Self { seats }
     }
+}
 
-    /// Read the roster only during census scanning.
-    pub(super) fn read(session_dir: &Path) -> Self {
-        fs::read_to_string(session_dir.join(ROSTER_FILE))
-            .map(|text| Self::parse(&text))
-            .unwrap_or_default()
+impl StaffWorkers {
+    fn for_directory(staff: &StaffRoster, directory: &Path) -> Self {
+        let recorded = sessions::UnitDirectorSource::read(directory);
+        let legacy = fs::read_to_string(directory.join(DIRECTOR_FILE)).unwrap_or_default();
+        let director = match recorded.session(staff) {
+            RunDirector::Session(id)
+                if !matches!(staff.member(id), StaffMemberLookup::Unavailable) =>
+            {
+                id
+            },
+            RunDirector::Session(_) | RunDirector::Unrecorded => legacy.trim(),
+        };
+        match staff.member(director) {
+            StaffMemberLookup::Managed { member, .. } | StaffMemberLookup::Root(member) => {
+                Self::from(UnitStaff {
+                    roster:   staff,
+                    director: member.session,
+                })
+            },
+            StaffMemberLookup::Unavailable => Self::default(),
+        }
+    }
+
+    fn attach_claims(&mut self, claims: &BTreeMap<PathBuf, SeatDocument>) {
+        for worker in self.seats.values_mut() {
+            worker.launcher = LauncherIdentity::Unrecorded;
+            let mut matches = claims.values().filter_map(|document| match document {
+                SeatDocument::Claim(claim) if claim.worker == worker.name => Some(claim.pid),
+                _ => None,
+            });
+            if let Some(pid) = matches.next()
+                && matches.next().is_none()
+            {
+                worker.launcher = LauncherIdentity::Recorded(pid);
+            }
+        }
     }
 }
 
@@ -2096,6 +2292,15 @@ fn shell_words(command: &str, boundary: CommandBoundary) -> Result<Vec<String>, 
 }
 
 #[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+pub(super) use fixtures::FixtureWorkers;
+#[cfg(test)]
+pub(super) use fixtures::fixture_names;
+#[cfg(test)]
+pub(super) use fixtures::write_worker_fixture;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -2114,6 +2319,37 @@ mod context_job_tests;
 #[cfg(test)]
 mod idle_prompt_tests {
     use super::*;
+
+    #[test]
+    fn shared_staff_snapshot_resolves_the_current_session_after_a_change() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        write_worker_fixture(
+            directory.path(),
+            &serde_json::json!({
+                "fixture-test": {"current_session":"thread", "role":"test"}
+            }),
+        );
+        let mut names = fixture_names(directory.path());
+        let first = names.staff_snapshot();
+        names.set_staff(Arc::clone(&first));
+        assert!(Arc::ptr_eq(&first, &names.staff_snapshot()));
+        let reference = WorkerReference::Staff {
+            staff_id: "fixture-test".into(),
+        };
+        assert_eq!(reference.session(&first), Some("thread"));
+        write_worker_fixture(
+            directory.path(),
+            &serde_json::json!({
+                "fixture-test": {"current_session":"replacement", "role":"test"}
+            }),
+        );
+        names.set_staff(fixture_names(directory.path()).staff_snapshot());
+        let changed = names.staff_snapshot();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(reference.session(&changed), Some("replacement"));
+        assert_eq!(reference.parent_session(&changed), Some("director-id"));
+        Ok(())
+    }
 
     #[test]
     fn departed_worker_sessions_release_their_watches_and_documents() -> std::io::Result<()> {
@@ -2182,8 +2418,8 @@ mod idle_prompt_tests {
     fn idle_worker_seats_do_not_list_an_unchanged_directory() -> std::io::Result<()> {
         let directory = tempfile::tempdir()?;
         let dispatch = ParsedDispatch {
-            session_dir: directory.path().to_path_buf(),
-            worktree:    SeatCheckout::RosterOnly,
+            session_dir: DispatchDirectory::Recorded(directory.path().to_path_buf()),
+            worktree:    SeatCheckout::WorkerName,
             seat:        SeatSelection::Launcher,
             job:         "Test the change".into(),
             pass_role:   DispatchRole::Unroled,

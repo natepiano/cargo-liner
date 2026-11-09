@@ -68,16 +68,29 @@ mod target_index;
 mod toast_action;
 mod tree_mutation;
 
+#[cfg(test)]
+mod loading_layout_tests;
+#[cfg(test)]
+mod metadata_retention_tests;
+#[cfg(test)]
+mod quota_transition_tests;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Error;
+pub(super) use async_tasks::GithubQuotaRefresh;
+pub(super) use async_tasks::QuotaFetchAdmission;
+pub(super) use async_tasks::QuotaFetchCompletion;
+pub(super) use async_tasks::QuotaFetchPermit;
+pub(super) use async_tasks::QuotaFetchReason;
+#[cfg(test)]
+pub(super) use async_tasks::QuotaScreenUpdate;
 use async_tasks::Startup;
 pub(super) use ci::CiRunDisplayMode;
 pub(crate) use confirm_action::ConfirmAction;
@@ -108,6 +121,7 @@ pub(super) use toast_action::CargoPortToastAction;
 pub(super) use tree_mutation::TreeMutation;
 use tui_pane::AppContext;
 use tui_pane::ClipboardBackend;
+use tui_pane::ColorMode;
 use tui_pane::CopyOutcome;
 use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
@@ -141,7 +155,6 @@ use super::app_render_state::RenderBorrows;
 use super::app_render_state::RenderRegistry;
 use super::background::Background;
 #[cfg(test)]
-#[cfg(test)]
 use super::columns::LintCell;
 #[cfg(test)]
 use super::columns::StyledSegment;
@@ -152,6 +165,8 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
+use super::panes::DescriptionState;
+use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputPane;
 use super::panes::OutputPaneVisibility;
@@ -159,7 +174,12 @@ use super::panes::OutputPresentation;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::panes::ProjectRowPresentation;
+use super::panes::ProjectRowWidthInput;
 use super::panes::SyncedDescriptionHeight;
+use super::project_list::ProjectPathLookup::Found;
+use super::project_list::ProjectPathLookup::StaleRoute;
+use super::project_list::ProjectPathLookup::UnknownPath;
 use super::project_list::VisibleRow;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
@@ -190,7 +210,6 @@ use crate::channel::Sender;
 use crate::ci::OwnerRepo;
 use crate::config;
 use crate::constants::TARGET_DIR;
-use crate::http::HttpClient;
 use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
@@ -200,7 +219,7 @@ use crate::project::AbsolutePath;
 #[cfg(test)]
 use crate::project::GitStatus;
 use crate::project::RootItem;
-use crate::project::WorkspaceMetadataStore;
+use crate::project::Visibility;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -319,7 +338,43 @@ pub(super) struct App {
     pub(super) fixture_dirs:         Option<FixtureDirs>,
 }
 
+/// Unpadded presentation includes hidden descendants that still affect fitting.
+#[derive(PartialEq)]
+struct ProjectListPresentation(Vec<ProjectRowPresentation>);
+
+impl ProjectListPresentation {
+    fn width_inputs(self) -> Vec<ProjectRowWidthInput> {
+        self.0
+            .into_iter()
+            .map(panes::ProjectRowPresentation::into_width_input)
+            .collect()
+    }
+}
+
 impl App {
+    /// Reuse the row renderer for change detection so diagnostic markers, Git
+    /// state and width inputs have one presentation owner. Freeze animation time.
+    fn project_row_presentation(&self) -> ProjectListPresentation {
+        let lookup = self.ci.status_lookup();
+        let ctx = PaneRenderCtx {
+            color_mode:                self.framework.color_mode,
+            animation_elapsed:         Duration::ZERO,
+            config:                    &self.config,
+            project_list:              &self.project_list,
+            selected_project_path:     self.selected_project_path_for_render(),
+            scan:                      &self.scan,
+            ci_status_lookup:          &lookup,
+            settings_render_inputs:    None,
+            synced_description_height: SyncedDescriptionHeight::default(),
+            empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
+            output_presentation:       OutputPresentation::derive(
+                self.inflight.owned_run().output_state(),
+                self.inflight.owned_run().running_label(),
+            ),
+        };
+        ProjectListPresentation(panes::project_width_presentations(&ctx))
+    }
+
     /// Constructor entry — declared here in `mod.rs` so `pub(super)`
     /// reaches `tui` (its parent module), satisfying callers in
     /// sibling modules `tui::terminal` and `tui::interaction`. The
@@ -331,29 +386,8 @@ impl App {
         background_tx: Sender<BackgroundMsg>,
         background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
-        http_client: HttpClient,
-        scan_started_at: Instant,
-        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Result<Self, Error> {
-        construct::AppBuilder::new(
-            projects,
-            background_tx,
-            background_rx,
-            startup_settings,
-            StartupEnvironment::production(http_client, scan_started_at, metadata_store),
-        )
-        .open_channels()
-        .run_startup()
-        .build()
-    }
-
-    #[cfg(test)]
-    pub(super) fn new_with_startup_environment(
-        projects: &[RootItem],
-        background_tx: Sender<BackgroundMsg>,
-        background_rx: Receiver<BackgroundMsg>,
-        startup_settings: StartupSettings,
         startup_environment: StartupEnvironment,
+        color_mode: ColorMode,
     ) -> Result<Self, Error> {
         construct::AppBuilder::new(
             projects,
@@ -361,6 +395,7 @@ impl App {
             background_rx,
             startup_settings,
             startup_environment,
+            color_mode,
         )
         .open_channels()
         .run_startup()
@@ -436,9 +471,11 @@ impl App {
     /// [`tui_pane::Toasts::next_visual_change_deadline`]. A new animated
     /// element added at render time without a matching deadline or predicate
     /// here will not advance while the screen is otherwise idle.
-    pub(super) fn animation_timeout(&self) -> Duration {
+    pub(super) fn animation_timeout(&self) -> Duration { self.animation_timeout_at(Instant::now()) }
+
+    /// Compute the wake interval from the same clock as the frame inputs.
+    pub(super) fn animation_timeout_at(&self, now: Instant) -> Duration {
         const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
-        let now = Instant::now();
         let animation_timeout = if self.is_animating() {
             ANIMATION_TICK
         } else {
@@ -589,13 +626,20 @@ impl App {
         )
     }
 
-    pub(super) fn prune_inactive_project_state(&mut self) {
+    pub(super) fn prune_inactive_project_state(&mut self, disk_entries: &[(String, AbsolutePath)]) {
+        if let Ok(mut store) = self.scan.metadata_store().lock() {
+            store.retain_checkouts(|root| self.project_list.is_rust_at_path(root));
+        }
         self.scan
             .manifest_metadata
             .retain_rust_projects(&self.project_list);
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
         self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
+        });
+        let discovered: HashSet<_> = disk_entries.iter().map(|(_, path)| path).collect();
+        self.scan.source_measurements.retain_projects(|root| {
+            discovered.contains(root) || matches!(self.project_list.at_path(root), Found(_))
         });
         self.scan
             .pending_git_first_commit_mut()
@@ -628,21 +672,18 @@ impl App {
         }
     }
 
-    /// Split-borrow accessor for per-pane render dispatch.
-    /// Returns the `&mut Panes` plus the read-only refs the
-    /// dispatcher passes through to construct `PaneRenderCtx`. All
-    /// Split-borrow accessor for the tiled render loop. Returns the
-    /// `&mut` registry plus a fully-built `PaneRenderCtx` whose
-    /// borrows are disjoint from the registry's. The single split
-    /// pattern lets [`tui_pane::render_panes`] dispatch every tile
-    /// pane through one `PaneRegistry` impl, including Lint and Ci
-    /// which were on their own split paths before this phase.
-    ///
-    /// `selected_project_path`, `animation_elapsed`, and
-    /// `ci_status_lookup` are passed in because their construction
-    /// requires `&self` (multi-subsystem queries / a clone of CI
-    /// display-mode state), which has to be released before the
-    /// `&mut` split here.
+    /// Hide the Package placeholder while Git is pending or shows its own description.
+    pub(super) fn empty_package_description(&self) -> EmptyDescriptionBehavior {
+        match self.panes.git.content().map(|data| &data.description) {
+            Some(DescriptionState::KnownEmpty) => EmptyDescriptionBehavior::ShowPlaceholder,
+            Some(DescriptionState::Pending | DescriptionState::Known(_)) | None => {
+                EmptyDescriptionBehavior::RenderNothing
+            },
+        }
+    }
+
+    /// Borrow the pane registry and its render context separately.
+    /// Compute shared queries before this mutable borrow.
     pub(super) fn split_for_render<'a>(
         &'a mut self,
         selected_project_path: Option<&'a Path>,
@@ -650,6 +691,7 @@ impl App {
         ci_status_lookup: &'a CiStatusLookup,
         overlay_inputs: OverlayRenderInputs<'a>,
         synced_description_height: SyncedDescriptionHeight,
+        empty_package_description: EmptyDescriptionBehavior,
     ) -> RenderBorrows<'a> {
         let Self {
             panes,
@@ -679,6 +721,7 @@ impl App {
             settings_pane: &mut framework.settings_pane,
         };
         let pane_render_context = PaneRenderCtx {
+            color_mode: framework.color_mode,
             animation_elapsed,
             config,
             project_list,
@@ -688,6 +731,7 @@ impl App {
             settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
             output_presentation,
+            empty_package_description,
         };
         RenderBorrows {
             registry,
@@ -1269,6 +1313,14 @@ impl App {
     /// app state. Reads Selection (cursor → project), Scan (project
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+        if pane != PaneId::Toasts
+            && matches!(
+                panes::PaneVisibility::in_layout(&self.panes.tiled_layout, pane),
+                panes::PaneVisibility::Hidden
+            )
+        {
+            return false;
+        }
         match panes::behavior(pane) {
             PaneBehavior::ProjectList | PaneBehavior::Cpu => true,
             PaneBehavior::DetailFields => match pane {
@@ -1277,10 +1329,13 @@ impl App {
                     .project_list
                     .selected_project_path()
                     .is_some_and(|path| {
-                        self.project_list
-                            .at_path(path)
-                            .and_then(|p| p.language_stats.as_ref())
-                            .is_some_and(|ls| !ls.entries.is_empty())
+                        (match self.project_list.at_path(path) {
+                            Found(p) if p.visibility == Visibility::Visible => {
+                                p.language_stats.as_ref()
+                            },
+                            Found(_) | UnknownPath | StaleRoute => None,
+                        })
+                        .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
                     !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
@@ -1289,11 +1344,9 @@ impl App {
                 }),
                 _ => false,
             },
-            PaneBehavior::DetailTargets => self
-                .panes
-                .targets
-                .content()
-                .is_some_and(panes::TargetsData::has_targets),
+            PaneBehavior::DetailTargets => {
+                self.panes.targets.has_available_targets(&self.project_list)
+            },
             PaneBehavior::Lints => {
                 matches!(self.output_pane_visibility(), OutputPaneVisibility::Hidden)
                     && self.lint.content().is_some_and(panes::LintsData::has_runs)
@@ -1380,12 +1433,8 @@ impl App {
                 .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
         }
 
-        if let Some(abs_path) = current
-            && self.project_list.paths.last_selected.as_ref() != Some(&abs_path)
-        {
+        if current.is_some() {
             self.scan.bump_generation();
-            self.project_list.paths.last_selected = Some(abs_path);
-            self.project_list.mark_sync_changed();
             self.maybe_priority_fetch();
         }
     }
@@ -1428,6 +1477,7 @@ mod tests {
     use ratatui::style::Style;
     use ratatui::widgets::List;
     use ratatui::widgets::Widget;
+    use tui_pane::ColorMode;
     use tui_pane::PaneFocusState;
     use tui_pane::RenderFocus;
 
@@ -1455,6 +1505,7 @@ mod tests {
     use crate::project::Comparison;
     use crate::project::FirstCommit;
     use crate::project::GitStatus;
+    use crate::project::GithubRunCount;
     use crate::project::HeadState;
     use crate::project::MemberGroup;
     use crate::project::NonRustProject;
@@ -1486,11 +1537,15 @@ mod tests {
     use crate::tui::columns::ProjectListWidths;
     use crate::tui::dismiss_target::DismissTarget;
     use crate::tui::panes::CiFetchKind;
+    use crate::tui::panes::EmptyDescriptionBehavior;
     use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
     use crate::tui::panes::PREFIX_ROOT_LEAF;
     use crate::tui::panes::PREFIX_WORKTREE_FLAT;
     use crate::tui::panes::PaneId;
     use crate::tui::project_list::ExpandKey;
+    use crate::tui::project_list::ProjectPathLookup::Found;
+    use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+    use crate::tui::project_list::ProjectPathLookup::UnknownPath;
     use crate::tui::project_list::VisibleRow;
     use crate::tui::project_list_state::ProjectList;
     use crate::tui::render_context::PaneRenderCtx;
@@ -1505,6 +1560,7 @@ mod tests {
         use super::*;
         use crate::channel;
         use crate::project::AbsolutePath;
+        use crate::project::GithubRunCount;
         use crate::project::ProjectPrData;
         use crate::tui::project_list::ExpandTarget;
         use crate::tui::startup_services::WatcherHandle;
@@ -1716,13 +1772,13 @@ mod tests {
             );
 
             assert!(
-                app.project_list.expanded.contains(&ExpandKey::Node(0)),
+                app.project_list.expanded.is_open(&ExpandKey::Node(0), 0),
                 "the root re-expands from its pending target"
             );
             assert!(
                 app.project_list
                     .expanded
-                    .contains(&ExpandKey::WorktreeGroup(0, 1, 0)),
+                    .is_open(&ExpandKey::WorktreeGroup(0, 1, 0), 2),
                 "the linked worktree's named group re-expands at depth"
             );
             assert!(
@@ -2125,7 +2181,7 @@ mod tests {
                         stars:       7,
                         description: Some("ok".to_string()),
                     }),
-                    github_total: 0,
+                    github_total: GithubRunCount::Known(0),
                     pr_data:      ProjectPrData::Unfetched,
                 },
             );
@@ -2135,7 +2191,7 @@ mod tests {
                 CachedRepoData {
                     runs:         Vec::new(),
                     meta:         None,
-                    github_total: 0,
+                    github_total: GithubRunCount::Known(0),
                     pr_data:      ProjectPrData::Unfetched,
                 },
             );
@@ -2725,9 +2781,11 @@ mod tests {
         use crate::config::CargoPortConfig;
         use crate::config::LintIndicator;
         use crate::config::NavigationKeys;
+        use crate::http::RateLimitQuota;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
         use crate::project::Comparison;
+        use crate::project::DiskMeasurement;
         use crate::project::PinnedCommit;
         use crate::project::ProjectType;
         use crate::project::RootItem;
@@ -2752,15 +2810,18 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
+        use crate::tui::panes::DescriptionState;
         use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
         use crate::tui::panes::HeadRelation;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::PackageData;
+        use crate::tui::panes::PackageDeletion;
         use crate::tui::panes::PackagePresence;
         use crate::tui::panes::PackageVersion;
         use crate::tui::panes::PaneId;
+        use crate::tui::panes::QuotaObservation;
         use crate::tui::panes::RemoteRow;
         use crate::tui::panes::RemoteRows;
         use crate::tui::panes::TargetsData;
@@ -2944,16 +3005,17 @@ mod tests {
 
         fn package_data_no_version() -> PackageData {
             PackageData {
+                deletion:                 PackageDeletion::Present,
                 title:                    "Package".to_string(),
                 name:                     "demo".to_string(),
                 worktree_group_summary:   None,
                 primary_section:          None,
                 path:                     "~/demo".to_string(),
                 version:                  PackageVersion::Manifest("0.1.0".to_string()),
-                description:              None,
+                description:              DescriptionState::KnownEmpty,
                 crates_io_rows:           Vec::new(),
                 types:                    Some(vec![ProjectType::Library]),
-                disk:                     Some(1_048_576),
+                disk:                     DiskMeasurement::TotalOnly(1_048_576),
                 stats_rows:               Vec::new(),
                 test_rows:                Vec::new(),
                 package_presence:         PackagePresence::Present,
@@ -2961,8 +3023,6 @@ mod tests {
                 license:                  None,
                 homepage:                 None,
                 repository:               None,
-                in_project_target:        None,
-                in_project_non_target:    None,
                 out_of_tree_target_bytes: None,
                 lint_display:             crate::tui::state::LintDisplay::default(),
                 ci_display:               crate::tui::state::CiDisplay::default(),
@@ -2974,10 +3034,31 @@ mod tests {
             type Setup = fn(&mut App);
             let cases: &[(AppPaneId, &[&str], Setup)] = &[
                 (AppPaneId::Package, &["activate"], |app| {
-                    app.panes.package.set_content(package_data_no_version());
+                    let mut data = package_data_no_version();
+                    data.crates_io_rows = vec![("Version", "0.1.0".to_string())];
+                    let position = panes::package_rows_from_data(&data)
+                        .iter()
+                        .position(|row| matches!(row, panes::PackageRow::CratesIo(_)))
+                        .expect("the fixture has a crates.io row");
+                    app.panes.package.set_content(data);
+                    app.panes.package.viewport.set_pos(position);
                 }),
                 (AppPaneId::Git, &["activate"], |app| {
-                    app.panes.git.set_content(GitData::default());
+                    let quota = QuotaObservation::Observed(RateLimitQuota {
+                        limit:     5000,
+                        used:      42,
+                        remaining: 4958,
+                        reset_at:  None,
+                    });
+                    app.panes.git.set_content(GitData {
+                        rate_limit_core: quota,
+                        rate_limit_graphql: quota,
+                        remotes: RemoteRows::Listed(vec![git_remote_with_url(
+                            "https://github.com/natepiano/demo",
+                        )]),
+                        ..GitData::default()
+                    });
+                    app.panes.git.viewport.set_pos(2);
                 }),
                 (AppPaneId::Targets, &["run", "release"], |app| {
                     app.panes.targets.set_content(targets_data_with_binary());
@@ -3101,14 +3182,21 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
 
+            let quota = QuotaObservation::Observed(RateLimitQuota {
+                limit:     5000,
+                used:      42,
+                remaining: 4958,
+                reset_at:  None,
+            });
             let data = GitData {
+                rate_limit_core: quota,
+                rate_limit_graphql: quota,
                 remotes: RemoteRows::Listed(vec![git_remote_with_url(
                     "https://github.com/natepiano/demo",
                 )]),
                 ..GitData::default()
             };
-            // Default GitData carries two flat rate-limit rows, so the first
-            // remote row sits at index 2.
+            // The observed quota adds two rows before the first remote row.
             let remote_pos = 2;
             app.panes.git.set_content(data);
             app.panes.git.viewport.set_pos(remote_pos);
@@ -3175,7 +3263,8 @@ mod tests {
                     source:            crate::tui::panes::TargetSource::workspace_root(
                         "demo".into(),
                     ),
-                    project_path:      crate::project::AbsolutePath::from("/tmp/demo"),
+                    project_path:      super::test_path("~/demo"),
+                    package_path:      super::test_path("~/demo"),
                     package_name:      "demo".to_string(),
                     src_path:          crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
                     required_features: Vec::new(),
@@ -3708,7 +3797,7 @@ mod tests {
             let root_info = app
                 .project_list
                 .at_path_mut(Path::new(&root_path))
-                .expect("root info");
+                .expect_found("root info");
             root_info.submodules.push(Submodule {
                 name:          "submod".to_string(),
                 path:          crate::project::AbsolutePath::from(sub_path),
@@ -4632,6 +4721,7 @@ mod tests {
         use tui_pane::Appearance;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
+        use tui_pane::ColorMode;
         use tui_pane::FocusedPane;
         use tui_pane::FrameworkFocusId;
         use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -4689,7 +4779,6 @@ mod tests {
         use crate::project::RepoInfo;
         use crate::project::ResolvedBranch;
         use crate::project::RootItem;
-        use crate::project::RustInfo;
         use crate::project::RustProject;
         use crate::project::Submodule;
         use crate::project::TargetRecord;
@@ -4728,6 +4817,9 @@ mod tests {
         use crate::tui::panes::PaneId;
         use crate::tui::panes::SyncedDescriptionHeight;
         use crate::tui::project_list::ExpandKey;
+        use crate::tui::project_list::ProjectPathLookup::Found;
+        use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+        use crate::tui::project_list::ProjectPathLookup::UnknownPath;
         use crate::tui::project_list_state::ProjectList;
         use crate::tui::render;
         use crate::tui::settings;
@@ -4743,20 +4835,17 @@ mod tests {
             keymap.dispatch_framework_global(FrameworkGlobalAction::OpenKeymap, app);
         }
 
-        fn make_package(name: &str, path: &Path) -> RootItem {
-            make_package_with_cargo(name, path, Cargo::default())
-        }
+        use crate::project::DiskMeasurement;
+        use crate::tui::panes::DescriptionState;
+        use crate::tui::project_list::ReplacementExpansion;
+        use crate::tui::test_support;
 
         fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
-            RootItem::Rust(RustProject::Package(Package {
-                path: AbsolutePath::from(path),
-                name: Some(name.to_string()),
-                rust: RustInfo {
-                    cargo,
-                    ..RustInfo::default()
-                },
-                ..Package::default()
-            }))
+            let mut item = test_support::make_package(name, path);
+            if let RootItem::Rust(project) = &mut item {
+                project.rust_info_mut().cargo = cargo;
+            }
+            item
         }
 
         fn make_package_worktree(
@@ -4955,6 +5044,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.lint,
@@ -4989,6 +5079,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.ci,
@@ -5256,8 +5347,8 @@ mod tests {
             let project = app
                 .project_list
                 .at_path_mut(path)
-                .expect("test project should exist in project list");
-            project.disk_usage_bytes = Some(0);
+                .expect_found("test project should exist in project list");
+            project.disk = DiskMeasurement::TotalOnly(0);
             project.visibility = Visibility::Deleted;
         }
 
@@ -5267,7 +5358,7 @@ mod tests {
             let deleted_dir = tmp.path().join("deleted");
             std::fs::create_dir_all(&deleted_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
+            let mut app = make_app(&[test_support::make_package("deleted", &deleted_dir)]);
             mark_deleted(&mut app, &deleted_dir);
             render_ui(&mut app);
 
@@ -5287,7 +5378,7 @@ mod tests {
             let deleted_dir = tmp.path().join("deleted");
             std::fs::create_dir_all(&deleted_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
+            let mut app = make_app(&[test_support::make_package("deleted", &deleted_dir)]);
             mark_deleted(&mut app, &deleted_dir);
             app.project_list.set_cursor(0);
             render_ui(&mut app);
@@ -5321,8 +5412,8 @@ mod tests {
             std::fs::create_dir_all(&second).expect("create test directory");
 
             let mut app = make_app(&[
-                make_package("first", &first),
-                make_package("second", &second),
+                test_support::make_package("first", &first),
+                test_support::make_package("second", &second),
             ]);
             render_ui(&mut app);
 
@@ -5346,22 +5437,22 @@ mod tests {
             let sub_dir = root_dir.join("vendor").join("dep");
             std::fs::create_dir_all(&sub_dir).expect("create test directory");
 
-            let root = make_package("demo", &root_dir);
+            let root = test_support::make_package("demo", &root_dir);
             let mut app = make_app(&[root]);
-            app.project_list
+            (app.project_list
                 .at_path_mut(&root_dir)
-                .expect("test project should exist in project list")
-                .submodules
-                .push(Submodule {
-                    name:          "vendor/dep".to_string(),
-                    path:          AbsolutePath::from(sub_dir),
-                    relative_path: "vendor/dep".to_string(),
-                    url:           None,
-                    branch:        None,
-                    commit:        PinnedCommit::Absent,
-                    project_info:  crate::project::ProjectInfo::default(),
-                    git_repo:      None,
-                });
+                .expect_found("test project should exist in project list"))
+            .submodules
+            .push(Submodule {
+                name:          "vendor/dep".to_string(),
+                path:          AbsolutePath::from(sub_dir),
+                relative_path: "vendor/dep".to_string(),
+                url:           None,
+                branch:        None,
+                commit:        PinnedCommit::Absent,
+                project_info:  crate::project::ProjectInfo::default(),
+                git_repo:      None,
+            });
             render_ui(&mut app);
 
             let (x, y) = pane_row_hit_point(&app, PaneId::ProjectList, 0);
@@ -5386,22 +5477,22 @@ mod tests {
             let sub_dir = root_dir.join("vendor").join("dep");
             std::fs::create_dir_all(&sub_dir).expect("create test directory");
 
-            let root = make_package("demo", &root_dir);
+            let root = test_support::make_package("demo", &root_dir);
             let mut app = make_app(&[root]);
-            app.project_list
+            (app.project_list
                 .at_path_mut(&root_dir)
-                .expect("test project should exist in project list")
-                .submodules
-                .push(Submodule {
-                    name:          "vendor/dep".to_string(),
-                    path:          AbsolutePath::from(sub_dir),
-                    relative_path: "vendor/dep".to_string(),
-                    url:           None,
-                    branch:        None,
-                    commit:        PinnedCommit::Absent,
-                    project_info:  crate::project::ProjectInfo::default(),
-                    git_repo:      None,
-                });
+                .expect_found("test project should exist in project list"))
+            .submodules
+            .push(Submodule {
+                name:          "vendor/dep".to_string(),
+                path:          AbsolutePath::from(sub_dir),
+                relative_path: "vendor/dep".to_string(),
+                url:           None,
+                branch:        None,
+                commit:        PinnedCommit::Absent,
+                project_info:  crate::project::ProjectInfo::default(),
+                git_repo:      None,
+            });
             render_ui(&mut app);
 
             app.set_focus(FocusedPane::App(AppPaneId::Package));
@@ -5435,8 +5526,8 @@ mod tests {
             std::fs::create_dir_all(&second).expect("create test directory");
 
             let mut app = make_app(&[
-                make_package("first", &first),
-                make_package("second", &second),
+                test_support::make_package("first", &first),
+                test_support::make_package("second", &second),
             ]);
             render_ui(&mut app);
 
@@ -5458,7 +5549,10 @@ mod tests {
             std::fs::create_dir_all(&alpha).expect("create test directory");
             std::fs::create_dir_all(&beta).expect("create test directory");
 
-            let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
+            let mut app = make_app(&[
+                test_support::make_package("alpha", &alpha),
+                test_support::make_package("beta", &beta),
+            ]);
             let (index, col_widths) = finder::build_finder_index(&app.project_list);
             let finder = &mut app.project_list.finder;
             finder.index = index;
@@ -5494,7 +5588,7 @@ mod tests {
                 vec![inline_group(vec![make_member("core", &member)])],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             app.project_list.move_down();
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -5558,8 +5652,8 @@ mod tests {
             std::fs::create_dir_all(&first).expect("create test directory");
             std::fs::create_dir_all(&second).expect("create test directory");
             let mut app = make_app(&[
-                make_package("first", &first),
-                make_package("second", &second),
+                test_support::make_package("first", &first),
+                test_support::make_package("second", &second),
             ]);
             render_ui(&mut app);
             open_overlay(&mut app);
@@ -5766,7 +5860,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             let runs = vec![
                 make_lint_run("run-1", LintRunStatus::Passed),
                 make_lint_run("run-2", LintRunStatus::Failed),
@@ -5827,26 +5921,26 @@ mod tests {
                 false,
                 Some(primary.as_path()),
             )))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             render_ui(&mut app);
 
-            app.project_list
-                .replace_roots_from(ProjectList::new(vec![RootItem::Worktrees(
-                    WorktreeGroup::new(
-                        RustProject::Package(make_package_worktree(
-                            "app",
-                            &primary,
-                            false,
-                            Some(primary.as_path()),
-                        )),
-                        vec![RustProject::Package(make_package_worktree(
-                            "app",
-                            &linked,
-                            true,
-                            Some(primary.as_path()),
-                        ))],
-                    ),
-                )]));
+            app.project_list.replace_roots_from(
+                ProjectList::new(vec![RootItem::Worktrees(WorktreeGroup::new(
+                    RustProject::Package(make_package_worktree(
+                        "app",
+                        &primary,
+                        false,
+                        Some(primary.as_path()),
+                    )),
+                    vec![RustProject::Package(make_package_worktree(
+                        "app",
+                        &linked,
+                        true,
+                        Some(primary.as_path()),
+                    ))],
+                ))]),
+                ReplacementExpansion::KeepValidKeys,
+            );
             render_ui(&mut app);
 
             let (x, y) = row_body_point(&app, 2);
@@ -5868,8 +5962,8 @@ mod tests {
             std::fs::create_dir_all(&live_dir).expect("create test directory");
 
             let mut app = make_app(&[
-                make_package("deleted", &deleted_dir),
-                make_package("live", &live_dir),
+                test_support::make_package("deleted", &deleted_dir),
+                test_support::make_package("live", &live_dir),
             ]);
             mark_deleted(&mut app, &deleted_dir);
             render_ui(&mut app);
@@ -5886,9 +5980,10 @@ mod tests {
             render_ui(&mut app);
 
             assert!(
-                app.project_list
-                    .at_path(&live_dir)
-                    .is_some_and(|info| info.visibility == Visibility::Visible),
+                match app.project_list.at_path(&live_dir) {
+                    Found(info) => info.visibility == Visibility::Visible,
+                    UnknownPath | StaleRoute => false,
+                },
                 "clicking the old dismiss location after rerender must not dismiss the surviving row"
             );
             assert_eq!(
@@ -5935,7 +6030,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             let toast_id = app.framework.toasts.push_persistent(
                 "Error",
                 "toast body",
@@ -5963,7 +6058,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             render_ui(&mut app);
 
             let (x, y) = pane_row_hit_point(&app, PaneId::Package, 1);
@@ -5979,7 +6074,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
             render_ui(&mut app);
             app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
@@ -6004,7 +6099,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
             let _ = app.framework.toasts.push_persistent(
                 "First",
@@ -6042,7 +6137,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             render_ui(&mut app);
             app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
             app.project_list.move_to_bottom();
@@ -6066,7 +6161,15 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             app.panes.package.viewport.set_pos(1);
             render_ui(&mut app);
 
@@ -6100,6 +6203,14 @@ mod tests {
                 ))],
             ))]);
             app.set_focus_to_pane(PaneId::Package);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             app.panes.package.viewport.set_pos(1);
             render_ui(&mut app);
 
@@ -6143,6 +6254,14 @@ mod tests {
                 ))],
             ))]);
             app.set_focus_to_pane(PaneId::Package);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             render_ui(&mut app);
 
             let package = app.panes.package.content().expect("package pane content");
@@ -6216,7 +6335,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             let make_target = |name: &str| TargetRecord {
                 name:              name.to_string(),
                 kinds:             vec![TargetKind::Example],
@@ -6287,6 +6406,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.git,
@@ -6317,22 +6437,12 @@ mod tests {
             fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
         }
 
-        fn find_text_cell(buffer: &Buffer, text: &str) -> Option<(u16, u16)> {
-            (buffer.area.y..buffer.area.bottom())
-                .find_map(|y| find_text_cell_in_row(buffer, y, text))
-        }
-
         fn find_text_cell_in_row(buffer: &Buffer, y: u16, text: &str) -> Option<(u16, u16)> {
-            let mut row = String::new();
-            let mut starts = Vec::new();
-            for x in buffer.area.x..buffer.area.right() {
-                starts.push((row.len(), x));
-                row.push_str(buffer[(x, y)].symbol());
-            }
-            let byte = row.find(text)?;
-            starts
-                .into_iter()
-                .find_map(|(start, x)| (start == byte).then_some((x, y)))
+            crate::tui::test_support::find_text_cell(
+                buffer,
+                Rect::new(buffer.area.x, y, buffer.area.width, 1),
+                text,
+            )
         }
 
         fn assert_git_error_colors(app: &mut App, error_value: &str) {
@@ -6340,7 +6450,8 @@ mod tests {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let buffer = render_selected_git(app, 8);
                 let value_position =
-                    find_text_cell(&buffer, error_value).expect("Error value should be rendered");
+                    crate::tui::test_support::find_text_cell(&buffer, buffer.area, error_value)
+                        .expect("Error value should be rendered");
                 let cell = &buffer[value_position];
                 assert_eq!(cell.fg, tui_pane::on_error_color());
                 assert_eq!(cell.bg, tui_pane::error_color());
@@ -6380,13 +6491,27 @@ mod tests {
                 let data = app.panes.git.content().expect("selected Git pane content");
                 assert!(matches!(data.checkout, panes::GitCheckout::UnreadableHead));
                 assert!(app.is_pane_tabbable(PaneId::Git));
-                let (x, y) = find_text_cell(&buffer, HEAD_UNREADABLE_LABEL)
-                    .expect("unreadable HEAD should render");
-                let (_, label_y) = find_text_cell(&buffer, DetailField::Head.label())
-                    .expect("unreadable HEAD should have a Branch label");
+                let (x, y) = crate::tui::test_support::find_text_cell(
+                    &buffer,
+                    buffer.area,
+                    HEAD_UNREADABLE_LABEL,
+                )
+                .expect("unreadable HEAD should render");
+                let (_, label_y) = crate::tui::test_support::find_text_cell(
+                    &buffer,
+                    buffer.area,
+                    DetailField::Head.label(),
+                )
+                .expect("unreadable HEAD should have a Branch label");
                 assert_eq!(label_y, y);
-                assert!(find_text_cell(&buffer, "local").is_none());
-                assert!(find_text_cell(&buffer, "unborn").is_none());
+                assert!(
+                    crate::tui::test_support::find_text_cell(&buffer, buffer.area, "local")
+                        .is_none()
+                );
+                assert!(
+                    crate::tui::test_support::find_text_cell(&buffer, buffer.area, "unborn")
+                        .is_none()
+                );
                 for column in x..x + u16::try_from(HEAD_UNREADABLE_LABEL.len()).expect("value fits")
                 {
                     assert_eq!(
@@ -6404,21 +6529,21 @@ mod tests {
             let root = temp.path();
             let child = root.join("dependency");
             std::fs::create_dir(&child).expect("submodule directory");
-            let mut app = make_app(&[make_package("demo", root)]);
-            app.project_list
+            let mut app = make_app(&[test_support::make_package("demo", root)]);
+            (app.project_list
                 .at_path_mut(root)
-                .expect("root project")
-                .submodules
-                .push(Submodule {
-                    name:          "dependency".to_string(),
-                    path:          AbsolutePath::from(child),
-                    relative_path: "dependency".to_string(),
-                    url:           None,
-                    branch:        None,
-                    commit:        PinnedCommit::Unreadable,
-                    project_info:  crate::project::ProjectInfo::default(),
-                    git_repo:      None,
-                });
+                .expect_found("root project"))
+            .submodules
+            .push(Submodule {
+                name:          "dependency".to_string(),
+                path:          AbsolutePath::from(child),
+                relative_path: "dependency".to_string(),
+                url:           None,
+                branch:        None,
+                commit:        PinnedCommit::Unreadable,
+                project_info:  crate::project::ProjectInfo::default(),
+                git_repo:      None,
+            });
             app.project_list.set_cursor(0);
             assert!(app.expand());
             app.ensure_visible_rows_cached();
@@ -6442,6 +6567,7 @@ mod tests {
                             &lookup,
                             OverlayRenderInputs::none(),
                             SyncedDescriptionHeight::default(),
+                            app.empty_package_description(),
                         );
                         tui_pane::Renderable::render(
                             split.registry.package,
@@ -6452,8 +6578,12 @@ mod tests {
                     })
                     .expect("render submodule Package pane");
                 let buffer = terminal.backend().buffer();
-                let (_, y) = find_text_cell(buffer, DetailField::Version.label())
-                    .expect("submodule Version row");
+                let (_, y) = crate::tui::test_support::find_text_cell(
+                    buffer,
+                    buffer.area,
+                    DetailField::Version.label(),
+                )
+                .expect("submodule Version row");
                 let (x, _) = find_text_cell_in_row(buffer, y, GIT_UNREADABLE_LABEL)
                     .expect("unreadable submodule pin");
                 for column in x..x + u16::try_from(GIT_UNREADABLE_LABEL.len()).expect("value fits")
@@ -6476,7 +6606,7 @@ mod tests {
             let mut config = std::fs::read_to_string(&config_path).expect("config");
             config.push_str("\n[remote \"-x\"]\nurl = https://github.com/natepiano/demo\n");
             std::fs::write(config_path, config).expect("remote config");
-            let mut app = make_app(&[make_package("demo", path)]);
+            let mut app = make_app(&[test_support::make_package("demo", path)]);
             app.project_list.set_cursor(0);
             let repo = RepoInfo::get(path).expect("repo");
             assert!(matches!(repo.remotes, RemoteList::Unreadable));
@@ -6484,8 +6614,18 @@ mod tests {
             super::apply_git_info(&mut app, path, (checkout, repo));
             app.sync_selected_project();
             let buffer = render_selected_ci(&mut app);
-            assert!(find_text_cell(&buffer, GIT_UNREADABLE_LABEL).is_some());
-            assert!(find_text_cell(&buffer, "requires a GitHub").is_none());
+            assert!(
+                crate::tui::test_support::find_text_cell(
+                    &buffer,
+                    buffer.area,
+                    GIT_UNREADABLE_LABEL
+                )
+                .is_some()
+            );
+            assert!(
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, "requires a GitHub")
+                    .is_none()
+            );
         }
 
         #[test]
@@ -6517,7 +6657,7 @@ mod tests {
                 let mut config = std::fs::read_to_string(&config_path).expect("config");
                 config.push_str("\n[remote \"origin\"]\nurl = https://github.com/natepiano/demo\n");
                 std::fs::write(config_path, config).expect("remote config");
-                let mut app = make_app(&[make_package("demo", path)]);
+                let mut app = make_app(&[test_support::make_package("demo", path)]);
                 app.project_list.set_cursor(0);
                 let mut repo = RepoInfo::get(path).expect("repo");
                 repo.workflows = WorkflowPresence::Present;
@@ -6533,7 +6673,12 @@ mod tests {
                 app.sync_selected_project();
                 let buffer = render_selected_ci(&mut app);
                 assert!(
-                    find_text_cell(&buffer, GIT_UNREADABLE_LABEL).is_some(),
+                    crate::tui::test_support::find_text_cell(
+                        &buffer,
+                        buffer.area,
+                        GIT_UNREADABLE_LABEL
+                    )
+                    .is_some(),
                     "corrupt HEAD: {corrupt_head}"
                 );
                 assert!(app.ci.content().expect("CI content").runs.is_empty());
@@ -6556,11 +6701,19 @@ mod tests {
                 }
                 super::apply_git_info(&mut app, project.path(), (checkout, repo));
                 let (buffer, widths) = super::render_tree_buffer(&mut app);
-                let (_, y) = find_text_cell(&buffer, "demo").expect("project row");
+                let (_, y) = crate::tui::test_support::find_text_cell(&buffer, buffer.area, "demo")
+                    .expect("project row");
                 let mut header = Buffer::empty(Rect::new(0, 0, buffer.area.width, 1));
                 crate::tui::columns::header_line(&widths, "Name").render(header.area, &mut header);
-                for label in ["Og", "Mn"] {
-                    let (x, _) = find_text_cell(&header, label).expect("sync column header");
+                for label in ["Sync", "Main"] {
+                    let (x, _) =
+                        crate::tui::test_support::find_text_cell(&header, header.area, label)
+                            .expect("sync column header");
+                    let x = x + u16::try_from(
+                        crate::tui::columns::display_width(label)
+                            - crate::tui::columns::display_width(GIT_STATUS_UNREADABLE),
+                    )
+                    .expect("sync column offset");
                     assert_eq!(
                         buffer[(x, y)].symbol(),
                         GIT_STATUS_UNREADABLE,
@@ -6578,7 +6731,8 @@ mod tests {
             repo.first_commit = FirstCommit::Probed(CommitDate::Unreadable);
             super::apply_git_info(&mut app, project.path(), (checkout, repo));
             let (buffer, _) = super::render_tree_buffer(&mut app);
-            let (_, y) = find_text_cell(&buffer, "demo").expect("project row");
+            let (_, y) = crate::tui::test_support::find_text_cell(&buffer, buffer.area, "demo")
+                .expect("project row");
             assert!(find_text_cell_in_row(&buffer, y, GIT_STATUS_UNREADABLE).is_some());
         }
 
@@ -6616,8 +6770,12 @@ mod tests {
                 },
             );
             let buffer = render_selected_git(&mut app, 8);
-            assert!(find_text_cell(&buffer, "local").is_none());
-            assert!(find_text_cell(&buffer, "feature").is_none());
+            assert!(
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, "local").is_none()
+            );
+            assert!(
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, "feature").is_none()
+            );
         }
 
         fn render_selected_ci(app: &mut App) -> Buffer {
@@ -6637,6 +6795,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     let area = frame.area();
                     let chrome = tui_pane::Renderable::render(
@@ -6651,7 +6810,7 @@ mod tests {
                     grid.add_titled(pane_frame, chrome.title);
                     grid.render(
                         frame.buffer_mut(),
-                        tui_pane::default_pane_chrome(),
+                        tui_pane::default_pane_chrome(ColorMode::Colored),
                         PaneBorders::Separate,
                     );
                 })
@@ -6718,15 +6877,19 @@ mod tests {
             let tmp = tempfile::tempdir().expect("fixture");
             let fixtures = probe_corrupt_remote_head_fixtures(tmp.path());
             for (name, path, checkout, repo) in fixtures {
-                let mut app = make_app(&[make_package("demo", &path)]);
+                let mut app = make_app(&[test_support::make_package("demo", &path)]);
                 app.project_list.select_project_in_tree(&path, false);
                 app.sync_selected_project();
                 super::apply_git_info(&mut app, &path, (checkout, repo));
                 for appearance in [Appearance::Dark, Appearance::Light] {
                     let _theme = ActiveThemeOverride::set(appearance);
                     let buffer = render_selected_git(&mut app, 16);
-                    let (_, y) =
-                        find_text_cell(&buffer, DetailField::Head.label()).expect("Branch row");
+                    let (_, y) = crate::tui::test_support::find_text_cell(
+                        &buffer,
+                        buffer.area,
+                        DetailField::Head.label(),
+                    )
+                    .expect("Branch row");
                     let (x, _) = find_text_cell_in_row(&buffer, y, GIT_UNREADABLE_LABEL)
                         .expect("failed branch lookup is drawn on Branch row");
                     for column in
@@ -6739,7 +6902,14 @@ mod tests {
                         );
                     }
                     let (tree, _) = super::render_tree_buffer(&mut app);
-                    assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
+                    assert!(
+                        crate::tui::test_support::find_text_cell(
+                            &tree,
+                            tree.area,
+                            GIT_STATUS_UNREADABLE
+                        )
+                        .is_some()
+                    );
                 }
             }
         }
@@ -6755,7 +6925,7 @@ mod tests {
             .expect("manifest");
             crate::test_support::init_git_repo(path);
             std::fs::write(path.join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
-            let mut app = make_app(&[make_package("demo", path)]);
+            let mut app = make_app(&[test_support::make_package("demo", path)]);
             app.project_list.select_project_in_tree(path, false);
             app.sync_selected_project();
             let repo = RepoInfo::get(path).expect("repository");
@@ -6782,7 +6952,12 @@ mod tests {
                     DetailField::LastCommit,
                     DetailField::RemotesUnreadable,
                 ] {
-                    let (_, y) = find_text_cell(&buffer, field.label()).expect("field label");
+                    let (_, y) = crate::tui::test_support::find_text_cell(
+                        &buffer,
+                        buffer.area,
+                        field.label(),
+                    )
+                    .expect("field label");
                     let (x, _) = find_text_cell_in_row(&buffer, y, GIT_UNREADABLE_LABEL)
                         .expect("unreadable value");
                     assert_eq!(
@@ -6791,9 +6966,23 @@ mod tests {
                         "{appearance:?}: {field:?}"
                     );
                 }
-                assert!(find_text_cell(&buffer, GitStatus::Clean.label()).is_none());
+                assert!(
+                    crate::tui::test_support::find_text_cell(
+                        &buffer,
+                        buffer.area,
+                        GitStatus::Clean.label()
+                    )
+                    .is_none()
+                );
                 let (tree, _) = super::render_tree_buffer(&mut app);
-                assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
+                assert!(
+                    crate::tui::test_support::find_text_cell(
+                        &tree,
+                        tree.area,
+                        GIT_STATUS_UNREADABLE
+                    )
+                    .is_some()
+                );
             }
         }
 
@@ -6831,7 +7020,11 @@ mod tests {
             app.project_list
                 .select_project_in_tree(&primary_path, false);
             app.sync_selected_project();
-            assert!(find_text_cell(&render_selected_git(&mut app, 8), &error_value).is_none());
+            let buffer = render_selected_git(&mut app, 8);
+            assert!(
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, &error_value)
+                    .is_none()
+            );
 
             app.project_list.select_project_in_tree(&linked_path, false);
             app.sync_selected_project();
@@ -6855,13 +7048,20 @@ mod tests {
                 matches!(data.checkout, crate::tui::panes::GitCheckout::Broken),
                 "an unreadable gitdir supplies no HEAD row"
             );
-            let (_, error_y) = find_text_cell(&buffer, &error_value)
-                .expect("Git pane should render the broken worktree error");
-            let (_, label_y) = find_text_cell(&buffer, error_label)
-                .expect("Git pane should label the broken worktree error");
+            let (_, error_y) =
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, &error_value)
+                    .expect("Git pane should render the broken worktree error");
+            let (_, label_y) =
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, error_label)
+                    .expect("Git pane should label the broken worktree error");
             assert_eq!(error_y, label_y);
             assert!(
-                find_text_cell(&buffer, DetailField::Head.label()).is_none(),
+                crate::tui::test_support::find_text_cell(
+                    &buffer,
+                    buffer.area,
+                    DetailField::Head.label()
+                )
+                .is_none(),
                 "a failed HEAD probe must not produce a Branch row",
             );
 
@@ -6877,7 +7077,7 @@ mod tests {
                 vec![super::make_vendored(Some(name), "~/app/vendor/helper")],
             );
             let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             assert_name_fit_matches_frame(&mut app, &format!("{name} (v)"));
         }
 
@@ -6896,7 +7096,7 @@ mod tests {
                 RustProject::Workspace(workspace),
                 Vec::new(),
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             assert_name_fit_matches_frame(&mut app, name);
         }
 
@@ -6911,8 +7111,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, app))
                 .expect("render project list frame");
             let buffer = terminal.backend().buffer();
-            let (column, _) =
-                find_text_cell(buffer, label).expect("project list row should render");
+            let (column, _) = crate::tui::test_support::find_text_cell(buffer, buffer.area, label)
+                .expect("project list row should render");
             let drawn_width = usize::from(column) + crate::tui::columns::display_width(label) - 1;
             assert_eq!(
                 app.project_list.cached_fit_widths.get(COL_NAME),
@@ -6933,10 +7133,11 @@ mod tests {
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             let (buffer, widths) = super::render_tree_buffer(&mut app);
-            let (column, _) = find_text_cell(&buffer, linked_name)
-                .expect("linked package worktree should render");
+            let (column, _) =
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, linked_name)
+                    .expect("linked package worktree should render");
             let drawn_width = usize::from(column) + crate::tui::columns::display_width(linked_name);
             assert_eq!(
                 widths.get(COL_NAME),
@@ -6962,7 +7163,7 @@ mod tests {
                 super::apply_items(&mut app, &items);
                 let deleted_path = if delete_member { &member } else { &root };
                 mark_deleted(&mut app, deleted_path);
-                app.project_list.expanded.insert(ExpandKey::Node(0));
+                app.project_list.expanded.expand(ExpandKey::Node(0), 0);
                 app.ensure_visible_rows_cached();
                 app.ensure_disk_cache();
                 app.ensure_fit_widths_cached();
@@ -6974,8 +7175,9 @@ mod tests {
                     .expect("render deleted row frame");
                 let buffer = terminal.backend().buffer();
                 let label = if delete_member { "member" } else { "root" };
-                let (_, suffix_y) = find_text_cell(buffer, DISMISS_SUFFIX)
-                    .unwrap_or_else(|| panic!("{label}: delete-marked Disk suffix is clipped"));
+                let (_, suffix_y) =
+                    crate::tui::test_support::find_text_cell(buffer, buffer.area, DISMISS_SUFFIX)
+                        .unwrap_or_else(|| panic!("{label}: delete-marked Disk suffix is clipped"));
                 assert!(
                     find_text_cell_in_row(buffer, suffix_y, label).is_some(),
                     "deleted row draws its whole suffix"
@@ -6997,10 +7199,11 @@ mod tests {
 
         #[test]
         fn manifest_error_marker_and_name_style_survive_real_layout() {
+            let mode = ColorMode::Colored;
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             app.scan
                 .manifest_metadata
                 .record_failure(&root, "error: invalid manifest");
@@ -7009,8 +7212,16 @@ mod tests {
                 let y = app.panes.project_list.body_rect.y;
                 let (x, _) = find_text_cell_in_row(&buffer, y, "a !")
                     .expect("visible name and error marker in fitted pane");
-                assert_eq!(buffer[(x, y)].fg, tui_pane::error_color());
-                assert_eq!(buffer[(x + 2, y)].fg, tui_pane::error_color());
+                assert_eq!(
+                    buffer[(x, y)].fg,
+                    crate::tui::theme_roles::selection_style(
+                        tui_pane::PaneSelectionState::Active,
+                        mode
+                    )
+                    .fg
+                    .expect("selected text colour")
+                );
+                assert_eq!(buffer[(x + 2, y)].fg, buffer[(x, y)].fg);
                 let table_start = app.panes.project_list.body_rect.x;
                 let name_end = table_start
                     + u16::try_from(app.project_list.cached_fit_widths.get(COL_NAME))
@@ -7018,7 +7229,7 @@ mod tests {
                 assert!(x + 3 < name_end, "fit reserves marker and gutter");
                 let expected_header = crate::tui::columns::header_line(
                     &app.project_list.cached_fit_widths,
-                    "  Projects",
+                    "   Projects",
                 );
                 let expected_area = Rect::new(0, 0, 320, 1);
                 let mut expected = Buffer::empty(expected_area);
@@ -7067,7 +7278,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             app.scan
                 .manifest_metadata
                 .record_failure(&root, "error: invalid manifest");
@@ -7092,7 +7303,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             let error = format!(
                 "error: failed to parse manifest at {}Cargo.toml",
                 "/long/path".repeat(200)
@@ -7108,7 +7319,7 @@ mod tests {
                 .content()
                 .expect("selected package")
                 .clone();
-            package.description = Some(description.to_string());
+            package.description = DescriptionState::Known(description.to_string());
             let rows = panes::package_rows_from_data(&package);
             let (field_row, field) = rows
                 .iter()
@@ -7120,7 +7331,7 @@ mod tests {
                 .expect("selectable field");
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().expect("selected Git data").clone();
-            git.description = Some(description.to_string());
+            git.description = DescriptionState::Known(description.to_string());
             app.panes.git.set_content(git);
             app.set_focus_to_pane(PaneId::Package);
             let mut terminal = Terminal::new(TestBackend::new(160, height)).expect("app terminal");
@@ -7190,13 +7401,17 @@ mod tests {
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             app.scan
                 .manifest_metadata
                 .record_failure(&root, "error: invalid manifest");
             let buffer = render_metadata_app(&mut app, 240);
-            let (x, y) = find_text_cell(&buffer, "error: invalid manifest")
-                .expect("selected project's diagnostic");
+            let (x, y) = crate::tui::test_support::find_text_cell(
+                &buffer,
+                buffer.area,
+                "error: invalid manifest",
+            )
+            .expect("selected project's diagnostic");
             assert!(
                 app.panes
                     .package
@@ -7206,10 +7421,20 @@ mod tests {
                 "diagnostic belongs to Package pane"
             );
             assert_eq!(buffer[(x, y)].fg, tui_pane::error_color());
-            assert!(find_text_cell(&buffer, "more context").is_none());
+            assert!(
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, "more context")
+                    .is_none()
+            );
             app.scan.manifest_metadata.record_success(&root);
             let healthy = render_metadata_app(&mut app, 240);
-            assert!(find_text_cell(&healthy, "error: invalid manifest").is_none());
+            assert!(
+                crate::tui::test_support::find_text_cell(
+                    &healthy,
+                    healthy.area,
+                    "error: invalid manifest"
+                )
+                .is_none()
+            );
         }
 
         #[test]
@@ -7217,7 +7442,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             let error = "error: failed to parse manifest at /very/long/project/path/with/more/characters/than/a/narrow/Package/pane/Cargo.toml";
             app.scan.manifest_metadata.record_failure(&root, error);
             for width in [100, 160, 240] {
@@ -7248,7 +7473,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("short-name project");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project folder");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             let baseline = render_manifest_metadata_pane(&mut app);
             app.scan
                 .manifest_metadata
@@ -7275,8 +7500,12 @@ mod tests {
                 marker_x + 3 < table_start + name_width,
                 "marker stays inside the name cell"
             );
-            let (error_x, error_y) =
-                find_text_cell(&failed, "error: rejected manifest").expect("Package diagnostic");
+            let (error_x, error_y) = crate::tui::test_support::find_text_cell(
+                &failed,
+                failed.area,
+                "error: rejected manifest",
+            )
+            .expect("Package diagnostic");
             assert!(
                 app.panes
                     .package
@@ -7291,13 +7520,14 @@ mod tests {
             let tmp = tempfile::tempdir().expect("deleted project");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project folder");
-            let mut app = make_app(&[make_package("a", &root)]);
+            let mut app = make_app(&[test_support::make_package("a", &root)]);
             app.scan
                 .manifest_metadata
                 .record_failure(&root, "error: rejected manifest");
             mark_deleted(&mut app, &root);
             let buffer = render_manifest_metadata_pane(&mut app);
-            let (x, y) = find_text_cell(&buffer, "[x]").expect("visible dismiss suffix");
+            let (x, y) = crate::tui::test_support::find_text_cell(&buffer, buffer.area, "[x]")
+                .expect("visible dismiss suffix");
             let hit = tui_pane::Hittable::hit_test_at(&app.panes.project_list, Position::new(x, y));
             assert!(
                 matches!(hit,
@@ -7315,15 +7545,15 @@ mod tests {
             let linked_path = tmp.path().join(linked_name);
             let mut primary =
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
-            primary.rust.project_info.disk_usage_bytes = Some(39_000_000_000);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(39_000_000_000);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
-            linked.rust.project_info.disk_usage_bytes = Some(304);
+            linked.rust.project_info.disk = DiskMeasurement::TotalOnly(304);
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
@@ -7337,14 +7567,20 @@ mod tests {
                     .draw(|frame| render::ui(frame, &mut app))
                     .expect("render project list frame");
                 let buffer = terminal.backend().buffer();
-                let (_, name_y) = find_text_cell(buffer, linked_name)
-                    .expect("broken worktree name should render");
+                let (_, name_y) =
+                    crate::tui::test_support::find_text_cell(buffer, buffer.area, linked_name)
+                        .expect("broken worktree name should render");
                 let disk = format!("304 B{BROKEN_WORKTREE_DISK_SUFFIX}");
-                let (_, disk_y) = find_text_cell(buffer, &disk)
-                    .expect("broken worktree disk suffix should render whole");
+                let (_, disk_y) =
+                    crate::tui::test_support::find_text_cell(buffer, buffer.area, &disk)
+                        .expect("broken worktree disk suffix should render whole");
                 assert_eq!(name_y, disk_y, "{appearance:?}");
-                let (column, y) = find_text_cell(buffer, BROKEN_WORKTREE_DISK_SUFFIX)
-                    .expect("whole suffix should render");
+                let (column, y) = crate::tui::test_support::find_text_cell(
+                    buffer,
+                    buffer.area,
+                    BROKEN_WORKTREE_DISK_SUFFIX,
+                )
+                .expect("whole suffix should render");
                 for x in column
                     ..column
                         + u16::try_from(BROKEN_WORKTREE_DISK_SUFFIX.len())
@@ -7367,20 +7603,21 @@ mod tests {
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
             // The fitted Disk width includes the linked row's whole suffix,
             // even alongside a primary with a larger size value.
-            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
                     let (column, y) =
-                        find_text_cell(&buffer, text).expect("whole broken row text should render");
+                        crate::tui::test_support::find_text_cell(&buffer, buffer.area, text)
+                            .expect("whole broken row text should render");
                     for x in
                         column..column + u16::try_from(text.len()).expect("ASCII text fits buffer")
                     {
@@ -7406,7 +7643,7 @@ mod tests {
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
             // The fitted Disk width includes the linked row's whole suffix,
             // even alongside a primary with a larger size value.
-            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
@@ -7416,16 +7653,18 @@ mod tests {
             let (mut checkout, repo) = make_git_info(None);
             checkout.status = GitStatus::Unreadable;
             super::apply_git_info(&mut app, &linked_path, (checkout, repo));
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
-                let (_, row) = find_text_cell(&buffer, linked_name)
-                    .expect("broken worktree row should render");
+                let (_, row) =
+                    crate::tui::test_support::find_text_cell(&buffer, buffer.area, linked_name)
+                        .expect("broken worktree row should render");
                 assert!(find_text_cell_in_row(&buffer, row, GIT_STATUS_UNREADABLE).is_none());
                 for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
                     let (column, y) =
-                        find_text_cell(&buffer, text).expect("whole broken row text should render");
+                        crate::tui::test_support::find_text_cell(&buffer, buffer.area, text)
+                            .expect("whole broken row text should render");
                     for x in
                         column..column + u16::try_from(text.len()).expect("ASCII text fits buffer")
                     {
@@ -7447,7 +7686,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
             app.handle_repo_info(&project_dir, repo);
             app.handle_checkout_info(&project_dir, checkout);
@@ -7466,7 +7705,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
             app.handle_repo_info(&project_dir, repo);
             app.handle_checkout_info(&project_dir, checkout);
@@ -7524,7 +7763,7 @@ mod tests {
                     let name = format!("project-{index:02}");
                     let dir = tmp.path().join(&name);
                     std::fs::create_dir_all(&dir).expect("create test directory");
-                    make_package(&name, &dir)
+                    test_support::make_package(&name, &dir)
                 })
                 .collect()
         }
@@ -7581,7 +7820,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
 
             let custom_target = tmp.path().join("out-of-tree-target");
             app.scan
@@ -7671,7 +7910,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             upsert_fake_package_metadata(
                 &app,
                 &project_dir,
@@ -7706,7 +7945,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             upsert_fake_package_metadata(&app, &project_dir, None, None, None);
             // Taller backend so the full field list fits — see the sibling
             // test for why the default 120×40 isn't enough here.
@@ -7733,7 +7972,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
 
             // Stage a disk-usage batch with a clearly-split breakdown.
             // 10 MiB target, 2 MiB source: assert both lines render with
@@ -7756,7 +7995,7 @@ mod tests {
                 "detail pane must surface the target/ breakdown label"
             );
             assert!(
-                rendered.contains("other"),
+                rendered.contains("Other"),
                 "detail pane must surface the non-target (other) breakdown label"
             );
             assert!(
@@ -7780,7 +8019,7 @@ mod tests {
             let project_dir = tmp.path().join("demo");
             let shared_target = tmp.path().join("shared-target");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
 
             let root = AbsolutePath::from(project_dir);
             let target = AbsolutePath::from(shared_target);
@@ -7889,8 +8128,8 @@ mod tests {
             std::fs::create_dir_all(&target_dir).expect("create test directory");
 
             let mut app = make_app(&[
-                make_package("main", &primary_dir),
-                make_package("feat", &sibling_dir),
+                test_support::make_package("main", &primary_dir),
+                test_support::make_package("feat", &sibling_dir),
             ]);
             upsert_shared_target_metadata(
                 &mut app,
@@ -7920,7 +8159,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             std::fs::create_dir_all(&project_dir).expect("create test directory");
-            let mut app = make_app(&[make_package("demo", &project_dir)]);
+            let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
 
             app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
                 project_dir.clone(),
@@ -8000,7 +8239,7 @@ mod tests {
 
         #[test]
         fn output_row_click_selects_clicked_line() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8025,7 +8264,7 @@ mod tests {
 
         #[test]
         fn output_drag_selects_the_line_range_and_yanks_it() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8065,7 +8304,7 @@ mod tests {
 
         #[test]
         fn output_click_after_drag_clears_the_selection_to_the_clicked_line() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8102,7 +8341,7 @@ mod tests {
 
         #[test]
         fn output_drag_ignored_when_output_not_focused() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
 
@@ -8120,7 +8359,7 @@ mod tests {
         /// claim the click.
         #[test]
         fn output_click_does_not_hit_stale_diagnostics_rect() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
 
             // Render once with output empty so the bottom row shows Lints/CiRuns
@@ -8142,7 +8381,7 @@ mod tests {
 
         #[test]
         fn output_toggle_visual_enters_and_leaves_visual_mode() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
 
@@ -8167,7 +8406,7 @@ mod tests {
 
         #[test]
         fn output_v_is_inert_without_vim() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
 
@@ -8180,7 +8419,7 @@ mod tests {
 
         #[test]
         fn output_selection_extends_and_yanks_against_snapshot() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8210,7 +8449,7 @@ mod tests {
 
         #[test]
         fn output_ctrl_a_selects_all_lines_and_yanks_them() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta"]);
 
@@ -8241,7 +8480,7 @@ mod tests {
 
         #[test]
         fn output_esc_collapses_vim_visual_to_the_cursor_row() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app_vim(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8272,7 +8511,7 @@ mod tests {
 
         #[test]
         fn output_shift_arrows_grow_the_selection_from_the_cursor_row() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8303,8 +8542,8 @@ mod tests {
         #[test]
         fn shift_arrows_do_nothing_outside_the_output_pane() {
             let mut app = make_app(&[
-                make_package("first", Path::new("/tmp/first")),
-                make_package("second", Path::new("/tmp/second")),
+                test_support::make_package("first", Path::new("/tmp/first")),
+                test_support::make_package("second", Path::new("/tmp/second")),
             ]);
             app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
             let _ = buffer_text_sized(&mut app, 120, 40);
@@ -8329,7 +8568,7 @@ mod tests {
 
         #[test]
         fn output_ctrl_shift_up_selects_from_the_cursor_to_the_top() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8349,7 +8588,7 @@ mod tests {
 
         #[test]
         fn output_ctrl_shift_down_selects_from_the_cursor_to_the_bottom() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8367,7 +8606,7 @@ mod tests {
 
         #[test]
         fn output_shift_arrows_extend_and_shrink_an_active_selection() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
@@ -8396,7 +8635,7 @@ mod tests {
 
         #[test]
         fn output_esc_collapses_vim_visual_before_requesting_termination() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app_vim(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
             // A process is still streaming while the user enters visual mode.
@@ -8432,7 +8671,7 @@ mod tests {
 
         #[test]
         fn output_title_shows_visual_hint_even_while_running() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app_vim(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
             app.inflight.set_example_running(Some("demo".to_string()));
@@ -8454,7 +8693,7 @@ mod tests {
 
         #[test]
         fn output_title_keeps_target_path_after_run_finishes() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha"]);
             app.inflight
@@ -8478,7 +8717,7 @@ mod tests {
 
         #[test]
         fn output_yank_strips_ansi_from_selection() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["\u{1b}[31mred line\u{1b}[0m"]);
 
@@ -8491,7 +8730,7 @@ mod tests {
 
         #[test]
         fn output_render_drops_non_sgr_escape_sequences() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(
                 &mut app,
@@ -8508,7 +8747,7 @@ mod tests {
 
         #[test]
         fn output_vim_esc_collapses_then_a_second_esc_closes_the_pane() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app_vim(&[project]);
             open_output(&mut app, &["alpha", "beta"]);
 
@@ -8537,7 +8776,7 @@ mod tests {
 
         #[test]
         fn focused_output_selection_row_highlight_fills_full_width() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
 
@@ -8554,7 +8793,9 @@ mod tests {
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
             // Find the tail row ("gamma") — the one-line selection while following.
-            let (text_col, y) = find_text_cell(&buffer, "gamma").expect("the tail row is rendered");
+            let (text_col, y) =
+                crate::tui::test_support::find_text_cell(&buffer, buffer.area, "gamma")
+                    .expect("the tail row is rendered");
 
             // A cell well past the 5-char text must carry the selection
             // background — the cursor row is a one-line selection, drawn in the
@@ -8569,7 +8810,7 @@ mod tests {
 
         #[test]
         fn selection_row_highlight_covers_ansi_colored_log_text() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             // A green ANSI segment followed by plain text — the colored span
             // carries its own background, which must not punch a hole in the
@@ -8584,8 +8825,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, &mut app))
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
-            let (col, y) =
-                find_text_cell(&buffer, "INFO").expect("the colored log line is rendered");
+            let (col, y) = crate::tui::test_support::find_text_cell(&buffer, buffer.area, "INFO")
+                .expect("the colored log line is rendered");
 
             // The 'I' of the green "INFO" must carry the selection-row background
             // (the cursor row is a one-line selection), not the bare default
@@ -8601,7 +8842,7 @@ mod tests {
 
         #[test]
         fn overlaid_output_steals_focus_from_hidden_diagnostics_pane() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta"]);
 
@@ -8621,8 +8862,13 @@ mod tests {
 
         #[test]
         fn closing_output_releases_focus_to_a_visible_pane() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
+            super::panes::seed_single_example_metadata(
+                &app,
+                &AbsolutePath::from("/tmp/demo"),
+                "example",
+            );
             open_output(&mut app, &["alpha", "beta"]);
             assert_eq!(app.focused_pane_id(), PaneId::Output);
 
@@ -8639,7 +8885,7 @@ mod tests {
 
         #[test]
         fn output_yank_copies_the_cursor_row_by_default() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["alpha", "beta"]);
 
@@ -8653,7 +8899,7 @@ mod tests {
 
         #[test]
         fn output_scroll_up_freezes_and_end_resumes_follow() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["a", "b", "c", "d", "e"]);
 
@@ -8672,7 +8918,7 @@ mod tests {
 
         #[test]
         fn output_process_exit_holds_a_range_but_resumes_when_collapsed() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
+            let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
             open_output(&mut app, &["a", "b", "c"]);
 
@@ -8774,7 +9020,7 @@ mod tests {
 
             let mut app = make_app(&[workspace, member.clone()]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list
                 .select_project_in_tree(member.path(), false);
 
@@ -8885,7 +9131,7 @@ mod tests {
                     ("vendored", 2),
                     ("submodules", 2),
                     ("lib", 1),
-                    ("bin", 1),
+                    ("binary", 1),
                     ("example", 1),
                     ("bench", 1),
                 ]
@@ -8919,14 +9165,12 @@ mod tests {
                 .package
                 .content()
                 .expect("pane should have rendered test content");
-            assert_eq!(package.stats_rows, vec![("vendored", 2), ("bin", 1)]);
+            assert_eq!(package.stats_rows, vec![("vendored", 2), ("binary", 1)]);
         }
 
-        /// Upsert minimal `WorkspaceMetadata` into `app`'s metadata store
-        /// for `project_path`, naming a single Example target so the Targets
-        /// pane becomes tabbable. Keeps the per-test setup out of line when
-        /// the test's focus is pane behavior, not metadata plumbing.
-        fn seed_single_example_metadata(
+        /// Add metadata with one Example target for `project_path`.
+        /// The target makes the Targets pane available to focus tests.
+        pub(super) fn seed_single_example_metadata(
             app: &App,
             project_path: &AbsolutePath,
             example_name: &str,
@@ -9409,10 +9653,10 @@ mod tests {
                 "top-level project should be deleted"
             );
             assert_eq!(
-                app.project_list
+                (app.project_list
                     .at_path(&abs_path)
-                    .expect("top-level project should still exist in hierarchy")
-                    .visibility,
+                    .expect_found("top-level project should still exist in hierarchy"))
+                .visibility,
                 Deleted
             );
 
@@ -9466,11 +9710,15 @@ mod tests {
             let crossed_out_non_suffix = line
                 .spans
                 .iter()
-                .filter(|span| span.content.as_ref() != " [x]")
+                .filter(|span| {
+                    span.content.as_ref() != " [x]"
+                        && !span.content.trim().is_empty()
+                        && span.content.trim() != "🦀"
+                })
                 .all(|span| span.style.add_modifier.contains(Modifier::CROSSED_OUT));
             assert!(
                 crossed_out_non_suffix,
-                "deleted row content should be crossed out"
+                "deleted row text should be crossed out"
             );
         }
 
@@ -9500,10 +9748,10 @@ mod tests {
                 "top-level project should be deleted"
             );
             assert_eq!(
-                app.project_list
+                (app.project_list
                     .at_path(&abs_path)
-                    .expect("top-level project should still exist in hierarchy")
-                    .visibility,
+                    .expect_found("top-level project should still exist in hierarchy"))
+                .visibility,
                 Deleted
             );
 
@@ -9545,10 +9793,10 @@ mod tests {
                 "dismissed top-level deleted project should no longer render"
             );
             assert_eq!(
-                app.project_list
+                (app.project_list
                     .at_path(&abs_path)
-                    .expect("top-level project should remain in hierarchy after dismiss")
-                    .visibility,
+                    .expect_found("top-level project should remain in hierarchy after dismiss"))
+                .visibility,
                 Dismissed
             );
             let lint_runs = app
@@ -9591,19 +9839,18 @@ mod tests {
             let root = make_project(Some("blender"), &root_path);
             let mut app = make_app(&[root]);
 
-            let root_info = app
-                .project_list
-                .at_path_mut(Path::new(&root_path))
-                .expect("test project should exist in project list");
-            root_info.submodules.push(Submodule {
-                name:          "lib/linux_x64".to_string(),
-                path:          AbsolutePath::from(sub_path.clone()),
-                relative_path: "lib/linux_x64".to_string(),
-                url:           None,
-                branch:        None,
-                commit:        PinnedCommit::Absent,
-                project_info:  crate::project::ProjectInfo::default(),
-                git_repo:      None,
+            app.handle_bg_msg(BackgroundMsg::Submodules {
+                path:       AbsolutePath::from(root_path.clone()),
+                submodules: vec![Submodule {
+                    name:          "lib/linux_x64".to_string(),
+                    path:          AbsolutePath::from(sub_path.clone()),
+                    relative_path: "lib/linux_x64".to_string(),
+                    url:           None,
+                    branch:        None,
+                    commit:        PinnedCommit::Absent,
+                    project_info:  crate::project::ProjectInfo::default(),
+                    git_repo:      None,
+                }],
             });
 
             app.handle_disk_usage(Path::new(&root_path), 2_000_000);
@@ -9651,7 +9898,10 @@ mod tests {
             ]
             .into();
 
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -9706,7 +9956,7 @@ mod tests {
             let mut app = make_app(&[make_project(None, "~/ws")]);
             app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/ws_feat"),
@@ -9760,7 +10010,7 @@ mod tests {
             );
             let root = make_workspace_worktrees_item(primary, Vec::new());
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -9808,7 +10058,7 @@ mod tests {
                 ExpandKey::WorktreeGroup(0, 1, 0),
             ]
             .into();
-            list.expanded = original.clone();
+            list.expanded = tui_pane::ExpansionModel::from_open_keys(original.clone());
 
             // The primary `Node` and `Worktree(0, 0)` share `~/ws`; the variant tag
             // keeps them distinct rather than collapsing to a single target.
@@ -9819,7 +10069,14 @@ mod tests {
             // freshly built (identical) tree restores exactly the same keys.
             let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
             rebuilt.apply_expanded(&targets);
-            assert_eq!(rebuilt.expanded, original);
+            assert_eq!(
+                rebuilt
+                    .expanded
+                    .open_keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                original
+            );
         }
 
         #[test]
@@ -9827,13 +10084,20 @@ mod tests {
             // A target whose path is gone (project removed since the last run) is
             // silently dropped, and the surviving target still applies.
             let mut list = as_entries(vec![linked_workspace_worktrees_fixture()]);
-            list.expanded = [ExpandKey::Node(0)].into();
+            list.expanded = tui_pane::ExpansionModel::from_open_keys([ExpandKey::Node(0)]);
             let mut targets = list.export_expanded();
             targets.push(ExpandTarget::Root(AbsolutePath::from("/nonexistent/gone")));
 
             let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
             rebuilt.apply_expanded(&targets);
-            assert_eq!(rebuilt.expanded, [ExpandKey::Node(0)].into());
+            assert_eq!(
+                rebuilt
+                    .expanded
+                    .open_keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                [ExpandKey::Node(0)].into()
+            );
         }
 
         #[test]
@@ -9940,7 +10204,10 @@ mod tests {
             };
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![build_root()]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![build_root()]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -9949,8 +10216,10 @@ mod tests {
 
             let expanded2: HashSet<ExpandKey> =
                 [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-            let rows2 =
-                super::as_entries(vec![build_root()]).compute_visible_rows(&expanded2, true);
+            let rows2 = super::as_entries(vec![build_root()]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded2.iter().cloned()),
+                true,
+            );
             assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
         }
 
@@ -9965,7 +10234,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(
                 rows,
@@ -9998,7 +10270,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(
                 rows,
@@ -10030,7 +10305,7 @@ mod tests {
                 ],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10057,7 +10332,7 @@ mod tests {
                 )],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10078,11 +10353,11 @@ mod tests {
                 )],
             );
             let mut app = make_app(&[root]);
-            app.project_list
+            (app.project_list
                 .at_path_mut(test_path("~/old_app").as_path())
-                .expect("linked worktree should exist")
-                .visibility = Deleted;
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+                .expect_found("linked worktree should exist"))
+            .visibility = Deleted;
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10110,7 +10385,10 @@ mod tests {
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
             let items = vec![root.clone()];
-            let rows = super::as_entries(items).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
             assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
             let mut items = vec![root];
@@ -10122,7 +10400,10 @@ mod tests {
                 .at_path_mut(&linked_path)
                 .expect("linked worktree should exist")
                 .visibility = Dismissed;
-            let rows = super::as_entries(items).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
             assert_eq!(
                 rows.len(),
                 1,
@@ -10201,10 +10482,10 @@ mod tests {
                 "selection should move back to the surviving top-level project"
             );
             assert_eq!(
-                app.project_list
+                (app.project_list
                     .at_path(&linked_abs)
-                    .expect("linked worktree should remain in the hierarchy")
-                    .visibility,
+                    .expect_found("linked worktree should remain in the hierarchy"))
+                .visibility,
                 Dismissed
             );
         }
@@ -10385,9 +10666,10 @@ mod tests {
             app.handle_disk_usage(Path::new(&primary_path), 2_000_000);
             app.handle_disk_usage(Path::new(&member_path), 1_234_567);
             assert_eq!(
-                app.project_list
-                    .at_path(Path::new(&member_path))
-                    .and_then(|info| info.disk_usage_bytes),
+                match app.project_list.at_path(Path::new(&member_path)) {
+                    Found(info) => info.disk.total(),
+                    UnknownPath | StaleRoute => None,
+                },
                 Some(1_234_567)
             );
             app.ensure_visible_rows_cached();
@@ -10409,9 +10691,10 @@ mod tests {
             app.ensure_visible_rows_cached();
 
             assert_eq!(
-                app.project_list
-                    .at_path(Path::new(&member_path))
-                    .and_then(|info| info.disk_usage_bytes),
+                match app.project_list.at_path(Path::new(&member_path)) {
+                    Found(info) => info.disk.total(),
+                    UnknownPath | StaleRoute => None,
+                },
                 Some(1_234_567),
                 "member disk usage should remain stored after dismiss"
             );
@@ -10581,7 +10864,10 @@ mod tests {
                 .visibility = Deleted;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), crate::project::Visibility::Visible);
             assert_eq!(rows.len(), 3, "deleted linked worktree should still render");
@@ -10608,7 +10894,10 @@ mod tests {
                 .visibility = Deleted;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), Deleted);
             assert_eq!(
@@ -10639,7 +10928,10 @@ mod tests {
                 .visibility = Dismissed;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), Dismissed);
             assert!(
@@ -10672,7 +10964,8 @@ mod tests {
             assert_eq!(
                 widths.get(COL_NAME),
                 crate::tui::panes::name_width_with_gutter(
-                    root_width.max(primary_entry_width).max(linked_entry_width)
+                    panes::PROJECT_LIST_LEFT_PADDING
+                        + root_width.max(primary_entry_width).max(linked_entry_width)
                 ),
                 "fit widths should use rendered worktree labels, not the absolute primary worktree path"
             );
@@ -10741,7 +11034,9 @@ mod tests {
 
             assert_eq!(
                 widths.get(COL_NAME),
-                crate::tui::panes::name_width_with_gutter(root_width.max(primary_entry_width)),
+                crate::tui::panes::name_width_with_gutter(
+                    panes::PROJECT_LIST_LEFT_PADDING + root_width.max(primary_entry_width),
+                ),
                 "fit widths should include the rendered primary marker"
             );
         }
@@ -10756,15 +11051,13 @@ mod tests {
             let names = rendered_root_name_cells(&mut app);
 
             assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+                names.iter().any(|name| name.contains("cargo-port [rust]")),
                 "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
             );
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+                    .any(|name| name.contains("cargo-port [archive]")),
                 "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
             );
             assert_ne!(
@@ -10790,15 +11083,13 @@ mod tests {
             let names = rendered_root_name_cells(&mut app);
 
             assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+                names.iter().any(|name| name.contains("cargo-port [rust]")),
                 "root label should prepend parents until the suffix becomes unique: {names:?}"
             );
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+                    .any(|name| name.contains("cargo-port [archive]")),
                 "root label should prepend parents until the suffix becomes unique: {names:?}"
             );
             assert!(
@@ -10823,7 +11114,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10860,7 +11154,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10888,7 +11185,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 2, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10912,7 +11212,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
             let expanded: HashSet<ExpandKey> =
                 [ExpandKey::Node(0), ExpandKey::Member(0, 0, 0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10940,11 +11243,11 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
             apply_items(&mut app, std::slice::from_ref(&root));
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
-                rendered.iter().any(|line| line.starts_with("└─▶ member")),
+                rendered.iter().any(|line| line.starts_with(" └─▶ member")),
                 "member with hidden vendored children should render a collapsed marker: {rendered:?}"
             );
             assert!(
@@ -10952,17 +11255,19 @@ mod tests {
                 "collapsed member should hide vendored child rows: {rendered:?}"
             );
 
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
-                rendered.iter().any(|line| line.starts_with("└─▼ member")),
+                rendered.iter().any(|line| line.starts_with(" └─▼ member")),
                 "expanded member should render an expanded marker: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("  └── helper (v)")),
+                    .any(|line| line.starts_with("   └── helper (v)")),
                 "vendored child should render two spaces deeper with an extended row marker: {rendered:?}"
             );
         }
@@ -10987,33 +11292,35 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(Some("bevy_hana"), "~/ws")]);
             apply_items(&mut app, std::slice::from_ref(&root));
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
 
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("├─▼ fake_widgets")),
+                    .any(|line| line.starts_with(" ├─▼ fake_widgets")),
                 "expanded member should render as a non-final branch: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("│ └── clay-layout (v)")),
+                    .any(|line| line.starts_with(" │ └── clay-layout (v)")),
                 "vendored child should carry the ancestor continuation: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("├── bevy_lagrange")),
+                    .any(|line| line.starts_with(" ├── bevy_lagrange")),
                 "middle member should extend the branch through the sibling marker slot: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("└── fairy_dust")),
+                    .any(|line| line.starts_with(" └── fairy_dust")),
                 "final member should extend the branch through the sibling marker slot: {rendered:?}"
             );
         }
@@ -11039,8 +11346,10 @@ mod tests {
                 1,
             );
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
 
             let rendered = rendered_root_name_cells(&mut app);
@@ -11088,6 +11397,7 @@ mod tests {
         use crate::project::CratesIoRelease;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
+        use crate::project::GithubRunCount;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
         use crate::project::Package;
@@ -11194,7 +11504,7 @@ mod tests {
             app.insert_ci_runs(
                 test_path("~/ws").as_path(),
                 vec![make_ci_run(1, CiStatus::Passed)],
-                0,
+                GithubRunCount::Known(0),
             );
 
             assert_eq!(
@@ -11255,7 +11565,7 @@ mod tests {
                         ..make_ci_run(2, CiStatus::Failed)
                     },
                 ],
-                0,
+                GithubRunCount::Known(0),
             );
 
             let ws = test_path("~/ws");
@@ -11327,7 +11637,7 @@ mod tests {
                         ..make_ci_run(2, CiStatus::Failed)
                     },
                 ],
-                0,
+                GithubRunCount::Known(0),
             );
 
             let helper = test_path(vendored_path);
@@ -11531,7 +11841,7 @@ mod tests {
 
             let mut app = make_app(&[workspace, member.clone()]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             app.project_list
                 .select_project_in_tree(member.path(), false);
@@ -12407,7 +12717,7 @@ mod tests {
                 .project_list
                 .vendored_at_path(vendored_path.as_path())
                 .expect("member-owned vendored package should be addressable by path");
-            assert_eq!(vendored.project_info.disk_usage_bytes, Some(4097));
+            assert_eq!(vendored.project_info.disk.total(), Some(4097));
             assert_eq!(
                 vendored
                     .project_info
@@ -13367,10 +13677,10 @@ mod tests {
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
-            app.project_list
+            (app.project_list
                 .at_path_mut(linked_path.as_path())
-                .expect("linked worktree should exist")
-                .visibility = Deleted;
+                .expect_found("linked worktree should exist"))
+            .visibility = Deleted;
 
             let make_lint_run = |run_id: &str, status| LintRun {
                 run_id: run_id.to_string(),
@@ -13876,7 +14186,8 @@ mod tests {
 
             let state = loaded_ci(&app, project.path());
             assert_eq!(
-                state.github_total, 57,
+                state.github_total,
+                crate::project::GithubRunCount::Known(57),
                 "CacheOnly should preserve previous github_total"
             );
         }
@@ -14668,7 +14979,7 @@ mod tests {
                     first_line: error.into(),
                 }),
             );
-            app.project_list.expanded.remove(&ExpandKey::Node(0));
+            app.project_list.expanded.collapse(ExpandKey::Node(0), 0);
             app.project_list
                 .recompute_visibility(app.config.include_non_rust().includes_non_rust());
             assert_eq!(
@@ -14676,7 +14987,7 @@ mod tests {
                 1,
                 "collapsed group shows its manifest failure"
             );
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list
                 .recompute_visibility(app.config.include_non_rust().includes_non_rust());
             assert_eq!(
@@ -16256,7 +16567,7 @@ mod tests {
                 )])],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             deliver_metadata(
                 &mut app,
@@ -16314,8 +16625,10 @@ mod tests {
             let new_member =
                 test_path("/__cargo_port_never_real/hana_feature/demos/wasm_node_demo");
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Worktree(0, 1));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Worktree(0, 1), 0);
 
             deliver_metadata(
                 &mut app,
@@ -16365,7 +16678,7 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
             app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
 
             app.project_list
@@ -16496,6 +16809,8 @@ mod tests {
                     .all(|entry| entry.package_name == "hana")
             );
 
+            tui_test_support::draw_pane(&mut app, PaneId::Targets, 80)
+                .expect("draw the target rows before launch");
             app.panes.targets.viewport.set_pos(1);
             panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
             let pending = app
@@ -16551,6 +16866,8 @@ mod tests {
                 .iter()
                 .position(|entry| entry.package_name == "wasm_node_demo")
                 .expect("member example should be listed");
+            tui_test_support::draw_pane(&mut app, PaneId::Targets, 80)
+                .expect("draw the target rows before launch");
             app.panes.targets.viewport.set_pos(target_index);
             panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
 
@@ -16626,10 +16943,10 @@ mod tests {
             );
 
             let mut app = make_app(&[root]);
-            app.project_list
+            (app.project_list
                 .at_path_mut(test_path("~/rust/cargo-mend_style_fix").as_path())
-                .expect("linked worktree should exist")
-                .visibility = Deleted;
+                .expect_found("linked worktree should exist"))
+            .visibility = Deleted;
             app.project_list.set_cursor(0);
             app.sync_selected_project();
             app.ensure_detail_cached();
@@ -16680,10 +16997,10 @@ mod tests {
 
             let mut app = make_app(&[root]);
             let dismissed_path = test_path("~/rust/cargo-mend_old_fix");
-            app.project_list
+            (app.project_list
                 .at_path_mut(dismissed_path.as_path())
-                .expect("dismissed worktree should exist")
-                .visibility = Dismissed;
+                .expect_found("dismissed worktree should exist"))
+            .visibility = Dismissed;
             app.project_list.set_cursor(0);
             app.sync_selected_project();
             app.ensure_detail_cached();
@@ -16722,7 +17039,7 @@ mod tests {
 
             let mut app = make_app(&[]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
 
             assert_eq!(
@@ -17074,7 +17391,7 @@ mod tests {
             let mut app = make_app(&[]);
             apply_items(&mut app, &[primary_item]);
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             assert_eq!(
                 app.visible_rows(),
@@ -17153,7 +17470,7 @@ mod tests {
             let mut app = make_app(&[]);
             apply_items(&mut app, &[primary_item]);
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             assert_eq!(
                 app.visible_rows(),
@@ -17371,7 +17688,9 @@ mod tests {
         fn handle_project_discovered_does_not_allocate_per_comparison() {
             const VISIBLE_PROJECTS: usize = 8;
 
-            fn allocations_for_discovery(app: &mut App, project_count: usize) -> usize {
+            fn allocations_for_discovery(project_count: usize) -> usize {
+                // Both sizes start with equivalent independent app state.
+                let mut app = make_app(&[]);
                 app.project_list = ProjectList::default();
                 for index in 0..project_count {
                     let path = format!("/abs/project_{index:04}");
@@ -17396,9 +17715,8 @@ mod tests {
                 allocations
             }
 
-            let mut app = make_app(&[]);
-            let small = allocations_for_discovery(&mut app, VISIBLE_PROJECTS);
-            let large = allocations_for_discovery(&mut app, 200);
+            let small = allocations_for_discovery(VISIBLE_PROJECTS);
+            let large = allocations_for_discovery(200);
             assert_eq!(
                 large, small,
                 "discovery allocations must not grow with comparisons"
@@ -17417,10 +17735,10 @@ mod tests {
             let target = project_list[199].path().to_path_buf();
             let visible = project_list[0].path().to_path_buf();
             let missing = Path::new("/abs/missing_project");
-            project_list
+            (project_list
                 .at_path_mut(&target)
-                .expect("target project should exist")
-                .visibility = Deleted;
+                .expect_found("target project should exist"))
+            .visibility = Deleted;
             let (deleted, allocations) = test_support::count_allocations(|| {
                 (
                     project_list.is_deleted(&target),
@@ -17494,7 +17812,7 @@ mod tests {
         let repo = entry.git_repo.get_or_insert_with(Default::default);
         repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
             runs,
-            github_total,
+            github_total: GithubRunCount::Known(github_total),
             ci_pagination: CiPagination::from(exhausted),
         });
     }
@@ -17521,6 +17839,7 @@ mod tests {
         holder: &'a TestRenderCtxHolder,
     ) -> PaneRenderCtx<'a> {
         PaneRenderCtx {
+            color_mode:                ColorMode::Colored,
             animation_elapsed:         app.animation_started.elapsed(),
             config:                    &app.config,
             project_list:              &app.project_list,
@@ -17529,6 +17848,7 @@ mod tests {
             ci_status_lookup:          &holder.ci_status_lookup,
             settings_render_inputs:    None,
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
+            empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
                 app.inflight.owned_run().output_state(),
                 app.inflight.owned_run().running_label(),

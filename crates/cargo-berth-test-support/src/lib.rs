@@ -38,6 +38,7 @@ mod test_process_group;
 
 use std::process::Command;
 use std::process::Output;
+use std::time::Duration;
 
 pub use berth_command::berth_command;
 pub use berth_command::use_git_read_subprocess;
@@ -83,4 +84,15 @@ pub use test_process_group::TestProcessGroup;
 /// Returns a named timeout, spawn error, or pipe error.
 pub fn command_output(command: &mut Command) -> std::io::Result<Output> {
     child_process::command_output(command, child_process::GIT_COMMAND_DEADLINE)
+}
+
+/// Capture a fixture whose full setup needs a caller-selected deadline.
+///
+/// # Errors
+/// Returns a spawn error, a named timeout, or a pipe error.
+pub fn fixture_output_with_deadline(
+    command: &mut FixtureCommand,
+    deadline: Duration,
+) -> std::io::Result<Output> {
+    child_process::command_output(command.command_mut(), deadline)
 }

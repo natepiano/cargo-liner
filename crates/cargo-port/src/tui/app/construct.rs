@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Error;
+use tui_pane::ColorMode;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::Keymap as FrameworkKeymap;
@@ -76,6 +77,7 @@ use crate::tui::theme_roles;
 /// reference are cloned at the entry point so the builder can outlive
 /// its caller's stack frame).
 pub(super) struct Inputs {
+    color_mode:          ColorMode,
     background_tx:       Sender<BackgroundMsg>,
     background_rx:       Receiver<BackgroundMsg>,
     cargo_port_config:   CargoPortConfig,
@@ -122,9 +124,11 @@ impl AppBuilder<Inputs> {
         background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
         startup_environment: StartupEnvironment,
+        color_mode: ColorMode,
     ) -> Self {
         Self {
             state: Inputs {
+                color_mode,
                 background_tx,
                 background_rx,
                 cargo_port_config: startup_settings.cargo_port_config,
@@ -166,10 +170,9 @@ impl AppBuilder<Channeled> {
             crate::themes::builtins(),
         );
         theme_roles::apply_role_defaults_to_registry(&mut theme_registry);
-        // `registry.resolve_active` resolves `inputs.cargo_port_config.appearance` into `resolved`
-        // and `initial_theme`. A miss silently falls back to the app's appearance-matched variant
-        // because toasts are not yet available during startup; the settings UI badge later surfaces
-        // the miss.
+        // `theme_registry.resolve_active` selects `resolved` and `initial_theme` from the
+        // appearance settings. A missing theme uses the matching built-in variant because
+        // startup cannot show toasts yet. The settings badge later shows the missing theme.
         let resolved = theme_registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,
             &inputs.cargo_port_config.appearance.light_theme,
@@ -198,13 +201,16 @@ impl AppBuilder<Channeled> {
             .spawn_lint_runtime(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
         let watcher = startup_services.spawn_watcher(WatcherStartup {
-            watch_roots:    &watch_roots,
-            background_tx:  inputs.background_tx.clone(),
-            non_rust:       inputs.cargo_port_config.tui.include_non_rust,
-            exclude_dirs:   ExcludeDirs::from(inputs.cargo_port_config.tui.exclude_dirs.as_slice()),
-            client:         inputs.startup_environment.http_client.clone(),
-            lint_runtime:   lint_spawn.handle.clone(),
-            metadata_store: Arc::clone(&inputs.startup_environment.metadata_store),
+            watch_roots:         &watch_roots,
+            background_tx:       inputs.background_tx.clone(),
+            source_measurements: Arc::clone(&inputs.startup_environment.source_measurements),
+            non_rust:            inputs.cargo_port_config.tui.include_non_rust,
+            exclude_dirs:        ExcludeDirs::from(
+                inputs.cargo_port_config.tui.exclude_dirs.as_slice(),
+            ),
+            client:              inputs.startup_environment.http_client.clone(),
+            lint_runtime:        lint_spawn.handle.clone(),
+            metadata_store:      Arc::clone(&inputs.startup_environment.metadata_store),
         });
         let built = scan::build_tree(
             &inputs.raw_projects,
@@ -235,6 +241,7 @@ impl AppBuilder<Started> {
             http_client,
             scan_started_at,
             metadata_store,
+            source_measurements,
             startup_services,
         } = inputs.startup_environment;
         let panes = Panes::new(&inputs.cargo_port_config.cpu, startup_services.clone());
@@ -258,12 +265,17 @@ impl AppBuilder<Started> {
             keymap::ResolvedKeymap::defaults(),
         );
         let themes = ThemeRuntime::new(started.themes_dir_resolution.into_external_path());
-        let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
+        let mut scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
+        scan.source_measurements = source_measurements;
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let mut framework = app_framework(inputs.settings_store, inputs.toast_settings);
+        let mut framework = app_framework(
+            inputs.settings_store,
+            inputs.toast_settings,
+            inputs.color_mode,
+        );
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
@@ -316,14 +328,20 @@ impl AppBuilder<Started> {
     }
 }
 
-fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -> Framework<App> {
-    tui_pane::Framework::new_with_settings(
+fn app_framework(
+    settings_store: SettingsStore,
+    toast_settings: ToastSettings,
+    color_mode: ColorMode,
+) -> Framework<App> {
+    let mut framework = tui_pane::Framework::new_with_settings(
         FocusedPane::App(AppPaneId::ProjectList),
         LoadedSettings {
             store: settings_store,
             toast_settings,
         },
-    )
+    );
+    framework.color_mode = color_mode;
+    framework
 }
 
 impl App {
@@ -338,7 +356,11 @@ impl App {
         }
         self.force_settings_if_unconfigured();
         self.restore_persisted_lint_pause();
-        self.prune_inactive_project_state();
+        // An empty startup tree has not received ScanResult yet. Its workers
+        // can already own measurements and dispatch stamps for incoming roots.
+        if !self.project_list.is_empty() {
+            self.prune_inactive_project_state(&[]);
+        }
         self.register_existing_projects();
         let lint_registered = self.register_lint_for_root_items();
         tracing::trace!(

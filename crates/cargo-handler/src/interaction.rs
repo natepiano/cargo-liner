@@ -81,14 +81,14 @@ pub(crate) enum SelectedSpan {
 }
 
 /// Owning process generation of a work row.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct RowOwner {
     pub(crate) pid:     u32,
     pub(crate) started: u64,
 }
 
 /// Legacy work identity excludes changing observations such as a countdown.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum LegacyWorkKind {
     Shell,
     Subagent(SubagentRole),
@@ -114,7 +114,7 @@ impl From<&ChildKind> for LegacyWorkKind {
 }
 
 /// Owned identity of a row, independent of its label, index and current tile.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RowIdentity {
     Session {
         machine: String,
@@ -197,10 +197,10 @@ pub(crate) enum TileSelection {
     Row(RowIdentity),
 }
 
-/// Whether a pointer selected a resolved row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The selected row from one press, or a press outside the rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RowClick {
-    Selected,
+    Selected(RowIdentity),
     Missed,
 }
 
@@ -370,6 +370,7 @@ impl SurfaceSelection {
     /// Replace section geometry only from the fitted summary lines.
     pub(crate) fn set_pin(&mut self, pin: SectionPin) {
         self.pin = pin;
+        self.update_content_height();
         self.keep_visible();
     }
 
@@ -397,9 +398,28 @@ impl SurfaceSelection {
         self.viewport.set_len(self.rows.len());
         self.viewport
             .set_pos(index.min(self.rows.len().saturating_sub(1)));
-        self.viewport
-            .set_content_height(self.rows.last().map_or(0, |(_, span)| span.end()));
+        self.update_content_height();
         self.keep_visible();
+    }
+
+    /// Include the table tail without making it selectable.
+    fn update_content_height(&mut self) {
+        let selected_end = self.rows.last().map_or(0, |(_, span)| span.end());
+        let table_end = match &self.pin {
+            SectionPin::NoAccounts => 0,
+            SectionPin::Accounts { body, .. } => body.end,
+        };
+        self.viewport
+            .set_content_height(selected_end.max(table_end));
+    }
+
+    /// Navigation after the final row can expose unselectable table lines.
+    const fn scroll_end(&self, span: RowSpan) -> usize {
+        if self.viewport.pos().saturating_add(1) == self.rows.len() {
+            self.viewport.content_height()
+        } else {
+            span.end()
+        }
     }
 
     pub(crate) fn selected_span(&self) -> SelectedSpan {
@@ -408,7 +428,7 @@ impl SurfaceSelection {
             .map_or(SelectedSpan::NoRows, |(_, span)| SelectedSpan::Row(*span))
     }
 
-    fn select(&mut self, identity: &RowIdentity) {
+    pub(crate) fn select(&mut self, identity: &RowIdentity) {
         if let Some(index) = self
             .rows
             .iter()
@@ -425,18 +445,19 @@ impl SurfaceSelection {
         }
         self.viewport.navigate(action);
         self.keep_visible();
-        if let Some((_, span)) = self.rows.get(self.viewport.pos())
-            && span.continuation_lines > 0
-        {
+        if let Some((_, span)) = self.rows.get(self.viewport.pos()) {
             match action {
                 NavAction::Home
                     if span.end().saturating_sub(span.start()) > self.viewport.visible_rows() =>
                 {
                     self.viewport.set_scroll_offset(span.start());
                 },
-                NavAction::End => self
-                    .viewport
-                    .set_scroll_offset(span.end().saturating_sub(self.viewport.visible_rows())),
+                NavAction::End => {
+                    let offset = self
+                        .scroll_end(*span)
+                        .saturating_sub(self.viewport.visible_rows());
+                    self.viewport.set_scroll_offset(offset);
+                },
                 _ => {},
             }
         }
@@ -448,7 +469,8 @@ impl SurfaceSelection {
         let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
             return false;
         };
-        if visible == 0 || span.end().saturating_sub(span.start()) <= visible {
+        let end = self.scroll_end(*span);
+        if visible == 0 || end.saturating_sub(span.start()) <= visible {
             return false;
         }
         let offset = self.viewport.scroll_offset();
@@ -461,10 +483,8 @@ impl SurfaceSelection {
             NavAction::HalfPageUp => (false, (visible / 2).max(1)),
             NavAction::Home | NavAction::End => return false,
         };
-        let next = if forward && offset.saturating_add(visible) < span.end() {
-            offset
-                .saturating_add(step)
-                .min(span.end().saturating_sub(visible))
+        let next = if forward && offset.saturating_add(visible) < end {
+            offset.saturating_add(step).min(end.saturating_sub(visible))
         } else if !forward && offset > span.start() {
             offset.saturating_sub(step).max(span.start())
         } else {
@@ -491,9 +511,10 @@ impl SurfaceSelection {
             return RowClick::Missed;
         };
         if let Some(index) = self.rows.iter().position(|(_, span)| span.contains(line)) {
+            let hit = RowClick::Selected(self.rows[index].0.clone());
             self.viewport.set_pos(index);
             self.keep_visible();
-            RowClick::Selected
+            hit
         } else {
             RowClick::Missed
         }
@@ -529,7 +550,12 @@ impl SurfaceSelection {
             let mapping = ViewportMapping::new(&self.pin, offset, height);
             let (body_start, visible, _) = mapping.body();
             self.viewport.set_viewport_rows(visible);
-            offset = if span.end() - span.start() > visible {
+            let showing_tail = self.scroll_end(span) > span.end()
+                && offset >= span.start()
+                && body_start.saturating_add(visible) > span.end();
+            offset = if showing_tail {
+                offset
+            } else if span.end() - span.start() > visible {
                 if span.end() <= body_start || span.start() >= body_start.saturating_add(visible) {
                     span.start()
                 } else {
@@ -562,7 +588,26 @@ pub(crate) struct Selections {
 }
 
 impl Selections {
-    pub(crate) fn containing(&self, identity: &RowIdentity) -> RowLocation {
+    pub(crate) fn containing(
+        &self,
+        preferred: &SelectableSurface,
+        identity: &RowIdentity,
+    ) -> RowLocation {
+        if let SelectableSurface::Surface(surface) = preferred
+            && self.surface(surface).map_or(false, |state| {
+                state.rows.iter().any(|(row, _)| row.continues(identity))
+            })
+        {
+            return RowLocation::Found(surface.clone());
+        }
+        if self
+            .surface(&SelectionSurface::Summary)
+            .map_or(false, |state| {
+                state.rows.iter().any(|(row, _)| row.continues(identity))
+            })
+        {
+            return RowLocation::Found(SelectionSurface::Summary);
+        }
         self.surfaces
             .iter()
             .find(|(_, state)| state.rows.iter().any(|(row, _)| row.continues(identity)))
@@ -572,8 +617,12 @@ impl Selections {
     }
 
     /// Move the active cursor with its exact row across surfaces.
-    pub(crate) fn follow_focused(&mut self, identity: &RowIdentity) -> RowLocation {
-        let RowLocation::Found(destination) = self.containing(identity) else {
+    pub(crate) fn follow_focused(
+        &mut self,
+        preferred: &SelectableSurface,
+        identity: &RowIdentity,
+    ) -> RowLocation {
+        let RowLocation::Found(destination) = self.containing(preferred, identity) else {
             return RowLocation::Gone;
         };
         match self.surface_mut(&destination) {
@@ -606,6 +655,14 @@ impl Selections {
             .filter_map(|(surface, state)| match state.selection() {
                 TileSelection::Row(row) => Some((surface.clone(), row)),
                 TileSelection::NoRows => None,
+            })
+            .filter(|(origin, row)| {
+                !rows.iter().any(|(surface, identities)| {
+                    surface == origin
+                        && identities
+                            .iter()
+                            .any(|(identity, _)| identity.continues(row))
+                })
             })
             .collect();
         self.surfaces
@@ -793,5 +850,56 @@ mod tests {
         app.click(cell);
 
         assert_eq!(focused(&app), TileContent::Summary);
+    }
+
+    #[test]
+    fn row_body_presses_resolve_once_within_the_painted_rectangle() {
+        let identity = RowIdentity::Shell {
+            machine: "local".into(),
+            pid:     10,
+            started: 100,
+        };
+        let mut state = SurfaceSelection::default();
+        state.resolve(vec![(identity.clone(), RowSpan::single(0))]);
+        state.set_area(Rect::new(10, 20, 5, 1));
+        assert_eq!(
+            state.click(Position::new(14, 20)),
+            RowClick::Selected(identity.clone())
+        );
+        assert_eq!(state.click(Position::new(15, 20)), RowClick::Missed);
+        assert_eq!(
+            state.click(Position::new(10, 20)),
+            RowClick::Selected(identity.clone())
+        );
+        state.set_area(Rect::new(10, 20, 4, 1));
+        assert_eq!(
+            state.click(Position::new(13, 20)),
+            RowClick::Selected(identity.clone())
+        );
+        assert_eq!(state.click(Position::new(14, 20)), RowClick::Missed);
+        assert_eq!(state.selection(), TileSelection::Row(identity));
+    }
+
+    #[test]
+    fn continuation_presses_resolve_the_same_row_as_the_first_line() {
+        let identity = RowIdentity::Shell {
+            machine: "local".into(),
+            pid:     10,
+            started: 100,
+        };
+        let mut state = SurfaceSelection::default();
+        state.resolve(vec![(
+            identity.clone(),
+            RowSpan::single(0).with_continuations(1),
+        )]);
+        state.set_area(Rect::new(10, 20, 8, 2));
+        assert_eq!(
+            state.click(Position::new(17, 21)),
+            RowClick::Selected(identity.clone())
+        );
+        assert_eq!(
+            state.click(Position::new(10, 20)),
+            RowClick::Selected(identity)
+        );
     }
 }

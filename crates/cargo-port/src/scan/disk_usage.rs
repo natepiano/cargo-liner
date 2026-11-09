@@ -7,10 +7,10 @@ use std::time::SystemTime;
 use sysinfo::Disks;
 use tui_pane::HardLinks;
 use tui_pane::PERF_LOG_TARGET;
-pub(crate) use tui_pane::dir_size;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
+use super::background_workers;
 use super::cargo_metadata::StreamingScanContext;
 use crate::config::ScanConfig;
 use crate::constants::CARGO_LOCK;
@@ -101,9 +101,9 @@ pub(super) fn spawn_initial_disk_usage(
 }
 
 #[derive(Clone)]
-pub(super) struct DiskUsageTree {
-    pub(super) root_abs_path: AbsolutePath,
-    pub(super) entries:       Vec<AbsolutePath>,
+pub(crate) struct DiskUsageTree {
+    pub(crate) root_abs_path: AbsolutePath,
+    pub(crate) entries:       Vec<AbsolutePath>,
 }
 
 pub(super) fn group_disk_usage_trees(
@@ -244,7 +244,11 @@ fn is_lint_source(path: &Path) -> bool {
     }
 }
 
-fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
+pub(crate) fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
+    background_workers::measure_files(|| measure_dir_sizes_for_tree(tree))
+}
+
+fn measure_dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
     let mut totals: HashMap<AbsolutePath, DirSizes> = tree
         .entries
         .iter()
@@ -294,6 +298,11 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, D
         entries,
     };
     dir_sizes_for_tree(&tree)
+}
+
+/// Reuse the disk workers for standalone and external target walks too.
+pub(crate) fn dir_size(path: &Path) -> u64 {
+    background_workers::measure_files(|| tui_pane::dir_size(path))
 }
 
 #[cfg(test)]

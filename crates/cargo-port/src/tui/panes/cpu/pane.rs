@@ -18,6 +18,8 @@ use crate::tui::panes::cpu;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StartupServices;
+#[cfg(test)]
+use crate::tui::test_support::contrast_failures;
 
 enum CpuMonitorSlot {
     Active(CpuMonitor),
@@ -40,7 +42,7 @@ impl CpuMonitorSlot {
     fn latest(&self) -> Option<CpuUsage> {
         match self {
             Self::Active(monitor) => monitor.latest(),
-            Self::Inert(_) => None,
+            Self::Inert(samples) => samples.try_iter().last(),
         }
     }
 
@@ -107,6 +109,11 @@ pub struct CpuPane {
 }
 
 impl CpuPane {
+    #[cfg(test)]
+    pub(in crate::tui) fn install_sample_for_test(&mut self, usage: CpuUsage) {
+        self.sample_phase = CpuSamplePhase::Sampled(usage);
+    }
+
     pub fn new(cpu_config: &CpuConfig, startup_services: StartupServices) -> Self {
         let monitor = CpuMonitorSlot::new(cpu_config, &startup_services);
         Self {
@@ -119,10 +126,17 @@ impl CpuPane {
         }
     }
 
-    pub fn tick(&mut self) {
-        if let Some(cpu_usage) = self.monitor.latest() {
-            self.sample_phase = CpuSamplePhase::Sampled(cpu_usage);
+    /// Drain samples and report whether the pane's visible sample state changed.
+    pub fn tick(&mut self) -> bool {
+        let Some(cpu_usage) = self.monitor.latest() else {
+            return false;
+        };
+        let next = CpuSamplePhase::Sampled(cpu_usage);
+        if self.sample_phase == next {
+            return false;
         }
+        self.sample_phase = next;
+        true
     }
 
     /// The monitor's sample-channel receiver, for registering in the
@@ -182,11 +196,13 @@ impl Hittable<HoverTarget> for CpuPane {
 mod tests {
     use std::time::Duration;
 
+    use anyhow::Context;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use tui_pane::ColorMode;
     use tui_pane::CpuBreakdown;
     use tui_pane::CpuCoreUsage;
     use tui_pane::CpuMonitor;
@@ -194,6 +210,7 @@ mod tests {
     use tui_pane::GpuUsage;
     use tui_pane::Hittable;
     use tui_pane::PaneBorders;
+    use tui_pane::PaneFocusState;
     use tui_pane::PaneFrameChrome;
 
     use super::CpuMonitorSlot;
@@ -201,6 +218,7 @@ mod tests {
     use super::CpuSamplePhase;
     use crate::channel;
     use crate::config::CpuConfig;
+    use crate::tui::panes::PaneId;
     use crate::tui::panes::constants::CPU_PANE_WIDTH;
     use crate::tui::panes::cpu::render;
     use crate::tui::startup_services::StartupServices;
@@ -231,14 +249,14 @@ mod tests {
 |│ 3 ███████   88% │|
 |│ 4            0% │|
 |│ 5 ████████ 100% │|
-|│ 1 of 2 ▼        │|
+|│ 6 █          1% │|
 |├─────────────────┤|
 |│ System      12% │|
 |│ User        25% │|
 |│ Idle        63% │|
 |├─────────────────┤|
 |│ GPU unavailable │|
-|└─────────────────┘|
+|└────1 of 2 ▼─────┘|
 ";
 
     #[cfg(target_os = "macos")]
@@ -300,6 +318,49 @@ mod tests {
         CpuPane::new(&CpuConfig::default(), StartupServices::quiet_unit_test())
     }
 
+    #[test]
+    fn selected_cpu_labels_use_selection_ink_on_both_fills() -> anyhow::Result<()> {
+        let previous = tui_pane::theme();
+        tui_pane::set_active_theme(std::sync::Arc::new(
+            crate::tui::test_support::shipped_dark_theme()?,
+        ));
+        let result = (|| -> anyhow::Result<()> {
+            for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+                let mut pane = quiet_pane();
+                pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+                pane.focus.pane_focus_state = focus;
+                let mut terminal = Terminal::new(TestBackend::new(30, 20))?;
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    render::render_cpu_sample_phase(
+                        frame,
+                        tui_pane::frame_inner(area),
+                        area,
+                        &mut pane,
+                        &CpuConfig::default(),
+                        &mut PaneFrameChrome::default(),
+                        ColorMode::Colored,
+                    );
+                })?;
+                let buffer = terminal.backend().buffer();
+                let failures = crate::tui::test_support::contrast_failures(
+                    buffer,
+                    &["CPU cores"],
+                    "selected CPU label",
+                );
+                assert!(failures.is_empty(), "{}", failures.join("\n"));
+                let (_, y) = crate::tui::test_support::position(buffer, "CPU cores")?;
+                for x in 1..29 {
+                    assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Rgb(255, 255, 255));
+                    assert_eq!(buffer[(x, y)].bg, buffer[(2, y)].bg);
+                }
+            }
+            Ok(())
+        })();
+        tui_pane::set_active_theme(previous);
+        result
+    }
+
     fn sampled_usage() -> CpuUsage {
         CpuUsage {
             total_percent: 37,
@@ -330,6 +391,7 @@ mod tests {
                     pane,
                     &CpuConfig::default(),
                     &mut PaneFrameChrome::default(),
+                    ColorMode::Colored,
                 );
             })
             .unwrap();
@@ -347,13 +409,25 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
+                let mut chrome = PaneFrameChrome::default();
                 render::render_cpu_sample_phase(
                     frame,
                     tui_pane::frame_inner(area),
                     area,
                     pane,
                     &CpuConfig::default(),
-                    &mut PaneFrameChrome::default(),
+                    &mut chrome,
+                    ColorMode::Colored,
+                );
+                let pane_frame = tui_pane::PaneFrame::new(area);
+                let mut grid = tui_pane::GridLines::new(area);
+                for label in chrome.labels {
+                    grid.add_label(pane_frame, label);
+                }
+                grid.render(
+                    frame.buffer_mut(),
+                    tui_pane::default_pane_chrome(ColorMode::Colored),
+                    PaneBorders::Separate,
                 );
             })
             .unwrap();
@@ -376,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_cores_keep_the_pager_on_its_own_row() {
+    fn overflowing_cores_keep_the_pager_in_the_bottom_border() {
         let mut pane = quiet_pane();
         pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(16, 42));
         for cursor in [0, 17] {
@@ -390,9 +464,10 @@ mod tests {
             assert_eq!(pagers.len(), 1, "one overflow pager: {rows:?}");
             let pager = pagers[0];
             assert!(!rows[pager].contains('%'), "pager covers a core: {rows:?}");
-            assert!(
-                rows[pager - 1].contains("42%"),
-                "pager is not at the band edge: {rows:?}"
+            assert_eq!(
+                pager,
+                rows.len() - 1,
+                "pager uses the bottom border: {rows:?}"
             );
             assert!(
                 pane.row_rects
@@ -416,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn core_pager_starts_at_the_metric_labels_left_edge() {
+    fn core_pager_is_centered_in_the_bottom_border() {
         let mut pane = quiet_pane();
         for (cursor, label) in [(0, "1 of 2 ▼"), (9, "▲ 2 of 2")] {
             pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(8, 42));
@@ -430,8 +505,8 @@ mod tests {
             );
             let pager = pagers[0];
             assert_eq!(pager.trim(), label, "{rows:?}");
-            assert_eq!(pager.find(label), rows[1].find("CPU cores"), "{rows:?}");
-            assert_eq!(pager.find(label), Some(2), "{rows:?}");
+            assert_eq!(Some(pager), rows.last(), "{rows:?}");
+            assert_eq!(pager.find(label), Some(5), "{rows:?}");
         }
     }
 
@@ -571,6 +646,99 @@ mod tests {
     }
 
     #[test]
+    fn system_percentage_has_readable_contrast_in_the_shipped_dark_theme() -> anyhow::Result<()> {
+        let theme = crate::themes::builtins()
+            .into_iter()
+            .find(|variant| variant.id.as_str() == crate::constants::DEFAULT_DARK_THEME)
+            .context("the shipped dark theme")?
+            .theme;
+        let previous = tui_pane::theme();
+        let background = theme.text.bg_focus.color;
+        tui_pane::set_active_theme(std::sync::Arc::new(theme));
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+        let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(
+                ratatui::widgets::Block::new()
+                    .style(ratatui::style::Style::default().bg(background)),
+                area,
+            );
+            render::render_cpu_sample_phase(
+                frame,
+                tui_pane::frame_inner(area),
+                area,
+                &mut pane,
+                &CpuConfig::default(),
+                &mut PaneFrameChrome::default(),
+                ColorMode::Colored,
+            );
+        })?;
+        tui_pane::set_active_theme(previous);
+        let failures =
+            super::contrast_failures(terminal.backend().buffer(), &["12%"], "System percentage");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_bars_keep_distinct_levels_without_color() -> anyhow::Result<()> {
+        const CHILD_ENV: &str = "CARGO_PORT_CPU_NO_COLOR_CHILD";
+        const TEST: &str = "cpu_bars_keep_distinct_levels_without_color";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .context("the test module")?
+                .1;
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", &format!("{module}::{TEST}")])
+                .env(CHILD_ENV, "1")
+                .env("NO_COLOR", "1")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return Ok(());
+        }
+        let mut app =
+            crate::tui::test_support::make_app_with_color_mode(&[], ColorMode::from_environment());
+        let mut usage = usage_with_cores(2, 25);
+        usage.cores[1].percent = 75;
+        app.panes.cpu.sample_phase = CpuSamplePhase::Sampled(usage);
+        app.ensure_visible_rows_cached();
+        app.ensure_fit_widths_cached();
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        let frame = terminal.draw(|frame| crate::tui::render::ui(frame, &mut app))?;
+        let area = app.panes.tiled_layout.area(PaneId::Cpu);
+        let rows: Vec<String> = (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| frame.buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let low = rows
+            .iter()
+            .find(|row| row.contains("25%") && row.contains('█'))
+            .context("the low utilization bar")?;
+        let high = rows
+            .iter()
+            .find(|row| row.contains("75%") && row.contains('█'))
+            .context("the high utilization bar")?;
+        assert!(
+            low.matches('█').count() < high.matches('█').count(),
+            "{rows:?}"
+        );
+        assert!(frame.buffer.content.iter().all(|cell| {
+            cell.fg == ratatui::style::Color::Reset && cell.bg == ratatui::style::Color::Reset
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn sampled_totals_use_labels_without_colons() {
         let mut pane = quiet_pane();
         pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
@@ -602,8 +770,8 @@ mod tests {
         assert_eq!(pane.viewport.len(), 22);
         let unavailable_core_rows = rows.iter().filter(|row| row.contains("42%")).count();
         assert_eq!(
-            unavailable_core_rows, 5,
-            "freed GPU rows must go to cores, with a separate pager: {rows:?}"
+            unavailable_core_rows, 6,
+            "freed GPU rows must go to cores, with the pager in the border: {rows:?}"
         );
         #[cfg(target_os = "macos")]
         {
@@ -691,15 +859,19 @@ mod tests {
                         &mut pane,
                         &CpuConfig::default(),
                         &mut chrome,
+                        ColorMode::Colored,
                     );
                     let mut grid = tui_pane::GridLines::new(area);
                     grid.add_titled(pane_frame, " CPU / GPU ");
                     for rule in chrome.rules {
                         grid.add_rule(pane_frame, rule);
                     }
+                    for label in chrome.labels {
+                        grid.add_label(pane_frame, label);
+                    }
                     grid.render(
                         frame.buffer_mut(),
-                        tui_pane::default_pane_chrome(),
+                        tui_pane::default_pane_chrome(ColorMode::Colored),
                         PaneBorders::Separate,
                     );
                 })
@@ -806,6 +978,26 @@ mod tests {
             core_rows[0], core_rows[1],
             "first sample moved the core-count row"
         );
+    }
+
+    #[test]
+    fn tick_reports_only_sample_phase_changes() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = quiet_pane();
+        let (sender, samples) = channel::unbounded();
+        pane.monitor = CpuMonitorSlot::Inert(samples);
+        assert!(!pane.tick());
+        sender.send(usage_with_cores(8, 42))?;
+        assert!(pane.tick());
+        sender.send(usage_with_cores(8, 42))?;
+        assert!(!pane.tick());
+        sender.send(usage_with_cores(8, 43))?;
+        assert!(pane.tick());
+        assert_eq!(
+            pane.sample_phase(),
+            &CpuSamplePhase::Sampled(usage_with_cores(8, 43))
+        );
+        assert!(!pane.tick());
+        Ok(())
     }
 
     #[test]

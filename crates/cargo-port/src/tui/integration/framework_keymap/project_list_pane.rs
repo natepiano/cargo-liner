@@ -33,14 +33,7 @@ impl Shortcuts<App> for ProjectListPane {
     const SCOPE_NAME: &'static str = "project_list";
     const SECTION_NAME: &'static str = "Project List";
 
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            crossterm::event::KeyCode::Right => ProjectListAction::ExpandRow,
-            crossterm::event::KeyCode::Left => ProjectListAction::CollapseRow,
-            '=' => ProjectListAction::ExpandAll,
-            '-' => ProjectListAction::CollapseAll,
-        }
-    }
+    fn defaults() -> Bindings<Self::Actions> { ProjectListAction::bindings() }
 
     fn bar_slots(&self, _: &App) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
         vec![(
@@ -53,7 +46,7 @@ impl Shortcuts<App> for ProjectListPane {
         )]
     }
 
-    fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &PROJECT_LIST_VIM_EXTRAS }
+    fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { ProjectListAction::vim_extras() }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { input::dispatch_project_list_action }
 }
@@ -70,16 +63,6 @@ impl CopySelection<App> for ProjectListPane {
             })
     }
 }
-
-/// `'l'` / `'h'` extend the `ProjectList` scope with vim-style row
-/// expand/collapse when `VimMode::Enabled`. Append-only — the keymap
-/// builder's vim overlay skips letters already bound on the full
-/// `KeyBind` (code + mods), so a TOML rebind to `'l'` for a different
-/// action wins over this default.
-static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
-    (ProjectListAction::ExpandRow, KeyBind::from_char('l')),
-    (ProjectListAction::CollapseRow, KeyBind::from_char('h')),
-];
 
 #[cfg(test)]
 #[expect(

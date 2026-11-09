@@ -373,6 +373,23 @@ impl ModuleImports {
         gates: &ConditionalAttributes,
     ) -> ImportMove {
         let scope_index = self.scope_at(offset);
+        // The carried gate includes conditions on enclosing constructs.
+        let Ok(parsed) =
+            syn::parse_str::<ItemUse>(&format!("{}{}", gates.render(""), item.to_token_stream()))
+        else {
+            return ImportMove::Blocked;
+        };
+        let condition = ImportCondition::from_attributes(&parsed.attrs);
+        // A glob can supply named bindings and unnamed traits that we cannot resolve here.
+        if self.candidates.iter().any(|candidate| {
+            candidate.scope == scope_index
+                && candidate.gates.overlaps(&condition)
+                && collect_use_bindings(&candidate.item.tree)
+                    .iter()
+                    .any(|binding| matches!(binding, UseBinding::Glob { .. }))
+        }) {
+            return ImportMove::Blocked;
+        }
         let scope = &self.scopes[scope_index];
         let conditional = !gates.is_empty();
         let bindings = collect_use_bindings(&item.tree);
@@ -401,12 +418,6 @@ impl ModuleImports {
             return ImportMove::Delete;
         }
         let mut moved = item.clone();
-        // The carried gate includes conditions on enclosing constructs.
-        let Ok(parsed) =
-            syn::parse_str::<ItemUse>(&format!("{}{}", gates.render(""), item.to_token_stream()))
-        else {
-            return ImportMove::Blocked;
-        };
         moved.attrs = parsed.attrs;
         self.add_candidate(scope_index, moved, ImportOrigin::Reservation);
         self.reserve_candidates();

@@ -5,11 +5,18 @@ use tui_pane::PERF_LOG_TARGET;
 
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::RootItem;
 use crate::project::Submodule;
+use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::app::ProjectListPresentation;
 use crate::tui::app::scan_state::ScanPhase;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
+use crate::tui::project_list::ReplacementExpansion;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::sccache;
 
@@ -57,15 +64,13 @@ impl App {
             "scan_result_applied"
         );
 
-        // `mutate_tree().replace_all(ProjectList::new(projects))` applies the scan result inline
-        // rather than calling `apply_tree_build`, avoiding redundant rebuild scheduling.
-        let selected_path = self
-            .project_list
-            .selected_project_path()
-            .map(AbsolutePath::from)
-            .or_else(|| self.project_list.paths.last_selected.clone());
-        self.mutate_tree().replace_all(ProjectList::new(projects));
-        self.prune_inactive_project_state();
+        // Install scanned roots before restoring expansion identities.
+        let selected_path = self.project_list.paths.last_selected.clone();
+        self.mutate_tree().projects.replace_roots_from(
+            ProjectList::new(projects),
+            ReplacementExpansion::RestoreSavedTargets,
+        );
+        self.prune_inactive_project_state(disk_entries);
         let lint_registered = self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
@@ -74,20 +79,10 @@ impl App {
         // `select_project_in_tree`, so the cursor lands on the correct expanded row. Startup seeds
         // the set from disk and rescans from the live tree.
         let pending = std::mem::take(&mut self.project_list.paths.pending_expanded);
-        self.project_list.apply_expanded(&pending);
-        self.rebuild_visible_rows_now();
+        self.restore_expanded(&pending);
         self.refresh_project_storage();
-
-        // `project_list.select_project_in_tree` restores `selected_path`, falling back to
-        // `set_cursor(0)` when no prior selection exists and the list is nonempty.
-        if let Some(path) = selected_path {
-            self.project_list.select_project_in_tree(
-                path.as_path(),
-                self.config.include_non_rust().includes_non_rust(),
-            );
-        } else if !self.project_list.is_empty() {
-            self.project_list.set_cursor(0);
-        }
+        self.restore_selection(selected_path.as_deref());
+        self.scan.state.phase = ScanPhase::Complete;
         self.sync_selected_project();
 
         // `register_background_services_for_tree` registers each project watcher, as
@@ -96,9 +91,6 @@ impl App {
         self.register_background_services_for_tree();
         self.finish_watcher_registration_batch();
 
-        // Set `scan.state.phase` to `ScanPhase::Complete` before `begin_startup_phase` initializes
-        // startup detail tracking.
-        self.scan.state.phase = ScanPhase::Complete;
         self.begin_startup_phase(lint_registered);
     }
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree
@@ -107,12 +99,84 @@ impl App {
     /// exhaustive matches with `unreachable!()`. Multi-statement arms
     /// are extracted as small helpers so each arm stays a single
     /// call.
+    pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+        let disk_before = self.disk_message_inputs(&msg);
+        let row_generation_before = self.project_list.row_generation;
+        let row_before = self.row_message_input(&msg);
+        let storage_before = self.project_list.project_storage();
+        let is_disk = matches!(
+            msg,
+            BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. }
+        );
+        let is_storage = matches!(msg, BackgroundMsg::ProjectStorage { .. });
+        if !is_disk {
+            self.update_generations_for_msg(&msg);
+        }
+        let rebuild = self.apply_bg_msg(msg);
+        let row_changed = match row_before {
+            MessageRowInput::Unaffected => false,
+            MessageRowInput::Rows(before) => before != self.project_row_presentation(),
+        };
+        let disk_changed = disk_before
+            .iter()
+            .any(|(path, before)| disk_row_input(&self.project_list, path) != *before);
+        if disk_changed
+            || (is_storage && self.project_list.project_storage() != storage_before)
+            || row_changed
+        {
+            if self.project_list.row_generation == row_generation_before {
+                self.project_list.row_generation += 1;
+            }
+            if disk_changed
+                && disk_before.iter().any(|(path, before)| {
+                    disk_row_input(&self.project_list, path) != *before
+                        && self.detail_path_is_affected(path)
+                })
+            {
+                self.scan.bump_generation();
+            }
+        }
+        rebuild
+    }
+
+    fn row_message_input(&self, msg: &BackgroundMsg) -> MessageRowInput {
+        match msg {
+            BackgroundMsg::CiRuns { .. }
+            | BackgroundMsg::CheckoutInfo { .. }
+            | BackgroundMsg::RepoInfo { .. }
+            | BackgroundMsg::NoRepository { .. }
+            | BackgroundMsg::Submodules { .. }
+            | BackgroundMsg::LintStatus { .. }
+            | BackgroundMsg::LintStartupStatus { .. }
+            | BackgroundMsg::LanguageStatsBatch { .. }
+            | BackgroundMsg::CargoMetadata { .. } => {
+                MessageRowInput::Rows(self.project_row_presentation())
+            },
+            // Structural handlers own index/row generations. Disk and storage
+            // compare their measured inputs separately; all other messages
+            // update tooling, detail or toast state rather than list rows.
+            _ => MessageRowInput::Unaffected,
+        }
+    }
+
+    fn disk_message_inputs(&self, msg: &BackgroundMsg) -> Vec<(AbsolutePath, DiskRowInput)> {
+        match msg {
+            BackgroundMsg::DiskUsage { path, .. } => {
+                vec![(path.clone(), disk_row_input(&self.project_list, path))]
+            },
+            BackgroundMsg::DiskUsageBatch { entries, .. } => entries
+                .iter()
+                .map(|(path, _)| (path.clone(), disk_row_input(&self.project_list, path)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "trivial 1:1 exhaustive variant mapping"
     )]
-    pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
-        self.update_generations_for_msg(&msg);
+    fn apply_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
                 self.handle_disk_usage_msg(path.as_path(), bytes);
@@ -154,6 +218,9 @@ impl App {
             },
             BackgroundMsg::RepoInfo { path, info } => {
                 self.handle_repo_info(path.as_path(), info);
+            },
+            BackgroundMsg::NoRepository { path } => {
+                self.handle_no_repository(path.as_path());
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(path.as_path(), first_commit);
@@ -260,24 +327,9 @@ impl App {
     /// the path resolves to a known leaf. Extracted from the dispatch
     /// match so each arm stays a single call.
     fn handle_submodules_msg(&mut self, path: &Path, submodules: Vec<Submodule>) {
-        let submodule_list_changed = self.project_list.at_path_mut(path).is_some_and(|info| {
-            let declarations_match = info.submodules.len() == submodules.len()
-                && info
-                    .submodules
-                    .iter()
-                    .zip(&submodules)
-                    .all(|(current, accepted)| {
-                        current.name == accepted.name
-                            && current.path == accepted.path
-                            && current.relative_path == accepted.relative_path
-                            && current.url == accepted.url
-                            && current.branch == accepted.branch
-                            && current.commit == accepted.commit
-                    });
-            info.submodules = submodules;
-            !declarations_match
-        });
+        let submodule_list_changed = self.project_list.replace_submodules(path, submodules);
         if submodule_list_changed {
+            self.project_list.rebuild_path_index();
             self.rebuild_visible_rows_now();
         }
     }
@@ -321,7 +373,7 @@ mod tests {
             ..Package::default()
         }));
         let mut app = crate::tui::test_support::make_app(&[project]);
-        app.project_list.expanded.insert(ExpandKey::Node(0));
+        app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
         let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
             path:       project_path.clone(),
@@ -345,4 +397,30 @@ mod tests {
             Some(Path::new("/tmp/project/second"))
         );
     }
+}
+
+/// Disk replies can change deletion state without changing bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiskRowInput {
+    Missing,
+    Present {
+        disk:       DiskMeasurement,
+        visibility: Visibility,
+    },
+}
+
+fn disk_row_input(projects: &ProjectList, path: &Path) -> DiskRowInput {
+    match projects.at_path(path) {
+        Found(info) => DiskRowInput::Present {
+            disk:       info.disk,
+            visibility: info.visibility,
+        },
+        UnknownPath | StaleRoute => DiskRowInput::Missing,
+    }
+}
+
+/// Only list-row inputs can change the list's width cache.
+enum MessageRowInput {
+    Unaffected,
+    Rows(ProjectListPresentation),
 }

@@ -48,10 +48,12 @@ pub fn draw_framework_overlay<A: KeymapUiContext + 'static, S: Copy>(
     match app.framework().overlay() {
         Some(FrameworkOverlayId::Settings) => {
             let resolved_settings_rows = settings_rows(app);
+            let mode = app.framework().color_mode;
             draw_settings(
                 frame,
                 &mut app.framework_mut().settings_pane,
                 &resolved_settings_rows,
+                mode,
             );
         },
         Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_overlay(frame, app, keymap),

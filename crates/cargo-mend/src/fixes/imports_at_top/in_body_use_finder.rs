@@ -2,10 +2,8 @@ use std::path::Path;
 
 use anyhow::Context;
 use proc_macro2::LineColumn;
-use syn::Arm;
 use syn::Attribute;
 use syn::Block;
-use syn::Expr;
 use syn::File;
 use syn::Item;
 use syn::ItemMod;
@@ -13,7 +11,6 @@ use syn::ItemUse;
 use syn::Stmt;
 use syn::UseTree;
 use syn::spanned::Spanned;
-use syn::visit;
 use syn::visit::Visit;
 
 use crate::config::DiagnosticCode;
@@ -21,6 +18,8 @@ use crate::fixes::constants::IMPORTS_AT_TOP_MESSAGE;
 use crate::fixes::constants::IMPORTS_AT_TOP_SUGGESTION;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::GateSource;
+use crate::fixes::imports::GateTracking;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::ImportMove;
 use crate::fixes::imports::ImportSource;
@@ -209,20 +208,22 @@ impl InBodyUseFinder<'_> {
     }
 }
 
-impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
-    fn visit_item(&mut self, node: &'ast Item) {
-        if self.result.is_err() {
-            return;
+impl GateTracking for InBodyUseFinder<'_> {
+    fn gate_source(&self) -> GateSource<'_, '_> {
+        GateSource {
+            indexed: self.source,
         }
-        let attributes = self.attributes(item_gate_attrs(node));
-        let pushed = attributes.len();
-        self.conditional_attributes.extend(attributes);
-        visit::visit_item(self, node);
-        self.conditional_attributes
-            .truncate(self.conditional_attributes.len() - pushed);
     }
 
-    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+    fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
+        &mut self.conditional_attributes
+    }
+}
+
+impl Visit<'_> for InBodyUseFinder<'_> {
+    imports::gate_tracking_visit!();
+
+    fn visit_item_mod(&mut self, node: &ItemMod) {
         let Some((brace, items)) = &node.content else {
             return;
         };
@@ -256,25 +257,7 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         self.conditional_attributes = outer_attributes;
     }
 
-    fn visit_stmt(&mut self, node: &'ast Stmt) {
-        let attributes = self.attributes(stmt_gate_attrs(node));
-        let pushed = attributes.len();
-        self.conditional_attributes.extend(attributes);
-        visit::visit_stmt(self, node);
-        self.conditional_attributes
-            .truncate(self.conditional_attributes.len() - pushed);
-    }
-
-    fn visit_arm(&mut self, node: &'ast Arm) {
-        let attributes = self.attributes(&node.attrs);
-        let pushed = attributes.len();
-        self.conditional_attributes.extend(attributes);
-        visit::visit_arm(self, node);
-        self.conditional_attributes
-            .truncate(self.conditional_attributes.len() - pushed);
-    }
-
-    fn visit_block(&mut self, node: &'ast Block) {
+    fn visit_block(&mut self, node: &Block) {
         for stmt in &node.stmts {
             if self.result.is_err() {
                 return;
@@ -446,51 +429,6 @@ fn flatten_use_to_bare_paths(tree: &UseTree) -> impl Iterator<Item = ImportLeaf>
         })
 }
 
-/// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
-/// attributes that conditionally remove the code they annotate. Moving a
-/// `use` out of a construct carrying one would make a conditionally-compiled
-/// import unconditional.
-/// Attributes on a statement that gate a `use` nested inside it. Items are
-/// handled in [`InBodyUseFinder::visit_item`]; a `use` statement's own
-/// attributes are handled in [`InBodyUseFinder::try_emit_fix`].
-fn stmt_gate_attrs(stmt: &Stmt) -> &[Attribute] {
-    match stmt {
-        Stmt::Local(local) => &local.attrs,
-        Stmt::Macro(stmt_macro) => &stmt_macro.attrs,
-        Stmt::Expr(expr, _) => expr_gate_attrs(expr),
-        Stmt::Item(_) => &[],
-    }
-}
-
-/// Attributes on a block-bearing expression. Only expressions that introduce a
-/// block can hold a nested `use`, so other variants never gate one.
-fn expr_gate_attrs(expr: &Expr) -> &[Attribute] {
-    match expr {
-        Expr::Block(block) => &block.attrs,
-        Expr::Unsafe(block) => &block.attrs,
-        Expr::If(branch) => &branch.attrs,
-        Expr::Match(branch) => &branch.attrs,
-        Expr::Loop(loop_expr) => &loop_expr.attrs,
-        Expr::While(loop_expr) => &loop_expr.attrs,
-        Expr::ForLoop(loop_expr) => &loop_expr.attrs,
-        _ => &[],
-    }
-}
-
-/// Attributes on an item that can contain a `use` moving past it to the module
-/// scope. Modules are excluded: they open their own scope, so an inner `use`
-/// moves to the module top and stays within any gate on the module itself.
-fn item_gate_attrs(item: &Item) -> &[Attribute] {
-    match item {
-        Item::Fn(item) => &item.attrs,
-        Item::Impl(item) => &item.attrs,
-        Item::Trait(item) => &item.attrs,
-        Item::Const(item) => &item.attrs,
-        Item::Static(item) => &item.attrs,
-        _ => &[],
-    }
-}
-
 /// A source-bound character position checked before move or insertion planning.
 /// Invalid lines and columns are rejected instead of becoming byte zero; diagnostics
 /// carry the original source line rather than substituting empty text for a missing line.
@@ -572,6 +510,78 @@ mod tests {
     }
 
     #[test]
+    fn local_trait_import_under_parent_glob_stays_free_of_unused_imports() -> anyhow::Result<()> {
+        let text = r"pub mod api {
+    pub trait Apply { fn apply(self); }
+    impl Apply for u8 { fn apply(self) {} }
+}
+use api::Apply;
+pub fn parent() { 1u8.apply(); }
+pub mod child {
+    use super::*;
+    pub fn check() {
+        use crate::api::Apply as _;
+        1u8.apply();
+        parent();
+    }
+}
+";
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("fixture.rs");
+        std::fs::write(&path, text)?;
+        let syntax = syn::parse_file(text)?;
+        let (_, fixes) = super::scan(&syntax, text, &path, "fixture.rs")?;
+        let fixes = crate::fixes::imports::ValidatedFixSet::try_from(fixes)?;
+        crate::fixes::imports::apply_fixes(&fixes)?;
+        let output = std::process::Command::new("rustc")
+            .args([
+                "--crate-type=lib",
+                "--emit=metadata",
+                "--deny=unused-imports",
+            ])
+            .arg(&path)
+            .arg("--out-dir")
+            .arg(temp.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "rewritten imports must compile without unused imports: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn moving_imports_checks_glob_scope_and_cfg_overlap() -> anyhow::Result<()> {
+        for (source, expected) in [
+            (
+                "use crate::api::*;\nfn f() { use crate::api::Apply; }\n",
+                "use crate::api::*;\nfn f() { use crate::api::Apply; }\n",
+            ),
+            (
+                "mod sibling { use crate::api::*; }\nfn f() { use crate::api::Apply; }\n",
+                "use crate::api::Apply;\nmod sibling { use crate::api::*; }\nfn f() {  }\n",
+            ),
+            (
+                "#[cfg(flag)] use crate::api::*;\nfn f() { #[cfg(not(flag))] use crate::api::Apply; }\n",
+                "#[cfg(flag)] use crate::api::*;\n#[cfg(not(flag))]\nuse crate::api::Apply;\nfn f() {  }\n",
+            ),
+        ] {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("fixture.rs");
+            std::fs::write(&path, source)?;
+            let syntax = syn::parse_file(source)?;
+            let (_, fixes) = super::scan(&syntax, source, &path, "fixture.rs")?;
+            let fixes = crate::fixes::imports::ValidatedFixSet::try_from(fixes)?;
+            crate::fixes::imports::apply_fixes(&fixes)?;
+            let rewritten = std::fs::read_to_string(&path)?;
+            syn::parse_file(&rewritten)?;
+            assert_eq!(rewritten, expected, "glob scope and cfg: {source}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn moved_import_keeps_unicode_diagnostic_and_edit_bytes() -> anyhow::Result<()> {
         let line = "fn f() { /* é */ use crate::a::Thing; }";
         let text = format!("// é\n{line}\n");
@@ -582,6 +592,131 @@ mod tests {
         assert_eq!(findings[0].line, 2);
         assert_eq!(fixes[0].replacement, "use crate::a::Thing;\n");
         assert_eq!(&text[fixes[1].start..fixes[1].end], "use crate::a::Thing;");
+        Ok(())
+    }
+
+    #[test]
+    fn moved_imports_keep_cfg_only_dependency_gates() -> anyhow::Result<()> {
+        let text = r#"#[cfg(target_os = "macos")]
+extern crate libproc;
+
+#[cfg(target_os = "macos")]
+fn process_endpoints() {
+    use libproc::proc_pid::pidinfo;
+    pidinfo();
+}
+
+struct Census;
+
+impl Census {
+    #[cfg(target_os = "macos")]
+    fn process_details() {
+        use libproc::bsd_info::BSDInfo;
+        let _: BSDInfo;
+    }
+}
+"#;
+        let syntax = syn::parse_file(text)?;
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("fixture.rs");
+        std::fs::write(&path, text)?;
+        let (findings, fixes) = super::scan(&syntax, text, &path, "fixture.rs")?;
+        assert_eq!(findings.len(), 2);
+        let fixes = crate::fixes::imports::ValidatedFixSet::try_from(fixes)?;
+        crate::fixes::imports::apply_fixes(&fixes)?;
+        let rewritten = std::fs::read_to_string(&path)?;
+        let rewritten_syntax = syn::parse_file(&rewritten)?;
+        let imports = rewritten_syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Use(import) => Some(import),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(imports.len(), 2, "{rewritten}");
+        let indexed = crate::fixes::imports::ImportSource::new(&rewritten);
+        for import in imports {
+            assert_eq!(import.attrs.len(), 1, "{rewritten}");
+            let gates = crate::fixes::imports::ConditionalAttributes::from_attributes(
+                &indexed,
+                &import.attrs,
+            );
+            assert_eq!(
+                gates.render(""),
+                "#[cfg(target_os = \"macos\")]\n",
+                "{rewritten}"
+            );
+        }
+        assert!(!rewritten.contains("    use libproc::"), "{rewritten}");
+        Ok(())
+    }
+
+    #[test]
+    fn moved_import_combines_enclosing_and_own_gates() -> anyhow::Result<()> {
+        let text = r#"#[cfg(feature = "processes")]
+impl Census {
+    #[cfg(target_os = "macos")]
+    fn details() {
+        #[cfg_attr(unix, cfg(feature = "details"))]
+        let _ = {
+            #[cfg(debug_assertions)]
+            use libproc::bsd_info::BSDInfo;
+        };
+    }
+}
+"#;
+        let syntax = syn::parse_file(text)?;
+        let (findings, fixes) = super::scan(
+            &syntax,
+            text,
+            std::path::Path::new("fixture.rs"),
+            "fixture.rs",
+        )?;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(fixes.len(), 2);
+        assert_eq!(
+            fixes[0].replacement,
+            concat!(
+                "#[cfg(feature = \"processes\")]\n",
+                "#[cfg(target_os = \"macos\")]\n",
+                "#[cfg_attr(unix, cfg(feature = \"details\"))]\n",
+                "#[cfg(debug_assertions)]\n",
+                "use libproc::bsd_info::BSDInfo;\n",
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn moved_import_keeps_only_gates_below_its_module() -> anyhow::Result<()> {
+        let text = r#"#[cfg(feature = "processes")]
+mod platform {
+    trait Census {
+        #[cfg(target_os = "macos")]
+        fn details() {
+            use libproc::bsd_info::BSDInfo;
+        }
+    }
+}
+fn other() { use crate::other::Other; }
+"#;
+        let syntax = syn::parse_file(text)?;
+        let (findings, fixes) = super::scan(
+            &syntax,
+            text,
+            std::path::Path::new("fixture.rs"),
+            "fixture.rs",
+        )?;
+        assert_eq!(findings.len(), 2);
+        assert_eq!(fixes.len(), 4);
+        assert_eq!(
+            fixes[0].replacement,
+            "    #[cfg(target_os = \"macos\")]\n    use libproc::bsd_info::BSDInfo;\n"
+        );
+        assert_eq!(&text[fixes[0].start..][..5], "trait");
+        assert_eq!(fixes[2].replacement, "use crate::other::Other;\n");
+        assert_eq!(fixes[2].start, 0);
         Ok(())
     }
 

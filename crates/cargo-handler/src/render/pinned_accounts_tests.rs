@@ -7,9 +7,9 @@
 
 use crossterm::event::KeyCode;
 use ratatui::layout::Position;
-use tui_pane::FocusLocation;
 use tui_pane::NavAction;
 use tui_pane::TerminalApp;
+use tui_pane::TileAction;
 use tui_pane::TileView;
 
 use super::accounts_grid_tests;
@@ -26,9 +26,10 @@ use crate::interaction::SelectedSpan;
 use crate::interaction::Selections;
 use crate::interaction::SurfaceLookup;
 use crate::interaction::TileSelection;
+use crate::sort::AccountsColumn;
 
 const NOW: u64 = 1_792_166_400;
-const WIDTHS: [u16; 3] = [200, 36, 18];
+const WIDTHS: [u16; 3] = [200, 60, 18];
 
 #[test]
 fn pinned_accounts_departing_tile_click_does_not_focus_or_select_its_replacement() {
@@ -70,11 +71,7 @@ fn pinned_accounts_departing_tile_click_does_not_focus_or_select_its_replacement
     let focused = app.tiles.focused_cell();
     let point = body
         .positions()
-        .find(|point| {
-            app.tiles
-                .cell_at(*point)
-                .is_some_and(|index| FocusLocation::Cell(index) != focused)
-        })
+        .find(|point| app.tiles.cell_at(*point).is_none())
         .expect("the drawn departure overlaps a destination replacement");
     let selections: Vec<_> = placements
         .iter()
@@ -248,7 +245,7 @@ fn pinned_end(width: u16) {
 #[test]
 fn pinned_accounts_full_headers_survive_end() { pinned_end(200); }
 #[test]
-fn pinned_accounts_two_line_headers_survive_end() { pinned_end(36); }
+fn pinned_accounts_two_line_headers_survive_end() { pinned_end(60); }
 #[test]
 fn pinned_accounts_stacked_heading_survives_end() { pinned_end(18); }
 
@@ -280,12 +277,12 @@ fn pinned_accounts_column_header_sorts_after_end() {
 #[test]
 fn pinned_accounts_continuation_click_uses_the_drawn_body_offset() {
     let mut app = fixture();
-    let complete = paint(&mut app, 36, 64);
+    let complete = paint(&mut app, 60, 64);
     let expected = headers(&complete);
     select_first(&mut app, &complete);
-    paint(&mut app, 36, 12);
+    paint(&mut app, 60, 16);
     accounts_grid_tests::account_key(&mut app, KeyCode::End);
-    let end = paint(&mut app, 36, 12);
+    let end = paint(&mut app, 60, 16);
     assert_pinned(&end, &expected);
     let preceding = accounts_grid_tests::locate(&end, "account-4");
     app.click(Position::new(preceding.column, preceding.row + 1));
@@ -303,16 +300,16 @@ fn pinned_accounts_resize_uses_each_fitted_layout_header_once() {
     let initial = paint(&mut app, 200, 24);
     let full = headers(&initial);
     let mut reference = fixture();
-    let two_line = headers(&paint(&mut reference, 36, 32));
+    let two_line = headers(&paint(&mut reference, 60, 32));
     let stacked = headers(&paint(&mut reference, 18, 64));
     select_first(&mut app, &initial);
     paint(&mut app, 200, 10);
     accounts_grid_tests::account_key(&mut app, KeyCode::End);
     for (width, expected) in [
         (200, &full),
-        (36, &two_line),
+        (60, &two_line),
         (18, &stacked),
-        (36, &two_line),
+        (60, &two_line),
         (200, &full),
     ] {
         let resized = paint(&mut app, width, 10);
@@ -469,7 +466,7 @@ fn pinned_accounts_missed_click_keeps_selection_and_retired_surface_stays_gone()
     );
     assert!(
         matches!(
-            selections.follow_focused(&identity),
+            selections.follow_focused(&SelectableSurface::EmptyCell, &identity),
             crate::interaction::RowLocation::Gone
         ),
         "retired row cannot focus replacement content"
@@ -503,7 +500,7 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
         vec![(old.clone(), RowSpan::single(0))],
     )]);
     assert!(matches!(
-        selections.containing(&old),
+        selections.containing(&SelectableSurface::EmptyCell, &old),
         RowLocation::Found(SelectionSurface::Summary)
     ));
     assert!(matches!(
@@ -514,7 +511,10 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
         SelectionSurface::Summary,
         vec![(replacement.clone(), RowSpan::single(0))],
     )]);
-    assert!(matches!(selections.follow_focused(&old), RowLocation::Gone));
+    assert!(matches!(
+        selections.follow_focused(&SelectableSurface::EmptyCell, &old),
+        RowLocation::Gone
+    ));
     assert_eq!(
         selections
             .surface(&SelectionSurface::Summary)
@@ -522,4 +522,111 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
             .selection(),
         TileSelection::Row(replacement)
     );
+}
+
+#[test]
+fn pinned_accounts_keep_header_and_continuation_targets_after_a_reading_changes() {
+    for width in [60, 64] {
+        let mut app = fixture();
+        let complete = paint(&mut app, width, 64);
+        select_first(&mut app, &complete);
+        paint(&mut app, width, 16);
+        accounts_grid_tests::account_key(&mut app, KeyCode::End);
+        let end = paint(&mut app, width, 16);
+        let account = accounts_grid_tests::locate(&end, "account-4");
+        if width == 60 {
+            assert_eq!(
+                headers(&complete)
+                    .iter()
+                    .map(|line| line.trim())
+                    .collect::<Vec<_>>(),
+                ["accounts"]
+            );
+            assert!(
+                lines(&end).iter().any(|line| line.contains("busy ")),
+                "narrow accounts draw stacked count facts"
+            );
+            app.accounts.table = AccountsTable::NotConfigured;
+            assert_eq!(app.accounts_sort, AccountsSort::SourceOrder);
+        } else {
+            let header = accounts_grid_tests::locate(&end, "left");
+            app.accounts.table = AccountsTable::NotConfigured;
+            app.click(Position::new(header.column, header.row));
+            assert_eq!(
+                app.accounts_sort,
+                AccountsSort::Sorted(crate::sort::ColumnSort {
+                    column:    AccountsColumn::WeeklyLeft,
+                    direction: crate::sort::SortDirection::Ascending,
+                })
+            );
+        }
+        app.click(Position::new(account.column, account.row + 1));
+        assert_eq!(
+            selected(&app),
+            TileSelection::Row(RowIdentity::SummaryAccount {
+                account: "account-4".into(),
+            })
+        );
+    }
+}
+
+#[test]
+fn moving_pinned_accounts_keep_their_header_and_continuation_targets() {
+    for (width, height) in [(60, 128), (84, 48)] {
+        let mut app = fixture();
+        app.loaded_config.config.tiles.view = TileView::Cells;
+        app.loaded_config.config.tiles.widen_summary = false;
+        app.loaded_config.config.tiles.initial_rows =
+            serde_json::from_value(serde_json::json!(4)).expect("four rows");
+        let before = paint(&mut app, width, height);
+        select_first(&mut app, &before);
+        accounts_grid_tests::account_key(&mut app, KeyCode::End);
+        paint(&mut app, width, height);
+        app.tiles
+            .apply(TileAction::Add, app.loaded_config.config.tiles.growth());
+        app.tiles.hold_motion_at_half_for_test();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("moving terminal");
+        terminal
+            .draw(|frame| {
+                draw_panes_at(
+                    frame,
+                    &mut app,
+                    Rect::new(0, 0, width, height),
+                    TileGridContents::Shown,
+                    NOW,
+                );
+            })
+            .expect("moving accounts frame");
+        assert!(app.tiles.has_pending_motion_for_test());
+        let buffer = terminal.backend().buffer();
+        let account = accounts_grid_tests::locate(buffer, "account-4");
+        if width == 60 {
+            assert!(
+                lines(buffer).iter().any(|line| line.contains("busy ")),
+                "narrow accounts draw stacked count facts"
+            );
+            app.accounts.table = AccountsTable::NotConfigured;
+            assert_eq!(app.accounts_sort, AccountsSort::SourceOrder);
+        } else {
+            let header = accounts_grid_tests::locate(buffer, "left");
+            app.accounts.table = AccountsTable::NotConfigured;
+            app.click(Position::new(header.column, header.row));
+            assert_eq!(
+                app.accounts_sort,
+                AccountsSort::Sorted(crate::sort::ColumnSort {
+                    column:    AccountsColumn::WeeklyLeft,
+                    direction: crate::sort::SortDirection::Ascending,
+                })
+            );
+        }
+        app.click(Position::new(account.column, account.row + 1));
+        assert_eq!(
+            selected(&app),
+            TileSelection::Row(RowIdentity::SummaryAccount {
+                account: "account-4".into(),
+            })
+        );
+    }
 }

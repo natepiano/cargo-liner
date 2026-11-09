@@ -48,7 +48,7 @@ impl MendRunner<'_> {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
                 compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                 report: planned.report,
-                notice: None,
+                notice: planned.function_plan.notice(),
                 check_duration,
                 compiler_warnings,
                 compiler_fixable,
@@ -57,21 +57,17 @@ impl MendRunner<'_> {
                 pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
-                // Count `previewed` from `Self::combined_fixes`, not the scans: a dry run must
-                // preview the edits an apply would write, and combining is
-                // where conflicting groups are dropped and duplicates collapse.
-                let fix_scans = planned.fix_scans();
-                let previewed = Self::combined_fixes(
-                    fix_scans,
-                    &planned.sources,
-                    &self.selection.package_roots,
-                )?;
+                // Preview the accepted function plan so dry runs count the edits an apply writes.
+                // The plan excludes conflicting groups and duplicate edits.
+                let fix_scans = planned.function_plan.accepted_scans(planned.fix_scans());
+                let previewed = &planned.function_plan.fixes;
                 let execution_notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),
                     fix_scans,
                     previewed.counts(),
                 );
+                let execution_notice = planned.function_plan.merge_notice(execution_notice);
                 Ok(ExecutionOutcome {
                     compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                     report: planned.report,
@@ -99,6 +95,7 @@ impl MendRunner<'_> {
             build_output_mode,
             self.color_mode,
             self.toolchain_probes,
+            &self.wrapper,
         )?;
         // Create `ParsedSources` after `compiler::run_selection` because `cargo fix`
         // may rewrite files during that check.

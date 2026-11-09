@@ -10,7 +10,6 @@ use crate::census::AccountColumn;
 use crate::census::AgentActivity;
 use crate::census::RoleFallback;
 use crate::census::accounts::AccountsTable;
-use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -72,7 +71,6 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     ]
     .into_iter()
     .map(|(manager, member, role)| HierarchyEdge {
-        reviewer: ReviewerState::NotPool,
         manager: manager.to_string(),
         member: member.to_string(),
         role,
@@ -248,7 +246,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
         [
-            "├─",
+            "├──",
             "dashboard",
             "unit",
             "thinking",
@@ -261,7 +259,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
             "│",
-            "└─",
+            "└──",
             "hanadocs-dashboard-impl",
             "impl",
             "idle",
@@ -272,7 +270,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└─", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
+        ["└──", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
@@ -593,16 +591,16 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         }
     }
     let rows = lines(&buffer);
-    assert!(rows[usize::from(row_of(&buffer, "unit-member"))].contains("├─ unit-member"));
-    assert!(rows[usize::from(row_of(&buffer, "clock job"))].contains("│  ├─ clock job"));
-    assert!(rows[usize::from(row_of(&buffer, "unheld worker"))].contains("│  │  └─ unheld worker"));
+    assert!(rows[usize::from(row_of(&buffer, "unit-member"))].contains("├── unit-member"));
+    assert!(rows[usize::from(row_of(&buffer, "clock job"))].contains("│ ├── clock job"));
+    assert!(rows[usize::from(row_of(&buffer, "unheld worker"))].contains("│ │ └── unheld worker"));
     assert!(
-        rows[usize::from(row_of(&buffer, "nested command"))].contains("│     └─ nested command")
+        rows[usize::from(row_of(&buffer, "nested command"))].contains("│   └── nested command")
     );
     assert!(
         rows.last()
             .expect("last work line")
-            .contains("└─ root command")
+            .contains("└── root command")
     );
     let status_x = find(&buffer, "status").expect("status column").0;
     for (name, role) in [
@@ -977,4 +975,132 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             "summary width includes account labels"
         );
     }
+}
+
+#[test]
+fn claude_dispatch_work_draws_under_its_seat_session() {
+    let mut root = agent(10, "director", 100, None);
+    let mut shell = child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(600),
+        "dispatch shell",
+        80,
+    );
+    shell.dispatch = serde_json::from_value(serde_json::json!({"worker": {
+        "seat":"fixture-fix", "identity":{"claude_session":"seat-session"},
+        "job":"repair the seat", "short_seat":"fix", "role":{"worker":"fix"}
+    }}))
+    .expect("Claude dispatch identity");
+    let work = child(
+        1,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(601),
+        "seat child command",
+        70,
+    );
+    root.children = vec![shell, work];
+    let mut seat = agent(20, "Claude seat", 90, Some(10));
+    seat.session_id = SessionIdentity::Claude("seat-session".into());
+    let state = MachineState::Answered(vec![root, seat], HierarchyEdges::default().into());
+    let cells = natedev_cells(&state);
+    let seat_index = cells[0]
+        .lines
+        .iter()
+        .position(|line| matches!(line.subject, LineSubject::Agent(_)))
+        .expect("seat row");
+    let work_index = cells[0].lines.iter().position(|line| matches!(line.subject, LineSubject::Work(work) if work.child.name == "seat child command")).expect("seat work");
+    assert_eq!(work_index, seat_index + 1);
+    assert_eq!(
+        cells[0].lines[work_index].rails.len(),
+        cells[0].lines[seat_index].rails.len() + 1
+    );
+    assert_eq!(
+        cells[0].lines.len(),
+        2,
+        "the shell folds and its work appears once"
+    );
+}
+
+#[test]
+fn a_selected_staff_worker_keeps_selection_after_rename_and_sort() {
+    use crate::interaction::RowSpan;
+    use crate::interaction::SelectionSurface;
+    use crate::interaction::Selections;
+    use crate::interaction::TileSelection;
+    use crate::sort::SortDirection;
+
+    let ordered = |name: &str| {
+        let mut root = agent(10, "director", 100, None);
+        root.children = [
+            (name, "worker-a", "thread-a"),
+            ("middle", "worker-b", "thread-b"),
+        ]
+        .into_iter()
+        .map(|(name, staff, thread)| {
+            let mut row = child(0, ChildKind::Thread, None, name, 80);
+            row.thread_id = CodexThreadId::Recorded(thread.into());
+            row.dispatch = serde_json::from_value(serde_json::json!({"worker":{
+                "seat":name,"staff_id":staff,"thread_id":thread,
+                "short_seat":name,"job":"","role":{"worker":"impl"}
+            }}))
+            .expect("staff worker dispatch");
+            row
+        })
+        .collect();
+        let state = MachineState::Answered(vec![root], HierarchyEdges::default().into());
+        let machines = [Machine {
+            name:  "natedev",
+            state: &state,
+        }];
+        let placement = AgentPlacement::from_machines(&machines);
+        let defaults = cell_order_placed(&placement);
+        let sorts = HashMap::from([(
+            defaults[0].id.clone(),
+            TreeSort {
+                column:    TreeColumn::Session,
+                direction: SortDirection::Ascending,
+            },
+        )]);
+        let cells = cell_order_sorted(&placement, &sorts, NOW);
+        cells[0]
+            .lines
+            .iter()
+            .map(|line| (line.name(), line.identity.clone()))
+            .collect::<Vec<_>>()
+    };
+    let before = ordered("alpha");
+    let selected = before
+        .iter()
+        .position(|(name, _)| name == "alpha")
+        .expect("selected worker");
+    let mut selections = Selections::default();
+    let resolve = |rows: &[(String, SelectedRow)]| {
+        vec![(
+            SelectionSurface::Summary,
+            rows.iter()
+                .enumerate()
+                .map(|(index, (_, id))| (id.clone(), RowSpan::single(index)))
+                .collect(),
+        )]
+    };
+    selections.resolve(resolve(&before));
+    selections
+        .surface_mut(&SelectionSurface::Summary)
+        .expect("selection surface")
+        .select(&before[selected].1);
+    let after = ordered("zeta");
+    let renamed = after
+        .iter()
+        .position(|(name, _)| name == "zeta")
+        .expect("renamed worker");
+    assert_ne!(selected, renamed, "the rename changes the sorted row index");
+    selections.resolve(resolve(&after));
+    assert_eq!(
+        selections
+            .surface(&SelectionSurface::Summary)
+            .expect("selection surface")
+            .selection(),
+        TileSelection::Row(after[renamed].1.clone())
+    );
 }

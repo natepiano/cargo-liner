@@ -24,130 +24,13 @@ use super::constants::SRGB_LINEAR_THRESHOLD;
 use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
+use crate::theme::ResetThemeFixture;
+use crate::theme::Role;
 
 /// Proposed role assignments with the shared account assignments unchanged.
 const ROLE_ACCOUNT_FIXTURE: &str = include_str!("fixtures/statusline.conf");
 /// A distance above 10 reads as a different color at a glance; 12 keeps that margin.
 const MINIMUM_LABEL_DISTANCE: f64 = 12.0;
-
-/// D65 CIELAB coordinates used only by the independent perceptual oracle.
-struct PerceptualColor {
-    lightness:   f64,
-    red_green:   f64,
-    yellow_blue: f64,
-}
-
-impl PerceptualColor {
-    fn from_terminal(color: Color) -> Self {
-        let (red, green, blue) = measured_channels(color);
-        let linear = |channel: u8| {
-            let value = f64::from(channel) / 255.0;
-            if value <= SRGB_LINEAR_THRESHOLD {
-                value / SRGB_LINEAR_DIVISOR
-            } else {
-                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
-            }
-        };
-        let (red, green, blue) = (linear(red), linear(green), linear(blue));
-        // The sRGB-to-XYZ matrix and D65 reference white define this conversion.
-        let x = 0.180_437_5_f64.mul_add(blue, 0.357_576_1_f64.mul_add(green, 0.412_456_4 * red))
-            / 0.95047;
-        let y = 0.072_175_0_f64.mul_add(blue, 0.715_152_2_f64.mul_add(green, 0.212_672_9 * red));
-        let z = 0.950_304_1_f64.mul_add(blue, 0.119_192_0_f64.mul_add(green, 0.019_333_9 * red))
-            / 1.08883;
-        let transform = |value: f64| {
-            let delta = 6.0_f64 / 29.0;
-            if value > delta.powi(3) {
-                value.cbrt()
-            } else {
-                value / (3.0 * delta.powi(2)) + 4.0 / 29.0
-            }
-        };
-        Self {
-            lightness:   116.0f64.mul_add(transform(y), -16.0),
-            red_green:   500.0 * (transform(x) - transform(y)),
-            yellow_blue: 200.0 * (transform(y) - transform(z)),
-        }
-    }
-
-    /// CIEDE2000 with unit lightness, chroma and hue weighting factors.
-    fn distance(&self, other: &Self) -> f64 {
-        let mean_chroma = f64::midpoint(
-            self.red_green.hypot(self.yellow_blue),
-            other.red_green.hypot(other.yellow_blue),
-        );
-        let chroma_weight =
-            |chroma: f64| (chroma.powi(7) / (chroma.powi(7) + 25.0_f64.powi(7))).sqrt();
-        let adjustment = (1.0 - chroma_weight(mean_chroma)) / 2.0;
-        let first_red = (1.0 + adjustment) * self.red_green;
-        let second_red = (1.0 + adjustment) * other.red_green;
-        let first_chroma = first_red.hypot(self.yellow_blue);
-        let second_chroma = second_red.hypot(other.yellow_blue);
-        let hue = |red: f64, yellow: f64| yellow.atan2(red).to_degrees().rem_euclid(360.0);
-        let first_hue = hue(first_red, self.yellow_blue);
-        let second_hue = hue(second_red, other.yellow_blue);
-        let hue_delta = if first_chroma * second_chroma == 0.0 {
-            0.0
-        } else if (second_hue - first_hue).abs() <= 180.0 {
-            second_hue - first_hue
-        } else if second_hue <= first_hue {
-            second_hue - first_hue + 360.0
-        } else {
-            second_hue - first_hue - 360.0
-        };
-        let mean_hue = if first_chroma * second_chroma == 0.0 {
-            first_hue + second_hue
-        } else if (first_hue - second_hue).abs() <= 180.0 {
-            f64::midpoint(first_hue, second_hue)
-        } else if first_hue + second_hue < 360.0 {
-            (first_hue + second_hue + 360.0) / 2.0
-        } else {
-            (first_hue + second_hue - 360.0) / 2.0
-        };
-        let cosine = |degrees: f64| degrees.to_radians().cos();
-        let mean_lightness = f64::midpoint(self.lightness, other.lightness);
-        let mean_chroma = f64::midpoint(first_chroma, second_chroma);
-        let hue_scale = 0.20f64.mul_add(
-            -cosine(4.0f64.mul_add(mean_hue, -63.0)),
-            0.32f64.mul_add(
-                cosine(3.0f64.mul_add(mean_hue, 6.0)),
-                0.24f64.mul_add(
-                    cosine(2.0 * mean_hue),
-                    0.17f64.mul_add(-cosine(mean_hue - 30.0), 1.0),
-                ),
-            ),
-        );
-        let lightness_delta = (other.lightness - self.lightness)
-            / (1.0
-                + 0.015 * (mean_lightness - 50.0).powi(2)
-                    / (mean_lightness - 50.0)
-                        .mul_add(mean_lightness - 50.0, 20.0)
-                        .sqrt());
-        let chroma_delta = (second_chroma - first_chroma) / 0.045f64.mul_add(mean_chroma, 1.0);
-        let hue_delta =
-            2.0 * (first_chroma * second_chroma).sqrt() * (hue_delta / 2.0).to_radians().sin()
-                / (0.015 * mean_chroma).mul_add(hue_scale, 1.0);
-        let rotation = -2.0
-            * chroma_weight(mean_chroma)
-            * (60.0 * (-((mean_hue - 275.0) / 25.0).powi(2)).exp())
-                .to_radians()
-                .sin();
-        (rotation * chroma_delta)
-            .mul_add(
-                hue_delta,
-                hue_delta.mul_add(
-                    hue_delta,
-                    chroma_delta.mul_add(chroma_delta, lightness_delta.powi(2)),
-                ),
-            )
-            .sqrt()
-    }
-}
-
-/// Independent perceptual distance for rendered cell regressions.
-pub(crate) fn perceptual_distance(first: Color, second: Color) -> f64 {
-    PerceptualColor::from_terminal(first).distance(&PerceptualColor::from_terminal(second))
-}
 
 #[test]
 fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
@@ -176,7 +59,7 @@ fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
     for variant in theme::builtins() {
         let name = variant.id.as_str().to_owned();
         tui_pane::set_active_theme(Arc::new(variant.theme));
-        let header = PerceptualColor::from_terminal(tui_pane::label_color());
+        let header = PerceptualColor::from(tui_pane::label_color());
         let entries = [
             ("role.showrunner", colors.role(FooterRole::Showrunner)),
             ("role.unit-director", colors.role(FooterRole::UnitDirector)),
@@ -192,7 +75,7 @@ fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
                 .style(Style::default())
                 .fg
                 .expect("configured foreground");
-            let distance = PerceptualColor::from_terminal(ink).distance(&header);
+            let distance = PerceptualColor::from(ink).distance(&header);
             measurements.push((name.clone(), entry, distance));
         }
     }
@@ -278,8 +161,7 @@ fn footer_role_colors_stay_distinct_from_accounts_headers_and_other_roles() {
                 .fg
                 .expect("plain row foreground");
             let distance = |first, second| {
-                PerceptualColor::from_terminal(first)
-                    .distance(&PerceptualColor::from_terminal(second))
+                PerceptualColor::from(first).distance(&PerceptualColor::from(second))
             };
             for (index, (role, color)) in roles.iter().enumerate() {
                 measurements.push((
@@ -879,4 +761,110 @@ fn covered_contrast_rejects_an_ink_that_only_fractional_coverage_accepts() {
     );
     assert!((measured - expected).abs() < 1e-12);
     assert!(measured < 4.5, "nearest-byte coverage must reject this ink");
+}
+
+#[test]
+fn astra_colors_enter_the_management_palette() -> Result<(), String> {
+    let colors = FooterColors::parse(include_str!("fixtures/statusline_astra.conf"));
+    for (wire, name) in [
+        ("astra-designer", "mauve"),
+        ("astra-reviewer", "bright-green"),
+    ] {
+        let role =
+            serde_json::from_value(serde_json::json!(wire)).map_err(|error| error.to_string())?;
+        let configured: FooterColor = name.parse().map_err(|_| format!("missing color {name}"))?;
+        let color = if wire == "astra-reviewer" {
+            FooterColor::AstraReviewerGreen
+        } else {
+            configured
+        };
+        assert_eq!(Color::from(color), Color::from(configured));
+        assert_eq!(colors.hierarchy_role(role), FooterTint::Management(color));
+        assert!(
+            colors
+                .session_row_inks()
+                .any(|ink| ink == SessionRowInk::Management(color))
+        );
+    }
+    assert_eq!(
+        Color::from(
+            "mauve"
+                .parse::<FooterColor>()
+                .map_err(|_| "missing mauve")?
+        ),
+        Color::Indexed(139)
+    );
+    Ok(())
+}
+
+fn check_astra_management_distances(role: HierarchyRole) {
+    let theme_reset = ResetThemeFixture::install();
+    let colors = FooterColors::parse(include_str!("fixtures/statusline_astra.conf"));
+    let mut failures = Vec::new();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        let floor = if name == "Default Dark" {
+            12.2
+        } else if name == "High Contrast Dark" {
+            14.8
+        } else {
+            15.0
+        };
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let tint_value = colors.hierarchy_role(role);
+            let FooterTint::Management(color) = tint_value else {
+                failures.push(format!("{role:?} requires management ink"));
+                continue;
+            };
+            let ink = tint_value.style(Style::default()).fg.expect("Astra ink");
+            for other in colors
+                .session_row_inks()
+                .filter(|other| *other != SessionRowInk::Management(color))
+            {
+                let other_ink = other.style().fg.expect("row ink");
+                let distance = perceptual_distance(ink, other_ink);
+                if distance < floor {
+                    failures.push(format!(
+                        "{name} tint={tint} {role:?}/{other:?} dE={distance:.9} floor={floor}"
+                    ));
+                }
+            }
+            for ordinal in 0..5 {
+                let session = Role::Session(crate::theme::SessionHue::of_agent(ordinal))
+                    .style()
+                    .fg
+                    .expect("session ink");
+                let distance = perceptual_distance(ink, session);
+                if distance < floor {
+                    failures.push(format!("{name} tint={tint} {role:?}/session-{ordinal} dE={distance:.9} floor={floor}"));
+                }
+            }
+            for ground in [
+                tui_pane::pane_background(false),
+                tui_pane::pane_background(true),
+            ] {
+                let ratio = covered_role_contrast(ink, ground);
+                if ratio < 4.5 {
+                    failures.push(format!("{name} tint={tint} {role:?} covered={ratio:.9}"));
+                }
+            }
+        }
+    }
+    drop(theme_reset);
+    assert!(
+        failures.is_empty(),
+        "Astra management distances: {failures:#?}"
+    );
+}
+
+#[test]
+fn astra_management_mauve_keeps_every_row_distance_and_covered_contrast() {
+    check_astra_management_distances(HierarchyRole::AstraDesigner);
+}
+#[test]
+fn astra_management_reviewer_keeps_every_row_distance_and_covered_contrast() {
+    check_astra_management_distances(HierarchyRole::AstraReviewer);
 }

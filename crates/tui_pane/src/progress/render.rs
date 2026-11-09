@@ -1,6 +1,7 @@
 //! Progress row vocabulary and panel rendering.
 
 use ratatui::style::Color;
+use unicode_width::UnicodeWidthStr;
 
 use super::Percentage;
 use super::ProgressState;
@@ -46,50 +47,48 @@ pub struct ProgressPanelStyle {
     pub failed:    Color,
 }
 
-/// Render the multi-row startup panel body into one line per row plus a
-/// matching per-line foreground color.
+/// Render each progress row with its foreground color.
 ///
-/// Each line is a left-aligned label, a
-/// fixed-width fill bar, a right-aligned percent, and — for a row that has
-/// been slow enough — the item it is currently working on. The color ramps
-/// linearly between the supplied active and complete RGB colors.
+/// Keep the label whole. Reduce the bar and state text before the label needs more space.
 #[must_use]
 pub fn progress_panel_body(
     rows: &[ProgressRow],
     body_width: usize,
     style: ProgressPanelStyle,
 ) -> (Vec<String>, Vec<Color>) {
-    let label_width = rows
-        .iter()
-        .map(|row| row.label.chars().count())
-        .max()
-        .unwrap_or(0);
+    let label_width = rows.iter().map(|row| row.label.width()).max().unwrap_or(0);
     let mut lines = Vec::with_capacity(rows.len());
     let mut colors = Vec::with_capacity(rows.len());
     for row in rows {
-        // `ProgressState::Active` renders a proportional `bar` and percent `suffix`; `CompleteHeld`
-        // renders full progress, while `Waiting` and `Failed` render an empty bar and state
-        // word.
-        let (bar, suffix) = match row.state {
-            ProgressState::Active(percentage) => (
-                progress_bar(percentage, style),
-                format!("{:>3}%", percentage.get()),
-            ),
-            ProgressState::CompleteHeld => {
-                (progress_bar(Percentage::full(), style), "100%".to_string())
-            },
-            ProgressState::Waiting => (
-                progress_bar(Percentage::empty(), style),
-                "waiting".to_string(),
-            ),
-            ProgressState::Failed => (
-                progress_bar(Percentage::empty(), style),
-                "failed".to_string(),
-            ),
+        let (percentage, suffix) = match row.state {
+            ProgressState::Active(percentage) => (percentage, format!("{:>3}%", percentage.get())),
+            ProgressState::CompleteHeld => (Percentage::full(), "100%".to_string()),
+            ProgressState::Waiting => (Percentage::empty(), "waiting".to_string()),
+            ProgressState::Failed => (Percentage::empty(), "failed".to_string()),
         };
-        let mut line = format!("{label:<label_width$}  {bar} {suffix}", label = row.label);
+        let fitted_label_width = label_width.min(body_width).max(row.label.width());
+        let padding = fitted_label_width.saturating_sub(row.label.width());
+        let mut line = format!("{}{}", row.label, " ".repeat(padding));
+        let remaining = body_width.saturating_sub(fitted_label_width + 2);
+        if remaining > 0 {
+            let bar_width = style
+                .bar_width
+                .min(remaining.saturating_sub(suffix.width() + 1));
+            line.push_str("  ");
+            if bar_width > 0 {
+                line.push_str(&progress_bar(
+                    percentage,
+                    ProgressPanelStyle { bar_width, ..style },
+                ));
+                line.push(' ');
+            }
+            line.push_str(&truncate_detail(
+                &suffix,
+                remaining.saturating_sub(bar_width + usize::from(bar_width > 0)),
+            ));
+        }
         if let ProgressDetail::Message(detail) = &row.detail {
-            let used = line.chars().count();
+            let used = line.width();
             let remaining = body_width.saturating_sub(used + 2);
             if remaining >= 4 {
                 line.push_str("  ");
@@ -145,6 +144,9 @@ fn ramp_channel(percentage: Percentage, start: u8, end: u8) -> u8 {
 /// Truncate the detail to `width` columns, replacing the tail with `…` when
 /// it doesn't fit.
 fn truncate_detail(detail: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
     if detail.chars().count() <= width {
         return detail.to_string();
     }
@@ -184,6 +186,54 @@ mod tests {
             label,
             state,
             detail: ProgressDetail::Absent,
+        }
+    }
+
+    #[test]
+    fn narrow_progress_rows_draw_whole_labels_in_each_state() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::Style;
+        use ratatui::text::Line;
+        use ratatui::widgets::Paragraph;
+        use ratatui::widgets::Widget;
+
+        use crate::ColorMode;
+
+        let rows = [
+            row(
+                "Cargo metadata",
+                ProgressState::Active(Percentage::from_fraction(1, 2)),
+            ),
+            row("Cargo metadata", ProgressState::Waiting),
+            row("Cargo metadata", ProgressState::Failed),
+            row("Cargo metadata", ProgressState::CompleteHeld),
+        ];
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for width in [14_u16, 18, 22, 27] {
+                let (lines, colors) = startup_panel_body(&rows, usize::from(width));
+                let text: Vec<_> = lines
+                    .iter()
+                    .zip(colors)
+                    .map(|(line, color)| {
+                        assert!(line.width() <= usize::from(width), "{width}: {line}");
+                        Line::styled(line.clone(), Style::default().fg(color))
+                    })
+                    .collect();
+                let area = Rect::new(0, 0, width, 4);
+                let mut buffer = Buffer::empty(area);
+                Paragraph::new(text).render(area, &mut buffer);
+                mode.clear_colors(&mut buffer);
+                for y in 0..4 {
+                    let label: String = (0..14).map(|x| buffer[(x, y)].symbol()).collect();
+                    assert_eq!(label, "Cargo metadata", "{mode:?}: {width}, row {y}");
+                }
+                if width == 27 {
+                    for (line, suffix) in lines.iter().zip(["50%", "waiting", "failed", "100%"]) {
+                        assert!(line.ends_with(suffix), "{line}");
+                    }
+                }
+            }
         }
     }
 

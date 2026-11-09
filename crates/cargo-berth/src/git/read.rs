@@ -16,6 +16,7 @@ use gix::diff::index::Change;
 use gix::object::Kind;
 use gix::progress::Discard;
 use gix::remote::Direction;
+use gix::sec::Permission;
 use gix::status::Item;
 use gix::status::UntrackedFiles;
 use gix::status::index_worktree::iter::Summary;
@@ -36,6 +37,7 @@ use super::constants::GIT_FILE_TYPE_MASK;
 use super::constants::GIT_FILESYSTEM_MONITOR_KEY;
 use super::constants::GIT_GC_AUTO_KEY;
 use super::constants::GIT_HEAD_REVISION;
+use super::constants::GIT_INHERITED_READ_ENVIRONMENT;
 use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use super::constants::GIT_LOCAL_REMOTE_VALUE;
 use super::constants::GIT_MAINTENANCE_AUTO_KEY;
@@ -60,7 +62,7 @@ use crate::ids::ReservationScopePath;
 /// Cases outside the in-process reader's compatibility contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GitReadRequirement {
-    /// Git's command boundary clears these selectors before reading another checkout.
+    /// Git interprets repository environment beyond the cleared checkout selectors.
     RepositoryEnvironment,
     /// Command-line configuration is interpreted by Git, including conditional includes.
     ConfigurationEnvironment,
@@ -199,9 +201,13 @@ impl RetentionRefReader {
 
 /// Load strict configuration from every Git source, including its installation prefix.
 pub(super) fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
-    if GIT_REPOSITORY_ENVIRONMENT
+    let clear_checkout_environment = GIT_REPOSITORY_ENVIRONMENT
         .iter()
-        .any(|name| std::env::var_os(name).is_some())
+        .any(|name| std::env::var_os(name).is_some());
+    if clear_checkout_environment
+        && GIT_INHERITED_READ_ENVIRONMENT
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
     {
         return Ok(RepositoryRead::GitRequired(
             GitReadRequirement::RepositoryEnvironment,
@@ -210,7 +216,12 @@ pub(super) fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> 
     if let RepositoryRead::GitRequired(reason) = configuration_overlay() {
         return Ok(RepositoryRead::GitRequired(reason));
     }
-    let options = installation::open_options()?;
+    let mut options = installation::open_options()?;
+    if clear_checkout_environment {
+        // Explicit paths must follow the same checkout selection as command::git_command.
+        // Other environment settings above retain Git's configuration behavior.
+        options.permissions.env.git_prefix = Permission::Deny;
+    }
     // Preserve phase 24's spawn boundary even though installation discovery now has
     // an explicit, bounded command and gix receives the discovered file directly.
     work::record_repository_open();
@@ -1627,14 +1638,27 @@ mod tests {
     }
 
     #[test]
-    fn inherited_repository_selectors_use_git_without_redirecting_the_requested_checkout()
-    -> FixtureResult {
+    fn inherited_repository_selectors_keep_reads_in_the_requested_checkout() -> FixtureResult {
         if let Some(root) = std::env::var_os("CARGO_BERTH_READ_REQUESTED_ROOT") {
             let root = std::path::Path::new(&root);
-            assert!(matches!(
-                status(root)?,
-                RepositoryRead::GitRequired(GitReadRequirement::RepositoryEnvironment)
-            ));
+            let native = status(root)?;
+            let redirected_objects = std::env::var_os("GIT_OBJECT_DIRECTORY").is_some();
+            let native = if redirected_objects {
+                assert!(matches!(
+                    native,
+                    RepositoryRead::GitRequired(GitReadRequirement::RepositoryEnvironment)
+                ));
+                let expected_commit = command::git_output(root, ["rev-parse", "HEAD"])?;
+                assert!(expected_commit.status.success(), "{expected_commit:?}");
+                let expected_commit = String::from_utf8(expected_commit.stdout)?;
+                assert_eq!(
+                    OperationObjectReader::new(root).commit("HEAD")?.to_string(),
+                    expected_commit.trim()
+                );
+                Vec::new()
+            } else {
+                in_process(native)?
+            };
             let snapshot = RepositorySnapshot::discover(root)?;
             let actual = &snapshot.working_tree_status()?.porcelain;
             let expected = command::git_output(
@@ -1649,21 +1673,46 @@ mod tests {
             )?;
             assert!(expected.status.success(), "{expected:?}");
             assert_eq!(actual, &expected.stdout);
+            if !redirected_objects {
+                assert_eq!(native, expected.stdout);
+            }
             assert_eq!(actual.as_slice(), b" M src/primary.rs\0");
             return Ok(());
         }
         let fixture = PatchEquivalenceFixture::new()?;
         fixture.write(PRIMARY_PATH, "requested checkout\n")?;
-        environment_child(
-            "inherited_repository_selectors_use_git_without_redirecting_the_requested_checkout",
-            &[
+        let object_directory = tempfile::tempdir()?;
+        for redirect_objects in [false, true] {
+            if redirect_objects {
+                std::fs::rename(
+                    fixture.root().join(".git/objects"),
+                    object_directory.path().join("objects"),
+                )?;
+                std::fs::create_dir(fixture.root().join(".git/objects"))?;
+            }
+            let mut environment = vec![
                 ("GIT_DIR", "/missing/inherited/repository"),
+                ("GIT_WORK_TREE", "/missing/inherited/worktree"),
+                ("GIT_INDEX_FILE", "/missing/inherited/index"),
+                ("GIT_COMMON_DIR", "/missing/inherited/common"),
+                ("GIT_PREFIX", "foreign-prefix/"),
                 (
                     "CARGO_BERTH_READ_REQUESTED_ROOT",
                     fixture.root().to_str().ok_or("fixture path encoding")?,
                 ),
-            ],
-        )?;
+            ];
+            let objects = object_directory.path().join("objects");
+            if redirect_objects {
+                environment.push((
+                    "GIT_OBJECT_DIRECTORY",
+                    objects.to_str().ok_or("object path encoding")?,
+                ));
+            }
+            environment_child(
+                "inherited_repository_selectors_keep_reads_in_the_requested_checkout",
+                &environment,
+            )?;
+        }
         Ok(())
     }
 

@@ -252,7 +252,7 @@ struct Fixture {
     requests: Receiver<Request>,
     updates:  Receiver<CensusUpdate>,
     count:    Arc<AtomicUsize>,
-    source:   HierarchyCommand,
+    source:   StaffFileSetting,
     remotes:  RemoteMachines,
     now:      Instant,
 }
@@ -262,7 +262,7 @@ impl Fixture {
         let (scans, input) = mpsc::channel();
         let (requests, observed) = mpsc::channel();
         let count = Arc::new(AtomicUsize::new(0));
-        let source = HierarchyCommand::new(HierarchySource::Command(SOURCE.into()));
+        let source = StaffFileSetting::new(HierarchySource::File(SOURCE.into()));
         let remotes = RemoteMachines::new(Vec::new());
         let updates = schedule::spawn_with_test_remote_and_budget(
             remotes.clone(),
@@ -642,7 +642,7 @@ fn catch_up_hierarchy_source_change_discards_the_pending_sources_late_links() {
     assert_eq!(old.command, SOURCE);
     fixture
         .source
-        .replace(HierarchySource::Command(REPLACEMENT.into()));
+        .replace(HierarchySource::File(REPLACEMENT.into()));
     old.answer(Ok(links()));
     let replacement = fixture.request();
     assert_eq!(replacement.command, REPLACEMENT);

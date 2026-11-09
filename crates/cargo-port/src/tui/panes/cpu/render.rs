@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
+use tui_pane::ColorMode;
 #[cfg(target_os = "macos")]
 use tui_pane::CoreCluster;
 use tui_pane::CpuUsage;
@@ -32,6 +33,7 @@ use crate::tui::panes::constants::CPU_GPU_ROWS;
 use crate::tui::panes::constants::CPU_PINNED_HEAD_ROWS;
 use crate::tui::panes::constants::CPU_STATIC_INNER_HEIGHT;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::theme_roles;
 
 /// The GPU section expands only when the platform has metrics to show.
 #[derive(Clone, Copy)]
@@ -161,7 +163,9 @@ fn cpu_bar_line(
     let (number_on_filled, number_past_fill) = number_text.split_at(filled.min(number_text.len()));
     let number_filled_span = Span::styled(
         number_on_filled.to_string(),
-        Style::default().fg(text_default()).bg(severity),
+        Style::default()
+            .fg(theme_roles::cpu_bar_label_color())
+            .bg(severity),
     );
     let number_empty_span = Span::styled(
         number_past_fill.to_string(),
@@ -169,7 +173,7 @@ fn cpu_bar_line(
     );
     let filled_span = Span::styled(
         "█".repeat(filled.saturating_sub(number_text.len())),
-        Style::default().fg(severity),
+        Style::default().fg(severity).bg(severity),
     );
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled.max(number_text.len()))),
@@ -273,17 +277,8 @@ fn metric_line(label: &str, percent: u8, color: Color, width: u16) -> Line<'stat
 /// The CPU pane's box tree: a pinned aggregate row, the scrolling cores band
 /// (the one `Fill` box), the System/User/Idle breakdown (a rule above it), and
 /// the GPU row (a rule above it). Rebuilt each frame from the live core count.
-fn cpu_region(core_count: usize, gpu_rows: GpuRows, inner_height: u16) -> Region {
-    let pinned_rows = CPU_PINNED_HEAD_ROWS + CPU_BREAKDOWN_ROWS + gpu_rows.count() + 2;
-    let band_height = usize::from(inner_height).saturating_sub(pinned_rows);
+fn cpu_region(core_count: usize, gpu_rows: GpuRows) -> Region {
     let cores = Region::rows(core_count, Size::Fill);
-    // Leave at least one bar visible in very short panes. Otherwise reserve
-    // a footer only when the cores overflow; it never owns a selectable row.
-    let cores = if core_count > band_height && band_height > 1 {
-        cores.footer()
-    } else {
-        cores
-    };
     Region::stack(vec![
         Region::rows(CPU_PINNED_HEAD_ROWS, Size::Fixed),
         cores,
@@ -308,7 +303,6 @@ struct CpuPanelLayout {
     gpu_divider:    Rect,
     gpu:            Rect,
     gpu_rows:       GpuRows,
-    cores_footer:   Rect,
     band_offset:    usize,
 }
 
@@ -322,11 +316,8 @@ impl CpuPanelLayout {
     ) -> Self {
         // `cpu_region(...).place` applies `prior_offset` only to region 1, the core band;
         // the pinned regions never scroll.
-        let placed = cpu_region(core_count, gpu_rows, inner.height).place(
-            inner,
-            cursor_pos,
-            &[0, prior_offset, 0, 0],
-        );
+        let placed =
+            cpu_region(core_count, gpu_rows).place(inner, cursor_pos, &[0, prior_offset, 0, 0]);
         let head = placed[0].content;
         let head_row = |offset: u16| Rect {
             y: head.y.saturating_add(offset),
@@ -351,7 +342,6 @@ impl CpuPanelLayout {
             gpu_divider: placed[3].chrome,
             gpu: placed[3].content,
             gpu_rows,
-            cores_footer: placed[1].footer,
             band_offset: placed[1].scroll_offset,
         }
     }
@@ -371,23 +361,33 @@ struct BreakdownRowSpec<'a> {
 
 const fn cpu_panel_title() -> &'static str { " CPU / GPU " }
 
-fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFocusState) -> Style {
-    tui_pane::selection_state(viewport, logical_row, focus).overlay_style()
+struct CpuRowSelection<'a> {
+    viewport:   &'a Viewport,
+    focus:      PaneFocusState,
+    color_mode: ColorMode,
+}
+
+impl CpuRowSelection<'_> {
+    fn paint(&self, frame: &mut Frame, area: Rect, logical_row: usize) {
+        theme_roles::paint_selection(
+            frame,
+            area,
+            tui_pane::selection_state(self.viewport, logical_row, self.focus),
+            self.color_mode,
+        );
+    }
 }
 
 fn render_selectable_row(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     area: Rect,
     logical_row: usize,
-    focus: PaneFocusState,
     paragraph: Paragraph<'static>,
 ) {
-    frame.render_widget(
-        paragraph.style(cpu_row_overlay_style(viewport, logical_row, focus)),
-        area,
-    );
+    frame.render_widget(paragraph, area);
+    selection.paint(frame, area, logical_row);
     row_rects.push((area, logical_row));
 }
 
@@ -412,19 +412,17 @@ fn push_cpu_dividers(area: Rect, layout: &CpuPanelLayout, chrome: &mut PaneFrame
 
 fn render_head_rows(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
     render_selectable_row(
         frame,
-        viewport,
+        selection,
         row_rects,
         layout.core_count_row,
         CpuSelectableRow::CoreCount.logical_index(layout.core_count),
-        focus,
         Paragraph::new(cpu_core_count_line(
             usage.cores.len(),
             layout.core_count_row.width,
@@ -432,23 +430,21 @@ fn render_head_rows(
     );
     render_selectable_row(
         frame,
-        viewport,
+        selection,
         row_rects,
         layout.total,
         CpuSelectableRow::Total.logical_index(layout.core_count),
-        focus,
         Paragraph::new(total_line(usage.total_percent, layout.total.width)),
     );
 }
 
 fn render_core_rows(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_config: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
     let end = layout
         .band_offset
@@ -469,11 +465,10 @@ fn render_core_rows(
         };
         render_selectable_row(
             frame,
-            viewport,
+            selection,
             row_rects,
             area,
             logical_row,
-            focus,
             Paragraph::new(cpu_bar_line(
                 core_index + 1,
                 number_width,
@@ -488,18 +483,16 @@ fn render_core_rows(
 
 fn render_breakdown_row(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
-    focus: PaneFocusState,
     breakdown_row_spec: BreakdownRowSpec<'_>,
 ) {
     render_selectable_row(
         frame,
-        viewport,
+        selection,
         row_rects,
         breakdown_row_spec.area,
         breakdown_row_spec.logical_row,
-        focus,
         Paragraph::new(metric_line(
             breakdown_row_spec.label,
             breakdown_row_spec.percent,
@@ -511,21 +504,19 @@ fn render_breakdown_row(
 
 fn render_gpu_rows(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
     match layout.gpu_rows {
         GpuRows::Unavailable => render_selectable_row(
             frame,
-            viewport,
+            selection,
             row_rects,
             layout.gpu,
             CpuSelectableRow::Gpu.logical_index(layout.core_count),
-            focus,
             Paragraph::new(value_line(
                 "GPU",
                 "unavailable".to_string(),
@@ -534,7 +525,7 @@ fn render_gpu_rows(
             )),
         ),
         GpuRows::Metrics => {
-            render_gpu_metrics(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+            render_gpu_metrics(frame, selection, row_rects, cpu_cfg, usage, layout);
         },
     }
 }
@@ -542,12 +533,11 @@ fn render_gpu_rows(
 #[cfg(target_os = "macos")]
 fn render_gpu_metrics(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
     let gpu = usage.gpu;
     let gpu_row = |offset: u16| Rect {
@@ -558,11 +548,10 @@ fn render_gpu_metrics(
     let mut render = |row: CpuSelectableRow, area: Rect, line: Line<'static>| {
         render_selectable_row(
             frame,
-            viewport,
+            selection,
             row_rects,
             area,
             row.logical_index(layout.core_count),
-            focus,
             Paragraph::new(line),
         );
     };
@@ -593,20 +582,18 @@ fn render_gpu_metrics(
 #[cfg(not(target_os = "macos"))]
 fn render_gpu_metrics(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
     render_selectable_row(
         frame,
-        viewport,
+        selection,
         row_rects,
         layout.gpu,
         CpuSelectableRow::Gpu.logical_index(layout.core_count),
-        focus,
         Paragraph::new(gpu_metric_line(
             "GPU",
             usage.gpu.device_percent,
@@ -626,20 +613,18 @@ const fn sync_cpu_pane_state(viewport: &mut Viewport, inner: Rect, layout: &CpuP
 
 fn render_cpu_metric_rows(
     frame: &mut Frame,
-    viewport: &Viewport,
+    selection: &CpuRowSelection<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_config: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
-    focus: PaneFocusState,
 ) {
-    render_head_rows(frame, viewport, row_rects, usage, layout, focus);
-    render_core_rows(frame, viewport, row_rects, cpu_config, usage, layout, focus);
+    render_head_rows(frame, selection, row_rects, usage, layout);
+    render_core_rows(frame, selection, row_rects, cpu_config, usage, layout);
     render_breakdown_row(
         frame,
-        viewport,
+        selection,
         row_rects,
-        focus,
         BreakdownRowSpec {
             area:        layout.system,
             logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
@@ -650,9 +635,8 @@ fn render_cpu_metric_rows(
     );
     render_breakdown_row(
         frame,
-        viewport,
+        selection,
         row_rects,
-        focus,
         BreakdownRowSpec {
             area:        layout.user,
             logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
@@ -663,9 +647,8 @@ fn render_cpu_metric_rows(
     );
     render_breakdown_row(
         frame,
-        viewport,
+        selection,
         row_rects,
-        focus,
         BreakdownRowSpec {
             area:        layout.idle,
             logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
@@ -674,7 +657,7 @@ fn render_cpu_metric_rows(
             color:       text_default(),
         },
     );
-    render_gpu_rows(frame, viewport, row_rects, cpu_config, usage, layout, focus);
+    render_gpu_rows(frame, selection, row_rects, cpu_config, usage, layout);
 }
 
 /// Body of `CpuPane::render`. Lives here (next to its helpers)
@@ -687,6 +670,7 @@ pub(super) fn render_cpu_pane_body(
     pane: &mut CpuPane,
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = pane_render_ctx.color_mode;
     let inner = tui_pane::frame_inner(area);
     let mut chrome = PaneFrameChrome {
         title: cpu_panel_title().to_string(),
@@ -707,6 +691,7 @@ pub(super) fn render_cpu_pane_body(
         pane,
         &pane_render_ctx.config.current().cpu,
         &mut chrome,
+        mode,
     );
     chrome
 }
@@ -718,6 +703,7 @@ pub(super) fn render_cpu_sample_phase(
     pane: &mut CpuPane,
     cpu_cfg: &CpuConfig,
     chrome: &mut PaneFrameChrome,
+    mode: ColorMode,
 ) {
     let usage = match pane.sample_phase() {
         CpuSamplePhase::AwaitingFirstSample { core_count } => {
@@ -751,17 +737,19 @@ pub(super) fn render_cpu_sample_phase(
     push_cpu_dividers(area, &layout, chrome);
 
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
-    let viewport = &pane.viewport;
-    render_cpu_metric_rows(
-        frame,
-        viewport,
-        &mut row_rects,
-        cpu_cfg,
-        usage,
-        &layout,
-        pane.focus.pane_focus_state,
-    );
-    render_cores_affordance(frame, &layout, cursor_pos);
+    let selection = CpuRowSelection {
+        viewport:   &pane.viewport,
+        focus:      pane.focus.pane_focus_state,
+        color_mode: mode,
+    };
+    render_cpu_metric_rows(frame, &selection, &mut row_rects, cpu_cfg, usage, &layout);
+    if let Some(label) = tui_pane::overflow_affordance_label(
+        area,
+        cores_overflow(&layout, cursor_pos),
+        Style::default().fg(label_color()),
+    ) {
+        chrome.labels.push(label);
+    }
     sync_cpu_pane_state(&mut pane.viewport, inner, &layout);
     pane.set_row_rects(row_rects);
 }
@@ -780,32 +768,19 @@ fn render_cpu_status(
     );
 }
 
-/// Draw the `▲ n of m ▼` overflow label in the cores footer when more cores
-/// exist than fit. Skipped when the band has no visible rows.
-fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_pos: usize) {
-    let band_visible = layout.band_visible();
-    if band_visible == 0 {
-        return;
-    }
-    // `band_cursor` maps `cursor_pos` in [CPU_PINNED_HEAD_ROWS, CPU_PINNED_HEAD_ROWS +
-    // layout.core_count) to its core, otherwise falling back to `layout.band_offset` for the pager
-    // anchor.
+/// Keep the core cursor as the pager anchor when it is inside the core band.
+/// Use the band offset when the cursor is on a pinned row.
+fn cores_overflow(layout: &CpuPanelLayout, cursor_pos: usize) -> ViewportOverflow {
     let band_cursor = cursor_pos
         .checked_sub(CPU_PINNED_HEAD_ROWS)
         .filter(|local| *local < layout.core_count)
         .unwrap_or(layout.band_offset);
-    let overflow = ViewportOverflow::new(
+    ViewportOverflow::new(
         layout.core_count,
         layout.band_offset,
-        band_visible,
+        layout.band_visible().max(1),
         band_cursor,
-    );
-    if let Some(label) = overflow.label() {
-        frame.render_widget(
-            Paragraph::new(format!(" {label}")).style(Style::default().fg(label_color())),
-            layout.cores_footer,
-        );
-    }
+    )
 }
 
 #[cfg(test)]
@@ -826,7 +801,7 @@ mod tests {
     use crate::tui::panes::constants::CPU_CONTENT_WIDTH;
 
     // The metrics GPU section pins 11 rows on macOS, 8 elsewhere. At height
-    // 14 the remaining band reserves one pager row, leaving 2 or 5 core rows.
+    // 14 the remaining band has 3 or 6 core rows. The pager uses the bottom border.
     /// Build a core row with the default config, supplying the macOS-only
     /// cluster argument as unmapped so the bar assertions stay platform-neutral.
     fn bar_line_for_test(core_number: usize, number_width: usize, percent: u8) -> Line<'static> {
@@ -847,8 +822,48 @@ mod tests {
             width:  20,
             height: inner_height,
         };
-        cpu_region(15, GpuRows::Metrics, inner.height).place(inner, cursor, &[0, prior, 0, 0])[1]
-            .scroll_offset
+        cpu_region(15, GpuRows::Metrics).place(inner, cursor, &[0, prior, 0, 0])[1].scroll_offset
+    }
+
+    #[test]
+    fn cpu_filled_cells_use_background_and_readable_number_ink() -> anyhow::Result<()> {
+        let previous = tui_pane::theme();
+        tui_pane::set_active_theme(std::sync::Arc::new(
+            crate::tui::test_support::shipped_dark_theme()?,
+        ));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 3))?;
+        terminal.draw(|frame| {
+            for (y, percent) in [(0, 40), (1, 100), (2, 10)] {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(bar_line_for_test(
+                        usize::from(y) + 1,
+                        1,
+                        percent,
+                    )),
+                    Rect::new(0, y, 30, 1),
+                );
+            }
+        })?;
+        let buffer = terminal.backend().buffer();
+        for y in 0..3 {
+            let label = &buffer[(1, y)];
+            let fill = &buffer[(3, y)];
+            assert_eq!(
+                fill.bg, label.bg,
+                "bar fill must have a continuous background"
+            );
+            assert_ne!(fill.bg, ratatui::style::Color::Reset);
+            assert_ne!(
+                label.fg,
+                tui_pane::text_default(),
+                "bar labels need contrasting ink"
+            );
+        }
+        let failures =
+            crate::tui::test_support::contrast_failures(buffer, &["1", "2", "3"], "CPU labels");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        tui_pane::set_active_theme(previous);
+        Ok(())
     }
 
     #[test]
@@ -856,9 +871,9 @@ mod tests {
         // `cores_offset(14, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
         // page.
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(14, 14, 0), 11);
+        assert_eq!(cores_offset(14, 14, 0), 10);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(14, 14, 0), 8);
+        assert_eq!(cores_offset(14, 14, 0), 7);
     }
 
     #[test]
@@ -873,9 +888,9 @@ mod tests {
         // `cores_offset(14, 17, 20)` keeps the prior offset for breakdown cursor 17 outside the
         // band, clamped to its last page (15 minus visible core rows).
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(14, 17, 20), 13);
+        assert_eq!(cores_offset(14, 17, 20), 12);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(14, 17, 20), 10);
+        assert_eq!(cores_offset(14, 17, 20), 9);
     }
 
     #[test]
@@ -897,7 +912,10 @@ mod tests {
         // entirely on shaded fill, leaving one block glyph in `line.spans[3]`.
         let line = bar_line_for_test(12, 2, 35);
         assert_eq!(line.spans[1].content, "12 ");
-        assert_eq!(line.spans[1].style.fg, Some(text_default()));
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(crate::tui::theme_roles::cpu_bar_label_color())
+        );
         assert!(line.spans[1].style.bg.is_some());
         assert_eq!(line.spans[2].content, "");
         assert_eq!(line.spans[3].content, "█");

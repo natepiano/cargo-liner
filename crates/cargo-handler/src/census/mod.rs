@@ -17,6 +17,8 @@
 pub(crate) mod account;
 pub(crate) mod accounts;
 pub(crate) mod activity;
+#[cfg(test)]
+mod astra_role_tests;
 mod branch;
 #[cfg(test)]
 mod catch_up_hierarchy_tests;
@@ -25,10 +27,15 @@ pub(crate) mod classify;
 mod claude_seat_tests;
 pub(crate) mod codex;
 mod codex_names;
+mod compaction_markers;
 pub(crate) mod desktop;
+mod herdr;
 pub(crate) mod hierarchy;
 #[cfg(test)]
 mod incremental_read_tests;
+pub(crate) mod model;
+#[cfg(test)]
+mod pane_worker_placement_tests;
 mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
@@ -38,6 +45,7 @@ mod restart_hierarchy_tests;
 mod reviewer_tests;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+mod session_identity;
 pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
@@ -45,6 +53,7 @@ pub(crate) mod tree;
 pub(crate) mod worker_dispatch;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -60,10 +69,12 @@ pub(crate) use activity::AgentActivity;
 pub(crate) use activity::RunLocation;
 #[cfg(test)]
 pub(crate) use activity::VerifyStep;
+pub(crate) use herdr::PaneWork;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
-use hierarchy::ReviewerState;
+use model::ModelName;
+use model::ReasoningEffort;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
@@ -76,6 +87,9 @@ pub(crate) use placement::mesh_worker_fixture;
 use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
+pub(crate) use session_identity::AstraSessionMembership;
+pub(crate) use session_identity::ProvenCodexThread;
+pub(crate) use session_identity::SessionIdentity;
 use sysinfo::System;
 use transcript::SubagentRole;
 use worker_dispatch::ResolvedWorkerDispatch;
@@ -90,7 +104,7 @@ use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
 
 /// The program a census row represents, including transport-only worker hosts.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Agent {
     /// A Claude Code session.
@@ -164,27 +178,6 @@ impl From<&str> for ServiceTier {
     }
 }
 
-/// A Claude Code session's stable identity, absent for other agents or old probes.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(untagged)]
-pub(crate) enum SessionIdentity {
-    /// No Claude Code session record identifies this row.
-    #[default]
-    Unrecorded,
-    /// The `sessionId` in a Claude Code session record.
-    Claude(String),
-}
-
-impl From<String> for SessionIdentity {
-    fn from(id: String) -> Self {
-        if id.is_empty() {
-            Self::Unrecorded
-        } else {
-            Self::Claude(id)
-        }
-    }
-}
-
 /// The member's responsibility under its manager.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -193,6 +186,10 @@ pub(crate) enum HierarchyRole {
     Showrunner,
     /// Directs a unit.
     Unit,
+    /// Performs work for a manager.
+    Worker,
+    /// Runs an independent agent.
+    Agent,
     /// Implements a change.
     Impl,
     /// Tests a change.
@@ -201,18 +198,28 @@ pub(crate) enum HierarchyRole {
     Review,
     /// Repairs a defect.
     Fix,
+    /// Designs for a manager through Astra.
+    #[serde(rename = "astra-designer")]
+    AstraDesigner,
+    /// Reviews for a manager through Astra.
+    #[serde(rename = "astra-reviewer")]
+    AstraReviewer,
 }
 
 impl HierarchyRole {
-    /// The role value the hierarchy command reports, shown in titles and member tree lines.
+    /// The role shown in titles and member rows.
     const fn text(self) -> &'static str {
         match self {
             Self::Showrunner => "showrunner",
             Self::Unit => "unit",
+            Self::Worker => "worker",
+            Self::Agent => "agent",
             Self::Impl => "impl",
             Self::Test => "test",
             Self::Review => "review",
             Self::Fix => "fix",
+            Self::AstraDesigner => "astra designer",
+            Self::AstraReviewer => "astra reviewer",
         }
     }
 }
@@ -221,13 +228,11 @@ impl HierarchyRole {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct HierarchyEdge {
     /// The manager's Claude Code session id, possibly on another machine.
-    pub(crate) manager:  String,
+    pub(crate) manager: String,
     /// The member's Claude session id or Codex app-server thread id.
-    pub(crate) member:   String,
+    pub(crate) member:  String,
     /// What the member does for its manager.
-    pub(crate) role:     HierarchyRole,
-    #[serde(default)]
-    pub(crate) reviewer: ReviewerState,
+    pub(crate) role:    HierarchyRole,
 }
 
 /// The management links reported by one machine.
@@ -257,8 +262,8 @@ pub(crate) enum HierarchySource {
     /// Hierarchy discovery is disabled.
     #[default]
     Off,
-    /// A shell command printing the schema-1 hierarchy contract.
-    Command(String),
+    /// A path to the schema-2 staff file.
+    File(String),
 }
 
 impl From<String> for HierarchySource {
@@ -266,16 +271,16 @@ impl From<String> for HierarchySource {
         if command.trim().is_empty() {
             Self::Off
         } else {
-            Self::Command(command)
+            Self::File(command)
         }
     }
 }
 
 /// The hierarchy setting shared between the app and the scheduler.
 #[derive(Clone, Debug)]
-pub(crate) struct HierarchyCommand(Arc<RwLock<HierarchySource>>);
+pub(crate) struct StaffFileSetting(Arc<RwLock<HierarchySource>>);
 
-impl HierarchyCommand {
+impl StaffFileSetting {
     /// Share the configured source with the scheduler.
     pub(crate) fn new(source: HierarchySource) -> Self { Self(Arc::new(RwLock::new(source))) }
 
@@ -303,6 +308,27 @@ pub(crate) enum RoleFallback {
     Worker(HierarchyRole),
 }
 
+/// Staff names retain their source through dispatch labeling and remote transport.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct StaffRowNames {
+    pub(crate) own:     StaffRowName,
+    pub(crate) threads: BTreeMap<String, String>,
+}
+
+impl StaffRowNames {
+    fn is_empty(&self) -> bool {
+        matches!(self.own, StaffRowName::Unlisted) && self.threads.is_empty()
+    }
+}
+
+/// A staff name takes precedence over every dispatch and activity label.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum StaffRowName {
+    #[default]
+    Unlisted,
+    Named(String),
+}
+
 /// One agent someone can talk to, or an app server transporting workers
 /// for placement without appearing in the summary or its own cell.
 /// The field order is the
@@ -310,9 +336,14 @@ pub(crate) enum RoleFallback {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "probe::ProbeAgentRow")]
 pub(crate) struct AgentRow {
+    #[serde(skip_serializing_if = "ModelName::is_unrecorded")]
+    pub(crate) model:           ModelName,
+    #[serde(skip_serializing_if = "ReasoningEffort::is_unrecorded")]
+    pub(crate) effort:          ReasoningEffort,
     /// Claude Code, Codex, or an app server retained only for worker placement.
     pub(crate) agent:           Agent,
-    /// Claude Code session identity, or unrecorded for other rows.
+    /// The proven identity; Codex uses a defaulted probe extension.
+    #[serde(flatten)]
     pub(crate) session_id:      SessionIdentity,
     pub(crate) role_fallback:   RoleFallback,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
@@ -322,6 +353,8 @@ pub(crate) struct AgentRow {
     pub(crate) account:         Account,
     /// The session's name, or what stands in for one.
     pub(crate) name:            String,
+    #[serde(default, skip_serializing_if = "StaffRowNames::is_empty")]
+    pub(crate) staff_names:     StaffRowNames,
     /// One current activity, resolved from conversation events and live verification.
     pub(crate) activity:        AgentActivity,
     /// When the agent's session began, in unix seconds: for Claude Code
@@ -435,6 +468,8 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "probe::ProbeChildRow", into = "probe::ProbeChildRow")]
 pub(crate) struct ChildRow {
+    pub(crate) model:        ModelName,
+    pub(crate) effort:       ReasoningEffort,
     /// Task naming survives placement so the final hierarchy role supplies its label.
     pub(crate) work_id:      WorkIdentity,
     pub(crate) worker_task:  WorkerTask,
@@ -533,9 +568,8 @@ impl RemoteHierarchyAnswers {
                     },
                 )
             },
-            Ok((rows, HierarchyAnswer::Failed { reason, reviewers })) => {
+            Ok((rows, HierarchyAnswer::Failed { reason })) => {
                 let edges = self.edges.entry(host.to_string()).or_default();
-                hierarchy::ReviewerPools::update_edges(edges, &reviewers);
                 MachineState::Answered(
                     rows,
                     HierarchySnapshot {
@@ -720,6 +754,9 @@ mod tests {
     /// A claude row started at `started`.
     fn row(started: u64) -> AgentRow {
         AgentRow {
+            model: crate::census::model::ModelName::Unrecorded,
+            effort: crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
@@ -769,10 +806,9 @@ mod tests {
         let mut answers = RemoteHierarchyAnswers::default();
         let mut census = Census::new("local".to_string());
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     HierarchyRole::Unit,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
         }]);
         for (host, started, hierarchy, expected) in [
             (
@@ -785,8 +821,7 @@ mod tests {
                 "remote",
                 2,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 edges.clone(),
             ),
@@ -794,8 +829,7 @@ mod tests {
                 "other",
                 3,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 HierarchyEdges::default(),
             ),
@@ -809,8 +843,7 @@ mod tests {
                 "remote",
                 5,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 HierarchyEdges::default(),
             ),
@@ -845,8 +878,7 @@ mod tests {
                 Ok((
                     vec![row(6)],
                     HierarchyAnswer::Failed {
-                        reason:    HierarchyError::ExitedUnsuccessfully,
-                        reviewers: Vec::new(),
+                        reason: HierarchyError::ExitedUnsuccessfully,
                     }
                 ))
             ),

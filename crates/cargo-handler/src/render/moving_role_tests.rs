@@ -2,6 +2,7 @@
 
 #![expect(clippy::expect_used, reason = "rendered fixture rows must exist")]
 
+use tui_pane::ColorMode;
 use tui_pane::TileGrid;
 use tui_pane::TileGrowth;
 
@@ -48,27 +49,39 @@ impl TileCells<TileKey> for ShrinkingCells<'_> {
     }
 }
 
-#[test]
-fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
+fn shrinking_owner() -> AgentRow {
     let mut owner: AgentRow = serde_json::from_value(serde_json::json!({
         "agent":"claude", "pid":10, "name":"owner", "started":1,
         "session_id":"owner", "directory":"", "children":[]
     }))
     .expect("owner row");
-    owner.children = ["impl", "review", "review", "review", "review", "showrunner"]
-        .into_iter()
-        .enumerate()
-        .map(|(index, role)| ChildRow {
-            pid: None,
-            kind: ChildKind::Subagent(SubagentRole::from_record(role, "")),
-            name: format!("work-{index}"),
-            started: 10 + u64::try_from(index).expect("small index"),
-            ..serde_json::from_value(serde_json::json!({
-                "kind":"shell", "depth":0, "name":"", "started":1
-            }))
-            .expect("child defaults")
-        })
-        .collect();
+    owner.children = [
+        SubagentRole::Impl,
+        SubagentRole::Reviewer,
+        SubagentRole::Reviewer,
+        SubagentRole::Reviewer,
+        SubagentRole::Reviewer,
+        SubagentRole::Showrunner,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, role)| ChildRow {
+        pid: None,
+        kind: ChildKind::Subagent(role),
+        name: format!("work-{index}"),
+        started: 10 + u64::try_from(index).expect("small index"),
+        ..serde_json::from_value(serde_json::json!({
+            "kind":"shell", "depth":0, "name":"", "started":1
+        }))
+        .expect("child defaults")
+    })
+    .collect();
+    owner
+}
+
+#[test]
+fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
+    let owner = shrinking_owner();
     let state = MachineState::Answered(vec![owner], HierarchyEdges::default().into());
     let colors = FooterColors::default();
     let mut cells = ShrinkingCells {
@@ -100,6 +113,7 @@ fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         buffer
     };

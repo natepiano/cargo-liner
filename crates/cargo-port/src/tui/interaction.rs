@@ -44,6 +44,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
                 if matches!(mode, ClickMode::Dispatch) {
                     toggle_selected_project_expansion(app);
                 }
+                app.record_selection_choice();
             } else {
                 set_pane_pos(app, pane, row);
             }

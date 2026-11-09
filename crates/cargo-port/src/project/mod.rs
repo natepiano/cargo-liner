@@ -38,7 +38,7 @@ pub(crate) use cargo::from_git_dir;
 pub(crate) use cargo::manifest_targets;
 pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
-pub(crate) use entry::entry_contains;
+pub(crate) use entry::RepositoryProbe;
 pub(crate) use fields::ProjectFields;
 pub(crate) use git::AheadBehind;
 // `git` re-exports repository, checkout and discovery APIs used by project consumers.
@@ -76,8 +76,10 @@ pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
 pub(crate) use git::worktree_ahead_behind_primary;
 pub(crate) use info::CiPagination;
+pub(crate) use info::DiskMeasurement;
 // `info` re-exports shared project enrichment and display state types.
 pub(crate) use info::GitHubInfo;
+pub(crate) use info::GithubRunCount;
 pub(crate) use info::LangEntry;
 pub(crate) use info::LanguageStats;
 pub(crate) use info::ProjectCiData;

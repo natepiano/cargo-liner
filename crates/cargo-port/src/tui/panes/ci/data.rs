@@ -8,7 +8,6 @@ use crate::tui::state::CiApplicability;
 
 #[derive(Clone)]
 pub enum CiEmptyState {
-    BranchScopedOnly,
     Fetching,
     Loading,
     NoRuns,
@@ -22,14 +21,13 @@ pub enum CiEmptyState {
 impl CiEmptyState {
     pub fn title(&self) -> String {
         match self {
-            Self::Unreadable => format!(" CI Runs — {GIT_UNREADABLE_LABEL} "),
-            Self::BranchScopedOnly => " CI Runs — shown on branch/worktree rows ".to_string(),
-            Self::Fetching | Self::Loading => " CI Runs — loading… ".to_string(),
-            Self::NoRuns => " No CI Runs ".to_string(),
+            Self::Unreadable => format!(" CI runs — {GIT_UNREADABLE_LABEL} "),
+            Self::Fetching | Self::Loading => " CI runs — loading… ".to_string(),
+            Self::NoRuns => " No CI runs ".to_string(),
             Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
             Self::NoWorkflowConfigured => " No CI workflow configured ".to_string(),
-            Self::NotGitRepo => " CI Runs — not a git repository ".to_string(),
-            Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ".to_string(),
+            Self::NotGitRepo => " CI runs — not a git repo ".to_string(),
+            Self::RequiresGithubRemote => " CI runs — no GitHub remote ".to_string(),
         }
     }
 }
@@ -96,9 +94,7 @@ pub fn build_ci_data(app: &App) -> CiData {
             CiApplicability::Applies | CiApplicability::Unpublished,
         ) => ci_runs,
     };
-    let empty_state = if selected_path.is_some() && !has_ci_owner {
-        CiEmptyState::BranchScopedOnly
-    } else if checkout_info.is_none() {
+    let empty_state = if checkout_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if matches!(ci_remote_access, CiRemoteAccess::Unreadable)
         || applicability == CiApplicability::UnreadableEvidence

@@ -87,7 +87,7 @@ impl ProjectFields for Submodule {
 
     fn worktree_health(&self) -> WorktreeHealth { self.project_info.worktree_health }
 
-    fn disk_usage_bytes(&self) -> Option<u64> { self.project_info.disk_usage_bytes }
+    fn disk_usage_bytes(&self) -> Option<u64> { self.project_info.disk.total() }
 
     fn git_info(&self) -> Option<&CheckoutInfo> { self.project_info.local_git_state.info() }
 

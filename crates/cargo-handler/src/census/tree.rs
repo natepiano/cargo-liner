@@ -27,7 +27,6 @@ use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
-use super::RowIdentity;
 use super::ServiceTier;
 use super::ShellTimerObservation;
 use super::Timer;
@@ -35,8 +34,11 @@ use super::WorkIdentity;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
+use super::model::ModelName;
+use super::model::ReasoningEffort;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
+use super::transcript::SubagentParent;
 use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
@@ -83,9 +85,20 @@ pub(super) struct ThreadEntry {
     pub(super) account:      Account,
 }
 
+/// A roster thread retained by a live verification supervisor.
+#[derive(Debug)]
+pub(super) struct RunThread {
+    pub(super) id:       String,
+    pub(super) dispatch: ResolvedWorkerDispatch,
+    pub(super) activity: AgentActivity,
+    pub(super) started:  u64,
+}
+
 /// What the scan read from disk for the tree.
 #[derive(Debug, Default)]
 pub(super) struct TreeSources<'a> {
+    /// Run-only threads belong to their unit director when no tree already contains them.
+    pub(super) run_threads:       HashMap<u32, Vec<RunThread>>,
     /// The worker launchers found in process commands and mesh rosters.
     pub(super) dispatches:        HashMap<u32, WorkerDispatch>,
     /// Exact thread identities backed by their own dispatch roster.
@@ -213,7 +226,7 @@ pub(super) fn attach_children(
     rows: &mut [AgentRow],
     processes: &[ProcessEntry],
     sources: &TreeSources<'_>,
-) {
+) -> HashSet<String> {
     let table = classify::pid_table(processes);
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
     for process in processes {
@@ -225,7 +238,7 @@ pub(super) fn attach_children(
         children: &children,
         sources,
     };
-    let trees: Vec<Vec<ChildRow>> = rows
+    let mut trees: Vec<Vec<ChildRow>> = rows
         .iter()
         .map(|row| {
             let sessions: Vec<&AgentRow> = rows
@@ -287,9 +300,87 @@ pub(super) fn attach_children(
             laid_out
         })
         .collect();
+    let added = append_run_threads(rows, &mut trees, sources);
     for (row, tree) in rows.iter_mut().zip(trees) {
         row.children = tree;
     }
+    added
+}
+
+/// `fold_run_processes` removes command rows that `WorkerRuns` joins to a worker row.
+pub(super) fn fold_run_processes(rows: &mut [AgentRow], processes: &HashSet<u32>) {
+    for row in rows {
+        let mut removed_depth = None;
+        row.children.retain(|child| {
+            if removed_depth.is_some_and(|depth| child.depth > depth) {
+                return false;
+            }
+            removed_depth = None;
+            if child.pid.is_some_and(|pid| processes.contains(&pid)) {
+                removed_depth = Some(child.depth);
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// Keep run-only seats that have no native conversation identity.
+pub(super) fn append_named_run_workers(
+    rows: &mut [AgentRow],
+    workers: &HashMap<u32, Vec<ChildRow>>,
+) {
+    for row in rows {
+        if let Some(children) = workers.get(&row.pid) {
+            row.children.extend(children.iter().cloned());
+        }
+    }
+}
+
+/// Add only missing run threads after the tree builder lays out all process sources.
+fn append_run_threads(
+    rows: &[AgentRow],
+    trees: &mut [Vec<ChildRow>],
+    sources: &TreeSources<'_>,
+) -> HashSet<String> {
+    let mut present: HashSet<_> = rows
+        .iter()
+        .flat_map(|row| row.session_id.ids().map(str::to_owned))
+        .chain(
+            trees
+                .iter()
+                .flatten()
+                .filter_map(|child| match &child.thread_id {
+                    CodexThreadId::Recorded(id) => Some(id.clone()),
+                    CodexThreadId::Unrecorded => None,
+                }),
+        )
+        .collect();
+    let mut added = HashSet::new();
+    for (row, children) in rows.iter().zip(trees.iter_mut()) {
+        for thread in sources.run_threads.get(&row.pid).into_iter().flatten() {
+            if present.insert(thread.id.clone()) {
+                added.insert(thread.id.clone());
+                children.push(ChildRow {
+                    model:        ModelName::Unrecorded,
+                    effort:       ReasoningEffort::Unrecorded,
+                    work_id:      WorkIdentity::Legacy,
+                    worker_task:  WorkerTask::RoleOnly,
+                    activity:     thread.activity,
+                    dispatch:     WorkerDispatch::Worker(thread.dispatch.clone()),
+                    thread_id:    CodexThreadId::Recorded(thread.id.clone()),
+                    depth:        0,
+                    kind:         ChildKind::Thread,
+                    service_tier: ServiceTier::Unrecorded,
+                    account:      Account::Unrecorded,
+                    pid:          None,
+                    name:         thread.dispatch.label(),
+                    started:      thread.started,
+                });
+            }
+        }
+    }
+    added
 }
 
 /// Open conversations are not workers: only an exact dispatch authorizes a child.
@@ -329,30 +420,12 @@ fn retain_dispatched_threads(nodes: &mut Vec<Node>, sources: &TreeSources<'_>) {
     });
 }
 
-/// One shell and thread that occupy the same final tile.
-#[derive(Debug)]
-pub(super) struct DispatchFold<'a> {
-    /// The shell whose row is suppressed, retaining its descendants.
-    pub(super) shell:    &'a ChildRow,
-    /// The worker row that receives the responsibility label.
-    pub(super) thread:   &'a ChildRow,
-    /// The identity established by parsing and roster lookup during scanning.
-    pub(super) dispatch: &'a ResolvedWorkerDispatch,
-}
-
-/// Join typed dispatches to threads only within the same normalized tile.
-pub(super) fn join_dispatches<'a>(
-    children: &[(RowIdentity<'a>, &'a ChildRow)],
-) -> Vec<DispatchFold<'a>> {
-    children.iter().filter_map(|(tile, shell)| {
-        let WorkerDispatch::Worker(dispatch) = &shell.dispatch else { return None; };
-        if !matches!(shell.kind, ChildKind::Shell(_)) { return None; }
-        let (_, thread) = children.iter().find(|(thread_tile, child)| {
-            thread_tile == tile && child.kind == ChildKind::Thread
-                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if dispatch.identity == super::worker_dispatch::WorkerIdentity::CodexThread(id.clone()))
-        })?;
-        Some(DispatchFold { shell, thread, dispatch })
-    }).collect()
+impl ChildRow {
+    /// Match a drawn thread without allocating another worker identity.
+    pub(super) fn is_thread(&self, id: &str) -> bool {
+        self.kind == ChildKind::Thread
+            && matches!(&self.thread_id, CodexThreadId::Recorded(thread) if thread == id)
+    }
 }
 
 /// Walks the process table below an agent.
@@ -459,11 +532,11 @@ impl Walker<'_> {
                 .map_or(&[][..], Vec::as_slice);
             let running: HashSet<&str> = subagents.iter().map(|agent| agent.id.as_str()).collect();
             for agent in subagents {
-                if agent
-                    .parent
-                    .as_deref()
-                    .is_none_or(|parent| !running.contains(parent))
-                {
+                let under_session = match &agent.parent {
+                    SubagentParent::OwningSession => true,
+                    SubagentParent::RecordedSubagent(parent) => !running.contains(parent.as_str()),
+                };
+                if under_session {
                     nodes.push(subagent_node(agent, subagents, &mut shells_by_subagent, 0));
                 }
             }
@@ -664,7 +737,7 @@ fn subagent_node(
         children.extend(
             subagents
                 .iter()
-                .filter(|other| other.parent.as_deref() == Some(agent.id.as_str()))
+                .filter(|other| matches!(&other.parent, SubagentParent::RecordedSubagent(parent) if parent == &agent.id))
                 .map(|other| subagent_node(other, subagents, shells, level.saturating_add(1))),
         );
     }
@@ -738,6 +811,8 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             activity: node.activity,
             thread_id: node.thread_id,
@@ -770,8 +845,12 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::ShellTimerObservation;
+    use crate::census::StaffRowNames;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
+    use crate::census::transcript::SubagentRole;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -873,13 +952,21 @@ mod tests {
     }
 
     /// A running subagent.
-    fn subagent(id: &str, parent: Option<&str>, description: &str, started: u64) -> Subagent {
+    fn subagent(
+        id: &str,
+        parent: Option<&str>,
+        description: &str,
+        started: u64,
+        role: SubagentRole,
+    ) -> Subagent {
         Subagent {
             agent_type: String::new(),
-            role: crate::census::transcript::SubagentRole::from_record("", description),
+            role,
             activity: AgentActivity::Idle,
             id: id.to_string(),
-            parent: parent.map(str::to_string),
+            parent: parent.map_or(SubagentParent::OwningSession, |parent| {
+                SubagentParent::RecordedSubagent(parent.to_owned())
+            }),
             description: description.to_string(),
             started,
             transcript: PathBuf::from(format!("/fixture/agent-{id}.jsonl")),
@@ -994,14 +1081,21 @@ mod tests {
     /// was found in the transcript of a subagent that has since finished.
     fn natedev_sources(sessions: &[SessionRecord]) -> TreeSources<'_> {
         TreeSources {
+            run_threads: HashMap::new(),
             dispatches: HashMap::new(),
             thread_dispatches: HashMap::new(),
             sessions,
             subagents: HashMap::from([(
                 GEOMETRY,
                 vec![
-                    subagent("a1", None, "Review phase 1", 900),
-                    subagent("a2", Some("a1"), "Explore the tests", 950),
+                    subagent("a1", None, "Review phase 1", 900, SubagentRole::Reviewer),
+                    subagent(
+                        "a2",
+                        Some("a1"),
+                        "Explore the tests",
+                        950,
+                        SubagentRole::Explore,
+                    ),
                 ],
             )]),
             shell_calls: HashMap::from([
@@ -1025,6 +1119,9 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
@@ -1199,10 +1296,10 @@ mod tests {
     #[test]
     fn natedev_cells_hold_what_each_agent_runs() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1259,14 +1356,14 @@ mod tests {
                 (1, claude, Some(3_900_050), "--print review", 805),
                 (
                     0,
-                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Review),
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Reviewer),
                     None,
                     "Review phase 1",
                     900
                 ),
                 (
                     1,
-                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Explore),
                     None,
                     "Explore the tests",
                     950
@@ -1297,10 +1394,10 @@ mod tests {
     #[test]
     fn each_tier_reaches_its_row() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1566,8 +1663,13 @@ mod tests {
             app_server(30, 1, 30, None),
         ];
         let sessions = [session(10, "unit")];
-        let mut rows =
-            classify::agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
+        let mut rows = classify::agent_rows_with_threads(
+            &processes,
+            &sessions,
+            &HashMap::default(),
+            None,
+            &AccountLabels::default(),
+        );
         // The completed scan can find a tmux launcher even for a transport-only server.
         for row in rows
             .iter_mut()
@@ -1617,10 +1719,10 @@ mod tests {
     #[test]
     fn app_server_thread_ids_survive_tree_flattening_independently_of_their_names() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );

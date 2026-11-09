@@ -1,17 +1,25 @@
+use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
 use tui_pane::Appearance;
+use tui_pane::ColorMode;
+use tui_pane::DIM_VALUE_ROLE;
+use tui_pane::PaneSelectionState;
 use tui_pane::StyleSpec;
 use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeRegistry;
 
 use super::constants::COLUMN_HEADER;
+use super::constants::CPU_BAR_LABEL;
 use super::constants::DISCOVERY_SHIMMER;
 use super::constants::GIT_IGNORED;
 use super::constants::GIT_MODIFIED;
 use super::constants::GIT_UNTRACKED;
 use super::constants::LANGUAGE_SUBTOTAL;
 use super::constants::ROLE_KEYS;
+use super::constants::SELECTION_TEXT;
 use super::constants::TARGET_BENCH;
 use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
@@ -44,6 +52,8 @@ pub(super) fn apply_role_defaults_to_theme(
     }
 }
 
+pub(super) fn cpu_bar_label_color() -> Color { role_color(CPU_BAR_LABEL) }
+
 pub(super) fn column_header_color() -> Color { role_color(COLUMN_HEADER) }
 
 pub(super) fn discovery_shimmer_color() -> Color { role_color(DISCOVERY_SHIMMER) }
@@ -57,6 +67,30 @@ pub(super) fn git_untracked_color() -> Color { role_color(GIT_UNTRACKED) }
 pub(super) fn language_subtotal_color() -> Color { role_color(LANGUAGE_SUBTOTAL) }
 
 pub(super) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
+
+pub(super) fn selection_style(selection: PaneSelectionState, mode: ColorMode) -> Style {
+    let style = selection.overlay_style(mode);
+    match selection {
+        PaneSelectionState::Active
+        | PaneSelectionState::Remembered
+        | PaneSelectionState::Hovered => style.fg(role_color(SELECTION_TEXT)),
+        PaneSelectionState::Unselected => style,
+    }
+}
+
+/// Apply selection after the row's text and cell styles.
+pub(super) fn paint_selection(
+    frame: &mut Frame,
+    area: Rect,
+    selection: PaneSelectionState,
+    mode: ColorMode,
+) {
+    if !matches!(selection, PaneSelectionState::Unselected) {
+        frame
+            .buffer_mut()
+            .set_style(area, selection_style(selection, mode));
+    }
+}
 
 fn role_color(role: &str) -> Color {
     tui_pane::role_color(role, default_role(role, RolePalette::DefaultDark))
@@ -75,6 +109,25 @@ fn palette_for(theme_id: Option<&ThemeId>, appearance: Appearance) -> RolePalett
 
 fn default_role(role: &str, role_palette: RolePalette) -> StyleSpec {
     match (role, role_palette) {
+        (DIM_VALUE_ROLE, RolePalette::DefaultDark) => {
+            StyleSpec::from_color(Color::Rgb(160, 160, 160))
+        },
+        (DIM_VALUE_ROLE, RolePalette::DefaultLight) => {
+            StyleSpec::from_color(Color::Rgb(98, 98, 98))
+        },
+        (DIM_VALUE_ROLE, RolePalette::HighContrastDark) => {
+            StyleSpec::from_color(Color::Rgb(229, 229, 229))
+        },
+        (DIM_VALUE_ROLE, RolePalette::HighContrastLight) => {
+            StyleSpec::from_color(Color::Rgb(90, 90, 90))
+        },
+        (SELECTION_TEXT, RolePalette::DefaultDark | RolePalette::HighContrastDark) => {
+            StyleSpec::from_color(Color::Rgb(255, 255, 255))
+        },
+        (SELECTION_TEXT, RolePalette::DefaultLight | RolePalette::HighContrastLight) => {
+            StyleSpec::from_color(Color::Black)
+        },
+        (CPU_BAR_LABEL, _) => StyleSpec::from_color(Color::Black),
         (COLUMN_HEADER, RolePalette::DefaultDark) => bold(Color::Rgb(150, 190, 180)),
         (COLUMN_HEADER, RolePalette::DefaultLight) => bold(Color::Rgb(60, 100, 90)),
         (COLUMN_HEADER | DISCOVERY_SHIMMER, RolePalette::HighContrastDark) => {

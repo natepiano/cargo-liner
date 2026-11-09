@@ -1,3 +1,8 @@
+/// Two arenas kept the driven process near 200 MiB while the default count retained more freed
+/// pages.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) const GNU_MALLOC_ARENA_LIMIT: libc::c_int = 2;
+
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub(crate) const CI_PASSED: &str = "🟢";
@@ -71,6 +76,14 @@ pub(crate) const TARGET_DIR: &str = "target";
 // ── Scan constants ────────────────────────────────────────────────────
 
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
+pub(crate) const SCAN_DISK_CONCURRENCY: usize = 6;
+/// `cargo metadata --no-deps` per workspace root, capped so a large multi-
+/// workspace tree doesn't monopolize the blocking pool. Runs briefly —
+/// milliseconds per invocation on typical workspaces — so a small cap is
+/// enough to preserve fairness with other enrichment tasks.
+pub(crate) const SCAN_METADATA_CONCURRENCY: usize = 4;
+pub(crate) const SCAN_DISCOVERY_CONCURRENCY: usize = 1;
+pub(crate) const SCAN_WATCHER_CONCURRENCY: usize = 1;
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";

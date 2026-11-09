@@ -64,7 +64,7 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 /// Default dark variant — cargo-port's shipped palette for dark
 /// terminals, and the value [`DEFAULT_DARK_THEME`] names.
 #[must_use]
-const fn default_dark() -> Theme {
+fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::from_color(Color::Yellow)),
@@ -73,14 +73,14 @@ const fn default_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
-            hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-            remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
+            active:     StyleSpec::from_color(Color::Rgb(101, 101, 101)),
+            hover:      StyleSpec::from_color(Color::Rgb(60, 60, 60)),
+            remembered: StyleSpec::from_color(Color::Rgb(80, 80, 80)),
         },
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Rgb(0, 213, 213)),
-            error:        StyleSpec::from_color(Color::Red),
-            on_error:     StyleSpec::from_color(Color::White),
+            error:        StyleSpec::from_color(Color::Rgb(255, 128, 128)),
+            on_error:     StyleSpec::from_color(Color::Black),
             inline_error: StyleSpec::from_color(Color::Yellow),
             success:      StyleSpec::from_color(Color::Green),
             label:        StyleSpec::from_color(Color::Rgb(150, 190, 180)),
@@ -102,16 +102,19 @@ const fn default_dark() -> Theme {
         disk_usage:  DiskUsageTheme {
             low:  StyleSpec::from_color(Color::Rgb(100, 220, 100)),
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
-            high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
+            high: StyleSpec::from_color(Color::Rgb(255, 128, 128)),
         },
-        roles:       BTreeMap::new(),
+        roles:       BTreeMap::from([(
+            String::from("cargo-port.selection.text"),
+            StyleSpec::from_color(Color::Rgb(255, 255, 255)),
+        )]),
     }
 }
 
 /// Default light variant — each value picked for legibility on a
 /// white terminal background.
 #[must_use]
-const fn default_light() -> Theme {
+fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::from_color(Color::Rgb(180, 120, 0))),
@@ -151,7 +154,10 @@ const fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       BTreeMap::new(),
+        roles:       BTreeMap::from([(
+            String::from("cargo-port.selection.text"),
+            StyleSpec::from_color(Color::Black),
+        )]),
     }
 }
 
@@ -162,7 +168,7 @@ const fn default_light() -> Theme {
 /// `LightGreen`, `LightRed`, `LightMagenta`) for maximum legibility
 /// under reduced-vision or glare conditions.
 #[must_use]
-const fn high_contrast_dark() -> Theme {
+fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::bold(Color::LightYellow)),
@@ -202,7 +208,10 @@ const fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       BTreeMap::new(),
+        roles:       BTreeMap::from([(
+            String::from("cargo-port.selection.text"),
+            StyleSpec::from_color(Color::Rgb(255, 255, 255)),
+        )]),
     }
 }
 
@@ -212,7 +221,7 @@ const fn high_contrast_dark() -> Theme {
 /// fields use saturated dark colors (deep red, deep green, deep blue,
 /// deep orange) chosen for AAA-grade contrast against a white canvas.
 #[must_use]
-const fn high_contrast_light() -> Theme {
+fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::bold(Color::Rgb(140, 60, 0))),
@@ -252,7 +261,10 @@ const fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       BTreeMap::new(),
+        roles:       BTreeMap::from([(
+            String::from("cargo-port.selection.text"),
+            StyleSpec::from_color(Color::Black),
+        )]),
     }
 }
 

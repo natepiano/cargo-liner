@@ -249,10 +249,19 @@ struct ReexportMountInventory {
 impl ReexportMountInventory {
     fn collect(selection: &Selection, report: &Report, parsed: &ParsedSources) -> Result<Self> {
         let root = &selection.analysis_root;
-        let workspace =
-            selection::resolve_cargo_selection(Some(&selection.workspace_root.join("Cargo.toml")))?;
-        let packages: BTreeMap<_, _> = workspace
-            .packages
+        // The workspace manifest already selects every member. Reuse its metadata during
+        // convergence.
+        let workspace;
+        let workspace_packages =
+            if selection.manifest_path == selection.workspace_root.join("Cargo.toml") {
+                &selection.packages
+            } else {
+                workspace = selection::resolve_cargo_selection(Some(
+                    &selection.workspace_root.join("Cargo.toml"),
+                ))?;
+                &workspace.packages
+            };
+        let packages: BTreeMap<_, _> = workspace_packages
             .iter()
             .flat_map(|package| {
                 package.targets.iter().map(|target| {
@@ -290,8 +299,7 @@ impl ReexportMountInventory {
                 packages.get(&crate_files::canonical(&root.join(&mount.crate_root_file)))
             })
             .collect();
-        let unobserved = workspace
-            .packages
+        let unobserved = workspace_packages
             .iter()
             .filter_map(|package| {
                 let root = crate_files::canonical(&package.root);

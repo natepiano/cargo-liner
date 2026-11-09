@@ -4,6 +4,7 @@ use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
+use ratatui::widgets::BorderType;
 use ratatui::widgets::Borders;
 
 use super::constants::PANE_TINT_ALPHA_WHOLE;
@@ -14,6 +15,7 @@ use super::constants::PANE_TINT_DARK_UNFOCUSED_ALPHA;
 use super::constants::PANE_TINT_LIGHT_FOCUSED_ALPHA;
 use super::constants::PANE_TINT_LIGHT_OVERLAY;
 use super::constants::PANE_TINT_LIGHT_UNFOCUSED_ALPHA;
+use crate::ColorMode;
 use crate::active_border_color;
 use crate::focused_pane_tint_enabled;
 use crate::inactive_border_color;
@@ -26,6 +28,8 @@ use crate::transparent_background;
 /// focused / unfocused render paths of a bordered pane.
 #[derive(Clone, Copy)]
 pub struct PaneChrome {
+    /// The terminal colour policy for these pane borders and titles.
+    pub color_mode:      ColorMode,
     /// Border style for the focused pane, where each pane draws its
     /// own box.
     ///
@@ -61,7 +65,12 @@ impl PaneChrome {
             .borders(Borders::ALL)
             .title(title)
             .title_style(self.title_style(focused))
-            .border_style(self.border_style(focused));
+            .border_style(self.border_style(focused))
+            .border_type(if focused && self.color_mode == ColorMode::NoColor {
+                BorderType::Thick
+            } else {
+                BorderType::Plain
+            });
         if let Some(pane_fill_style) = pane_fill(focused) {
             block.style(pane_fill_style)
         } else {
@@ -111,9 +120,16 @@ impl PaneChrome {
 /// Titles always take focus: focused gets the bold accent, unfocused
 /// the dim shade.
 #[must_use]
-pub fn default_pane_chrome() -> PaneChrome {
+pub fn default_pane_chrome(mode: ColorMode) -> PaneChrome {
     PaneChrome {
-        active_border:   Style::default().fg(active_border_color()),
+        color_mode:      mode,
+        active_border:   if mode == ColorMode::NoColor {
+            Style::default()
+                .fg(active_border_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(active_border_color())
+        },
         inactive_border: Style::default().fg(inactive_border_color()),
         active_title:    Style::default()
             .fg(title_color())
@@ -278,4 +294,39 @@ pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
         .title(title.into())
         .title_style(Style::default().fg(inactive_border_color()))
         .border_style(Style::default().fg(inactive_border_color()))
+}
+
+#[cfg(test)]
+mod color_mode_tests {
+    use ratatui::widgets::Widget;
+
+    use super::*;
+
+    #[test]
+    fn block_border_uses_the_selected_color_mode() {
+        for (mode, corner, edge) in [
+            (ColorMode::Colored, "┌", "─"),
+            (ColorMode::NoColor, "┏", "━"),
+        ] {
+            let area = Rect::new(0, 0, 5, 3);
+            let mut buffer = Buffer::empty(area);
+            default_pane_chrome(mode)
+                .block(String::new(), true)
+                .render(area, &mut buffer);
+            assert_eq!(buffer[(0, 0)].symbol(), corner);
+            assert_eq!(buffer[(1, 0)].symbol(), edge);
+        }
+    }
+
+    #[test]
+    fn active_border_uses_emphasis_without_color() {
+        for (mode, modifiers) in [
+            (ColorMode::Colored, Modifier::empty()),
+            (ColorMode::NoColor, Modifier::BOLD),
+        ] {
+            let chrome = default_pane_chrome(mode);
+            assert_eq!(chrome.active_border.fg, Some(active_border_color()));
+            assert_eq!(chrome.active_border.add_modifier, modifiers);
+        }
+    }
 }

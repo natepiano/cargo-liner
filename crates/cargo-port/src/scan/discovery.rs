@@ -8,6 +8,7 @@ use tui_pane::PERF_LOG_TARGET;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
+use super::SourceMeasurements;
 use super::emit_git_info;
 use super::emit_service_signal;
 use super::exclude::ExcludeDirs;
@@ -24,10 +25,12 @@ use crate::http::HttpClient;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
+use crate::project::GithubRunCount;
 use crate::project::ManifestTargets;
 use crate::project::ProjectFields;
 use crate::project::ProjectPrData;
 use crate::project::RootItem;
+use crate::project::Submodule;
 
 /// Build a normalized project item for a discovered root directory.
 ///
@@ -67,8 +70,10 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
 }
 
 /// Shared network context passed to `fetch_project_details`.
+#[derive(Clone)]
 pub(crate) struct FetchContext {
-    pub client: HttpClient,
+    pub source_measurements: Arc<SourceMeasurements>,
+    pub client:              HttpClient,
 }
 
 pub(crate) struct ProjectDetailRequest<'a> {
@@ -79,13 +84,46 @@ pub(crate) struct ProjectDetailRequest<'a> {
     pub repo_presence: GitRepoPresence,
 }
 
-/// Fetch local project details for a single project and send results through
-/// the provided channel. Used by both the main scan and project discovery paths.
-pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
+/// Capture submodule caches before detail work enters the background queue.
+pub(crate) fn project_detail_job(req: &ProjectDetailRequest<'_>) -> impl FnOnce() + Send + use<> {
+    let submodules = if req.repo_presence.is_in_repo() {
+        project::get_submodules(req.abs_path)
+    } else {
+        Vec::new()
+    };
+    let abs = AbsolutePath::from(req.abs_path);
+    let submodule_paths: Vec<_> = submodules.iter().map(|sub| sub.path().clone()).collect();
+    req.fetch_context
+        .source_measurements
+        .replace_submodules(&abs, &submodule_paths);
+    let enrichment_jobs: Vec<_> = submodules
+        .iter()
+        .map(|sub| enrichment::enrichment_job(sub, req.sender, req.fetch_context))
+        .collect();
+    let sender = req.sender.clone();
+    let fetch_context = req.fetch_context.clone();
+    let name = req.name.map(str::to_string);
+    let repo_presence = req.repo_presence;
+    move || {
+        let request = ProjectDetailRequest {
+            sender: &sender,
+            fetch_context: &fetch_context,
+            abs_path: abs.as_path(),
+            name: name.as_deref(),
+            repo_presence,
+        };
+        fetch_project_details(&request, submodules, enrichment_jobs);
+    }
+}
+
+fn fetch_project_details(
+    req: &ProjectDetailRequest<'_>,
+    submodules: Vec<Submodule>,
+    enrichment_jobs: Vec<impl FnOnce()>,
+) {
     let sender = req.sender;
     let fetch_context = req.fetch_context;
-    let abs_path = req.abs_path;
-    let abs: AbsolutePath = abs_path.to_path_buf().into();
+    let abs: AbsolutePath = req.abs_path.to_path_buf().into();
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
     // `emit_git_info` sends local Git metadata, including Git status, but skips
@@ -93,19 +131,11 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
+    } else {
+        let _ = sender.send(BackgroundMsg::NoRepository { path: abs.clone() });
     }
 
-    // `project::get_submodules` reads `submodules` up front (local, fast: .gitmodules +
-    // one git ls-tree), so the project's own fetch and each submodule's fetch register
-    // through `BackgroundMsg::CratesIoFetchQueued` before the first one completes.
-    // The startup panel's crates.io row can then never read done while a fetch from
-    // this task is pending. (`enrichment::enrich` re-sends `CratesIoFetchQueued` for
-    // its own fetch; registration is idempotent.)
-    let submodules = if repo_presence.is_in_repo() {
-        project::get_submodules(abs_path)
-    } else {
-        Vec::new()
-    };
+    // Register all submodule fetches before the first network request can complete.
     for sub in &submodules {
         if let Some(name) = sub.crates_io_name() {
             let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
@@ -135,15 +165,15 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Send `BackgroundMsg::Submodules` first so `at_path_mut` can resolve each
     // submodule before its per-entry enrichment messages arrive. Each submodule's
-    // `enrichment::enrich` call emits its own disk-usage message: that path is not
+    // enrichment job emits its own disk-usage message: that path is not
     // covered by the initial batch scan, so `BackgroundMsg::DiskUsage` is its only writer.
     if !submodules.is_empty() {
         let _ = sender.send(BackgroundMsg::Submodules {
-            path:       abs.clone(),
-            submodules: submodules.clone(),
+            path: abs.clone(),
+            submodules,
         });
-        for sub in &submodules {
-            enrichment::enrich(sub, sender, fetch_context);
+        for job in enrichment_jobs {
+            job();
         }
     }
 
@@ -172,7 +202,7 @@ pub(crate) struct RepoMetaInfo {
 pub(crate) struct CachedRepoData {
     pub(crate) runs:         Vec<CiRun>,
     pub(crate) meta:         Option<RepoMetaInfo>,
-    pub(crate) github_total: u32,
+    pub(crate) github_total: GithubRunCount,
     pub(crate) pr_data:      ProjectPrData,
 }
 

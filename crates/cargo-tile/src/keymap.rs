@@ -20,6 +20,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "attract")]
 use tui_pane::FavoritesOverlayPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkGlobalShortcutPresentation;
@@ -27,8 +28,11 @@ use tui_pane::FrameworkGlobalShortcutVisibility;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
+#[cfg(feature = "attract")]
 use tui_pane::MovingBandPane;
+#[cfg(feature = "attract")]
 use tui_pane::MovingTextPane;
+#[cfg(feature = "attract")]
 use tui_pane::PixelatePane;
 use tui_pane::SettingsNavigation;
 use tui_pane::TileGridPane;
@@ -71,16 +75,18 @@ pub(crate) fn build_keymap(
             builder = builder.load_toml(path)?;
         }
     }
-    builder
+    let builder = builder
         .register_navigation::<SettingsNavigation<App>>()?
         .register_globals::<AppGlobalAction>()?
         .register_overlay()?
-        .register_pane::<TileGridPane<App>>()
+        .register_pane::<TileGridPane<App>>();
+    #[cfg(feature = "attract")]
+    let builder = builder
         .register(MovingBandPane::<App>::default())
         .register(MovingTextPane::<App>::default())
         .register(PixelatePane::<App>::default())
-        .register(FavoritesOverlayPane::<App>::default())
-        .build_into(framework)
+        .register(FavoritesOverlayPane::<App>::default());
+    builder.build_into(framework)
 }
 
 #[cfg(test)]
@@ -89,6 +95,7 @@ pub(crate) fn build_keymap(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[cfg(feature = "attract")]
     use tui_pane::AttractMode;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
@@ -113,6 +120,7 @@ mod tests {
     /// `keymap.toml` is hand-edited, so the table each attract mode's
     /// keys are read from keeps its name wherever the scope is declared.
     #[test]
+    #[cfg(feature = "attract")]
     fn each_attract_mode_keeps_its_keymap_table_name() {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = build_keymap(&mut framework, None).expect("the app's keymap must assemble");
@@ -135,6 +143,7 @@ mod tests {
     /// The favorites overlay's keys are read from the `[favorites]` table
     /// of the hand-edited `keymap.toml`, wherever the scope is declared.
     #[test]
+    #[cfg(feature = "attract")]
     fn the_favorites_overlay_keeps_its_keymap_table_name() {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = build_keymap(&mut framework, None).expect("the app's keymap must assemble");
@@ -158,6 +167,7 @@ mod tests {
             keymap.navigation().is_some(),
             "the settings overlay moves on the navigation scope"
         );
+        #[cfg(feature = "attract")]
         for mode in [
             AttractMode::MovingBand,
             AttractMode::MovingText,
@@ -180,7 +190,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "attract"))]
 #[expect(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
@@ -215,13 +225,14 @@ mod overlay_tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED: [&str; 92] = [
+    const EXPECTED: [&str; 93] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
         "[Global Shortcuts] global",
         "global.add_tile = +",
         "global.dismiss = x",
+        "global.expand = enter",
         "global.focus_up = up",
         "global.focus_down = down",
         "global.focus_left = left",

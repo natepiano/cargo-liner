@@ -22,8 +22,10 @@ use super::TESTS_TOTAL_LABEL;
 use super::TESTS_UNIT_LABEL;
 use super::TestCounts;
 use super::Workspace;
+use crate::project::DiskMeasurement;
 use crate::project::PinnedCommit;
 use crate::project::ProjectFields;
+use crate::tui::panes::DescriptionState;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
 
@@ -115,9 +117,9 @@ pub enum PackageSection {
 impl PackageSection {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::WorktreeGroupSummary => "Worktree Group Summary",
-            Self::PrimaryWorkspace => "Primary Workspace",
-            Self::PrimaryPackage => "Primary Package",
+            Self::WorktreeGroupSummary => "Worktree group summary",
+            Self::PrimaryWorkspace => "Primary workspace",
+            Self::PrimaryPackage => "Primary package",
         }
     }
 }
@@ -174,6 +176,13 @@ pub enum PackageVersion {
     Submodule(PinnedCommit),
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum PackageDeletion {
+    #[default]
+    Present,
+    Deleted,
+}
+
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
@@ -181,6 +190,7 @@ pub enum PackageVersion {
 /// without `&App` access. Pre-resolving `lint_display` and `ci_display`
 /// lets `PackagePane::render` operate on `&PackageData` alone.
 pub struct PackageData {
+    pub deletion:                 PackageDeletion,
     pub title:                    String,
     pub name:                     String,
     pub worktree_group_summary:   Option<WorktreeGroupSummary>,
@@ -188,7 +198,7 @@ pub struct PackageData {
     pub path:                     String,
     /// Version or pin state, formatted by the renderer.
     pub version:                  PackageVersion,
-    pub description:              Option<String>,
+    pub description:              DescriptionState,
     /// crates.io section of the stats column — `version` (latest stable,
     /// or the newest prerelease when there is no stable), an optional
     /// prerelease row (`rc` / `beta` / `alpha`) when a newer prerelease
@@ -204,10 +214,8 @@ pub struct PackageData {
     /// identity into it. The renderer maps absence to a placeholder
     /// so a missing value can never render as a blank.
     pub types:                    Option<Vec<ProjectType>>,
-    /// Bytes under the project root. `None` until the disk walk has
-    /// reported; the renderer formats `Some` and leaves `None` blank,
-    /// matching the `target/` / `other` sub-rows.
-    pub disk:                     Option<u64>,
+    /// The disk total and parts retain their measurement state.
+    pub disk:                     DiskMeasurement,
     /// Structure section of the stats column — project-child counts
     /// (`members` / `vendored` / `submodules`) followed by cargo target-kind
     /// counts (`lib` / `bin` / `proc-macro` / `example` / `bench`).
@@ -225,12 +233,6 @@ pub struct PackageData {
     pub license:                  Option<String>,
     pub homepage:                 Option<String>,
     pub repository:               Option<String>,
-    /// Bytes under the project root inside any `target/` subtree.
-    /// `None` until the walker has reported a breakdown.
-    pub in_project_target:        Option<u64>,
-    /// Everything else under the project root (source, docs, .git,
-    /// vendored crates outside target, etc.).
-    pub in_project_non_target:    Option<u64>,
     /// Typed display value for the Lint field; populated at
     /// assembly time so render can read it without `&App`. The
     /// renderer matches on variants and applies
@@ -289,7 +291,7 @@ pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, us
 /// yet. Unauthenticated is excluded: it's not an
 /// outage, and the rate-limit rows already carry the auth hint.
 pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
-    data.stars.is_none()
+    matches!(data.stars, super::GithubStars::Unreachable)
         && matches!(
             data.github_status,
             crate::tui::state::AvailabilityStatus::Unreachable
@@ -309,18 +311,11 @@ pub(super) fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
         ];
     }
     let mut fields = vec![DetailField::Path, DetailField::Disk];
-    // Insert the target / non-target breakdown immediately below the
-    // aggregate Disk row when the walker has reported one, so the user
-    // sees which half of the bytes is build artifact vs source (the
-    // two always sum to Disk for owners; for sharers the target line
-    // reads 0 — target is redirected out of tree).
-    if data.in_project_target.is_some() {
-        fields.push(DetailField::DiskTarget);
+    // Reserve both disk-part rows before the measurement arrives.
+    if data.deletion == PackageDeletion::Present {
+        fields.extend([DetailField::DiskTarget, DetailField::DiskNonTarget]);
     }
-    if data.in_project_non_target.is_some() {
-        fields.push(DetailField::DiskNonTarget);
-    }
-    if data.out_of_tree_target_bytes.is_some() {
+    if data.deletion == PackageDeletion::Present && data.out_of_tree_target_bytes.is_some() {
         fields.push(DetailField::DiskOutOfTreeTarget);
     }
     fields.push(DetailField::Targets);
@@ -422,13 +417,15 @@ pub(super) fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) ->
 }
 
 /// Resolve (version, description) for the detail pane from the
-/// authoritative metadata. Returns `(None, None)` pre-metadata; the
-/// renderer maps the absent version to its placeholder.
+/// authoritative metadata. Before metadata arrives, the description stays pending.
+/// The renderer maps the absent version to its placeholder.
 pub(super) fn version_and_description(
     pkg: Option<&PackageRecord>,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, DescriptionState) {
     let version = pkg.map(|p| p.version.to_string());
-    let description = pkg.and_then(|p| p.description.clone());
+    let description = pkg.map_or(DescriptionState::Pending, |p| {
+        DescriptionState::from(p.description.clone())
+    });
     (version, description)
 }
 
@@ -516,12 +513,15 @@ mod test_row_tests {
 #[cfg(test)]
 mod package_row_tests {
     use super::*;
+    use crate::project::DiskMeasurement;
     use crate::project::ProjectType;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
+            deletion:                 super::PackageDeletion::Present,
             title:                    if is_rust_project {
                 "Package".to_string()
             } else {
@@ -532,10 +532,10 @@ mod package_row_tests {
             primary_section:          None,
             path:                     "~/demo".to_string(),
             version:                  PackageVersion::Manifest("0.1.0".to_string()),
-            description:              None,
+            description:              DescriptionState::KnownEmpty,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
-            disk:                     Some(38_989_922_304),
+            disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Present,
@@ -543,8 +543,6 @@ mod package_row_tests {
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             lint_display:             LintDisplay::default(),
             ci_display:               CiDisplay::default(),
@@ -600,6 +598,8 @@ mod package_row_tests {
             vec![
                 "Path",
                 "Disk",
+                "  target/",
+                "  Other",
                 "Type",
                 "Lint",
                 "CI",

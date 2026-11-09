@@ -18,6 +18,13 @@ mod action;
 mod constants;
 mod draw;
 mod flow_layout;
+#[cfg_attr(
+    test,
+    expect(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )
+)]
 mod grid;
 mod growth;
 mod host;
@@ -33,11 +40,14 @@ pub use draw::CellReadoutFade;
 pub use draw::RowExceedsTotal;
 pub use draw::RowsReadout;
 pub use draw::SelectedRow;
+pub use draw::ShownRows;
 pub use draw::SummaryFoot;
 pub use draw::TileCells;
 pub use draw::TileGridContents;
 pub use draw::draw_tile_cell;
 pub use draw::draw_tile_grid;
+pub use grid::CellIndex;
+pub use grid::CellTravel;
 pub use grid::FocusLocation;
 pub use grid::TileContent;
 pub use grid::TileDemand;
@@ -45,8 +55,9 @@ pub use grid::TileDemands;
 pub use grid::TileGrid;
 pub use grid::TilePlacement;
 pub use growth::TileGrowth;
-pub use host::CellClick;
 pub use host::CellPoint;
+pub use host::CellPointer;
+pub use host::CellPress;
 pub use host::TileGridHost;
 pub use host::TileGridPane;
 pub use host::TilePick;

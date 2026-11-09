@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Range;
 
 #[cfg(test)]
 use super::Account;
@@ -25,8 +26,8 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 #[cfg(test)]
 use super::scan::ScanStage;
+#[cfg(test)]
 use super::tree;
-use super::tree::DispatchFold;
 #[cfg(test)]
 use super::tree::ThreadEntry;
 #[cfg(test)]
@@ -143,12 +144,72 @@ pub(crate) struct ManagedThread<'a> {
     pub(crate) role:        HierarchyRole,
 }
 
-/// A live Claude seat joins a dispatch shell to a listed session.
+/// `DispatchWorker` identifies the thread or session that receives a dispatch label.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DispatchWorker<'a> {
+    Thread(&'a super::ChildRow),
+    Session {
+        identity: RowIdentity<'a>,
+        row:      &'a AgentRow,
+    },
+}
+
+/// `DispatchPairing` joins a shell to its exact worker in one final tile.
 #[derive(Debug)]
-struct ClaudeDispatchFold<'a> {
+pub(super) struct DispatchPairing<'a> {
     shell:    &'a super::ChildRow,
-    worker:   RowIdentity<'a>,
+    worker:   DispatchWorker<'a>,
     dispatch: &'a ResolvedWorkerDispatch,
+}
+
+/// The rows do not prove one visible dispatch pair.
+#[derive(Debug)]
+pub(super) struct UnmatchedDispatch;
+
+impl<'a> DispatchPairing<'a> {
+    /// Validate the worker identity and both tile roots, each represented by `RowIdentity`.
+    pub(super) fn join(
+        shell_tile: RowIdentity<'a>,
+        shell: &'a super::ChildRow,
+        worker_tile: RowIdentity<'a>,
+        worker: DispatchWorker<'a>,
+    ) -> Result<Self, UnmatchedDispatch> {
+        let WorkerDispatch::Worker(dispatch) = &shell.dispatch else {
+            return Err(UnmatchedDispatch);
+        };
+        let matches = match (&dispatch.identity, worker) {
+            (WorkerIdentity::CodexThread(id), DispatchWorker::Thread(thread)) => {
+                thread.is_thread(id)
+            },
+            (WorkerIdentity::CodexThread(id), DispatchWorker::Session { row, .. }) => {
+                matches!(
+                    row.session_id,
+                    SessionIdentity::Codex(_) | SessionIdentity::Astra(_)
+                ) && row.session_id.ids().any(|session| session == id)
+            },
+            (WorkerIdentity::ClaudeSession(id), DispatchWorker::Session { row, .. }) => {
+                row.session_id.ids().any(|session| session == id)
+            },
+            _ => false,
+        };
+        if shell_tile == worker_tile && matches!(shell.kind, ChildKind::Shell(_)) && matches {
+            Ok(Self {
+                shell,
+                worker,
+                dispatch,
+            })
+        } else {
+            Err(UnmatchedDispatch)
+        }
+    }
+}
+
+/// The shell work that a `DispatchPairing` places under its Claude session.
+pub(crate) struct SessionDispatchWork<'a> {
+    pub(crate) owner:       RowIdentity<'a>,
+    pub(crate) row:         &'a AgentRow,
+    pub(crate) worker:      RowIdentity<'a>,
+    pub(crate) descendants: Range<usize>,
 }
 
 /// The one forest shared by tile ordering and summary membership.
@@ -160,10 +221,8 @@ pub(crate) struct AgentPlacement<'a> {
     pub(crate) threads: Vec<super::ManagedThread<'a>>,
     /// Launcher-cycle rows promoted after the ordinary roots.
     rescued_roots:      HashSet<RowIdentity<'a>>,
-    hidden_threads:     Vec<&'a super::ChildRow>,
-    claude_dispatches:  Vec<ClaudeDispatchFold<'a>>,
     /// Shell/thread pairs joined after their tile membership is normalized.
-    dispatch_folds:     Vec<DispatchFold<'a>>,
+    dispatch_folds:     Vec<DispatchPairing<'a>>,
 }
 
 impl<'a> AgentPlacement<'a> {
@@ -202,43 +261,21 @@ impl<'a> AgentPlacement<'a> {
         let mut edges: Vec<_> = machines
             .iter()
             .flat_map(|machine| machine.state.edges())
-            .filter(|edge| edge.reviewer.is_drawn())
             .collect();
         edges.sort_by(|left, right| left.manager.cmp(&right.manager));
         let managers: HashMap<_, _> = rows
             .iter()
-            .filter(|row| row.row.agent == Agent::Claude)
-            .filter_map(|row| match &row.row.session_id {
-                SessionIdentity::Claude(id) => Some((id.as_str(), row.identity)),
-                SessionIdentity::Unrecorded => None,
-            })
+            .flat_map(|row| row.row.session_id.ids().map(|id| (id, row.identity)))
             .collect();
         Self::resolve_managers(&mut rows, &edges, &managers);
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
         let threads = Self::resolve_threads(machines, &managers, &edges);
-        let hidden_threads = machines.iter().flat_map(|machine| {
-            machine.state.rows().iter().flat_map(move |row| row.children.iter()).filter(move |child| {
-                matches!(&child.thread_id, CodexThreadId::Recorded(id) if machine.state.edges().iter().any(|edge| edge.member == *id && !edge.reviewer.is_drawn()))
-            })
-        }).collect();
         let mut placement = Self {
             rows,
             threads,
             rescued_roots,
-            hidden_threads,
-            claude_dispatches: Vec::new(),
             dispatch_folds: Vec::new(),
         };
-        placement.claude_dispatches = machines.iter().flat_map(|machine| {
-            machine.state.rows().iter().flat_map(|row| row.children.iter()).filter_map(|child| {
-                let WorkerDispatch::Worker(dispatch) = &child.dispatch else { return None; };
-                let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else { return None; };
-                if !matches!(child.kind, ChildKind::Shell(_)) { return None; }
-                placement.rows.iter().find(|row| row.identity.machine == machine.name
-                    && matches!(&row.row.session_id, SessionIdentity::Claude(session) if session == id))
-                    .map(|row| ClaudeDispatchFold { shell: child, worker: row.identity, dispatch })
-            }).collect::<Vec<_>>()
-        }).collect();
         placement.dispatch_folds = placement.resolve_dispatches(machines);
         placement
     }
@@ -262,7 +299,7 @@ impl<'a> AgentPlacement<'a> {
     }
 
     /// Include only visible work, assigning moved threads to their manager's tile.
-    fn resolve_dispatches(&self, machines: &[Machine<'a>]) -> Vec<DispatchFold<'a>> {
+    fn resolve_dispatches(&self, machines: &[Machine<'a>]) -> Vec<DispatchPairing<'a>> {
         let mut children = Vec::new();
         for machine in machines {
             for row in machine.state.rows() {
@@ -294,13 +331,28 @@ impl<'a> AgentPlacement<'a> {
                 }
             }
         }
-        tree::join_dispatches(&children)
-    }
-
-    pub(crate) fn hides_thread(&self, child: &super::ChildRow) -> bool {
-        self.hidden_threads
+        let workers: Vec<_> = children
             .iter()
-            .any(|hidden| std::ptr::eq(*hidden, child))
+            .filter(|(_, child)| child.kind == ChildKind::Thread)
+            .map(|(tile, child)| (*tile, DispatchWorker::Thread(child)))
+            .chain(self.rows.iter().map(|placed| {
+                (
+                    self.tile_root(placed.identity),
+                    DispatchWorker::Session {
+                        identity: placed.identity,
+                        row:      placed.row,
+                    },
+                )
+            }))
+            .collect();
+        children
+            .iter()
+            .filter_map(|(tile, shell)| {
+                workers.iter().find_map(|(worker_tile, worker)| {
+                    DispatchPairing::join(*tile, shell, *worker_tile, *worker).ok()
+                })
+            })
+            .collect()
     }
 
     /// Whether this shell's worker is already visible in its tile.
@@ -308,17 +360,45 @@ impl<'a> AgentPlacement<'a> {
         self.dispatch_folds
             .iter()
             .any(|fold| std::ptr::eq(fold.shell, child))
-            || self
-                .claude_dispatches
-                .iter()
-                .any(|fold| std::ptr::eq(fold.shell, child))
+    }
+
+    /// Place the descendants of each paired shell under its Claude session.
+    pub(crate) fn session_dispatch_work(&self) -> Vec<SessionDispatchWork<'a>> {
+        self.dispatch_folds
+            .iter()
+            .filter_map(|pair| {
+                let DispatchWorker::Session {
+                    identity: worker, ..
+                } = pair.worker
+                else {
+                    return None;
+                };
+                self.rows.iter().find_map(|owner| {
+                    let index = owner
+                        .row
+                        .children
+                        .iter()
+                        .position(|child| std::ptr::eq(child, pair.shell))?;
+                    let start = index + 1;
+                    let end = (start..owner.row.children.len())
+                        .find(|&next| owner.row.children[next].depth <= pair.shell.depth)
+                        .unwrap_or(owner.row.children.len());
+                    Some(SessionDispatchWork {
+                        owner: owner.identity,
+                        row: owner.row,
+                        worker,
+                        descendants: start..end,
+                    })
+                })
+            })
+            .collect()
     }
 
     /// The dispatch label for a Claude session matched in its final tile.
     pub(crate) fn row_dispatch_label(&self, identity: RowIdentity<'a>) -> DispatchLabel<'a> {
-        self.claude_dispatches
+        self.dispatch_folds
             .iter()
-            .find(|fold| fold.worker == identity)
+            .find(|fold| matches!(fold.worker, DispatchWorker::Session { identity: worker, .. } if worker == identity))
             .map_or(DispatchLabel::Original, |fold| {
                 DispatchLabel::Worker(fold.dispatch)
             })
@@ -328,7 +408,7 @@ impl<'a> AgentPlacement<'a> {
     pub(crate) fn dispatch_label(&self, child: &'a super::ChildRow) -> DispatchLabel<'a> {
         self.dispatch_folds
             .iter()
-            .find(|fold| std::ptr::eq(fold.thread, child))
+            .find(|fold| matches!(fold.worker, DispatchWorker::Thread(thread) if std::ptr::eq(thread, child)))
             .map_or_else(
                 || match &child.dispatch {
                     WorkerDispatch::Worker(dispatch) if child.kind == ChildKind::Thread => {
@@ -415,12 +495,12 @@ impl<'a> AgentPlacement<'a> {
             .map(|row| (row.identity, row.placement))
             .collect();
         for row in rows.iter_mut() {
-            let SessionIdentity::Claude(member) = &row.row.session_id else {
+            let Some(member) = row.row.session_id.ids().next() else {
                 continue;
             };
             if let Some((manager, role)) = edges
                 .iter()
-                .filter(|edge| edge.member == *member)
+                .filter(|edge| edge.member == member)
                 .filter_map(|edge| {
                     managers
                         .get(edge.manager.as_str())
@@ -431,17 +511,14 @@ impl<'a> AgentPlacement<'a> {
                 row.placement = Placement::Managed { manager, role };
             }
         }
-        // Sort `candidates` by `SessionIdentity::Claude` `id`, so the result is
+        // Sort `candidates` by their session id, so the result is
         // independent of machine and row order; restore `launchers[identity]`
         // when a `Managed` link closes a cycle, repeating because the restored
         // `Placement` can expose another cycle.
         let mut candidates: Vec<_> = rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| match &row.row.session_id {
-                SessionIdentity::Claude(id) => Some((id.as_str(), index)),
-                SessionIdentity::Unrecorded => None,
-            })
+            .flat_map(|(index, row)| row.row.session_id.ids().map(move |id| (id, index)))
             .collect();
         candidates.sort_unstable_by_key(|(id, _)| *id);
         loop {
@@ -596,8 +673,7 @@ impl<'a> AgentPlacement<'a> {
                     matches!(
                         child.kind,
                         ChildKind::Shell(_) | ChildKind::Subagent(_) | ChildKind::Thread
-                    ) && !self.hides_thread(child)
-                        && !self.folds_dispatch(child)
+                    ) && !self.folds_dispatch(child)
                         && !self.threads.iter().any(|thread| {
                             std::ptr::eq(
                                 &raw const thread.owner_row.children[thread.child_index],
@@ -659,10 +735,10 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         status:     Some("busy".to_string()),
         entrypoint: None,
     }];
-    let manager_rows = classify::agent_rows(
+    let manager_rows = classify::agent_rows_with_threads(
         &manager_processes,
         &sessions,
-        &[],
+        &HashMap::default(),
         None,
         &AccountLabels::default(),
     );
@@ -675,8 +751,13 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
             &["codex", "app-server", "--listen", "stdio://"],
         ),
     ];
-    let mut worker_rows =
-        classify::agent_rows(&processes, &[], &[], None, &AccountLabels::default());
+    let mut worker_rows = classify::agent_rows_with_threads(
+        &processes,
+        &[],
+        &HashMap::default(),
+        None,
+        &AccountLabels::default(),
+    );
     let sources = TreeSources {
         threads: HashMap::from([(
             30,
@@ -697,10 +778,9 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         super::MachineState::Answered(
             worker_rows,
             super::HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "unit".to_string(),
-                member:   "mesh-worker".to_string(),
-                role:     super::HierarchyRole::Impl,
+                manager: "unit".to_string(),
+                member:  "mesh-worker".to_string(),
+                role:    super::HierarchyRole::Impl,
             }])
             .into(),
         ),
@@ -717,10 +797,15 @@ mod tests {
     use crate::census::HierarchyRole;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
-    use crate::census::hierarchy::ReviewerState;
+    use crate::census::StaffRowNames;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
 
     fn agent(pid: u32, id: &str) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
@@ -787,7 +872,6 @@ mod tests {
 
     fn edge(manager: &str, member: &str, role: HierarchyRole) -> HierarchyEdge {
         HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
             manager: manager.to_string(),
             member: member.to_string(),
             role,
@@ -917,16 +1001,14 @@ mod tests {
                 order.map(|index| original[index].clone()).to_vec(),
                 HierarchyEdges(vec![
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "C".to_string(),
-                        member:   "B".to_string(),
-                        role:     HierarchyRole::Unit,
+                        manager: "C".to_string(),
+                        member:  "B".to_string(),
+                        role:    HierarchyRole::Unit,
                     },
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "B".to_string(),
-                        member:   "A".to_string(),
-                        role:     HierarchyRole::Impl,
+                        manager: "B".to_string(),
+                        member:  "A".to_string(),
+                        role:    HierarchyRole::Impl,
                     },
                 ])
                 .into(),
@@ -999,16 +1081,14 @@ mod tests {
                 order.map(|index| original[index].clone()).to_vec(),
                 HierarchyEdges(vec![
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "B".to_string(),
-                        member:   "A".to_string(),
-                        role:     HierarchyRole::Unit,
+                        manager: "B".to_string(),
+                        member:  "A".to_string(),
+                        role:    HierarchyRole::Unit,
                     },
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "A".to_string(),
-                        member:   "B".to_string(),
-                        role:     HierarchyRole::Impl,
+                        manager: "A".to_string(),
+                        member:  "B".to_string(),
+                        role:    HierarchyRole::Impl,
                     },
                 ])
                 .into(),

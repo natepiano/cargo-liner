@@ -1,4 +1,11 @@
+#[cfg(test)]
+mod ci_count_tests;
+mod constants;
+#[cfg(test)]
+mod disk_loading_tests;
 mod pane;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 
 pub use pane::PackagePane;

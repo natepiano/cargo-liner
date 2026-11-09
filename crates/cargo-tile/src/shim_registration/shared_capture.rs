@@ -10,14 +10,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
+use super::native_fixture;
+use super::parallel_cases;
 use crate::config::Config;
+use crate::constants::CAPTURE_SHIM_VERSION;
 use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
 use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_VERSION_PREFIX;
-use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::hook;
 use crate::hook::AccountHookOutcome;
 use crate::hook::AccountHookReport;
@@ -49,7 +51,9 @@ fn account_at(home: &Path, name: &str) -> HookAccount {
 }
 
 /// Cargo builds the binary before the `unit_tests` integration target and names it here.
-fn cargo_tile() -> &'static Path { Path::new(env!("CARGO_BIN_EXE_cargo-tile")) }
+fn cargo_tile() -> &'static Path {
+    native_fixture::executable().expect("prepare the real installer executable")
+}
 
 fn original_cargo(account: &HookAccount, toolchain: &str) -> PathBuf {
     let bin = account
@@ -89,7 +93,7 @@ fn injected_accounts_install_each_toolchain_through_the_built_binary() {
                 .join(format!(".rustup/toolchains/{toolchain}/bin"));
             assert_eq!(
                 fs::read(bin.join("cargo")).expect("installed shim"),
-                include_bytes!("../cargo-capture-shim.sh")
+                expected_shim(&bin.join("cargo"))
             );
             let shim = fs::metadata(bin.join("cargo")).expect("shim metadata");
             assert_eq!((shim.uid(), shim.gid()), (account.uid, account.gid));
@@ -161,7 +165,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
             .join(format!(".rustup/toolchains/{toolchain}/bin"));
         assert_eq!(
             fs::read(bin.join("cargo")).expect("staged installer writes shim"),
-            include_bytes!("../cargo-capture-shim.sh")
+            expected_shim(&bin.join("cargo"))
         );
         assert_eq!(
             fs::read(bin.join("cargo-tile-real")).expect("staged installer preserves cargo"),
@@ -309,7 +313,7 @@ fn account_owned_cargo_in_permitted_groups_keeps_its_saved_group() {
     assert!(groups.status.success(), "{groups:?}");
     let groups = String::from_utf8(groups.stdout).expect("numeric groups");
     assert_ne!(groups.trim(), "");
-    for group in groups.split_whitespace() {
+    drop(parallel_cases::run(groups.split_whitespace(), |group| {
         let gid = group.parse::<u32>().expect("numeric gid");
         let account = account_at(&directory.path().join(group), "runner");
         let bin = original_cargo(&account, "stable");
@@ -349,7 +353,7 @@ fn account_owned_cargo_in_permitted_groups_keeps_its_saved_group() {
                 .gid(),
             gid
         );
-    }
+    }));
 }
 
 #[test]
@@ -376,7 +380,7 @@ fn injected_account_repairs_interrupted_and_refreshes_outdated_installs() {
         assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
         assert_eq!(
             fs::read(bin.join("cargo")).expect("repaired shim"),
-            include_bytes!("../cargo-capture-shim.sh")
+            expected_shim(&bin.join("cargo"))
         );
         assert_eq!(
             fs::read(bin.join("cargo-tile-real")).expect("saved cargo survives"),
@@ -408,7 +412,7 @@ fn injected_account_reports_child_errors_and_continues_other_toolchains() {
     );
     assert_eq!(
         fs::read(good.join("cargo")).expect("later toolchain installs"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&good.join("cargo"))
     );
     assert_eq!(
         fs::read(broken.join("cargo")).expect("failed toolchain untouched"),
@@ -431,11 +435,8 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     let directory = tempfile::tempdir().expect("mixed account reports fixture");
     let account = account_at(directory.path(), "runner");
     let orphan = original_cargo(&account, orphan_name);
-    fs::write(
-        orphan.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
-    )
-    .expect("orphan shim without saved cargo");
+    fs::write(orphan.join("cargo"), expected_shim(&orphan.join("cargo")))
+        .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, installed_name);
     let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
@@ -469,7 +470,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     }
     assert_eq!(
         fs::read(working.join("cargo")).expect("successful install"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&working.join("cargo"))
     );
     assert_eq!(
         fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
@@ -477,7 +478,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     );
     assert_eq!(
         fs::read(orphan.join("cargo")).expect("orphan survives install"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&orphan.join("cargo"))
     );
     assert!(!orphan.join("cargo-tile-real").exists());
 }
@@ -497,7 +498,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
     let directory = tempfile::tempdir().expect("mixed shim versions fixture");
     let account = account_at(directory.path(), "runner");
     let newer = installed_cargo(&account, newer_name);
-    let supported = SUPPORTED_REGISTRATION_VERSION;
+    let supported = CAPTURE_SHIM_VERSION;
     let installed = supported + 1;
     let contents = newer_shim(installed);
     fs::write(newer.join("cargo"), &contents).expect("newer installed shim");
@@ -569,7 +570,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
     );
     assert_eq!(
         fs::read(working.join("cargo")).expect("successful sibling install"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&working.join("cargo"))
     );
     assert_eq!(
         fs::read(newer.join("cargo")).expect("newer shim is kept"),
@@ -593,7 +594,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
 /// Only the installed header changes; all other embedded shim bytes remain current.
 fn newer_shim(version: u64) -> String {
     let source = include_str!("../../src/cargo-capture-shim.sh");
-    let header = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}");
+    let header = format!("{SHIM_VERSION_PREFIX}{CAPTURE_SHIM_VERSION}");
     assert_eq!(source.lines().filter(|line| *line == header).count(), 1);
     source.replacen(&header, &format!("{SHIM_VERSION_PREFIX}{version}"), 1)
 }
@@ -604,7 +605,7 @@ fn local_install_refuses_to_replace_a_newer_shim() {
     let directory = tempfile::tempdir().expect("local downgrade fixture");
     let account = account_at(directory.path(), "runner");
     let bin = installed_cargo(&account, "newer");
-    let installed = SUPPORTED_REGISTRATION_VERSION + 1;
+    let installed = CAPTURE_SHIM_VERSION + 1;
     let contents = newer_shim(installed);
     fs::write(bin.join("cargo"), &contents).expect("newer shim");
     let original = fs::read(bin.join("cargo-tile-real")).expect("real cargo before refusal");
@@ -647,7 +648,7 @@ fn local_install_refuses_a_truncated_version_without_changing_installed_files() 
     let account = account_at(directory.path(), "runner");
     let bin = installed_cargo(&account, "truncated");
     let source = include_str!("../../src/cargo-capture-shim.sh");
-    let header = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}");
+    let header = format!("{SHIM_VERSION_PREFIX}{CAPTURE_SHIM_VERSION}");
     let header_start = source.find(&header).expect("embedded version header");
     let padding = SHIM_MARKER_SEARCH_BYTES - header_start - header.len();
     let contents = source.replacen(
@@ -719,11 +720,8 @@ fn injected_account_reports_every_orphan_beside_a_successful_install() {
     let account = account_at(directory.path(), "runner");
     for name in ["a-orphan", "z-orphan"] {
         let bin = original_cargo(&account, name);
-        fs::write(
-            bin.join("cargo"),
-            include_bytes!("../cargo-capture-shim.sh"),
-        )
-        .expect("orphan shim without saved cargo");
+        fs::write(bin.join("cargo"), expected_shim(&bin.join("cargo")))
+            .expect("orphan shim without saved cargo");
     }
     original_cargo(&account, "m-working");
     let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
@@ -768,11 +766,8 @@ fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
     let broken = original_cargo(&account, "a-broken");
     fs::create_dir(broken.join("cargo-tile-shim.lock")).expect("lock open must fail");
     let orphan = original_cargo(&account, "m-orphan");
-    fs::write(
-        orphan.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
-    )
-    .expect("orphan shim without saved cargo");
+    fs::write(orphan.join("cargo"), expected_shim(&orphan.join("cargo")))
+        .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, "z-working");
     let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
@@ -809,12 +804,12 @@ fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
     );
     assert_eq!(
         fs::read(orphan.join("cargo")).expect("orphan untouched"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&orphan.join("cargo"))
     );
     assert!(!orphan.join("cargo-tile-real").exists());
     assert_eq!(
         fs::read(working.join("cargo")).expect("later toolchain installs"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&working.join("cargo"))
     );
     assert_eq!(
         fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
@@ -1030,7 +1025,8 @@ fn account_child_has_account_environment_and_only_machine_report_lines() {
     assert_report_flag_is_hidden(&account, "install");
 }
 
-/// Record the real child's environment and machine output before forwarding both streams.
+/// Let `observe-account` record the real child's credentials and environment.
+/// Forward both output streams without a Python process.
 fn observe_account_child(directory: &Path) -> PathBuf {
     let observer = directory.join("observe-account");
     let binary = cargo_tile()
@@ -1040,16 +1036,16 @@ fn observe_account_child(directory: &Path) -> PathBuf {
     fs::write(
         &observer,
         format!(
-            r#"#!/bin/sh
-id -u > "$HOME/child-uid"
-id -g > "$HOME/child-gid"
+            r#"#!/bin/bash
+printf '%s\n' "$EUID" > "$HOME/child-uid"
+/usr/bin/id -g > "$HOME/child-gid"
 printf '%s\n' "$@" > "$HOME/child-arguments"
-printf '%s\n' "$HOME" "$RUSTUP_HOME" > "$HOME/child-environment"
+printf '%s\n%s\n' "$HOME" "$RUSTUP_HOME" > "$HOME/child-environment"
 '{binary}' "$@" > "$HOME/child-output" 2> "$HOME/child-error"
-result=$?
+child_status=$?
 cat "$HOME/child-output"
 cat "$HOME/child-error" >&2
-exit "$result"
+exit "$child_status"
 "#
         ),
     )
@@ -1113,7 +1109,7 @@ fn account_status_child_reports_all_states_without_changing_toolchains() {
     let orphaned = original_cargo(&account, "d-orphaned");
     fs::write(
         orphaned.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
+        expected_shim(&orphaned.join("cargo")),
     )
     .expect("orphan shim");
     let unreadable = original_cargo(&account, "e-unreadable");
@@ -1227,7 +1223,7 @@ fn account_status_distinguishes_no_toolchains_from_failed_discovery_and_continue
     let orphaned = original_cargo(&accounts[2], "orphaned");
     fs::write(
         orphaned.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
+        expected_shim(&orphaned.join("cargo")),
     )
     .expect("orphan shim");
     let reports = hook::run_account_hooks(&accounts, cargo_tile(), HookOperation::Status);
@@ -1267,11 +1263,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
     let account = account_at(&directory.path().join("runner"), "runner");
     let later = account_at(&directory.path().join("later"), "later");
     let orphan = original_cargo(&account, "a-orphaned");
-    fs::write(
-        orphan.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
-    )
-    .expect("orphan shim");
+    fs::write(orphan.join("cargo"), expected_shim(&orphan.join("cargo"))).expect("orphan shim");
     let broken = installed_cargo(&account, "b-failed");
     fs::create_dir(broken.join("cargo-tile-shim.lock")).expect("removal lock fails");
     let installed = installed_cargo(&account, "c-installed");
@@ -1336,7 +1328,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
     for bin in [&orphan, &broken] {
         assert_eq!(
             fs::read(bin.join("cargo")).expect("refused shim survives"),
-            include_bytes!("../cargo-capture-shim.sh")
+            expected_shim(&bin.join("cargo"))
         );
     }
     assert!(!absent.join("cargo-tile-real").exists());
@@ -1346,11 +1338,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
 fn installed_cargo(account: &HookAccount, toolchain: &str) -> PathBuf {
     let bin = original_cargo(account, toolchain);
     fs::rename(bin.join("cargo"), bin.join("cargo-tile-real")).expect("save original cargo");
-    fs::write(
-        bin.join("cargo"),
-        include_bytes!("../cargo-capture-shim.sh"),
-    )
-    .expect("installed shim");
+    fs::write(bin.join("cargo"), expected_shim(&bin.join("cargo"))).expect("installed shim");
     set_mode(&bin.join("cargo"), 0o751);
     bin
 }
@@ -1503,7 +1491,7 @@ fn assert_finished_account_toolchain(bin: &Path, operation: HookOperation) {
     if operation == HookOperation::Install {
         assert_eq!(
             fs::read(&cargo).expect("completed shim"),
-            include_bytes!("../cargo-capture-shim.sh")
+            expected_shim(&cargo)
         );
         assert_eq!(
             fs::read(real).expect("completed saved cargo"),
@@ -1644,7 +1632,7 @@ fn assert_child_report_retention(operation: HookOperation, failure: ChildReportF
     match operation {
         HookOperation::Install => assert_eq!(
             fs::read(later_bin.join("cargo")).expect("later shim"),
-            include_bytes!("../cargo-capture-shim.sh")
+            expected_shim(&later_bin.join("cargo"))
         ),
         HookOperation::Uninstall | HookOperation::Status => assert_eq!(
             fs::read(later_bin.join("cargo")).expect("later original cargo"),
@@ -1804,7 +1792,7 @@ fn credential_failure_is_incomplete_preserves_reason_and_continues_accounts() {
     );
     assert_eq!(
         fs::read(first.join("cargo")).expect("first shim unchanged"),
-        include_bytes!("../cargo-capture-shim.sh")
+        expected_shim(&first.join("cargo"))
     );
     assert!(first.join("cargo-tile-real").exists());
     assert_eq!(reports[1].outcome, AccountHookOutcome::Completed);
@@ -1841,63 +1829,85 @@ fn darwin_membership_beyond_the_credential_limit_keeps_account_children_running(
         .map(|offset| accounts[0].gid.checked_add(offset).expect("fixture gid"))
         .chain(std::iter::once(accounts[0].gid))
         .collect();
-    for operation in [
+    let installed = assert_darwin_membership_child_operation(
+        &accounts,
+        &observer,
+        &groups,
         HookOperation::Install,
-        HookOperation::Status,
-        HookOperation::Uninstall,
-    ] {
-        let mut prepared = Vec::new();
-        let reports =
-            hook::run_account_hooks_with(&accounts, &observer, operation, |_, account| {
-                let resolved = if account.name == accounts[0].name {
-                    groups.clone()
-                } else {
-                    vec![account.gid]
-                };
-                let membership =
-                    DarwinGroupMembership::new(account.uid, account.gid, resolved, 16)?;
-                assert_eq!(membership.groups[0], account.gid);
-                assert_eq!(
-                    u32::try_from(membership.uid).expect("membership uid"),
-                    account.uid
-                );
-                if account.name == accounts[0].name {
-                    assert_eq!(membership.count, 16);
-                    assert_eq!(membership.groups.len(), 17);
-                    let mut retained = membership.groups.clone();
-                    retained.sort_unstable();
-                    let mut expected = groups.clone();
-                    expected.sort_unstable();
-                    assert_eq!(
-                        retained, expected,
-                        "the complete resolved list survives preparation"
-                    );
-                    assert!(!membership.groups[..16].contains(&membership.groups[16]));
-                } else {
-                    assert_eq!(membership.count, 1);
-                    assert_eq!(membership.groups, [account.gid]);
-                }
-                prepared.push(account.name.clone());
-                Ok(())
-            });
-        assert_eq!(prepared, ["runner-with-many-groups", "later"]);
-        assert_eq!(reports.len(), accounts.len());
-        for (account, report) in accounts.iter().zip(&reports) {
-            assert_eq!(report.account, account.name);
-            assert_eq!(report.operation, operation);
-            assert_eq!(report.outcome, AccountHookOutcome::Completed);
-            assert_account_child_environment(account);
-            assert_rendered_toolchain(
-                report,
-                "stable",
-                match operation {
-                    HookOperation::Install | HookOperation::Status => "installed",
-                    HookOperation::Uninstall => "removed",
-                },
-            );
-        }
-        assert!(operation.completion(&reports).is_ok());
+        &[],
+    );
+    for operation in [HookOperation::Status, HookOperation::Uninstall] {
+        drop(assert_darwin_membership_child_operation(
+            &accounts, &observer, &groups, operation, &installed,
+        ));
     }
+}
+
+/// Reuse the installed accounts and retain every operation and membership assertion.
+fn assert_darwin_membership_child_operation(
+    accounts: &[HookAccount],
+    observer: &Path,
+    groups: &[u32],
+    operation: HookOperation,
+    installed: &[AccountHookReport],
+) -> Vec<AccountHookReport> {
+    if operation != HookOperation::Install {
+        assert!(
+            installed
+                .iter()
+                .all(|report| report.outcome == AccountHookOutcome::Completed)
+        );
+    }
+    let mut prepared = Vec::new();
+    let reports = hook::run_account_hooks_with(accounts, observer, operation, |_, account| {
+        let resolved = if account.name == accounts[0].name {
+            groups.to_vec()
+        } else {
+            vec![account.gid]
+        };
+        let membership = DarwinGroupMembership::new(account.uid, account.gid, resolved, 16)?;
+        assert_eq!(membership.groups[0], account.gid);
+        assert_eq!(
+            u32::try_from(membership.uid).expect("membership uid"),
+            account.uid
+        );
+        if account.name == accounts[0].name {
+            assert_eq!(membership.count, 16);
+            assert_eq!(membership.groups.len(), 17);
+            let mut retained = membership.groups.clone();
+            retained.sort_unstable();
+            let mut expected = groups.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                retained, expected,
+                "the complete resolved list survives preparation"
+            );
+            assert!(!membership.groups[..16].contains(&membership.groups[16]));
+        } else {
+            assert_eq!(membership.count, 1);
+            assert_eq!(membership.groups, [account.gid]);
+        }
+        prepared.push(account.name.clone());
+        Ok(())
+    });
+    assert_eq!(prepared, ["runner-with-many-groups", "later"]);
+    assert_eq!(reports.len(), accounts.len());
+    for (account, report) in accounts.iter().zip(&reports) {
+        assert_eq!(report.account, account.name);
+        assert_eq!(report.operation, operation);
+        assert_eq!(report.outcome, AccountHookOutcome::Completed);
+        assert_account_child_environment(account);
+        assert_rendered_toolchain(
+            report,
+            "stable",
+            match operation {
+                HookOperation::Install | HookOperation::Status => "installed",
+                HookOperation::Uninstall => "removed",
+            },
+        );
+    }
+    assert!(operation.completion(&reports).is_ok());
+    reports
 }
 
 #[test]
@@ -2261,4 +2271,9 @@ fn obsolete_roots_key_is_ignored_and_auto_install_is_preserved() {
 
 fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("fixture permissions");
+}
+
+/// Render every expected shim byte for its toolchain runner path.
+fn expected_shim(cargo: &Path) -> Vec<u8> {
+    hook::shim_source_for(&cargo.with_file_name(crate::constants::CAPTURE_RUNNER_NAME)).into_bytes()
 }

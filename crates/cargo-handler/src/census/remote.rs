@@ -217,6 +217,7 @@ mod tests {
     use crate::census::AgentActivity;
     use crate::census::AgentRow;
     use crate::census::ServiceTier;
+    use crate::census::StaffRowNames;
     use crate::constants::UNREADABLE_PROBE_REASON;
 
     /// A probe that finished with `status` and printed `stdout`.
@@ -238,6 +239,9 @@ mod tests {
             machine_state(finished(Some(0), report)),
             MachineState::Answered(
                 vec![AgentRow {
+                    model:           crate::census::model::ModelName::Unrecorded,
+                    effort:          crate::census::model::ReasoningEffort::Unrecorded,
+                    staff_names:     StaffRowNames::default(),
                     role_fallback:   crate::census::RoleFallback::None,
                     session_id:      crate::census::SessionIdentity::Unrecorded,
                     agent:           Agent::Claude,

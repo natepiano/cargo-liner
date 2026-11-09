@@ -53,7 +53,7 @@ fn shell_timer_ink_stays_distinct_from_every_account_after_coverage_solving() {
                         ink,
                         tests::covered_role_contrast(shell, ground),
                         tests::covered_role_contrast(ink, ground),
-                        tests::perceptual_distance(shell, ink),
+                        super::perceptual_distance(shell, ink),
                     ));
                 }
             }
@@ -131,7 +131,7 @@ fn teal_account_ink_stays_distinct_from_other_accounts_roles_and_azure() {
                         tint,
                         focused,
                         peer,
-                        tests::perceptual_distance(teal, color),
+                        super::perceptual_distance(teal, color),
                     ));
                 }
             }

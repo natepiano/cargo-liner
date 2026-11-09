@@ -1,5 +1,9 @@
 //! Exercise the installed binary without accessing a real rustup toolchain.
 
+#[cfg(test)]
+#[path = "../src/shim_registration/native_fixture.rs"]
+mod native_fixture;
+
 /// Each child owns an environment pointing exclusively at temporary fixture data.
 #[cfg(test)]
 #[allow(
@@ -17,6 +21,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::process::Child;
     use std::process::Command;
     use std::process::Output;
     use std::process::Stdio;
@@ -49,9 +54,11 @@ exit 37
     /// Keep all subprocess resources alive until synchronous commands and assertions finish.
     struct ToolchainLifecycle {
         /// The fixture owns every home, toolchain, capture, and observation directory.
-        directory: TempDir,
+        directory:  TempDir,
         /// The executable path stays the same before, during, and after installation.
-        cargo:     PathBuf,
+        cargo:      PathBuf,
+        /// The real installer omits debug data from repeated copies.
+        executable: PathBuf,
     }
 
     impl ToolchainLifecycle {
@@ -83,11 +90,25 @@ exit 37
                     .path()
                     .join("home/.rustup/toolchains/ignored/bin/cargo"),
             );
-            Self { directory, cargo }
+            let prepared = super::native_fixture::executable();
+            assert!(prepared.is_ok(), "{prepared:?}");
+            let executable = prepared
+                .expect("prepare the real installer executable")
+                .to_owned();
+            Self {
+                directory,
+                cargo,
+                executable,
+            }
         }
 
         /// Clear inherited capture and cargo settings without changing the test runner itself.
         fn command(&self, executable: &Path) -> Command {
+            let executable = if executable == Path::new(env!("CARGO_BIN_EXE_cargo-tile")) {
+                &self.executable
+            } else {
+                executable
+            };
             let mut command = Command::new(executable);
             command
                 .env_clear()
@@ -262,10 +283,7 @@ exit 37
                 .any(|line| line == format!("{TOOLCHAIN}: capture shim installed"))
         );
         assert_original_cargo(&saved, &original);
-        assert_eq!(
-            fs::read(&fixture.cargo).expect("read installed shim"),
-            include_bytes!("../src/cargo-capture-shim.sh")
-        );
+        assert_installed_shim(&fixture.cargo);
         assert_eq!(
             fixture.cli(&["status"]),
             format!("{TOOLCHAIN}: capturing\n")
@@ -346,10 +364,7 @@ exit 37
         assert!(output.stderr.is_empty(), "{output:?}");
         if operation == "install" {
             assert_original_cargo(&fixture.cargo.with_file_name("cargo-tile-real"), &original);
-            assert_eq!(
-                fs::read(&fixture.cargo).expect("completed installation"),
-                include_bytes!("../src/cargo-capture-shim.sh")
-            );
+            assert_installed_shim(&fixture.cargo);
         } else {
             assert_original_cargo(&fixture.cargo, &original);
             assert!(!fixture.cargo.with_file_name("cargo-tile-real").exists());
@@ -368,14 +383,28 @@ exit 37
         fixture.assert_fallback_untouched();
     }
 
+    /// Own the CLI child until cleanup completes, including during a panic.
+    struct UnfinishedCli {
+        child: Child,
+    }
+
+    impl Drop for UnfinishedCli {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
     /// Kill and reap on both success and timeout, then join the owner of the stdout pipe.
     fn terminate_after_first_row(command: &mut Command) -> Output {
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start CLI with unfinished later work");
-        let stdout = child.stdout.take().expect("child stdout pipe");
+        let mut cli = UnfinishedCli {
+            child: command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start CLI with unfinished later work"),
+        };
+        let stdout = cli.child.stdout.take().expect("child stdout pipe");
         let (sender, receiver) = mpsc::channel();
         let reader = thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -386,11 +415,22 @@ exit 37
             bytes
         });
         let first = receiver.recv_timeout(CHILD_OUTPUT_TIMEOUT);
-        child
+        cli.child
             .kill()
             .expect("terminate CLI before later operation completes");
-        let mut output = child.wait_with_output().expect("reap terminated CLI");
-        output.stdout = reader.join().expect("join stdout reader");
+        let status = cli.child.wait().expect("reap terminated CLI");
+        let mut stderr = Vec::new();
+        cli.child
+            .stderr
+            .take()
+            .expect("child stderr pipe")
+            .read_to_end(&mut stderr)
+            .expect("drain child stderr");
+        let output = Output {
+            status,
+            stdout: reader.join().expect("join stdout reader"),
+            stderr,
+        };
         assert!(
             matches!(first, Ok(Ok(length)) if length > 0),
             "completed row never arrived: {first:?}; {output:?}"
@@ -495,5 +535,21 @@ exit 37
             "permission refusal creates no lock or staging file"
         );
         fixture.assert_fallback_untouched();
+    }
+    fn assert_installed_shim(path: &Path) {
+        let executable = path
+            .with_file_name("cargo-tile-capture")
+            .to_str()
+            .expect("fixture runner path")
+            .replace('\'', "'\\''");
+        let expected = include_str!("../src/cargo-capture-shim.sh")
+            .replace("@CARGO_TILE_EXECUTABLE@", &format!("'{executable}'"))
+            .replace("@CAPTURE_SHIM_ARGUMENT@", "--capture-shim")
+            .replace(
+                "@CAPTURE_SHIM_PASSTHROUGH_ARGUMENT@",
+                "--capture-shim-passthrough",
+            );
+        let installed = fs::read_to_string(path).expect("read installed shim");
+        assert_eq!(installed, expected);
     }
 }

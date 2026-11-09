@@ -17,6 +17,8 @@ mod constants;
 mod hook;
 mod interaction;
 mod keymap;
+#[cfg(target_os = "linux")]
+mod linux_process_stat;
 mod probe;
 mod progress;
 mod registration;
@@ -31,4 +33,7 @@ mod tiles;
 
 use std::process::ExitCode;
 
-fn main() -> ExitCode { cli::Cli::parse_arguments().run() }
+fn main() -> ExitCode {
+    hook::capture_shim_entry();
+    cli::Cli::parse_arguments().run()
+}

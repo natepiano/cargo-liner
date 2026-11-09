@@ -124,7 +124,7 @@ impl<'a> LocalImportRelation<'a> {
             return Self::OutsideBoundary;
         }
         match current.len().saturating_sub(common) {
-            0 => Self::Descendant {
+            0 if common < target.len() => Self::Descendant {
                 suffix: &target[common..],
             },
             1 if common < target.len() => Self::ParentSibling {
@@ -315,7 +315,7 @@ mod tests {
                 "use crate::a::b::Item as Alias;",
                 Some("super::b::Item as Alias"),
             ),
-            ("a::b", "use crate::a::b;", Some("")),
+            ("a::b", "use crate::a::b;", None),
             ("a::b::c", "use crate::a::b;", None),
             ("a::b::c", "use crate::a::b as Parent;", None),
             ("a::b::c", "use crate::a::Item;", None),

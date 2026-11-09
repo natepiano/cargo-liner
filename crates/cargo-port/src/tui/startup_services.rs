@@ -13,6 +13,9 @@ use tui_pane::Theme;
 use tui_pane::ThemeRegistry;
 use tui_pane::ThemeState;
 
+use super::app::GithubQuotaRefresh;
+use super::app::QuotaFetchCompletion;
+use super::app::QuotaFetchPermit;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::SendError;
@@ -118,6 +121,13 @@ pub(super) enum StartupEffect {
     Suppressed,
 }
 
+/// The service profile owns the source of storage and sccache replies.
+#[cfg(test)]
+pub(super) enum BackgroundQuerySource {
+    System,
+    QueuedReplies,
+}
+
 impl StartupEffect {
     const fn runs(self) -> bool { matches!(self, Self::Real) }
 }
@@ -133,6 +143,14 @@ pub struct StartupServices {
 }
 
 impl StartupServices {
+    #[cfg(test)]
+    pub(super) const fn background_query_source(&self) -> BackgroundQuerySource {
+        match self.profile {
+            StartupProfile::Production => BackgroundQuerySource::System,
+            StartupProfile::QuietUnitTest(_) => BackgroundQuerySource::QueuedReplies,
+        }
+    }
+
     fn new(profile: StartupProfile) -> Self {
         Self {
             profile,
@@ -263,13 +281,14 @@ impl StartupServices {
         if self.allows(StartupEffectKind::Watcher) {
             self.record_real(StartupEffectKind::Watcher);
             WatcherHandle::active(watcher::spawn_watcher(WatcherSpawn {
-                watch_roots:    startup.watch_roots,
-                background_tx:  startup.background_tx,
-                non_rust:       startup.non_rust,
-                exclude_dirs:   startup.exclude_dirs,
-                client:         startup.client,
-                lint_runtime:   startup.lint_runtime,
-                metadata_store: startup.metadata_store,
+                watch_roots:         startup.watch_roots,
+                background_tx:       startup.background_tx,
+                source_measurements: startup.source_measurements,
+                non_rust:            startup.non_rust,
+                exclude_dirs:        startup.exclude_dirs,
+                client:              startup.client,
+                lint_runtime:        startup.lint_runtime,
+                metadata_store:      startup.metadata_store,
             }))
         } else {
             self.record_suppressed(StartupEffectKind::Watcher);
@@ -299,6 +318,7 @@ impl StartupServices {
             startup.exclude_dirs,
             startup.client,
             startup.metadata_store,
+            startup.source_measurements,
         );
         StreamingScanStart {
             sender,
@@ -307,19 +327,19 @@ impl StartupServices {
         }
     }
 
-    pub(super) fn spawn_github_rate_limit_prime(&self, client: HttpClient) {
+    pub(super) fn spawn_github_rate_limit_prime(
+        &self,
+        client: HttpClient,
+        permit: QuotaFetchPermit,
+    ) {
         if !self.allows(StartupEffectKind::GithubRateLimitPrime) {
             self.record_suppressed(StartupEffectKind::GithubRateLimitPrime);
+            permit.complete(QuotaFetchCompletion::Failed);
             return;
         }
         self.record_real(StartupEffectKind::GithubRateLimitPrime);
         thread::spawn(move || {
-            let (rate_limit, _signal) = client.fetch_rate_limit();
-            if rate_limit.is_some() {
-                tracing::info!("rate_limit_prime_ok");
-            } else {
-                tracing::info!("rate_limit_prime_failed");
-            }
+            permit.fetch(&client);
         });
     }
 
@@ -328,6 +348,7 @@ impl StartupServices {
         sender: Sender<BackgroundMsg>,
         client: HttpClient,
         service: ServiceKind,
+        quota_refresh: GithubQuotaRefresh,
     ) {
         if !self.allows(StartupEffectKind::ServiceRetryProbes) {
             self.record_suppressed(StartupEffectKind::ServiceRetryProbes);
@@ -337,13 +358,13 @@ impl StartupServices {
         let http_config = config::active_config().http;
         thread::spawn(move || {
             thread::sleep(http_config.unavailable_grace());
-            if client.probe_service(service) {
+            if probe_service_with_quota(&client, service, &quota_refresh) {
                 scan::emit_service_recovered(&sender, service);
                 return;
             }
             let _ = sender.send(BackgroundMsg::ServiceUnreachableConfirmed { service });
             loop {
-                if client.probe_service(service) {
+                if probe_service_with_quota(&client, service, &quota_refresh) {
                     scan::emit_service_recovered(&sender, service);
                     break;
                 }
@@ -556,10 +577,11 @@ impl WatcherHandle {
 
 #[derive(Clone)]
 pub(super) struct StartupEnvironment {
-    pub(super) http_client:      HttpClient,
-    pub(super) scan_started_at:  Instant,
-    pub(super) metadata_store:   Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(super) startup_services: StartupServices,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) http_client:         HttpClient,
+    pub(super) scan_started_at:     Instant,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) startup_services:    StartupServices,
 }
 
 impl StartupEnvironment {
@@ -567,17 +589,19 @@ impl StartupEnvironment {
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+        source_measurements: Arc<SourceMeasurements>,
     ) -> Self {
         Self {
             http_client,
             scan_started_at,
             metadata_store,
             startup_services: StartupServices::new(StartupProfile::production()),
+            source_measurements,
         }
     }
 
     #[cfg(test)]
-    pub(super) const fn with_services(
+    pub(super) fn with_services(
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -588,27 +612,30 @@ impl StartupEnvironment {
             scan_started_at,
             metadata_store,
             startup_services,
+            source_measurements: Arc::default(),
         }
     }
 }
 
 pub(super) struct WatcherStartup<'a> {
-    pub(super) watch_roots:    &'a [AbsolutePath],
-    pub(super) background_tx:  Sender<BackgroundMsg>,
-    pub(super) non_rust:       NonRustInclusion,
-    pub(super) exclude_dirs:   ExcludeDirs,
-    pub(super) client:         HttpClient,
-    pub(super) lint_runtime:   Option<RuntimeHandle>,
-    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) watch_roots:         &'a [AbsolutePath],
+    pub(super) background_tx:       Sender<BackgroundMsg>,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) exclude_dirs:        ExcludeDirs,
+    pub(super) client:              HttpClient,
+    pub(super) lint_runtime:        Option<RuntimeHandle>,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 pub(super) struct StreamingScanStartup<'a> {
-    pub(super) scan_dirs:      Vec<AbsolutePath>,
-    pub(super) inline_dirs:    &'a [String],
-    pub(super) exclude_dirs:   ExcludeDirs,
-    pub(super) non_rust:       NonRustInclusion,
-    pub(super) client:         HttpClient,
-    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) scan_dirs:           Vec<AbsolutePath>,
+    pub(super) inline_dirs:         &'a [String],
+    pub(super) exclude_dirs:        ExcludeDirs,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) client:              HttpClient,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 pub(super) struct StreamingScanStart {
@@ -756,3 +783,15 @@ enum StartupEffectKind {
 use std::path::PathBuf;
 
 use crate::config::CargoPortConfigurationPathResolution;
+use crate::scan::SourceMeasurements;
+
+fn probe_service_with_quota(
+    client: &HttpClient,
+    service: ServiceKind,
+    quota_refresh: &GithubQuotaRefresh,
+) -> bool {
+    match service {
+        ServiceKind::GitHub => quota_refresh.probe_recovery(client),
+        ServiceKind::CratesIo => client.probe_service(service),
+    }
+}

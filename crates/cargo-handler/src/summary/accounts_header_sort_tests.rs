@@ -6,8 +6,8 @@
 )]
 
 use ratatui::buffer::Buffer;
-use tui_pane::CellClick;
 use tui_pane::CellPoint;
+use tui_pane::CellPointer;
 use tui_pane::TileContent;
 
 use super::accounts_gradient_tests;
@@ -16,6 +16,7 @@ use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
+use crate::census::accounts::AccountsReading;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
 use crate::census::scan::ScanStage;
@@ -24,6 +25,52 @@ use crate::sort::AccountsColumn;
 
 const DAY_SECONDS: i64 = 86_400;
 const SOURCE_ORDER: [&str; 4] = ["gamma", "alpha", "beta", "delta"];
+
+#[test]
+fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
+    for (name, ascending, descending) in [
+        (
+            "paused",
+            ["alpha", "beta", "gamma"],
+            ["gamma", "beta", "alpha"],
+        ),
+        (
+            "exited",
+            ["gamma", "beta", "alpha"],
+            ["alpha", "beta", "gamma"],
+        ),
+    ] {
+        let rows: Vec<_> = [("gamma",5,1), ("alpha",1,8), ("beta",3,4)].into_iter().map(|(label,paused,exited)| serde_json::json!({
+            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"idle":3,"paused":paused,"exited":exited,"total":5+paused+exited},null],
+            "weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null
+        })).collect();
+        let reading = AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({"accounts":rows,"problems":[]}))
+                .expect("board JSON"),
+        )
+        .expect("board counts");
+        let column = AccountsColumn::ALL
+            .into_iter()
+            .find(|column| column.header() == name)
+            .expect("board count column");
+        let mut app = app_with_accounts(reading.accounts);
+        let before = drawn(&mut app);
+        click_header(&mut app, &before, column);
+        let first = drawn(&mut app);
+        assert_order(&first, &ascending);
+        click_header(&mut app, &first, column);
+        let second = drawn(&mut app);
+        assert_order(&second, &descending);
+        let positions: Vec<_> = descending
+            .iter()
+            .map(|label| accounts_gradient_tests::locate(&second, label).row)
+            .collect();
+        assert!(
+            positions.windows(2).all(|rows| rows[1] >= rows[0] + 2),
+            "role rows remain with their account: {positions:?}"
+        );
+    }
+}
 
 fn app_with_accounts(mut accounts: Vec<AccountUsage>) -> App {
     // Unread fixtures keep header widths equal at fixture time and click time.
@@ -41,7 +88,7 @@ fn accounts() -> Vec<AccountUsage> {
         ("delta", AccountRole::Spare, 100.0, 5),
     ]
     .map(|(label, role, amount, days)| AccountUsage {
-        roles: vec![role],
+        roles: vec![accounts_gradient_tests::role_usage(role)],
         weekly_left_percent: Reading::Known(amount),
         credits: Credits::Amount(amount),
         ..accounts_gradient_tests::account(
@@ -69,6 +116,11 @@ fn with_agents(mut app: App) -> App {
     app
 }
 
+fn drawn(app: &mut App) -> Buffer {
+    let area = accounts_gradient_tests::drawn(app).area;
+    render::draw_summary_for_test(app, area)
+}
+
 fn header_point(buffer: &Buffer, column: AccountsColumn) -> CellPoint {
     let row = accounts_gradient_tests::locate(buffer, "left").row;
     let line: String = (buffer.area.x..buffer.area.right())
@@ -84,7 +136,7 @@ fn header_point(buffer: &Buffer, column: AccountsColumn) -> CellPoint {
 fn click_header(app: &mut App, buffer: &Buffer, column: AccountsColumn) {
     render::cell_clicked(
         app,
-        CellClick {
+        CellPointer {
             index:   0,
             content: TileContent::Summary,
             area:    buffer.area,
@@ -136,12 +188,12 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
     for (column, ascending, descending) in cases {
         let mut app = with_agents(app_with_accounts(accounts()));
         let original_sort = app.summary_sort;
-        let before = accounts_gradient_tests::drawn(&app);
+        let before = drawn(&mut app);
         assert_order(&before, &SOURCE_ORDER);
         let agents_before = ["session-first", "session-second"]
             .map(|label| accounts_gradient_tests::locate(&before, label).row);
         click_header(&mut app, &before, column);
-        let first = accounts_gradient_tests::drawn(&app);
+        let first = drawn(&mut app);
         assert_order(&first, &ascending);
         assert_eq!(app.summary_sort, original_sort);
         assert_eq!(
@@ -150,13 +202,13 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
             agents_before,
         );
         click_header(&mut app, &first, column);
-        let second = accounts_gradient_tests::drawn(&app);
+        let second = drawn(&mut app);
         assert_order(&second, &descending);
         assert_eq!(app.summary_sort, original_sort);
         let agent_header = accounts_gradient_tests::locate(&second, "session");
         render::cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index:   0,
                 content: TileContent::Summary,
                 area:    second.area,
@@ -182,7 +234,7 @@ fn accounts_header_sort_signed_zero_values_keep_source_order() {
             })
             .into();
         let mut app = app_with_accounts(rows);
-        let before = accounts_gradient_tests::drawn(&app);
+        let before = drawn(&mut app);
         click_header(&mut app, &before, column);
         assert_order(&accounts_gradient_tests::drawn(&app), &["A", "B"]);
     }
@@ -208,9 +260,9 @@ fn accounts_header_sort_unknown_values_stay_after_numeric_and_chronological_valu
         rows.insert(2, unavailable);
         let mut app = app_with_accounts(rows);
         for _ in 0..2 {
-            let before = accounts_gradient_tests::drawn(&app);
+            let before = drawn(&mut app);
             click_header(&mut app, &before, column);
-            let after = accounts_gradient_tests::drawn(&app);
+            let after = drawn(&mut app);
             let first_unknown = ["unlimited-account", "unavailable-account"]
                 .map(|label| accounts_gradient_tests::locate(&after, label).row)
                 .into_iter()
@@ -229,7 +281,7 @@ fn accounts_header_sort_unknown_values_stay_after_numeric_and_chronological_valu
 #[test]
 fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
     let mut app = app_with_accounts(accounts());
-    let before = accounts_gradient_tests::drawn(&app);
+    let before = drawn(&mut app);
     let header = header_point(&before, AccountsColumn::Credits);
     for point in [
         CellPoint {
@@ -243,7 +295,7 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
     ] {
         render::cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index: 0,
                 content: TileContent::Summary,
                 area: before.area,
@@ -261,12 +313,12 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
 
 #[test]
 fn numeric_account_cells_align_their_right_edges_with_their_headers() {
-    let app = app_with_accounts(accounts());
-    let buffer = accounts_gradient_tests::drawn(&app);
+    let mut app = app_with_accounts(accounts());
+    let buffer = drawn(&mut app);
     for (column, previous_column, values) in [
         (
             AccountsColumn::WeeklyLeft,
-            AccountsColumn::Roles,
+            AccountsColumn::Account,
             ["10%", "2%", "10%", "100%"],
         ),
         (
@@ -296,48 +348,35 @@ fn numeric_account_cells_align_their_right_edges_with_their_headers() {
 }
 
 #[test]
-fn new_account_headers_toggle_and_keep_blank_read_and_credit_states_last() {
+fn account_enabled_header_toggles_and_keeps_disabled_states_last() {
     let table=crate::census::accounts::AccountsReading::parse(&serde_json::to_vec(&serde_json::json!({"accounts":[
-        {"label":"older","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":true,"credits_in_use":false,"read_ok":true,"read_at":"2026-10-16T00:00:00Z","resets_at":null},
-        {"label":"newer","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":false,"credits_in_use":true,"read_ok":true,"read_at":"2026-10-17T00:00:00Z","resets_at":null},
-        {"label":"blank","roles":[],"weekly_left_percent":null,"credits":null,"use_credits":false,"credits_in_use":false,"read_at":null,"resets_at":null}
+        {"label":"older","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":true,"read_ok":true,"read_at":"2026-10-16T00:00:00Z","resets_at":null},
+        {"label":"newer","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":false,"read_ok":true,"read_at":"2026-10-17T00:00:00Z","resets_at":null},
+        {"label":"blank","roles":[],"weekly_left_percent":null,"credits":null,"use_credits":false,"read_at":null,"resets_at":null}
     ],"problems":[]})).expect("wire JSON")).expect("reading");
-    for (header, first, second) in [
-        (
-            "enabled",
-            ["older", "newer", "blank"],
-            ["older", "newer", "blank"],
-        ),
-        (
-            "in use",
-            ["newer", "older", "blank"],
-            ["newer", "older", "blank"],
-        ),
-        (
-            "read",
-            ["newer", "older", "blank"],
-            ["older", "newer", "blank"],
-        ),
-    ] {
-        let mut app = accounts_gradient_tests::app_with_accounts(table.accounts.clone());
-        for (marker, order) in [("▲", first), ("▼", second)] {
-            let before = accounts_gradient_tests::drawn(&app);
-            let point = accounts_gradient_tests::locate(&before, header);
-            render::cell_clicked(
-                &mut app,
-                CellClick {
-                    index:   0,
-                    content: TileContent::Summary,
-                    area:    before.area,
-                    point:   CellPoint {
-                        column: point.column - before.area.x,
-                        row:    point.row - before.area.y,
-                    },
+    let (header, first, second) = (
+        "enabled",
+        ["older", "newer", "blank"],
+        ["older", "newer", "blank"],
+    );
+    let mut app = accounts_gradient_tests::app_with_accounts(table.accounts);
+    for (marker, order) in [("▲", first), ("▼", second)] {
+        let before = drawn(&mut app);
+        let point = accounts_gradient_tests::locate(&before, header);
+        render::cell_clicked(
+            &mut app,
+            CellPointer {
+                index:   0,
+                content: TileContent::Summary,
+                area:    before.area,
+                point:   CellPoint {
+                    column: point.column - before.area.x,
+                    row:    point.row - before.area.y,
                 },
-            );
-            let after = accounts_gradient_tests::drawn(&app);
-            assert_order(&after, &order);
-            accounts_gradient_tests::locate(&after, &format!("{header} {marker}"));
-        }
+            },
+        );
+        let after = drawn(&mut app);
+        assert_order(&after, &order);
+        accounts_gradient_tests::locate(&after, &format!("{header} {marker}"));
     }
 }

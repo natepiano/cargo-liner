@@ -27,6 +27,7 @@ use std::time::Instant;
 use tui_pane::FramePhase;
 use tui_pane::FrameProbe;
 
+#[cfg(feature = "attract")]
 use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use crate::constants::PROBE_THRESHOLD;
 
@@ -138,6 +139,7 @@ pub(crate) enum FrameLog {}
 impl FrameProbe for FrameLog {
     type Output = Counted<Stdout>;
 
+    #[cfg(feature = "attract")]
     const BACKDROP_UNAVAILABLE_NOTICE: &'static str = ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 
     fn output(stdout: Stdout) -> Self::Output { Counted::new(stdout) }

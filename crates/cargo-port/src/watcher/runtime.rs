@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -41,13 +42,19 @@ use crate::project::AbsolutePath;
 #[cfg(test)]
 use crate::project::ProjectFields;
 use crate::project::WorkspaceMetadataStore;
+use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::scan::MetadataDispatchContext;
+use crate::scan::SourceMeasurements;
 
 #[cfg(test)]
 #[path = "discovery_event_tests.rs"]
 mod discovery_event_tests;
+
+#[cfg(test)]
+#[path = "project_retirement_tests.rs"]
+mod project_retirement_tests;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -68,19 +75,21 @@ pub(crate) enum WatcherMsg {
 /// directories with filtered folder watches and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
 pub(crate) struct WatcherSpawn<'a> {
-    pub watch_roots:    &'a [AbsolutePath],
-    pub background_tx:  Sender<BackgroundMsg>,
-    pub non_rust:       NonRustInclusion,
-    pub exclude_dirs:   ExcludeDirs,
-    pub client:         HttpClient,
-    pub lint_runtime:   Option<RuntimeHandle>,
-    pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub watch_roots:         &'a [AbsolutePath],
+    pub background_tx:       Sender<BackgroundMsg>,
+    pub source_measurements: Arc<SourceMeasurements>,
+    pub non_rust:            NonRustInclusion,
+    pub exclude_dirs:        ExcludeDirs,
+    pub client:              HttpClient,
+    pub lint_runtime:        Option<RuntimeHandle>,
+    pub metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     let WatcherSpawn {
         watch_roots,
         background_tx,
+        source_measurements,
         non_rust,
         exclude_dirs,
         client,
@@ -127,6 +136,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
         cargo_home: roots::resolve_cargo_home(),
         watch_roots: watch_roots.to_vec(),
         background_tx,
+        source_measurements,
         non_rust,
         exclude_dirs,
         client,
@@ -144,15 +154,16 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
 /// consumes. [`spawn_watcher_thread`] turns one into a [`WatcherLoopContext`]
 /// on the watcher thread, which is what keeps registration off the caller.
 struct WatcherLoopStartup {
-    registration:      WatchRegistration,
-    cargo_home:        CargoHome,
-    watch_roots:       Vec<AbsolutePath>,
-    background_tx:     Sender<BackgroundMsg>,
-    non_rust:          NonRustInclusion,
-    exclude_dirs:      ExcludeDirs,
-    client:            HttpClient,
-    lint_runtime:      Option<RuntimeHandle>,
-    metadata_dispatch: MetadataDispatchContext,
+    registration:        WatchRegistration,
+    cargo_home:          CargoHome,
+    watch_roots:         Vec<AbsolutePath>,
+    background_tx:       Sender<BackgroundMsg>,
+    source_measurements: Arc<SourceMeasurements>,
+    non_rust:            NonRustInclusion,
+    exclude_dirs:        ExcludeDirs,
+    client:              HttpClient,
+    lint_runtime:        Option<RuntimeHandle>,
+    metadata_dispatch:   MetadataDispatchContext,
 }
 
 impl WatcherLoopStartup {
@@ -189,29 +200,31 @@ impl WatcherLoopStartup {
         );
         roots::register_cargo_home_watch(watcher, &mut registered_roots, &self.cargo_home);
         WatcherLoopContext {
-            watch_roots:       registered_roots,
-            cargo_home:        self.cargo_home,
-            background_tx:     self.background_tx,
-            non_rust:          self.non_rust,
-            exclude_dirs:      self.exclude_dirs,
-            client:            self.client,
-            lint_runtime:      self.lint_runtime,
-            metadata_dispatch: self.metadata_dispatch,
-            watcher_config:    config::active_config().watcher,
+            watcher_config:      config::active_config().watcher,
+            watch_roots:         registered_roots,
+            cargo_home:          self.cargo_home,
+            background_tx:       self.background_tx,
+            source_measurements: self.source_measurements,
+            non_rust:            self.non_rust,
+            exclude_dirs:        self.exclude_dirs,
+            client:              self.client,
+            lint_runtime:        self.lint_runtime,
+            metadata_dispatch:   self.metadata_dispatch,
         }
     }
 }
 
 struct WatcherLoopContext {
-    watcher_config:    WatcherConfig,
-    watch_roots:       RegisteredRoots,
-    cargo_home:        CargoHome,
-    background_tx:     Sender<BackgroundMsg>,
-    non_rust:          NonRustInclusion,
-    exclude_dirs:      ExcludeDirs,
-    client:            HttpClient,
-    lint_runtime:      Option<RuntimeHandle>,
-    metadata_dispatch: MetadataDispatchContext,
+    watcher_config:      WatcherConfig,
+    watch_roots:         RegisteredRoots,
+    cargo_home:          CargoHome,
+    background_tx:       Sender<BackgroundMsg>,
+    source_measurements: Arc<SourceMeasurements>,
+    non_rust:            NonRustInclusion,
+    exclude_dirs:        ExcludeDirs,
+    client:              HttpClient,
+    lint_runtime:        Option<RuntimeHandle>,
+    metadata_dispatch:   MetadataDispatchContext,
 }
 
 fn spawn_watcher_thread<W: Watcher + Send + 'static>(
@@ -220,7 +233,7 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     notify_rx: StdReceiver<notify::Result<Event>>,
     mut watcher_guard: W,
 ) -> JoinHandle<()> {
-    thread::spawn(move || {
+    scan::spawn_watcher_work(move || {
         let ctx = startup.register(&mut watcher_guard);
         watcher_loop(&ctx, &watch_rx, &notify_rx, watcher_guard);
     })
@@ -299,6 +312,39 @@ impl WatcherRegistrationPhase {
 }
 
 impl WatcherLoopState {
+    /// Release watcher work for projects below a removed folder.
+    pub(super) fn retire_projects_under(&mut self, path: &Path) -> Vec<AbsolutePath> {
+        let removed: Vec<_> = self
+            .projects
+            .keys()
+            .filter(|root| root.starts_with(path))
+            .cloned()
+            .collect();
+        for root in &removed {
+            if let Some(entry) = self.projects.remove(root) {
+                self.pending_disk.remove(&entry.label);
+                self.discovered.remove(root);
+                if let Some(parent) = root.parent()
+                    && !self
+                        .projects
+                        .keys()
+                        .any(|project| project.parent() == Some(parent))
+                {
+                    self.project_parents.remove(parent);
+                }
+                if let Some(key) = refresh::git_refresh_key(&entry)
+                    && !self
+                        .projects
+                        .values()
+                        .any(|project| refresh::git_refresh_key(project).as_ref() == Some(&key))
+                {
+                    self.pending_git.remove(&key);
+                }
+            }
+        }
+        removed
+    }
+
     fn new() -> Self {
         Self {
             projects:        HashMap::new(),
@@ -484,10 +530,13 @@ fn apply_probe_outcomes(
         &ctx.background_tx,
         &mut state.pending_new,
         &mut state.discovered,
-        &ctx.watcher_config,
-        ctx.non_rust,
-        &ctx.exclude_dirs,
-        &ctx.client,
+        probe::NewProjectProbeInputs {
+            watcher_config:      &ctx.watcher_config,
+            source_measurements: &ctx.source_measurements,
+            non_rust:            ctx.non_rust,
+            exclude_dirs:        &ctx.exclude_dirs,
+            client:              &ctx.client,
+        },
     );
     for outcome in outcomes {
         apply_folder_probe(watcher, registered, state, &ctx.background_tx, outcome);
@@ -514,6 +563,14 @@ pub(super) fn apply_folder_probe(
         },
         FolderProbeOutcome::NotProject(path) => {
             if !path.is_dir() {
+                for root in state.retire_projects_under(&path) {
+                    if root != path {
+                        let _ = background_tx.send(BackgroundMsg::DiskUsage {
+                            path:  root,
+                            bytes: 0,
+                        });
+                    }
+                }
                 state.discovered.remove(&path);
                 let _ = background_tx.send(BackgroundMsg::DiskUsage {
                     path:  path.clone(),
@@ -1316,6 +1373,7 @@ mod tests {
                 watch_roots: registered_roots.clone(),
                 cargo_home: CargoHome::Unavailable,
                 background_tx,
+                source_measurements: Arc::default(),
                 non_rust: NonRustInclusion::Exclude,
                 exclude_dirs: ExcludeDirs::default(),
                 metadata_dispatch: test_metadata_dispatch(&client),
@@ -1500,6 +1558,7 @@ mod tests {
                 cargo_home: CargoHome::Unavailable,
                 watch_roots: Vec::new(),
                 background_tx,
+                source_measurements: Arc::default(),
                 non_rust: NonRustInclusion::Exclude,
                 exclude_dirs: ExcludeDirs::default(),
                 client,
@@ -3197,7 +3256,12 @@ mod tests {
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
+                BackgroundMsg::DiskUsageBatch { root_path, entries }
+                    if *root_path == *project_dir
+                        && entries
+                            .iter()
+                            .any(|(path, _)| path.as_path() == project_dir.as_path()) =>
+                {
                     got_disk = true;
                 },
                 BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. }
@@ -3255,13 +3319,16 @@ mod tests {
             &background_tx,
             &mut pending_new,
             &mut discovered,
-            &WatcherConfig::default(),
-            NonRustInclusion::default(),
-            &ExcludeDirs::default(),
-            &crate::http::HttpClient::new_without_github_auth_for_test(
-                test_support::test_runtime().handle().clone(),
-            )
-            .expect("http client"),
+            probe::NewProjectProbeInputs {
+                watcher_config:      &WatcherConfig::default(),
+                source_measurements: &Arc::default(),
+                non_rust:            NonRustInclusion::default(),
+                exclude_dirs:        &ExcludeDirs::default(),
+                client:              &crate::http::HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("http client"),
+            },
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx
@@ -3302,13 +3369,16 @@ mod tests {
             &background_tx,
             &mut pending_new,
             &mut discovered,
-            &WatcherConfig::default(),
-            NonRustInclusion::default(),
-            &ExcludeDirs::default(),
-            &crate::http::HttpClient::new_without_github_auth_for_test(
-                test_support::test_runtime().handle().clone(),
-            )
-            .expect("http client"),
+            probe::NewProjectProbeInputs {
+                watcher_config:      &WatcherConfig::default(),
+                source_measurements: &Arc::default(),
+                non_rust:            NonRustInclusion::default(),
+                exclude_dirs:        &ExcludeDirs::default(),
+                client:              &crate::http::HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("http client"),
+            },
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx
@@ -3518,9 +3588,15 @@ mod tests {
 
         let mut got_zero = false;
         while let Ok(msg) = background_rx.try_recv() {
-            if let BackgroundMsg::DiskUsage { path, bytes } = msg
-                && path.as_path() == linked_dir
-                && bytes == 0
+            if let BackgroundMsg::DiskUsageBatch { root_path, entries } = msg
+                && root_path.as_path() == linked_dir
+                && entries.len() == 1
+                && entries.iter().any(|(path, sizes)| {
+                    path.as_path() == linked_dir
+                        && sizes.total == 0
+                        && sizes.in_project_target == 0
+                        && sizes.in_project_non_target == 0
+                })
             {
                 got_zero = true;
             }

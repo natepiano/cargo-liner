@@ -20,6 +20,7 @@ use super::constants::COL_LINT;
 use super::constants::COL_MAIN;
 use super::constants::COL_NAME;
 use super::constants::COL_SYNC;
+use super::constants::MAIN_COMPARISON_VALUE_RESERVE;
 use super::constants::NUM_COLS;
 use crate::ci::CiStatus;
 use crate::config::LintIndicator;
@@ -29,6 +30,8 @@ use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::tui::render;
 use crate::tui::theme_roles;
+
+pub(in crate::tui) const PROJECTS_HEADER: &str = "   Projects";
 
 // Imported `COL_*` constants index the `ColumnDef` array returned by `column_defs`.
 
@@ -40,7 +43,7 @@ pub(super) enum ColumnWidth {
     Fit { min: usize },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(in crate::tui) enum Align {
     Left,
     Right,
@@ -112,8 +115,10 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
     [
         // `COL_NAME` uses this `ColumnDef` for the project name.
         ColumnDef {
-            header_levels: &[""],
-            width:         ColumnWidth::Fit { min: 10 },
+            header_levels: &[PROJECTS_HEADER],
+            width:         ColumnWidth::Fit {
+                min: PROJECTS_HEADER.len() + lint_headers[0].len().saturating_sub(lint_width),
+            },
             align:         Align::Left,
             gap:           0,
             header_mode:   HeaderMode::Standard,
@@ -134,37 +139,36 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // `COL_LANG` reserves two columns with `HeaderMode::Hidden`.
+        // The Type column names the project icon.
         ColumnDef {
-            header_levels: &[""],
-            width:         ColumnWidth::Fixed(2),
+            header_levels: &["Type"],
+            width:         ColumnWidth::Fixed(4),
             align:         Align::Left,
             gap:           1,
-            header_mode:   HeaderMode::Hidden,
+            header_mode:   HeaderMode::Standard,
         },
-        // `COL_GIT_PATH` labels its status glyph "Git"; `Align::Right` places "t" above the right
-        // edge of the two-column emoji.
+        // The Git column keeps enough width for its heading.
         ColumnDef {
             header_levels: &["Git"],
-            width:         ColumnWidth::Fixed(2),
+            width:         ColumnWidth::Fixed(3),
             align:         Align::Right,
             gap:           1,
-            header_mode:   HeaderMode::BorrowLeft,
+            header_mode:   HeaderMode::Standard,
         },
-        // `COL_SYNC` shows origin/upstream sync status, promoting "Og" to "Orig" to "Origin" from
-        // `header_levels` as `ColumnWidth::Fit` widens to fit cell content.
+        // The Sync column shows the origin or upstream comparison.
         ColumnDef {
-            header_levels: &["Og", "Orig", "Origin"],
+            header_levels: &["Sync"],
             width:         ColumnWidth::Fit { min: 0 },
             align:         Align::Right,
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // `COL_MAIN` shows local main delta, promoting "M" to "Mn" to "Main" from `header_levels`
-        // as `ColumnWidth::Fit` widens.
+        // The Main column shows the local main comparison.
         ColumnDef {
-            header_levels: &["M", "Mn", "Main"],
-            width:         ColumnWidth::Fit { min: 0 },
+            header_levels: &["Main"],
+            width:         ColumnWidth::Fit {
+                min: MAIN_COMPARISON_VALUE_RESERVE,
+            },
             align:         Align::Right,
             gap:           1,
             header_mode:   HeaderMode::Standard,
@@ -183,7 +187,7 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
 
 // `CellContent`, `StyledSegment`, `LintCell` and `ProjectRow` hold styled table output.
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub(in crate::tui) struct CellContent {
     pub text:           String,
     pub style:          Style,
@@ -193,7 +197,7 @@ pub(in crate::tui) struct CellContent {
     pub suffix_style:   Option<Style>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(in crate::tui) struct StyledSegment {
     pub text:  String,
     pub style: Style,
@@ -243,7 +247,7 @@ impl LintCell {
 }
 
 /// Deleted rows strike their content while suffix spans retain their own style.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(in crate::tui) enum RowLifecycle {
     Present,
     Deleted,
@@ -305,6 +309,7 @@ pub(in crate::tui) struct ProjectRow<'a> {
     pub worktree_health:   WorktreeHealth,
 }
 
+#[derive(PartialEq)]
 pub(in crate::tui) struct RowCells {
     pub cells:           [CellContent; NUM_COLS],
     pub prefix:          String,
@@ -352,18 +357,74 @@ impl ProjectListWidths {
     /// Total display width of all columns including gaps.
     pub(in crate::tui) fn total_width(&self) -> usize {
         let defs = column_defs(self.lint_column);
-        let mut total = 0;
-        for (i, def) in defs.iter().enumerate() {
-            total += def.gap + self.get(i);
+        Self::columns_total(&std::array::from_fn(|index| self.get(index)), &defs)
+    }
+
+    fn columns_total(widths: &[usize; NUM_COLS], defs: &[ColumnDef; NUM_COLS]) -> usize {
+        widths
+            .iter()
+            .zip(defs)
+            .filter(|(width, _)| **width > 0)
+            .map(|(width, def)| width + def.gap)
+            .sum()
+    }
+
+    /// Keep every column with the name at its heading floor.
+    pub(in crate::tui) fn minimum_table_width(&self) -> usize {
+        let defs = column_defs(self.lint_column);
+        let mut widths = std::array::from_fn(|index| self.get(index));
+        widths[COL_NAME] = name_heading_floor(&defs);
+        Self::columns_total(&widths, &defs)
+    }
+
+    /// Reserve two 15-cell detail panes when the window can hold them.
+    pub(in crate::tui) const fn pane_width_limit(window_width: u16) -> u16 {
+        if window_width > 30 {
+            window_width - 30
+        } else {
+            window_width
         }
-        total
+    }
+
+    /// Fit the measured columns to the available row width.
+    pub(in crate::tui) fn fitted(&self, available: usize, window_width: u16) -> Self {
+        let available = available.min(usize::from(Self::pane_width_limit(window_width)));
+        let defs = column_defs(self.lint_column);
+        let mut widths = std::array::from_fn::<_, NUM_COLS, _>(|index| self.get(index));
+        let excess = Self::columns_total(&widths, &defs).saturating_sub(available);
+        widths[COL_NAME] = widths[COL_NAME]
+            .saturating_sub(excess)
+            .max(name_heading_floor(&defs));
+        for index in [COL_MAIN, COL_SYNC, COL_GIT_PATH, COL_LANG, COL_CI, COL_LINT] {
+            if Self::columns_total(&widths, &defs) <= available {
+                break;
+            }
+            widths[index] = 0;
+        }
+        widths[COL_NAME] = 0;
+        let other_width = Self::columns_total(&widths, &defs) + defs[COL_NAME].gap;
+        widths[COL_NAME] = self
+            .get(COL_NAME)
+            .min(available.saturating_sub(other_width));
+        Self {
+            inner:       ColumnWidths::new(
+                widths
+                    .into_iter()
+                    .map(|width| ColumnSpec::fixed(u16::try_from(width).unwrap_or(u16::MAX)))
+                    .collect(),
+            ),
+            lint_column: self.lint_column,
+            generation:  self.generation,
+        }
     }
 
     pub(in crate::tui) const fn lint_column_status(&self) -> LintColumnStatus { self.lint_column }
 }
 
-/// Map the project-list `column_defs` into [`ColumnSpec`]s for
-/// `ColumnWidths`.
+/// Keep the Projects heading and the cells that the Lint heading borrows.
+fn name_heading_floor(defs: &[ColumnDef; NUM_COLS]) -> usize { defs[COL_NAME].seed_width() }
+
+/// Convert the column definitions to width rules.
 fn project_list_specs(lint_column: LintColumnStatus) -> Vec<ColumnSpec> {
     column_defs(lint_column)
         .iter()
@@ -406,6 +467,96 @@ fn pad_center(s: &str, target: usize) -> String {
     format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
 }
 
+/// Keep the prefix and the worktree mark outside the shortened name.
+fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'static>> {
+    let fallback = [StyledSegment {
+        text:  cell.text.clone(),
+        style: cell.style,
+    }];
+    let segments = cell.segments.as_deref().unwrap_or(&fallback);
+    let text: String = segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect();
+    let mark_start = text
+        .rfind(" 🌲:")
+        .or_else(|| text.strip_suffix(" (p)").map(str::len));
+    let mark_start = mark_start
+        .filter(|start| display_width(&text[*start..]) < width)
+        .unwrap_or(text.len());
+    let mark = &text[mark_start..];
+    let name = &text[..mark_start];
+    let prefix = render::truncate_with_ellipsis(
+        prefix,
+        width.saturating_sub(display_width(mark) + usize::from(!name.is_empty())),
+        "",
+    );
+    let available = width.saturating_sub(display_width(&prefix) + display_width(mark));
+    if display_width(name) > available
+        && let Some(bracket) = name.find(" [")
+    {
+        let suffix = &name[bracket + 1..];
+        let suffix = render::truncate_with_ellipsis(suffix, available, "…");
+        let name_width = available.saturating_sub(display_width(&suffix) + 1);
+        let label = render::truncate_with_ellipsis(&name[..bracket], name_width, "…");
+        let separator = if label.is_empty() { "" } else { " " };
+        let padding = available
+            .saturating_sub(display_width(&label) + separator.len() + display_width(&suffix));
+        let suffix_style = segments
+            .iter()
+            .scan(0, |end, segment| {
+                *end += segment.text.len();
+                Some((*end, segment.style))
+            })
+            .find_map(|(end, style)| (end > bracket).then_some(style))
+            .unwrap_or(cell.style);
+        return vec![
+            Span::styled(prefix, cell.style),
+            Span::styled(format!("{label}{separator}"), cell.style),
+            Span::styled(suffix, suffix_style),
+            Span::styled(mark.to_string(), cell.style),
+            Span::styled(" ".repeat(padding), cell.style),
+        ];
+    }
+    let cut = display_width(name) > available;
+    let mut remaining = available.saturating_sub(usize::from(cut));
+    let mut spans = vec![Span::styled(prefix, cell.style)];
+    let mut byte_offset = 0;
+    for segment in segments {
+        let end = (mark_start.saturating_sub(byte_offset)).min(segment.text.len());
+        let shown = render::truncate_with_ellipsis(&segment.text[..end], remaining, "");
+        remaining = remaining.saturating_sub(display_width(&shown));
+        spans.push(Span::styled(shown, segment.style));
+        byte_offset += segment.text.len();
+    }
+    if cut && available > 0 {
+        spans.push(Span::styled("…", cell.style));
+    }
+    let mut byte_offset = 0;
+    for segment in segments {
+        let start = mark_start
+            .saturating_sub(byte_offset)
+            .min(segment.text.len());
+        if start < segment.text.len() {
+            spans.push(Span::styled(
+                segment.text[start..].to_string(),
+                segment.style,
+            ));
+        }
+        byte_offset += segment.text.len();
+    }
+    let padding = available.saturating_sub(display_width(name));
+    spans.push(Span::styled(" ".repeat(padding), cell.style));
+    if cell.segments.is_none() {
+        let text: String = spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect();
+        return vec![Span::styled(text, cell.style)];
+    }
+    spans
+}
+
 // `row_to_line` renders `RowCells`, and `header_line` renders the column headings.
 
 /// Render a `RowCells` into a styled `Line` using the column definitions and
@@ -413,8 +564,7 @@ fn pad_center(s: &str, target: usize) -> String {
 pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
     let defs = column_defs(widths.lint_column_status());
     let mut spans = Vec::with_capacity(NUM_COLS);
-    // `suffix_indices` identifies `spans` that carry suffixes and are exempt from deleted-row
-    // strikethrough.
+    // Keep icons and dismissal marks outside the deletion strike.
     let mut suffix_indices: Vec<usize> = Vec::new();
 
     for (i, cell) in row.cells.iter().enumerate() {
@@ -431,7 +581,10 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
         if let Some(suffix) = &cell.suffix {
             let suffix_w = display_width(suffix);
             let text_w = col_width.saturating_sub(suffix_w);
-            let text_padded = pad_left(&cell.text, text_w);
+            let text_padded = pad_left(
+                &render::truncate_with_ellipsis(&cell.text, text_w, "…"),
+                text_w,
+            );
             let gap = " ".repeat(defs[i].gap);
             spans.push(Span::styled(format!("{gap}{text_padded}"), cell.style));
             let suffix_style = cell.suffix_style.unwrap_or(cell.style);
@@ -440,31 +593,12 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             continue;
         }
 
-        if i == COL_NAME
-            && let Some(segments) = &cell.segments
-        {
-            let prefix_w = display_width(&row.prefix);
-            let available = col_width.saturating_sub(prefix_w);
-            let content_w = segments
-                .iter()
-                .map(|segment| display_width(&segment.text))
-                .sum();
-            spans.push(Span::styled(row.prefix.clone(), cell.style));
-            for segment in segments {
-                spans.push(Span::styled(segment.text.clone(), segment.style));
-            }
-            let padding = available.saturating_sub(content_w);
-            if padding > 0 {
-                spans.push(Span::styled(" ".repeat(padding), cell.style));
-            }
+        if i == COL_NAME {
+            spans.extend(name_cell_spans(cell, &row.prefix, col_width));
             continue;
         }
 
-        let content = if i == COL_NAME {
-            let prefix_w = display_width(&row.prefix);
-            let available = col_width.saturating_sub(prefix_w);
-            format!("{}{}", row.prefix, pad_right(&cell.text, available))
-        } else if (i == COL_SYNC || i == COL_MAIN) && cell.text == IN_SYNC {
+        let content = if (i == COL_SYNC || i == COL_MAIN) && cell.text == IN_SYNC {
             let padded = pad_left(&cell.text, col_width);
             format!("{}{padded}", " ".repeat(defs[i].gap))
         } else {
@@ -476,19 +610,15 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             format!("{}{padded}", " ".repeat(defs[i].gap))
         };
 
+        if matches!(i, COL_LANG | COL_LINT | COL_CI | COL_GIT_PATH) {
+            suffix_indices.push(spans.len());
+        }
         spans.push(Span::styled(content, cell.style));
     }
 
     match row.lifecycle {
         RowLifecycle::Deleted => {
-            let strike = Style::default()
-                .fg(label_color())
-                .add_modifier(Modifier::CROSSED_OUT);
-            for (i, span) in spans.iter_mut().enumerate() {
-                if !suffix_indices.contains(&i) {
-                    span.style = strike;
-                }
-            }
+            spans = cross_out_text(spans, &suffix_indices);
         },
         RowLifecycle::Present => match row.worktree_health {
             WorktreeHealth::Normal => {},
@@ -504,6 +634,33 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
     Line::from(spans)
 }
 
+fn cross_out_text(spans: Vec<Span<'static>>, suffix_indices: &[usize]) -> Vec<Span<'static>> {
+    let strike = Style::default()
+        .fg(label_color())
+        .add_modifier(Modifier::CROSSED_OUT);
+    spans
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, span)| {
+            if suffix_indices.contains(&index) {
+                return vec![span];
+            }
+            let text = span.content.as_ref();
+            let content = text.trim();
+            if content.is_empty() {
+                return vec![span];
+            }
+            let start = text.len() - text.trim_start().len();
+            let end = start + content.len();
+            vec![
+                Span::styled(text[..start].to_string(), span.style),
+                Span::styled(content.to_string(), span.style.patch(strike)),
+                Span::styled(text[end..].to_string(), span.style),
+            ]
+        })
+        .collect()
+}
+
 /// Build the header `Line` from column definitions and resolved widths.
 /// `name_text` is the dynamic header for the Name column (e.g. "~/rust (42)").
 pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
@@ -513,11 +670,16 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
-    let mut slot_widths =
-        std::array::from_fn::<usize, NUM_COLS, _>(|i| defs[i].gap + widths.get(i));
+    let mut slot_widths = std::array::from_fn::<usize, NUM_COLS, _>(|i| {
+        if widths.get(i) == 0 {
+            0
+        } else {
+            defs[i].gap + widths.get(i)
+        }
+    });
 
     for (i, def) in defs.iter().enumerate() {
-        if def.header_mode != HeaderMode::BorrowLeft {
+        if widths.get(i) == 0 || def.header_mode != HeaderMode::BorrowLeft {
             continue;
         }
 
@@ -538,8 +700,13 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
     for (i, def) in defs.iter().enumerate() {
         let slot_width = slot_widths[i];
 
-        let content = if i == COL_NAME {
-            pad_right(name_text, slot_width)
+        let content = if slot_width == 0 {
+            String::new()
+        } else if i == COL_NAME {
+            pad_right(
+                &render::truncate_with_ellipsis(name_text, slot_width, "…"),
+                slot_width,
+            )
         } else {
             match def.header_mode {
                 HeaderMode::Standard => {
@@ -795,7 +962,7 @@ fn summary_label_col(widths: &ProjectListWidths) -> usize {
         .unwrap_or(COL_NAME)
 }
 
-/// Build a `RowCells` for the summary (Σ) row.
+/// Build the summary (Σ) row.
 pub(in crate::tui) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
     let total_style = Style::default()
         .fg(title_color())
@@ -825,18 +992,18 @@ pub(in crate::tui) fn build_summary_cells(widths: &ProjectListWidths, disk: &str
     }
     RowCells {
         cells,
-        prefix: " ".repeat(widths.get(COL_NAME)),
+        prefix: " ".repeat(
+            widths
+                .get(COL_NAME)
+                .saturating_sub(usize::from(sigma_col == COL_NAME)),
+        ),
         lifecycle: RowLifecycle::Present,
         worktree_health: Normal,
     }
 }
 
-/// Build the project-volume availability row below the Σ disk total.
-///
-/// The label spans the normally-empty metadata columns so its final `e`
-/// right-aligns with the Σ above it, without disturbing the Disk column.
-/// `style` colors both the label and the value — the caller bands it by
-/// remaining free space.
+/// Build the available-space row below the Σ row.
+/// Align both labels and both Disk values at their right edges.
 pub(in crate::tui) fn build_available_line(
     widths: &ProjectListWidths,
     disk: &str,
@@ -847,7 +1014,8 @@ pub(in crate::tui) fn build_available_line(
     let sigma_end = (0..=sigma_col)
         .map(|col| rendered_column_width(widths, &defs, col))
         .sum();
-    let mut spans = vec![Span::styled(pad_left("Available", sigma_end), style)];
+    let label = render::truncate_with_ellipsis("Available", sigma_end, "…");
+    let mut spans = vec![Span::styled(pad_left(&label, sigma_end), style)];
     for col in sigma_col.saturating_add(1)..COL_DISK {
         let width = rendered_column_width(widths, &defs, col);
         if width > 0 {
@@ -952,8 +1120,8 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Mn");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Sync");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "     Disk");
         assert_eq!(line.width(), widths.total_width());
     }
@@ -969,33 +1137,41 @@ mod tests {
         let line = header_line(&widths, "Projects");
 
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
-        assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
+        assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 5);
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Mn");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Sync");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
         assert_eq!(line.width(), widths.total_width());
     }
 
     #[test]
     fn header_levels_promote_with_observed_width() {
-        // Empty: only the seed (1) for COL_MAIN, (2) for COL_SYNC.
+        // The initial widths show both complete labels.
         let widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         let defs = column_defs(LintColumnStatus::Enabled);
-        assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "M");
-        assert_eq!(defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)), "Og");
+        assert_eq!(
+            defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)),
+            "Main"
+        );
+        assert_eq!(
+            defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)),
+            "Sync"
+        );
 
-        // The observed `COL_MAIN` and `COL_SYNC` widths select the second `header_levels` labels.
+        // Smaller observations keep both complete labels.
         let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_MAIN, 3);
         widths.observe(COL_SYNC, 5);
-        assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "Mn");
+        assert_eq!(
+            defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)),
+            "Main"
+        );
         assert_eq!(
             defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)),
-            "Orig"
+            "Sync"
         );
 
-        // These `widths.observe` calls make the longest `COL_MAIN` and `COL_SYNC` header labels
-        // fit.
+        // Larger observations keep the same labels.
         let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_MAIN, 4);
         widths.observe(COL_SYNC, 6);
@@ -1005,7 +1181,7 @@ mod tests {
         );
         assert_eq!(
             defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)),
-            "Origin"
+            "Sync"
         );
     }
 
@@ -1019,8 +1195,8 @@ mod tests {
 
         let line = header_line(&widths, "Projects");
 
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Origin");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Main");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "   Sync");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
     }
 
     #[test]
@@ -1118,7 +1294,7 @@ mod tests {
             line.spans[COL_NAME].content.as_ref(),
             " ".repeat(widths.get(COL_NAME))
         );
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "     Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
     }
@@ -1197,7 +1373,7 @@ mod tests {
         assert_eq!(defs[COL_CI].header_max(), "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "     Σ");
     }
 
     #[test]
@@ -1233,6 +1409,48 @@ mod tests {
             &format!(" {}", CiStatus::Passed.icon())
         );
         assert_eq!(line.width(), widths.total_width());
+    }
+
+    #[test]
+    fn cut_project_segments_keep_a_visible_ellipsis() -> anyhow::Result<()> {
+        let mut row = build_group_header_cells("", "demo");
+        row.cells[COL_NAME].segments = Some(vec![
+            StyledSegment {
+                text:  "demo".to_string(),
+                style: Style::default(),
+            },
+            StyledSegment {
+                text:  " !".to_string(),
+                style: Style::default(),
+            },
+        ]);
+        let widths = ProjectListWidths {
+            inner:       tui_pane::ColumnWidths::new(
+                (0..NUM_COLS)
+                    .map(|column| {
+                        tui_pane::ColumnSpec::fixed(if column == COL_NAME { 4 } else { 0 })
+                    })
+                    .collect(),
+            ),
+            lint_column: LintColumnStatus::Hidden,
+            generation:  0,
+        };
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 1))?;
+        terminal.draw(|frame| {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(row_to_line(&row, &widths)),
+                frame.area(),
+            );
+        })?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert_eq!(text, "dem…");
+        Ok(())
     }
 
     #[test]
@@ -1367,10 +1585,25 @@ mod tests {
                 ..CellContent::default()
             };
             let line = row_to_line(&row, &widths);
-            assert_eq!(line.spans[COL_NAME].style, expected);
-            assert_eq!(line.spans[COL_DISK].style, expected);
-            assert_eq!(line.spans[COL_DISK + 1].style, expected_suffix);
-            assert_eq!(line.spans[COL_DISK + 1].content.as_ref(), "!");
+            let name = line
+                .spans
+                .iter()
+                .find(|span| span.content.trim() == "demo")
+                .expect("the project name");
+            let value = line
+                .spans
+                .iter()
+                .find(|span| span.content.trim() == "1")
+                .expect("the Disk value");
+            let suffix = line
+                .spans
+                .iter()
+                .find(|span| span.content == "!")
+                .expect("the Disk suffix");
+            assert_eq!(name.style, expected);
+            assert_eq!(value.style, expected);
+            assert_eq!(suffix.style, expected_suffix);
+            assert_eq!(suffix.content.as_ref(), "!");
         }
     }
 

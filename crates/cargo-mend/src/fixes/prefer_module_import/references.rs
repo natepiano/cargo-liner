@@ -13,6 +13,7 @@ use syn::ExprForLoop;
 use syn::ExprIf;
 use syn::ExprWhile;
 use syn::FieldValue;
+use syn::File;
 use syn::FnArg;
 use syn::Ident;
 use syn::ImplItemFn;
@@ -22,12 +23,14 @@ use syn::ItemMod;
 use syn::ItemUse;
 use syn::Local;
 use syn::Macro;
+use syn::Member;
 use syn::Pat;
 use syn::Stmt;
 use syn::TraitItemFn;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::preserved_imports;
 use super::support::SourceSpan;
 use crate::fixes::imports::ImportSource;
 
@@ -44,12 +47,13 @@ pub(super) struct BareReference {
 /// Binding registration always has an active scope, even at the root.
 /// Entering and leaving nested scopes cannot silently discard a local binding.
 pub(super) struct ReferenceCollector<'a> {
-    source:                &'a ImportSource<'a>,
-    imported_names:        &'a BTreeSet<String>,
-    pub(super) references: Result<Vec<BareReference>>,
-    active_scope:          BTreeSet<String>,
-    enclosing_scopes:      Vec<BTreeSet<String>>,
-    inline_mod_depth:      usize,
+    source:                       &'a ImportSource<'a>,
+    imported_names:               &'a BTreeSet<String>,
+    pub(super) references:        Result<Vec<BareReference>>,
+    pub(super) preserved_imports: BTreeSet<String>,
+    active_scope:                 BTreeSet<String>,
+    enclosing_scopes:             Vec<BTreeSet<String>>,
+    inline_mod_depth:             usize,
 }
 
 /// Whether the `PreviousToken` permits an unqualified imported name to be rewritten;
@@ -124,6 +128,7 @@ impl<'a> ReferenceCollector<'a> {
             source,
             imported_names,
             references: Ok(Vec::new()),
+            preserved_imports: BTreeSet::new(),
             active_scope: BTreeSet::new(),
             enclosing_scopes: Vec::new(),
             inline_mod_depth: 0,
@@ -195,6 +200,11 @@ impl<'a> ReferenceCollector<'a> {
 }
 
 impl Visit<'_> for ReferenceCollector<'_> {
+    fn visit_file(&mut self, node: &File) {
+        self.preserved_imports = preserved_imports::collect(node);
+        visit::visit_file(self, node);
+    }
+
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
     fn visit_item_mod(&mut self, item_mod: &ItemMod) {
@@ -344,12 +354,18 @@ impl Visit<'_> for ReferenceCollector<'_> {
             self.visit_attribute(attribute);
         }
         if field_value.colon_token.is_none() {
-            // Struct literal field shorthand `Foo { name }`. The expression
-            // is required to be a bare ident matching `name`; replacing it
-            // with `module::name` produces a parse error. Either way the
-            // value resolves to a local binding (otherwise the expansion
-            // `name: name` wouldn't compile), so leave the bare ident
-            // alone.
+            // Struct literal field shorthand `Foo { name }`. A path such as
+            // `module::name` is not valid there, so the rewrite cannot qualify it.
+            // A local binding needs no import. With no local binding, the name
+            // comes from the import, so keep the import.
+            if let Member::Named(name) = &field_value.member {
+                let name = name.to_string();
+                if self.imported_names.contains(&name)
+                    && matches!(self.name_shadowing(&name), NameShadowing::Visible)
+                {
+                    self.preserved_imports.insert(name);
+                }
+            }
             return;
         }
         self.visit_expr(&field_value.expr);
@@ -427,7 +443,7 @@ fn block_item_bindings(block: &Block) -> BTreeSet<String> {
 /// while the import itself still changed — `use crate::disk::worker::channels;`
 /// with the call left as bare `contents_match(..)` (E0425). Inline modules that
 /// re-import a name from the file's own top level are handled by dropping the
-/// candidate instead, in `scan::drop_candidates_reimported_by_inline_modules`.
+/// candidate instead, in `descendant_imports::drop_candidates_reached_by_descendants`.
 ///
 /// `Item` is `#[non_exhaustive]`; a variant syn adds later declares no name
 /// here, which at worst rewrites a reference this collector should have left

@@ -164,6 +164,7 @@ pub(super) fn rendered_line(
     selected: &FavoriteSelection,
     lifecycle: FavoriteRowLifecycle,
     now: Instant,
+    mode: crate::ColorMode,
 ) -> Line<'static> {
     match line {
         CachedOverlayLine::NonRow(line) => line.clone(),
@@ -175,7 +176,7 @@ pub(super) fn rendered_line(
             let marker = FavoriteRowMarker::for_row(selected, identity, *current_parameters);
             let line = Line::from(vec![Span::raw(marker.prefix()), Span::raw(tail.clone())]);
             if marker.is_selected() {
-                line.style(selection_style(PaneFocusState::Active))
+                line.style(selection_style(PaneFocusState::Active, mode))
             } else {
                 let color = match identity {
                     FavoriteRowIdentity::Recognized(_) => blend_color(
@@ -498,6 +499,7 @@ pub(super) fn wrapped_notice_height(message: &str, surface_width: u16) -> u16 {
 mod tests {
 
     use super::*;
+    use crate::ColorMode;
     use crate::FavoriteRowRecognition;
     use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::favorites_overlay::test_app;
@@ -598,11 +600,15 @@ fraying = "leading"
             &FavoriteSelection::Row(identity.clone()),
             FavoriteRowLifecycle::Active,
             Instant::now(),
+            ColorMode::Colored,
         );
 
         assert_eq!(rendered.spans[0].content, "▸  ");
         assert!(!rendered.spans[0].content.contains('●'));
-        assert_eq!(rendered.style, selection_style(PaneFocusState::Active));
+        assert_eq!(
+            rendered.style,
+            selection_style(PaneFocusState::Active, crate::ColorMode::Colored)
+        );
     }
 
     #[test]
@@ -640,6 +646,7 @@ fraying = "leading"
                 &selection,
                 FavoriteRowLifecycle::Active,
                 Instant::now(),
+                ColorMode::Colored,
             )
             .spans[0]
                 .content
@@ -695,6 +702,7 @@ fraying = "leading"
                 &selection,
                 FavoriteRowLifecycle::Active,
                 Instant::now(),
+                ColorMode::Colored,
             );
 
             assert_eq!(rendered.spans[0].content, expected_prefix);
@@ -725,6 +733,7 @@ fraying = "leading"
                         &FavoriteSelection::NoRowSelected,
                         FavoriteRowLifecycle::Active,
                         now,
+                        ColorMode::Colored,
                     )
                     .spans[0]
                         .content
@@ -773,12 +782,14 @@ fraying = "leading"
             &FavoriteSelection::NoRowSelected,
             FavoriteRowLifecycle::Active,
             started,
+            ColorMode::Colored,
         );
         let removing = rendered_line(
             &line,
             &FavoriteSelection::NoRowSelected,
             FavoriteRowLifecycle::Removing { since: started },
             started + FAVORITE_REMOVAL_FADE / 2,
+            ColorMode::Colored,
         );
 
         assert_eq!(

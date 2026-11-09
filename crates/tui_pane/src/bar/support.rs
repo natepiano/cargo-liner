@@ -30,12 +30,27 @@ pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, pal
         push_paired(spans, &slot.key, secondary_key, slot.label, palette);
         return;
     }
+    push_hint(
+        spans,
+        &slot.key.display_short(),
+        slot.label,
+        slot.shortcut_state,
+        palette,
+    );
+}
+
+/// Style one hint and separate it from earlier hints.
+pub(super) fn push_hint(
+    spans: &mut Vec<Span<'static>>,
+    key: &str,
+    label: &'static str,
+    shortcut_state: ShortcutState,
+    palette: &BarPalette,
+) {
     if !spans.is_empty() {
         spans.push(Span::styled(SEPARATOR, palette.separator_style));
     }
-    let key = slot.key.display_short();
-    let label = slot.label;
-    let (key_style, label_style) = match slot.shortcut_state {
+    let (key_style, label_style) = match shortcut_state {
         ShortcutState::Enabled => (palette.enabled_key_style, palette.enabled_label_style),
         ShortcutState::Disabled => (palette.disabled_key_style, palette.disabled_label_style),
     };

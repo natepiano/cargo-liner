@@ -110,7 +110,8 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
             .fg
             .expect("resolved footer color");
         let mut cell = entry(&root, None);
-        cell.lines.push(TreeLine {
+        cell.lines.push(TreeLine::new(TreeLineContent {
+            expansion:      TreeMarker::Leaf,
             dispatch_label: DispatchLabel::Original,
             machine:        "natedev",
             location:       SessionLocation::SameMachine,
@@ -119,7 +120,7 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
             rails:          Vec::new(),
             branch:         Branch::Last,
             subject:        LineSubject::Agent(role),
-        });
+        }));
         for width in [80, 220] {
             let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
             let y = find(&buffer, "member").expect("the member is drawn").1;
@@ -147,7 +148,8 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
         ..agent(20, "member", MINUTE, Some(10))
     };
     let mut cell = entry(&root, None);
-    cell.lines.push(TreeLine {
+    cell.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -156,7 +158,7 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
-    });
+    }));
     let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
     assert_color(&buffer, "codex1", Color::Indexed(211));
     assert_color(
@@ -217,7 +219,8 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
         (HierarchyRole::Fix, "fix"),
     ] {
         let mut cell = entry(&root, None);
-        cell.lines.push(TreeLine {
+        cell.lines.push(TreeLine::new(TreeLineContent {
+            expansion:      TreeMarker::Leaf,
             dispatch_label: DispatchLabel::Original,
             machine:        "natedev",
             location:       SessionLocation::SameMachine,
@@ -226,7 +229,7 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
             rails:          Vec::new(),
             branch:         Branch::Last,
             subject:        LineSubject::ManagedThread(&worker, role),
-        });
+        }));
         let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
         assert_color(&buffer, label, text_default());
         assert_color(&buffer, "codex1", Color::LightCyan);
@@ -295,7 +298,8 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
         ] {
             let mut cell = entry(&root, None);
             cell.lines.clear();
-            cell.lines.push(TreeLine {
+            cell.lines.push(TreeLine::new(TreeLineContent {
+                expansion:      TreeMarker::Leaf,
                 dispatch_label: DispatchLabel::Original,
                 machine:        "natedev",
                 location:       SessionLocation::SameMachine,
@@ -304,7 +308,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 rails:          Vec::new(),
                 branch:         Branch::Last,
                 subject:        LineSubject::ManagedThread(&worker, role),
-            });
+            }));
             cells.push((cell, true));
         }
         for (cell, inherits_directory) in cells {

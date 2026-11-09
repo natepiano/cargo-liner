@@ -2,7 +2,6 @@
 
 > **Status: not built.** These phases are not built, and nothing runs from this plan until a unit is assigned.
 
-> **Production: remove-running-section** — production doc `docs/cargo-port/cargo-liner-production.md`
 
 ## Phases
 

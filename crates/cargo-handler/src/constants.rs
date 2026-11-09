@@ -52,8 +52,8 @@ pub(crate) const MACHINES_SETTINGS_SECTION: &str = "Machines";
 pub(crate) const CENSUS_SETTINGS_SECTION: &str = "Census";
 /// Label of the settings row holding `machines.remote`.
 pub(crate) const REMOTE_MACHINES_LABEL: &str = "remote";
-/// Label of the command reporting management links.
-pub(crate) const HIERARCHY_COMMAND_LABEL: &str = "hierarchy command";
+/// Label of the configured staff file path.
+pub(crate) const STAFF_FILE_LABEL: &str = "staff file";
 
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
@@ -98,6 +98,10 @@ pub(crate) const TREE_AGE_HEADER: &str = "age";
 pub(crate) const TREE_BRANCH_HEADER: &str = "branch";
 /// The directory column of an agent tile tree.
 pub(crate) const TREE_DIRECTORY_HEADER: &str = "directory";
+/// The effort column of an agent tile tree.
+pub(crate) const TREE_EFFORT_HEADER: &str = "effort";
+/// The model column of an agent tile tree.
+pub(crate) const TREE_MODEL_HEADER: &str = "model";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
 /// The work type column of an agent tile tree.
@@ -109,14 +113,14 @@ pub(crate) const TREE_SESSION_HEADER: &str = "session";
 pub(crate) const TREE_STATUS_HEADER: &str = "status";
 /// Leads a session in an agent cell's tree that has a later session
 /// beside it.
-pub(crate) const TREE_BRANCH: &str = "├─ ";
+pub(crate) const TREE_BRANCH: &str = "├── ";
 /// Leads the last session its launcher opened in an agent cell's tree.
-pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
+pub(crate) const TREE_LAST_BRANCH: &str = "└── ";
 /// Carries a level's line of an agent cell's tree down past a line
 /// that does not branch at it.
-pub(crate) const TREE_RAIL: &str = "│  ";
+pub(crate) const TREE_RAIL: &str = "│ ";
 /// Stands for a level of an agent cell's tree whose line has ended.
-pub(crate) const TREE_SPACE: &str = "   ";
+pub(crate) const TREE_SPACE: &str = "  ";
 /// Rows the note standing in for an empty tree takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its tree when the agent is
@@ -375,30 +379,27 @@ pub(crate) const CODEX_RESUME_LAST_ARGUMENT: &str = "--last";
 /// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
 /// the highest `<n>` present is the one Codex writes.
 pub(crate) const CODEX_STATE_PREFIX: &str = "state_";
+/// Start the first log read at the oldest live process, using the time index.
+pub(crate) const CODEX_LOG_INITIAL_QUERY: &str = "SELECT id, ts, process_uuid, thread_id, feedback_log_body FROM logs INDEXED BY idx_logs_ts WHERE ts >= ?1 ORDER BY id";
+/// Start the cursor beyond all rows in the first read snapshot.
+pub(crate) const CODEX_LOG_MAX_ID_QUERY: &str = "SELECT coalesce(max(id), 0) FROM logs";
+/// Read each later log row once through the primary key.
+pub(crate) const CODEX_LOG_NEW_QUERY: &str =
+    "SELECT id, ts, process_uuid, thread_id, feedback_log_body FROM logs WHERE id > ?1 ORDER BY id";
+/// The versioned Codex log database prefix.
+pub(crate) const CODEX_LOG_PREFIX: &str = "logs_";
+/// The process identity prefix in Codex log rows.
+pub(crate) const CODEX_LOG_PROCESS_PREFIX: &str = "pid:";
 /// Extension of Codex's thread database. Its journal files beside it
 /// carry longer ones.
 pub(crate) const CODEX_STATE_EXTENSION: &str = "sqlite";
 /// How long a read of Codex's thread database waits on a writer before
 /// giving up on the scan's names.
 pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
-/// The threads an interactive Codex created within a span of creation
-/// times: `?1` is [`CODEX_LEGACY_TUI_ORIGINATOR`], `?2` and `?3` the span's
-/// ends in unix milliseconds.
-pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
-     rollout_path FROM threads WHERE (thread_source = 'user' OR \
-     (thread_source IS NULL AND originator = ?1)) AND (source IS NULL OR source <> 'exec') \
-     AND created_at_ms BETWEEN ?2 AND ?3";
-/// Interactive threads in older databases without both source columns.
-pub(crate) const CODEX_LEGACY_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
-     rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
 /// The newest thread in one directory, including threads older than process startup.
 pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 /// The interactive originator used by older rows without a thread source.
 pub(crate) const CODEX_LEGACY_TUI_ORIGINATOR: &str = "codex-tui";
-/// How long after an interactive Codex starts the thread it starts with
-/// may be created. Codex creates it during startup, after any question
-/// about trusting the directory.
-pub(crate) const CODEX_THREAD_START_WINDOW: Duration = Duration::from_secs(60);
 /// How long before an interactive Codex's recorded start its thread may
 /// be created: the process table counts a start in whole seconds from a
 /// boot time that is itself read in whole seconds.
@@ -502,23 +503,24 @@ pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
     ["list-clients", "-F", "#{client_pid} #{session_name}"];
 
 // hierarchy discovery
-/// Version of the hierarchy command's JSON contract.
-pub(crate) const HIERARCHY_SCHEMA: u32 = 1;
+/// The schema version of the staff file.
+pub(crate) const HIERARCHY_SCHEMA: u32 = 2;
 /// Largest accepted hierarchy answer in bytes, before JSON decoding.
 pub(crate) const HIERARCHY_OUTPUT_LIMIT: usize = 1024 * 1024;
-/// The shell that evaluates a configured hierarchy command.
+/// The shell that evaluates an accounts command.
 pub(crate) const SHELL_PROGRAM: &str = "sh";
-/// The program that terminates a hierarchy command's process group.
+/// The program that stops a command process group.
 #[cfg(unix)]
 pub(crate) const KILL_PROGRAM: &str = "kill";
 /// Terminate the entire group, even when the shell has started child commands.
 #[cfg(unix)]
 pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
-/// Maximum runtime of the local hierarchy command.
+/// The time limit for an accounts command.
 pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-/// Allow the measured 0.62-second hierarchy command to finish inside the two-second scan budget.
+/// The first publication budget for injected discovery sources.
+#[cfg(test)]
 pub(crate) const HIERARCHY_FIRST_PUBLISH_BUDGET: Duration = Duration::from_secs(1);
 
 // remote probe
@@ -554,6 +556,11 @@ pub(crate) const SSH_CONTROL_MASTER: &str = "ControlMaster=auto";
 const PROBE_SCAN_SSH_MARGIN: Duration = Duration::from_secs(10);
 /// Allow hierarchy discovery its deadline plus time for scanning and ssh.
 pub(crate) const PROBE_TIMEOUT: Duration = HIERARCHY_TIMEOUT.saturating_add(PROBE_SCAN_SSH_MARGIN);
+/// Reserve time for ssh and output after the local scan.
+const PROBE_SSH_OUTPUT_RESERVE: Duration = Duration::from_secs(2);
+/// Maximum scan span that leaves time for ssh and output.
+pub(crate) const HERDR_PROBE_WAIT_LIMIT: Duration =
+    PROBE_TIMEOUT.saturating_sub(PROBE_SSH_OUTPUT_RESERVE);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);
@@ -585,10 +592,6 @@ pub(crate) const ACCOUNTS_STALE_SECONDS: u64 = 60 * 60;
 pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 
 // reviewer discovery
-/// Review pool directory below the user's home.
-pub(crate) const REVIEW_POOL_DIRECTORY: &str = ".local/state/review-pool";
-/// One production's reviewer lease document.
-pub(crate) const REVIEW_POOL_FILE: &str = "pool.json";
 /// Claude print-mode arguments.
 pub(crate) const CLAUDE_PRINT_ARGUMENTS: [&str; 2] = ["--print", "-p"];
 /// Claude permission selector.
@@ -601,3 +604,121 @@ pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan
 pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
 /// Markdown heading opening for a pooled review job.
 pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
+
+/// Herdr exports its API address to pane processes.
+pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
+/// The worker retries failed subscriptions without blocking a scan.
+pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500);
+/// Bound each herdr API answer.
+pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;
+
+// worker launcher arguments
+/// The launcher argument `--claim-pid`.
+pub(crate) const DISPATCH_CLAIM_PID_FLAG: &str = "--claim-pid";
+/// The launcher argument `--cwd`.
+pub(crate) const DISPATCH_CWD_FLAG: &str = "--cwd";
+/// The launcher argument `--diff`.
+pub(crate) const DISPATCH_DIFF_FLAG: &str = "--diff";
+/// The launcher argument `--early-ready`.
+pub(crate) const DISPATCH_EARLY_READY_FLAG: &str = "--early-ready";
+/// The launcher argument `--effort`.
+pub(crate) const DISPATCH_EFFORT_FLAG: &str = "--effort";
+/// The launcher argument `--family`.
+pub(crate) const DISPATCH_FAMILY_FLAG: &str = "--family";
+/// The launcher argument `--fix-cause`.
+pub(crate) const DISPATCH_FIX_CAUSE_FLAG: &str = "--fix-cause";
+/// The launcher argument `--from`.
+pub(crate) const DISPATCH_FROM_FLAG: &str = "--from";
+/// The launcher argument `--from-session-dir`.
+pub(crate) const DISPATCH_FROM_SESSION_DIR_FLAG: &str = "--from-session-dir";
+/// The launcher argument `--guard-text`.
+pub(crate) const DISPATCH_GUARD_TEXT_FLAG: &str = "--guard-text";
+/// The launcher argument `--held-design`.
+pub(crate) const DISPATCH_HELD_DESIGN_FLAG: &str = "--held-design";
+/// The launcher argument `--held-role`.
+pub(crate) const DISPATCH_HELD_ROLE_FLAG: &str = "--held-role";
+/// The launcher argument `--human`.
+pub(crate) const DISPATCH_HUMAN_FLAG: &str = "--human";
+/// The launcher argument `--id-file`.
+pub(crate) const DISPATCH_ID_FILE_FLAG: &str = "--id-file";
+/// The launcher argument `--image`.
+pub(crate) const DISPATCH_IMAGE_FLAG: &str = "--image";
+/// The launcher argument `--instructions-file`.
+pub(crate) const DISPATCH_INSTRUCTIONS_FILE_FLAG: &str = "--instructions-file";
+/// The launcher argument `--lease`.
+pub(crate) const DISPATCH_LEASE_FLAG: &str = "--lease";
+/// The launcher argument `--lens`.
+pub(crate) const DISPATCH_LENS_FLAG: &str = "--lens";
+/// The launcher argument `--log-file`.
+pub(crate) const DISPATCH_LOG_FILE_FLAG: &str = "--log-file";
+/// The launcher argument `--log`.
+pub(crate) const DISPATCH_LOG_FLAG: &str = "--log";
+/// The launcher argument `--model`.
+pub(crate) const DISPATCH_MODEL_FLAG: &str = "--model";
+/// The launcher argument `--name`.
+pub(crate) const DISPATCH_NAME_FLAG: &str = "--name";
+/// The launcher argument `--new-worker`.
+pub(crate) const DISPATCH_NEW_WORKER_FLAG: &str = "--new-worker";
+/// The launcher argument `--no-accounting`.
+pub(crate) const DISPATCH_NO_ACCOUNTING_FLAG: &str = "--no-accounting";
+/// The launcher argument `--operation`.
+pub(crate) const DISPATCH_OPERATION_FLAG: &str = "--operation";
+/// The launcher argument `--pass`.
+pub(crate) const DISPATCH_PASS_FLAG: &str = "--pass";
+/// The launcher argument `--paths`.
+pub(crate) const DISPATCH_PATHS_FLAG: &str = "--paths";
+/// The launcher argument `--phase`.
+pub(crate) const DISPATCH_PHASE_FLAG: &str = "--phase";
+/// The launcher argument `--pool`.
+pub(crate) const DISPATCH_POOL_FLAG: &str = "--pool";
+/// The launcher argument `--prompt-file`.
+pub(crate) const DISPATCH_PROMPT_FILE_FLAG: &str = "--prompt-file";
+/// The launcher argument `--prompt`.
+pub(crate) const DISPATCH_PROMPT_FLAG: &str = "--prompt";
+/// The launcher argument `--read-only`.
+pub(crate) const DISPATCH_READ_ONLY_FLAG: &str = "--read-only";
+/// The launcher argument `--repeat-checked`.
+pub(crate) const DISPATCH_REPEAT_CHECKED_FLAG: &str = "--repeat-checked";
+/// The launcher argument `--reply-file`.
+pub(crate) const DISPATCH_REPLY_FILE_FLAG: &str = "--reply-file";
+/// The launcher argument `--report-recipient`.
+pub(crate) const DISPATCH_REPORT_RECIPIENT_FLAG: &str = "--report-recipient";
+/// The launcher argument `--resident`.
+pub(crate) const DISPATCH_RESIDENT_FLAG: &str = "--resident";
+/// The launcher argument `--role`.
+pub(crate) const DISPATCH_ROLE_FLAG: &str = "--role";
+/// The launcher argument `--sandbox`.
+pub(crate) const DISPATCH_SANDBOX_FLAG: &str = "--sandbox";
+/// The launcher argument `--service-tier`.
+pub(crate) const DISPATCH_SERVICE_TIER_FLAG: &str = "--service-tier";
+/// The launcher argument `--slot`.
+pub(crate) const DISPATCH_SLOT_FLAG: &str = "--slot";
+/// The launcher argument `--staff-id`.
+pub(crate) const DISPATCH_STAFF_ID_FLAG: &str = "--staff-id";
+/// The launcher argument `--style-since`.
+pub(crate) const DISPATCH_STYLE_SINCE_FLAG: &str = "--style-since";
+/// The launcher argument `--style-until`.
+pub(crate) const DISPATCH_STYLE_UNTIL_FLAG: &str = "--style-until";
+/// The launcher argument `--submission-receipt-file`.
+pub(crate) const DISPATCH_SUBMISSION_RECEIPT_FILE_FLAG: &str = "--submission-receipt-file";
+/// The launcher argument `--summary-file`.
+pub(crate) const DISPATCH_SUMMARY_FILE_FLAG: &str = "--summary-file";
+/// The launcher argument `--summary`.
+pub(crate) const DISPATCH_SUMMARY_FLAG: &str = "--summary";
+/// The launcher argument `--task`.
+pub(crate) const DISPATCH_TASK_FLAG: &str = "--task";
+/// The launcher argument `--timeout`.
+pub(crate) const DISPATCH_TIMEOUT_FLAG: &str = "--timeout";
+/// The launcher argument `--message-file`.
+pub(crate) const MESSAGE_FILE_FLAG: &str = "--message-file";
+/// The launcher argument `--message`.
+pub(crate) const MESSAGE_FLAG: &str = "--message";
+/// The launcher argument `--to`.
+pub(crate) const SEAT_FLAG: &str = "--to";
+/// The launcher argument `--session-dir`.
+pub(crate) const SESSION_DIRECTORY_FLAG: &str = "--session-dir";
+
+/// The shell entry for the current assignment launcher.
+pub(crate) const DISPATCH_ASSIGN_SHELL_SCRIPT: &str = ".claude/scripts/direct/assign.sh";
+/// The Python entry for the current assignment launcher.
+pub(crate) const DISPATCH_ASSIGN_PYTHON_SCRIPT: &str = ".claude/scripts/direct/assign.py";

@@ -1,5 +1,7 @@
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 
+use crate::ColorMode;
 use crate::Viewport;
 use crate::active_focus_color;
 use crate::hover_focus_color;
@@ -107,10 +109,24 @@ pub const fn selection_state_for(
 /// Background style for a cursor row given the owning pane's focus
 /// state.
 #[must_use]
-pub fn selection_style(focus: PaneFocusState) -> Style {
+pub fn selection_style(focus: PaneFocusState, mode: ColorMode) -> Style {
     match focus {
-        PaneFocusState::Active => Style::default().bg(active_focus_color()),
-        PaneFocusState::Remembered => Style::default().bg(remembered_focus_color()),
+        PaneFocusState::Active => {
+            let style = Style::default().bg(active_focus_color());
+            if mode == ColorMode::NoColor {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            }
+        },
+        PaneFocusState::Remembered => {
+            let style = Style::default().bg(remembered_focus_color());
+            if mode == ColorMode::NoColor {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            }
+        },
         PaneFocusState::Inactive => Style::default(),
     }
 }
@@ -118,18 +134,20 @@ pub fn selection_style(focus: PaneFocusState) -> Style {
 impl PaneSelectionState {
     /// Style overlay that visually communicates this selection state.
     #[must_use]
-    pub fn overlay_style(self) -> Style {
+    pub fn overlay_style(self, mode: ColorMode) -> Style {
         match self {
-            Self::Active => selection_style(PaneFocusState::Active),
+            Self::Active => selection_style(PaneFocusState::Active, mode),
             Self::Hovered => Style::default().bg(hover_focus_color()),
-            Self::Remembered => selection_style(PaneFocusState::Remembered),
+            Self::Remembered => selection_style(PaneFocusState::Remembered, mode),
             Self::Unselected => Style::default(),
         }
     }
 
     /// Patch `style` with this selection state's overlay.
     #[must_use]
-    pub fn patch(self, style: Style) -> Style { style.patch(self.overlay_style()) }
+    pub fn patch(self, style: Style, mode: ColorMode) -> Style {
+        style.patch(self.overlay_style(mode))
+    }
 }
 
 /// Format a 1-based scroll position as `"{pos+1} of {len}"`.
@@ -144,14 +162,35 @@ mod tests {
 
     use super::PaneFocusState;
     use super::PaneSelectionState;
+    use crate::ColorMode;
     use crate::Viewport;
     use crate::active_focus_color;
     use crate::hover_focus_color;
     use crate::remembered_focus_color;
 
     #[test]
+    fn selection_emphasis_uses_the_selected_color_mode() {
+        for (mode, active, remembered) in [
+            (ColorMode::Colored, Modifier::empty(), Modifier::empty()),
+            (ColorMode::NoColor, Modifier::REVERSED, Modifier::BOLD),
+        ] {
+            let active_style = super::selection_style(PaneFocusState::Active, mode);
+            let remembered_style = super::selection_style(PaneFocusState::Remembered, mode);
+            assert_eq!(active_style.add_modifier, active);
+            assert_eq!(active_style.bg, Some(active_focus_color()));
+            assert_eq!(remembered_style.add_modifier, remembered);
+            assert_eq!(remembered_style.bg, Some(remembered_focus_color()));
+            assert_eq!(PaneSelectionState::Active.overlay_style(mode), active_style);
+            assert_eq!(
+                PaneSelectionState::Remembered.overlay_style(mode),
+                remembered_style
+            );
+        }
+    }
+
+    #[test]
     fn active_selection_style_only_adds_background_and_emphasis() {
-        let style = super::selection_style(PaneFocusState::Active);
+        let style = super::selection_style(PaneFocusState::Active, ColorMode::Colored);
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(active_focus_color()));
@@ -161,7 +200,7 @@ mod tests {
     #[test]
     fn selection_patch_preserves_existing_foreground() {
         let base_style = Style::default().fg(Color::Red);
-        let patched_style = PaneSelectionState::Active.patch(base_style);
+        let patched_style = PaneSelectionState::Active.patch(base_style, ColorMode::Colored);
 
         assert_eq!(patched_style.fg, Some(Color::Red));
         assert_eq!(patched_style.bg, Some(active_focus_color()));
@@ -171,7 +210,7 @@ mod tests {
     #[test]
     fn remembered_selection_patch_preserves_existing_foreground() {
         let base_style = Style::default().fg(Color::Green);
-        let patched_style = PaneSelectionState::Remembered.patch(base_style);
+        let patched_style = PaneSelectionState::Remembered.patch(base_style, ColorMode::Colored);
 
         assert_eq!(patched_style.fg, Some(Color::Green));
         assert_eq!(patched_style.bg, Some(remembered_focus_color()));
@@ -180,7 +219,7 @@ mod tests {
     #[test]
     fn hovered_selection_patch_preserves_existing_foreground() {
         let base_style = Style::default().fg(Color::Blue);
-        let patched_style = PaneSelectionState::Hovered.patch(base_style);
+        let patched_style = PaneSelectionState::Hovered.patch(base_style, ColorMode::Colored);
 
         assert_eq!(patched_style.fg, Some(Color::Blue));
         assert_eq!(patched_style.bg, Some(hover_focus_color()));

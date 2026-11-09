@@ -13,6 +13,7 @@ use crate::tui::app::App;
 use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
+use crate::tui::project_list;
 use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -65,12 +66,12 @@ impl RunTargetKind {
 /// controls ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetSource {
-    label: String,
-    kind:  TargetSourceKind,
+    label:           String,
+    pub(super) kind: TargetSourceKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TargetSourceKind {
+pub(super) enum TargetSourceKind {
     WorkspaceRoot,
     Member,
     Worktree,
@@ -127,7 +128,10 @@ pub struct TargetEntry {
     pub display_name:      String,
     pub run_target_kind:   RunTargetKind,
     pub source:            TargetSource,
+    /// The working directory for Cargo.
     pub project_path:      AbsolutePath,
+    /// The owning package directory from its Cargo manifest.
+    pub package_path:      AbsolutePath,
     pub package_name:      String,
     pub src_path:          AbsolutePath,
     /// Cargo `required-features` for this target, passed as `--features`
@@ -243,7 +247,11 @@ impl TargetsData {
             if !include_all_members && manifest_dir != Some(selected_path) {
                 continue;
             }
-            let source = if is_real_workspace && manifest_dir == Some(checkout_root) {
+            let Some(manifest_dir) = manifest_dir else {
+                continue;
+            };
+            let package_path = AbsolutePath::from(manifest_dir);
+            let source = if is_real_workspace && manifest_dir == checkout_root {
                 TargetSource::workspace_root(record.name.clone())
             } else {
                 TargetSource::member(record.name.clone())
@@ -257,14 +265,18 @@ impl TargetsData {
                         run_target_kind:   RunTargetKind::Binary,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
+                        package_path:      package_path.clone(),
                         package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Example) {
-                    let category =
-                        example_category(manifest_dir, target.src_path.as_path(), &target.name);
+                    let category = example_category(
+                        Some(manifest_dir),
+                        target.src_path.as_path(),
+                        &target.name,
+                    );
                     let display_name = if category.is_empty() {
                         target.name.clone()
                     } else {
@@ -276,6 +288,7 @@ impl TargetsData {
                         run_target_kind: RunTargetKind::Example,
                         source: source.clone(),
                         project_path: project_path.clone(),
+                        package_path: package_path.clone(),
                         package_name: record.name.clone(),
                         src_path: target.src_path.clone(),
                         required_features: target.required_features.clone(),
@@ -288,6 +301,7 @@ impl TargetsData {
                         run_target_kind:   RunTargetKind::Bench,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
+                        package_path:      package_path.clone(),
                         package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
@@ -334,12 +348,19 @@ fn lookup_worktree_group_targets(
     }
 
     let mut targets_data = TargetsData::default();
-    for entry in worktree_group
+    let entries: Vec<_> = worktree_group
         .iter_entries()
         .filter(|entry| entry.visibility() == Visibility::Visible)
-    {
+        .collect();
+    let labels = project_list::differing_path_labels(
+        &entries
+            .iter()
+            .map(|entry| entry.path().to_string())
+            .collect::<Vec<_>>(),
+    );
+    for (entry, label) in entries.into_iter().zip(labels) {
         let mut targets = lookup_targets_data_for_path(app, entry.path());
-        targets.relabel_as_worktree(&entry.root_directory_name().into_string());
+        targets.relabel_as_worktree(&label);
         targets_data.append(targets);
     }
     targets_data.sort_entries();
@@ -433,6 +454,7 @@ mod target_list_tests {
             run_target_kind,
             source: TargetSource::workspace_root("demo".into()),
             project_path: AbsolutePath::from("/tmp"),
+            package_path: AbsolutePath::from("/tmp"),
             package_name: "demo".into(),
             src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),
             required_features: Vec::new(),

@@ -63,7 +63,7 @@ impl Renderable<PaneRenderCtx<'_>> for PackagePane {
     ) -> Option<PaneFrameChrome> {
         let render_styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         tui_pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(pane_render_ctx.color_mode),
         };
         Some(package::render_package_pane_body(
             frame,

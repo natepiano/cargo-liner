@@ -127,17 +127,23 @@ impl GlobalShortcutsPane {
     }
 
     /// Render the global shortcuts modal.
-    pub fn render<Ctx>(&mut self, frame: &mut Frame<'_>, area: Rect, keymap: &Keymap<Ctx>)
-    where
+    pub fn render<Ctx>(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        keymap: &Keymap<Ctx>,
+        mode: crate::ColorMode,
+    ) where
         Ctx: AppContext + 'static,
     {
         let rows = keymap.global_shortcut_rows();
         self.viewport.set_len(rows.len());
-        let inputs = render_inputs(&rows, &self.viewport, self.focus.pane_focus_state);
+        let inputs = render_inputs(&rows, &self.viewport, self.focus.pane_focus_state, mode);
         let width = inputs.content_width.min(area.width.saturating_sub(4));
         let line_count = inputs.lines.len();
         let height = popup_height(line_count, area.height);
         let popup = PopupFrame {
+            color_mode: mode,
             title: Some(" Global Shortcuts ".to_string()),
             border_color: title_color(),
             width,
@@ -199,19 +205,21 @@ pub fn draw_global_shortcuts_overlay<Ctx>(
 ) where
     Ctx: AppContext + 'static,
 {
+    let mode = ctx.framework().color_mode;
     let pane = &mut ctx.framework_mut().global_shortcuts_pane;
     pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
-    pane.render(frame, frame.area(), keymap);
+    pane.render(frame, frame.area(), keymap, mode);
 }
 
 fn render_inputs(
     rows: &[GlobalShortcutRow],
     viewport: &Viewport,
     focus: PaneFocusState,
+    mode: crate::ColorMode,
 ) -> RenderInputs {
-    let (lines, line_targets) = build_lines(rows, viewport, focus);
+    let (lines, line_targets) = build_lines(rows, viewport, focus, mode);
     let content_width = lines
         .iter()
         .map(line_width)
@@ -236,6 +244,7 @@ fn build_lines(
     rows: &[GlobalShortcutRow],
     viewport: &Viewport,
     focus: PaneFocusState,
+    mode: crate::ColorMode,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
     let key_width = rows
         .iter()
@@ -252,7 +261,7 @@ fn build_lines(
             line_targets.push(None);
         }
         let selection = crate::selection_state(viewport, selectable_index, focus);
-        lines.push(row_line(row, selection, key_width));
+        lines.push(row_line(row, selection, key_width, mode));
         line_targets.push(Some(selectable_index));
     }
     (lines, line_targets)
@@ -280,6 +289,7 @@ fn row_line<'a>(
     row: &GlobalShortcutRow,
     selection: PaneSelectionState,
     key_width: usize,
+    mode: crate::ColorMode,
 ) -> Line<'a> {
     let padded_desc = format!(
         "{:<width$}",
@@ -297,11 +307,11 @@ fn row_line<'a>(
     Line::from(vec![
         Span::styled(
             format!("{SECTION_ITEM_INDENT}{marker}{padded_desc}"),
-            selection.patch(Style::default().fg(description_ink)),
+            selection.patch(Style::default().fg(description_ink), mode),
         ),
         Span::styled(
             key_display,
-            selection.patch(Style::default().fg(text_default())),
+            selection.patch(Style::default().fg(text_default()), mode),
         ),
     ])
 }
@@ -326,6 +336,7 @@ mod tests {
     use super::render_inputs;
     use super::row_line;
     use crate::BLOCK_BORDER_WIDTH;
+    use crate::ColorMode;
     use crate::GlobalShortcutRow;
     use crate::KeyBind;
     use crate::KeySequence;
@@ -348,6 +359,7 @@ mod tests {
             &row,
             PaneSelectionState::Unselected,
             key_label(&row).width(),
+            ColorMode::Colored,
         );
         let description_width = line.spans[0].content.as_ref().width();
         let indent_width = format!("{SECTION_ITEM_INDENT}  ").width();
@@ -364,7 +376,12 @@ mod tests {
             description: "Pause or resume all lints",
             key:         Some(KeySequence::from(KeyBind::shift(' '))),
         }];
-        let inputs = render_inputs(&rows, &Viewport::new(), PaneFocusState::Active);
+        let inputs = render_inputs(
+            &rows,
+            &Viewport::new(),
+            PaneFocusState::Active,
+            ColorMode::Colored,
+        );
         let longest_line = inputs.lines.iter().map(line_width).max().unwrap_or(0);
         let expected = longest_line
             .saturating_add(BLOCK_BORDER_WIDTH)

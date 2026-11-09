@@ -107,7 +107,7 @@ impl Renderable<PaneRenderCtx<'_>> for GitPane {
     ) -> Option<PaneFrameChrome> {
         let render_styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         tui_pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(ctx.color_mode),
         };
         Some(git::render_git_pane_body(
             frame,

@@ -1,1 +1,19 @@
-{"schema":1,"edges":[{"manager":"manager-session","member":"unit-session","role":"unit"}]}
+{
+  "schema": 2,
+  "rows": [
+    {
+      "id": "s0",
+      "name": "manager-session",
+      "kind": "showrunner",
+      "parent": null,
+      "current_session": "manager-session"
+    },
+    {
+      "id": "s1",
+      "name": "unit-session",
+      "kind": "unit",
+      "parent": "s0",
+      "current_session": "unit-session"
+    }
+  ]
+}

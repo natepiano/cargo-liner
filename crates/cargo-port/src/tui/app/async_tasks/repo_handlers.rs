@@ -21,7 +21,9 @@ use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::CratesIoReleaseState;
 use crate::project::FirstCommit;
+use crate::project::GitRepo;
 use crate::project::GitStatus;
+use crate::project::GithubRunCount;
 use crate::project::LocalGitState;
 use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
@@ -31,6 +33,7 @@ use crate::project::PullRequestInfo;
 use crate::project::PullRequestState;
 use crate::project::PullRequestUnavailableReason;
 use crate::project::RepoInfo;
+use crate::project::RepositoryProbe;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -38,6 +41,8 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
+use crate::tui::panes::DetailCacheState;
+use crate::tui::project_list::ProjectPathLookup;
 use crate::tui::project_list_state::SyncResolution;
 use crate::tui::state;
 
@@ -79,8 +84,10 @@ impl App {
                     );
                     scan::emit_service_signal(&sender, signal);
                     let (runs, github_total) = match ci_fetch_result {
-                        CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
-                        CiFetchResult::CacheOnly(runs) => (runs, 0),
+                        CiFetchResult::Loaded { runs, github_total } => {
+                            (runs, GithubRunCount::Known(github_total))
+                        },
+                        CiFetchResult::CacheOnly(runs) => (runs, GithubRunCount::Unavailable),
                     };
                     let data = CachedRepoData {
                         runs,
@@ -170,8 +177,13 @@ impl App {
         // CI, branch and lint already resolve ownership to that checkout.
         let stores_own_git_state = !self.project_list.is_vendored_path(path)
             && !self.project_list.is_workspace_member_path(path);
-        if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
-            project.local_git_state = LocalGitState::Detected(Box::new(checkout_info));
+        if stores_own_git_state {
+            match self.project_list.at_path_mut(path) {
+                ProjectPathLookup::Found(project) => {
+                    project.local_git_state = LocalGitState::Detected(Box::new(checkout_info));
+                },
+                ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
+            }
         }
         // `panes.clear_worktree_summary_cache` discards branch names read from
         // `ProjectInfo::local_git_state`, so worktree summary rows recompute from the
@@ -273,7 +285,7 @@ impl App {
         let is_submodule_target = self.project_list.is_submodule_path(path);
         if is_submodule_target {
             if let Some(git_repo) = self.project_list.ensure_git_repo_for(path) {
-                git_repo.repo_info = Some(info);
+                git_repo.repo_info = RepositoryProbe::Repository(info);
             }
         } else if let Some(entry) = self.project_list.entry_containing_mut(path) {
             if entry.root_item.path().as_path() != path {
@@ -282,7 +294,7 @@ impl App {
                 return;
             }
             let git_repo = entry.git_repo.get_or_insert_with(Default::default);
-            git_repo.repo_info = Some(info);
+            git_repo.repo_info = RepositoryProbe::Repository(info);
         }
         if fetch_head_advanced
             && self.scan.is_complete()
@@ -294,6 +306,19 @@ impl App {
         }
         self.record_sync_observation(path);
         self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Store a completed probe outside Git without starting a remote fetch.
+    pub(super) fn handle_no_repository(&mut self, path: &Path) {
+        if self.project_list.is_submodule_path(path) {
+            if let Some(repo) = self.project_list.ensure_git_repo_for(path) {
+                *repo = GitRepo::without_repository();
+            }
+        } else if let Some(entry) = self.project_list.entry_containing_mut(path)
+            && entry.root_item.path().as_path() == path
+        {
+            entry.git_repo = Some(GitRepo::without_repository());
+        }
     }
     /// Diff the current sync state for `path` against the tracker's
     /// baseline; on transition, push or extend the "Sync changes" task
@@ -647,7 +672,7 @@ impl App {
         }
         self.ci.clear_content();
         self.lint.clear_content();
-        self.panes.clear_detail_data(None);
+        self.panes.clear_detail_data(DetailCacheState::Cleared);
         self.background
             .register_item_background_services(&service_root_item);
         self.register_lint_project_if_eligible(&service_root_item);

@@ -12,14 +12,13 @@ mod lints;
 mod output;
 mod package;
 mod pane_data;
+mod presentation;
 mod project_list;
 mod spec;
 mod support;
 mod system;
 mod targets;
 mod widths;
-
-use std::collections::HashMap;
 
 #[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
@@ -44,7 +43,9 @@ pub(super) use cpu::CpuPane;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
+pub(super) use data::DetailCacheState;
 pub(super) use description::DescriptionBlock;
+pub(super) use description::DescriptionState;
 pub(super) use description::EmptyDescriptionBehavior;
 pub(super) use description::SyncedDescriptionHeight;
 pub(super) use description::sync_floor;
@@ -76,11 +77,14 @@ pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
+pub(super) use pane_data::GithubStars;
 #[cfg(test)]
 pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
 #[cfg(test)]
 pub(super) use pane_data::HeadRelation;
 pub(super) use pane_data::PackageData;
+#[cfg(test)]
+pub(super) use pane_data::PackageDeletion;
 #[cfg(test)]
 pub(super) use pane_data::PackagePresence;
 pub(super) use pane_data::PackageRow;
@@ -94,6 +98,7 @@ pub(super) use pane_data::PullRequestPolling;
 pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
+pub(super) use pane_data::QuotaObservation;
 pub(super) use pane_data::RemoteRow;
 #[cfg(test)]
 pub(super) use pane_data::RemoteRows;
@@ -127,6 +132,7 @@ pub(super) use spec::size_spec;
 pub(super) use system::Panes;
 pub(super) use targets::BuildMode;
 pub(super) use targets::RunTargetKind;
+pub(super) use targets::TargetAvailability;
 pub(super) use targets::TargetEntry;
 #[cfg(test)]
 pub(super) use targets::TargetSource;
@@ -151,7 +157,7 @@ use super::keymap::GitAction;
 use super::keymap::LintsAction;
 use super::keymap::PackageAction;
 use super::keymap::TargetsAction;
-use super::project_list_state::ProjectList;
+use super::project_list_state::DiskCacheKey;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
 #[cfg(test)]
@@ -204,8 +210,8 @@ pub(super) fn dispatch_targets_action(targets_action: TargetsAction, app: &mut A
     actions::dispatch_targets_action(targets_action, app);
 }
 
-pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    project_list::compute_disk_cache(entries)
+pub(super) fn compute_disk_cache(key: &DiskCacheKey) -> Vec<u64> {
+    project_list::compute_disk_cache(key)
 }
 
 #[cfg(test)]
@@ -246,6 +252,14 @@ pub(super) fn navigate_package_detail(app: &mut App, nav_action: NavAction) {
 pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }
 
 #[cfg(test)]
+pub(super) use constants::PROJECT_LIST_LEFT_PADDING;
+pub(super) use constants::PROJECT_LIST_RIGHT_PADDING;
+pub(super) use layout::PaneVisibility;
+#[cfg(test)]
 pub(super) use pane_data::GitProbe;
 pub(super) use pane_data::GitReadHealth;
 pub(super) use pane_data::GitSyncLabels;
+pub(in crate::tui) use presentation::ProjectPresentation;
+pub(super) use project_list::ProjectRowPresentation;
+pub(super) use project_list::ProjectRowWidthInput;
+pub(super) use project_list::project_width_presentations;

@@ -45,6 +45,7 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 69, g = 69, b = 69 }
 
 [variants.roles]
+"cargo-port.selection.text" = "Black"
 
 [variants.status]
 bar = { r = 220, g = 220, b = 220 }

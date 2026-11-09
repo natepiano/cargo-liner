@@ -1,6 +1,7 @@
 mod apply;
 mod combine;
 mod execute;
+mod function_length;
 mod mend_runner;
 mod notices;
 mod plan;

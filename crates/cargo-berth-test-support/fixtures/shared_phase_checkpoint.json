@@ -1,0 +1,521 @@
+{
+  "claims": [
+    {
+      "schema_version": 2,
+      "event_id": "01a1b940-e9a9-78f2-b3e9-0dfdd3ec7494",
+      "actor": {
+        "repository": "01a069e3-f5b0-7b72-b619-006afc838755",
+        "worktree": "01a11bbe-3d84-7901-b137-668bcd38c351",
+        "run": "01a1b940-e98c-7340-b562-bc48f5aa6b68"
+      },
+      "identity_inputs": {
+        "status": "recorded",
+        "invocation_directory": {
+          "status": "utf8",
+          "path": "/home/natepiano/rust/cargo-liner-tile"
+        },
+        "cargo_berth_session_id": {
+          "status": "unset"
+        },
+        "claude_code_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f"
+        },
+        "cargo_berth_run": {
+          "status": "unset"
+        },
+        "git_dir": {
+          "status": "unset"
+        },
+        "git_common_dir": {
+          "status": "unset"
+        }
+      },
+      "at": "2026-11-08T03:43:21.513Z",
+      "projection_generation": 187512,
+      "op": "claim",
+      "reservation_id": "01a1b940-e98c-7340-b562-bc51b4be154e",
+      "scopes": [
+        {
+          "path": "crates/tui_pane/src/tiles/draw.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/tui_pane/src/tiles/grid.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/frame_preparation.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/command_cache.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/cell_paint.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/tui_pane/src/pane/frame.rs",
+          "kind": "file"
+        }
+      ],
+      "source": {
+        "kind": "explicit"
+      },
+      "purpose": {
+        "kind": "not_provided_by_caller"
+      },
+      "trunk_at_claim": "c2b063fd48b3fc643f3ef7615dd15cc53a4abe3c",
+      "target": {
+        "target": "refs/heads/main",
+        "source": "branch_configuration"
+      },
+      "head_snapshot": {
+        "kind": "branch",
+        "full_ref": "refs/heads/remove-running-section-tile",
+        "head": "a833d55049a1f4e6981add48ae22b3f4d8cd9d04"
+      },
+      "phase_start_head": "a833d55049a1f4e6981add48ae22b3f4d8cd9d04",
+      "worktree_root": "/home/natepiano/rust/cargo-liner-tile",
+      "worktree_administrative_locator": "worktrees/cargo-liner-tile-fixes",
+      "authorization": {
+        "kind": "sequence",
+        "overlaps": [
+          {
+            "reservation_id": "01a1b75f-ef24-72b0-a588-a323248f496e",
+            "scope_revision": "9d866d4b92e070b8db1d9d56b010ca073df48c5520f871c1ad11d4f2b41c51c0",
+            "scopes": [
+              {
+                "path": "crates/tui_pane/src/pane/frame.rs",
+                "kind": "file"
+              },
+              {
+                "path": "crates/tui_pane/src/tiles/draw.rs",
+                "kind": "file"
+              }
+            ]
+          }
+        ],
+        "blocker": "01a1b75f-ef24-72b0-a588-a323248f496e",
+        "direction": "holder_before_requester",
+        "edge_id": "01a1b940-e9a8-75d2-bb27-78d76e1d0165",
+        "reason": "showrunner 2026-11-07: Phase 31 edits draw.rs and draw_clipped in frame.rs beside port; GridLines waits for port 4n on main"
+      },
+      "coordination_identity_provenance": "not_presented"
+    },
+    {
+      "schema_version": 2,
+      "event_id": "01a1b9c0-0421-70f1-81d3-dcfca7f8c3e1",
+      "actor": {
+        "repository": "01a069e3-f5b0-7b72-b619-006afc838755",
+        "worktree": "01a11bbe-3d84-7901-b137-668bcd38c351",
+        "run": "01a1b9c0-03fe-7771-bb2a-263369e21c0d"
+      },
+      "identity_inputs": {
+        "status": "recorded",
+        "invocation_directory": {
+          "status": "utf8",
+          "path": "/home/natepiano/rust/cargo-liner-tile"
+        },
+        "cargo_berth_session_id": {
+          "status": "unset"
+        },
+        "claude_code_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f"
+        },
+        "cargo_berth_run": {
+          "status": "unset"
+        },
+        "git_dir": {
+          "status": "unset"
+        },
+        "git_common_dir": {
+          "status": "unset"
+        }
+      },
+      "at": "2026-11-08T06:02:11.361Z",
+      "projection_generation": 188082,
+      "op": "claim",
+      "reservation_id": "01a1b9c0-03fe-7771-bb2a-264f9d6b2497",
+      "scopes": [
+        {
+          "path": "crates/tui_pane/src/tiles/draw.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/tui_pane/src/tiles/grid.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/frame_preparation.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/command_cache.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/render/cell_paint.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/tui_pane/src/pane/frame.rs",
+          "kind": "file"
+        }
+      ],
+      "source": {
+        "kind": "explicit"
+      },
+      "purpose": {
+        "kind": "not_provided_by_caller"
+      },
+      "trunk_at_claim": "80435c06c91ec03efb67433095a328e991fe658b",
+      "target": {
+        "target": "refs/heads/main",
+        "source": "branch_configuration"
+      },
+      "head_snapshot": {
+        "kind": "branch",
+        "full_ref": "refs/heads/remove-running-section-tile",
+        "head": "705c2b1a183fe995945592bc81be54ca2cb4c6cc"
+      },
+      "phase_start_head": "705c2b1a183fe995945592bc81be54ca2cb4c6cc",
+      "worktree_root": "/home/natepiano/rust/cargo-liner-tile",
+      "worktree_administrative_locator": "worktrees/cargo-liner-tile-fixes",
+      "authorization": {
+        "kind": "sequence",
+        "overlaps": [
+          {
+            "reservation_id": "01a1b75f-ef24-72b0-a588-a323248f496e",
+            "scope_revision": "9d866d4b92e070b8db1d9d56b010ca073df48c5520f871c1ad11d4f2b41c51c0",
+            "scopes": [
+              {
+                "path": "crates/tui_pane/src/pane/frame.rs",
+                "kind": "file"
+              },
+              {
+                "path": "crates/tui_pane/src/tiles/draw.rs",
+                "kind": "file"
+              }
+            ]
+          }
+        ],
+        "blocker": "01a1b75f-ef24-72b0-a588-a323248f496e",
+        "direction": "holder_before_requester",
+        "edge_id": "01a1b9c0-0420-7112-9ccf-6373b20dca1b",
+        "reason": "showrunner 2026-11-07: Phase 31 edits draw.rs and draw_clipped in frame.rs beside port; claimed again after the 43g checkpoint released the shared claim"
+      },
+      "coordination_identity_provenance": "not_presented"
+    },
+    {
+      "schema_version": 2,
+      "event_id": "01a1b9c6-04f7-74e2-aa76-5e6d3b2a29c0",
+      "actor": {
+        "repository": "01a069e3-f5b0-7b72-b619-006afc838755",
+        "worktree": "01a11bbe-3d84-7901-b137-668bcd38c351",
+        "run": "01a1b9c0-03fe-7771-bb2a-263369e21c0d"
+      },
+      "identity_inputs": {
+        "status": "recorded",
+        "invocation_directory": {
+          "status": "utf8",
+          "path": "/home/natepiano/rust/cargo-liner-tile"
+        },
+        "cargo_berth_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f.phase-30m"
+        },
+        "claude_code_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f"
+        },
+        "cargo_berth_run": {
+          "status": "unset"
+        },
+        "git_dir": {
+          "status": "unset"
+        },
+        "git_common_dir": {
+          "status": "unset"
+        }
+      },
+      "at": "2026-11-08T06:08:44.791Z",
+      "projection_generation": 188091,
+      "op": "claim",
+      "reservation_id": "01a1b9c6-04b6-70d1-b878-2ae47e79e1ca",
+      "scopes": [
+        {
+          "path": "crates/cargo-tile/src/cargo-capture-shim.sh",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/hook.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/constants.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/CHANGELOG.md",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/progress/capture.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/terminal.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/census/scan.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/tests/cli_lifecycle.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/tests/shim_modes.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/app_scenarios.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/capture_log_observer.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/fixture_events.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/installed.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/mod.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/parallel_cases.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/python_cache.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/reader_executable.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/reader_scenario.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/reader_scenario_cases.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/reader_scenarios.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/reader_staging_cases.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/rows_readout.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/setup_reader.py",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/shim_registration/shared_capture.rs",
+          "kind": "file"
+        }
+      ],
+      "source": {
+        "kind": "first_touch"
+      },
+      "purpose": {
+        "kind": "not_provided_by_caller"
+      },
+      "trunk_at_claim": "80435c06c91ec03efb67433095a328e991fe658b",
+      "target": {
+        "target": "refs/heads/main",
+        "source": "branch_configuration"
+      },
+      "head_snapshot": {
+        "kind": "branch",
+        "full_ref": "refs/heads/remove-running-section-tile",
+        "head": "b92742058749c999d748be724b3ea1818e97c377"
+      },
+      "phase_start_head": "b92742058749c999d748be724b3ea1818e97c377",
+      "worktree_root": "/home/natepiano/rust/cargo-liner-tile",
+      "worktree_administrative_locator": "worktrees/cargo-liner-tile-fixes",
+      "authorization": {
+        "kind": "no_conflict"
+      },
+      "coordination_identity_provenance": "presented"
+    },
+    {
+      "schema_version": 2,
+      "event_id": "01a1b9c9-3c57-7330-9adf-28e2fd2dd434",
+      "actor": {
+        "repository": "01a069e3-f5b0-7b72-b619-006afc838755",
+        "worktree": "01a11bbe-3d84-7901-b137-668bcd38c351",
+        "run": "01a1b9c0-03fe-7771-bb2a-263369e21c0d"
+      },
+      "identity_inputs": {
+        "status": "recorded",
+        "invocation_directory": {
+          "status": "utf8",
+          "path": "/home/natepiano/rust/cargo-liner-tile"
+        },
+        "cargo_berth_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f.phase-43i"
+        },
+        "claude_code_session_id": {
+          "status": "utf8",
+          "value": "da82452f-3640-4dec-b6c5-0c783d77e79f"
+        },
+        "cargo_berth_run": {
+          "status": "unset"
+        },
+        "git_dir": {
+          "status": "unset"
+        },
+        "git_common_dir": {
+          "status": "unset"
+        }
+      },
+      "at": "2026-11-08T06:12:15.575Z",
+      "projection_generation": 188270,
+      "op": "claim",
+      "reservation_id": "01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8",
+      "scopes": [
+        {
+          "path": "crates/cargo-tile/src/app_global_action.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/main.rs",
+          "kind": "file"
+        },
+        {
+          "path": "crates/cargo-tile/src/cli.rs",
+          "kind": "file"
+        }
+      ],
+      "source": {
+        "kind": "first_touch"
+      },
+      "purpose": {
+        "kind": "not_provided_by_caller"
+      },
+      "trunk_at_claim": "80435c06c91ec03efb67433095a328e991fe658b",
+      "target": {
+        "target": "refs/heads/main",
+        "source": "branch_configuration"
+      },
+      "head_snapshot": {
+        "kind": "branch",
+        "full_ref": "refs/heads/remove-running-section-tile",
+        "head": "b92742058749c999d748be724b3ea1818e97c377"
+      },
+      "phase_start_head": "b92742058749c999d748be724b3ea1818e97c377",
+      "worktree_root": "/home/natepiano/rust/cargo-liner-tile",
+      "worktree_administrative_locator": "worktrees/cargo-liner-tile-fixes",
+      "authorization": {
+        "kind": "no_conflict"
+      },
+      "coordination_identity_provenance": "presented"
+    }
+  ],
+  "empty_share": {
+    "schema_version": 2,
+    "event_id": "01a1ba01-0f3f-7a32-8300-78114228bcc5",
+    "actor": {
+      "repository": "01a069e3-f5b0-7b72-b619-006afc838755",
+      "worktree": "01a149d4-5027-7993-8f86-f6e643ea072b",
+      "run": "01a1ba01-0da6-7e80-b44a-1ddbc944fdc8"
+    },
+    "identity_inputs": {
+      "status": "recorded",
+      "invocation_directory": {
+        "status": "utf8",
+        "path": "/home/natepiano/rust/cargo-liner-style"
+      },
+      "cargo_berth_session_id": {
+        "status": "unset"
+      },
+      "claude_code_session_id": {
+        "status": "utf8",
+        "value": "294cac84-fe49-4a1b-952d-70ffd6ce8aee"
+      },
+      "cargo_berth_run": {
+        "status": "unset"
+      },
+      "git_dir": {
+        "status": "unset"
+      },
+      "git_common_dir": {
+        "status": "unset"
+      }
+    },
+    "at": "2026-11-08T07:13:14.047Z",
+    "projection_generation": 188973,
+    "op": "holder_merge_extent_observed",
+    "extent": {
+      "status": "empty",
+      "key": {
+        "trunk": "726589707e849418b5eda263d190e42a8ce61496",
+        "head": "40bb8be2f2a8a06086d2f12f807c33064d6daeb9",
+        "working_tree": {
+          "tracked_paths": [
+            "docs/cargo-port/remove-running-section-tile-fixes.md"
+          ],
+          "untracked_paths": []
+        },
+        "reservation_group": {
+          "kind": "reservation_shares",
+          "reservation_ids": [
+            "01a1b940-e98c-7340-b562-bc51b4be154e",
+            "01a1b9c0-03fe-7771-bb2a-264f9d6b2497",
+            "01a1b9c6-04b6-70d1-b878-2ae47e79e1ca",
+            "01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8"
+          ]
+        }
+      }
+    },
+    "reservations": [
+      {
+        "reservation_id": "01a1b9c0-03fe-7771-bb2a-264f9d6b2497",
+        "run_status": "editing"
+      },
+      {
+        "reservation_id": "01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8",
+        "run_status": "editing"
+      }
+    ]
+  }
+}

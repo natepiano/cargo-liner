@@ -6,6 +6,8 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::Action;
+use tui_pane::BLOCK_BORDER_WIDTH;
+use tui_pane::ColorMode;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -19,7 +21,7 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
-use super::constants::CONTENT_WIDTH_PADDING;
+use super::constants::CONTENT_RIGHT_PADDING;
 use super::constants::POPUP_BORDER_HEIGHT;
 use super::constants::POPUP_HORIZONTAL_MARGIN;
 use super::constants::POPUP_MIN_WIDTH;
@@ -36,6 +38,7 @@ use crate::tui::integration::AppGlobalAction;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::SccacheAction;
 use crate::tui::overlays::PopupFrame;
+use crate::tui::theme_roles;
 
 struct SccacheLines {
     lines:            Vec<Line<'static>>,
@@ -43,17 +46,19 @@ struct SccacheLines {
 }
 
 pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App) {
+    let mode = app.framework.color_mode;
     let SccacheLines {
-        lines,
+        mut lines,
         selectable_lines,
-    } = build_lines(&app.overlays.sccache_pane);
+    } = build_lines(&app.overlays.sccache_pane, mode);
     let hints = shortcut_hints(app);
     let width = content_width(&lines)
         .max(content_width(std::slice::from_ref(&hints)).saturating_add(1))
         .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
     let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
-        title: Some(" Sccache Stats ".to_string()),
+        color_mode: mode,
+        title: Some(" Sccache stats ".to_string()),
         border_color: title_color(),
         width,
         height,
@@ -63,6 +68,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         height: popup.inner.height.saturating_sub(1),
         ..popup.inner
     };
+    let hints = whole_hints(&hints, popup.inner.width.saturating_sub(1));
     if popup.inner.height > 0 {
         frame.render_widget(
             Paragraph::new(hints),
@@ -81,22 +87,43 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         .set_selectable_lines(selectable_lines);
     let visible_height = usize::from(inner.height);
     // A status-only popup starts at its first line.
-    let scroll_offset = app.overlays.sccache_pane.selected_line().map_or(0, |line| {
-        keep_visible_scroll_offset(line.line_index, visible_height, line_count)
-    });
+    let selected_line = app
+        .overlays
+        .sccache_pane
+        .selected_line()
+        .map_or(0, |line| line.line_index);
+    let scroll_offset = keep_visible_scroll_offset(selected_line, visible_height, line_count);
     let viewport = app.overlays.sccache_pane.viewport_mut();
     viewport.set_content_area(inner);
     viewport.set_viewport_rows(visible_height);
     viewport.set_scroll_offset(scroll_offset);
 
+    for line in &mut lines {
+        let padding = usize::from(inner.width).saturating_sub(line.width());
+        line.spans.push(Span::raw(" ".repeat(padding)));
+    }
     let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(paragraph, inner);
     render_overflow_affordance(
         frame,
         popup.outer,
-        ViewportOverflow::new(line_count, scroll_offset, visible_height, scroll_offset),
+        ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
         Style::default().fg(label_color()),
     );
+}
+
+fn whole_hints(hints: &Line<'static>, width: u16) -> Line<'static> {
+    let text = hints.to_string();
+    let mut visible = String::new();
+    for hint in text.split(" · ") {
+        let separator = if visible.is_empty() { "" } else { " · " };
+        if visible.width() + separator.width() + hint.width() > usize::from(width) {
+            break;
+        }
+        visible.push_str(separator);
+        visible.push_str(hint);
+    }
+    Line::from(visible)
 }
 
 fn shortcut_hints(app: &App) -> Line<'static> {
@@ -123,7 +150,7 @@ fn shortcut_hints(app: &App) -> Line<'static> {
     if let Some(scope) = keymap.navigation() {
         for (backward, forward, label) in [
             (NavAction::Up, NavAction::Down, "nav"),
-            (NavAction::Home, NavAction::End, "ends"),
+            (NavAction::Home, NavAction::End, "first/last"),
             (NavAction::PageUp, NavAction::PageDown, "page"),
             (NavAction::HalfPageUp, NavAction::HalfPageDown, "half page"),
         ] {
@@ -146,7 +173,7 @@ fn shortcut_hints(app: &App) -> Line<'static> {
     Line::from(hints.join(" · "))
 }
 
-fn build_lines(pane: &SccachePane) -> SccacheLines {
+fn build_lines(pane: &SccachePane, mode: ColorMode) -> SccacheLines {
     let mut lines = Vec::new();
     let mut selectable_lines = Vec::new();
     match pane.status() {
@@ -156,11 +183,11 @@ fn build_lines(pane: &SccachePane) -> SccacheLines {
         },
         SccacheStatus::Ready { lines: stat_rows } => {
             push_header(&mut lines, "Stats");
-            push_stat_lines(&mut lines, &mut selectable_lines, pane, stat_rows);
+            push_stat_lines(&mut lines, &mut selectable_lines, pane, stat_rows, mode);
         },
         SccacheStatus::Failed { lines: errors } => {
             push_header(&mut lines, "Error");
-            push_stat_lines(&mut lines, &mut selectable_lines, pane, errors);
+            push_stat_lines(&mut lines, &mut selectable_lines, pane, errors, mode);
         },
     }
     SccacheLines {
@@ -205,11 +232,12 @@ fn push_stat_lines(
     selectable_lines: &mut Vec<SccacheSelectableLine>,
     pane: &SccachePane,
     raw_lines: &[String],
+    mode: ColorMode,
 ) {
     let parsed = stats::parse_stat_lines(raw_lines);
     let alignment = stats::value_alignment_for_lines(&parsed);
     for line in parsed {
-        push_parsed_stat_line(lines, selectable_lines, pane, line, alignment);
+        push_parsed_stat_line(lines, selectable_lines, pane, line, alignment, mode);
     }
 }
 
@@ -219,6 +247,7 @@ fn push_parsed_stat_line(
     pane: &SccachePane,
     parsed: ParsedStatLine,
     alignment: ValueAlignment,
+    mode: ColorMode,
 ) {
     match parsed {
         ParsedStatLine::Field { label, value } => {
@@ -233,17 +262,27 @@ fn push_parsed_stat_line(
             });
             let selection = selection_state(&pane.viewport, target, PaneFocusState::Active);
             let label_width = stat_label_width();
-            lines.push(Line::from(vec![
-                Span::styled(SECTION_ITEM_INDENT, selection.patch(Style::default())),
-                Span::styled(
-                    format!("{label:<label_width$} "),
-                    selection.patch(Style::default().fg(label_color())),
-                ),
-                Span::styled(
-                    alignment.format(&value),
-                    selection.patch(Style::default().fg(text_default())),
-                ),
-            ]));
+            lines.push(
+                Line::from(vec![
+                    Span::styled(
+                        SECTION_ITEM_INDENT,
+                        crate::tui::theme_roles::selection_style(selection, mode),
+                    ),
+                    Span::styled(
+                        format!("{label:<label_width$} "),
+                        Style::default()
+                            .fg(label_color())
+                            .patch(crate::tui::theme_roles::selection_style(selection, mode)),
+                    ),
+                    Span::styled(
+                        alignment.format(&value),
+                        Style::default()
+                            .fg(text_default())
+                            .patch(crate::tui::theme_roles::selection_style(selection, mode)),
+                    ),
+                ])
+                .style(theme_roles::selection_style(selection, mode)),
+            );
         },
         ParsedStatLine::Subheader { text, context: _ } => push_subheader(lines, text),
         ParsedStatLine::Text(text) => push_item(lines, text),
@@ -255,18 +294,18 @@ const fn stat_label_width() -> usize { 36 }
 fn content_width(lines: &[Line<'_>]) -> u16 {
     lines
         .iter()
-        .map(line_width)
+        .map(Line::width)
         .max()
-        .and_then(|width| u16::try_from(width.saturating_add(CONTENT_WIDTH_PADDING)).ok())
+        .and_then(|width| {
+            u16::try_from(
+                width
+                    .saturating_add(BLOCK_BORDER_WIDTH)
+                    .saturating_add(CONTENT_RIGHT_PADDING.width()),
+            )
+            .ok()
+        })
         .unwrap_or(POPUP_MIN_WIDTH)
         .max(POPUP_MIN_WIDTH)
-}
-
-fn line_width(line: &Line<'_>) -> usize {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref().width())
-        .sum()
 }
 
 fn popup_height(row_count: usize, area_height: u16) -> u16 {
@@ -284,6 +323,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use tui_pane::ColorMode;
     use tui_pane::Keymap;
     use tui_pane::NavAction;
     use tui_pane::VimMode;
@@ -295,6 +335,7 @@ mod tests {
 
     #[test]
     fn clicking_a_scrolled_stat_line_copies_its_own_value_across_headings() {
+        let mode = ColorMode::Colored;
         let mut pane = SccachePane::new();
         let request = pane.start_loading();
         pane.apply_result(
@@ -310,7 +351,7 @@ mod tests {
         let SccacheLines {
             lines,
             selectable_lines,
-        } = build_lines(&pane);
+        } = build_lines(&pane, mode);
         assert!(lines[1].to_string().contains("Cache hits"));
         assert!(lines[4].to_string().contains("Cache misses"));
         pane.set_selectable_lines(selectable_lines);
@@ -347,11 +388,12 @@ mod tests {
 
     #[test]
     fn status_only_lines_have_no_selection_or_copy_value() {
+        let mode = ColorMode::Colored;
         let mut pane = SccachePane::new();
         let SccacheLines {
             lines,
             selectable_lines,
-        } = build_lines(&pane);
+        } = build_lines(&pane, mode);
         assert_eq!(lines.len(), 2);
         pane.set_selectable_lines(selectable_lines);
         pane.viewport.set_content_area(Rect::new(0, 0, 60, 4));
@@ -366,6 +408,7 @@ mod tests {
         reason = "tests should panic on unexpected values"
     )]
     fn sccache_render_evidence_has_registered_hints_and_no_copy_targets_in_the_footer() {
+        let mode = ColorMode::Colored;
         let mut app = test_support::make_app(&[]);
         app.framework_keymap = std::rc::Rc::new(
             integration::build_framework_keymap(
@@ -374,7 +417,7 @@ mod tests {
             )
             .expect("default keymap"),
         );
-        let before = build_lines(&app.overlays.sccache_pane)
+        let before = build_lines(&app.overlays.sccache_pane, mode)
             .lines
             .iter()
             .map(|line| line.to_string().trim().to_string())
@@ -384,7 +427,7 @@ mod tests {
         let hints = shortcut_hints(&app).to_string();
         assert_eq!(
             hints,
-            "Esc close · y copy · ↑/↓ nav · home/end ends · pageup/pagedown page"
+            "Esc close · y copy · ↑/↓ nav · home/end first/last · pageup/pagedown page"
         );
         let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("terminal");
         terminal
@@ -418,7 +461,7 @@ mod tests {
         );
         assert_eq!(
             shortcut_hints(&app).to_string(),
-            "⌃w close · ⌃k/↓ nav · home/end ends · pageup/pagedown page"
+            "⌃w close · ⌃k/↓ nav · home/end first/last · pageup/pagedown page"
         );
         std::fs::write(&path, "[sccache]\ncancel = \"\"").expect("unbind close");
         let builder = Keymap::builder()

@@ -12,7 +12,7 @@
 //! - [`DescriptionBlock::for_pane`] is the only producer of `rows`.
 //! - [`DescriptionBlock::natural_sync_height`] reads `rows` to report the block's contribution to
 //!   the inter-pane sync.
-//! - [`DescriptionBlock::render`] reads the *same* `rows` to draw.
+//! - [`DescriptionBlock::render_with_selection`] reads the *same* `rows` to draw.
 //!
 //! Adding content therefore has to flow through the constructor, which is
 //! the single place that updates the rendered rows and the sync height at
@@ -24,12 +24,55 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::ColorMode;
 use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
 use super::constants::NO_DESCRIPTION_AVAILABLE;
 use super::support;
 use crate::tui::render;
+use crate::tui::theme_roles;
+
+const SHORT_PANE_BODY_HEIGHT: u16 = 12;
+const SHORT_DESCRIPTION_ROWS: u16 = 2;
+const DESCRIPTION_INSET: u16 = 1;
+const DESCRIPTION_MARGIN_COUNT: u16 = 2;
+const SHORT_NO_DESCRIPTION: &str = "No description";
+
+/// The known state of a package or repository description.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DescriptionState {
+    #[default]
+    Pending,
+    Known(String),
+    KnownEmpty,
+}
+
+impl From<Option<String>> for DescriptionState {
+    fn from(text: Option<String>) -> Self {
+        match text {
+            Some(text) if !text.trim().is_empty() => Self::Known(text),
+            Some(_) | None => Self::KnownEmpty,
+        }
+    }
+}
+
+impl DescriptionState {
+    pub fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Known(text) => Some(text),
+            Self::Pending | Self::KnownEmpty => None,
+        }
+    }
+}
+
+const fn empty_description_text(width: usize) -> &'static str {
+    if NO_DESCRIPTION_AVAILABLE.len() <= width {
+        NO_DESCRIPTION_AVAILABLE
+    } else {
+        SHORT_NO_DESCRIPTION
+    }
+}
 
 /// What the block renders when the source description is empty.
 #[derive(Clone, Copy)]
@@ -64,8 +107,8 @@ impl SyncedDescriptionHeight {
 
 /// Pre-wrapped description block for one detail pane. Owns the wrapped
 /// row strings and the layout dimensions needed to render them; both
-/// [`DescriptionBlock::natural_sync_height`] and [`DescriptionBlock::render`] read from the same
-/// private `rows` field.
+/// [`DescriptionBlock::natural_sync_height`] and [`DescriptionBlock::render_with_selection`] read
+/// from the same private `rows` field.
 #[derive(Clone)]
 enum DescriptionContentState {
     Real,
@@ -95,29 +138,36 @@ pub(in crate::tui) struct DescriptionBlock {
 }
 
 impl DescriptionBlock {
-    /// Build the description block for a pane sitting in `outer_area`.
-    /// `empty_behavior` decides what renders when the source text is
-    /// empty (Package shows a placeholder; Git renders nothing).
+    /// Build the description block for a pane in `outer_area`.
+    /// Pending descriptions add no rows.
+    /// `empty_behavior` controls known-empty descriptions: Package shows a placeholder, and Git
+    /// renders nothing.
     pub(in crate::tui) fn for_pane(
-        text: Option<&str>,
+        description: &DescriptionState,
         outer_area: Rect,
         empty_behavior: EmptyDescriptionBehavior,
     ) -> Self {
         let inner_width = outer_area.width.saturating_sub(2);
         let inner_height = outer_area.height.saturating_sub(2);
-        let padding = u16::from(inner_width > 2);
-        let column_width = inner_width.saturating_sub(padding.saturating_mul(2));
-
-        let trimmed = text.map(str::trim).filter(|s| !s.is_empty());
+        let trimmed = description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let padding = DESCRIPTION_INSET.min(inner_width);
+        let column_width = inner_width.saturating_sub(padding * DESCRIPTION_MARGIN_COUNT);
         let content_state = DescriptionContentState::from_trimmed(trimmed);
 
         let (body, style) = match (trimmed, empty_behavior) {
             (Some(real), _) => (Some(real), Style::default()),
-            (None, EmptyDescriptionBehavior::ShowPlaceholder) => (
-                Some(NO_DESCRIPTION_AVAILABLE),
-                Style::default().fg(label_color()),
-            ),
-            (None, EmptyDescriptionBehavior::RenderNothing) => (None, Style::default()),
+            (None, EmptyDescriptionBehavior::ShowPlaceholder)
+                if matches!(description, DescriptionState::KnownEmpty) =>
+            {
+                (
+                    Some(empty_description_text(usize::from(column_width))),
+                    Style::default().fg(label_color()),
+                )
+            },
+            (None, _) => (None, Style::default()),
         };
 
         let rows = match body {
@@ -131,7 +181,11 @@ impl DescriptionBlock {
             column_width,
             padding,
             content_state,
-            inner_height_cap: inner_height,
+            inner_height_cap: if inner_height < SHORT_PANE_BODY_HEIGHT {
+                SHORT_DESCRIPTION_ROWS
+            } else {
+                inner_height
+            },
         }
     }
 
@@ -142,12 +196,17 @@ impl DescriptionBlock {
     /// when *both* panes have real content do they align their bottoms.
     pub(in crate::tui) fn natural_sync_height(&self) -> u16 {
         if self.content_state.has_real_content() {
-            u16::try_from(self.rows.len())
-                .unwrap_or(u16::MAX)
-                .min(self.inner_height_cap)
+            self.natural_height()
         } else {
             0
         }
+    }
+
+    /// Count every visible description row, including a known-empty message.
+    pub(in crate::tui) fn natural_height(&self) -> u16 {
+        u16::try_from(self.rows.len())
+            .unwrap_or(u16::MAX)
+            .min(self.inner_height_cap)
     }
 
     /// Render into `project_inner` with `max_height` as the hard cap
@@ -155,26 +214,6 @@ impl DescriptionBlock {
     /// `synced_floor` as the inter-pane sync floor. Returns the
     /// rendered height, which the pane uses to position the separator
     /// rule and the rest of its content.
-    #[allow(
-        dead_code,
-        reason = "selectable panes call render_with_selection; keep the unselected wrapper for callers that do not track row focus"
-    )]
-    pub(in crate::tui) fn render(
-        &self,
-        frame: &mut Frame,
-        project_inner: Rect,
-        synced_floor: SyncedDescriptionHeight,
-        max_height: u16,
-    ) -> u16 {
-        self.render_with_selection(
-            frame,
-            project_inner,
-            synced_floor,
-            max_height,
-            PaneSelectionState::Unselected,
-        )
-    }
-
     pub(in crate::tui) fn render_with_selection(
         &self,
         frame: &mut Frame,
@@ -182,13 +221,18 @@ impl DescriptionBlock {
         synced_floor: SyncedDescriptionHeight,
         max_height: u16,
         selection: PaneSelectionState,
+        mode: ColorMode,
     ) -> u16 {
         if self.rows.is_empty() || self.column_width == 0 {
             return 0;
         }
-        let synced_cap = project_inner.height.saturating_sub(1);
+        let synced_cap = if project_inner.height < SHORT_PANE_BODY_HEIGHT {
+            SHORT_DESCRIPTION_ROWS
+        } else {
+            project_inner.height.saturating_sub(1)
+        };
         let synced_floor = synced_floor.rows().min(synced_cap);
-        let row_budget = max_height.max(synced_floor);
+        let row_budget = max_height.max(synced_floor).min(synced_cap);
         if row_budget == 0 {
             return 0;
         }
@@ -199,7 +243,7 @@ impl DescriptionBlock {
             usize::from(self.column_width),
         );
 
-        let style = selection.patch(self.style);
+        let style = selection.patch(self.style, mode);
         let lines: Vec<Line<'static>> = visible
             .into_iter()
             .map(|row| Line::from(Span::styled(row, style)))
@@ -217,6 +261,15 @@ impl DescriptionBlock {
             height: description_height,
         };
         frame.render_widget(Paragraph::new(lines), area);
+        theme_roles::paint_selection(
+            frame,
+            Rect {
+                height: description_height,
+                ..project_inner
+            },
+            selection,
+            mode,
+        );
         description_height
     }
 }
@@ -272,7 +325,7 @@ mod tests {
     #[test]
     fn block_uses_muted_placeholder_when_missing() {
         let block = DescriptionBlock::for_pane(
-            None,
+            &super::DescriptionState::KnownEmpty,
             description_area(80, 3),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
@@ -284,7 +337,7 @@ mod tests {
     #[test]
     fn empty_behavior_render_empty_produces_no_rows() {
         let block = DescriptionBlock::for_pane(
-            None,
+            &super::DescriptionState::KnownEmpty,
             description_area(80, 3),
             EmptyDescriptionBehavior::RenderNothing,
         );
@@ -296,7 +349,7 @@ mod tests {
     #[test]
     fn renders_real_description_with_default_style() {
         let block = DescriptionBlock::for_pane(
-            Some("Real package description"),
+            &super::DescriptionState::Known("Real package description".to_string()),
             description_area(80, 3),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
@@ -308,7 +361,7 @@ mod tests {
     #[test]
     fn wraps_overflowing_text_into_rows() {
         let block = DescriptionBlock::for_pane(
-            Some("one two three four five six seven eight"),
+            &super::DescriptionState::Known("one two three four five six seven eight".to_string()),
             description_area(13, 5),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );

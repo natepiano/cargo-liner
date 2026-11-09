@@ -37,6 +37,7 @@ use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::panes::TargetAvailability;
 use crate::tui::state;
 use crate::tui::state::Inflight;
 use crate::tui::state::OwnedRunActivation;
@@ -75,6 +76,22 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
         OwnedRunStartingRequest::Matched(pending_example_run) => pending_example_run.clone(),
         OwnedRunStartingRequest::NoMatch => return,
     };
+    if matches!(
+        TargetAvailability::resolve(
+            pending_example_run.package_path.as_path(),
+            Path::new(&pending_example_run.abs_path),
+            &app.project_list,
+        ),
+        TargetAvailability::HeldOwnerDeleted
+    ) {
+        let output_was_empty = app.inflight.owned_run().output_is_empty();
+        app.inflight.fail_owned_run_start(
+            owned_run_id,
+            "Failed to start: target owner is Deleted".to_string(),
+        );
+        app.owned_run_output_replaced(output_was_empty);
+        return;
+    }
     let mut command = cargo_command_for_owned_run(&pending_example_run);
     isolate_owned_process(&mut command);
 
@@ -387,6 +404,7 @@ mod tests {
     fn pending_example_run(cargo_package_invocation: CargoPackageInvocation) -> PendingExampleRun {
         PendingExampleRun {
             abs_path: "/tmp/demo".to_string(),
+            package_path: AbsolutePath::from(Path::new("/tmp/demo")),
             target_name: "demo".to_string(),
             display_path: "demo".to_string(),
             cargo_package_invocation,

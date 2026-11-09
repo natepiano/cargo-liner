@@ -7,6 +7,7 @@
 )]
 
 use tui_pane::CellPoint;
+use tui_pane::TerminalApp;
 
 use super::*;
 use crate::census::RoleFallback;
@@ -55,10 +56,9 @@ fn unassigned_forest() -> MachineState {
     MachineState::Answered(
         vec![boss, worker, ups, nested, postmaster],
         HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss-id".into(),
-            member:   "impl-id".into(),
-            role:     HierarchyRole::Impl,
+            manager: "boss-id".into(),
+            member:  "impl-id".into(),
+            role:    HierarchyRole::Impl,
         }])
         .into(),
     )
@@ -196,14 +196,15 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     let work = work_buffer("ups");
     for (name, prefix) in [
-        ("opened-session", "├─ opened-session session thinking"),
-        ("ups-shell", "└─ ups-shell shell running"),
-        ("ups-codex", "└─ ups-codex worker idle"),
+        ("opened-session", "├── opened-session session thinking"),
+        ("ups-shell", "└── ups-shell shell running"),
+        ("ups-codex", "└── ups-codex worker idle"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));
     }
     assert!(
-        row_text(&work_buffer("postmaster"), "post-task").starts_with("└─ post-task subagent idle")
+        row_text(&work_buffer("postmaster"), "post-task")
+            .starts_with("└── post-task subagent idle")
     );
 }
 
@@ -448,5 +449,52 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
             ),
             HeaderHit::Column(TreeColumn::Age)
         );
+    }
+}
+
+#[test]
+fn unassigned_session_count_tracks_real_rows_and_removes_a_finished_session() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::render;
+
+    let mut app = App::new_for_test().expect("test app");
+    app.loaded_config.config.tiles.widen_summary = false;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+    for (names, readout) in [
+        (
+            vec!["cargo-liner-handler-c6", "phase41-check"],
+            "content rows: 1 of 2",
+        ),
+        (vec!["cargo-liner-handler-c6"], "content rows: 1 of 1"),
+    ] {
+        app.census.apply(CensusUpdate::Local {
+            rows:      names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let mut row = agent(u32::try_from(index + 10).expect("pid"), name, HOUR, None);
+                    row.directory = "~/rust/cargo-liner-handler".into();
+                    row
+                })
+                .collect(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
+        let keymap = app.keymap();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("updated frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("settled frame");
+        let buffer = terminal.backend().buffer();
+        let text = lines(buffer).join("\n");
+        assert!(text.contains(readout), "{text}");
+        assert_eq!(text.contains("phase41-check"), names.len() == 2, "{text}");
+        assert!(text.contains("cargo-liner-handler-c6"), "{text}");
     }
 }
