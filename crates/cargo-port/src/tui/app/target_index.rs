@@ -11,7 +11,8 @@ use crate::project::AbsolutePath;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TargetDirMember {
-    pub(super) project_root: AbsolutePath,
+    pub(super) project_root:  AbsolutePath,
+    pub(super) checkout_root: AbsolutePath,
 }
 
 /// Forward map: `target_directory` → projects that resolve to it.
@@ -26,6 +27,39 @@ pub(crate) struct TargetDirIndex {
 impl TargetDirIndex {
     pub(crate) fn new() -> Self { Self::default() }
 
+    /// Replace the members of one checkout after an accepted metadata result.
+    pub(super) fn replace_checkout(
+        &mut self,
+        checkout_root: &AbsolutePath,
+        member_roots: &[AbsolutePath],
+        target_dir: &AbsolutePath,
+    ) {
+        let current: HashSet<_> = member_roots.iter().collect();
+        let removed: Vec<_> = self
+            .by_target_dir
+            .values()
+            .flatten()
+            .filter(|member| {
+                member.checkout_root == *checkout_root && !current.contains(&member.project_root)
+            })
+            .map(|member| member.project_root.clone())
+            .collect();
+        for project_root in removed {
+            if let Some(previous_dir) = self.by_project.remove(&project_root) {
+                self.evict_from_bucket(&previous_dir, &project_root);
+            }
+        }
+        for project_root in member_roots {
+            self.upsert(
+                TargetDirMember {
+                    project_root:  project_root.clone(),
+                    checkout_root: checkout_root.clone(),
+                },
+                target_dir.clone(),
+            );
+        }
+    }
+
     /// Set/replace the `target_dir` for `member.project_root`. If the
     /// project previously lived under a different target dir, the
     /// stale entry is evicted before inserting the new one. Safe to
@@ -35,7 +69,10 @@ impl TargetDirIndex {
         if let Some(previous_dir) = self.by_project.get(&project_root).cloned() {
             if previous_dir == target_dir {
                 if let Some(bucket) = self.by_target_dir.get_mut(&target_dir) {
-                    if bucket.iter().any(|m| m.project_root == project_root) {
+                    if let Some(current) =
+                        bucket.iter_mut().find(|m| m.project_root == project_root)
+                    {
+                        *current = member;
                         return;
                     }
                     bucket.push(member);
@@ -113,8 +150,51 @@ mod tests {
 
     fn project(root: &str) -> TargetDirMember {
         TargetDirMember {
-            project_root: dir(root),
+            project_root:  dir(root),
+            checkout_root: dir("/ws"),
         }
+    }
+
+    #[test]
+    fn replacing_checkout_members_keeps_only_current_members_and_shared_siblings() {
+        let mut index = TargetDirIndex::new();
+        let checkout = dir("/ws");
+        let shared = dir("/shared");
+        let other = dir("/other/member");
+        index.replace_checkout(&dir("/other"), std::slice::from_ref(&other), &shared);
+        for revision in 0..128 {
+            let members = [
+                checkout.clone(),
+                dir("/ws/stable"),
+                dir(&format!("/ws/member-{revision}")),
+            ];
+            let target = if revision % 2 == 0 {
+                shared.clone()
+            } else {
+                dir("/custom-target")
+            };
+            index.replace_checkout(&checkout, &members, &target);
+            assert_eq!(index.by_project.len(), members.len() + 1);
+            let mut expected = members.to_vec();
+            if target == shared {
+                expected.push(other.clone());
+            }
+            let actual = index
+                .siblings(&target, &[])
+                .into_iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            assert_eq!(actual, expected.into_iter().collect::<HashSet<_>>());
+            assert_eq!(
+                index.by_target_dir.len(),
+                if target == shared { 1 } else { 2 }
+            );
+            assert!(index.siblings(&shared, &[]).contains(&&other));
+        }
+        index.replace_checkout(&checkout, &[], &shared);
+        assert_eq!(index.by_project.len(), 1);
+        assert_eq!(index.by_target_dir.len(), 1);
+        assert_eq!(index.siblings(&shared, &[]), vec![&other]);
     }
 
     #[test]

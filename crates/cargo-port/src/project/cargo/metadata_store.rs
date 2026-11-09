@@ -25,6 +25,7 @@ use crate::constants::DOT_CARGO_DIR;
 use crate::constants::RUST_TOOLCHAIN;
 use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::project::AbsolutePath;
+use crate::scan::MetadataRefreshQueue;
 
 /// Process-wide cache of `cargo metadata` results, keyed by checkout root.
 ///
@@ -34,16 +35,26 @@ use crate::project::AbsolutePath;
 /// this type directly.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceMetadataStore {
-    by_checkout_root:         HashMap<AbsolutePath, WorkspaceMetadata>,
-    /// Per-workspace monotonic counter. Every dispatch bumps the counter
-    /// and stamps the spawned work with the new value; arrivals only
-    /// commit if their stamp still matches the current counter. This
-    /// coalesces rapid edits to a single accepted result.
-    pub dispatch_generations: HashMap<AbsolutePath, u64>,
+    by_checkout_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
+    /// Latest dispatch stamp for each checkout. The process-wide sequence
+    /// prevents a removed and recreated checkout from accepting old replies.
+    pub dispatch_generations:      HashMap<AbsolutePath, u64>,
+    latest_dispatch:               u64,
+    pub(crate) metadata_refreshes: MetadataRefreshQueue,
 }
 
 impl WorkspaceMetadataStore {
     pub(crate) fn new() -> Self { Self::default() }
+
+    pub(crate) fn retain_checkouts(&mut self, mut is_active: impl FnMut(&AbsolutePath) -> bool) {
+        self.by_checkout_root.retain(|root, _| is_active(root));
+        self.dispatch_generations.retain(|root, _| is_active(root));
+    }
+
+    pub(crate) fn remove_checkout(&mut self, root: &AbsolutePath) {
+        self.by_checkout_root.remove(root);
+        self.dispatch_generations.remove(root);
+    }
 
     /// Look up the metadata keyed by `checkout_root`.
     pub(crate) fn get(&self, checkout_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
@@ -131,12 +142,10 @@ impl WorkspaceMetadataStore {
     /// value. Callers should stamp the spawned work with this value and use
     /// [`Self::is_current_generation`] at merge time.
     pub(crate) fn next_generation(&mut self, workspace_root: &AbsolutePath) -> u64 {
-        let slot = self
-            .dispatch_generations
-            .entry(workspace_root.clone())
-            .or_default();
-        *slot = slot.saturating_add(1);
-        *slot
+        self.latest_dispatch = self.latest_dispatch.saturating_add(1);
+        self.dispatch_generations
+            .insert(workspace_root.clone(), self.latest_dispatch);
+        self.latest_dispatch
     }
 
     /// `true` when the captured `generation` still matches the latest

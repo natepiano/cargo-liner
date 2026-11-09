@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::ops::Range;
 use std::path::Component;
@@ -17,10 +17,11 @@ use super::constants::EXAMPLES_LABEL;
 use super::constants::INTEGRATION_TESTS_LABEL;
 use super::constants::UNIT_TESTS_LABEL;
 use crate::project::LangEntry;
+use crate::scan::SourceFileMeasurements;
 
 #[derive(Default)]
 pub(super) struct RustBreakdownCache {
-    unit_totals: HashMap<PathBuf, Option<LineTotals>>,
+    unit_totals: SourceFileMeasurements<Option<LineTotals>>,
 }
 
 impl RustBreakdownCache {
@@ -30,13 +31,14 @@ impl RustBreakdownCache {
         line_totals: LineTotals,
         config: &Config,
     ) -> Option<LineTotals> {
-        if let Some(cached_unit_line_totals) = self.unit_totals.get(path) {
-            return *cached_unit_line_totals;
-        }
-        let unit_line_totals = unit_totals_for_file(path, line_totals, config);
         self.unit_totals
-            .insert(path.to_path_buf(), unit_line_totals);
-        unit_line_totals
+            .measure(path, || Ok(unit_totals_for_file(path, line_totals, config)))
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn retain_seen(&mut self, paths: &HashSet<PathBuf>) {
+        self.unit_totals.retain_seen(paths);
     }
 }
 

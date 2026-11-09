@@ -2,7 +2,7 @@
 //!
 //! Every site that *discovers* a new project-like path at runtime — the
 //! filesystem watcher, the per-submodule loop in `scan::fetch_project_details`
-//! — calls [`enrich`] with the entry as `&dyn ProjectFields`. The funnel
+//! — creates an [`enrichment_job`] for the entry. The funnel
 //! emits git info, disk usage, language stats, and (when the entry's
 //! `crates_io_name` returns `Some`) crates.io metadata.
 //!
@@ -22,24 +22,28 @@ use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
+use crate::scan::SourceMeasurements;
 
-/// Run enrichment for a single discovered entry.
-///
-/// Emits git info, disk usage, language stats, and crates.io metadata
-/// according to the entry's capability methods.
-pub(crate) fn enrich(
+/// Capture source caches before enrichment can wait on other work.
+pub(crate) fn enrichment_job(
     entry: &dyn ProjectFields,
     sender: &Sender<BackgroundMsg>,
     ctx: &FetchContext,
-) {
+) -> impl FnOnce() + Send + use<> {
     let path: AbsolutePath = entry.path().clone();
-
-    scan::emit_git_info(sender, &path);
-    emit_disk(&path, sender);
-    spawn_language_scan(path.clone(), sender.clone());
-    spawn_test_count_scan(path.clone(), sender.clone());
-    if let Some(name) = entry.crates_io_name() {
-        emit_crates_io(name, &path, sender, ctx);
+    let language_job =
+        language_enrichment_job(path.clone(), sender.clone(), &ctx.source_measurements);
+    let name = entry.crates_io_name().map(str::to_string);
+    let sender = sender.clone();
+    let ctx = ctx.clone();
+    move || {
+        scan::emit_git_info(&sender, &path);
+        emit_disk(&path, &sender);
+        language_job();
+        spawn_test_count_scan(path.clone(), sender.clone());
+        if let Some(name) = name {
+            emit_crates_io(&name, &path, &sender, &ctx);
+        }
     }
 }
 
@@ -51,15 +55,30 @@ fn emit_disk(path: &AbsolutePath, sender: &Sender<BackgroundMsg>) {
     });
 }
 
-pub(crate) fn spawn_language_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {
-    rayon::spawn(move || {
-        let stats = scan::collect_language_stats_single(path.as_path());
-        if !stats.entries.is_empty() {
-            let _ = sender.send(BackgroundMsg::LanguageStatsBatch {
-                entries: vec![(path, stats)],
-            });
-        }
-    });
+pub(crate) fn spawn_language_scan(
+    path: AbsolutePath,
+    sender: Sender<BackgroundMsg>,
+    measurements: &SourceMeasurements,
+) {
+    language_enrichment_job(path, sender, measurements)();
+}
+
+pub(crate) fn language_enrichment_job(
+    path: AbsolutePath,
+    sender: Sender<BackgroundMsg>,
+    measurements: &SourceMeasurements,
+) -> impl FnOnce() + Send + use<> {
+    let job = scan::language_measurement_job(path.clone(), measurements);
+    move || {
+        rayon::spawn(move || {
+            let stats = job();
+            if !stats.entries.is_empty() {
+                let _ = sender.send(BackgroundMsg::LanguageStatsBatch {
+                    entries: vec![(path, stats)],
+                });
+            }
+        });
+    }
 }
 
 fn spawn_test_count_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -22,6 +23,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
+use crate::scan::SourceMeasurements;
 
 pub(super) fn spawn_project_refresh(
     background_tx: Sender<BackgroundMsg>,
@@ -86,7 +88,7 @@ pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
-    _: u32,
+    source_measurements: &Arc<SourceMeasurements>,
     non_rust: NonRustInclusion,
     exclude_dirs: &ExcludeDirs,
     client: &HttpClient,
@@ -151,19 +153,22 @@ pub(super) fn probe_new_projects(
             }
             let sender = background_tx.clone();
             let fetch_context = FetchContext {
-                client: client.clone(),
+                source_measurements: std::sync::Arc::clone(source_measurements),
+                client:              client.clone(),
             };
-            enrichment::spawn_language_scan(abs_path.clone(), background_tx.clone());
-            rayon::spawn(move || {
-                let request = ProjectDetailRequest {
-                    sender: &sender,
-                    fetch_context: &fetch_context,
-                    abs_path: &abs_path,
-                    name: project_name.as_deref(),
-                    repo_presence,
-                };
-                scan::fetch_project_details(&request);
-            });
+            enrichment::spawn_language_scan(
+                abs_path.clone(),
+                background_tx.clone(),
+                source_measurements,
+            );
+            let request = ProjectDetailRequest {
+                sender: &sender,
+                fetch_context: &fetch_context,
+                abs_path: &abs_path,
+                name: project_name.as_deref(),
+                repo_presence,
+            };
+            rayon::spawn(scan::project_detail_job(&request));
         } else {
             outcomes.push(FolderProbeOutcome::NotProject(dir));
         }

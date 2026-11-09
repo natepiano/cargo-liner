@@ -53,7 +53,8 @@ impl App {
 
         let sender = self.background.background_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
-            client: self.net.http_client(),
+            source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
+            client:              self.net.http_client(),
         });
         self.project_list.for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
@@ -64,19 +65,15 @@ impl App {
             };
             let sender = sender.clone();
             let fetch_context = std::sync::Arc::clone(&fetch_context);
-            rayon::spawn(move || {
-                let request = ProjectDetailRequest {
-                    sender: &sender,
-                    fetch_context: fetch_context.as_ref(),
-                    abs_path: &abs_path,
-                    // `ProjectDetailRequest::name` stays `None` because
-                    // `dispatch_crates_io_fetches` consumes the `CratesIoFetchPlan` instead of a
-                    // per-leaf detail task; only the watcher probe supplies a crate name.
-                    name: None,
-                    repo_presence,
-                };
-                scan::fetch_project_details(&request);
-            });
+            let request = ProjectDetailRequest {
+                sender: &sender,
+                fetch_context: fetch_context.as_ref(),
+                abs_path: &abs_path,
+                // The shared fetch plan supplies startup crate names.
+                name: None,
+                repo_presence,
+            };
+            rayon::spawn(scan::project_detail_job(&request));
         });
         self.dispatch_crates_io_fetches(crates_io_plan);
     }

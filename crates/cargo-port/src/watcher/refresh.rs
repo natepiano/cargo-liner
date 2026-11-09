@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+
+#[cfg(test)]
+#[path = "disk_burst_tests.rs"]
+mod disk_burst_tests;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Sender as StdSender;
