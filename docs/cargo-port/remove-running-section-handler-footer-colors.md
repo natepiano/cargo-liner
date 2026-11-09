@@ -1850,51 +1850,25 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 57e — Worker roles come from the staff file  · status: done
 
-**Depends on:** Phase 42, Phase 57c, Phase 62, Phase 67, Phase 21, Phase 71 and Phase 72 (`census/activity.rs`); agents Phase 17b (`~/.claude` branch `sdlc-agents`, 2c33c651f) adds the `role` field to each staff row. Build against it now; checkpoint only after 17b is on `~/.claude` main (the showrunner, 2026-11-09: it says when).
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-handler takes each Codex worker's unit and role from its staff row. It no longer reads `mesh_roster.json` or `role_map_cache.json`.
-
-**Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
-
-**Constraints from prior phases:**
-- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261). Since Phase 71, `read_worker_runs` (`census/scan.rs` ≈1091) also accepts non-Claude rows as directors. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
-- Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
-- Phase 21: Astra worker membership comes from checked staff rows (`AstraMembership` in `census/hierarchy.rs`, `SessionIdentity::with_astra` in `census/scan.rs`). Keep it and its tests in `census/astra_role_tests.rs` when worker-role publication changes.
-- Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green, the `impl`-finishes-first case of `census/fixtures/pane_detached_tile.json` included. Two Phase 71 paths find a worker with no roster:
-  1. `run_directors` (`census/scan.rs` ≈224) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource` in `census/worker_dispatch/sessions.rs` ≈32, read ≈168), before the roster.
-  2. `LiveWorkerRun::worker` (`census/activity.rs` ≈742) joins a record's seat name to the one staff edge under that director, and falls back to `RunWorkerIdentity::NamedSeat`.
-- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈546).
-- Phase 72: compaction markers are read in `census/compaction_markers.rs` (`CompactionMarkers`). Their row state is `Activity::Compacting`. Keep the compaction regressions in `census/activity_regression_tests.rs` green. `scan_staged` stays nonblocking.
-
-**Spec:**
-1. Read each worker row's `role` field through the existing schema-2 `StaffFileReader`. The field is an optional string. One of `impl`, `test`, `review`, `fix`, `astra-designer` or `astra-reviewer` is a known role (`staff.KnownWorkerRole`). An absent field or any other value is `WorkerRoleUnknown`, and the row shows no role. `progress_history.begin_dispatch` writes the field; a one-off backfill fills old rows after the 17b merge. Ignore the new `home` field. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈668) and the probe report (`census/probe.rs` ≈597, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep the Phase 71 recorded-owner director source and the named-seat join when the roster reads go. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
-3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
-4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
-5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
-6. CHANGELOG: one Changed line in cargo-handler.
+- Each worker's role and unit come from its staff row. `StaffWorkerRole` is `Known(WorkerRole)` or `Unknown`, read through `From<Option<&Value>>`. An absent or unknown `role` value shows the generic worker role. `WorkerRole` includes `AstraDesigner` and `AstraReviewer`.
+- `StaffRoster` keeps a session map. `member(session)` returns `StaffMemberLookup` (`Unavailable`, `Root`, `Managed`), and `workers(manager)` lists the workers of one manager.
+- `WorkerRoster`, `RosterWorker`, `attach_roster_runs`, `HierarchyEdges::with_worker_roles` and the `role_map_cache.json` input are removed. cargo-handler reads no `mesh_roster.json`.
+- Launcher candidates come from `StaffWorkers::for_directory`: only the staff workers of the unit director recorded in `progress_history_state.json` (or the legacy director file). `WorkerNames` caches them per directory and rebuilds them on a new staff snapshot or an ownership-file change (`UnitOwnershipRevision`). A launcher with no checked director has no candidates and shows as a plain shell row.
+- `ResolvedWorkerDispatch` carries `DispatchStaffMembership` (`Member(staff id)` or `Unlisted`). `selection_key()` returns the staff id, or the seat for an older probe row, so a rename keeps the selected row.
+- Probe rows write `role` with the four older values (`DispatchRole::legacy()` maps Astra roles to `unroled`), plus `staff_role` and `staff_id`. Decode prefers `staff_role`, then `role`, then the short seat.
 
 **Files:**
-- `crates/cargo-handler/src/census/worker_dispatch/` — and its fixtures
-- `crates/cargo-handler/src/census/command_inputs.rs`
-- `crates/cargo-handler/src/census/hierarchy.rs`
-- `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — and its fixtures
-- `crates/cargo-handler/src/census/placement.rs` — `DispatchPairing`
-- `crates/cargo-handler/src/census/fixtures/dispatch_pairing.json`
-- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — the pairing consumer tests
-- `crates/cargo-handler/src/census/activity.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — and its fixtures
-- `crates/cargo-handler/src/census/scan/staged_tests.rs` — and its fixtures
-- `crates/cargo-handler/src/census/schedule.rs` — scheduler publication of worker roles
-- `crates/cargo-handler/src/census/probe.rs` — `scan_configured` worker roles
-- `crates/cargo-handler/CHANGELOG.md`
+- `census/hierarchy.rs` — staff roster, member lookup and role parsing.
+- `census/worker_dispatch/mod.rs` — dispatch roles, unit candidates, probe fields and the selection key; `sessions.rs` — the unit director source that candidates share; `fixtures.rs` — staff and launcher fixtures.
+- `census/scan.rs`, `probe.rs`, `schedule.rs`, `command_inputs.rs` — roster reads removed; `agent_cell.rs` — selection by `selection_key`.
 
-**Workers:** 1 writer.
+**Gotchas:**
+- A staff row needs a `role` value for its worker to show a role. Rows written before the role backfill show the generic worker role.
+- Never put a new role value in `dispatch.role`: older probe receivers decode only the four older values. New values go in `staff_role`.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live on natedev, after the 17b merge and backfill: every live worker shows the same unit and role as before.
+**Ruled out:** waiting rows for legacy runs without staff membership — such rows came only from the deleted mesh roster.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
