@@ -774,46 +774,23 @@ A left click on a project row goes through `tui_pane::ExpansionModel::press_row`
 
 ### Phase 4u — Every cargo-mend test runs under a second  · status: done
 
-**Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q, which edits `crates/cargo-port/`, and beside 4s, which edits `crates/cargo-port/` and `crates/tui_pane/`, when berth fences its files (showrunner, 2026-11-09).
+#### As-built
 
-#### Work Order
+Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the slowest takes 0.902 s. The 4t chain and fallback tests take a median of 0.260 s and 0.241 s alone.
 
-**Goal:** every test in the full `verify.sh test cargo-mend` suite takes under 1 s, and the 4t chain and fallback tests take under 1 s alone.
-
-**Source:** Phase 4t, 2026-11-09. Full-suite run `20261109T102754-1307842-587d` lists these slow tests:
-- `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`: 11.808 s.
-- `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` (`crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs:1147`): 1.818 s alone (run `20261109T100445-2101576-30f9`) and 4.407 s in the full suite (run `20261109T100344-1891821-0129`). It runs `cargo mend --fix-compiler`, which chains `cargo fix` after the mend checks.
-- The 4t chain and fallback tests: 3.360 s and 2.537 s in that run. In run `20261109T104104-3137201-85a5` they took 5.393 s and 4.007 s, and their cargo child processes took only 1.637 s and 1.461 s. Measure where the rest goes before you attribute it to load.
-- The 4t chain and fallback tests alone, median of 3 at the end of 4t: 1.743 s and 2.303 s, at a natedev load average of 66-94. In the fallback's median run, real cargo took 1.057 s, other child-command time including launchers took 1.046 s (cause not measured), mend outside its children took 0.134 s, and the test took 0.047 s. The record is run `20261109T105429-565962-1a66`.
-
-**Decision:** showrunner, 2026-11-09: a multi-second test is a defect, never load. This phase is not done until the full-suite list of tests at 1 s or more is empty.
-
-**Constraints:**
-- Find the cost of each slow test first. If the cost is in cargo-mend, fix it there, so every mend user saves the same CPU.
-- Keep each test's proof. For example, the `pub use` used only by `#[cfg(test)]` code survives `--fix-compiler`, and the test target still compiles.
-
-**Constraints from prior phases:**
-- `failed_chain_link_keeps_an_independent_chain` took 4.677 s in the last full suite (run `20261109T112518-1166146-ee88`). It is in this phase's scope. It proves that a failed link does not lose an independent chain's fix.
-- Keep `runner/chain.rs`'s validation paths: `ChainValidation::{Batch, PrunedBatch, IndividualLinks}`. A located `StepAttribution::SharedBindings` step goes to `IndividualLinks`, and its pass limit stays dynamic.
-- Keep the 4t budgets: chain 3 `cargo check` runs, fallback 3, one `cargo metadata`, no rustfmt process. Keep the retry messages, the declined-fix reports and the source assertions.
-
-**Spec:**
-1. **Measure.** List every cargo-mend test at 1 s or more in the full suite. For each, count the `cargo check`, `cargo fix` and `cargo metadata` runs, with the time of each. Quote the source lines that start each run.
-2. **Cut the cost.** Start with `fix_rollback` (11.8 s) and `narrow_pub_crate` (4.4 s). Remove repeated or unneeded runs in cargo-mend. Change a fixture shape only when the runs are all needed, and report that as an `Assertion-Change:` line.
-3. **Launcher time.** Measure the 1.046 s of child-command time outside real cargo in the fallback test. Remove it if it is cost in cargo-mend or the test. If it is cost of the measurement, say so with the proof.
-4. **Recheck.** Run the full suite again, and run the 4t chain and fallback tests alone 3 times each. Repeat steps 1-3 until no test takes 1 s or more in the full suite, and both 4t tests have an alone median under 1 s.
-5. **Changelog.** Add an entry to `crates/cargo-mend/CHANGELOG.md` when mend's behavior or cost changes.
+- `cargo mend` shares immutable driver copies across projects in `~/.cache/cargo-mend`. A run that cannot use the cache falls back to a local wrapper.
+- Each cached run holds a shared lock on `retention.lock` for the whole run. A short exclusive `publication.lock` covers only the publish step. Eviction removes a copy only when its `try_lock` on the retention lock succeeds.
+- Compiler-fix validation reuses earlier checks, rustfmt resolves once, and the progress thread exits with no shutdown delay.
 
 **Files:**
-- `crates/cargo-mend/src/` — the runs that the slow tests start
-- `crates/cargo-mend/tests/` — the slow tests
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-mend/src/compiler/build/execute.rs` — driver copy cache, retention and publication locks
+- `crates/cargo-mend/src/compiler/constants.rs` — `WRAPPER_CACHE_RETENTION_LOCK_FILE` and `WRAPPER_CACHE_PUBLICATION_LOCK_FILE`
+- `crates/cargo-mend/src/compiler/build/progress.rs` — progress thread shutdown
+- `crates/cargo-mend/src/fixes/runner/function_length/` — short functions skip rustfmt
 
-**Workers:** 1 writer.
+**Gotchas:** Measure a first run after a relink. Later runs reuse the cache and hide a lock wait.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean, no test at 1 s or more in the full suite, and the 4t chain and fallback tests have an alone median under 1 s. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** One exclusive lock for publish and retention, because the publisher waits on every running mend.
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
