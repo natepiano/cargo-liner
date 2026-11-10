@@ -3735,7 +3735,12 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@""#,
         "{}",
         json_output(&unavailable.output)
     );
-    assert_eq!(historical_candidate_queries(&unavailable), 1);
+    assert_eq!(
+        historical_candidate_queries(&unavailable),
+        1,
+        "{}",
+        json_output(&unavailable.output)
+    );
     assert_eq!(
         scoped_patch_comparison_attempts(
             &unavailable,
@@ -6835,7 +6840,12 @@ fn reverted_scoped_patch_proof_fixture() -> RevertedScopedPatchProofFixture {
     // Keep the old phase subject available for the deliberately stale comparison record.
     dirty_source(repository.path(), "src/lib.rs");
     let warmed = run_board_with_git_trace(repository.path());
-    assert!(warmed.output.status.success());
+    assert!(
+        warmed.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&warmed.output.stdout),
+        String::from_utf8_lossy(&warmed.output.stderr)
+    );
     let warmed_board = json_output(&warmed.output);
     let warmed_status = &board_reservation_snapshot(
         &warmed_board["payload"]["data"],
@@ -6938,12 +6948,18 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> (
     let reservation_id = info.reservation_id;
     let protected_tip = info.protected_tip;
     let warmed = run_board_with_git_trace(repository.path());
-    assert!(warmed.output.status.success());
+    assert!(
+        warmed.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&warmed.output.stdout),
+        String::from_utf8_lossy(&warmed.output.stderr)
+    );
     let warmed_board = json_output(&warmed.output);
     assert_eq!(
         board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["integration_evidence"]
             ["status"]["proof"],
-        "protected_tip_ancestor"
+        "protected_tip_ancestor",
+        "{warmed_board}"
     );
     assert_eq!(
         board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["lifecycle"]
@@ -7001,7 +7017,12 @@ fn warmed_scoped_patch_proof_after_release() -> (
     let reservation_id = info.reservation_id;
     let protected_tip = info.protected_tip;
     let released = run_board_with_git_trace(repository.path());
-    assert!(released.output.status.success());
+    assert!(
+        released.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&released.output.stdout),
+        String::from_utf8_lossy(&released.output.stderr)
+    );
     let released_board = json_output(&released.output);
     assert_eq!(
         board_reservation_snapshot(&released_board["payload"]["data"], &reservation_id)["lifecycle"]

@@ -1948,7 +1948,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Binds later work:** “Three cargo-berth lock tests pass under load” and “cargo-berth tests run under a second” preserve the shared-reservation lifecycle tests.
 
-### Phase 57 — Three cargo-berth lock tests pass under load  · status: todo
+### Phase 57 — Three cargo-berth lock tests pass under load  · status: done
 
 **Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
 
