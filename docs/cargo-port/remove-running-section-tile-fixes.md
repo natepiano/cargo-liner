@@ -1951,35 +1951,22 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 57 — Three cargo-berth lock tests pass under load  · status: done
 
-**Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
+#### As-built
 
-The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit it blocks. The Phase 30m round 2 Mac workspace gate (run `20261108T100328-2152148-9d81`) failed two cargo-berth tests that Phase 30m does not touch.
-
-#### Work Order
-
-**Goal:** all six tests named in Spec items 1–4 pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
-
-**Spec:**
-1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". The Phase 58 paired Mac head run (2026-11-09) failed it again with a ledger-lock refusal. Find the wait that takes the time, quote its line, and fix it there. The timer at `tests/hooks.rs:771` includes `FixtureCommand::output`, which uses the shared child runtime's Mac waiter thread. Compare the previous and current shared child runtimes under the same Mac load. Measure check execution, hook execution and output collection apart before you change a lock wait.
-2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
-3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
-4. Three `tests/board.rs` tests failed on the Mac in the Phase 30m round 3 workspace gate (2026-11-08 22:1x, load 16-40): `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` (`tests/board.rs:6989`, left `Null`, right `"protected_tip_ancestor"`), and `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` (`tests/board.rs:7070`, "ordinary reconciliation should settle the reachable checkpoint", left `"outstanding"`, right `"released"`). Find the cause, quote its line, and fix it there.
-5. Reproduce each fault red first on the machine that showed it, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
-6. Do not loosen an assertion. Keep every existing assertion.
+- The git child process starts with its foreground bytes in a fixed order (`crates/cargo-berth/src/git/child.rs`).
+- `ExitNotification::wait_for_child` checks the process when its exit notification passes the deadline, so a late notification returns the exit status of an ended process, not a deadline error. A test covers a delayed notification.
+- The retention lock diagnostic runs under the shared spawn lock and names the process that holds the ledger lock (`crates/cargo-berth/src/error.rs`).
+- Prepared lock-test fixtures and their recorded histories live in `cargo-berth-test-support`.
+- natedev runs all six named tests green, each in 0.13 to 0.67 s. The Mac half of the Goal stays open and moves to the "cargo-berth tests stay under a second when they run together" phase.
 
 **Files:**
-- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/board.rs` — the tests and their fixtures.
-- `crates/cargo-berth-test-support/` — shared fixtures.
-- `crates/cargo-berth/tests/recorded_templates.rs` — registrations of the recorded fixture states for these tests (routed 2026-11-09).
-- `crates/cargo-berth/src/git/error.rs`, `crates/cargo-berth/src/git/protocol.rs` — the `lsof` holder lookup in `git_lock_holders` (`error.rs:408`) runs under `CONTROL_REPLY_DEADLINE` (750 ms, `protocol.rs:21`); under Mac load it ends without a holder (routed 2026-11-09).
+- `crates/cargo-berth/src/git/child.rs` — child start order and the exit wait.
+- `crates/cargo-berth/src/error.rs` — the retention lock diagnostic.
+- `crates/cargo-berth-test-support/` — prepared lock-test fixtures and recorded histories.
 
-Another product file of a cause needs director routing.
-
-**Constraints from prior phases:** Phase 56: shared merge coverage does not checkpoint a sibling. Keep reservation-and-worktree selection in `MergedRunEndings::CheckpointRequested`, active sibling claims and the repeated-reconciliation assertions. Hold `S/locks/mac.lock` until the detached Mac gate ends; `verify.lock` alone does not serialize gates. Phase 58a: merge its four registrations with `PREPARED_LOCK_REPOSITORIES` in `tests/recorded_templates.rs`. Keep both fixture module sets and `cold_single_target_setup_builds_every_recorded_template`.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with all six named tests green and each of them under 1 s; lint. The other slow cargo-berth tests in these four files go to Phase 58b.
+**Gotchas:**
+- A wall-clock deadline inside a proof test fails under load by design; use an explicit event at the spawn boundary.
+- Before a red Mac result is trusted, check that the Mac binary holds the new code.
 
 ### Phase 58 — cargo-berth tests run under a second  · status: done
 
@@ -2362,47 +2349,29 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 
 ### Phase 32e — The last tile frames over 4 ms of CPU  · status: done
 
-**Depends on:** Phase 32b (it adds the per-frame CPU counters and the retained paintings that this phase measures).
+#### As-built
 
-#### Work Order
-
-**Goal:** In the fixed busy capture, no `cargo-tile` frame spends more than 4 ms of on-CPU draw time. Phase 32b's final capture has 2 of 822, 1 of 752 and 17 of 730 frames over the limit at 24, 40 and 80 rows, with a maximum of 5.723, 4.011 and 5.295 ms. Sixteen of these frames spend their time in the draw callback, with paintings rejected. Four frames write about 16 kB.
-
-**Spec:**
-
-1. **Measure first.** For a slow frame that writes 19 bytes, record the first rejected source field with its old and new display values. Record preparation CPU apart from validation and repaint CPU. Record the repaint trigger beside the terminal diff cell count. Compare total draw time with and without the per-write clock reads.
-2. **Validate paintings by what they display.** The source check compares the complete `CargoProcess` and raw resource values. Compare the values that determine the painting: the displayed duration and the formatted resource totals. Keep full precision in the accounting data. Aggregate contributions before rounding. Keep the layout, command visibility and destination checks.
-3. **Remove the periodic full output.** The runner forces a repaint every two seconds, and unchanged cells then differ. Replace this with bounded row batches if periodic recovery is still necessary. Keep recovery for resize and external terminal damage. A recovery batch writes only in a frame that is already scheduled, the once-a-second status frame, so an idle tile draws no added frame. If periodic recovery stays, add an injected-time test: damage an idle terminal, and every row is correct within 2 s, the period of today's repaint.
-4. **Buffer terminal output** before the counted stdout writer, if step 1 shows that small writes cost CPU.
-5. **Compare with the same script on the final tree.** Run `python3 /tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/32b/capture/cpu_build_capture.py <label>` from the home worktree, `/home/natepiano/rust/cargo-liner-tile`. It builds the release binary and runs `capture.py` with its `terminal_bridge.py`. It writes `<label>-results.json` in the same folder. Use `cpu5-results.json` there as the before result. Keep the tree unchanged during a capture. Report the before and after maximum, p99, count over 4 ms and sample count at each size.
+- Retained cell paintings validate by displayed values: the shown duration and the formatted resource totals. Full precision stays in the accounting data. Layout, command visibility and destination checks stay.
+- The runner has no periodic full output. Idle recovery repaints damaged rows from the retained buffer in bounded batches, only in the once-a-second status frame. Resize and external damage keep full recovery.
+- Retained cells recolor from separate ink sources. Foreground recording uses bounded position arrays, and live cells skip foreground recording and ink binding.
+- Command preparation survives hierarchy changes; argument choices and default arguments still invalidate it.
+- `probe.rs` logs nested stage counters: preparation, width measurement, allocation, demand, capture, patch creation and ink binding.
+- `FamilyPalette` lives in `theme/family_palette.rs`; its test restores the theme with a `Drop` fixture.
+- The 4 ms gate is not met: the counted capture has maximums of 3.24, 4.46 and 4.81 ms at 24, 40 and 80 rows. Three interleaved pairs against main show no change larger than the spread.
 
 **Files:**
-- `crates/cargo-tile/src/render/{cell_paint,frame_preparation}.rs`, `crates/cargo-tile/src/render.rs` — the display signature and the retained paintings.
-- `crates/cargo-tile/src/probe.rs` — the measurements of step 1.
-- `crates/tui_pane/src/runner/{event_loop,constants}.rs` — the repaint trigger and the final draw measurement.
-- `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/theme/family_palette.rs` — the palette cache move and its test fixture.
-- `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only.
+- `crates/cargo-tile/src/render.rs` — stage timers and recording decisions.
+- `crates/cargo-tile/src/render/cell_paint.rs` — display signature, retained paintings, recolor and position arrays.
+- `crates/cargo-tile/src/render/command_cache.rs`, `crates/cargo-tile/src/render/frame_preparation.rs` — preparation reuse and grid timing.
+- `crates/cargo-tile/src/probe.rs` — stage counters.
+- `crates/tui_pane/src/runner/event_loop.rs`, `crates/tui_pane/src/runner/constants.rs` — recovery batches and the final draw measurement.
+- `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/theme/family_palette.rs` — the palette module.
 
-**Workers:** 2 writers
-- `impl` — the render, probe and runner files, their tests, and final verification.
-- `palette` — `theme/mod.rs`, `theme/family_palette.rs` and their tests (review items 4 to 6).
+**Binds later work:** retained cells recolor from separate ink sources; keep them separate.
 
-**Constraints from prior phases:** Phase 32b: `cpu_ns` reads `CLOCK_THREAD_CPUTIME_ID`, and run-queue wait is context only. Extend the retained-versus-fresh table in `cell_paint.rs` with subsecond clock changes and resource changes around rounding boundaries. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
-
-**Review items from Phase 32b, fixed in this phase:**
-1. The disconnected-input return in `event_loop.rs` loses the final draw measurement.
-2. The command-change case of `roster_revisions_keep_only_unchanged_cell_paintings` draws a different invocation. Change the command on the same invocation.
-3. `PaintedRowSource::ended` stores a `bool`. Use a named completion enum.
-4. `family_colors_follow_role_and_reserved_ink_changes` restores the theme without a `Drop` fixture.
-5. The fallback expectation in that test duplicates `builtins::DARK_FAMILY_COLORS[0]`.
-6. `FamilyPalette` sits in the `theme/mod.rs` module root. Move it to a child module.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
-- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Phase 32b's final result stays beside it.
-- A gate capture counts only when the 1-minute load is below 32 at its start and at its end. `capture.py` records both loads in the result. A capture outside the limit is void, not red. Do not wait idle for a low load: continue the repair round, and run the gate capture when the load is below the limit (showrunner, 2026-11-10).
-- Change-Review: none — draw time only, with no visible change.
+**Gotchas:**
+- `capture_cpu_ns` surrounds all of `frame_draw_contents`, so foreground recording counts with painting.
+- A gate capture counts only when the 1-minute load is below 32 at its start and at its end; outside the limit it is void, not red.
 
 ### Phase 32h — Tile frames stay under 4 ms after layout, view and value changes  · status: todo
 
@@ -2420,7 +2389,7 @@ Phase 32e landed under the three-round rule with its gate open (finding F010). I
 2. **Value changes count.** Frames over 4 ms also come after a duration change (`00:05` to `00:06`) and after a memory reading change, with `invalid_view=0`. `CellPaintSource::matches` checks layout before these source values (`crates/cargo-tile/src/render/cell_paint.rs:355`). Cover these frames, not only view changes.
 3. **Make the recording areas small.** `paint_ink` saves and marks every foreground in its rectangle, then scans that rectangle again (`crates/cargo-tile/src/render/cell_paint.rs:591`). Ancestry recording gets the remaining pane (`crates/cargo-tile/src/render.rs:2443`): prepare the ancestry lines once, record only their drawn rectangle, and record nothing when there are no lines. Continuation recording gets the table area (`crates/cargo-tile/src/render.rs:2804`): resolve the continuation search first, then record only the selected row. Keep the full search dependency in `CellPaintReach`.
 4. **Limits.** Do not skip recording only because the current fade is zero: a finished row can fade during later cache replays. Keep destination validation: continuation placement reads existing symbols, and retained patches use absolute buffer positions. Do not move the work into `before_draw`: that hides the cost from the draw measurement and does not reduce CPU work.
-5. **Deterministic proof.** Add a fixture at 160 columns and 24, 40 and 80 rows. Make argument, hierarchy, duration and resource changes. Check the first frame after each change, not `settled_frame` (`crates/cargo-tile/src/render.rs:8754`), which draws four times. Compare each buffer with a fresh painting. Count foreground recording visits apart from the snapshot and patch counters. Empty ancestry needs zero recording visits. Continuation recording stays at one row as the table height grows. Include mixed live and finished rows, Brighten, wide glyphs and shifted buffers.
+5. **Deterministic proof.** Add a fixture at 160 columns and 24, 40 and 80 rows. Make argument, hierarchy, duration and resource changes. Also resize the tile, move a cell, and change the destination symbols so that the continuation target moves: patches use absolute positions (`crates/cargo-tile/src/render/cell_paint.rs:836`), and continuation placement searches destination symbols (`crates/cargo-tile/src/render.rs:2722`). Check the first frame after each change, not `settled_frame` (`crates/cargo-tile/src/render.rs:8754`), which draws four times. Compare each buffer with a fresh painting. Count foreground recording visits apart from the snapshot and patch counters. Empty ancestry needs zero recording visits. Continuation recording stays at one row as the table height grows. Include mixed live and finished rows, Brighten, wide glyphs and shifted buffers.
 6. **The shifted-buffer test runs.** The loop at `crates/cargo-tile/src/render/cell_paint.rs:991` supplies only `Reset` and `Black`, so the shifted-buffer branch never runs. Add `Indexed(16)` to that loop.
 7. **Constant order (finding F009).** Put `RECOVERY_BATCH_MILLIS` in `crates/tui_pane/src/runner/constants.rs` with the related repaint constants, in the module order that the style guide gives.
 
@@ -2437,40 +2406,30 @@ Phase 32e landed under the three-round rule with its gate open (finding F010). I
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green. When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build.
+- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Run `python3 /tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/32b/capture/cpu_build_capture.py <label>` from the phase worktree. It builds the release binary, runs `capture.py` with its `terminal_bridge.py`, and writes `<label>-results.json` in the same folder. Keep the tree unchanged during a capture. Phase 32e's counted capture is the before result. Report the before and after maximum, p99, count over 4 ms and sample count at each size.
 - A gate capture counts only when the 1-minute load is below 32 at its start and at its end. A capture outside the limit is void, not red.
-- Three interleaved pairs against main for any CPU claim, with the median change and the spread.
+- Three interleaved pairs against main for any CPU claim, with the median change and the spread. Record the candidate and main revisions beside each pair.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
-**Depends on:** Phase 32 (it adds the compiler wrapper layout and the toggle state). Phase 32b measures the same files, so this phase starts after it.
+#### As-built
 
-#### Work Order
-
-**Goal:** Two defects from Phase 32's design check (2026-11-09, `S/phases/32/review3_reply_ux_1.txt`) moved here under the hard landing. With `h` on, compiler rows in a narrow column read `clippy-driver ~/.rustup/toolchai…`, so every row is the same and no row names its crate. The status bar still says `tree` for the key named `processes`, and it draws the mode words in the version's ink.
-
-**Spec:**
-
-1. **A compiler row keeps its crate with all arguments on.** For `CommandLayout::CompilerWrapper`, the first row with `h` on has the same form as with `h` off: the frontend name and the crate value, with no `--crate-name` flag (`clippy-driver hana_diegetic`). A crate name wider than the command column is cut with `…` on that row. Every other argument follows in argv order on the argument rows, with the compiler path first. The `--crate-name` pair is not repeated. Wrapping, flag binding and the `…` rule do not change. A wrapper call with no `--crate-name` keeps argv order. Test, red first: add rows to `a_rustc_wrapper_row_shows_rustc_and_its_crate` that read the crate from the first row at the live command-column width (25 cells) and at 20 cells with `h` on. (Architect review 2026-11-09: `clippy-driver --crate-name hana_diegetic` needs 40 cells, so a reorder alone cannot keep the crate on the first row.)
-2. **Status words use the key names.** `PROCESS_TREE_NOTE_LABEL` reads `processes`. The `processes` and `all arguments` notes use the bar's hint ink from `bar/support.rs`, not the version's ink. Other notes (`attract`, `frozen`) do not change. Test, red first: extend the status-line test that reads these notes from the buffer, for both text and ink.
+- With all arguments on, the first compiler row holds the frontend name and the crate value (`clippy-driver hana_diegetic`). A crate name wider than the command column is cut with `…`. Other arguments follow in argv order, with the compiler path first, and the `--crate-name` pair does not repeat.
+- `compiler_argument_layout` identifies forwarded compiler executables. `wrapped_process_command` reserves the heading row.
+- The status bar names the process tree key `processes` (`PROCESS_TREE_NOTE_LABEL`). The `processes` and `all arguments` notes use the hint ink.
 
 **Files:**
-- `crates/cargo-tile/src/census/command_text.rs` — item 1 and its parser cases.
-- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/render.rs` — item 2, and item 1's render test.
-- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/support.rs` — item 2's note ink, only if the note style has no hint ink today. `crates/tui_pane/CHANGELOG.md` — one line if `tui_pane` changes.
-- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
+- `crates/cargo-tile/src/census/command_text.rs` — compiler heading form and forwarded executables.
+- `crates/cargo-tile/src/render.rs` — heading row reservation and status notes.
+- `crates/cargo-tile/src/constants.rs` — `PROCESS_TREE_NOTE_LABEL`.
+- `crates/tui_pane/src/bar/status_line.rs` — note ink.
 
-**Workers:** 1 writer — `impl`, every file above.
+**Gotchas:**
+- A capture that sets terminal colors and selects no appearance can draw the dark theme on a white terminal. Record the resolved theme and the terminal settings.
+- The budget reserves one row per invocation before arguments, so four wrappers need about 12 framed rows.
 
-**Constraints from prior phases:** Phase 32b: `PreparedTables::prepare` keeps cell paintings across roster revisions, and `CellPaintSource::matches` validates each one against its sources. A change to what a command cell displays changes those sources, or the cell keeps a stale painting. Unchanged displayed values keep their reuse. This phase runs beside Phase 32e in its own worktree, so Phase 32e's capture tree stays unchanged. In `render.rs`, this phase edits only the status-line notes and item 1's render test; Phase 32e owns the rest. Phase 35m: a summary command shows its arguments only when the whole command fits one line, also with `h` on; otherwise it shows the named words. This phase does not change that rule. Phase 48 removed the `p` and `h` status-bar hints: the status bar keeps the mode words, and the on state of a key shows in the shortcuts surface. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
-- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- Shots of a live tile with a `cargo clippy` whose children run as the compiler wrapper, with `h` off and on, at 24 and 40 rows; a fresh helper's design check passes.
-- Change-review line: with all arguments on, a compiler row names its crate on its first row.
-- Change-review line: the status bar says `processes` when the process tree is on.
+**Ruled out:** a change to the cargo probe row: the real crate name `___` stays (showrunner, 2026-11-10).
 
 ### Phase 32f — Active crate labels read on a light background  · status: todo
 
@@ -2510,7 +2469,7 @@ Phase 32e landed under the three-round rule with its gate open (finding F010). I
 
 ### Phase 32g — The hidden-process row reads whole and matches its cell  · status: todo
 
-**Depends on:** Phase 32c, Phase 32e
+**Depends on:** Phase 32c, Phase 32e, Phase 32h (both edit the painting and retained replay in `render.rs` and `render/cell_paint.rs`; item 4's fade clamp must keep Phase 32h's draw time)
 
 #### Work Order
 
@@ -2540,6 +2499,7 @@ Phase 32e landed under the three-round rule with its gate open (finding F010). I
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - Shots of a live tile with hidden processes at 24 and 40 rows on a light background, and at 80 rows with `h` on with matched light and dark appearances. Record the resolved theme and the terminal settings before judging missing text, placement or contrast. A fresh helper's design check passes.
+- Phase 32h's capture gate, repeated on the final release build with the fade clamp: no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows, under the same load rule.
 - Change-review line: the hidden-process row reads whole on the background of its cell.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
