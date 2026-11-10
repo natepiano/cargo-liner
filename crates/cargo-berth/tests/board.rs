@@ -7,6 +7,9 @@
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -43,6 +46,16 @@ pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
 pub use edges_templates::successor_history_state;
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -3722,7 +3735,12 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@""#,
         "{}",
         json_output(&unavailable.output)
     );
-    assert_eq!(historical_candidate_queries(&unavailable), 1);
+    assert_eq!(
+        historical_candidate_queries(&unavailable),
+        1,
+        "{}",
+        json_output(&unavailable.output)
+    );
     assert_eq!(
         scoped_patch_comparison_attempts(
             &unavailable,
@@ -4556,9 +4574,8 @@ fn assert_ancestry_settlement_journal(fixture: &OutstandingReservationFixture) {
 /// no alert names the proof lost -- while the operator's own recovery stays available throughout.
 #[test]
 fn a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof() {
-    let fixture = warmed_ancestor_proof_after_trunk_rewrite();
-    let competing_reservations =
-        append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
+    let (fixture, history) = warmed_ancestor_proof_after_trunk_rewrite();
+    let competing_reservations = append_prepared_released_competitor(&fixture, &history.competitor);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
@@ -4738,7 +4755,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
 /// proof read as lost between one commit and the next.
 #[test]
 fn a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward() {
-    let fixture = warmed_scoped_patch_proof_after_release();
+    let (fixture, history) = warmed_scoped_patch_proof_after_release();
     let root = fixture.repository.path();
     let proving = run_board_with_git_trace(root);
     assert!(proving.output.status.success());
@@ -4751,8 +4768,17 @@ fn a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward() {
 
     // Twice, because a proof that survives one advance and is re-derived on the next would still
     // report a loss on a repository that keeps committing.
-    for advance in ["first", "second"] {
-        let advanced_trunk = advance_trunk(root, advance);
+    for advanced_trunk in history.advances {
+        git(
+            root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "reset",
+                "--hard",
+                &advanced_trunk,
+            ],
+        );
         let following = run_board_with_git_trace(root);
         assert!(following.output.status.success());
         let data = &json_output(&following.output)["payload"]["data"];
@@ -5465,7 +5491,7 @@ fn a_deferred_comparison_reports_the_rewrite_without_discarding_a_scoped_patch_p
 /// each time.
 #[test]
 fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() {
-    let fixture = warmed_scoped_patch_proof_after_release();
+    let (fixture, _) = warmed_scoped_patch_proof_after_release();
     let evidence_before = journal_operation_count_for_reservation(
         fixture.repository.path(),
         "evidence_revalidated",
@@ -6814,7 +6840,12 @@ fn reverted_scoped_patch_proof_fixture() -> RevertedScopedPatchProofFixture {
     // Keep the old phase subject available for the deliberately stale comparison record.
     dirty_source(repository.path(), "src/lib.rs");
     let warmed = run_board_with_git_trace(repository.path());
-    assert!(warmed.output.status.success());
+    assert!(
+        warmed.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&warmed.output.stdout),
+        String::from_utf8_lossy(&warmed.output.stderr)
+    );
     let warmed_board = json_output(&warmed.output);
     let warmed_status = &board_reservation_snapshot(
         &warmed_board["payload"]["data"],
@@ -6902,94 +6933,33 @@ fn commit_library_target_from_base(
     source: &str,
     message: &str,
 ) -> String {
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "reset",
-            "--hard",
-            phase_start_head,
-        ],
-    );
-    fs::write(repository_root.join("src/lib.rs"), source).expect("target source should write");
-    git(repository_root, &["add", "src/lib.rs"]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            message,
-        ],
-    );
-    git_stdout(repository_root, &["rev-parse", "HEAD"])
+    GIT.commit_library_target_from_base(repository_root, phase_start_head, source, message)
 }
 
-/// Commit outside every reserved scope, so trunk moves forward and keeps reaching what it held.
-fn advance_trunk(repository_root: &Path, marker: &str) -> String {
-    let advancing_source = format!("src/advanced-{marker}.rs");
-    let message = format!("{marker} advance past the proof");
-    fs::write(
-        repository_root.join(&advancing_source),
-        "pub fn advanced() {}\n",
-    )
-    .expect("advancing source should write");
-    git(repository_root, &["add", &advancing_source]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            &message,
-        ],
-    );
-    git_stdout(repository_root, &["rev-parse", "HEAD"])
-}
-
-fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
-    let repository = initialized_repository();
-    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let reservation_id = reservation_id(&claim(repository.path(), "file:src/lib.rs", FIRST_RUN));
-    fs::write(
-        repository.path().join("src/lib.rs"),
-        "pub fn protected() {}\n",
-    )
-    .expect("protected source should write");
-    git(repository.path(), &["add", "src/lib.rs"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "protected ancestor",
-        ],
-    );
-    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        repository.path(),
-        &serde_json::json!({
-            "op": "checkpoint",
-            "reservation_id": reservation_id,
-            "protected_tip": protected_tip,
-            "trunk_snapshot": protected_tip,
-        }),
-    );
+fn warmed_ancestor_proof_after_trunk_rewrite() -> (
+    RewrittenReservationFixture,
+    prepared_lock_tests::AncestorProofCommits,
+) {
+    let repository = prepared_lock_tests::ANCESTOR_CHECKPOINT.instantiate();
+    let info: prepared_lock_tests::PreparedProofHistory<prepared_lock_tests::AncestorProofCommits> =
+        prepared_lock_tests::read_history(repository.path())
+            .expect("prepared proof history should read");
+    let phase_start_head = info.phase_start_head;
+    let reservation_id = info.reservation_id;
+    let protected_tip = info.protected_tip;
     let warmed = run_board_with_git_trace(repository.path());
-    assert!(warmed.output.status.success());
+    assert!(
+        warmed.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&warmed.output.stdout),
+        String::from_utf8_lossy(&warmed.output.stderr)
+    );
     let warmed_board = json_output(&warmed.output);
     assert_eq!(
         board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["integration_evidence"]
             ["status"]["proof"],
-        "protected_tip_ancestor"
+        "protected_tip_ancestor",
+        "{warmed_board}"
     );
     assert_eq!(
         board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["lifecycle"]
@@ -7010,13 +6980,16 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
         ],
     );
     let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    RewrittenReservationFixture {
-        repository,
-        reservation_id,
-        phase_start_head,
-        protected_tip,
-        target,
-    }
+    (
+        RewrittenReservationFixture {
+            repository,
+            reservation_id,
+            phase_start_head,
+            protected_tip,
+            target,
+        },
+        info.commits,
+    )
 }
 
 fn lost_integration_evidence_alert<'board>(
@@ -7031,41 +7004,25 @@ fn lost_integration_evidence_alert<'board>(
     })
 }
 
-/// Release a reservation, then warm a content proof for it at a trunk its protected tip cannot
-/// reach, and leave trunk on a further rewrite that still carries the reserved content.
-fn warmed_scoped_patch_proof_after_release() -> RewrittenReservationFixture {
-    let repository = initialized_repository();
-    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let reservation_id = reservation_id(&claim(repository.path(), "file:src/lib.rs", FIRST_RUN));
-    fs::write(
-        repository.path().join("src/lib.rs"),
-        "pub fn protected() {}\n",
-    )
-    .expect("protected source should write");
-    git(repository.path(), &["add", "src/lib.rs"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "protected ancestor",
-        ],
-    );
-    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        repository.path(),
-        &serde_json::json!({
-            "op": "checkpoint",
-            "reservation_id": reservation_id,
-            "protected_tip": protected_tip,
-            "trunk_snapshot": protected_tip,
-        }),
-    );
+/// Restore a released reservation and verify its content proof before selecting the amended target.
+fn warmed_scoped_patch_proof_after_release() -> (
+    RewrittenReservationFixture,
+    prepared_lock_tests::ContentProofCommits,
+) {
+    let repository = prepared_lock_tests::CONTENT_CHECKPOINT.instantiate();
+    let info: prepared_lock_tests::PreparedProofHistory<prepared_lock_tests::ContentProofCommits> =
+        prepared_lock_tests::read_history(repository.path())
+            .expect("prepared proof history should read");
+    let phase_start_head = info.phase_start_head;
+    let reservation_id = info.reservation_id;
+    let protected_tip = info.protected_tip;
     let released = run_board_with_git_trace(repository.path());
-    assert!(released.output.status.success());
+    assert!(
+        released.output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&released.output.stdout),
+        String::from_utf8_lossy(&released.output.stderr)
+    );
     let released_board = json_output(&released.output);
     assert_eq!(
         board_reservation_snapshot(&released_board["payload"]["data"], &reservation_id)["lifecycle"]
@@ -7074,14 +7031,18 @@ fn warmed_scoped_patch_proof_after_release() -> RewrittenReservationFixture {
         "ordinary reconciliation should settle the reachable checkpoint"
     );
 
-    // Trunk now carries the reserved content under a commit the protected tip does not reach,
-    // which is what an amending push leaves behind. The comparison runs here and materializes the
-    // content proof this fixture exists to hold.
-    let warmed_target = commit_library_target_from_base(
+    // The prepared target holds equivalent content outside the protected tip's history.
+    // The live board command verifies the content proof.
+    let warmed_target = info.commits.warmed_target.clone();
+    git(
         repository.path(),
-        &phase_start_head,
-        "pub fn protected() {}\n",
-        "equivalent proof target",
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            &warmed_target,
+        ],
     );
     let warmed = run_board_with_git_trace(repository.path());
     assert!(warmed.output.status.success());
@@ -7094,20 +7055,22 @@ fn warmed_scoped_patch_proof_after_release() -> RewrittenReservationFixture {
     assert_eq!(warmed_status["proof"], "scoped_patch_equivalent");
     assert_eq!(warmed_status["trunk_oid"], warmed_target);
 
-    let target = commit_library_target_from_base(
+    let target = info.commits.amended_target.clone();
+    git(
         repository.path(),
-        &phase_start_head,
-        "pub fn protected() {}\n",
-        "amended equivalent target",
+        &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &target],
     );
     assert_ne!(target, warmed_target);
-    RewrittenReservationFixture {
-        repository,
-        reservation_id,
-        phase_start_head,
-        protected_tip,
-        target,
-    }
+    (
+        RewrittenReservationFixture {
+            repository,
+            reservation_id,
+            phase_start_head,
+            protected_tip,
+            target,
+        },
+        info.commits,
+    )
 }
 
 fn reachable_outstanding_reservations_fixture(
@@ -7368,13 +7331,7 @@ fn append_comparison_reservations(
     proof_subject_similarity: ProofSubjectSimilarity,
     completion: ReservationCompletion,
 ) -> Vec<String> {
-    let journal = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
-        .expect("journal should read");
-    let claim = journal
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
-        .find(|event| event["op"] == "claim")
-        .expect("fixture should contain a claim");
+    let claim = comparison_claim(fixture);
     let mut reservation_ids = Vec::new();
     for reservation_index in 0..additional_reservations {
         let reservation_id = uuid::Uuid::now_v7().to_string();
@@ -7398,61 +7355,107 @@ fn append_comparison_reservations(
                 (claim["scopes"].clone(), fixture.protected_tip.clone())
             },
         };
-        append_journal_operation(
-            fixture.repository.path(),
-            &serde_json::json!({
-                "op": "claim",
-                "reservation_id": reservation_id,
-                "scopes": scopes,
-                "source": claim["source"],
-                "purpose": claim["purpose"],
-                "trunk_at_claim": claim["trunk_at_claim"],
-                "head_snapshot": claim["head_snapshot"],
-                "phase_start_head": claim["phase_start_head"],
-                "worktree_root": claim["worktree_root"],
-                "worktree_administrative_locator": claim["worktree_administrative_locator"],
-                "authorization": {"kind": "no_conflict"},
-                "coordination_identity_provenance": claim["coordination_identity_provenance"],
-            }),
-        );
-        append_journal_operation(
-            fixture.repository.path(),
-            &serde_json::json!({
-                "op": "checkpoint",
-                "reservation_id": reservation_id,
-                "protected_tip": protected_tip,
-                "trunk_snapshot": match completion {
-                    ReservationCompletion::Outstanding => &fixture.phase_start_head,
-                    ReservationCompletion::Released => &protected_tip,
-                },
-            }),
-        );
-        if matches!(completion, ReservationCompletion::Outstanding) {
-            continue;
-        }
-        append_journal_operation(
-            fixture.repository.path(),
-            &serde_json::json!({
-                "op": "evidence_revalidated",
-                "reservation_id": reservation_id,
-                "status": {
-                    "status": "integrated",
-                    "trunk_oid": protected_tip,
-                    "proof": "protected_tip_ancestor",
-                },
-                "edit_blocking_status": "clear",
-            }),
-        );
-        append_journal_operation(
-            fixture.repository.path(),
-            &serde_json::json!({
-                "op": "release",
-                "reservation_id": reservation_id,
-                "disposition": {"kind": "integrated"},
-            }),
+        append_comparison_reservation(
+            fixture,
+            &claim,
+            &reservation_id,
+            &scopes,
+            &protected_tip,
+            completion,
         );
     }
     reservation_ids
+}
+
+fn append_prepared_released_competitor(
+    fixture: &RewrittenReservationFixture,
+    protected_tip: &str,
+) -> Vec<String> {
+    let claim = comparison_claim(fixture);
+    let reservation_id = uuid::Uuid::now_v7().to_string();
+    let scopes = serde_json::json!([{"path": "src/distinct-0.rs", "kind": "file"}]);
+    append_comparison_reservation(
+        fixture,
+        &claim,
+        &reservation_id,
+        &scopes,
+        protected_tip,
+        ReservationCompletion::Released,
+    );
+    vec![reservation_id]
+}
+
+fn comparison_claim(fixture: &RewrittenReservationFixture) -> serde_json::Value {
+    let journal = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
+        .expect("journal should read");
+    journal
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .find(|event| event["op"] == "claim")
+        .expect("fixture should contain a claim")
+}
+
+fn append_comparison_reservation(
+    fixture: &RewrittenReservationFixture,
+    claim: &serde_json::Value,
+    reservation_id: &str,
+    scopes: &serde_json::Value,
+    protected_tip: &str,
+    completion: ReservationCompletion,
+) {
+    append_journal_operation(
+        fixture.repository.path(),
+        &serde_json::json!({
+            "op": "claim",
+            "reservation_id": reservation_id,
+            "scopes": scopes,
+            "source": claim["source"],
+            "purpose": claim["purpose"],
+            "trunk_at_claim": claim["trunk_at_claim"],
+            "head_snapshot": claim["head_snapshot"],
+            "phase_start_head": claim["phase_start_head"],
+            "worktree_root": claim["worktree_root"],
+            "worktree_administrative_locator": claim["worktree_administrative_locator"],
+            "authorization": {"kind": "no_conflict"},
+            "coordination_identity_provenance": claim["coordination_identity_provenance"],
+        }),
+    );
+    append_journal_operation(
+        fixture.repository.path(),
+        &serde_json::json!({
+            "op": "checkpoint",
+            "reservation_id": reservation_id,
+            "protected_tip": protected_tip,
+            "trunk_snapshot": match completion {
+                ReservationCompletion::Outstanding => fixture.phase_start_head.as_str(),
+                ReservationCompletion::Released => protected_tip,
+            },
+        }),
+    );
+    if matches!(completion, ReservationCompletion::Outstanding) {
+        return;
+    }
+    append_journal_operation(
+        fixture.repository.path(),
+        &serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": reservation_id,
+            "status": {
+                "status": "integrated",
+                "trunk_oid": protected_tip,
+                "proof": "protected_tip_ancestor",
+            },
+            "edit_blocking_status": "clear",
+        }),
+    );
+    append_journal_operation(
+        fixture.repository.path(),
+        &serde_json::json!({
+            "op": "release",
+            "reservation_id": reservation_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    );
 }
 
 /// Commit a competitor's claimed path on a branch of its own and return that commit.
@@ -7471,82 +7474,12 @@ fn commit_competitor_scope(
     phase_start_head: &str,
     reservation_index: usize,
 ) -> String {
-    let scratch = tempdir().expect("competitor scratch directory should exist");
-    let index_path = scratch.path().join("index");
-    let source_path = scratch.path().join("competitor.rs");
-    fs::write(&source_path, "pub fn competitor() {}\n").expect("competitor source should write");
-
-    git_with_index(
+    GIT.commit_competitor_scope(
         repository_root,
-        &index_path,
-        &["read-tree", phase_start_head],
-    );
-    let blob = git_with_index(
-        repository_root,
-        &index_path,
-        &[
-            "hash-object",
-            "-w",
-            "--path",
-            scope_path,
-            source_path
-                .to_str()
-                .expect("competitor source path should be UTF-8"),
-        ],
-    );
-    git_with_index(
-        repository_root,
-        &index_path,
-        &[
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            &format!("100644,{blob},{scope_path}"),
-        ],
-    );
-    let tree = git_with_index(repository_root, &index_path, &["write-tree"]);
-    let protected_tip = git_with_index(
-        repository_root,
-        &index_path,
-        &[
-            "commit-tree",
-            &tree,
-            "-p",
-            phase_start_head,
-            "-m",
-            "competitor work inside its own scope",
-        ],
-    );
-    // A ref keeps the commit reachable for the whole run; nothing prunes it out from under the
-    // reservation whose protected tip it is.
-    git(
-        repository_root,
-        &[
-            "update-ref",
-            &format!("refs/heads/competitor-{reservation_index}"),
-            &protected_tip,
-        ],
-    );
-    protected_tip
-}
-
-/// Run one git command against a temporary index and return its trimmed output.
-fn git_with_index(repository_root: &Path, index_path: &Path, arguments: &[&str]) -> String {
-    let output = GIT.output_with_environment(
-        repository_root,
-        arguments,
-        "GIT_INDEX_FILE",
-        index_path.to_str().expect("index path should be UTF-8"),
-    );
-    assert!(
-        output.status.success(),
-        "git {arguments:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+        scope_path,
+        phase_start_head,
+        reservation_index,
+    )
 }
 
 fn append_scoped_patch_attempt(repository_root: &Path, reservation_id: &str, target: &str) {

@@ -33,6 +33,7 @@ mod fixture_directory;
 mod git_driver;
 mod integration_repository;
 mod journal_records;
+mod recorded_history;
 mod repository_template;
 mod test_process_group;
 
@@ -71,6 +72,9 @@ pub use journal_records::HOLDER_MERGE_EXTENT_OBSERVED;
 pub use journal_records::MERGE_EXTENT_OBSERVED;
 pub use journal_records::is_merge_extent_observation;
 pub use journal_records::observes_merge_extent_of;
+pub use recorded_history::copy_recorded_repository;
+pub use recorded_history::relocate_tree;
+pub use recorded_history::write_recorded_state;
 pub use repository_template::LedgerFixture;
 pub use repository_template::LedgerTemplate;
 pub use repository_template::RepositoryTemplate;

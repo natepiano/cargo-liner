@@ -202,6 +202,7 @@ pub use backdrop::kwin_evaluate;
 pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
+pub use bar::HintToggleState;
 pub use bar::ScanIndicator;
 pub use bar::ShortcutState;
 pub use bar::StatusBar;

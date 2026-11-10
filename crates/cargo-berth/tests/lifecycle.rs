@@ -4074,7 +4074,8 @@ mod merge_extent {
                     .filter(|line| line.contains("merge-tree") && line.contains("--name-only"))
                     .count(),
                 expected_merge_queries,
-                "only changed keys repeat the merge query: {queries}"
+                "only changed keys repeat the merge query: {queries}; {}",
+                json(&output)
             );
         }
     }

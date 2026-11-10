@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
@@ -94,8 +95,7 @@ pub trait TerminalApp: KeymapEditContext + SettingsHost + 'static {
     /// called once per burst, before the full repaint that follows.
     fn resize_settled(&mut self) {}
 
-    /// Whether the periodic full repaint waits for now, for a screen
-    /// that already writes every cell it covers.
+    /// Defer periodic recovery while the app already writes every cell it covers.
     fn holds_full_repaint(&self) -> bool { false }
 
     /// The loop has ended, before the terminal is restored.
@@ -164,6 +164,12 @@ pub trait FrameProbe {
 
     /// Run `body`, recording how long it took as `phase`.
     fn timed<T>(_phase: FramePhase, body: impl FnOnce() -> T) -> T { body() }
+
+    /// Measure the application callback inside a terminal draw.
+    fn timed_callback<T>(body: impl FnOnce() -> T) -> T { body() }
+
+    /// Record output changes after the timed draw finishes.
+    fn completed_frame(_: &Buffer, _: Rect) {}
 
     /// Write `line` to the probe's log as a line of its own, for what
     /// happens once rather than every frame.

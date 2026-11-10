@@ -5,6 +5,20 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
+
 #[path = "support/covered_branch_template.rs"]
 mod covered_branch_template;
 
@@ -741,9 +755,9 @@ fn a_contended_ledger_states_the_engine_message() -> TestResult {
 
 #[test]
 fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -> TestResult {
-    let repository = INITIALIZED_REPOSITORY.instantiate();
+    let repository = prepared_lock_tests::HOOK_WORKTREE.instantiate();
     let root = repository.path();
-    let (_directory, foreign_root) = add_worktree(&repository, "busy-ledger-holder")?;
+    let foreign_root = root.join(".git/fixture-worktrees/busy-ledger-holder");
     let foreign = run_berth_with_session(
         &foreign_root,
         &["claim", "file:foreign.rs", "--json"],
@@ -770,7 +784,7 @@ fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -
         .current_dir(root)
         .env_remove("CARGO_BERTH_RUN")
         .env("CARGO_BERTH_SESSION_ID", session)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
         .output()?;
     let envelope = json_output(&checked)?;
     assert_eq!(checked.status.code(), Some(6), "{envelope}");
@@ -784,7 +798,7 @@ fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
         .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

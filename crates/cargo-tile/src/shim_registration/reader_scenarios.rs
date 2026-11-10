@@ -5,7 +5,6 @@
     reason = "tests should panic on unexpected values"
 )]
 
-use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::process::Command;
@@ -179,7 +178,6 @@ fn run_reader_script(scenario: &str) {
 }
 
 fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
-    let directory = tempfile::tempdir().expect("isolate writer and reader processes");
     let executable = std::env::current_exe().expect("integration reader executable");
     // Only a reader starts Foundation. Parser checks use the original executable path.
     #[cfg(target_os = "macos")]
@@ -188,11 +186,6 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
     } else {
         reader_executable::stage(&executable).expect("stage the reader outside the build directory")
     };
-    let shim_source = directory.path().join("capture-shim.sh");
-    fs::write(&shim_source, hook::shim_source_for(&hook::fixture_runner()))
-        .expect("render the native capture entry from protocol constants");
-    let stdout_path = directory.path().join("scenario.stdout");
-    let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
     let mut command = Command::new("python3");
@@ -200,33 +193,40 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
     command
         .arg("-S")
         .arg(READER_SCENARIO_SCRIPT)
-        .arg(directory.path())
+        .arg("--scenario-owner")
         .arg(executable)
-        .arg(&shim_source)
         .arg(scenario)
         .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
         .arg(cadence.smoothing.as_secs_f64().to_string())
-        .stdout(Stdio::from(
-            File::create(&stdout_path).expect("create reader scenario stdout file"),
-        ))
-        .stderr(Stdio::from(
-            File::create(&stderr_path).expect("create reader scenario stderr file"),
-        ));
+        .env(
+            "CARGO_TILE_SCENARIO_SHIM",
+            hook::shim_source_for(&hook::fixture_runner()),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let ScenarioDeadline::After(duration) = deadline {
         command.arg(duration.as_secs_f64().to_string());
     }
-    let status = command
-        .status()
+    let mut child = command
+        .spawn()
         .expect("run isolated production reader regression");
-    let stdout = fs::read(stdout_path).expect("read reader scenario stdout file");
-    let stderr = fs::read(stderr_path).expect("read reader scenario stderr file");
+    // Keep the lifetime pipe open until the owner completes its cleanup.
+    let lifetime = child
+        .stdin
+        .take()
+        .expect("keep the scenario owner lifetime pipe");
+    let output = child
+        .wait_with_output()
+        .expect("collect the reader scenario result");
+    drop(lifetime);
     if std::env::var_os(READER_TIMESTAMPS_ENV).is_some() {
-        print!("{}", String::from_utf8_lossy(&stderr));
+        print!("{}", String::from_utf8_lossy(&output.stderr));
     }
     ReaderScenarioResult {
-        status,
-        stdout,
-        stderr,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
     }
 }
 
@@ -260,6 +260,30 @@ fn reader_end_deadline_kills_a_reader_that_ignores_end_and_keeps_writing() {
 #[test]
 fn reader_scenario_sigkill_ends_its_waiting_writer_group() {
     run_reader_script("--writer-kill-self-check");
+}
+
+/// A successful scenario leaves no process or temporary folder.
+#[test]
+fn reader_scenario_pass_removes_its_processes_and_folder() {
+    run_reader_script("--ownership-pass-self-check");
+}
+
+/// A failed assertion leaves no process or temporary folder.
+#[test]
+fn reader_scenario_assertion_removes_its_processes_and_folder() {
+    run_reader_script("--ownership-failure-self-check");
+}
+
+/// A deadline timeout leaves no process or temporary folder.
+#[test]
+fn reader_scenario_timeout_removes_its_processes_and_folder() {
+    run_reader_script("--ownership-timeout-self-check");
+}
+
+/// A killed scenario leaves no process or temporary folder.
+#[test]
+fn reader_scenario_sigkill_removes_its_processes_and_folder() {
+    run_reader_script("--ownership-sigkill-self-check");
 }
 
 /// The process-wide deadline identifies the scenario and pending predicate.

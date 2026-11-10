@@ -11,6 +11,7 @@ mod status_bar_contrast_tests;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -49,6 +50,22 @@ enum GlobalSlotFit {
     AfterUptime,
 }
 
+/// A toggle records its value independently of shortcut availability.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HintToggleState {
+    /// The action is off.
+    Off,
+    /// The action is on.
+    On,
+}
+
+/// Ordinary actions do not have an on or off value.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum HintValue {
+    Action,
+    Toggle(HintToggleState),
+}
+
 /// One global slot in the status line.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StatusLineGlobal<A: Action> {
@@ -59,6 +76,7 @@ pub struct StatusLineGlobal<A: Action> {
     /// Whether the slot renders at all.
     pub visibility:     Visibility,
     fit:                GlobalSlotFit,
+    hint_value:         HintValue,
 }
 
 impl<A: Action> StatusLineGlobal<A> {
@@ -70,6 +88,7 @@ impl<A: Action> StatusLineGlobal<A> {
             shortcut_state: ShortcutState::Enabled,
             visibility:     Visibility::Visible,
             fit:            GlobalSlotFit::Required,
+            hint_value:     HintValue::Action,
         }
     }
 
@@ -88,6 +107,7 @@ impl<A: Action> StatusLineGlobal<A> {
             shortcut_state: ShortcutState::Enabled,
             visibility:     Visibility::Visible,
             fit:            GlobalSlotFit::Required,
+            hint_value:     HintValue::Action,
         }
     }
 
@@ -99,6 +119,47 @@ impl<A: Action> StatusLineGlobal<A> {
             shortcut_state: ShortcutState::Enabled,
             visibility:     Visibility::Visible,
             fit:            GlobalSlotFit::Required,
+            hint_value:     HintValue::Action,
+        }
+    }
+
+    /// Record a toggle value without changing shortcut availability.
+    #[must_use]
+    pub const fn with_toggle(mut self, state: HintToggleState) -> Self {
+        self.hint_value = HintValue::Toggle(state);
+        self
+    }
+
+    /// Read the semantic hint value for shortcut presentation.
+    pub(crate) const fn hint_value(self) -> HintValue { self.hint_value }
+
+    /// Name the action in its saved keymap scope.
+    #[must_use]
+    pub fn action_key(self) -> &'static str {
+        match self.action {
+            StatusLineGlobalAction::App(action) => action.toml_key(),
+            StatusLineGlobalAction::Framework(action) => action.toml_key(),
+            StatusLineGlobalAction::Fixed { key, .. } => key,
+        }
+    }
+
+    /// Read the action's plain display label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self.action {
+            StatusLineGlobalAction::App(action) => action.bar_label(),
+            StatusLineGlobalAction::Framework(action) => action.bar_label(),
+            StatusLineGlobalAction::Fixed { label, .. } => label,
+        }
+    }
+
+    /// Ordinary actions have no toggle label.
+    #[must_use]
+    pub const fn toggle_label(self) -> &'static str {
+        match self.hint_value {
+            HintValue::Action => "",
+            HintValue::Toggle(HintToggleState::Off) => "off",
+            HintValue::Toggle(HintToggleState::On) => "on",
         }
     }
 
@@ -179,6 +240,7 @@ pub struct StatusLine<'a, A: Action> {
     /// Ordered global slots for the right side of the status line.
     pub globals:        &'a [StatusLineGlobal<A>],
     hint_fit:           HintFit,
+    hint_notes:         &'a [StatusLineNote],
 }
 
 struct StatusLineItems {
@@ -206,6 +268,7 @@ impl<'a, A: Action> StatusLine<'a, A> {
             notes,
             globals,
             hint_fit: HintFit::WholeGroups,
+            hint_notes: &[],
         }
     }
 
@@ -216,6 +279,13 @@ impl<'a, A: Action> StatusLine<'a, A> {
     #[must_use]
     pub const fn with_individual_note_hints(mut self) -> Self {
         self.hint_fit = HintFit::IndividualHints;
+        self
+    }
+
+    /// Append mode notes with the enabled shortcut label style.
+    #[must_use]
+    pub const fn with_hint_notes(mut self, notes: &'a [StatusLineNote]) -> Self {
+        self.hint_notes = notes;
         self
     }
 }
@@ -257,6 +327,14 @@ pub fn render<Ctx, G>(
         .notes
         .iter()
         .map(|note| status_line_note_spans(std::slice::from_ref(note), palette))
+        .chain(status.hint_notes.iter().map(|note| {
+            note_spans(
+                note,
+                palette.enabled_label_style,
+                palette.enabled_label_style,
+            )
+            .to_vec()
+        }))
         .collect();
     let required_globals = status
         .globals
@@ -296,13 +374,16 @@ pub fn status_line_note_spans(
 ) -> Vec<Span<'static>> {
     notes
         .iter()
-        .flat_map(|note| {
-            [
-                Span::styled(note.label.clone(), palette.status_label_style),
-                Span::styled(format!("{} ", note.value), palette.status_value_style),
-            ]
-        })
+        .flat_map(|note| note_spans(note, palette.status_label_style, palette.status_value_style))
         .collect()
+}
+
+/// Format a note with its label style and value style.
+fn note_spans(note: &StatusLineNote, label: Style, value: Style) -> [Span<'static>; 2] {
+    [
+        Span::styled(note.label.clone(), label),
+        Span::styled(format!("{} ", note.value), value),
+    ]
 }
 
 /// Resolve and style status-line global slots.

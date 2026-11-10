@@ -407,7 +407,7 @@ pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
 /// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
 /// whose rows wrap three deep in manifest paths is doing it because it
 /// was asked to, not because the commands grew.
-pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "tree";
+pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "processes";
 /// The process every tree on this machine roots at -- `launchd` on
 /// macOS, `init` on Linux. An ancestry walk stops short of it: a row
 /// naming the one process everything descends from tells one command
@@ -439,7 +439,7 @@ pub(crate) const RUSTC_LIBRARY_CRATE_TYPE: &str = "lib";
 pub(crate) const RUSTC_RLIB_CRATE_TYPE: &str = "rlib";
 /// Request options whose values remain exact across split and joined spelling.
 pub(crate) const RUSTC_REQUEST_VALUE_FLAGS: &[&[u8]] = &[
-    b"--crate-name",
+    RUSTC_CRATE_NAME_FLAG.as_bytes(),
     b"--edition",
     RUSTC_CRATE_TYPE_FLAG.as_bytes(),
     b"--check-cfg",
@@ -547,22 +547,43 @@ pub(crate) const CARGO_RELEASE_FLAGS: [&str; 2] = ["--release", "-r"];
 pub(crate) enum ValuedOptionScope {
     /// Cargo accepts the option before its subcommand as well.
     Global,
+    /// Cargo and compiler frontends accept the option before a subcommand.
+    GlobalAndRustc,
+    /// Cargo and compiler frontends accept the option in their argument tails.
+    CargoAndRustc,
     /// Cargo accepts the option in its own argument tail.
     Cargo,
     /// Rustc and its lint-aware drivers accept the lint level and its value.
     RustcLint,
+    /// The nextest runner accepts these options before its argument separator.
+    Nextest,
 }
+
+impl ValuedOptionScope {
+    /// Whether Cargo accepts this scope before its subcommand.
+    pub(crate) const fn accepted_before_subcommand(self) -> bool {
+        match self {
+            Self::Global | Self::GlobalAndRustc => true,
+            Self::CargoAndRustc | Self::Cargo | Self::RustcLint | Self::Nextest => false,
+        }
+    }
+}
+
+/// Select the crate name in a compiler command.
+pub(crate) const RUSTC_CRATE_NAME_FLAG: &str = "--crate-name";
+/// Select the crate name in one compiler argument.
+pub(crate) const RUSTC_CRATE_NAME_PREFIX: &str = "--crate-name=";
 
 /// The single arity table for command selection and command wrapping.
 pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
-    ("--color", ValuedOptionScope::Global),
+    ("--color", ValuedOptionScope::GlobalAndRustc),
     ("--config", ValuedOptionScope::Global),
-    ("-Z", ValuedOptionScope::Global),
-    ("-C", ValuedOptionScope::Global),
+    ("-Z", ValuedOptionScope::GlobalAndRustc),
+    ("-C", ValuedOptionScope::GlobalAndRustc),
     ("--features", ValuedOptionScope::Cargo),
     ("-p", ValuedOptionScope::Cargo),
     ("--package", ValuedOptionScope::Cargo),
-    ("--target", ValuedOptionScope::Cargo),
+    ("--target", ValuedOptionScope::CargoAndRustc),
     ("--bin", ValuedOptionScope::Cargo),
     ("--example", ValuedOptionScope::Cargo),
     ("--test", ValuedOptionScope::Cargo),
@@ -574,6 +595,47 @@ pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
     ("--profile", ValuedOptionScope::Cargo),
     ("--message-format", ValuedOptionScope::Cargo),
     ("--exclude", ValuedOptionScope::Cargo),
+    ("-F", ValuedOptionScope::Nextest),
+    ("--build-jobs", ValuedOptionScope::Nextest),
+    ("--cargo-message-format", ValuedOptionScope::Nextest),
+    ("-R", ValuedOptionScope::Nextest),
+    ("--rerun", ValuedOptionScope::Nextest),
+    ("--run-ignored", ValuedOptionScope::Nextest),
+    ("--flaky-result", ValuedOptionScope::Nextest),
+    ("--debugger", ValuedOptionScope::Nextest),
+    ("--tracer", ValuedOptionScope::Nextest),
+    ("--show-progress", ValuedOptionScope::Nextest),
+    ("--max-progress-running", ValuedOptionScope::Nextest),
+    ("--cargo-metadata", ValuedOptionScope::Nextest),
+    ("--binaries-metadata", ValuedOptionScope::Nextest),
+    ("--build-dir-remap", ValuedOptionScope::Nextest),
+    ("--user-config-file", ValuedOptionScope::Nextest),
+    ("-E", ValuedOptionScope::Nextest),
+    ("--filterset", ValuedOptionScope::Nextest),
+    ("--success-output", ValuedOptionScope::Nextest),
+    ("--failure-output", ValuedOptionScope::Nextest),
+    ("--status-level", ValuedOptionScope::Nextest),
+    ("--final-status-level", ValuedOptionScope::Nextest),
+    ("--test-threads", ValuedOptionScope::Nextest),
+    ("-j", ValuedOptionScope::Nextest),
+    ("--partition", ValuedOptionScope::Nextest),
+    ("--profile", ValuedOptionScope::Nextest),
+    ("-P", ValuedOptionScope::Nextest),
+    ("--retries", ValuedOptionScope::Nextest),
+    ("--cargo-profile", ValuedOptionScope::Nextest),
+    ("--archive-file", ValuedOptionScope::Nextest),
+    ("--archive-format", ValuedOptionScope::Nextest),
+    ("--extract-to", ValuedOptionScope::Nextest),
+    ("--workspace-remap", ValuedOptionScope::Nextest),
+    ("--target-dir-remap", ValuedOptionScope::Nextest),
+    ("--message-format-version", ValuedOptionScope::Nextest),
+    ("--no-tests", ValuedOptionScope::Nextest),
+    ("--max-fail", ValuedOptionScope::Nextest),
+    ("--stress-count", ValuedOptionScope::Nextest),
+    ("--stress-duration", ValuedOptionScope::Nextest),
+    ("--platform-filter", ValuedOptionScope::Nextest),
+    ("--config-file", ValuedOptionScope::Nextest),
+    ("--tool-config-file", ValuedOptionScope::Nextest),
     ("-D", ValuedOptionScope::RustcLint),
     ("-W", ValuedOptionScope::RustcLint),
     ("-A", ValuedOptionScope::RustcLint),
@@ -582,6 +644,8 @@ pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
     ("--warn", ValuedOptionScope::RustcLint),
     ("--allow", ValuedOptionScope::RustcLint),
     ("--forbid", ValuedOptionScope::RustcLint),
+    (RUSTC_CRATE_NAME_FLAG, ValuedOptionScope::RustcLint),
+    ("--edition", ValuedOptionScope::RustcLint),
 ];
 /// Separates a flag from a value assigned in the same argv entry.
 pub(crate) const ARGUMENT_ASSIGNMENT: char = '=';

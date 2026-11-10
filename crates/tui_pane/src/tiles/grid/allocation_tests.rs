@@ -435,8 +435,8 @@ fn falling_tree_demand_keeps_the_first_selected_destination() {
     draw_view_frame(&mut grid, &cells, area, growth);
     assert_eq!(
         cells.measurements.borrow().len(),
-        2,
-        "an unchanged draw measures only the two displays"
+        1,
+        "an unchanged draw measures only the drawn display"
     );
 }
 
