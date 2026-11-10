@@ -72,7 +72,10 @@ fn disk_rows_and_project_sum_change_from_loading_to_measured() -> anyhow::Result
                 test_support::rows(&measured)
             );
         }
-        for (buffer, value) in [(&loading, "…"), (&measured, "4.1 KiB")] {
+        for (buffer, value) in [
+            (&loading, "…"),
+            (&measured, if width == 80 { "4 KiB" } else { "4.1 KiB" }),
+        ] {
             let rows = test_support::rows(buffer);
             let row = rows
                 .iter()

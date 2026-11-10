@@ -58,6 +58,7 @@ use super::app::App;
 use super::app::ConfirmAction;
 use super::app::ConfirmationModalState;
 use super::app_render_state::OverlayRenderInputs;
+use super::columns::ProjectColumnLayout;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::STRIP_SLOT_COUNT;
@@ -79,17 +80,22 @@ use crate::constants::TARGET_DIR;
 use crate::project;
 use crate::project::AbsolutePath;
 
-pub(super) fn format_bytes(bytes: u64) -> String {
+pub(super) fn format_bytes(bytes: u64) -> String { format_bytes_with_precision(bytes, 1) }
+
+/// Round storage values to whole units for narrow project columns.
+pub(super) fn format_bytes_compact(bytes: u64) -> String { format_bytes_with_precision(bytes, 0) }
+
+fn format_bytes_with_precision(bytes: u64, precision: usize) -> String {
     #[allow(
         clippy::cast_precision_loss,
         reason = "display-only — sub-byte precision is irrelevant"
     )]
     if bytes >= BYTES_PER_GIB {
-        format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
+        format!("{:.*} GiB", precision, bytes as f64 / BYTES_PER_GIB as f64)
     } else if bytes >= BYTES_PER_MIB {
-        format!("{:.1} MiB", bytes as f64 / BYTES_PER_MIB as f64)
+        format!("{:.*} MiB", precision, bytes as f64 / BYTES_PER_MIB as f64)
     } else if bytes >= BYTES_PER_KIB {
-        format!("{:.1} KiB", bytes as f64 / BYTES_PER_KIB as f64)
+        format!("{:.*} KiB", precision, bytes as f64 / BYTES_PER_KIB as f64)
     } else {
         format!("{bytes} B")
     }
@@ -217,13 +223,14 @@ fn resolve_tiled_layout(
             + panes::PROJECT_LIST_RIGHT_PADDING,
     )
     .unwrap_or(u16::MAX);
+    let project_column = ProjectColumnLayout {
+        preferred_width: left_width,
+        minimum_width:   minimum_left_width,
+        lint_column:     app.config.current().lint.enabled.into(),
+    };
     let targets_preferred_width = app.panes.targets.preferred_width();
-    let (package_width, git_width) = panes::top_pane_widths(
-        top_area,
-        left_width,
-        minimum_left_width,
-        targets_preferred_width,
-    );
+    let (package_width, git_width) =
+        panes::top_pane_widths(top_area, project_column, targets_preferred_width);
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
         height
@@ -234,8 +241,7 @@ fn resolve_tiled_layout(
     };
     panes::resolve_layout(
         top_area,
-        left_width,
-        minimum_left_width,
+        project_column,
         core_count,
         bottom_row,
         top_required_inner,
@@ -886,6 +892,8 @@ mod tests {
     use ratatui::style::Style;
     use tui_pane::ColorMode;
 
+    use crate::tui::columns::LintColumnStatus;
+    use crate::tui::columns::ProjectColumnLayout;
     use crate::tui::panes;
     use crate::tui::panes::BottomRow;
     use crate::tui::panes::CPU_PANE_WIDTH;
@@ -961,8 +969,11 @@ mod tests {
     fn resolved_layout_keeps_cpu_column_fixed() {
         let narrow = panes::resolve_layout(
             Rect::new(0, 0, 80, 30),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             20,
@@ -970,8 +981,11 @@ mod tests {
         );
         let wide = panes::resolve_layout(
             Rect::new(0, 0, 150, 30),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             20,
@@ -986,8 +1000,11 @@ mod tests {
     fn top_row_has_no_dead_space_above_targets() {
         let layout = panes::resolve_layout(
             Rect::new(0, 0, 120, 30),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             20,
@@ -1017,8 +1034,11 @@ mod tests {
         // leaving more height for Targets.
         let layout = panes::resolve_layout(
             Rect::new(0, 0, 120, 40),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             4,

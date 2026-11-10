@@ -1,6 +1,5 @@
 //! Actual application status-bar foregrounds and grounds under every built-in theme.
 #![expect(clippy::expect_used, reason = "render fixture setup must succeed")]
-use std::sync::Arc;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -9,14 +8,13 @@ use tui_pane::ShortcutState;
 use super::*;
 use crate::tui::test_support;
 fn check(theme_name: &str) {
-    let previous = tui_pane::theme();
     let app = test_support::make_app(&[]);
     let keymap = &app.framework_keymap;
     let variant = crate::themes::builtins()
         .into_iter()
         .find(|variant| variant.id.as_str() == theme_name)
         .expect("built-in theme");
-    tui_pane::set_active_theme(Arc::new(variant.theme));
+    let _theme = test_support::ThemeOverride::install(variant.theme);
     let mut terminal = Terminal::new(TestBackend::new(300, 1)).expect("bar terminal");
     terminal
         .draw(|frame| render_status_bar(frame, &app, frame.area()))
@@ -51,7 +49,6 @@ fn check(theme_name: &str) {
             &format!("{theme_name} {state:?}"),
         ));
     }
-    tui_pane::set_active_theme(previous);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 #[test]

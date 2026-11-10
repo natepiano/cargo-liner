@@ -130,9 +130,13 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     let package_lower = package::package_lower_metadata_height(
         &data.package,
         &package_data::package_rows_from_data(&data.package),
+        package_width.saturating_sub(2),
     );
-    let git_lower =
-        git::git_lower_content_height(&data.git, git_data::git_fields_from_data(&data.git).len());
+    let git_lower = git::git_lower_content_height(
+        &data.git,
+        &git_data::git_fields_from_data(&data.git),
+        git_width.saturating_sub(2),
+    );
 
     let package_desc = description_natural_rows(
         &data.package.description,

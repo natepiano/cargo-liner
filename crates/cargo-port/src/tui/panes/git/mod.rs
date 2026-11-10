@@ -1,3 +1,4 @@
+mod constants;
 mod pane;
 #[cfg(test)]
 mod readability_tests;

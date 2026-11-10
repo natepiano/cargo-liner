@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Round Projects Disk values to whole units at 60–80 columns and align the headers when Lint is off.
+- Keep Projects columns at 60 cells. Shorten project names before column labels.
+- Keep Package labels and pane titles whole. Place counts below labels when the row is narrow.
+- Count stacked Git quota rows in the layout and keep usable worktree pages below descriptions.
+- Keep Lint Runs headers and dates whole. Draw whole stacked runs and map each visible line to its run.
+- Keep stacked Package counts together across pages and count both lines in the layout.
+- Drop Git table columns before cutting their headers. Show narrow CI empty messages below the title.
+- Keep the CI Total column when the runs have no branch mode.
+- Sccache stats uses one thick border in color mode and under NO_COLOR. Every other popup keeps its default border.
+- Keep the Targets Source header whole before target names. Drop whole ahead/behind tokens instead of cutting numbers.
+- Stack Git rate values when they do not fit inline, and keep the row shape steady as the reset counts down. Keep a name letter after the Package title separator.
+- Draw all empty Package values in the dim value colour. Keep Startup page marks readable under every registered theme.
+- Restore test themes through the shared Drop fixture after failures.
+
 - Remove spaces and trailing middle-dot separators before cut-value ellipses. Keep the Tracked header and short Worktree Group CI values whole.
 - Give quiet CI and lint values a separate theme role with readable contrast on focused and unfocused panes.
 - Deliver pull-request results to submodules. Keep cached rows when the remote list cannot be read. Hide empty loading sections without a fetch.

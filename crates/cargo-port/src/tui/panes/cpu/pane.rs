@@ -320,45 +320,40 @@ mod tests {
 
     #[test]
     fn selected_cpu_labels_use_selection_ink_on_both_fills() -> anyhow::Result<()> {
-        let previous = tui_pane::theme();
-        tui_pane::set_active_theme(std::sync::Arc::new(
+        let _theme = crate::tui::test_support::ThemeOverride::install(
             crate::tui::test_support::shipped_dark_theme()?,
-        ));
-        let result = (|| -> anyhow::Result<()> {
-            for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
-                let mut pane = quiet_pane();
-                pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
-                pane.focus.pane_focus_state = focus;
-                let mut terminal = Terminal::new(TestBackend::new(30, 20))?;
-                terminal.draw(|frame| {
-                    let area = frame.area();
-                    render::render_cpu_sample_phase(
-                        frame,
-                        tui_pane::frame_inner(area),
-                        area,
-                        &mut pane,
-                        &CpuConfig::default(),
-                        &mut PaneFrameChrome::default(),
-                        ColorMode::Colored,
-                    );
-                })?;
-                let buffer = terminal.backend().buffer();
-                let failures = crate::tui::test_support::contrast_failures(
-                    buffer,
-                    &["CPU cores"],
-                    "selected CPU label",
+        );
+        for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+            let mut pane = quiet_pane();
+            pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+            pane.focus.pane_focus_state = focus;
+            let mut terminal = Terminal::new(TestBackend::new(30, 20))?;
+            terminal.draw(|frame| {
+                let area = frame.area();
+                render::render_cpu_sample_phase(
+                    frame,
+                    tui_pane::frame_inner(area),
+                    area,
+                    &mut pane,
+                    &CpuConfig::default(),
+                    &mut PaneFrameChrome::default(),
+                    ColorMode::Colored,
                 );
-                assert!(failures.is_empty(), "{}", failures.join("\n"));
-                let (_, y) = crate::tui::test_support::position(buffer, "CPU cores")?;
-                for x in 1..29 {
-                    assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Rgb(255, 255, 255));
-                    assert_eq!(buffer[(x, y)].bg, buffer[(2, y)].bg);
-                }
+            })?;
+            let buffer = terminal.backend().buffer();
+            let failures = crate::tui::test_support::contrast_failures(
+                buffer,
+                &["CPU cores"],
+                "selected CPU label",
+            );
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            let (_, y) = crate::tui::test_support::position(buffer, "CPU cores")?;
+            for x in 1..29 {
+                assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Rgb(255, 255, 255));
+                assert_eq!(buffer[(x, y)].bg, buffer[(2, y)].bg);
             }
-            Ok(())
-        })();
-        tui_pane::set_active_theme(previous);
-        result
+        }
+        Ok(())
     }
 
     fn sampled_usage() -> CpuUsage {
@@ -652,9 +647,8 @@ mod tests {
             .find(|variant| variant.id.as_str() == crate::constants::DEFAULT_DARK_THEME)
             .context("the shipped dark theme")?
             .theme;
-        let previous = tui_pane::theme();
         let background = theme.text.bg_focus.color;
-        tui_pane::set_active_theme(std::sync::Arc::new(theme));
+        let _theme = crate::tui::test_support::ThemeOverride::install(theme);
         let mut pane = quiet_pane();
         pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
         let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 24))?;
@@ -675,7 +669,6 @@ mod tests {
                 ColorMode::Colored,
             );
         })?;
-        tui_pane::set_active_theme(previous);
         let failures =
             super::contrast_failures(terminal.backend().buffer(), &["12%"], "System percentage");
         assert!(failures.is_empty(), "{}", failures.join("\n"));

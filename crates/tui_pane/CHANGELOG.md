@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `PopupBorder` and `PopupFrame::render_with_border` let a popup select a thick border in both colour modes.
 - `StatusLine::with_hint_notes` draws mode notes in the enabled shortcut label ink. Other notes keep their styles.
 - Global shortcut hints can show toggle values independently of shortcut availability.
 
@@ -47,6 +48,10 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Toast cards use available side-gap space to keep warning titles and close buttons whole.
+- Opaque toast cards paint the theme background and use theme colours. Transparent cards keep their existing colours.
+- Draw normal toast page marks in the theme's default text colour so the footer remains readable.
 
 - Cut pane titles keep a blank cell before the corner or joint.
 - Status lines keep whole hint groups by default. `StatusLine::with_individual_note_hints` enables individual hint fitting and a three-cell gap before notes. With this policy, narrow rows drop whole hints from the right. Rows without notes keep whole hint groups.

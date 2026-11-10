@@ -1,7 +1,11 @@
 use anyhow::Context;
 use tui_pane::ColorMode;
 
+use super::constants::SOURCE_HEADER;
 use super::render;
+use crate::tui::columns;
+use crate::tui::columns::LintColumnStatus;
+use crate::tui::columns::ProjectColumnLayout;
 use crate::tui::panes;
 use crate::tui::panes::BottomRow;
 use crate::tui::panes::PaneId;
@@ -11,10 +15,10 @@ use crate::tui::panes::TargetSource;
 use crate::tui::test_support;
 
 #[test]
-fn targets_show_whole_names_at_ninety_five_and_one_hundred_sixty_columns() -> anyhow::Result<()> {
+fn targets_keep_the_source_header_before_names_at_ninety_five_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
         for width in [95, 160] {
-            let mut app = test_support::project_app();
             app.framework.color_mode = mode;
             let mut data = test_support::target_data();
             for (entry, name) in data
@@ -42,13 +46,7 @@ fn targets_show_whole_names_at_ninety_five_and_one_hundred_sixty_columns() -> an
                 .map(|x| buffer[(x, header_y)].symbol())
                 .collect();
             let source_header = header.split_whitespace().nth(1).context("Source header")?;
-            assert!(
-                source_header == "Source"
-                    || (source_header.starts_with('S')
-                        && source_header.ends_with('…')
-                        && source_header.chars().count() >= 2),
-                "{header:?}"
-            );
+            assert_eq!(source_header, "Source", "{header:?}");
             let source_x = area.x
                 + 1
                 + u16::try_from(
@@ -67,23 +65,36 @@ fn targets_show_whole_names_at_ninety_five_and_one_hundred_sixty_columns() -> an
                         .to_string()
                 })
                 .collect();
-            assert_eq!(names, ["cargo-handler", "cargo-berth"], "{width}, {mode:?}");
+            let expected = if width == 95 {
+                ["cargo-hand…", "cargo-berth"]
+            } else {
+                ["cargo-handler", "cargo-berth"]
+            };
+            assert_eq!(names, expected, "{width}, {mode:?}");
         }
     }
     Ok(())
 }
 
 #[test]
-fn every_source_kind_reaches_two_cells_before_target_names_are_cut() -> anyhow::Result<()> {
+fn every_source_kind_keeps_six_source_cells_before_target_names_are_cut() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
         app.framework.color_mode = mode;
-        for source in [
-            TargetSource::workspace_root("workspace_root".into()),
-            TargetSource::member("workspace_member".into()),
-            TargetSource::worktree("worktree_checkout".into()),
+        for (source, expected_source) in [
+            (
+                TargetSource::workspace_root("workspace_root".into()),
+                "works…",
+            ),
+            (TargetSource::member("workspace_member".into()), "works…"),
+            (TargetSource::worktree("worktree_checkout".into()), "workt…"),
         ] {
-            for (pane_width, expected_name) in [(27, "cargo-handler"), (26, "cargo-handl…")] {
+            for (pane_width, expected_name) in [
+                (31, "cargo-handler"),
+                (30, "cargo-handl…"),
+                (27, "cargo-ha…"),
+                (26, "cargo-h…"),
+            ] {
                 let mut data = test_support::target_data();
                 data.binaries.truncate(1);
                 data.binaries[0].display_name = "cargo-handler".into();
@@ -91,15 +102,20 @@ fn every_source_kind_reaches_two_cells_before_target_names_are_cut() -> anyhow::
                 app.panes.targets.set_content(data);
                 let buffer =
                     test_support::draw_pane_in_window(&mut app, PaneId::Targets, 95, pane_width)?;
-                let (source_x, header_y) = test_support::position(&buffer, "S…")?;
+                let (source_x, header_y) = test_support::position(&buffer, "Source")?;
                 test_support::position(&buffer, "Kind")?;
                 let y = header_y + 1;
                 let name: String = (1..source_x).map(|x| buffer[(x, y)].symbol()).collect();
-                let value: String = (source_x..source_x + 2)
+                let source_width = u16::try_from(columns::display_width(SOURCE_HEADER))?;
+                let value: String = (source_x..source_x + source_width)
                     .map(|x| buffer[(x, y)].symbol())
                     .collect();
                 assert_eq!(name.trim(), expected_name, "{mode:?}, width={pane_width}");
-                assert_eq!(value.trim(), "w…", "{mode:?}, width={pane_width}");
+                assert_eq!(
+                    value.trim(),
+                    expected_source,
+                    "{mode:?}, width={pane_width}"
+                );
                 test_support::position(&buffer, "binary")?;
             }
         }
@@ -135,8 +151,11 @@ fn empty_targets_keep_the_project_column_at_its_measured_width() {
     for project_width in [66, 69, 80] {
         let layout = panes::resolve_layout(
             ratatui::layout::Rect::new(0, 0, 160, 44),
-            project_width,
-            46,
+            ProjectColumnLayout {
+                preferred_width: project_width,
+                minimum_width:   46,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             32,
             BottomRow::Diagnostics,
             14,
@@ -174,8 +193,11 @@ fn wide_layout_reserves_target_names_before_project_names_grow() -> anyhow::Resu
             let preferred = app.panes.targets.preferred_width();
             let layout = panes::resolve_layout(
                 ratatui::layout::Rect::new(0, 0, 160, 44),
-                project_width,
-                46,
+                ProjectColumnLayout {
+                    preferred_width: project_width,
+                    minimum_width:   46,
+                    lint_column:     app.config.current().lint.enabled.into(),
+                },
                 32,
                 BottomRow::Diagnostics,
                 14,

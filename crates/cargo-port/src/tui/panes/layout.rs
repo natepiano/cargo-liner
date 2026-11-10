@@ -14,6 +14,7 @@ use super::cpu;
 use super::lang;
 use super::spec::PaneId;
 use super::targets;
+use crate::tui::columns::ProjectColumnLayout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::tui) enum BottomRow {
@@ -123,8 +124,7 @@ pub(in crate::tui) fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> {
 
 pub(in crate::tui) fn resolve_layout(
     area: Rect,
-    left_width: u16,
-    minimum_left_width: u16,
+    project_column: ProjectColumnLayout,
     core_count: usize,
     bottom_row: BottomRow,
     top_required_inner: u16,
@@ -143,8 +143,7 @@ pub(in crate::tui) fn resolve_layout(
         .constraints([
             Constraint::Length(project_column_width(
                 area.width,
-                left_width,
-                minimum_left_width,
+                project_column,
                 targets_preferred_width,
             )),
             Constraint::Min(0),
@@ -296,21 +295,25 @@ fn tiled_row_constraints(
 
 fn project_column_width(
     window_width: u16,
-    left_width: u16,
-    minimum_left_width: u16,
+    project_column: ProjectColumnLayout,
     targets_preferred_width: u16,
 ) -> u16 {
-    let natural = left_width
-        .min((window_width / 2).max(minimum_left_width))
+    let natural = project_column
+        .preferred_width
+        .min((window_width / 2).max(project_column.minimum_width))
         .min(crate::tui::columns::ProjectListWidths::pane_width_limit(
             window_width,
+            project_column.lint_column,
         ));
     let preferred_middle = targets_preferred_width
         .max(targets::minimum_width())
         .saturating_add(cpu_column_width())
         .saturating_add(lang::minimum_width());
     if targets_preferred_width > targets::minimum_width()
-        && window_width >= minimum_left_width.saturating_add(preferred_middle)
+        && window_width
+            >= project_column
+                .minimum_width
+                .saturating_add(preferred_middle)
     {
         natural.min(window_width.saturating_sub(preferred_middle))
     } else {
@@ -327,8 +330,7 @@ const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 /// measured height matches the rendered layout.
 pub(in crate::tui) fn top_pane_widths(
     area: Rect,
-    left_width: u16,
-    minimum_left_width: u16,
+    project_column: ProjectColumnLayout,
     targets_preferred_width: u16,
 ) -> (u16, u16) {
     let cols = Layout::default()
@@ -336,8 +338,7 @@ pub(in crate::tui) fn top_pane_widths(
         .constraints([
             Constraint::Length(project_column_width(
                 area.width,
-                left_width,
-                minimum_left_width,
+                project_column,
                 targets_preferred_width,
             )),
             Constraint::Min(0),
@@ -380,8 +381,10 @@ mod tests {
 
     use super::BottomRow;
     use super::PANE_BORDER_HEIGHT;
+    use super::ProjectColumnLayout;
     use super::derived_layout;
     use super::resolve_layout;
+    use crate::tui::columns::LintColumnStatus;
     use crate::tui::panes::PaneId;
 
     #[test]
@@ -461,8 +464,11 @@ mod tests {
     fn resolved_layout_keeps_top_row_flush_with_targets() {
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 30),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             20,
@@ -491,8 +497,11 @@ mod tests {
         // `cpu::cpu_required_pane_height(12)`.
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             100,
@@ -512,8 +521,11 @@ mod tests {
         let top_inner = 8;
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 41),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             top_inner,
@@ -533,8 +545,11 @@ mod tests {
         let cpu_floor = super::cpu::cpu_required_pane_height(12);
         let tall_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             100,
@@ -542,8 +557,11 @@ mod tests {
         );
         let short_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
-            30,
-            30,
+            ProjectColumnLayout {
+                preferred_width: 30,
+                minimum_width:   30,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             12,
             BottomRow::Diagnostics,
             4,

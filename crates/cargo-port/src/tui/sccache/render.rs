@@ -10,6 +10,7 @@ use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::ColorMode;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
+use tui_pane::PopupBorder;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ViewportOverflow;
@@ -63,7 +64,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         width,
         height,
     }
-    .render_with_areas(frame);
+    .render_with_border(frame, PopupBorder::Thick);
     let inner = Rect {
         height: popup.inner.height.saturating_sub(1),
         ..popup.inner
@@ -442,7 +443,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains(&format!("│ {hints}")));
+        assert!(rendered.contains(&format!("┃ {hints}")));
         assert!(rendered.contains("Loading sccache stats"));
         assert_eq!(app.overlays.sccache_pane.viewport.len(), 0);
         println!("Before Sccache body (unchanged build_lines):\n{before}");

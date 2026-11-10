@@ -19,6 +19,9 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::scan::ProjectStorage;
 use crate::tui::app::App;
+use crate::tui::columns::COL_NAME;
+use crate::tui::columns::COMPLETE_PROJECT_HEADERS_WIDTH;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::GitCheckout;
@@ -101,6 +104,7 @@ fn app_with_names(root: &Path, name: &str) -> anyhow::Result<App> {
         RootItem::Rust(RustProject::Package(deleted)),
     ];
     let mut app = test_support::make_app(&items);
+    app.framework.color_mode = ColorMode::Colored;
     app.config.current_mut().lint.enabled = LintIndicator::Enabled;
     app.project_list = ProjectList::new(items);
     app.ensure_visible_rows_cached();
@@ -124,7 +128,12 @@ fn assert_columns_and_disk_edges(app: &App, buffer: &Buffer, long: bool) -> anyh
         assert!(header.contains(heading), "missing {heading}: {header}");
     }
     let mut edges = Vec::new();
-    for value in ["1.0 GiB", "2.0 GiB", "3.0 GiB", "4.0 GiB", "[x]"] {
+    let values = if (60..=80).contains(&buffer.area.width) {
+        ["1 GiB", "2 GiB", "3 GiB", "4 GiB", "[x]"]
+    } else {
+        ["1.0 GiB", "2.0 GiB", "3.0 GiB", "4.0 GiB", "[x]"]
+    };
+    for value in values {
         let (x, y) = test_support::find_text_cell(buffer, area, value).context(value)?;
         edges.push(x + u16::try_from(value.len())?);
         assert_eq!(buffer[(edges[0], y)].symbol(), " ");
@@ -140,10 +149,11 @@ fn assert_columns_and_disk_edges(app: &App, buffer: &Buffer, long: bool) -> anyh
         )
         .context("CI column")?
         .0;
-        for value in ["1.0 GiB", "2.0 GiB"] {
+        for value in values.into_iter().take(2) {
             let (_, y) = test_support::find_text_cell(buffer, area, value).context(value)?;
             let name = text_row(buffer, Rect::new(area.x, y, lint_x - area.x, 1), y);
             assert!(name.trim_end().ends_with('…'), "{name}");
+            assert!(name.chars().any(char::is_alphabetic), "{name}");
         }
     }
     Ok(())
@@ -193,10 +203,15 @@ fn worktree_names_shrink_before_columns_and_keep_disk_alignment() -> anyhow::Res
             let row = text_row(&buffer, area, y);
             assert!(row.contains('…'), "{row}");
         }
+        let (first_size, second_size) = if width == 80 {
+            ("1 GiB", "2 GiB")
+        } else {
+            ("1.0 GiB", "2.0 GiB")
+        };
         let first =
-            test_support::find_text_cell(&buffer, area, "1.0 GiB").context("primary size")?;
+            test_support::find_text_cell(&buffer, area, first_size).context("primary size")?;
         let second =
-            test_support::find_text_cell(&buffer, area, "2.0 GiB").context("linked size")?;
+            test_support::find_text_cell(&buffer, area, second_size).context("linked size")?;
         assert_eq!(first.0, second.0);
     }
     Ok(())
@@ -293,7 +308,14 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
     git.rate_limit_core = quota;
     git.rate_limit_graphql = quota;
     app.panes.git.set_content(git);
-    for width in [95, 80, 67, 60] {
+    for (width, lint) in [
+        (95, LintIndicator::Enabled),
+        (80, LintIndicator::Enabled),
+        (67, LintIndicator::Enabled),
+        (60, LintIndicator::Enabled),
+        (67, LintIndicator::Disabled),
+    ] {
+        app.config.current_mut().lint.enabled = lint;
         if width == 67 {
             let run = serde_json::from_value(serde_json::json!({
                 "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
@@ -309,6 +331,12 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
         }
         let buffer = test_support::draw_ui(&mut app, width)?;
         assert_drawn_pane_widths(&app, width);
+        let projects = app.panes.project_list.body_rect;
+        let header = text_row(&buffer, projects, projects.y - 1);
+        assert!(!header.contains("ProjectsLint"), "{width}: {header}");
+        let end = header.find("Projects").context("Projects heading")? + "Projects".len();
+        assert!(header[end..].starts_with(' '), "{width}: {header}");
+
         for pane in [
             PaneId::Package,
             PaneId::Git,
@@ -328,34 +356,20 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
             assert_columns_and_disk_edges(&app, &buffer, true)?;
         }
         if width == 60 {
-            assert_eq!(app.panes.tiled_layout.area(PaneId::ProjectList).width, 30);
-            for pane in [PaneId::Package, PaneId::Git, PaneId::Lints, PaneId::CiRuns] {
-                let area = app.panes.tiled_layout.area(pane);
-                assert!(!area.is_empty(), "{pane:?}");
-                if matches!(pane, PaneId::Package | PaneId::Git) {
-                    assert_eq!(area.width, 15);
-                    assert!(app.tabbable_panes().contains(&pane), "{pane:?}");
-                }
-                assert_eq!(buffer[(area.right() - 1, area.y + 1)].symbol(), "│");
-            }
-            let projects = app.panes.project_list.body_rect;
-            let header = text_row(&buffer, projects, projects.y - 1);
-            for retained in ["Projects", "Lint", "CI", "Disk"] {
-                assert!(header.contains(retained), "{header}");
-            }
-            for removed in ["Main", "Sync", "Git", "Type"] {
-                assert!(!header.contains(removed), "{header}");
-            }
-            let lints = app.panes.tiled_layout.area(PaneId::Lints);
-            test_support::find_text_cell(&buffer, lints, "No lint runs")
-                .context("visible Lints pane")?;
+            assert_sixty_column_project_priority(&app, &buffer)?;
         } else if width == 67 {
             let cpu = app.panes.tiled_layout.area(PaneId::Cpu);
             assert!(cpu.is_empty());
             assert!(!app.tabbable_panes().contains(&PaneId::Cpu));
             let targets = app.panes.tiled_layout.area(PaneId::Targets);
-            test_support::find_text_cell(&buffer, targets, "first").context("whole target row")?;
-            assert!(app.tabbable_panes().contains(&PaneId::Targets));
+            if lint == LintIndicator::Enabled {
+                assert!(targets.is_empty());
+                assert!(!app.tabbable_panes().contains(&PaneId::Targets));
+            } else {
+                test_support::find_text_cell(&buffer, targets, "first")
+                    .context("whole target row")?;
+                assert!(app.tabbable_panes().contains(&PaneId::Targets));
+            }
             assert!(app.tabbable_panes().contains(&PaneId::CiRuns));
             let ci = app.panes.tiled_layout.area(PaneId::CiRuns);
             test_support::find_text_cell(&buffer, ci, "CI runs").context("visible CI pane")?;
@@ -382,12 +396,98 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
     Ok(())
 }
 
+#[test]
+fn project_width_keeps_the_workspace_member_title_whole() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let mut app = app_with_names(scratch.path(), LONG_NAME)?;
+    app.config.current_mut().lint.enabled = LintIndicator::Disabled;
+    install_targets(&mut app)?;
+    let mut data = app
+        .panes
+        .package
+        .content()
+        .context("Package content")?
+        .clone();
+    data.title = "Workspace Member".to_string();
+    app.panes.package.set_content(data);
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for width in [80, 81, 95] {
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            if width == 80 {
+                assert_eq!(
+                    app.panes.tiled_layout.area(PaneId::ProjectList).width,
+                    COMPLETE_PROJECT_HEADERS_WIDTH
+                );
+                assert_eq!(app.panes.tiled_layout.area(PaneId::Package).width, 18);
+                assert_eq!(app.panes.tiled_layout.area(PaneId::Git).width, 17);
+                assert_eq!(app.panes.tiled_layout.area(PaneId::Targets).width, 35);
+            }
+            let area = app.panes.tiled_layout.area(PaneId::Package);
+            test_support::find_text_cell(
+                &buffer,
+                Rect::new(area.x, area.y, area.width, 1),
+                "Workspace Member",
+            )
+            .with_context(|| format!("whole member title at {width} in {mode:?}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn assert_sixty_column_project_priority(app: &App, buffer: &Buffer) -> anyhow::Result<()> {
+    assert_columns_and_disk_edges(app, buffer, false)?;
+    let projects_width =
+        ProjectListWidths::pane_width_limit(60, app.config.current().lint.enabled.into());
+    assert_eq!(
+        app.panes.tiled_layout.area(PaneId::ProjectList).width,
+        projects_width
+    );
+    assert!(app.panes.tiled_layout.area(PaneId::Package).is_empty());
+    assert!(!app.tabbable_panes().contains(&PaneId::Package));
+    for pane in [PaneId::Git, PaneId::Lints, PaneId::CiRuns] {
+        let area = app.panes.tiled_layout.area(pane);
+        assert!(!area.is_empty(), "{pane:?}");
+        if pane == PaneId::Git {
+            assert_eq!(area.width, 60 - projects_width);
+            assert!(app.tabbable_panes().contains(&pane), "{pane:?}");
+        }
+        assert_eq!(buffer[(area.right() - 1, area.y + 1)].symbol(), "│");
+    }
+    let projects = app.panes.project_list.body_rect;
+    let name_width = app
+        .project_list
+        .cached_fit_widths
+        .fitted(usize::from(projects.width.saturating_sub(1)), 60)
+        .get(COL_NAME);
+    for y in projects.y..projects.y + 2 {
+        let name = text_row(
+            buffer,
+            Rect::new(projects.x, y, u16::try_from(name_width)?, 1),
+            y,
+        );
+        assert!(name.trim_end().ends_with('…'), "{name}");
+        assert!(name.chars().any(char::is_alphabetic), "{name}");
+    }
+    let header = text_row(buffer, projects, projects.y - 1);
+    for retained in HEADINGS {
+        assert!(header.contains(retained), "{header}");
+    }
+    let lints = app.panes.tiled_layout.area(PaneId::Lints);
+    test_support::find_text_cell(buffer, lints, "No lint runs").context("visible Lints pane")?;
+    Ok(())
+}
+
 fn assert_drawn_pane_widths(app: &App, width: u16) {
     if width == 60 {
         return;
     }
     let projects = app.panes.tiled_layout.area(PaneId::ProjectList);
-    let expected_projects = if width == 67 { 37 } else { 49 };
+    let expected_projects = if width <= 80 {
+        ProjectListWidths::pane_width_limit(width, app.config.current().lint.enabled.into())
+    } else {
+        49
+    };
     assert_eq!(projects.width, expected_projects);
     assert_eq!(
         app.panes.tiled_layout.area(PaneId::CiRuns).width,
@@ -403,16 +503,20 @@ fn assert_drawn_pane_widths(app: &App, width: u16) {
             assert_eq!(targets.width, 27);
         },
         80 => {
-            assert_eq!((package.width, git.width), (16, 15));
-            assert_eq!(targets.width, 31);
+            assert_eq!((package.width, git.width), (17, 16));
+            assert_eq!(targets.width, width - expected_projects);
         },
         _ => {
             assert_eq!(width, 67);
-            assert_eq!((package.width, git.width), (15, 15));
-            assert_eq!(targets.width, 30);
-            for pane in [PaneId::Package, PaneId::Git] {
-                assert!(app.tabbable_panes().contains(&pane));
+            assert!(package.is_empty());
+            assert_eq!(git.width, width - expected_projects);
+            if app.config.current().lint.enabled == LintIndicator::Enabled {
+                assert!(targets.is_empty());
+            } else {
+                assert_eq!(targets.width, width - expected_projects);
             }
+            assert!(!app.tabbable_panes().contains(&PaneId::Package));
+            assert!(app.tabbable_panes().contains(&PaneId::Git));
         },
     }
 }
@@ -443,7 +547,9 @@ fn targets_always_fill_the_right_column_before_cpu_joins() -> anyhow::Result<()>
     install_targets(&mut app)?;
     let targets_min = targets::minimum_width();
     let cpu_width = crate::tui::panes::constants::CPU_PANE_WIDTH;
-    let projects_width = 48;
+    let projects_width =
+        ProjectListWidths::pane_width_limit(60, app.config.current().lint.enabled.into())
+            + targets_min.saturating_sub(cpu_width);
     for right_width in [
         cpu_width,
         targets_min + cpu_width - 1,
@@ -488,43 +594,57 @@ fn long_worktree_app(root: &Path) -> anyhow::Result<App> {
 }
 
 #[test]
-fn long_worktrees_leave_detail_panes_visible_at_sixty_columns() -> anyhow::Result<()> {
+fn long_worktrees_keep_columns_and_git_at_sixty_columns() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
+    let mut app = long_worktree_app(scratch.path())?;
     for lint in [LintIndicator::Enabled, LintIndicator::Disabled] {
-        let mut app = long_worktree_app(scratch.path())?;
         app.config.current_mut().lint.enabled = lint;
         let paths = app.project_list.visible_project_storage_paths();
         app.project_list
             .set_project_storage(&paths, ProjectStorage::Available(295 << 30));
         let buffer = test_support::draw_ui(&mut app, 60)?;
-        assert_eq!(app.panes.tiled_layout.area(PaneId::ProjectList).width, 30);
-        for pane in [PaneId::Package, PaneId::Git, PaneId::Lints, PaneId::CiRuns] {
+        let projects_width =
+            ProjectListWidths::pane_width_limit(60, app.config.current().lint.enabled.into());
+        assert_eq!(
+            app.panes.tiled_layout.area(PaneId::ProjectList).width,
+            projects_width
+        );
+        assert!(app.panes.tiled_layout.area(PaneId::Package).is_empty());
+        assert!(!app.tabbable_panes().contains(&PaneId::Package));
+        for pane in [PaneId::Git, PaneId::Lints, PaneId::CiRuns] {
             let area = app.panes.tiled_layout.area(pane);
             assert!(!area.is_empty(), "{pane:?}");
             let title = text_row(&buffer, area, area.y);
             assert!(title.contains('─'), "{pane:?}: {title}");
         }
-        for pane in [PaneId::Package, PaneId::Git] {
-            assert!(app.tabbable_panes().contains(&pane));
-            assert_eq!(app.panes.tiled_layout.area(pane).width, 15);
-        }
+        assert!(app.tabbable_panes().contains(&PaneId::Git));
+        assert_eq!(
+            app.panes.tiled_layout.area(PaneId::Git).width,
+            60 - projects_width
+        );
         let area = app.panes.project_list.body_rect;
+        let header = text_row(&buffer, area, area.y - 1);
+        for heading in HEADINGS {
+            if heading != "Lint" || lint == LintIndicator::Enabled {
+                assert!(header.contains(heading), "{header}");
+            }
+        }
         for y in area.y..area.y + 4 {
-            let size = if y == area.y { "3.0 GiB" } else { "1.0 GiB" };
+            let size = if y == area.y { "3 GiB" } else { "1 GiB" };
             let (x, _) =
                 test_support::find_text_cell(&buffer, Rect::new(area.x, y, area.width, 1), size)
                     .context("worktree disk value")?;
-            assert_eq!(x + 7, area.right() - 1, "{lint:?}");
+            assert_eq!(x + 5, area.right() - 1, "{lint:?}");
             assert_eq!(buffer[(area.right() - 1, y)].symbol(), " ");
             assert_eq!(buffer[(area.right(), y)].symbol(), "│");
         }
         let group = text_row(&buffer, area, area.y);
-        assert!(group.contains("proof"), "{group}");
-        test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "… 🌲:3")
+        assert!(group.contains('p'), "{group}");
+        test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "… 🌲")
             .context("the group keeps its mark")?;
         let primary = text_row(&buffer, area, area.y + 1);
         assert!(
-            primary.contains("pro") && primary.contains("… (p)"),
+            primary.contains('p') && primary.contains("… (p)"),
             "{primary}"
         );
     }
@@ -549,12 +669,53 @@ fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()>
         if y > area.y + 1 {
             assert!(!row.contains("(p)"), "{row}");
         }
-        let size = if y == area.y { "3.0 GiB" } else { "1.0 GiB" };
+        let size = if y == area.y { "3 GiB" } else { "1 GiB" };
         let (x, _) =
             test_support::find_text_cell(&buffer, Rect::new(area.x, y, area.width, 1), size)
                 .context("worktree disk value")?;
-        assert_eq!(*disk_edge.get_or_insert(x + 7), x + 7);
+        assert_eq!(*disk_edge.get_or_insert(x + 5), x + 5);
     }
+    let mut entries = (0..13)
+        .map(|index| {
+            package(
+                &scratch.path().join(format!("東group-{index}")),
+                "many_worktrees",
+                1 << 30,
+            )
+            .map(RustProject::Package)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter();
+    app.project_list = ProjectList::new(vec![RootItem::Worktrees(WorktreeGroup::new(
+        entries.next().context("primary worktree")?,
+        entries.collect(),
+    ))]);
+    app.ensure_visible_rows_cached();
+    for width in [60, 80, 95] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.project_list.body_rect;
+        let group = text_row(&buffer, area, area.y);
+        let prefix = group
+            .find("▶ ")
+            .with_context(|| format!("whole group prefix: {group}"))?;
+        let mark = group
+            .find(" 🌲")
+            .with_context(|| format!("spaced tree mark: {group}"))?;
+        let name = &group[prefix + "▶ ".len()..mark];
+        assert!(name.chars().any(char::is_alphabetic), "{width}: {group}");
+        assert!(name.ends_with('…'), "{width}: {group}");
+        if width == 95 {
+            test_support::find_text_cell(
+                &buffer,
+                Rect::new(area.x, area.y, area.width, 1),
+                " 🌲:13",
+            )
+            .with_context(|| format!("whole group count: {group}"))?;
+        } else {
+            assert!(!group.contains(":13"), "{width}: {group}");
+        }
+    }
+
     Ok(())
 }
 
@@ -641,6 +802,9 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
             32 << 30,
         )?)))
         .chain(groups)
+        .chain(std::iter::once(RootItem::Rust(RustProject::Package(
+            package(&scratch.path().join("東京tools"), "東京tools", 1 << 30)?,
+        ))))
         .collect(),
     );
     app.project_list.expanded.expand(ExpandKey::Node(1), 0);
@@ -671,7 +835,7 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
             .with_context(|| format!("cut tree name: {name}: {:?}", test_support::rows(&buffer)))?;
         assert!(name[..cut].chars().any(char::is_alphabetic), "{name}");
     }
-    for (offset, text) in [(1, "[a… 🌲:3"), (2, "p… (p)"), (5, "[w… 🌲:2")] {
+    for (offset, text) in [(1, "[a… 🌲"), (2, "p… (p)"), (5, "[w… 🌲")] {
         test_support::find_text_cell(
             &buffer,
             Rect::new(area.x, area.y + offset, area.width, 1),
@@ -679,5 +843,15 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
         )
         .with_context(|| format!("whole tree label {text}: {:?}", test_support::rows(&buffer)))?;
     }
+    for width in [60, 80] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.project_list.body_rect;
+        test_support::find_text_cell(&buffer, area, "東")
+            .with_context(|| format!("wide name keeps its first letter at {width}"))?;
+    }
+    let buffer = test_support::draw_ui(&mut app, 95)?;
+    test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, " 🌲:3")
+        .context("the group count draws when its slot fits")?;
+
     Ok(())
 }

@@ -879,13 +879,20 @@ fn git_pages_keep_table_headers_with_the_first_worktree() -> anyhow::Result<()> 
         app.panes.git.viewport.set_pos(index);
         let buffer = test_support::draw_ui(&mut app, 80)?;
         let area = app.panes.tiled_layout.area(PaneId::Git);
-        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "N…") {
+        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Sync") {
+            let header = ratatui::layout::Rect::new(area.x, y, area.width, 1);
+            test_support::find_text_cell(&buffer, header, "Branch")
+                .context("whole Branch header")?;
+            let text: String = (area.x..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert!(!text.contains('…'), "{text}");
             saw_header = true;
             assert!(y + 1 < area.bottom() - 1);
             test_support::find_text_cell(
                 &buffer,
                 ratatui::layout::Rect::new(area.x, y + 1, area.width, 1),
-                "m…",
+                "master",
             )
             .context("first worktree below the header")?;
         }
@@ -1057,8 +1064,16 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
     app.panes.git.viewport.home();
     let first = draw_short_ui(&mut app)?;
     let area = app.panes.tiled_layout.area(PaneId::Git);
-    assert_eq!(area.width, 15, "the full UI keeps the after-data Git width");
-    assert_pane_page(&first, area, "1 of 2 ▼");
+    let expected_width = if app.config.lint_enabled() == LintIndicator::Enabled {
+        16
+    } else {
+        17
+    };
+    assert_eq!(
+        area.width, expected_width,
+        "the full UI keeps whole Git divider titles"
+    );
+    assert_pane_page(&first, area, "1 of 3 ▼");
     let first_worktree =
         panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
     app.panes.git.viewport.set_pos(first_worktree - 1);
@@ -1067,11 +1082,51 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
         .with_context(|| format!("worktree divider: {:?}", test_support::rows(&second)))?;
     assert_eq!(second[(area.x, title.1)].symbol(), "├");
     assert_eq!(second[(area.right() - 1, title.1)].symbol(), "┤");
-    assert_pane_page(&second, area, "▲ 2 of 2");
+    assert_pane_page(&second, area, "▲ 2 of 3 ▼");
     test_support::find_text_cell(&second, area, "master").context("worktree table on page 2")?;
     app.panes.git.viewport.home();
     let first_again = draw_short_ui(&mut app)?;
-    assert_pane_page(&first_again, area, "1 of 2 ▼");
+    assert_pane_page(&first_again, area, "1 of 3 ▼");
+    let mut data = app.panes.git.content().context("Git content")?.clone();
+    let sample = data.worktrees[0].clone();
+    data.worktrees = (0..13)
+        .map(|index| WorktreeInfo {
+            name: format!("checkout-{index}"),
+            branch: Some(format!("b{index:02}")),
+            ..sample.clone()
+        })
+        .collect();
+    data.description =
+        DescriptionState::Known("Tools for projects, builds, tests and worktrees".to_string());
+    app.panes.git.set_content(data);
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        let mut seen = std::collections::HashSet::new();
+        let count =
+            panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
+        for cursor in count..count + 14 {
+            app.panes.git.viewport.set_pos(cursor);
+            let buffer = draw_short_ui(&mut app)?;
+            let area = app.panes.tiled_layout.area(PaneId::Git);
+            assert!(app.panes.git.viewport.visible_rows() > 1);
+            if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Worktrees (13)") {
+                let (left, right) = match mode {
+                    ColorMode::Colored => ("├", "┤"),
+                    ColorMode::NoColor => ("┣", "┫"),
+                };
+                assert_eq!(buffer[(area.x, y)].symbol(), left);
+                assert_eq!(buffer[(area.right() - 1, y)].symbol(), right);
+            }
+            for index in 0..13 {
+                if test_support::find_text_cell(&buffer, area, &format!("b{index:02}")).is_some() {
+                    seen.insert(index);
+                    test_support::find_text_cell(&buffer, area, "Worktrees (13)")
+                        .context("whole divider on the worktree page")?;
+                }
+            }
+        }
+        assert_eq!(seen.len(), 13);
+    }
     Ok(())
 }
 

@@ -4692,7 +4692,6 @@ mod tests {
         use std::path::PathBuf;
         use std::process::Command;
         use std::rc::Rc;
-        use std::sync::Arc;
         use std::time::Duration;
         use std::time::Instant;
 
@@ -4728,7 +4727,6 @@ mod tests {
         use tui_pane::RenderFocus;
         use tui_pane::SettingsLineTarget;
         use tui_pane::SettingsRowPayload;
-        use tui_pane::Theme;
         use tui_pane::ToastActivation;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
@@ -6432,24 +6430,6 @@ mod tests {
             terminal.backend().buffer().clone()
         }
 
-        struct ActiveThemeOverride {
-            saved: Arc<Theme>,
-        }
-
-        impl ActiveThemeOverride {
-            fn set(appearance: Appearance) -> Self {
-                let saved = tui_pane::theme();
-                tui_pane::set_active_theme(std::sync::Arc::new(tui_pane::fallback_theme(
-                    appearance,
-                )));
-                Self { saved }
-            }
-        }
-
-        impl Drop for ActiveThemeOverride {
-            fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
-        }
-
         fn find_text_cell_in_row(buffer: &Buffer, y: u16, text: &str) -> Option<(u16, u16)> {
             crate::tui::test_support::find_text_cell(
                 buffer,
@@ -6460,7 +6440,9 @@ mod tests {
 
         fn assert_git_error_colors(app: &mut App, error_value: &str) {
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(app, 8);
                 let value_position =
                     crate::tui::test_support::find_text_cell(&buffer, buffer.area, error_value)
@@ -6499,7 +6481,9 @@ mod tests {
                 },
             );
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(&mut app, 8);
                 let data = app.panes.git.content().expect("selected Git pane content");
                 assert!(matches!(data.checkout, panes::GitCheckout::UnreadableHead));
@@ -6563,7 +6547,9 @@ mod tests {
             app.project_list.set_cursor(1);
             app.sync_selected_project();
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 app.ensure_detail_cached();
                 let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("terminal");
                 let selected_path = app
@@ -6895,7 +6881,9 @@ mod tests {
                 app.sync_selected_project();
                 super::apply_git_info(&mut app, &path, (checkout, repo));
                 for appearance in [Appearance::Dark, Appearance::Light] {
-                    let _theme = ActiveThemeOverride::set(appearance);
+                    let _theme = crate::tui::test_support::ThemeOverride::install(
+                        tui_pane::fallback_theme(appearance),
+                    );
                     let buffer = render_selected_git(&mut app, 16);
                     let (_, y) = crate::tui::test_support::find_text_cell(
                         &buffer,
@@ -6945,7 +6933,9 @@ mod tests {
             let checkout = CheckoutInfo::get(path, &repo.local_main_branch).expect("checkout");
             super::apply_git_info(&mut app, path, (checkout, repo));
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(&mut app, 12);
                 let data = app.panes.git.content().expect("Git pane content");
                 let fields = panes::git_fields_from_data(data);
@@ -7569,7 +7559,9 @@ mod tests {
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 app.ensure_visible_rows_cached();
                 app.ensure_disk_cache();
                 app.ensure_fit_widths_cached();
@@ -7625,7 +7617,9 @@ mod tests {
             ))]);
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
                     let (column, y) =
@@ -7668,7 +7662,9 @@ mod tests {
             super::apply_git_info(&mut app, &linked_path, (checkout, repo));
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 let (_, row) =
                     crate::tui::test_support::find_text_cell(&buffer, buffer.area, linked_name)

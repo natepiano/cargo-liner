@@ -8,7 +8,9 @@ use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
 use crate::ci::CiStatus;
+use crate::config::LintIndicator;
 use crate::config::NonRustInclusion;
+use crate::lint::LintStatus;
 use crate::project::CratesIoRelease;
 use crate::project::DiskMeasurement;
 use crate::project::GithubRunCount;
@@ -131,9 +133,30 @@ fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result
                     description: DescriptionState::KnownEmpty,
                     lint_display: LintDisplay::NoRuns,
                     ci_display: ci,
+                    package_presence: PackagePresence::Present,
                     ..PackageData::default()
                 });
                 let buffer = test_support::draw_pane(&mut app, PaneId::Package, 70)?;
+                for y in buffer.area.y..buffer.area.bottom() {
+                    for x in buffer.area.x..buffer.area.right() {
+                        if buffer[(x, y)].symbol() == "—" {
+                            assert_eq!(
+                                buffer[(x, y)].fg,
+                                tui_pane::dim_value_color(),
+                                "{} ({x}, {y})",
+                                variant.id.as_str()
+                            );
+                        }
+                    }
+                }
+                for label in ["License", "Homepage"] {
+                    let (_, y) = test_support::position(&buffer, label)?;
+                    assert!(
+                        (buffer.area.x..buffer.area.right())
+                            .any(|x| buffer[(x, y)].symbol() == "—"),
+                        "{label}"
+                    );
+                }
                 for value in [text, "—"] {
                     let position = test_support::position(&buffer, value)?;
                     assert_eq!(buffer[position].bg, tui_pane::pane_background(focused));
@@ -158,9 +181,23 @@ fn cut_workspace_description_pane_title_keeps_a_blank_cell_before_the_corner() -
         name: "package-with-a-long-name".to_string(),
         ..PackageData::default()
     });
-    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
-    let rows = test_support::rows(&buffer);
-    assert!(rows[0].trim_end().ends_with("… ┐"), "{rows:?}");
+    app.framework.color_mode = ColorMode::Colored;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, width) in [(80, 17), (95, 17), (80, 18), (80, 24)] {
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Package, window, width)?;
+            let rows = test_support::rows(&buffer);
+            assert!(!rows[0].contains(" - …"), "{rows:?}");
+            if width == 17 {
+                assert!(rows[0].contains("Workspace"), "{rows:?}");
+                assert!(rows[0].trim_end().ends_with("Workspace ────┐"), "{rows:?}");
+            } else {
+                assert!(rows[0].contains("Workspace - p"), "{rows:?}");
+                assert!(rows[0].trim_end().ends_with("… ┐"), "{rows:?}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -287,6 +324,43 @@ fn package_values_end_with_an_ellipsis_when_they_do_not_fit() -> anyhow::Result<
         row.trim_end_matches(['│', ' ']).ends_with('…'),
         "cut value needs a mark: {row}"
     );
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        for (width, version, type_column, version_text, version_column, edition_column) in [
+            (18, "0.1.0", 10, "0.1.0", 11, 12),
+            (30, "0.1.0", 13, "0.1.0", 13, 13),
+            (18, "0.1.0-extra-long", 10, "0.…", 13, 12),
+        ] {
+            app.framework.color_mode = mode;
+            app.panes.package.set_content(PackageData {
+                description: DescriptionState::KnownEmpty,
+                types: Some(vec![crate::project::ProjectType::Binary]),
+                version: PackageVersion::Manifest(version.to_string()),
+                edition: Some("2021".to_string()),
+                package_presence: PackagePresence::Present,
+                ..PackageData::default()
+            });
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, width)?;
+            for (label, value, column) in [
+                ("Type", "binary", type_column),
+                ("Version", version_text, version_column),
+                ("Edition", "2021", edition_column),
+            ] {
+                let label_position = test_support::position(&buffer, label)?;
+                let value_position = test_support::position(&buffer, value)?;
+                assert_eq!(
+                    value_position,
+                    (column, label_position.1),
+                    "{mode:?}, {width}"
+                );
+                let row = &test_support::rows(&buffer)[usize::from(label_position.1)];
+                assert_eq!(
+                    row.contains('…'),
+                    value.ends_with('…'),
+                    "{mode:?}, {width}: {row}"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -425,56 +499,51 @@ fn package_draws_sentence_case_release_and_disk_labels() -> anyhow::Result<()> {
 
 #[test]
 fn selected_descriptions_use_one_text_color_and_fill_each_row() -> anyhow::Result<()> {
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
-            for pane in [PaneId::Package, PaneId::Git] {
-                let mut app = test_support::project_app();
-                if pane == PaneId::Git {
-                    app.panes.git.set_content(GitData {
-                        description: DescriptionState::Known(
-                            "A fleet of tools with a long description for several rows".to_string(),
-                        ),
-                        ..crate::tui::panes::GitData::default()
-                    });
-                    app.panes.git.focus.pane_focus_state = focus;
-                } else {
-                    app.panes.package.focus.pane_focus_state = focus;
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+        for pane in [PaneId::Package, PaneId::Git] {
+            let mut app = test_support::project_app();
+            if pane == PaneId::Git {
+                app.panes.git.set_content(GitData {
+                    description: DescriptionState::Known(
+                        "A fleet of tools with a long description for several rows".to_string(),
+                    ),
+                    ..crate::tui::panes::GitData::default()
+                });
+                app.panes.git.focus.pane_focus_state = focus;
+            } else {
+                app.panes.package.focus.pane_focus_state = focus;
+            }
+            let buffer = test_support::draw_pane(&mut app, pane, 24)?;
+            let word = if pane == PaneId::Git {
+                "A fleet"
+            } else {
+                "No description"
+            };
+            let failures =
+                test_support::contrast_failures(&buffer, &[word], "selected description");
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            let (_, y) = test_support::position(&buffer, word)?;
+            let ground = buffer[(2, y)].bg;
+            for row in y..buffer.area.bottom() - 1 {
+                if buffer[(2, row)].bg != ground {
+                    break;
                 }
-                let buffer = test_support::draw_pane(&mut app, pane, 24)?;
-                let word = if pane == PaneId::Git {
-                    "A fleet"
-                } else {
-                    "No description"
-                };
-                let failures =
-                    test_support::contrast_failures(&buffer, &[word], "selected description");
-                assert!(failures.is_empty(), "{}", failures.join("\n"));
-                let (_, y) = test_support::position(&buffer, word)?;
-                let ground = buffer[(2, y)].bg;
-                for row in y..buffer.area.bottom() - 1 {
-                    if buffer[(2, row)].bg != ground {
-                        break;
-                    }
-                    for x in 1..buffer.area.right() - 1 {
-                        assert_eq!(
-                            buffer[(x, row)].bg,
-                            ground,
-                            "description fill {pane:?} {focus:?} at {x},{row}"
-                        );
-                        assert_eq!(
-                            buffer[(x, row)].fg,
-                            ratatui::style::Color::Rgb(255, 255, 255)
-                        );
-                    }
+                for x in 1..buffer.area.right() - 1 {
+                    assert_eq!(
+                        buffer[(x, row)].bg,
+                        ground,
+                        "description fill {pane:?} {focus:?} at {x},{row}"
+                    );
+                    assert_eq!(
+                        buffer[(x, row)].fg,
+                        ratatui::style::Color::Rgb(255, 255, 255)
+                    );
                 }
             }
         }
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+    }
+    Ok(())
 }
 
 #[test]
@@ -982,7 +1051,7 @@ fn empty_description_keeps_its_inset_without_a_cut_word() -> anyhow::Result<()> 
 }
 
 #[test]
-fn narrow_test_counts_cut_the_label_before_the_count() -> anyhow::Result<()> {
+fn narrow_test_counts_keep_the_whole_label_above_the_count() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
@@ -990,12 +1059,40 @@ fn narrow_test_counts_cut_the_label_before_the_count() -> anyhow::Result<()> {
         test_rows: vec![("integration", 1273)],
         ..PackageData::default()
     });
-    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
-    let (x, y) = test_support::position(&buffer, "1273")?;
-    assert!(x < 16);
-    let row = &test_support::rows(&buffer)[usize::from(y)];
-    assert!(row.contains("integra…"), "{row}");
-    assert_eq!(buffer[(buffer.area.right() - 2, y)].symbol(), " ");
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (width, height) in [(16, 45), (17, 45), (16, 9), (17, 10), (17, 11)] {
+            let rows =
+                panes::package_rows_from_data(app.panes.package.content().context("Package")?);
+            let index = rows
+                .iter()
+                .position(|row| matches!(row, crate::tui::panes::PackageRow::Tests(0)))
+                .context("test count row")?;
+            app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
+            app.panes.package.viewport.set_len(rows.len());
+            app.panes.package.viewport.set_pos(index);
+            let buffer = test_support::draw_pane_in_window_at_size(
+                &mut app,
+                PaneId::Package,
+                80,
+                width,
+                height,
+            )?;
+            let (x, y) = test_support::position(&buffer, "1273")?;
+            assert!(x < 16);
+            let row = &test_support::rows(&buffer)[usize::from(y)];
+            let (_, label_y) = test_support::position(&buffer, "integration")?;
+            assert_eq!(y, label_y + 1);
+            for line in [label_y, y] {
+                assert!(
+                    matches!(app.panes.package.hit_test_at(ratatui::layout::Position::new(x, line)), Some(crate::tui::hit_test::HoverTarget::PaneRow { pane: PaneId::Package, row }) if row == index)
+                );
+            }
+            assert!(!test_support::rows(&buffer)[usize::from(label_y)].contains('…'));
+            assert!(row.contains("1273"), "{row}");
+            assert_eq!(buffer[(buffer.area.right() - 2, y)].symbol(), " ");
+        }
+    }
     Ok(())
 }
 
@@ -1102,6 +1199,11 @@ fn empty_description_wraps_inside_the_inset_at_each_window_width() -> anyhow::Re
         app.framework.color_mode = ColorMode::Colored;
         let buffer = test_support::draw_ui(&mut app, width)?;
         let area = app.panes.tiled_layout.area(PaneId::Package);
+        if width == 60 {
+            assert!(area.is_empty());
+            assert!(!app.tabbable_panes().contains(&PaneId::Package));
+            continue;
+        }
         let x = area.x + 2;
         let y = area.y + 1;
         assert_eq!(buffer[(x - 1, y)].symbol(), " ");
@@ -1194,14 +1296,19 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
         let rows = test_support::rows(&buffer);
         for (label, value) in [
             ("unit", "5908"),
-            ("inte", "1273"),
+            ("integration", "1273"),
             ("doc", "10"),
             ("(ignored)", "5"),
             ("Total", "7191"),
         ] {
             if let Some(y) = rows.iter().position(|row| row.contains(label)) {
                 let row = &rows[y];
-                let y = u16::try_from(y)?;
+                let label_y = u16::try_from(y)?;
+                let y = label_y + u16::from(label == "integration");
+                if label == "integration" {
+                    assert!(!row.contains('…'), "{row}");
+                }
+                assert_eq!(buffer[(edge, label_y)].symbol(), " ");
                 let (x, _) = test_support::find_text_cell(
                     &buffer,
                     ratatui::layout::Rect::new(1, y, area.width - 2, 1),
@@ -1236,8 +1343,8 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
 
 #[test]
 fn narrow_package_titles_keep_the_label_and_worktree_count_on_one_row() -> anyhow::Result<()> {
-    for (window, pane_width) in [(80, 17), (95, 24)] {
-        let mut app = test_support::project_app();
+    let mut app = test_support::project_app();
+    for (window, pane_width) in [(80, 16), (80, 17), (95, 24)] {
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
             description: DescriptionState::KnownEmpty,
@@ -1356,6 +1463,43 @@ fn worktree_counts_share_the_label_row_and_lint_keeps_its_column() -> anyhow::Re
         lint_columns.push(value.0);
     }
     assert_eq!(lint_columns[0], lint_columns[1]);
+    let mut app = test_support::project_app();
+    app.config.current_mut().lint.enabled = LintIndicator::Enabled;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (window, pane_width, count, status, expected) in [
+            (80, 18, 60, LintStatus::NoLog, " Lint       60"),
+            (160, 47, 60, LintStatus::NoLog, " Lint         60"),
+            (80, 18, 60, LintStatus::Stale, " Lint     ⚫ 60"),
+            (80, 18, 123_456, LintStatus::NoLog, " Lint    123456"),
+        ] {
+            app.panes.package.set_content(PackageData {
+                description: DescriptionState::KnownEmpty,
+                lint_display: LintDisplay::Runs { count, status },
+                disk: DiskMeasurement::Measured {
+                    total:  73,
+                    target: 0,
+                    other:  73,
+                },
+                stats_rows: vec![("binary", 1)],
+                package_presence: PackagePresence::Present,
+                ..PackageData::default()
+            });
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Package, window, pane_width)?;
+            let lint = test_support::position(&buffer, "Lint")?;
+            let row = &test_support::rows(&buffer)[usize::from(lint.1)];
+            test_support::find_text_cell(
+                &buffer,
+                ratatui::layout::Rect::new(0, lint.1, pane_width, 1),
+                expected,
+            )
+            .with_context(|| format!("{window}, {mode:?}: {row}"))?;
+            if !expected.contains('…') {
+                assert!(!row.contains('…'), "{window}, {mode:?}: {row}");
+            }
+        }
+    }
     Ok(())
 }
 

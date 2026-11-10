@@ -41,8 +41,9 @@ fn narrow_ci_draws_only_complete_columns() -> anyhow::Result<()> {
 }
 
 #[test]
-fn ci_placeholder_marks_its_cut_text() -> anyhow::Result<()> {
+fn ci_placeholder_wraps_the_full_message_below_a_whole_title() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
     app.ci.set_content(CiData {
         empty_state:    CiEmptyState::NoWorkflowConfigured,
         runs:           Vec::new(),
@@ -50,11 +51,15 @@ fn ci_placeholder_marks_its_cut_text() -> anyhow::Result<()> {
         current_branch: None,
     });
     let buffer = test_support::draw_pane(&mut app, PaneId::CiRuns, 18)?;
-    let text = test_support::rows(&buffer).join("\n");
-    assert!(
-        text.contains("No CI workflow configured") || text.contains("No CI workflo… "),
-        "{text}"
-    );
+    let rows = test_support::rows(&buffer);
+    assert!(rows[0].contains(" CI runs "), "{rows:?}");
+    let message = rows[1..rows.len() - 1]
+        .iter()
+        .map(|row| row.trim_matches(['│', '┃', ' ']))
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(message, "No CI workflow configured");
     Ok(())
 }
 
@@ -83,6 +88,7 @@ fn ci_hides_branch_when_the_whole_value_cannot_fit() -> anyhow::Result<()> {
 #[test]
 fn branch_ci_gives_narrow_cells_to_commit_and_status() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
     app.ci.set_content(CiData {
         runs:           vec![display_run("fleet")?],
         mode_label:     Some("branch".to_string()),
@@ -95,6 +101,19 @@ fn branch_ci_gives_narrow_cells_to_commit_and_status() -> anyhow::Result<()> {
     test_support::position(&buffer, "Commit")?;
     test_support::position(&buffer, "Total")?;
     test_support::position(&buffer, "🟢")?;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        let mut data = app.ci.content().context("CI runs")?.clone();
+        data.mode_label = None;
+        data.current_branch = None;
+        data.runs[0].wall_clock_secs = Some(297);
+        data.runs[0].ci_status = CiStatus::Failed;
+        app.ci.set_content(data);
+        let buffer = test_support::draw_ui(&mut app, 80)?;
+        let area = app.panes.tiled_layout.area(PaneId::CiRuns);
+        test_support::find_text_cell(&buffer, area, "Commit").context("whole Commit header")?;
+        assert_total_header_edge(&buffer, area)?;
+    }
     Ok(())
 }
 
