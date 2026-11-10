@@ -701,6 +701,16 @@ mod tests {
 
     #[test]
     fn a_colored_nextest_starting_header_reports_testing_before_the_first_result() {
+        for header in [
+            "Starting 24 tests across 3 binaries\n",
+            "Starting 24 tests across 3 binaries (5012 tests skipped)\n",
+        ] {
+            assert_eq!(parse_state(header), CurrentProgress::Active(testing(0, 24)));
+            assert_eq!(
+                parse_state(&format!("{header}PASS [0.01s] (11/24) example\n")),
+                CurrentProgress::Active(testing(11, 24)),
+            );
+        }
         let start = "    \x1b[1;32mStarting\x1b[0m \x1b[1m24\x1b[0m tests across \
                      \x1b[1m3\x1b[0m binaries (5012 tests skipped)\n";
         let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_FINISHED}{start}");

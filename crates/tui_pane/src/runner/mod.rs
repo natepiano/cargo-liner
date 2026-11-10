@@ -35,6 +35,7 @@ pub use app::NoProbe;
 pub use app::PollWork;
 pub use app::Repaint;
 pub use app::TerminalApp;
+pub(crate) use deadline::StatusDeadline;
 pub use deadline::VisualDeadline;
 pub use keys::dispatch_key;
 pub use lifecycle::run_terminal;

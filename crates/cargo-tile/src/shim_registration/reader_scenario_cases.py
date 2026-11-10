@@ -267,6 +267,7 @@ READER_SCENARIOS = (
 SELF_CHECK_SCENARIOS = (
     '--cpu-duplicate-self-check', '--cpu-kernel-self-check', '--cpu-boundary-self-check',
     '--cpu-changing-load-self-check', '--cpu-delayed-drain-self-check',
+    '--cpu-retention-self-check',
     '--blocked-invocation-self-check',
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
@@ -947,6 +948,33 @@ def assert_changing_cpu_load() -> None:
                         counters={10: {'tree': {'process': 0.07}}})
     assert abs(cpu_percent(oracle.observe(recovered)[10]) - 100) < 0.000001
 
+def assert_cpu_retention() -> None:
+    # The product tests' sequences: an orphan departure, each process's positive
+    # change, and a reaped child with and without concurrent parent work.
+    reaped = {'child': 'parent'}
+    for reapers, sequence in (
+        ({}, (({'parent': 0.01, 'helper': 0.1}, 0.11), ({'parent': 0.01}, 0.11),
+              ({'parent': 0.03}, 0.13), ({'parent': 0.05}, 0.15))),
+        ({}, (({'parent': 0.1, 'helper': 0.1}, 0.2),
+              ({'parent': 0.12, 'new': 0.09}, 0.31))),
+        (reaped, (({'parent': 0.01, 'child': 0.1}, 0.11), ({'parent': 0.11}, 0.11),
+                  ({'parent': 0.21}, 0.21))),
+        (reaped, (({'parent': 0.01, 'child': 0.1}, 0.11), ({'parent': 0.13}, 0.13),
+                  ({'parent': 0.23}, 0.23))),
+    ):
+        oracle = NativeCpuOracle()
+        for number, (counters, expected) in enumerate(sequence, 1):
+            scan = CpuScan(number, number * NANOSECONDS_PER_SECOND,
+                           cadence=(50_000_000, 50_000_000, 100_000_000,
+                                    CounterRetention.REAPED_CHILDREN),
+                           owners={10: ('Reading(0.0)', 'invocation')},
+                           counters={10: {'tree': counters}},
+                           reapers={identity: reapers[identity] for identity in counters if identity in reapers})
+            oracle.observe(scan)
+            assert abs(oracle.histories['invocation'].accumulated - expected) < 0.0000001, \
+                (number, counters, expected, oracle.histories['invocation'])
+
+
 def assert_delayed_cpu_drain() -> None:
     first = b'\x1b]777;cargo-tile-cpu;1;100000000\x07one\x1b[?25l'
     second = b'\x1b]777;cargo-tile-cpu;2;200000000\x07two\x1b[?25l'
@@ -1197,6 +1225,8 @@ class CpuScan:
     counters: dict[int, dict[str, dict[str, float]]] = field(default_factory=dict)
     nested: dict[int, dict[str, float]] = field(default_factory=dict)
     results: dict[int, tuple[float, CpuReading, CpuReading, CpuReading]] = field(default_factory=dict)
+    # A process's reaper receives its counter when it is reaped; an unproven reaper is absent.
+    reapers: dict[str, str] = field(default_factory=dict)
 
 
 class UnavailableCpuReading(Enum):
@@ -1266,6 +1296,8 @@ def read_cpu_scans(path: Path) -> list[CpuScan]:
                 group = pending.counters.setdefault(int(fields[1]), {}).setdefault(fields[2], {})
                 assert fields[3] not in group, ('duplicate counter record', fields)
                 group[fields[3]] = float(fields[4])
+                if fields[5]:
+                    pending.reapers[fields[3]] = fields[5]
             elif fields[0] == 'nested':
                 pending.nested.setdefault(int(fields[1]), {})[fields[2]] = float(fields[3])
             elif fields[0] == 'result':
@@ -1276,6 +1308,9 @@ def read_cpu_scans(path: Path) -> list[CpuScan]:
 @dataclass
 class NativeCpuHistory:
     processes: dict[str, dict[str, float]] = field(default_factory=dict)
+    present: dict[str, set[str]] = field(default_factory=dict)
+    reapers: dict[str, str] = field(default_factory=dict)
+    unreceived: dict[str, dict[str, float]] = field(default_factory=dict)
     totals: dict[str, float] = field(default_factory=dict)
     nested: dict[str, float] = field(default_factory=dict)
     accumulated: float = 0.0
@@ -1286,7 +1321,26 @@ class NativeCpuHistory:
         retention = scan.cadence[3]
         for group, counters in scan.counters.get(pid, {}).items():
             if retention is CounterRetention.REAPED_CHILDREN:
-                self.totals[group] = max(self.totals.get(group, 0.0), sum(counters.values()))
+                seen = self.processes.setdefault(group, {})
+                unreceived = self.unreceived.setdefault(group, {})
+                # A departed process's last counter waits for its reaper's next rise.
+                for identity in self.present.get(group, set()) - counters.keys():
+                    if identity in self.reapers:
+                        reaper = self.reapers[identity]
+                        unreceived[reaper] = unreceived.get(reaper, 0.0) + seen[identity]
+                total = self.totals.get(group, 0.0)
+                for identity, counter in counters.items():
+                    gain = max(0.0, counter - seen.get(identity, 0.0))
+                    received = min(gain, unreceived.get(identity, 0.0))
+                    unreceived[identity] = unreceived.get(identity, 0.0) - received
+                    total += gain - received
+                    seen[identity] = max(seen.get(identity, 0.0), counter)
+                    if identity in scan.reapers:
+                        self.reapers[identity] = scan.reapers[identity]
+                    else:
+                        self.reapers.pop(identity, None)
+                self.present[group] = set(counters)
+                self.totals[group] = total
             else:
                 retained = self.processes.setdefault(group, {})
                 for identity, counter in counters.items():
@@ -2224,6 +2278,10 @@ if scenario == '--cpu-boundary-self-check':
 if scenario == '--cpu-changing-load-self-check':
     assert_changing_cpu_load()
     sys.exit(0)
+if scenario == '--cpu-retention-self-check':
+    assert_cpu_retention()
+    sys.exit(0)
+
 if scenario == '--cpu-delayed-drain-self-check':
     assert_delayed_cpu_drain()
     sys.exit(0)

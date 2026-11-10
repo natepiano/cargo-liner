@@ -2814,7 +2814,11 @@ fn root_cargo_is_read_before_the_compiler_it_can_reap() {
     });
     assert_eq!(order, [root, child]);
     assert_eq!(
-        work[&root].tree.values().sum::<Duration>(),
+        work[&root]
+            .tree
+            .values()
+            .map(|counter| counter.elapsed)
+            .sum::<Duration>(),
         Duration::from_millis(100)
     );
 }

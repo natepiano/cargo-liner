@@ -326,6 +326,8 @@ pub(crate) const CONTENT_RIGHT_INSET: u16 = 1;
 /// stands beside `dur` because the two answer the same question from
 /// either end -- how long this has been going, and how hard.
 pub(crate) const CPU_COLUMN: usize = 4;
+/// Linux adds a reaped child's time to its parent's counter; Darwin adds it to no counter.
+pub(crate) const CPU_REAPED_TIME_MOVES_TO_PARENT: bool = cfg!(target_os = "linux");
 /// How long a `cpu` reading is carried before the table takes a fresh
 /// one, in milliseconds.
 ///

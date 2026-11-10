@@ -21430,9 +21430,12 @@ mod tests {
                     ("frozen", palette.status_label_style),
                 ])
             {
-                let start = status
+                // Count columns, not bytes: the pending CPU reading `—` is one column.
+                let start = status[..status
                     .find(label)
-                    .unwrap_or_else(|| panic!("missing {label}: {status}"));
+                    .unwrap_or_else(|| panic!("missing {label}: {status}"))]
+                    .chars()
+                    .count();
                 for column in start..start + label.len() {
                     let cell = &buffer[(u16::try_from(column).expect("status column"), 39)];
                     assert_eq!(
@@ -21530,7 +21533,7 @@ mod tests {
         expected.push(format!("└{}┘", "─".repeat(inner)));
         expected.push(format!(
             "{:<width$}{notes}",
-            " Uptime: 0s",
+            " Uptime: 0s CPU: —",
             width = usize::from(WIDTH) - notes.chars().count()
         ));
         assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
@@ -21561,7 +21564,7 @@ mod tests {
                 "│ │                                                      │ │",
                 "│ └──────────────────────────────────────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -21599,7 +21602,7 @@ mod tests {
                 "│ │   Focus the tile above                          up   │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -21618,7 +21621,7 @@ mod tests {
                 "│ │  │   Focus the tile to the left        left      │   │ │",
                 "│ └──│   Focus the tile to the right       right     │───┘ │",
                 "└────└───────────────────1 of 3 ▼────────────────────┘─────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
             ],
         ),
     ];

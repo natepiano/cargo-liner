@@ -46,10 +46,8 @@ pub(super) type ProbeBackend<P> = CrosstermBackend<<P as FrameProbe>::Output>;
 /// [`GlobalAction::Restart`](crate::GlobalAction::Restart) sets the
 /// matching lifecycle flag.
 ///
-/// Drawing is demand-driven: a frame is painted only when an event
-/// arrived or the app's work said something changed. With nothing
-/// arriving and nobody typing there is nothing to repaint, so an idle
-/// app costs essentially nothing.
+/// Draw when input, app work, or a visual deadline changes the screen.
+/// An idle app draws one status frame each second.
 pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
     terminal: &mut Terminal<ProbeBackend<A::Probe>>,
     app: &mut A,
@@ -71,6 +69,7 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
         // Before the frame rather than inside it: whatever the app does
         // here can cost far longer than a frame, and `terminal.draw` is
         // no place to spend it.
+        dirty |= app.framework_mut().tick_status(Instant::now()) == Repaint::Needed;
         app.before_draw();
         if recovery.is_empty() && !app.holds_full_repaint() {
             recovery = row_recovery.batch(Instant::now(), terminal.current_buffer_mut().area);
@@ -119,8 +118,9 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
             deadline = now + period;
         }
         let toast_visual_deadline = app.framework().toasts.next_visual_change_deadline(now);
-        let visual_deadline =
-            VisualDeadline::from(toast_visual_deadline).earlier(app.visual_deadline(now, period));
+        let visual_deadline = VisualDeadline::from(toast_visual_deadline)
+            .earlier(app.visual_deadline(now, period))
+            .earlier(app.framework().status_visual_deadline());
         let remaining = visual_deadline.limit_wait(now, deadline.saturating_duration_since(now));
         match input.recv_timeout(remaining) {
             Ok(event) => {
@@ -387,6 +387,32 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol().to_owned())
             .collect()
+    }
+
+    #[test]
+    fn an_idle_app_draws_one_status_frame_a_second() {
+        let start = std::time::Instant::now();
+        let mut status = super::super::deadline::StatusDeadline::new(start);
+        let mut terminal = Terminal::new(TestBackend::new(1, 1)).expect("test terminal");
+        let mut retained = Buffer::empty(ratatui::layout::Rect::default());
+        let mut frames = Vec::new();
+        for millis in 0..=3_000 {
+            let repaint = status.take_tick(start + std::time::Duration::from_millis(millis));
+            super::prepare_frame::<_, crate::NoProbe>(
+                &mut terminal,
+                &mut retained,
+                repaint,
+                ratatui::layout::Rect::default(),
+                super::Resized::No,
+                |frame| {
+                    frames.push(millis);
+                    frame.buffer_mut()[(0, 0)].set_symbol("S");
+                },
+            )
+            .expect("a status frame draws");
+        }
+        assert_eq!(frames, [1_000, 2_000, 3_000]);
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "S");
     }
 
     #[test]
