@@ -2,7 +2,7 @@
 
 #![expect(
     clippy::expect_used,
-    reason = "fixture launchers, rosters and rows must parse"
+    reason = "fixture launchers, staff documents and rows must parse"
 )]
 #![expect(
     clippy::panic,
@@ -118,13 +118,13 @@ fn processes(
     ]
 }
 
-fn roster(directory: &Path, seat: &str, launcher: &Value) {
-    fs::write(
-        directory.join(ROSTER_FILE),
-        serde_json::json!({seat:{"thread_id":THREAD,"launcher_pid":launcher,"role":"impl"}})
-            .to_string(),
-    )
-    .expect("roster writes");
+fn staff_fixture(directory: &Path, seat: &str, launcher: &Value) {
+    write_worker_fixture(
+        directory,
+        &serde_json::json!({
+            seat:{"current_session":THREAD,"launcher_pid":launcher,"role":"impl"}
+        }),
+    );
 }
 
 fn grouped_text(dispatch: &WorkerDispatch) -> String {
@@ -176,14 +176,14 @@ fn grouped_text(dispatch: &WorkerDispatch) -> String {
 
 fn assert_form(root: &str, seat: &str, fresh: bool, phase: &str, job: &str) {
     let directory = fixture(root);
-    // For `launcher`, fresh rosters record `codex_mesh.py` start; follow rosters record
-    // `implement.sh`. The live two-accounts roster has no launcher pid at all.
+    // A fresh launcher claim names the mesh process. A follow claim names the launcher.
+    // The two-account fixture has no launcher claim.
     let launcher = if seat == "fixture-two-accounts-test" {
         Value::Null
     } else {
         serde_json::json!(if fresh { 702 } else { 701 })
     };
-    roster(directory.path(), seat, &launcher);
+    staff_fixture(directory.path(), seat, &launcher);
     let found = scan::find_worker_dispatches(&processes(directory.path(), seat, fresh, phase, job));
     let dispatch = found.get(&600).expect("wrapper row resolves");
     let text = grouped_text(dispatch);
@@ -263,7 +263,7 @@ fn dispatch_form_delegate_session_follow_folds_and_keeps_the_job() {
 }
 
 #[test]
-fn dispatch_form_roster_written_after_launcher_start_is_seen_on_the_next_scan() {
+fn dispatch_form_staff_written_after_launcher_start_is_seen_on_the_next_scan() {
     let directory = fixture("unit");
     let seat = "fixture-impl";
     let processes = processes(
@@ -271,7 +271,7 @@ fn dispatch_form_roster_written_after_launcher_start_is_seen_on_the_next_scan() 
         seat,
         true,
         "4",
-        "Implement the late roster",
+        "Implement the late staff member",
     );
     let before = scan::find_worker_dispatches(&processes);
     assert!(
@@ -279,9 +279,12 @@ fn dispatch_form_roster_written_after_launcher_start_is_seen_on_the_next_scan() 
             .get(&600)
             .is_none_or(|dispatch| *dispatch == WorkerDispatch::Plain)
     );
-    roster(directory.path(), seat, &serde_json::json!(702));
+    staff_fixture(directory.path(), seat, &serde_json::json!(702));
     let after = scan::find_worker_dispatches(&processes);
     let text = grouped_text(after.get(&600).expect("later scan resolves wrapper"));
-    assert!(text.contains("impl · Implement the late roster"), "{text}");
+    assert!(
+        text.contains("impl · Implement the late staff member"),
+        "{text}"
+    );
     assert!(!text.contains("Dispatch fixture seat"), "{text}");
 }

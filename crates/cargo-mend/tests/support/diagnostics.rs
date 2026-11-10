@@ -6,6 +6,11 @@ use std::process::Command;
 
 use serde::Deserialize;
 use tempfile::TempDir;
+use toml_edit::ArrayOfTables;
+use toml_edit::DocumentMut;
+use toml_edit::Item;
+use toml_edit::Table;
+use toml_edit::value;
 
 use super::mend_command_for;
 use super::mend_json;
@@ -102,6 +107,47 @@ impl DiagnosticBatch {
     }
 
     pub(crate) fn path(&self) -> &Path { self.temp.path() }
+
+    /// Use only for fixtures without test cases or `cfg(test)` source.
+    pub(crate) fn single_compile_targets(&self) {
+        let roots = match self.layout {
+            FixtureLayout::Workspace => self
+                .members
+                .iter()
+                .map(|member| self.path().join(member))
+                .collect(),
+            FixtureLayout::SiblingModules => vec![self.path().to_path_buf()],
+        };
+        for root in roots {
+            let path = root.join("Cargo.toml");
+            let mut manifest = fs::read_to_string(&path)
+                .expect("read fixture manifest")
+                .parse::<DocumentMut>()
+                .expect("parse fixture manifest");
+            if root.join("src/lib.rs").is_file() {
+                manifest["lib"]["test"] = value(false);
+                manifest["lib"]["bench"] = value(false);
+            }
+            if root.join("src/main.rs").is_file() {
+                let name = manifest["package"]["name"]
+                    .as_str()
+                    .expect("fixture package name")
+                    .to_owned();
+                let bins = manifest
+                    .entry("bin")
+                    .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+                    .as_array_of_tables_mut()
+                    .expect("fixture binary targets");
+                let mut binary = Table::new();
+                binary["name"] = value(name);
+                binary["path"] = value("src/main.rs");
+                binary["test"] = value(false);
+                binary["bench"] = value(false);
+                bins.push(binary);
+            }
+            fs::write(path, manifest.to_string()).expect("write fixture targets");
+        }
+    }
 
     pub(crate) fn command(&self) -> Command {
         let mut command = mend_command_for(&self.path().join("Cargo.toml"));

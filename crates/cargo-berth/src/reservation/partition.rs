@@ -99,7 +99,7 @@ impl AuthorizedEditingIdentity {
     /// inside its own worktree. The pre-edit hook therefore lets a run edit over the
     /// reservation post-commit drift first-touched in that same checkout, while a holder in
     /// any other worktree stays foreign exactly as before.
-    pub(super) fn is_foreign(self, holder: &Reservation) -> bool {
+    pub(super) fn is_foreign(self, holder_reservation: &Reservation) -> bool {
         match self {
             Self::SessionReservation {
                 coordination_run_id,
@@ -109,35 +109,34 @@ impl AuthorizedEditingIdentity {
             | Self::Run {
                 coordination_run_id,
                 worktree_id,
-            } => {
-                holder.is_foreign_to_coordination_run_in_worktree(coordination_run_id, worktree_id)
-            },
+            } => holder_reservation
+                .is_foreign_to_coordination_run_in_worktree(coordination_run_id, worktree_id),
             Self::Unidentified { .. } => true,
         }
     }
 
     pub(super) fn authorizes(
         self,
-        reservations: &RetainedReservationSet,
-        holder: &Reservation,
+        retained_reservation_set: &RetainedReservationSet,
+        holder_reservation: &Reservation,
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
         // `answer_records_authorize` honors a `--defer` answer that binds its worktree and acquires
         // no reservation to identify the caller by, so every caller in that worktree
         // inherits it, an unidentified one included.
-        reservations.answer_records_authorize(self.worktree(), holder, overlap_scope, path_case)
-            || reservations
+        retained_reservation_set.answer_records_authorize(self.worktree(), holder_reservation, overlap_scope, path_case)
+            || retained_reservation_set
             .iter()
-            .filter(|requester| {
-                self.identifies_requester(requester)
-                    && requester.edit_blocking_status() == EditBlockingStatus::Blocking
+            .filter(|requester_reservation| {
+                self.identifies_requester(requester_reservation)
+                    && requester_reservation.edit_blocking_status() == EditBlockingStatus::Blocking
                     // An answer authorizes the first write while `requester` is still clean.
                     // `requester.declared_race_scopes()` is an entitlement here, never the holder's refusal extent.
-                    && requester.declared_race_scopes().as_slice().iter().any(|scope| scope.overlaps(overlap_scope, path_case))
+                    && requester_reservation.declared_race_scopes().as_slice().iter().any(|scope| scope.overlaps(overlap_scope, path_case))
             })
-            .any(|requester| {
-                reservations_authorize_scope(reservations, requester, holder, overlap_scope, path_case)
+            .any(|requester_reservation| {
+                reservations_authorize_scope(retained_reservation_set, requester_reservation, holder_reservation, overlap_scope, path_case)
             })
     }
 
@@ -145,10 +144,10 @@ impl AuthorizedEditingIdentity {
     ///
     /// Overlap answers bind the worktree that recorded them, so a later run in the same
     /// worktree inherits them along with the reservations they were recorded against.
-    pub(super) fn identifies_requester(self, requester: &Reservation) -> bool {
+    pub(super) fn identifies_requester(self, requester_reservation: &Reservation) -> bool {
         match self {
             Self::SessionReservation { worktree_id, .. } | Self::Run { worktree_id, .. } => {
-                requester.actor.worktree == worktree_id
+                requester_reservation.actor.worktree == worktree_id
             },
             Self::Unidentified { .. } => false,
         }

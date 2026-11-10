@@ -71,8 +71,8 @@ impl PaneChrome {
             } else {
                 BorderType::Plain
             });
-        if let Some(fill) = pane_fill(focused) {
-            block.style(fill)
+        if let Some(pane_fill_style) = pane_fill(focused) {
+            block.style(pane_fill_style)
         } else {
             block
         }

@@ -659,42 +659,22 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a size cap on a structure that should not grow; it hides the growth.
 
-### Phase 4q — The project list uses the shared row click toggle  · status: todo
+### Phase 4q — The project list uses the shared row click toggle  · status: done
 
-**Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash).
+**Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash). It runs after Phase 4t (showrunner, 2026-11-09).
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-port project list toggles expand and collapse through the shared `tui_pane` row click toggle, and cargo-port's own copy is gone. The behavior does not change: a click anywhere on an expandable row toggles it.
-
-**Source:** user, 2026-11-08, via the showrunner: row click-to-toggle for expand and collapse is shared through `tui_pane`. Today cargo-port and cargo-handler each have their own copy. The handler unit builds the shared piece and moves cargo-handler onto it first.
-
-**Decision:** showrunner, 2026-11-08: add this phase after Phase 4p. It starts when the handler unit's `tui_pane` piece is on main.
-
-**Constraints:**
-- Change no behavior and no look. A left click on any expandable project row selects it and toggles it; a focus-only click (`ClickMode::FocusOnly`) does not toggle.
-- Use the shared piece as main has it. A change it needs goes to the handler unit through the showrunner, not into a cargo-port copy.
-- Delete cargo-port's own toggle path; leave no duplicate.
-- Keep the Phase 4p memory bounds: background work runs on the shared pool in `scan/background_workers.rs`, never a thread per call, and the 4p bound tests (`metadata_retention_tests`, `disk_burst_tests`, `skip_growth_tests`, `project_retirement_tests`) stay green.
-- Keep the Phase 4o layout: the five-cell Main reserve (`MAIN_COMPARISON_VALUE_RESERVE`, `tui/columns/constants.rs`), the `Projects` header on the name start cell, and one letter before `…` in a cut name.
-
-**Spec:**
-1. **Read the shared API.** Main at 92b1c9556 is merged and has the handler unit's piece: `tui_pane::ExpansionModel::press_row` and `RowPressResult` (`crates/tui_pane/src/expansion.rs`). Read its API.
-2. **Move the project list onto it.** `tui/interaction.rs::handle_click` (≈line 35) sets the cursor and calls `toggle_selected_project_expansion` (≈line 25), which calls `ProjectList::toggle_expand_for_row` (`tui/project_list/list.rs:2303`). Route the click through the shared piece. Keep `ProjectList` as the owner of the expansion state.
-3. **Delete the copy.** Remove the cargo-port click toggle code the shared piece replaces.
-4. **Tests.** Keep `expandable_project_row_click_toggles_children` (`tui/app/mod.rs:5432`) and `row_body_click_selects_clicked_project` green with no assertion change. Add a test that a focus-only click on an expandable row does not toggle it.
+A left click on a project row goes through `tui_pane::ExpansionModel::press_row`. `ProjectList` keeps the expansion state. `ProjectList::press_row(row, NonRustInclusion) -> RowPressResult` calls the shared model and runs `recompute_visibility` only after `RowPressResult::Toggled`. A focus-only click (`ClickMode::FocusOnly`) does not toggle, and a test in `tui/app/mod.rs` pins it. cargo-port has no click toggle of its own, and `tui/project_list/selection.rs` does not exist.
 
 **Files:**
-- `crates/cargo-port/src/tui/interaction.rs` and `crates/cargo-port/src/tui/input/dispatch.rs` — Spec 2
-- `crates/cargo-port/src/tui/project_list/` — Specs 2 and 3
-- `crates/cargo-port/src/tui/app/mod.rs` — Spec 4 tests
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/tui/project_list/list.rs` — `ProjectList::press_row`
+- `crates/cargo-port/src/tui/interaction.rs` — the click handler that calls it
+- `crates/cargo-port/src/tui/app/mod.rs` — the click tests
 
-**Workers:** 1 writer: Specs 1-4 and the changelog.
+**Gotchas:** `ProjectList::press_row` takes `expanded` out with `std::mem::take` for the call and puts it back, because the shared model borrows the model and the row source at once.
 
-**State:** none. The expansion state stays in `ProjectList`.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The click tests pass with no assertion change. No cargo-port click toggle code is left beside the shared piece. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** a cargo-port copy of the shared toggle; a change the shared piece needs goes to its owner.
 
 ### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: done
 
@@ -752,40 +732,65 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a Sync-column reserve (it moved the Main header and cut tree names to no letters at 80 columns).
 
-### Phase 4r — mend --fix keeps the tui_pane tiles re-exports and writes no empty use  · status: todo
+### Phase 4r — mend --fix keeps the tui_pane tiles re-exports and writes no empty use  · status: done
 
-**Depends on:** Phase 4o (it runs next; mend phases take priority over 4q). Phase 4q starts after this phase.
+#### As-built
 
-#### Work Order
-
-**Goal:** `cargo mend --all-targets --workspace --fix` on the cargo-tile Phase 31 tree applies its fixes, and the workspace builds after them with nothing rolled back.
-
-**Source:** showrunner, 2026-11-09: a blocking mend bug in cargo-tile's Phase 31 lint gate. Log: `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/31/repair4_lint.txt`. Tree: `/tmp/claude/scratch/until-2026-11-16T0500Z-phase-tile-unit-31-dcj7s6/src` (kept until 2026-11-16). A copy of its `crates/tui_pane` sources, both Cargo files and the log is in `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4r/inputs/`.
-- `crates/tui_pane/src/tiles/grid.rs:103`: mend wrote `use ;`, so rustc reports `expected identifier, found ;`.
-- `tiles/draw.rs:1257`, `tiles/host.rs:333` and `tiles/host_tests.rs:14`: `use crate::TileDemand` and `use crate::TileContent` no longer resolve after the fix. The source tree has `pub use tiles::TileDemand` and `pub use tiles::TileContent` in `lib.rs` (lines 592-593); rustc's help names `crate::tiles::TileDemand`.
-- The two E0282 errors on `CellPress::Retired` (`host.rs:108`, `host_tests.rs:58`) follow from the broken imports.
-
-**Decision:** user rule 2026-11-02: any cargo-mend bug is always fixed, as its own phase, before other work it blocks.
-
-**Constraints:**
-- Fix the cause in cargo-mend. Change no tui_pane or cargo-tile source.
-- A fix that mend cannot apply safely is declined with its report; mend never writes an empty or unresolved import.
-
-**Spec:**
-1. **Find the fix that writes `use ;`.** Run the current mend on the copied inputs, name the fixer and the planned edit, and quote the source line that produces the empty path.
-2. **Find the fix that removes or bypasses the root re-exports.** Name the fixer that leaves `crate::TileDemand` and `crate::TileContent` unresolved, and why it judged the root re-exports removable or the imports rewritable.
-3. **Repair both causes in cargo-mend.** Each fixture test reduces the tiles shape: a private module `tiles` with `pub use` re-exports, root `pub use tiles::X`, and in-crate `use crate::X` users in sibling and test modules. After `--fix` the fixture builds, and a second `--fix` changes nothing.
-4. **Prove on the real tree.** Run the new mend on a copy of the Phase 31 tree: `--fix` applies with no rollback, and the workspace check passes.
-5. **Changelog.** Add the entry to `crates/cargo-mend/CHANGELOG.md`.
+- `LocalImportRelation::for_paths` (`fixes/imports/path.rs`) gives `Descendant` only when the target path is longer than the common prefix. A self-module import, such as `use crate::tiles::grid;` inside `tiles::grid`, is not a descendant with an empty suffix, so mend never writes `use ;`.
+- That one cause also broke the Phase 31 root re-exports. With it fixed, `use crate::TileDemand` and `use crate::TileContent` resolve through `lib.rs`'s `pub use tiles::…`.
+- `ReexportMountInventory::collect` (`fixes/subtree_reexport/scan.rs`) reuses `selection.packages` when the selection's manifest is the workspace root `Cargo.toml`. A member-directory run still runs its own workspace lookup. A re-export chain fix runs one `cargo metadata`, not five.
+- On a copy of the cargo-tile Phase 31 tree, `cargo mend --all-targets --workspace --fix` applies two fixes with no rollback, and the workspace check passes.
 
 **Files:**
-- `crates/cargo-mend/src/` — the fixers Specs 1-2 name
-- `crates/cargo-mend/tests/diagnostics/` — the fixture tests
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-mend/src/fixes/imports/path.rs` — local import relation and the empty-suffix guard
+- `crates/cargo-mend/src/fixes/subtree_reexport/scan.rs` — the mount inventory reuses the selection's packages
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `fix_keeps_tile_root_exports_and_self_module_imports`
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs` — `fix_chain_with_check_budget` asserts one `cargo metadata` run
+- `crates/cargo-mend/CHANGELOG.md` — two Fixed entries
 
-**Workers:** 1 writer.
+**Binds later work:** `fix_chain_with_check_budget` allows at most five `cargo check` runs and exactly one `cargo metadata` run; mend --fix collapses a re-export chain with fewer checks lowers the check budget. `reexport_chain_collapses_in_one_run` takes 2.7-3.1 s in the full suite before that phase.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second. The fixture tests fail without the repair. `cargo mend --fix` on a copy of the Phase 31 tree reports no rollback. The checkpoint carries a `Change-Review:` line.
+**Gotchas:** the `for_paths` unit test row for a self-module import (`use crate::a::b;` inside `a::b`) expects `None`.
+
+### Phase 4t — mend --fix collapses a re-export chain with fewer checks  · status: done
+
+#### As-built
+
+`cargo mend --fix` plans re-export chain links whose edits do not depend on a check result in one pass, and validates them with one `cargo check`. A chain costs 3 checks (5 before), the one-failed-link fallback costs 3 (4 before), and a run uses one `cargo metadata` and no rustfmt process.
+
+- `ChainValidation::{Batch, PrunedBatch, IndividualLinks}` (`fixes/runner/chain.rs`) selects the validation path for one fix run.
+- `StepAttribution::{SingleBinding, SharedBindings}` is set per planning pass. A failed batch prunes the links that compiler error files locate. A located `SharedBindings` step goes to `IndividualLinks`, and its pass limit is dynamic.
+- `compiler/build/stderr.rs` reads `ErrorLocations` from cargo's rendered stderr and returns `error_files` on the build outcome.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/runner/chain.rs` — chain validation paths and pruning
+- `crates/cargo-mend/src/fixes/subtree_reexport/chain.rs` — chain link planning
+- `crates/cargo-mend/src/compiler/build/stderr.rs` — error file locations
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs` — `fix_chain_with_check_budget`, `failed_chain_link_keeps_the_other_validated_fixes`, `failed_chain_link_keeps_an_independent_chain`
+
+**Gotchas:** `--message-format=json-render-diagnostics` makes cargo emit no compiler-message on stdout, so diagnostics come from stderr only.
+
+**Ruled out:** named eligibility states for `public_use` and `use_path`, which are private syntax-match helpers where `None` means no match.
+
+### Phase 4u — Every cargo-mend test runs under a second  · status: done
+
+#### As-built
+
+Every test in the full `verify.sh test cargo-mend` suite takes under 1 s; the slowest takes 0.902 s. The 4t chain and fallback tests take a median of 0.260 s and 0.241 s alone.
+
+- `cargo mend` shares immutable driver copies across projects in `~/.cache/cargo-mend`. A run that cannot use the cache falls back to a local wrapper.
+- Each cached run holds a shared lock on `retention.lock` for the whole run. A short exclusive `publication.lock` covers only the publish step. Eviction removes a copy only when its `try_lock` on the retention lock succeeds.
+- Compiler-fix validation reuses earlier checks, rustfmt resolves once, and the progress thread exits with no shutdown delay.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/build/execute.rs` — driver copy cache, retention and publication locks
+- `crates/cargo-mend/src/compiler/constants.rs` — `WRAPPER_CACHE_RETENTION_LOCK_FILE` and `WRAPPER_CACHE_PUBLICATION_LOCK_FILE`
+- `crates/cargo-mend/src/compiler/build/progress.rs` — progress thread shutdown
+- `crates/cargo-mend/src/fixes/runner/function_length/` — short functions skip rustfmt
+
+**Gotchas:** Measure a first run after a relink. Later runs reuse the cache and hide a lock wait.
+
+**Ruled out:** One exclusive lock for publish and retention, because the publisher waits on every running mend.
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
@@ -823,7 +828,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Constraints from prior phases:**
 - Keep the Phase 4o rules: no space or ` ·` before `…` (`render::truncate_with_ellipsis`); the five-cell Main reserve (`MAIN_COMPARISON_VALUE_RESERVE`); the `Projects` header on the name start cell; a cut name keeps one letter; Git labels keep both margins when they fit; `Tracked` whole at 95 (Git pane 23 cells); dim value contrast is measured on focused and unfocused pane backgrounds.
-- Keep the Phase 4l, 4m and 4n rules listed under Phase 4o.
+- Keep these rules from Phases 4l, 4m and 4n: a loading Git section draws no count; the Structure width reserve keeps the right-margin cell and the blank cell before the divider; the Package and Git readability tests stay green; the description states, `RepositoryProbe::NoRepository`, the fixed Structure width and the cut-title rule stay as built; the Targets preferred width, the cut-title gap and the opt-in footer fit stay as built. Targets Source values shrink before a target name is cut; Spec 2 changes only the `Source` header.
 - Keep the Phase 4p memory bounds and their tests green.
 - New drawing tests set `ColorMode` explicitly and build one App per test. Name each test for the behavior it pins.
 
@@ -840,7 +845,52 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean (lint covers the whole workspace); no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4v — Returned narrow-width, border and lint column fixes  · status: todo
+
+**Depends on:** Phase 4s (both edit `crates/cargo-port/src/tui/panes/`). It runs after Phase 4s (showrunner, 2026-11-09).
+
+#### Work Order
+
+**Goal:** at 60 and 80 columns a project name gives way before any list column goes, Package labels and pane titles draw whole, the Git list keeps usable height, Sccache draws one border, and the Lint Runs and CI runs tables show their columns.
+
+**Source:** showrunner validation of C222-C229, 2026-11-09. C222, C224 and C227 return; items 4 and 5 are new defects.
+1. C222: at 60 columns Type, Git, Sync and Main drop while names grow: `│   Projects    CI      Disk │`, `│ ▶ bevy-0.20.0    142.1 MiB │`. The user's rule: names get `…` before any column goes.
+2. C224: at 80 columns a Package label is cut (`│  integ… 1294  │`, page 3) and the pane title is cut (`┌Worktree Gr… ┐`). With 13 worktrees the Git list area is one row tall (`▲ 18 of 28 ▼`) and the divider has no `Worktrees (N)` title.
+3. C227: NO_COLOR draws the thick Sccache border; color mode draws a thin one (`┌ Sccache stats ───┐`).
+4. Lint Runs columns are cut at every width. 160: `│2026-10-  19:00:55  19:00:55`. 80: `ration`, `2026-1`. 60: `art  End  ion  ize  Res`.
+5. At 80 columns under NO_COLOR, `CI runs (466)` (not branch mode) shows only Commit, with no Total column.
+
+**Decision:** showrunner, 2026-11-09: one fix phase for all five, after Phase 4s. Each fix returns as a new Change-Review row.
+
+**Constraints:**
+- Never cut a label. Cut a value, a name or a message first.
+- Colours come from the theme, not from code.
+- Keep the Phase 4o rules: no space or ` ·` before `…`; the five-cell Main reserve; the `Projects` header on the name start cell; a cut name keeps one letter.
+- Change no other look at widths where nothing is cut now.
+
+**Spec:**
+1. **Project list columns.** At 60 columns a name gets `…` before Type, Git, Sync or Main drops (`tui/columns/`, `tui/panes/project_list/`).
+2. **Package and Git.** At 80 columns no Package label or pane title is cut. With 13 worktrees the Git list area keeps more than one row, and the divider carries `Worktrees (N)` (`tui/panes/package/`, `tui/panes/git/`).
+3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`).
+4. **Lint Runs.** At 60, 80 and 160 columns no Lint Runs header or date is cut inside a word (`tui/panes/lints/render.rs`).
+5. **CI runs.** At 80 columns under NO_COLOR, outside branch mode, the CI runs table shows a Total column (`tui/panes/ci/`).
+6. **Changelog.** Add the cargo-port entries.
+
+**Files:**
+- `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
+- `crates/cargo-port/src/tui/panes/package/` and `crates/cargo-port/src/tui/panes/git/` — Spec 2
+- `crates/cargo-port/src/tui/sccache/render.rs` — Spec 3
+- `crates/cargo-port/src/tui/panes/lints/render.rs` — Spec 4
+- `crates/cargo-port/src/tui/panes/ci/` — Spec 5
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer: Specs 1-6 and their tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the five defects at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

@@ -103,7 +103,6 @@ use crate::constants::SHIM_STAGING_NAME;
 use crate::constants::SHIM_VERSION_PREFIX;
 use crate::constants::TOOLCHAIN_BIN_DIR;
 use crate::constants::TOOLCHAINS_DIR;
-use crate::constants::ValuedOptionScope;
 #[cfg(test)]
 use crate::shim_registration::native_fixture;
 
@@ -302,9 +301,10 @@ impl NativeCargoCall {
 fn capture_requested(arguments: &[OsString]) -> bool {
     let mut words = arguments.iter();
     while let Some(word) = words.next() {
-        if COMMAND_VALUED_OPTIONS.iter().any(|(option, scope)| {
-            matches!(scope, ValuedOptionScope::Global) && word == OsStr::new(option)
-        }) {
+        if COMMAND_VALUED_OPTIONS
+            .iter()
+            .any(|(option, scope)| scope.accepted_before_subcommand() && word == OsStr::new(option))
+        {
             words.next();
             continue;
         }
@@ -4369,8 +4369,22 @@ mod tests {
 
     #[test]
     fn the_installed_shim_skips_every_valued_global_option() {
+        let captured_queries: Vec<_> = [
+            ("--color", "auto"),
+            ("-Z", "unstable-options"),
+            ("-C", "workspace"),
+        ]
+        .into_iter()
+        .filter(|(option, value)| {
+            capture_requested(&[(*option).into(), (*value).into(), "metadata".into()])
+        })
+        .collect();
+        assert!(
+            captured_queries.is_empty(),
+            "query commands requested capture after: {captured_queries:?}"
+        );
         for (option, scope) in COMMAND_VALUED_OPTIONS {
-            if matches!(scope, ValuedOptionScope::Global) {
+            if scope.accepted_before_subcommand() {
                 assert!(!capture_requested(&[
                     (*option).into(),
                     "build".into(),

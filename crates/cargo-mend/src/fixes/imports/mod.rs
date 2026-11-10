@@ -20,6 +20,7 @@ pub(super) use gate_tracking::item_gate_attributes;
 pub(super) use gate_tracking::pattern_attributes;
 pub(super) use gate_tracking::trait_item_attributes;
 pub(super) use gate_tracking::type_attributes;
+pub(super) use import_scan::FixSetPresence;
 pub(super) use import_scan::ImportGroup;
 pub(super) use import_scan::ImportScan;
 pub(super) use import_scan::OwnedFix;
@@ -37,6 +38,7 @@ pub(super) use module_imports::plan_module_imports;
 pub(super) use path::ImportSource;
 pub(super) use scan::scan_selection;
 use syn::UseTree;
+pub(super) use use_binding::BindingSpelling;
 pub(super) use use_binding::UseBinding;
 
 pub(super) fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {

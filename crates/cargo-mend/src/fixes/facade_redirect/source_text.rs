@@ -175,10 +175,10 @@ impl<'a> SourceLines<'a> {
 
 /// The bytes a `use` item occupies: its outer attributes through its `;`.
 pub(in crate::fixes) fn item_use_byte_range(
-    lines: &SourceLines<'_>,
+    source_lines: &SourceLines<'_>,
     item_use: &ItemUse,
 ) -> Result<(usize, usize), SourcePositionError> {
-    lines.span_range(item_use.span().start(), item_use.semi_token.span.end())
+    source_lines.span_range(item_use.span().start(), item_use.semi_token.span.end())
 }
 
 /// A deletion may take whole lines only when no code shares them with the item.
@@ -390,12 +390,12 @@ pub(in crate::fixes) fn find_source_root(path: &Path) -> Option<PathBuf> {
 
 pub(in crate::fixes) fn dedup_fixes(fixes: &mut Vec<UseFix>) {
     let mut seen = BTreeSet::new();
-    fixes.retain(|fix| {
+    fixes.retain(|use_fix| {
         seen.insert((
-            fix.path.clone(),
-            fix.start,
-            fix.end,
-            fix.replacement.clone(),
+            use_fix.path.clone(),
+            use_fix.start,
+            use_fix.end,
+            use_fix.replacement.clone(),
         ))
     });
 }
@@ -432,8 +432,8 @@ mod tests {
     /// `target` from `source`.
     fn after_line_deletion(source: &str, target: &str) -> String {
         let start = source.find(target).expect("target in source");
-        let fix = line_deletion(Path::new("lib.rs"), source, start..start + target.len());
-        format!("{}{}", &source[..fix.start], &source[fix.end..])
+        let use_fix = line_deletion(Path::new("lib.rs"), source, start..start + target.len());
+        format!("{}{}", &source[..use_fix.start], &source[use_fix.end..])
     }
 
     #[test]
@@ -513,8 +513,8 @@ mod tests {
     #[test]
     fn a_column_past_a_multibyte_character_lands_on_the_right_byte() {
         let source = "// é\nlet é = x;\n";
-        let lines = SourceLines::new(source);
-        let position = lines
+        let source_lines = SourceLines::new(source);
+        let position = source_lines
             .position(LineColumn {
                 line:   2,
                 column: 8,
@@ -594,11 +594,11 @@ mod tests {
     #[test]
     fn indent_is_empty_when_code_precedes_the_offset() {
         let source = "mod m {\n    use a::b;\n}\nfn f() { use c::d; }\n";
-        let lines = SourceLines::new(source);
+        let source_lines = SourceLines::new(source);
         let inner = source.find("use a").expect("inner use");
         let inline = source.find("use c").expect("inline use");
-        assert_eq!(lines.indent_before(inner), "    ");
-        assert_eq!(lines.indent_before(inline), "");
+        assert_eq!(source_lines.indent_before(inner), "    ");
+        assert_eq!(source_lines.indent_before(inline), "");
     }
     #[test]
     fn deletion_extent_keeps_code_sharing_either_side_of_the_item() {

@@ -9,22 +9,22 @@ use std::time::Instant;
 
 use sysinfo::Pid;
 
-use super::Census;
-use super::CensusCadence;
-use super::InvocationResourceUse;
-use super::ProcessField;
-use super::ProcessObservation;
-use super::ProcessObservations;
 use super::ProcessRefreshSource;
 use super::RefreshPace;
 use super::RefreshWorker;
 use super::StageAnswer;
-use super::row;
 use crate::census::command_text::ScannerHome;
 use crate::census::direct_capture::DirectAssociation;
+use crate::census::invocation_cpu_accounting::CensusCadence;
 use crate::census::invocation_cpu_accounting::Measurement;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::process_identity::InvocationId;
+use crate::census::scan::census::Census;
+use crate::census::scan::invocation;
+use crate::census::scan::observation::ProcessField;
+use crate::census::scan::observation::ProcessObservation;
+use crate::census::scan::observation::ProcessObservations;
+use crate::census::scan::resource_use::InvocationResourceUse;
 
 /// Changes arrive independently of the table retained by the refresh source.
 #[derive(Default)]
@@ -309,7 +309,7 @@ fn late_session_rows_regroup_foreign_commands_without_a_process_refresh() -> Res
     let mut early = Vec::new();
     let mut late = Vec::new();
     for process in records.records.values() {
-        let row = row(
+        let row = invocation::row(
             process,
             process.cmd(),
             InvocationId::for_test(process.pid.as_u32()),

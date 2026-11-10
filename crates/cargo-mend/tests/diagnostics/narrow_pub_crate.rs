@@ -13,6 +13,10 @@ fn pub_in_private_top_level_module_is_flagged() {
 name = "narrow_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -55,6 +59,10 @@ fn shallow_public_signature_prevents_pub_crate_narrowing() {
 name = "shallow_signature_floor_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -102,6 +110,10 @@ fn re_exported_item_is_not_flagged() {
 name = "narrow_reexport_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -152,6 +164,10 @@ fn fix_preserves_pub_required_by_private_module_reexport() {
 name = "private_module_reexport_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -239,6 +255,10 @@ fn fix_preserves_pub_required_by_public_trait_interface() {
 name = "public_trait_interface_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -324,6 +344,10 @@ fn mixed_items_only_non_exported_flagged() {
 name = "narrow_mixed_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -361,6 +385,10 @@ fn mod_rs_top_level_module_is_flagged() {
 name = "narrow_modrs_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -442,6 +470,10 @@ fn dry_run_reports_fix_count() {
 name = "narrow_dryrun_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -595,6 +627,10 @@ fn methods_on_re_exported_type_are_not_flagged() {
 name = "narrow_impl_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -667,6 +703,10 @@ fn type_reachable_via_reexported_enum_variant_is_not_flagged() {
 name = "narrow_reachable_variant_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -758,6 +798,10 @@ fn methods_on_non_exported_type_are_flagged() {
 name = "narrow_impl_internal_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -869,6 +913,10 @@ fn pub_at_depth_3_is_narrowed_when_parent_caps_at_pub_crate() {
 name = "narrow_nested_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -918,6 +966,10 @@ fn restricted_facade_and_crate_signature_join_to_pub_crate_narrowing() {
 name = "joined_facade_signature_narrowing_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -983,6 +1035,10 @@ fn nested_public_signature_exceeds_pub_crate_facade_floor() {
 name = "nested_signature_floor_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -1046,6 +1102,10 @@ fn super_to_crate_chain_narrows_only_the_crate_wide_item() {
 name = "super_to_crate_consumer_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -1229,8 +1289,7 @@ edition = "2024"
         "the re-export reached only from #[cfg(test)] must NOT be removed; inner_facade/mod.rs after:\n{facade_after}",
     );
 
-    // And the project must still compile under `cargo nextest run --no-run` —
-    // i.e. mend left the tree in a state where every target builds.
+    // Compile the test binary after the compiler fixes.
     let test_build = cargo_command()
         .arg("nextest")
         .arg("run")

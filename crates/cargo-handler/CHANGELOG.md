@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Worker units and roles come from the shared staff file instead of legacy roster and role cache files.
+
 - A left press anywhere on an expandable row opens or closes it through the shared `tui_pane` rule.
 - Accounts show busy, idle, paused, exited and total counts in the accounts board's order, with no shell column.
 - Reset times use three clear color steps in every theme. The soonest resets use the strongest step.

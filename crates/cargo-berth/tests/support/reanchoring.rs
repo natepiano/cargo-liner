@@ -217,32 +217,7 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
     let id = fixture.start_phase();
     fixture.commit("one", "base");
     let first_tip = fixture.head();
-    // Replay this first commit before the conflict so Git itself writes the map.
-    fs::write(
-        fixture.holder.join("phase.txt"),
-        reanchoring_templates::contents("one", "two"),
-    )
-    .expect("second protected hunk should write");
-    fs::write(fixture.holder.join("unreserved.txt"), "holder addition\n")
-        .expect("unreserved conflict should write");
-    GIT.run(&fixture.holder, ["add", "phase.txt", "unreserved.txt"]);
-    let tree = GIT.stdout(&fixture.holder, ["write-tree"]);
-    // Avoid post-commit drift widening the reservation into the conflict path.
-    let old_tip = GIT.stdout(
-        &fixture.holder,
-        [
-            "commit-tree",
-            &tree,
-            "-p",
-            &first_tip,
-            "-m",
-            "second phase hunk",
-        ],
-    );
-    GIT.run(
-        &fixture.holder,
-        ["update-ref", "refs/heads/holder", &old_tip, &first_tip],
-    );
+    let old_tip = commit_conflicting_second_hunk(&fixture, &first_tip);
     fixture.checkpoint(&id);
     assert!(
         !journal_events(fixture.root())
@@ -328,6 +303,37 @@ fn assert_reanchored_checkpoint_is_outstanding(
             ["stage"],
         "outstanding"
     );
+}
+
+/// Commit the protected hunk and conflict path without widening the reservation.
+fn commit_conflicting_second_hunk(fixture: &RewriteFixture, first_tip: &str) -> String {
+    // Replay this first commit before the conflict so Git itself writes the map.
+    fs::write(
+        fixture.holder.join("phase.txt"),
+        reanchoring_templates::contents("one", "two"),
+    )
+    .expect("second protected hunk should write");
+    fs::write(fixture.holder.join("unreserved.txt"), "holder addition\n")
+        .expect("unreserved conflict should write");
+    GIT.run(&fixture.holder, ["add", "phase.txt", "unreserved.txt"]);
+    let tree = GIT.stdout(&fixture.holder, ["write-tree"]);
+    // Avoid post-commit drift widening the reservation into the conflict path.
+    let old_tip = GIT.stdout(
+        &fixture.holder,
+        [
+            "commit-tree",
+            &tree,
+            "-p",
+            first_tip,
+            "-m",
+            "second phase hunk",
+        ],
+    );
+    GIT.run(
+        &fixture.holder,
+        ["update-ref", "refs/heads/holder", &old_tip, first_tip],
+    );
+    old_tip
 }
 
 /// Observe the branch command separately: Git ignores a committed hook's failure.

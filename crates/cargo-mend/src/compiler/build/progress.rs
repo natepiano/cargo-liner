@@ -138,7 +138,7 @@ impl CargoProgress {
                         frame_index = (frame_index + 1) % PROGRESS_FRAMES.len();
                     }
                 }
-                thread::sleep(PROGRESS_INTERVAL);
+                thread::park_timeout(PROGRESS_INTERVAL);
             }
         });
 
@@ -157,6 +157,7 @@ impl CargoProgress {
         };
         state.active.store(false, Ordering::Relaxed);
         if let Some(handle) = state.handle.take() {
+            handle.thread().unpark();
             let _ = handle.join();
         }
         state.clear_line();

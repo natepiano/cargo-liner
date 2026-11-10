@@ -62,10 +62,6 @@ pub(crate) enum TargetSupport {
     Enabled,
 }
 
-impl TargetSupport {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 impl From<bool> for TargetSupport {
     fn from(value: bool) -> Self { if value { Self::Enabled } else { Self::Disabled } }
 }
@@ -75,7 +71,10 @@ impl Serialize for TargetSupport {
     where
         S: Serializer,
     {
-        serializer.serialize_bool(self.is_enabled())
+        match self {
+            Self::Enabled => serializer.serialize_bool(true),
+            Self::Disabled => serializer.serialize_bool(false),
+        }
     }
 }
 

@@ -292,7 +292,12 @@ fn account_refresh_keeps_the_destination_through_animation_frames() {
             );
             assert_eq!(
                 observed.widths.borrow().len(),
-                if frame == 0 { search_calls } else { 2 },
+                (if frame == 0 { search_calls } else { 2 })
+                    - usize::from(
+                        app.tiles.placements(area, growth).iter().any(|placement| {
+                            matches!(placement.content, TileContent::Group(_))
+                        })
+                    ),
                 "demand calls at width {width} on frame {frame}",
             );
             if frame == 0 {
@@ -336,8 +341,12 @@ fn assert_account_arrival(app: &mut App, source: &App, area: Rect) {
     );
     assert_eq!(
         observed.widths.borrow().len(),
-        2,
-        "an arrival draw measures only the two displays at width {width}"
+        2 - usize::from(
+            selected
+                .iter()
+                .any(|placement| matches!(placement.content, TileContent::Group(_))),
+        ),
+        "an arrival draw measures only the drawn display at width {width}"
     );
     assert_eq!(
         app.tiles.placements(area, growth),

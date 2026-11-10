@@ -75,9 +75,9 @@ struct UseVisitor<'a> {
 }
 
 impl Visit<'_> for UseVisitor<'_> {
-    fn visit_item_mod(&mut self, node: &ItemMod) {
-        if let Some((_, items)) = &node.content {
-            self.current_module_path.push(node.ident.to_string());
+    fn visit_item_mod(&mut self, item_mod: &ItemMod) {
+        if let Some((_, items)) = &item_mod.content {
+            self.current_module_path.push(item_mod.ident.to_string());
             for item in items {
                 self.visit_item(item);
             }
@@ -85,11 +85,11 @@ impl Visit<'_> for UseVisitor<'_> {
         }
     }
 
-    fn visit_item_use(&mut self, node: &ItemUse) {
-        let candidate = import_path::analyze_use_tree(&self.current_module_path, &node.tree)
-            .or_else(|| import_path::analyze_deep_super(&self.current_module_path, &node.tree));
+    fn visit_item_use(&mut self, item_use: &ItemUse) {
+        let candidate = import_path::analyze_use_tree(&self.current_module_path, &item_use.tree)
+            .or_else(|| import_path::analyze_deep_super(&self.current_module_path, &item_use.tree));
         if let Some(candidate) = candidate {
-            let span = node.span();
+            let span = item_use.span();
             let start = span.start();
             let end = span.end();
             let Some(location) = self.source.locate(start, end) else {
@@ -153,24 +153,24 @@ fn scan_selection_with_fixes(
     selection: &Selection,
     sources: &ParsedSources,
 ) -> Result<Vec<ImportFinding>> {
-    let mut findings = Vec::new();
+    let mut import_findings = Vec::new();
     for package_root in &selection.package_roots {
         let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
         let module_map = sources.module_map(&source_root);
-        for entry in WalkDir::new(&source_root)
+        for dir_entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
         {
-            let path = entry.path();
-            if !entry.file_type().is_file()
+            let path = dir_entry.path();
+            if !dir_entry.file_type().is_file()
                 || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
-            findings.extend(scan_file(
+            import_findings.extend(scan_file(
                 selection.analysis_root.as_path(),
                 &source_root,
                 path,
@@ -179,7 +179,7 @@ fn scan_selection_with_fixes(
             )?);
         }
     }
-    findings.sort_by(|a, b| {
+    import_findings.sort_by(|a, b| {
         (
             &a.shorten_import_fact.path,
             a.shorten_import_fact.line,
@@ -193,12 +193,12 @@ fn scan_selection_with_fixes(
                 b.shorten_import_fact.diagnostic_code,
             ))
     });
-    findings.dedup_by(|a, b| {
+    import_findings.dedup_by(|a, b| {
         a.shorten_import_fact.path == b.shorten_import_fact.path
             && a.shorten_import_fact.line == b.shorten_import_fact.line
             && a.shorten_import_fact.column == b.shorten_import_fact.column
     });
-    Ok(findings)
+    Ok(import_findings)
 }
 
 fn scan_file(
@@ -211,20 +211,20 @@ fn scan_file(
     let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
         return Ok(Vec::new());
     };
-    let source = sources
+    let parsed_source = sources
         .source(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax = source
+    let syntax_file = parsed_source
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
-    let text = source.text();
-    let mut visitor = UseVisitor {
+    let text = parsed_source.text();
+    let mut use_visitor = UseVisitor {
         analysis_root,
         path,
         source: import_path::ImportSource::new(text),
         current_module_path: base_module_path,
         findings: Vec::new(),
     };
-    visitor.visit_file(syntax);
-    Ok(visitor.findings)
+    use_visitor.visit_file(syntax_file);
+    Ok(use_visitor.findings)
 }

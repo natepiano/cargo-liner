@@ -4853,65 +4853,23 @@ fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
 }
 
 #[test]
-fn filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks() {
-    let repository = initialized_repository();
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "checkout",
-            "--quiet",
-            "-b",
-            "rebase-source",
-        ],
-    );
-    for commit_index in 0..3 {
-        let path = format!("rebase-{commit_index}.txt");
-        fs::write(repository.path().join(&path), format!("{commit_index}\n"))
-            .expect("rebase source should write");
-        git(repository.path(), &["add", &path]);
-        git(
-            repository.path(),
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "commit",
-                "--quiet",
-                "-m",
-                &format!("rebase source {commit_index}"),
-            ],
-        );
-    }
-    let source_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "checkout",
-            "--quiet",
-            "main",
-        ],
-    );
-    fs::write(repository.path().join("upstream-rebase.txt"), "upstream\n")
-        .expect("upstream source should write");
-    git(repository.path(), &["add", "upstream-rebase.txt"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "upstream rebase base",
-        ],
-    );
+fn filtered_three_commit_rebase_succeeds_with_live_hooks() {
+    let repository = gate_fixtures::THREE_COMMIT_REBASE.instantiate();
+    let gate_fixtures::ThreeCommitRebaseHistory { source_tip } =
+        recorded_history::read(repository.path());
+    run_three_commit_rebase_sample(repository.path(), &source_tip, RebaseHookMode::FilteredLive);
+}
 
-    for hook_mode in [RebaseHookMode::FilteredBypass, RebaseHookMode::FilteredLive] {
-        run_three_commit_rebase_sample(repository.path(), &source_tip, hook_mode);
-    }
+#[test]
+fn filtered_three_commit_rebase_succeeds_with_bypassed_hooks() {
+    let repository = gate_fixtures::THREE_COMMIT_REBASE.instantiate();
+    let gate_fixtures::ThreeCommitRebaseHistory { source_tip } =
+        recorded_history::read(repository.path());
+    run_three_commit_rebase_sample(
+        repository.path(),
+        &source_tip,
+        RebaseHookMode::FilteredBypass,
+    );
 }
 
 #[test]

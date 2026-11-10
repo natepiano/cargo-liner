@@ -44,12 +44,12 @@ impl AnalysisCallbacks {
 }
 
 impl Callbacks for AnalysisCallbacks {
-    fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
-        let crate_name = tcx.crate_name(LOCAL_CRATE);
-        let _analyzing =
+    fn after_analysis(&mut self, _: &Compiler, ty_ctxt: TyCtxt<'_>) -> Compilation {
+        let crate_name = ty_ctxt.crate_name(LOCAL_CRATE);
+        let _analyzing_marker =
             AnalyzingMarker::new(&self.driver_settings.analyzing_dir, crate_name.as_str());
         let analysis_start = Instant::now();
-        let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
+        let findings = visibility::collect_and_store_findings(ty_ctxt, &self.driver_settings);
         sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());
         match findings {
             Ok(FindingsPersistence::OutsideAnalysisScope | FindingsPersistence::ReportWritten) => {
@@ -76,7 +76,7 @@ impl PassthroughInvocation {
             .context("compiler driver expected rustc path in wrapper arguments")?;
         let rustc_args = wrapper_args.iter().skip(2).cloned();
 
-        let invocation = match rustc_wrapper {
+        let passthrough_invocation = match rustc_wrapper {
             Some(program) => Self {
                 program,
                 args: iter::once(rustc.clone()).chain(rustc_args).collect(),
@@ -86,7 +86,7 @@ impl PassthroughInvocation {
                 args:    rustc_args.collect(),
             },
         };
-        Ok(invocation)
+        Ok(passthrough_invocation)
     }
 
     fn command(&self) -> Command {
@@ -154,13 +154,13 @@ fn driver_main_impl() -> Result<ExitCode> {
         )
         .collect();
 
-    let mut callbacks = AnalysisCallbacks::new(driver_settings);
+    let mut analysis_callbacks = AnalysisCallbacks::new(driver_settings);
     let compiler_exit_code = rustc_driver::catch_with_exit_code(|| {
-        rustc_driver::run_compiler(&rustc_args, &mut callbacks);
+        rustc_driver::run_compiler(&rustc_args, &mut analysis_callbacks);
     })
     .into_exit_code();
 
-    let exit_code = callbacks.error.map_or(compiler_exit_code, |err| {
+    let exit_code = analysis_callbacks.error.map_or(compiler_exit_code, |err| {
         eprintln!("mend: {err:#}");
         ExitCode::FAILURE
     });
@@ -169,8 +169,9 @@ fn driver_main_impl() -> Result<ExitCode> {
 }
 
 fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
-    let invocation = PassthroughInvocation::new(wrapper_args, passthrough_rustc_wrapper())?;
-    let status = invocation
+    let passthrough_invocation =
+        PassthroughInvocation::new(wrapper_args, passthrough_rustc_wrapper())?;
+    let exit_status = passthrough_invocation
         .command()
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -178,7 +179,9 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
         .status()
         .context("failed to invoke rustc passthrough from mend wrapper")?;
     Ok(exit_code_from_i32(
-        status.code().unwrap_or_else(|| i32::from(EXIT_CODE_ERROR)),
+        exit_status
+            .code()
+            .unwrap_or_else(|| i32::from(EXIT_CODE_ERROR)),
     ))
 }
 
@@ -203,10 +206,10 @@ mod tests {
     fn passthrough_invocation_uses_rustc_without_existing_wrapper() -> Result<()> {
         let wrapper_args = wrapper_args();
 
-        let invocation = PassthroughInvocation::new(&wrapper_args, None)?;
+        let passthrough_invocation = PassthroughInvocation::new(&wrapper_args, None)?;
 
         assert_eq!(
-            invocation,
+            passthrough_invocation,
             PassthroughInvocation {
                 program: OsString::from("/toolchain/bin/rustc"),
                 args:    vec![OsString::from("-vV")],
@@ -219,11 +222,11 @@ mod tests {
     fn passthrough_invocation_chains_existing_wrapper_before_rustc() -> Result<()> {
         let wrapper_args = wrapper_args();
 
-        let invocation =
+        let passthrough_invocation =
             PassthroughInvocation::new(&wrapper_args, Some(OsString::from("/cache/kache")))?;
 
         assert_eq!(
-            invocation,
+            passthrough_invocation,
             PassthroughInvocation {
                 program: OsString::from("/cache/kache"),
                 args:    vec![

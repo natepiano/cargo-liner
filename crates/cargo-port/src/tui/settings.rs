@@ -1430,7 +1430,10 @@ fn lint_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::LintsEnabled),
             "Enabled".to_string(),
-            on_off(app.config.lint_enabled()),
+            match app.config.lint_enabled() {
+                crate::config::LintIndicator::Enabled => TOGGLE_ON.to_string(),
+                crate::config::LintIndicator::Disabled => TOGGLE_OFF.to_string(),
+            },
         ),
         (
             Some(SettingOption::LintOnDiscovery),

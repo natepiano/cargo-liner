@@ -88,8 +88,11 @@ impl FrameworkGlobalShortcutPresentation {
     /// Classify one framework action for the compact shortcut
     /// overlay.
     #[must_use]
-    pub(super) fn visibility(self, action: GlobalAction) -> FrameworkGlobalShortcutVisibility {
-        (self.visibility)(action)
+    pub(super) fn visibility(
+        self,
+        global_action: GlobalAction,
+    ) -> FrameworkGlobalShortcutVisibility {
+        (self.visibility)(global_action)
     }
 }
 
@@ -98,7 +101,7 @@ impl Default for FrameworkGlobalShortcutPresentation {
 }
 
 const fn show_framework_global_shortcut(
-    _action: GlobalAction,
+    _global_action: GlobalAction,
 ) -> FrameworkGlobalShortcutVisibility {
     FrameworkGlobalShortcutVisibility::Shown
 }
@@ -191,7 +194,9 @@ impl Action for GlobalAction {
 }
 
 impl Display for GlobalAction {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result { f.write_str(self.description()) }
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(self.description())
+    }
 }
 
 #[cfg(test)]
@@ -222,25 +227,25 @@ mod tests {
 
     #[test]
     fn toml_keys_round_trip_for_every_variant() {
-        for variant in GlobalAction::ALL {
+        for global_action in GlobalAction::ALL {
             assert_eq!(
-                GlobalAction::from_toml_key(variant.toml_key()),
-                Some(*variant),
+                GlobalAction::from_toml_key(global_action.toml_key()),
+                Some(*global_action),
             );
         }
     }
 
     #[test]
     fn descriptions_are_non_empty_for_every_variant() {
-        for variant in GlobalAction::ALL {
-            assert_ne!(variant.description(), "");
+        for global_action in GlobalAction::ALL {
+            assert_ne!(global_action.description(), "");
         }
     }
 
     #[test]
     fn bar_labels_are_non_empty_for_every_variant() {
-        for variant in GlobalAction::ALL {
-            assert_ne!(variant.bar_label(), "");
+        for global_action in GlobalAction::ALL {
+            assert_ne!(global_action.bar_label(), "");
         }
     }
 
@@ -274,7 +279,7 @@ mod tests {
 
     #[test]
     fn defaults_produce_canonical_eight_bindings() {
-        let map = GlobalAction::defaults().into_scope_map();
+        let scope_map = GlobalAction::defaults().into_scope_map();
 
         let cases: [(KeyBind, GlobalAction); 8] = [
             (KeyBind::from('q'), GlobalAction::Quit),
@@ -295,16 +300,16 @@ mod tests {
 
         for (key, expected) in cases {
             assert_eq!(
-                map.action_for(&key),
+                scope_map.action_for(&key),
                 Some(expected),
                 "expected {key:?} → {expected:?}",
             );
         }
 
-        for variant in GlobalAction::ALL {
+        for global_action in GlobalAction::ALL {
             assert!(
-                !map.display_keys_for(*variant).is_empty(),
-                "every default variant must be bound: {variant:?}",
+                !scope_map.display_keys_for(*global_action).is_empty(),
+                "every default variant must be bound: {global_action:?}",
             );
         }
     }

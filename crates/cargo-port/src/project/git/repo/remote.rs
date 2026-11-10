@@ -62,10 +62,6 @@ pub(super) enum UpstreamRemote {
     Missing,
 }
 
-impl UpstreamRemote {
-    pub(super) const fn is_present(self) -> bool { matches!(self, Self::Present) }
-}
-
 impl From<&[String]> for UpstreamRemote {
     fn from(remote_names: &[String]) -> Self {
         if remote_names.iter().any(|name| name == GIT_REMOTE_UPSTREAM) {
@@ -114,10 +110,9 @@ pub(super) fn build_remote_info(
         TrackedRef::Untracked => Comparison::NotCompared,
         TrackedRef::Unreadable => Comparison::Unreadable,
     };
-    let kind = if name == GIT_REMOTE_ORIGIN && context.upstream_remote.is_present() {
-        RemoteKind::Fork
-    } else {
-        RemoteKind::Clone
+    let kind = match (name, context.upstream_remote) {
+        (GIT_REMOTE_ORIGIN, UpstreamRemote::Present) => RemoteKind::Fork,
+        (_, UpstreamRemote::Present | UpstreamRemote::Missing) => RemoteKind::Clone,
     };
     let push = push::resolve_push_state(url.as_deref(), pushurl);
     Ok(RemoteInfo {

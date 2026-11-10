@@ -93,7 +93,7 @@ impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
 }
 
 pub(super) fn classify_outward_declaration(item: &Item) -> OutwardDeclarationClassification<'_> {
-    let (identifier, kind) = match item {
+    let (identifier, outward_declaration_kind) = match item {
         Item::Const(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
@@ -142,7 +142,7 @@ pub(super) fn classify_outward_declaration(item: &Item) -> OutwardDeclarationCla
             .unwrap_or(&source_name)
             .to_string(),
         identifier_span: identifier.span(),
-        kind,
+        kind: outward_declaration_kind,
     })
 }
 
@@ -150,57 +150,59 @@ pub(super) fn potentially_outward_item_surface_carriers_mentioning_name<'syntax>
     item: &'syntax Item,
     item_name: &str,
 ) -> Vec<ItemSignatureCarrier<'syntax>> {
-    let mut carriers = Vec::new();
-    let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
+    let mut item_signature_carriers = Vec::new();
+    let mut item_surface_reference_visitor = ItemSurfaceReferenceVisitor::new(item_name);
     match item {
         Item::Const(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
-            visitor.visit_type(&item.ty);
+            item_surface_reference_visitor.visit_type(&item.ty);
         },
         Item::Enum(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
             for variant in &item.variants {
-                visit_field_types(&mut visitor, &variant.fields);
+                visit_field_types(&mut item_surface_reference_visitor, &variant.fields);
             }
         },
         Item::Fn(item) if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit => {
-            visitor.visit_signature(&item.sig);
+            item_surface_reference_visitor.visit_signature(&item.sig);
         },
         Item::Static(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
-            visitor.visit_type(&item.ty);
+            item_surface_reference_visitor.visit_type(&item.ty);
         },
         Item::Struct(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
             match &item.fields {
-                Fields::Named(fields) => carriers.extend(visible_field_carriers(
+                Fields::Named(fields) => item_signature_carriers.extend(visible_field_carriers(
                     fields.named.iter().enumerate(),
                     item_name,
                 )),
-                Fields::Unnamed(fields) => carriers.extend(visible_field_carriers(
+                Fields::Unnamed(fields) => item_signature_carriers.extend(visible_field_carriers(
                     fields.unnamed.iter().enumerate(),
                     item_name,
                 )),
                 Fields::Unit => {},
             }
-            return carriers;
+            return item_signature_carriers;
         },
         Item::Trait(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
             for trait_item in &item.items {
                 match trait_item {
-                    TraitItem::Fn(item) => visitor.visit_signature(&item.sig),
+                    TraitItem::Fn(item) => {
+                        item_surface_reference_visitor.visit_signature(&item.sig);
+                    },
                     TraitItem::Type(item) => {
                         if let Some((_, ty)) = &item.default {
-                            visitor.visit_type(ty);
+                            item_surface_reference_visitor.visit_type(ty);
                         }
                     },
-                    TraitItem::Const(item) => visitor.visit_type(&item.ty),
+                    TraitItem::Const(item) => item_surface_reference_visitor.visit_type(&item.ty),
                     _ => {},
                 }
             }
@@ -208,23 +210,23 @@ pub(super) fn potentially_outward_item_surface_carriers_mentioning_name<'syntax>
         Item::Type(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
-            visitor.visit_type(&item.ty);
+            item_surface_reference_visitor.visit_type(&item.ty);
         },
         Item::Union(item)
             if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
         {
-            carriers.extend(visible_field_carriers(
+            item_signature_carriers.extend(visible_field_carriers(
                 item.fields.named.iter().enumerate(),
                 item_name,
             ));
-            return carriers;
+            return item_signature_carriers;
         },
         _ => {},
     }
-    if visitor.found == SurfaceReferenceMatch::Found {
-        carriers.push(ItemSignatureCarrier::Declaration);
+    if item_surface_reference_visitor.found == SurfaceReferenceMatch::Found {
+        item_signature_carriers.push(ItemSignatureCarrier::Declaration);
     }
-    carriers
+    item_signature_carriers
 }
 
 fn visible_field_carriers<'syntax>(
@@ -238,16 +240,19 @@ fn visible_field_carriers<'syntax>(
         .collect()
 }
 
-fn visit_field_types(visitor: &mut ItemSurfaceReferenceVisitor<'_>, fields: &Fields) {
+fn visit_field_types(
+    item_surface_reference_visitor: &mut ItemSurfaceReferenceVisitor<'_>,
+    fields: &Fields,
+) {
     match fields {
         Fields::Named(fields) => {
             for field in &fields.named {
-                visitor.visit_type(&field.ty);
+                item_surface_reference_visitor.visit_type(&field.ty);
             }
         },
         Fields::Unnamed(fields) => {
             for field in &fields.unnamed {
-                visitor.visit_type(&field.ty);
+                item_surface_reference_visitor.visit_type(&field.ty);
             }
         },
         Fields::Unit => {},
@@ -296,26 +301,26 @@ const fn impl_item_visibility(item: &ImplItem) -> DeclarationVisibility {
 }
 
 fn impl_item_surface_reference(item: &ImplItem, item_name: &str) -> SurfaceReferenceMatch {
-    let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
+    let mut item_surface_reference_visitor = ItemSurfaceReferenceVisitor::new(item_name);
     match item {
         ImplItem::Fn(item) => {
-            visitor.visit_signature(&item.sig);
+            item_surface_reference_visitor.visit_signature(&item.sig);
         },
         ImplItem::Const(item) => {
-            visitor.visit_type(&item.ty);
+            item_surface_reference_visitor.visit_type(&item.ty);
         },
         ImplItem::Type(item) => {
-            visitor.visit_type(&item.ty);
+            item_surface_reference_visitor.visit_type(&item.ty);
         },
         _ => {},
     }
-    visitor.found
+    item_surface_reference_visitor.found
 }
 
 fn field_type_reference(field: &Field, item_name: &str) -> SurfaceReferenceMatch {
-    let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
-    visitor.visit_type(&field.ty);
-    visitor.found
+    let mut item_surface_reference_visitor = ItemSurfaceReferenceVisitor::new(item_name);
+    item_surface_reference_visitor.visit_type(&field.ty);
+    item_surface_reference_visitor.found
 }
 
 #[cfg(test)]

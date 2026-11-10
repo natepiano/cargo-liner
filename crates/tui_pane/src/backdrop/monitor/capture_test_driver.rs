@@ -66,11 +66,12 @@ impl BackdropMonitor {
     #[must_use]
     pub fn with_capture_test_driver() -> (Self, BackdropMonitorCaptureTestDriver) {
         let endpoints = Arc::new(Mutex::new(CaptureTestWorkerEndpoints::NoActiveWorker));
-        let monitor = Self::with_capture_worker_launcher(CaptureWorkerLauncher::TestDriver {
-            endpoints: Arc::clone(&endpoints),
-        });
-        let capture_test_driver = BackdropMonitorCaptureTestDriver { endpoints };
-        (monitor, capture_test_driver)
+        let backdrop_monitor =
+            Self::with_capture_worker_launcher(CaptureWorkerLauncher::TestDriver {
+                endpoints: Arc::clone(&endpoints),
+            });
+        let backdrop_monitor_capture_test_driver = BackdropMonitorCaptureTestDriver { endpoints };
+        (backdrop_monitor, backdrop_monitor_capture_test_driver)
     }
 }
 
@@ -117,13 +118,13 @@ impl BackdropMonitorCaptureTestDriver {
     ) -> Result<OutstandingCaptureAttempt, CaptureTestDriverError> {
         monitor.window_identification_state = WindowIdentificationState::NotAttempted;
         monitor.request_capture_if_worker_available(Metrics::for_capture_test());
-        let request = self.take_capture_request()?;
+        let capture_request = self.take_capture_request()?;
         let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
             monitor.capture_attempt_progress
         else {
             return Err(CaptureTestDriverError::RequestUnavailable);
         };
-        if request.sequence != outstanding_capture_attempt.sequence {
+        if capture_request.sequence != outstanding_capture_attempt.sequence {
             return Err(CaptureTestDriverError::RequestUnavailable);
         }
         Ok(outstanding_capture_attempt)
@@ -151,10 +152,10 @@ impl BackdropMonitorCaptureTestDriver {
             },
         };
         monitor.request_capture_if_worker_available(Metrics::for_capture_test());
-        let request = self.take_capture_request()?;
+        let capture_request = self.take_capture_request()?;
         let capture_attempt_result = desktop::capture_attempt_for_test(
-            request.sequence,
-            request.window_target,
+            capture_request.sequence,
+            capture_request.window_target,
             capture_attempt_test_case,
         );
         self.send_capture_result(capture_attempt_result)

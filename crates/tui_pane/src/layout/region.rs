@@ -283,20 +283,20 @@ impl Region {
     /// hold their prior offset (re-clamped to the box's current range).
     #[must_use]
     pub fn place(&self, area: Rect, cursor: usize, prior_offsets: &[usize]) -> Vec<Placed> {
-        let mut walk = PlaceWalk {
+        let mut place_walk = PlaceWalk {
             cursor,
             prior_offsets,
             leaf_index: 0,
             selectable_start: 0,
             placed: Vec::new(),
         };
-        self.place_into(area, &mut walk);
-        walk.placed
+        self.place_into(area, &mut place_walk);
+        place_walk.placed
     }
 
     /// Resolve one node within its allotted rect, appending its leaves'
     /// [`Placed`] entries to the walk in flattened-leaf order.
-    fn place_into(&self, area: Rect, walk: &mut PlaceWalk<'_>) {
+    fn place_into(&self, area: Rect, place_walk: &mut PlaceWalk<'_>) {
         match self {
             // A `Region::Rows` box outside a `Region::Stack` (the root or a column
             // child): `Size::Fixed` and `Size::Cap` take their claimed height at the
@@ -311,18 +311,18 @@ impl Region {
                         height: outer,
                         ..area
                     },
-                    walk,
+                    place_walk,
                 );
             },
-            Self::Stack(children) => place_stack(children, area, walk),
+            Self::Stack(children) => place_stack(children, area, place_walk),
             Self::Columns(children) => {
                 let widths: Vec<Constraint> = children.iter().map(|(width, _)| *width).collect();
                 let column_areas = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints(widths)
                     .split(area);
-                for ((_, child), column_area) in children.iter().zip(column_areas.iter()) {
-                    child.place_into(*column_area, walk);
+                for ((_, child), column_rect) in children.iter().zip(column_areas.iter()) {
+                    child.place_into(*column_rect, place_walk);
                 }
             },
         }
@@ -343,7 +343,7 @@ struct PlaceWalk<'a> {
 /// Lay out one stack's children top to bottom: every `Fixed` rows box takes
 /// its exact outer height, every `Cap` rows box its clamped height, and the
 /// one child that fills takes the remainder.
-fn place_stack(children: &[Region], area: Rect, walk: &mut PlaceWalk<'_>) {
+fn place_stack(children: &[Region], area: Rect, place_walk: &mut PlaceWalk<'_>) {
     debug_assert_eq!(
         children.iter().filter(|child| child.fills_stack()).count(),
         1,
@@ -364,15 +364,15 @@ fn place_stack(children: &[Region], area: Rect, walk: &mut PlaceWalk<'_>) {
         // Clamp `outer` to the room left in `area` so a too-short area can't push
         // later boxes off-screen; the trailing boxes shrink to nothing instead.
         let outer = natural.min(area.bottom().saturating_sub(y));
-        let child_area = Rect {
+        let child_rect = Rect {
             x: area.x,
             y,
             width: area.width,
             height: outer,
         };
         match child {
-            Region::Rows(rows) => place_leaf(*rows, child_area, walk),
-            node => node.place_into(child_area, walk),
+            Region::Rows(rows) => place_leaf(*rows, child_rect, place_walk),
+            node => node.place_into(child_rect, place_walk),
         }
         y = y.saturating_add(outer);
     }
@@ -381,14 +381,14 @@ fn place_stack(children: &[Region], area: Rect, walk: &mut PlaceWalk<'_>) {
 /// Resolve one leaf rows box within its exact outer rect: split off the
 /// chrome rows at the top and the footer rows at the bottom, compute the
 /// content rect between, and record its scroll offset.
-fn place_leaf(rows: Rows, area: Rect, walk: &mut PlaceWalk<'_>) {
+fn place_leaf(rows: Rows, area: Rect, place_walk: &mut PlaceWalk<'_>) {
     let chrome_height = rows.chrome.min(area.height);
     let footer_height = rows.footer.min(area.height.saturating_sub(chrome_height));
     let content_height = area
         .height
         .saturating_sub(chrome_height)
         .saturating_sub(footer_height);
-    let chrome = Rect {
+    let chrome_rect = Rect {
         height: chrome_height,
         ..area
     };
@@ -404,23 +404,25 @@ fn place_leaf(rows: Rows, area: Rect, walk: &mut PlaceWalk<'_>) {
     };
     let scroll_offset = box_scroll_offset(
         rows,
-        walk.cursor
-            .checked_sub(walk.selectable_start)
+        place_walk
+            .cursor
+            .checked_sub(place_walk.selectable_start)
             .filter(|local| *local < rows.count),
         usize::from(content_height),
-        walk.prior_offsets
-            .get(walk.leaf_index)
+        place_walk
+            .prior_offsets
+            .get(place_walk.leaf_index)
             .copied()
             .unwrap_or(0),
     );
-    walk.placed.push(Placed {
-        chrome,
+    place_walk.placed.push(Placed {
+        chrome: chrome_rect,
         content,
         footer,
         scroll_offset,
     });
-    walk.leaf_index += 1;
-    walk.selectable_start += rows.count;
+    place_walk.leaf_index += 1;
+    place_walk.selectable_start += rows.count;
 }
 
 /// Scroll offset for one box this frame. A `Fixed` box never scrolls. A `Fill`
@@ -506,19 +508,19 @@ mod tests {
 
     #[test]
     fn locate_maps_the_cursor_to_box_and_row() {
-        let tree = cpu_tree(8);
+        let region = cpu_tree(8);
         // `tree.locate(0)` selects the aggregate (box 0, row 0).
-        assert_eq!(tree.locate(0), Some((0, 0)));
+        assert_eq!(region.locate(0), Some((0, 0)));
         // `tree.locate(1)` and `tree.locate(8)` select the first and last core (box 1).
-        assert_eq!(tree.locate(1), Some((1, 0)));
-        assert_eq!(tree.locate(8), Some((1, 7)));
+        assert_eq!(region.locate(1), Some((1, 0)));
+        assert_eq!(region.locate(8), Some((1, 7)));
         // `tree.locate(9)` through `tree.locate(11)` address breakdown System/User/Idle (box 2).
-        assert_eq!(tree.locate(9), Some((2, 0)));
-        assert_eq!(tree.locate(11), Some((2, 2)));
+        assert_eq!(region.locate(9), Some((2, 0)));
+        assert_eq!(region.locate(11), Some((2, 2)));
         // `tree.locate(12)` selects the GPU (box 3).
-        assert_eq!(tree.locate(12), Some((3, 0)));
+        assert_eq!(region.locate(12), Some((3, 0)));
         // `tree.locate(13)` is past the end.
-        assert_eq!(tree.locate(13), None);
+        assert_eq!(region.locate(13), None);
     }
 
     #[test]
@@ -565,8 +567,8 @@ mod tests {
         // the band holds its prior offset, clamped to its last page (15 - 3 = 12).
         let placed = cpu_tree(15).place(inner(10), 0, &[0, 7, 0, 0]);
         assert_eq!(placed[1].scroll_offset, 7);
-        let pinned = cpu_tree(15).place(inner(10), 0, &[0, 20, 0, 0]);
-        assert_eq!(pinned[1].scroll_offset, 12);
+        let clamped_placed = cpu_tree(15).place(inner(10), 0, &[0, 20, 0, 0]);
+        assert_eq!(clamped_placed[1].scroll_offset, 12);
     }
 
     #[test]
@@ -581,13 +583,13 @@ mod tests {
 
     #[test]
     fn which_box_holds_the_highlight_at_box_boundaries() {
-        let tree = cpu_tree(8);
+        let region = cpu_tree(8);
         // `tree.locate` checks the last aggregate row, first core,
         // last core, and first breakdown row.
-        assert_eq!(tree.locate(0).map(|(box_index, _)| box_index), Some(0));
-        assert_eq!(tree.locate(1).map(|(box_index, _)| box_index), Some(1));
-        assert_eq!(tree.locate(8).map(|(box_index, _)| box_index), Some(1));
-        assert_eq!(tree.locate(9).map(|(box_index, _)| box_index), Some(2));
+        assert_eq!(region.locate(0).map(|(box_index, _)| box_index), Some(0));
+        assert_eq!(region.locate(1).map(|(box_index, _)| box_index), Some(1));
+        assert_eq!(region.locate(8).map(|(box_index, _)| box_index), Some(1));
+        assert_eq!(region.locate(9).map(|(box_index, _)| box_index), Some(2));
     }
 
     #[test]
@@ -601,19 +603,19 @@ mod tests {
 
     #[test]
     fn columns_flatten_left_column_before_right() {
-        let tree = detail_tree();
+        let region = detail_tree();
         // `detail_tree().total_selectable()` counts 1 description, 6 metadata,
         // and (3 + 5 + 2) right-column rows.
-        assert_eq!(tree.total_selectable(), 17);
+        assert_eq!(region.total_selectable(), 17);
         // `tree.locate` walks the description, then the left column's rows, then the
         // right column's boxes top to bottom.
-        assert_eq!(tree.locate(0), Some((0, 0)));
-        assert_eq!(tree.locate(1), Some((1, 0)));
-        assert_eq!(tree.locate(6), Some((1, 5)));
-        assert_eq!(tree.locate(7), Some((2, 0)));
-        assert_eq!(tree.locate(10), Some((3, 0)));
-        assert_eq!(tree.locate(15), Some((4, 0)));
-        assert_eq!(tree.locate(17), None);
+        assert_eq!(region.locate(0), Some((0, 0)));
+        assert_eq!(region.locate(1), Some((1, 0)));
+        assert_eq!(region.locate(6), Some((1, 5)));
+        assert_eq!(region.locate(7), Some((2, 0)));
+        assert_eq!(region.locate(10), Some((3, 0)));
+        assert_eq!(region.locate(15), Some((4, 0)));
+        assert_eq!(region.locate(17), None);
     }
 
     #[test]
@@ -630,9 +632,9 @@ mod tests {
         let placed = detail_tree().place(inner(20), 0, &[0; 5]);
         // `Constraint::Min(8)` + `Constraint::Length(10)` over a 20-wide area: the
         // left column takes the 10 columns the fixed right column leaves.
-        let metadata = placed[1];
-        assert_eq!(metadata.chrome, Rect::new(0, 4, 10, 1));
-        assert_eq!(metadata.content, Rect::new(0, 5, 10, 15));
+        let metadata_placed = placed[1];
+        assert_eq!(metadata_placed.chrome, Rect::new(0, 4, 10, 1));
+        assert_eq!(metadata_placed.content, Rect::new(0, 5, 10, 15));
         // `placed[2]` starts the right column where the left ends, with its first
         // box at the columns node's top.
         assert_eq!(placed[2].chrome, Rect::new(10, 4, 10, 1));
@@ -670,8 +672,8 @@ mod tests {
         // box holds its prior offset, clamped to its scroll range (5 rows - 2 visible).
         let placed = detail_tree().place(inner(16), 0, &[0, 0, 0, 1, 0]);
         assert_eq!(placed[3].scroll_offset, 1);
-        let pinned = detail_tree().place(inner(16), 0, &[0, 0, 0, 9, 0]);
-        assert_eq!(pinned[3].scroll_offset, 3);
+        let clamped_placed = detail_tree().place(inner(16), 0, &[0, 0, 0, 9, 0]);
+        assert_eq!(clamped_placed[3].scroll_offset, 3);
     }
 
     /// A Targets-like tree: a scrolling table (one header chrome row) above a
@@ -737,8 +739,8 @@ mod tests {
         assert_eq!(placed[1].chrome.y, 8);
         // `Region::place` scrolls content rows only — the footer is chrome, so
         // the cursor on the last row scrolls to 10 - 6 visible = 4.
-        let scrolled = tree.place(inner(12), 9, &[0, 0]);
-        assert_eq!(scrolled[0].scroll_offset, 4);
+        let scrolled_placed = tree.place(inner(12), 9, &[0, 0]);
+        assert_eq!(scrolled_placed[0].scroll_offset, 4);
     }
 
     #[test]

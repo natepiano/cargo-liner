@@ -11,6 +11,7 @@ use crate::constants::NO_MORE_RUNS_MARKER;
 use crate::http::HttpClient;
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
+use crate::project::CiPagination;
 
 /// What a CI fetch function returns. Forces callers to handle the
 /// "network failed but cache exists" case explicitly -- the compiler won't
@@ -44,9 +45,10 @@ pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str) -> AbsolutePath {
     ci_cache_dir(owner, repo)
 }
 
-/// Check if the "no more runs" marker exists for a repo.
-pub(crate) fn is_exhausted(owner: &str, repo: &str) -> bool {
-    ci_cache_dir(owner, repo).join(NO_MORE_RUNS_MARKER).exists()
+/// `pagination` returns `CiPagination::Exhausted` when the repo's "no more runs"
+/// marker exists, and `CiPagination::HasMore` otherwise.
+pub(crate) fn pagination(owner: &str, repo: &str) -> CiPagination {
+    crate::project::CiPagination::from(ci_cache_dir(owner, repo).join(NO_MORE_RUNS_MARKER).exists())
 }
 
 /// Save the "no more runs" marker for a repo.

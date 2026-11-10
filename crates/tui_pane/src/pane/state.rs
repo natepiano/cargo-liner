@@ -199,30 +199,30 @@ mod tests {
 
     #[test]
     fn selection_patch_preserves_existing_foreground() {
-        let base = Style::default().fg(Color::Red);
-        let patched = PaneSelectionState::Active.patch(base, ColorMode::Colored);
+        let base_style = Style::default().fg(Color::Red);
+        let patched_style = PaneSelectionState::Active.patch(base_style, ColorMode::Colored);
 
-        assert_eq!(patched.fg, Some(Color::Red));
-        assert_eq!(patched.bg, Some(active_focus_color()));
-        assert_eq!(patched.add_modifier, Modifier::default());
+        assert_eq!(patched_style.fg, Some(Color::Red));
+        assert_eq!(patched_style.bg, Some(active_focus_color()));
+        assert_eq!(patched_style.add_modifier, Modifier::default());
     }
 
     #[test]
     fn remembered_selection_patch_preserves_existing_foreground() {
-        let base = Style::default().fg(Color::Green);
-        let patched = PaneSelectionState::Remembered.patch(base, ColorMode::Colored);
+        let base_style = Style::default().fg(Color::Green);
+        let patched_style = PaneSelectionState::Remembered.patch(base_style, ColorMode::Colored);
 
-        assert_eq!(patched.fg, Some(Color::Green));
-        assert_eq!(patched.bg, Some(remembered_focus_color()));
+        assert_eq!(patched_style.fg, Some(Color::Green));
+        assert_eq!(patched_style.bg, Some(remembered_focus_color()));
     }
 
     #[test]
     fn hovered_selection_patch_preserves_existing_foreground() {
-        let base = Style::default().fg(Color::Blue);
-        let patched = PaneSelectionState::Hovered.patch(base, ColorMode::Colored);
+        let base_style = Style::default().fg(Color::Blue);
+        let patched_style = PaneSelectionState::Hovered.patch(base_style, ColorMode::Colored);
 
-        assert_eq!(patched.fg, Some(Color::Blue));
-        assert_eq!(patched.bg, Some(hover_focus_color()));
+        assert_eq!(patched_style.fg, Some(Color::Blue));
+        assert_eq!(patched_style.bg, Some(hover_focus_color()));
     }
 
     #[test]

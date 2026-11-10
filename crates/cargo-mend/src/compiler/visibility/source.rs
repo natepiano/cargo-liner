@@ -108,8 +108,8 @@ pub(super) fn highlight_span(visibility_span: Span, ident_span: Option<Span>) ->
     ident_span.map_or(visibility_span, |ident_span| visibility_span.to(ident_span))
 }
 
-pub(super) const fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {
-    match kind {
+pub(super) const fn item_kind_label(item_kind: ItemKind<'_>) -> Option<&'static str> {
+    match item_kind {
         ItemKind::Const(..) => Some("const"),
         ItemKind::Enum(..) => Some("enum"),
         ItemKind::Fn { .. } => Some("fn"),
@@ -128,16 +128,18 @@ pub(super) const fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> 
     }
 }
 
-pub(super) const fn impl_item_kind_label(kind: ImplItemKind<'_>) -> &'static str {
-    match kind {
+pub(super) const fn impl_item_kind_label(impl_item_kind: ImplItemKind<'_>) -> &'static str {
+    match impl_item_kind {
         ImplItemKind::Const(..) => "const",
         ImplItemKind::Fn(..) => "fn",
         ImplItemKind::Type(..) => "type",
     }
 }
 
-pub(super) const fn foreign_item_kind_label(kind: ForeignItemKind<'_>) -> &'static str {
-    match kind {
+pub(super) const fn foreign_item_kind_label(
+    foreign_item_kind: ForeignItemKind<'_>,
+) -> &'static str {
+    match foreign_item_kind {
         ForeignItemKind::Fn(..) => "fn",
         ForeignItemKind::Static(..) => "static",
         ForeignItemKind::Type => "type",
@@ -146,8 +148,8 @@ pub(super) const fn foreign_item_kind_label(kind: ForeignItemKind<'_>) -> &'stat
 
 pub(super) fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
     let source_map = tcx.sess.source_map();
-    let file = source_map.lookup_char_pos(span.lo()).file;
-    real_file_path_from_name(file.name.clone())
+    let source_file = source_map.lookup_char_pos(span.lo()).file;
+    real_file_path_from_name(source_file.name.clone())
 }
 
 pub(super) fn use_item_contains_glob(tcx: TyCtxt<'_>, span: Span) -> Result<bool> {
@@ -203,9 +205,9 @@ fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDis
     })
 }
 
-fn real_file_path_from_name(name: FileName) -> Option<PathBuf> {
-    match name {
-        FileName::Real(real) => real
+fn real_file_path_from_name(file_name: FileName) -> Option<PathBuf> {
+    match file_name {
+        FileName::Real(real_file_name) => real_file_name
             .local_path()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
         _ => None,

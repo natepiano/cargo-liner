@@ -352,10 +352,23 @@ pub(in crate::tui) struct CiFetchTracker {
     inner: HashSet<AbsolutePath>,
 }
 
+/// `CiFetchTracker::complete` distinguishes a removed request from an untracked path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::tui) enum CiFetchCompletion {
+    Completed,
+    Untracked,
+}
+
 impl CiFetchTracker {
     pub(in crate::tui) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub(in crate::tui) fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
+    pub(in crate::tui) fn complete(&mut self, path: &Path) -> CiFetchCompletion {
+        if self.inner.remove(path) {
+            CiFetchCompletion::Completed
+        } else {
+            CiFetchCompletion::Untracked
+        }
+    }
 
     pub(in crate::tui) fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
 

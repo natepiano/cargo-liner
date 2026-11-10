@@ -28,6 +28,7 @@ use super::constants::CRATES_IO_PRE_LABEL;
 use super::constants::CRATES_IO_RC_LABEL;
 use super::constants::CRATES_IO_VERSION_LABEL;
 use super::git;
+use super::git::GitDescription;
 use super::git_data;
 use super::git_data::GitData;
 use super::git_data::GitDetailFields;
@@ -182,7 +183,12 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     let package_total =
         package::package_content_height(package_desc.max(synced_desc), package_lower)
             .saturating_add(error_height);
-    let git_total = git::git_content_height(git_desc.max(synced_desc), git_desc > 0, git_lower);
+    let description = if git_desc > 0 {
+        GitDescription::Present
+    } else {
+        GitDescription::Absent
+    };
+    let git_total = git::git_content_height(git_desc.max(synced_desc), description, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
 }
@@ -213,10 +219,9 @@ enum WorktreeRootDisplay {
 
 impl From<&RootItem> for WorktreeRootDisplay {
     fn from(item: &RootItem) -> Self {
-        if git_data::is_worktree_group(item) {
-            Self::Grouped
-        } else {
-            Self::Single
+        match item {
+            RootItem::Worktrees(group) if group.renders_as_group() => Self::Grouped,
+            RootItem::Worktrees(_) | RootItem::Rust(_) | RootItem::NonRust(_) => Self::Single,
         }
     }
 }

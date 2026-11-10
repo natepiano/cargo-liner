@@ -132,9 +132,9 @@ pub fn dispatch_keymap_action<Ctx: KeymapEditContext>(
 pub fn handle_keymap_navigation_key<Ctx: KeymapEditContext>(
     ctx: &mut Ctx,
     keymap: &Keymap<Ctx>,
-    code: KeyCode,
+    key_code: KeyCode,
 ) {
-    match code {
+    match key_code {
         KeyCode::Enter => {
             ctx.clear_keymap_inline_error();
             ctx.framework_mut().keymap_pane.enter_awaiting();
@@ -145,7 +145,7 @@ pub fn handle_keymap_navigation_key<Ctx: KeymapEditContext>(
         },
         _ => {
             let viewport = ctx.framework_mut().keymap_pane.viewport_mut();
-            match code {
+            match key_code {
                 KeyCode::Up => viewport.up(),
                 KeyCode::Down => viewport.down(),
                 KeyCode::Home => viewport.home(),
@@ -161,9 +161,9 @@ pub fn handle_keymap_navigation_key<Ctx: KeymapEditContext>(
 pub fn handle_keymap_capture_command<Ctx: KeymapEditContext>(
     ctx: &mut Ctx,
     keymap: &Keymap<Ctx>,
-    command: KeymapCaptureCommand,
+    keymap_capture_command: KeymapCaptureCommand,
 ) {
-    match command {
+    match keymap_capture_command {
         KeymapCaptureCommand::None => (),
         KeymapCaptureCommand::Cancel | KeymapCaptureCommand::ClearConflict => {
             ctx.clear_keymap_inline_error();
@@ -176,10 +176,12 @@ pub fn handle_keymap_capture_command<Ctx: KeymapEditContext>(
 /// overlay, by opening the full editor on the matching row.
 pub fn edit_selected_global_shortcut<Ctx: KeymapEditContext>(ctx: &mut Ctx, keymap: &Keymap<Ctx>) {
     let rows = keymap.global_shortcut_rows();
-    let Some(selected) = rows.get(ctx.framework().global_shortcuts_pane.viewport().pos()) else {
+    let Some(global_shortcut_row) =
+        rows.get(ctx.framework().global_shortcuts_pane.viewport().pos())
+    else {
         return;
     };
-    let target = (selected.scope, selected.action);
+    let target = (global_shortcut_row.scope, global_shortcut_row.action);
     let Some(index) = selectable_rows(ctx, keymap)
         .iter()
         .position(|row| (row.scope, row.action) == target)
@@ -213,12 +215,12 @@ pub fn keymap_toml<Ctx: KeymapEditContext>(ctx: &Ctx, keymap: &Keymap<Ctx>) -> S
 /// apply it or park the overlay on the conflict.
 fn capture<Ctx: KeymapEditContext>(ctx: &mut Ctx, keymap: &Keymap<Ctx>, bind: KeyBind) {
     let rows = KeymapPane::ordered_help_rows(ctx, keymap);
-    let selected = rows
+    let selected_keymap_help_row = rows
         .iter()
         .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
         .nth(ctx.framework().keymap_pane.viewport().pos())
         .cloned();
-    let Some(row) = selected else {
+    let Some(row) = selected_keymap_help_row else {
         return;
     };
 
@@ -228,12 +230,12 @@ fn capture<Ctx: KeymapEditContext>(ctx: &mut Ctx, keymap: &Keymap<Ctx>, bind: Ke
         return;
     }
 
-    let pending = PendingRebind {
+    let pending_rebind = PendingRebind {
         scope:  row.scope,
         action: row.action,
         bind:   bind.into(),
     };
-    if let Err(message) = write_keymap(ctx, keymap, Some(&pending)) {
+    if let Err(message) = write_keymap(ctx, keymap, Some(&pending_rebind)) {
         ctx.set_keymap_inline_error(message);
         ctx.framework_mut().keymap_pane.enter_conflict();
         return;
@@ -249,7 +251,7 @@ fn capture<Ctx: KeymapEditContext>(ctx: &mut Ctx, keymap: &Keymap<Ctx>, bind: Ke
 /// within the row's own scope.
 fn rejection<Ctx: KeymapEditContext>(
     ctx: &Ctx,
-    rows: &[KeymapHelpRow],
+    keymap_help_rows: &[KeymapHelpRow],
     row: &KeymapHelpRow,
     bind: KeyBind,
 ) -> Option<String> {
@@ -260,25 +262,37 @@ fn rejection<Ctx: KeymapEditContext>(
         return Some(message);
     }
     let cross_scope = if row.scope == GLOBAL_SCOPE {
-        conflict(rows, row, bind, |other| other.scope != GLOBAL_SCOPE)
+        conflict(keymap_help_rows, row, bind, |other_keymap_help_row| {
+            other_keymap_help_row.scope != GLOBAL_SCOPE
+        })
     } else {
-        conflict(rows, row, bind, |other| other.scope == GLOBAL_SCOPE)
+        conflict(keymap_help_rows, row, bind, |other_keymap_help_row| {
+            other_keymap_help_row.scope == GLOBAL_SCOPE
+        })
     };
-    cross_scope.or_else(|| conflict(rows, row, bind, |other| other.scope == row.scope))
+    cross_scope.or_else(|| {
+        conflict(keymap_help_rows, row, bind, |other_keymap_help_row| {
+            other_keymap_help_row.scope == row.scope
+        })
+    })
 }
 
 /// The first row matching `predicate` that already holds `bind`.
 fn conflict(
-    rows: &[KeymapHelpRow],
-    current: &KeymapHelpRow,
+    keymap_help_rows: &[KeymapHelpRow],
+    current_keymap_help_row: &KeymapHelpRow,
     bind: KeyBind,
     predicate: impl Fn(&KeymapHelpRow) -> bool,
 ) -> Option<String> {
-    rows.iter()
+    keymap_help_rows
+        .iter()
         .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
         .filter(|row| predicate(row))
         .filter(|row| row.bind.as_ref().and_then(KeySequence::single_key) == Some(bind))
-        .find(|row| row.scope != current.scope || row.action != current.action)
+        .find(|row| {
+            row.scope != current_keymap_help_row.scope
+                || row.action != current_keymap_help_row.action
+        })
         .map(|row| {
             format!(
                 "\"{}\" used by {} → {}",
@@ -366,18 +380,18 @@ fn binds_for<Ctx: KeymapEditContext>(
     scope: &str,
     action_key: &str,
 ) -> Vec<KeySequence> {
-    let binds = match scope {
+    let key_sequences = match scope {
         GLOBAL_SCOPE => global_binds::<Ctx>(keymap, action_key),
         NAVIGATION_SCOPE => NavAction::from_toml_key(action_key)
             .zip(keymap.navigation())
-            .map(|(action, nav)| nav.display_keys_for(action).to_vec())
+            .map(|(action, scope_map)| scope_map.display_keys_for(action).to_vec())
             .unwrap_or_default(),
         OVERLAY_SCOPE => OverlayAction::from_toml_key(action_key)
             .map(|action| keymap.overlay().display_keys_for(action).to_vec())
             .unwrap_or_default(),
         _ => pane_binds(ctx, keymap, scope, action_key),
     };
-    binds
+    key_sequences
         .into_iter()
         .filter(|bind| !ctx.keymap_generated_bind(scope, action_key, bind))
         .collect()
@@ -419,12 +433,12 @@ fn pane_binds<Ctx: KeymapEditContext>(
 
 /// Render binds as a TOML value: a bare string for one, an array for
 /// several, and an empty string for an action left unbound.
-fn toml_value(binds: &[KeySequence]) -> String {
-    match binds {
+fn toml_value(key_sequences: &[KeySequence]) -> String {
+    match key_sequences {
         [] => "\"\"".to_string(),
         [bind] => format!("\"{}\"", bind.display()),
         _ => {
-            let values = binds
+            let values = key_sequences
                 .iter()
                 .map(|bind| format!("\"{}\"", bind.display()))
                 .collect::<Vec<_>>()
@@ -538,26 +552,35 @@ mod tests {
             .build()
             .expect("keymap with presentation policy must build");
         let compact_rows = keymap.global_shortcut_rows();
-        let expected = compact_rows
+        let expected_global_shortcut_row = compact_rows
             .first()
             .expect("the compact overlay must retain a first row");
-        assert_eq!(expected.action, "prev_pane");
+        assert_eq!(expected_global_shortcut_row.action, "prev_pane");
 
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework:    Framework::new(FocusedPane::App(TestPaneId::Main)),
             inline_error: None,
         };
-        super::edit_selected_global_shortcut(&mut app, &keymap);
+        super::edit_selected_global_shortcut(&mut test_app, &keymap);
 
-        let editor_rows = super::selectable_rows(&app, &keymap);
-        let selected = editor_rows
-            .get(app.framework().keymap_pane.viewport().pos())
+        let editor_rows = super::selectable_rows(&test_app, &keymap);
+        let selected_keymap_help_row = editor_rows
+            .get(test_app.framework().keymap_pane.viewport().pos())
             .expect("the full editor must select the compact row");
         assert_eq!(
-            (selected.scope, selected.action),
-            (expected.scope, expected.action)
+            (
+                selected_keymap_help_row.scope,
+                selected_keymap_help_row.action
+            ),
+            (
+                expected_global_shortcut_row.scope,
+                expected_global_shortcut_row.action
+            )
         );
-        assert_eq!(app.framework().overlay(), Some(FrameworkOverlayId::Keymap));
-        assert!(app.framework().keymap_pane.is_awaiting());
+        assert_eq!(
+            test_app.framework().overlay(),
+            Some(FrameworkOverlayId::Keymap)
+        );
+        assert!(test_app.framework().keymap_pane.is_awaiting());
     }
 }

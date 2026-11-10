@@ -118,8 +118,8 @@ impl KeymapPane {
     /// `Browse` from any state. Capture-conflict resolution
     /// (`Awaiting → Conflict`) is driven by the embedding application's
     /// collision check.
-    pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
-        if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
+    pub fn handle_key(&mut self, key_bind: &KeyBind) -> KeyOutcome {
+        if let Some(action) = Self::defaults().into_scope_map().action_for(key_bind) {
             match action {
                 OverlayAction::StartEdit => self.enter_awaiting(),
                 OverlayAction::Cancel => self.enter_browse(),
@@ -149,16 +149,16 @@ impl KeymapPane {
     }
 
     /// Consume one text-input key while the pane is capturing a replacement binding.
-    pub fn handle_capture_key(&mut self, bind: KeyBind) -> KeymapCaptureCommand {
-        if bind.code == KeyCode::Esc {
+    pub fn handle_capture_key(&mut self, key_bind: KeyBind) -> KeymapCaptureCommand {
+        if key_bind.code == KeyCode::Esc {
             self.enter_browse();
             return KeymapCaptureCommand::Cancel;
         }
-        if bind.code == KeyCode::Enter && matches!(self.edit_state, EditState::Conflict) {
+        if key_bind.code == KeyCode::Enter && matches!(self.edit_state, EditState::Conflict) {
             self.enter_awaiting();
             return KeymapCaptureCommand::ClearConflict;
         }
-        KeymapCaptureCommand::Captured(bind)
+        KeymapCaptureCommand::Captured(key_bind)
     }
 
     /// Borrow the framework-owned viewport state.
@@ -170,8 +170,8 @@ impl KeymapPane {
 
     /// Replace the map of where each selectable row was drawn, used for
     /// mouse hit-testing.
-    pub(super) fn replace_row_spans(&mut self, spans: Vec<KeymapRowSpan>) {
-        self.row_spans = spans;
+    pub(super) fn replace_row_spans(&mut self, keymap_row_spans: Vec<KeymapRowSpan>) {
+        self.row_spans = keymap_row_spans;
     }
 
     /// Selectable row rendered at `line`, if the line is clickable.
@@ -182,8 +182,8 @@ impl KeymapPane {
     pub fn line_target(&self, line: usize) -> Option<usize> {
         self.row_spans
             .iter()
-            .find(|span| span.line == line)
-            .map(|span| span.selection)
+            .find(|keymap_row_span| keymap_row_span.line == line)
+            .map(|keymap_row_span| keymap_row_span.selection)
     }
 
     /// First rendered line for the given selectable row, if any.
@@ -191,8 +191,8 @@ impl KeymapPane {
     pub fn line_for_selection(&self, selection: usize) -> Option<usize> {
         self.row_spans
             .iter()
-            .find(|span| span.selection == selection)
-            .map(|span| span.line)
+            .find(|keymap_row_span| keymap_row_span.selection == selection)
+            .map(|keymap_row_span| keymap_row_span.line)
     }
 
     /// Selectable row at screen `pos`, or `None` if `pos` lies
@@ -205,20 +205,21 @@ impl KeymapPane {
     /// whichever column was clicked.
     #[must_use]
     pub fn row_at(&self, pos: Position) -> Option<usize> {
-        let inner = self.viewport.content_area();
-        if inner.width == 0 || inner.height == 0 || !inner.contains(pos) {
+        let content_rect = self.viewport.content_area();
+        if content_rect.width == 0 || content_rect.height == 0 || !content_rect.contains(pos) {
             return None;
         }
-        let line = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
-        let across = pos.x.saturating_sub(inner.x);
+        let line =
+            usize::from(pos.y.saturating_sub(content_rect.y)) + self.viewport.scroll_offset();
+        let across = pos.x.saturating_sub(content_rect.x);
         self.row_spans
             .iter()
-            .find(|span| {
-                span.line == line
-                    && across >= span.start
-                    && across < span.start.saturating_add(span.width)
+            .find(|keymap_row_span| {
+                keymap_row_span.line == line
+                    && across >= keymap_row_span.start
+                    && across < keymap_row_span.start.saturating_add(keymap_row_span.width)
             })
-            .map(|span| span.selection)
+            .map(|keymap_row_span| keymap_row_span.selection)
     }
 
     /// Current input mode for the overlay.
@@ -333,8 +334,8 @@ mod tests {
     #[test]
     fn new_starts_in_browse_mode() {
         let pane = KeymapPane::new();
-        let app = fresh_app();
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        let test_app = fresh_app();
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
@@ -368,25 +369,25 @@ mod tests {
     #[test]
     fn enter_in_browse_transitions_to_awaiting() {
         let mut pane = KeymapPane::new();
-        let app = fresh_app();
+        let test_app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Enter.into());
-        assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
+        assert!(matches!(pane.mode(&test_app), Mode::TextInput(_)));
     }
 
     #[test]
     fn esc_in_awaiting_returns_to_browse() {
         let mut pane = KeymapPane::for_test_awaiting(None);
-        let app = fresh_app();
+        let test_app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Esc.into());
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
     fn esc_in_conflict_returns_to_browse() {
         let mut pane = KeymapPane::for_test_conflict(None);
-        let app = fresh_app();
+        let test_app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Esc.into());
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
@@ -402,26 +403,26 @@ mod tests {
     #[test]
     fn handle_capture_esc_cancels_and_returns_to_browse() {
         let mut pane = KeymapPane::for_test_awaiting(None);
-        let app = fresh_app();
+        let test_app = fresh_app();
 
         assert_eq!(
             pane.handle_capture_key(KeyCode::Esc.into()),
             KeymapCaptureCommand::Cancel,
         );
 
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
     fn handle_capture_enter_clears_conflict() {
         let mut pane = KeymapPane::for_test_conflict(None);
-        let app = fresh_app();
+        let test_app = fresh_app();
 
         assert_eq!(
             pane.handle_capture_key(KeyCode::Enter.into()),
             KeymapCaptureCommand::ClearConflict,
         );
 
-        assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
+        assert!(matches!(pane.mode(&test_app), Mode::TextInput(_)));
     }
 }

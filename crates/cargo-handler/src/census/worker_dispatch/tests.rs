@@ -1,4 +1,4 @@
-//! Dispatch identities come from fixture rosters and fold only inside one tile.
+//! Staff identities let dispatches fold only inside one tile.
 
 #![expect(
     clippy::expect_used,
@@ -56,11 +56,12 @@ fn captured_tile_detached_dispatch_folds_into_its_codex_pane()
             "name":run["label"], "started":100}]
     }))?;
     director.children[0].dispatch = WorkerDispatch::Worker(ResolvedWorkerDispatch {
-        seat:       "impl".into(),
-        identity:   WorkerIdentity::CodexThread(id.to_owned()),
-        job:        JobText::Recorded(run["label"].as_str().ok_or("captured run label")?.into()),
-        short_seat: "impl".into(),
-        role:       DispatchRole::Worker(WorkerRole::Impl),
+        seat:         "impl".into(),
+        staff_member: DispatchStaffMembership::Unlisted,
+        identity:     WorkerIdentity::CodexThread(id.to_owned()),
+        job:          JobText::Recorded(run["label"].as_str().ok_or("captured run label")?.into()),
+        short_seat:   "impl".into(),
+        role:         DispatchRole::Worker(WorkerRole::Impl),
     });
     let pane: AgentRow = serde_json::from_value(serde_json::json!({
         "agent":"codex", "pid":captured["pane_pid"], "name":"impl", "started":100,
@@ -84,17 +85,16 @@ fn captured_tile_detached_dispatch_folds_into_its_codex_pane()
     Ok(())
 }
 
-/// A real roster file in an isolated session directory.
-fn roster_fixture() -> TempDir {
+/// A staff file and launcher claims in an isolated unit directory.
+fn worker_fixture() -> TempDir {
     let directory = TempDir::new().expect("temporary session directory");
-    fs::write(
-        directory.path().join("mesh_roster.json"),
-        r#"{
-        "cargo-liner-handler-enh-impl7": {"thread_id":"worker-thread", "launcher_pid":701},
-        "cargo-liner-handler-enh-test2": {"thread_id":"other-thread", "launcher_pid":702}
-    }"#,
-    )
-    .expect("fixture roster writes");
+    write_worker_fixture(
+        directory.path(),
+        &serde_json::json!({
+            "cargo-liner-handler-enh-impl7": {"current_session":"worker-thread", "launcher_pid":701, "role":"impl"},
+            "cargo-liner-handler-enh-test2": {"current_session":"other-thread", "launcher_pid":702, "role":"test"}
+        }),
+    );
     directory
 }
 
@@ -107,14 +107,14 @@ fn command(directory: &Path, flags: &str) -> String {
 }
 
 #[test]
-fn explicit_dispatch_seat_resolves_from_the_fixture_roster() {
-    let directory = roster_fixture();
+fn explicit_dispatch_seat_resolves_from_the_staff_snapshot() {
+    let directory = worker_fixture();
     let parsed = ParsedDispatch::parse(&command(
         directory.path(),
         &format!("--phase 1 --to {SEAT}"),
     ))
     .expect("literal dispatch parses");
-    let roster = WorkerRoster::read(
+    let roster = FixtureWorkers::read(
         parsed
             .session_directory()
             .expect("recorded session directory"),
@@ -138,12 +138,13 @@ fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
         .prefix("handler-job-heading-")
         .tempdir_in(root.path())
         .expect("isolated worker session");
-    fs::write(
-        directory.path().join(ROSTER_FILE),
-        serde_json::json!({SEAT:{"thread_id":"worker-thread", "launcher_pid":701}}).to_string(),
-    )
-    .expect("worker roster writes");
-    let mut names = WorkerNames::default();
+    write_worker_fixture(
+        directory.path(),
+        &serde_json::json!({
+            SEAT: {"current_session":"worker-thread", "launcher_pid":701, "role":"impl"}
+        }),
+    );
+    let mut names = fixture_names(directory.path());
     let worktree = ThreadWorktree::Recorded("/fixture/cargo-liner-handler-enh".into());
     for (heading, job) in [
         (
@@ -183,7 +184,7 @@ fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
         let literal = command(directory.path(), &format!("--to {SEAT}")).replace(JOB, heading);
         let parsed = ParsedDispatch::parse(&literal).expect("heading job parses");
         let WorkerDispatch::Worker(dispatch) =
-            parsed.resolve(&WorkerRoster::read(directory.path()), 701)
+            parsed.resolve(&FixtureWorkers::read(directory.path()), 701)
         else {
             panic!("the heading dispatch resolves its worker");
         };
@@ -203,10 +204,10 @@ fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
 
 #[test]
 fn dispatch_without_to_selects_the_seat_by_its_launcher_pid() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let parsed = ParsedDispatch::parse(&command(directory.path(), "--phase 1"))
         .expect("new dispatch parses");
-    let roster = WorkerRoster::read(
+    let roster = FixtureWorkers::read(
         parsed
             .session_directory()
             .expect("recorded session directory"),
@@ -223,6 +224,112 @@ fn dispatch_without_to_selects_the_seat_by_its_launcher_pid() {
     assert_eq!(parsed.resolve(&roster, 999), WorkerDispatch::Plain);
 }
 
+struct NeighborUnitFixture {
+    root:     TempDir,
+    first:    PathBuf,
+    second:   PathBuf,
+    document: Value,
+}
+
+impl NeighborUnitFixture {
+    fn new() -> Self {
+        let root = tempfile::tempdir().expect("unit fixtures");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        for (directory, owner) in [(&first, "unit-a"), (&second, "unit-b")] {
+            fs::create_dir(directory).expect("unit directory");
+            fs::write(
+                directory.join("progress_history_state.json"),
+                serde_json::json!({"owner_staff_id":owner}).to_string(),
+            )
+            .expect("unit owner");
+            fs::write(
+                directory.join("impl_claim_impl.json"),
+                serde_json::json!({"worker":"impl","pid":701}).to_string(),
+            )
+            .expect("unit claim");
+        }
+        let path = root.path().join("staff.json");
+        let document = serde_json::json!({"schema":2,"rows":[
+            {"id":"boss","kind":"showrunner","name":"boss","parent":null,"current_session":"boss"},
+            {"id":"unit-a","kind":"unit","name":"first","parent":"boss","current_session":"director-a"},
+            {"id":"unit-b","kind":"unit","name":"second","parent":"boss","current_session":"director-b"},
+            {"id":"worker-a","kind":"worker","name":"impl","parent":"unit-a","current_session":"thread-a","role":"impl"},
+            {"id":"worker-b","kind":"worker","name":"impl","parent":"unit-b","current_session":"thread-b","role":"review"}
+        ]});
+        fs::write(&path, document.to_string()).expect("shared staff file");
+        Self {
+            root,
+            first,
+            second,
+            document,
+        }
+    }
+}
+
+#[test]
+fn launcher_candidates_stay_in_their_unit_and_reuse_the_staff_snapshot() {
+    use crate::census::hierarchy::StaffFileReader;
+    let NeighborUnitFixture {
+        root,
+        first,
+        second,
+        mut document,
+    } = NeighborUnitFixture::new();
+    let path = root.path().join("staff.json");
+    let source = HierarchySource::File(path.to_string_lossy().into_owned());
+    let reader = StaffFileReader::default();
+    let staff = reader.roster(&source);
+    let mut names = WorkerNames::default();
+    names.set_staff(Arc::clone(&staff));
+    for (directory, id, role) in [
+        (&first, "thread-a", HierarchyRole::Impl),
+        (&second, "thread-b", HierarchyRole::Review),
+    ] {
+        for flags in ["--to impl", ""] {
+            let parsed = ParsedDispatch::parse(&command(directory, flags)).expect("unit launcher");
+            let WorkerDispatch::Worker(dispatch) = names.resolve_dispatch(&parsed, &[], 701) else {
+                panic!("the unit must select its own impl worker");
+            };
+            assert_eq!(dispatch.identity, WorkerIdentity::CodexThread(id.into()));
+            assert_eq!(dispatch.fallback(), RoleFallback::Worker(role));
+        }
+    }
+    assert_eq!(names.candidate_builds, 2);
+    names.set_staff(staff);
+    let parsed = ParsedDispatch::parse(&command(&first, "--to impl")).expect("first launcher");
+    assert!(matches!(
+        names.resolve_dispatch(&parsed, &[], 701),
+        WorkerDispatch::Worker(_)
+    ));
+    assert_eq!(names.candidate_builds, 2);
+    let prompt = format!("{JOB}\nBoard: {}/board", first.display());
+    let roots = SessionRoots::new([root.path().to_owned()]);
+    let WorkerDispatch::Worker(before) =
+        names.resolve("thread-a", &prompt, &ThreadWorktree::Unrecorded, &roots)
+    else {
+        panic!("checked worker before rename");
+    };
+    document["rows"][3]["name"] = serde_json::json!("renamed worker");
+    fs::write(&path, document.to_string()).expect("renamed staff member");
+    names.set_staff(reader.roster(&source));
+    let WorkerDispatch::Worker(after) =
+        names.resolve("thread-a", &prompt, &ThreadWorktree::Unrecorded, &roots)
+    else {
+        panic!("checked worker after rename");
+    };
+    assert_eq!(before.selection_key(), after.selection_key());
+    assert_eq!(after.selection_key(), "worker-a");
+    assert_eq!(after.seat(), "renamed worker");
+    let renamed =
+        ParsedDispatch::parse(&command(&first, "--to worker-a")).expect("stable staff selector");
+    assert!(matches!(
+        names.resolve_dispatch(&renamed, &[], 701),
+        WorkerDispatch::Worker(_)
+    ));
+    assert_eq!(names.candidate_builds, 3);
+}
+
 #[test]
 fn ordinary_or_ambiguous_commands_do_not_become_worker_dispatches() {
     for command in [
@@ -236,7 +343,7 @@ fn ordinary_or_ambiguous_commands_do_not_become_worker_dispatches() {
 
 #[test]
 fn command_continuations_keep_the_shell_row_beside_its_worker() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     for assignments in ["", "PLAN_DELEGATE_RESOLVES_ROUND=1 "] {
         let literal = format!(
             "{assignments}{}",
@@ -292,7 +399,7 @@ fn command_continuations_keep_the_shell_row_beside_its_worker() {
 
 #[test]
 fn leading_literal_assignments_fold_the_shell_into_its_worker() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--phase 1 --to {SEAT}"));
     for assignments in [
         "PLAN_DELEGATE_RESOLVES_ROUND=1",
@@ -347,7 +454,7 @@ fn leading_literal_assignments_fold_the_shell_into_its_worker() {
 
 #[test]
 fn job_arguments_with_equals_fold_with_or_without_leading_assignments() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--phase 1 --to {SEAT}"));
     for assignments in ["", "PLAN_DELEGATE_RESOLVES_ROUND=1 "] {
         for (job_word, job) in [("'cap=3 retries'", "cap=3 retries"), ("x=y", "x=y")] {
@@ -402,7 +509,7 @@ fn job_arguments_with_equals_fold_with_or_without_leading_assignments() {
 
 #[test]
 fn ansi_c_quoted_live_repair_jobs_fold_with_or_without_assignments() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let job = "Phase 69 repair round 3\nScreen Capture status card fits its text";
     for assignments in ["", "PLAN_DELEGATE_RESOLVES_ROUND=1 "] {
         let literal = format!(
@@ -475,7 +582,7 @@ fn ansi_c_quoted_live_repair_jobs_fold_with_or_without_assignments() {
 
 #[test]
 fn ansi_c_escapes_decode_to_the_literal_launcher_argument() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     for (escaped, decoded) in [
         (
@@ -524,7 +631,7 @@ fn ansi_c_escapes_decode_to_the_literal_launcher_argument() {
 
 #[test]
 fn malformed_ansi_c_quotes_and_expansions_remain_ordinary_shells() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     for job_word in [
         r"$'unterminated",
@@ -558,7 +665,7 @@ fn malformed_ansi_c_quotes_and_expansions_remain_ordinary_shells() {
 
 #[test]
 fn invalid_or_misplaced_assignments_do_not_parse_as_dispatches() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     for assignments in [
         "1X=1",
@@ -592,7 +699,7 @@ fn invalid_or_misplaced_assignments_do_not_parse_as_dispatches() {
 
 #[test]
 fn launcher_arguments_end_at_the_team_role_or_optional_mesh_prefix() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let mut arguments = launcher_arguments(directory.path());
     assert!(ParsedDispatch::from_arguments(&arguments).is_ok());
     arguments.push("mesh-prefix".to_string());
@@ -609,7 +716,7 @@ fn launcher_arguments_end_at_the_team_role_or_optional_mesh_prefix() {
 
 #[test]
 fn quoted_job_newlines_and_escaped_line_breaks_remain_one_invocation() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     let multiline_job = literal.replace(JOB, "fix the handover\nand retain its state");
     let parsed = ParsedDispatch::parse(&multiline_job).expect("quoted job remains one argument");
@@ -682,10 +789,10 @@ fn drawn_tiles_with_edges(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<Str
 
 #[test]
 fn a_dispatch_folds_into_a_managed_thread_moved_from_another_host_row() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let dispatch = ParsedDispatch::parse(&command(directory.path(), &format!("--to {SEAT}")))
         .expect("dispatch parses")
-        .resolve(&WorkerRoster::read(directory.path()), 701);
+        .resolve(&FixtureWorkers::read(directory.path()), 701);
     let mut shell = child("shell", "managed dispatch shell");
     shell.dispatch = dispatch;
     let mut root = agent(10, &[shell]);
@@ -745,10 +852,11 @@ fn process(pid: u32, parent: u32, name: &str, arguments: Vec<String>) -> Process
 
 #[test]
 fn the_launcher_pid_resolves_the_owning_shell_wrapper_without_to() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let arguments = launcher_arguments(directory.path());
     let parsed = ParsedDispatch::from_arguments(&arguments).expect("actual launcher argv parses");
-    let WorkerDispatch::Worker(worker) = parsed.resolve(&WorkerRoster::read(directory.path()), 701)
+    let WorkerDispatch::Worker(worker) =
+        parsed.resolve(&FixtureWorkers::read(directory.path()), 701)
     else {
         panic!("the actual launcher owns seat impl7");
     };
@@ -784,9 +892,70 @@ fn the_launcher_pid_resolves_the_owning_shell_wrapper_without_to() {
     assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
 }
 
+/// The checkpoint receiver has only the four legacy worker role values.
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRole {
+    Worker(CheckpointWorkerRole),
+    Unroled,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointWorkerRole {
+    Impl,
+    Test,
+    Review,
+    Fix,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointDispatch {
+    Worker { role: CheckpointRole },
+}
+
+#[derive(Deserialize)]
+struct CheckpointChild {
+    dispatch: CheckpointDispatch,
+}
+
+#[derive(Deserialize)]
+struct CheckpointRow {
+    children: Vec<CheckpointChild>,
+}
+
+const CHECKPOINT_PROBE_ROLES: [(DispatchRole, CheckpointRole); 7] = [
+    (
+        DispatchRole::Worker(WorkerRole::Impl),
+        CheckpointRole::Worker(CheckpointWorkerRole::Impl),
+    ),
+    (
+        DispatchRole::Worker(WorkerRole::Test),
+        CheckpointRole::Worker(CheckpointWorkerRole::Test),
+    ),
+    (
+        DispatchRole::Worker(WorkerRole::Review),
+        CheckpointRole::Worker(CheckpointWorkerRole::Review),
+    ),
+    (
+        DispatchRole::Worker(WorkerRole::Fix),
+        CheckpointRole::Worker(CheckpointWorkerRole::Fix),
+    ),
+    (
+        DispatchRole::Worker(WorkerRole::AstraDesigner),
+        CheckpointRole::Unroled,
+    ),
+    (
+        DispatchRole::Worker(WorkerRole::AstraReviewer),
+        CheckpointRole::Unroled,
+    ),
+    (DispatchRole::Unroled, CheckpointRole::Unroled),
+];
+
 #[test]
 fn probe_rows_round_trip_dispatch_identity_and_accept_older_rows_without_it() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let mut shell = child("shell", "dispatch shell");
     assert_eq!(
         shell.dispatch,
@@ -800,28 +969,38 @@ fn probe_rows_round_trip_dispatch_identity_and_accept_older_rows_without_it() {
     );
     shell.dispatch = ParsedDispatch::parse(&command(directory.path(), &format!("--to {SEAT}")))
         .expect("dispatch parses")
-        .resolve(&WorkerRoster::read(directory.path()), 701);
-    let encoded = serde_json::to_string(&agent(10, std::slice::from_ref(&shell)))
-        .expect("probe row serializes");
-    let decoded: AgentRow = serde_json::from_str(&encoded).expect("probe row reads back");
-    assert_eq!(decoded.children[0].dispatch, shell.dispatch);
-    let WorkerDispatch::Worker(dispatch) = &decoded.children[0].dispatch else {
-        panic!("the remote probe retains a resolved worker identity");
-    };
-    assert_eq!(
-        dispatch.identity,
-        WorkerIdentity::CodexThread("worker-thread".into())
-    );
-    assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
+        .resolve(&FixtureWorkers::read(directory.path()), 701);
+    for (role, legacy) in CHECKPOINT_PROBE_ROLES {
+        let WorkerDispatch::Worker(worker) = &mut shell.dispatch else {
+            panic!("fixture worker dispatch");
+        };
+        worker.role = role;
+        let encoded = serde_json::to_string(&agent(10, std::slice::from_ref(&shell)))
+            .expect("probe row serializes");
+        let decoded: AgentRow = serde_json::from_str(&encoded).expect("probe row reads back");
+        assert_eq!(decoded.children[0].dispatch, shell.dispatch);
+        let WorkerDispatch::Worker(dispatch) = &decoded.children[0].dispatch else {
+            panic!("the remote probe retains a resolved worker identity");
+        };
+        assert_eq!(
+            dispatch.identity,
+            WorkerIdentity::CodexThread("worker-thread".into())
+        );
+        assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
+        let checkpoint: CheckpointRow =
+            serde_json::from_str(&encoded).expect("checkpoint probe receiver");
+        let CheckpointDispatch::Worker { role } = &checkpoint.children[0].dispatch;
+        assert_eq!(*role, legacy);
+    }
 }
 
 #[test]
 fn resolved_dispatch_folds_into_its_thread_in_the_same_tile() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let parsed = ParsedDispatch::parse(&command(directory.path(), &format!("--to {SEAT}")))
         .expect("dispatch parses");
     let mut shell = child("shell", "original dispatch shell");
-    shell.dispatch = parsed.resolve(&WorkerRoster::read(directory.path()), 701);
+    shell.dispatch = parsed.resolve(&FixtureWorkers::read(directory.path()), 701);
     let mut thread = child("thread", "original thread title");
     thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
     thread.pid = None;
@@ -834,8 +1013,8 @@ fn resolved_dispatch_folds_into_its_thread_in_the_same_tile() {
 
 #[test]
 fn unresolved_and_cross_tile_dispatches_keep_their_shell_rows() {
-    let directory = roster_fixture();
-    let roster = WorkerRoster::read(directory.path());
+    let directory = worker_fixture();
+    let roster = FixtureWorkers::read(directory.path());
     let missing = ParsedDispatch::parse(&command(directory.path(), "--to missing-seat"))
         .expect("missing seat command still parses");
     assert_eq!(
@@ -868,7 +1047,7 @@ fn unresolved_and_cross_tile_dispatches_keep_their_shell_rows() {
 }
 
 #[test]
-fn roster_roles_override_the_seat_stem_and_missing_roles_use_only_worker_stems() {
+fn staff_roles_ignore_seat_stems_and_unknown_roles_show_no_role() {
     for (short, recorded, expected) in [
         ("impl4", Some("fix"), DispatchRole::Worker(WorkerRole::Fix)),
         (
@@ -891,32 +1070,29 @@ fn roster_roles_override_the_seat_stem_and_missing_roles_use_only_worker_stems()
             Some("fix"),
             DispatchRole::Worker(WorkerRole::Fix),
         ),
-        ("impl4", None, DispatchRole::Worker(WorkerRole::Impl)),
-        ("test22", None, DispatchRole::Worker(WorkerRole::Test)),
-        ("review3", None, DispatchRole::Worker(WorkerRole::Review)),
-        ("fix2", None, DispatchRole::Worker(WorkerRole::Fix)),
-        ("impl", None, DispatchRole::Worker(WorkerRole::Impl)),
+        ("impl4", None, DispatchRole::Unroled),
+        ("test22", None, DispatchRole::Unroled),
+        ("review3", None, DispatchRole::Unroled),
+        ("fix2", None, DispatchRole::Unroled),
+        ("impl", None, DispatchRole::Unroled),
         ("arrange", None, DispatchRole::Unroled),
-        ("impl4-extra", None, DispatchRole::Worker(WorkerRole::Impl)),
-        ("mat-test", None, DispatchRole::Worker(WorkerRole::Test)),
-        ("mat_test3", None, DispatchRole::Worker(WorkerRole::Test)),
-        (
-            "prefix_fix2_later-impl4",
-            None,
-            DispatchRole::Worker(WorkerRole::Fix),
-        ),
-        ("test_impl", None, DispatchRole::Worker(WorkerRole::Test)),
+        ("impl4-extra", None, DispatchRole::Unroled),
+        ("mat-test", None, DispatchRole::Unroled),
+        ("mat_test3", None, DispatchRole::Unroled),
+        ("prefix_fix2_later-impl4", None, DispatchRole::Unroled),
+        ("test_impl", None, DispatchRole::Unroled),
         (
             "mat-test",
             Some("review"),
             DispatchRole::Worker(WorkerRole::Review),
         ),
         ("myimpl4", None, DispatchRole::Unroled),
+        ("impl4", Some("future"), DispatchRole::Unroled),
     ] {
         let seat = format!("cargo-liner-handler-enh-{short}");
-        let roster = WorkerRoster::parse(
+        let roster = FixtureWorkers::parse(
             &serde_json::json!({
-                seat.clone(): {"thread_id":"worker-thread", "launcher_pid":701, "role":recorded}
+                seat.clone(): {"current_session":"worker-thread", "launcher_pid":701, "role":recorded}
             })
             .to_string(),
         );
@@ -940,17 +1116,28 @@ fn roster_roles_override_the_seat_stem_and_missing_roles_use_only_worker_stems()
 }
 
 #[test]
-fn typed_roster_fields_ignore_malformed_neighbours_and_optional_metadata() {
-    let roster = WorkerRoster::parse(
-        r#"{
-        "cargo-liner-handler-enh-impl7":{"thread_id":" worker-thread ","launcher_pid":"bad","role":{ "future":true }},
-        "broken": 17,
-        "missing-thread": {"launcher_pid":701},
-        "blank-thread": {"thread_id":"  "},
-        "wrong-thread": {"thread_id":42},
-        "cargo-liner-handler-enh-fix2":{"thread_id":"fix-thread","launcher_pid":702,"role":"review","unrelated":{"schema":2}}
-    }"#,
+fn malformed_claims_preserve_checked_staff_workers() {
+    let directory = tempfile::tempdir().expect("claim fixture directory");
+    write_worker_fixture(
+        directory.path(),
+        &serde_json::json!({
+            "cargo-liner-handler-enh-impl7":{"current_session":"worker-thread","launcher_pid":"bad","role":"impl"},
+            "cargo-liner-handler-enh-fix2":{"current_session":"fix-thread","launcher_pid":702,"role":"review"}
+        }),
     );
+    for (name, claim) in [
+        ("broken", "17"),
+        ("missing-thread", r#"{"pid":701}"#),
+        ("blank-thread", r#"{"worker":"","pid":701}"#),
+        ("wrong-thread", r#"{"worker":42,"pid":701}"#),
+    ] {
+        fs::write(
+            directory.path().join(format!("impl_claim_{name}.json")),
+            claim,
+        )
+        .expect("malformed claim");
+    }
+    let roster = FixtureWorkers::read(directory.path());
     let parsed = ParsedDispatch::parse(&command(
         Path::new("/fixture/session"),
         &format!("--to {SEAT}"),
@@ -980,13 +1167,17 @@ fn typed_roster_fields_ignore_malformed_neighbours_and_optional_metadata() {
 #[test]
 fn folded_worker_role_reaches_the_final_tile_through_placement() {
     for (short, role, expected) in [
-        ("impl4", None, DispatchRole::Worker(WorkerRole::Impl)),
+        (
+            "impl4",
+            Some("impl"),
+            DispatchRole::Worker(WorkerRole::Impl),
+        ),
         ("fix2", Some("test"), DispatchRole::Worker(WorkerRole::Test)),
         ("arrange", None, DispatchRole::Unroled),
     ] {
         let seat = format!("cargo-liner-handler-enh-{short}");
-        let roster = WorkerRoster::parse(
-            &serde_json::json!({seat.clone(): {"thread_id":"worker-thread","role":role}})
+        let roster = FixtureWorkers::parse(
+            &serde_json::json!({seat.clone(): {"current_session":"worker-thread","role":role}})
                 .to_string(),
         );
         let parsed = ParsedDispatch::parse(&command(
@@ -1017,11 +1208,11 @@ fn folded_worker_role_reaches_the_final_tile_through_placement() {
     }
 }
 
-/// Draw a folded seat with either a roster role or its name-stem role.
+/// Draw a folded seat with its staff role or final managed role.
 fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buffer {
     let seat = format!("cargo-liner-handler-enh-{short}");
-    let roster = WorkerRoster::parse(
-        &serde_json::json!({seat.clone():{"thread_id":"worker-thread","role":recorded}})
+    let roster = FixtureWorkers::parse(
+        &serde_json::json!({seat.clone():{"current_session":"worker-thread","role":recorded}})
             .to_string(),
     );
     let parsed = ParsedDispatch::parse(&command(
@@ -1069,11 +1260,11 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
 #[test]
 fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
     for (short, recorded, expected_role) in [
-        ("impl4", None, "impl"),
-        ("fix2", None, "fix"),
+        ("impl4", Some("impl"), "impl"),
+        ("fix2", Some("fix"), "fix"),
         ("impl4", Some("review"), "review"),
         ("arrange", None, "worker"),
-        ("mat-test", None, "test"),
+        ("mat-test", Some("test"), "test"),
     ] {
         for managed in [false, true] {
             let expected_role = if managed { "test" } else { expected_role };
@@ -1127,11 +1318,11 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
 
 #[test]
 fn folded_dispatches_sort_as_single_worker_rows() {
-    let roster = WorkerRoster::parse(
+    let roster = FixtureWorkers::parse(
         r#"{
-        "cargo-liner-handler-enh-impl4":{"thread_id":"impl-thread"},
-        "cargo-liner-handler-enh-fix2":{"thread_id":"fix-thread"},
-        "cargo-liner-handler-enh-arrange":{"thread_id":"arrange-thread"}
+        "cargo-liner-handler-enh-impl4":{"current_session":"impl-thread","role":"impl"},
+        "cargo-liner-handler-enh-fix2":{"current_session":"fix-thread","role":"fix"},
+        "cargo-liner-handler-enh-arrange":{"current_session":"arrange-thread"}
     }"#,
     );
     let mut children = Vec::new();
@@ -1257,7 +1448,7 @@ fn older_probe_dispatches_infer_roles_only_when_the_role_field_is_absent() {
 
 #[test]
 fn pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let first = command(directory.path(), &format!("--to {SEAT}"));
     let second = command(directory.path(), "--to cargo-liner-handler-enh-test2");
     let parsed = ParsedDispatch::parse(&first).expect("first dispatch");
@@ -1289,14 +1480,14 @@ fn pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible() {
 
 #[test]
 fn multiline_dispatch_jobs_draw_every_word_on_one_worker_line() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     for job in [
         "fix the handover\nand retain its state",
         "  fix the handover\r\n\tand retain its state  ",
     ] {
         let literal = command(directory.path(), &format!("--to {SEAT}")).replace(JOB, job);
         let parsed = ParsedDispatch::parse(&literal).expect("multiline job parses");
-        let dispatch = parsed.resolve(&WorkerRoster::read(directory.path()), 701);
+        let dispatch = parsed.resolve(&FixtureWorkers::read(directory.path()), 701);
         let mut shell = child("shell", "multiline dispatch shell");
         shell.dispatch = dispatch;
         let mut thread = child("thread", "original multiline worker");
@@ -1315,8 +1506,8 @@ fn multiline_dispatch_jobs_draw_every_word_on_one_worker_line() {
 
 #[test]
 fn seat_sender_commands_use_current_legacy_and_messenger_paths_without_hiding_other_work() {
-    let directory = roster_fixture();
-    let roster = WorkerRoster::read(directory.path());
+    let directory = worker_fixture();
+    let roster = FixtureWorkers::read(directory.path());
     let legacy = command(directory.path(), &format!("--to {SEAT}"));
     let current = legacy.replace("/delegate/", "/direct/");
     let review = format!(
@@ -1361,7 +1552,7 @@ fn seat_sender_commands_use_current_legacy_and_messenger_paths_without_hiding_ot
 
 #[test]
 fn variable_prompt_wrappers_fold_only_the_final_observed_seat_dispatch() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     for family in ["delegate", "direct"] {
         let script = format!("/fixture/.claude/scripts/{family}/implement.sh");
         let mut arguments = launcher_arguments(directory.path());
@@ -1422,7 +1613,7 @@ fn variable_prompt_wrappers_fold_only_the_final_observed_seat_dispatch() {
 /// A build before a delivery is still work, even when its launcher is the final command.
 #[test]
 fn builds_before_seat_dispatches_keep_their_command_rows() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal =
         command(directory.path(), &format!("--to {SEAT}")).replace("/delegate/", "/direct/");
     let mut arguments = launcher_arguments(directory.path());
@@ -1500,7 +1691,7 @@ fn drawn_observed_sender(wrapper: String, arguments: Vec<String>) -> String {
 
 #[test]
 fn prompt_preparation_with_substitution_or_in_place_edits_keeps_its_work_row() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     let arguments = command_words(&literal).expect("literal launcher argv");
     for preparation in [
@@ -1534,7 +1725,7 @@ fn prompt_preparation_with_substitution_or_in_place_edits_keeps_its_work_row() {
 
 #[test]
 fn quoted_heredoc_prose_does_not_keep_the_delivery_beside_its_seat() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal = command(directory.path(), &format!("--to {SEAT}"));
     let arguments = command_words(&literal).expect("literal launcher argv");
     for delimiter in ["'PROMPT'", "\"PROMPT\"", "\\PROMPT"] {
@@ -1553,7 +1744,7 @@ fn quoted_heredoc_prose_does_not_keep_the_delivery_beside_its_seat() {
 
 #[test]
 fn review_launchers_without_a_lens_and_with_slot_or_pool_fold_into_the_exact_seat() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     for flags in [
         format!("--to {SEAT}"),
         "--slot impl7 --phase 17".into(),
@@ -1593,7 +1784,7 @@ enum LiveSenderForm {
 
 /// Actual launcher argv and shell cwd anchor literal expansion; no shell is executed.
 fn assert_live_sender_folds(form: LiveSenderForm) {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let session = directory.path().display().to_string();
     let worktree = "/fixture/cargo-liner-handler-enh";
     let script = if matches!(form, LiveSenderForm::LegacyLauncher) {
@@ -1742,7 +1933,7 @@ fn pairing_arguments(
             2..2,
             [
                 "--to".into(),
-                SEAT.into(),
+                fixture["staff_id"].as_str().expect("staff identity").into(),
                 "--fix-cause".into(),
                 "repair dispatch pairing".into(),
             ],
@@ -1926,7 +2117,7 @@ fn pairing_processes(
                 SESSION_DIRECTORY_FLAG.into(),
                 directory.display().to_string(),
                 SEAT_FLAG.into(),
-                SEAT.into(),
+                "fixture-worker".into(),
                 MESSAGE_FLAG.into(),
                 JOB.into(),
             ],
@@ -1946,28 +2137,25 @@ fn paired_dispatch_fixture(
     use crate::census::tree::TreeSources;
     use crate::census::tree::{self};
 
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let prompt = directory.path().join("prompt.md");
     fs::write(&prompt, JOB).expect("dispatch prompt");
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/dispatch_pairing.json"))
         .expect("captured argv fixture");
-    fs::write(
-        directory.path().join(ROSTER_FILE),
-        serde_json::json!({
-            SEAT: {"staff_id": fixture["staff_id"], "launcher_pid":701, "role":"fix"}
-        })
-        .to_string(),
-    )
-    .expect("staff roster");
     let session = if matches!(family, PairingWorkerFamily::Claude) {
         "claude-seat-session"
     } else {
         "worker-thread"
     };
+    fs::write(
+        directory.path().join("progress_history_state.json"),
+        serde_json::json!({"owner_staff_id":"director"}).to_string(),
+    )
+    .expect("pairing director");
     let staff_path = directory.path().join("staff.json");
     fs::write(&staff_path, serde_json::json!({"schema":2,"rows":[
         {"id":"director","kind":"showrunner","name":"director","parent":null,"current_session":"manager-id"},
-        {"id":"fixture-worker","kind":"worker","name":staff_name,"parent":"director","current_session":session}
+        {"id":"fixture-worker","kind":"worker","name":staff_name,"parent":"director","current_session":session,"role":"fix"}
     ]}).to_string()).expect("staff file");
     let staff = StaffFileReader::default().roster(&HierarchySource::File(
         staff_path.to_string_lossy().into_owned(),
@@ -2071,7 +2259,7 @@ fn claude_seat_dispatch_uses_the_same_pairing() {
 
 #[test]
 fn review_future_flag_values_preserve_the_session_directory() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     for tail in [
         format!("--future-limit 5 '{}'", directory.path().display()),
         format!(
@@ -2083,7 +2271,7 @@ fn review_future_flag_values_preserve_the_session_directory() {
             "bash /fixture/.claude/scripts/direct/review.sh {tail}"
         ))
         .expect("review command");
-        let roster = WorkerRoster::read(directory.path());
+        let roster = FixtureWorkers::read(directory.path());
         let WorkerDispatch::Worker(worker) = parsed.resolve(&roster, 701) else {
             panic!("the future flag preserves the review identity");
         };
@@ -2110,11 +2298,12 @@ fn review_future_flag_values_preserve_the_session_directory() {
 
 #[test]
 fn legacy_flag_like_job_text_does_not_change_the_seat() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let literal =
         command(directory.path(), &format!("--to {SEAT}")).replace(JOB, "--to=missing-seat");
     let parsed = ParsedDispatch::parse(&literal).expect("literal job");
-    let WorkerDispatch::Worker(worker) = parsed.resolve(&WorkerRoster::read(directory.path()), 701)
+    let WorkerDispatch::Worker(worker) =
+        parsed.resolve(&FixtureWorkers::read(directory.path()), 701)
     else {
         panic!("the job text cannot replace the seat");
     };
@@ -2124,7 +2313,7 @@ fn legacy_flag_like_job_text_does_not_change_the_seat() {
 
 #[test]
 fn live_mesh_child_overrides_the_launcher_seat() {
-    let directory = roster_fixture();
+    let directory = worker_fixture();
     let mut arguments = launcher_arguments(directory.path());
     arguments.splice(2..2, ["--to".into(), "missing-seat".into()]);
     let launcher = process(701, 10, "bash", arguments);

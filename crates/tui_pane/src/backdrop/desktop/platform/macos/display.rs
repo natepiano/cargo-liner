@@ -91,11 +91,11 @@ pub(super) const fn display_bounds(display: &Display) -> CoreGraphicsRect { disp
 /// display that will not answer is read as one, which is what a
 /// panel carrying one pixel to the point would have answered.
 pub(super) fn backing_scale(display: &Display) -> u32 {
-    let Some(mode) = CGDisplayCopyDisplayMode(display.id) else {
+    let Some(cg_display_mode) = CGDisplayCopyDisplayMode(display.id) else {
         return 1;
     };
-    let points = CGDisplayMode::width(Some(&mode));
-    let pixels = CGDisplayMode::pixel_width(Some(&mode));
+    let points = CGDisplayMode::width(Some(&cg_display_mode));
+    let pixels = CGDisplayMode::pixel_width(Some(&cg_display_mode));
     if points == 0 {
         return 1;
     }

@@ -38,16 +38,16 @@ impl UseSiteIndex {
         &mut self,
         target_def_path: String,
         caller_module_def_path: String,
-        reference: UseSiteReference,
+        use_site_reference: UseSiteReference,
     ) {
         let recorded = self
             .0
             .entry(target_def_path)
             .or_default()
             .entry(caller_module_def_path)
-            .or_insert(reference);
+            .or_insert(use_site_reference);
         if matches!(
-            (*recorded, reference),
+            (*recorded, use_site_reference),
             (_, UseSiteReference::Named)
                 | (
                     UseSiteReference::PrivateImport | UseSiteReference::RestrictedImport,
@@ -55,7 +55,7 @@ impl UseSiteIndex {
                 )
                 | (UseSiteReference::DeclarationInterface, _)
         ) {
-            *recorded = reference;
+            *recorded = use_site_reference;
         }
     }
 
@@ -77,11 +77,13 @@ impl UseSiteIndex {
             .flat_map(|(target_def_path, callers)| {
                 callers
                     .into_iter()
-                    .map(move |(caller_module_def_path, reference)| UseSite {
-                        target_def_path: target_def_path.clone(),
-                        caller_module_def_path,
-                        reference,
-                    })
+                    .map(
+                        move |(caller_module_def_path, use_site_reference)| UseSite {
+                            target_def_path: target_def_path.clone(),
+                            caller_module_def_path,
+                            reference: use_site_reference,
+                        },
+                    )
             })
             .collect()
     }

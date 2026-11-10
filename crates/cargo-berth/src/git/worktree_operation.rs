@@ -63,11 +63,11 @@ impl WorktreeOperation {
     pub(crate) fn observe(worktree_administrative_directory: &Path) -> Self {
         WORKTREE_OPERATION_MARKERS
             .iter()
-            .find_map(|(marker, operation)| {
+            .find_map(|(marker, worktree_operation)| {
                 worktree_administrative_directory
                     .join(marker)
                     .exists()
-                    .then_some(*operation)
+                    .then_some(*worktree_operation)
             })
             .unwrap_or(Self::Idle)
     }
@@ -87,29 +87,32 @@ mod tests {
     #[test]
     fn observe_names_each_pending_operation_and_prefers_rebase()
     -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let temp_dir = tempfile::tempdir()?;
         assert_eq!(
-            WorktreeOperation::observe(directory.path()),
+            WorktreeOperation::observe(temp_dir.path()),
             WorktreeOperation::Idle
         );
-        for (marker, expected) in [
+        for (marker, expected_worktree_operation) in [
             (GIT_REBASE_MERGE_STATE_PATH, WorktreeOperation::Rebase),
             (GIT_REBASE_APPLY_STATE_PATH, WorktreeOperation::Rebase),
             (GIT_MERGE_STATE_PATH, WorktreeOperation::Merge),
             (GIT_CHERRY_PICK_STATE_PATH, WorktreeOperation::CherryPick),
             (GIT_REVERT_STATE_PATH, WorktreeOperation::Revert),
         ] {
-            let marker_path = directory.path().join(marker);
+            let marker_path = temp_dir.path().join(marker);
             fs::write(&marker_path, "pending")?;
-            assert_eq!(WorktreeOperation::observe(directory.path()), expected);
+            assert_eq!(
+                WorktreeOperation::observe(temp_dir.path()),
+                expected_worktree_operation
+            );
             fs::remove_file(marker_path)?;
         }
         // `GIT_REBASE_MERGE_STATE_PATH` and `GIT_CHERRY_PICK_STATE_PATH` can coexist because a
         // stopped replay can expose another operation's marker at the same time.
-        fs::create_dir(directory.path().join(GIT_REBASE_MERGE_STATE_PATH))?;
-        fs::write(directory.path().join(GIT_CHERRY_PICK_STATE_PATH), "pending")?;
+        fs::create_dir(temp_dir.path().join(GIT_REBASE_MERGE_STATE_PATH))?;
+        fs::write(temp_dir.path().join(GIT_CHERRY_PICK_STATE_PATH), "pending")?;
         assert_eq!(
-            WorktreeOperation::observe(directory.path()),
+            WorktreeOperation::observe(temp_dir.path()),
             WorktreeOperation::Rebase
         );
         Ok(())

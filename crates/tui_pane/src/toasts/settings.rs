@@ -361,16 +361,16 @@ fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
 }
 
 pub(crate) fn remove_legacy_toast_keys(table: &mut Table) {
-    if let Some(Value::Table(tui)) = table.get_mut("tui") {
-        tui.remove("status_flash_secs");
-        tui.remove("task_linger_secs");
+    if let Some(Value::Table(tui_table)) = table.get_mut("tui") {
+        tui_table.remove("status_flash_secs");
+        tui_table.remove("task_linger_secs");
     }
-    if let Some(Value::Table(toasts)) = table.get_mut("toasts") {
+    if let Some(Value::Table(toasts_table)) = table.get_mut("toasts") {
         // `remove_legacy_toast_keys` completes the one-shot migration in `toasts`:
         // "default_timeout" → "status_toast_visible", "task_linger" →
         // "finished_task_visible". Remove the old keys after the load path has
         // copied their values into the new fields.
-        toasts.remove("default_timeout");
-        toasts.remove("task_linger");
+        toasts_table.remove("default_timeout");
+        toasts_table.remove("task_linger");
     }
 }

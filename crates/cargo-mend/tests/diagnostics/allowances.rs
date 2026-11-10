@@ -168,8 +168,16 @@ fn stored_reach_boundary(stored_reach: &Value) -> Option<&str> {
     }
 }
 
-fn constraint_has_requirement(constraint: &Value, boundary: &str) -> bool {
-    constraint
+/// `RequirementMatch` is `Matching` when `constraint_has_requirement` finds a stored
+/// signature or facade requirement at the requested boundary, and `Different` otherwise.
+#[derive(Debug, PartialEq, Eq)]
+enum RequirementMatch {
+    Matching,
+    Different,
+}
+
+fn constraint_has_requirement(constraint: &Value, boundary: &str) -> RequirementMatch {
+    if constraint
         .get("signature_requirement")
         .and_then(stored_reach_boundary)
         == Some(boundary)
@@ -178,6 +186,19 @@ fn constraint_has_requirement(constraint: &Value, boundary: &str) -> bool {
             .and_then(|facade| facade.get("required"))
             .and_then(stored_reach_boundary)
             == Some(boundary)
+    {
+        RequirementMatch::Matching
+    } else {
+        RequirementMatch::Different
+    }
+}
+
+/// `ConstraintLocationMatch` is `Matching` when `constraint_matches_location` finds
+/// the diagnostic code, source-path suffix and line all match, and `Different` otherwise.
+#[derive(Debug, PartialEq, Eq)]
+enum ConstraintLocationMatch {
+    Matching,
+    Different,
 }
 
 fn constraint_matches_location(
@@ -185,8 +206,8 @@ fn constraint_matches_location(
     diagnostic_code: &str,
     finding_path: &str,
     finding_line: u64,
-) -> bool {
-    constraint.get("diagnostic_code").and_then(Value::as_str) == Some(diagnostic_code)
+) -> ConstraintLocationMatch {
+    if constraint.get("diagnostic_code").and_then(Value::as_str) == Some(diagnostic_code)
         && constraint
             .get("source")
             .and_then(|source| source.get("path"))
@@ -197,6 +218,11 @@ fn constraint_matches_location(
             .and_then(|source| source.get("line"))
             .and_then(Value::as_u64)
             == Some(finding_line)
+    {
+        ConstraintLocationMatch::Matching
+    } else {
+        ConstraintLocationMatch::Different
+    }
 }
 
 fn assert_constraint_matches(
@@ -235,8 +261,9 @@ fn assert_constraint_matches(
         "{stored_report:#?}"
     );
     if let Some(boundary) = expectation.required_boundary() {
-        assert!(
+        assert_eq!(
             constraint_has_requirement(constraint, boundary),
+            RequirementMatch::Matching,
             "{stored_report:#?}"
         );
     }
@@ -280,9 +307,14 @@ fn assert_stored_forbidden_visibility_advice(
             .and_then(Value::as_array)
             .expect("read stored visibility constraints");
         for constraint in constraints {
-            if !constraint_matches_location(constraint, diagnostic_code, finding_path, finding_line)
-            {
-                continue;
+            match constraint_matches_location(
+                constraint,
+                diagnostic_code,
+                finding_path,
+                finding_line,
+            ) {
+                ConstraintLocationMatch::Matching => {},
+                ConstraintLocationMatch::Different => continue,
             }
             matches += 1;
             assert_constraint_matches(constraint, expectation, &stored_report);
@@ -1783,19 +1815,26 @@ pub fn run(app: &app::App) {
         r#"mod types;
 mod focus;
 
-pub use types::App;
+pub use types::{App, SearchPhase};
 "#,
     )
     .expect("write app facade");
     fs::write(
         temp.path().join("src/tui/app/types.rs"),
-        r#"pub struct App {
-    pub searching: bool,
+        r#"/// `SearchPhase` records `App::searching`, starting `Idle` before `Searching`.
+#[derive(Clone, Copy)]
+pub enum SearchPhase {
+    Idle,
+    Searching,
+}
+
+pub struct App {
+    pub searching: SearchPhase,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self { searching: false }
+        Self { searching: SearchPhase::Idle }
     }
 }
 "#,
@@ -1803,10 +1842,10 @@ impl App {
     .expect("write types child");
     fs::write(
         temp.path().join("src/tui/app/focus.rs"),
-        r#"use super::App;
+        r#"use super::{App, SearchPhase};
 
 impl App {
-    pub fn is_searching(&self) -> bool {
+    pub fn is_searching(&self) -> SearchPhase {
         self.searching
     }
 }
@@ -2123,6 +2162,10 @@ fn wider_signature_exposure_names_why_an_exact_facade_annotation_must_change() {
 name = "wider_signature_exact_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2172,6 +2215,10 @@ fn wider_signature_with_nonmatching_facade_keeps_boundary_mismatch_advice() {
 name = "wider_signature_nonmatching_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2567,6 +2614,10 @@ fn parent_boundary_impl_surfaces_preserve_method_self_and_trait_caps() {
 name = "parent_boundary_impl_surface_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2839,6 +2890,10 @@ fn named_exported_module_gives_only_its_public_descendants_external_reach() {
 name = "exported_ancestor_module_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -2984,6 +3039,10 @@ fn restricted_glob_child_does_not_give_signature_type_public_reach() {
 name = "restricted_glob_child_signature_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3028,6 +3087,10 @@ fn direct_public_glob_uses_each_exact_childs_effective_reach() {
 name = "direct_public_glob_child_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3247,6 +3310,10 @@ fn public_signature_exposure_still_requires_bare_pub() {
 name = "public_signature_exposure_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3289,6 +3356,10 @@ fn resolved_facade_requirements_with_and_without_signature_are_persisted() {
 name = "resolved_facade_persistence_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3380,6 +3451,10 @@ fn public_signature_precedes_an_unresolvable_parent_facade_blocker() {
 name = "public_signature_blocked_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3451,6 +3526,10 @@ fn restricted_signature_accepts_exact_crate_reach_despite_an_unresolvable_facade
 name = "restricted_signature_blocked_facade_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -3823,6 +3902,10 @@ fn stale_public_facade_is_reviewed_when_joined_reach_equals_public() {
 name = "stale_facade_equal_joined_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4046,6 +4129,10 @@ fn stale_restricted_facade_without_remaining_reach_keeps_safe_cleanup_advice() {
 name = "stale_restricted_cleanup_control_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4189,6 +4276,10 @@ fn same_module_parent_visible_signature_sets_the_parent_floor() {
 name = "same_module_parent_signature_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4243,6 +4334,10 @@ fn trait_impl_signature_reach_is_capped_by_trait_visibility() {
 name = "trait_impl_reach_cap_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4385,6 +4480,10 @@ fn local_trait_reexports_set_associated_signature_reach() {
 name = "trait_reexport_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4460,6 +4559,10 @@ fn private_equivalent_inherent_items_do_not_expose_signature_types() {
 name = "inherent_item_private_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -4680,6 +4783,10 @@ fn struct_and_union_field_signature_exposure_uses_each_field_reach() {
 name = "field_signature_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -5128,6 +5235,14 @@ pub fn require(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 }
 
+/// `SignatureExposureClaim` is `Claimed` when `claims_public_signature_exposure` finds
+/// public-signature advice at the requested path, and `Absent` when no such advice occurs.
+#[derive(Debug, PartialEq, Eq)]
+enum SignatureExposureClaim {
+    Claimed,
+    Absent,
+}
+
 // `Marker`'s `#[require(AttributeTarget)]` argument is metadata, not a signature.
 // `AttributeTarget` is named in token position; whether it reaches public API
 // depends on what `require` expands to, which only post-expansion HIR knows.
@@ -5150,14 +5265,20 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
     };
     // `AttributeTarget` may keep a `DiagnosticCode::OverbroadPubCrate` finding
     // for an unrelated reason, or lose it entirely once the false exposure is gone.
-    // `claims_public_signature_exposure` must never claim a public signature carries it.
+    // `claims_public_signature_exposure` must return `SignatureExposureClaim::Absent`
+    // for it: a public signature must never be claimed to carry `AttributeTarget`.
     let claims_public_signature_exposure = |path: &str| {
-        report
+        if report
             .findings
             .iter()
             .filter(|finding| finding.path == path)
             .flat_map(|finding| finding.help.iter())
             .any(|line| line == "consider using: `pub`")
+        {
+            SignatureExposureClaim::Claimed
+        } else {
+            SignatureExposureClaim::Absent
+        }
     };
     assert!(
         target_finding("app/src/hidden/api/signature_target.rs")
@@ -5170,8 +5291,9 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
         "app/src/hidden/api/attribute_target.rs",
         "app/src/hidden/api.rs",
     ] {
-        assert!(
-            !claims_public_signature_exposure(path),
+        assert_eq!(
+            claims_public_signature_exposure(path),
+            SignatureExposureClaim::Absent,
             "a type named only by attribute metadata must not count as publicly exposed at {path}: {report:#?}",
         );
     }

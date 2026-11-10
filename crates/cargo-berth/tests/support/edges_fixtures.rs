@@ -1064,3 +1064,74 @@ pub(super) fn waiting_action_for<'board>(
         .as_str()
         .expect("waiting action reason")
 }
+
+/// The initial edges and ordinary readiness precede deletion of the middle checkout.
+pub(super) const ORPHANED_MIDDLE_START: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("edges-orphaned-middle-start", build_orphaned_middle_start);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct OrphanedMiddleStart {
+    pub(super) first_id:           String,
+    pub(super) middle_id:          String,
+    pub(super) ordinary_readiness: serde_json::Value,
+}
+
+fn build_orphaned_middle_start(destination: &Path) {
+    let repository = crate::edges_templates::LEFT_RIGHT_TREES.instantiate();
+    let worktrees = repository.path().join(".git/fixture-worktrees");
+    let first_root = worktrees.join("first");
+    let middle_root = worktrees.join("middle");
+    let before_root = worktrees.join("before-orphaning");
+    dirty_source(&first_root, "left/shared.rs");
+    let first = claim(&first_root, "tree:left", FIRST_RUN);
+    let first_id = reservation_id(&first);
+    let middle_id = reservation_id(&claim(&middle_root, "tree:right", SECOND_RUN));
+    let middle = defer_answer(&middle_root, "file:left/shared.rs", SECOND_RUN, &first_id);
+    assert_eq!(reservation_id(&middle), middle_id);
+    let first_edge = sequence(
+        repository.path(),
+        &first_id,
+        &middle_id,
+        "first before middle",
+    );
+    assert!(first_edge.status.success());
+    commit_middle_work(&middle_root);
+    let before = defer_claim(&before_root, "file:right/before.rs", THIRD_RUN, &middle_id);
+    let before_id = reservation_id(&before);
+    let before_edge = sequence(
+        repository.path(),
+        &middle_id,
+        &before_id,
+        "middle before the comparison successor",
+    );
+    assert!(before_edge.status.success());
+    let ordinary_readiness = json_output(&before_edge)["payload"]["data"]["readiness"].clone();
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &OrphanedMiddleStart {
+            first_id,
+            middle_id,
+            ordinary_readiness,
+        },
+    );
+}
+
+/// The middle holder retains its real outgoing work while its checkout is absent.
+fn commit_middle_work(middle_root: &Path) {
+    for path in ["right/before.rs", "right/orphaned.rs", "right/recovered.rs"] {
+        dirty_source(middle_root, path);
+    }
+    git(middle_root, &["add", "right"]);
+    git(
+        middle_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "middle work",
+        ],
+    );
+}

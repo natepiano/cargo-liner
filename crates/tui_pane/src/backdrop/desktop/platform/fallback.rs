@@ -17,10 +17,10 @@ use crate::backdrop::desktop::candidate;
 pub(in crate::backdrop::desktop) fn capture(
     _: Metrics,
     _: CaptureWindowTarget,
-    sequence: CaptureAttemptSequence,
+    capture_attempt_sequence: CaptureAttemptSequence,
 ) -> CaptureAttemptResult {
     candidate::capture_failure_before_window_selection(
-        sequence,
+        capture_attempt_sequence,
         CaptureFailure::UnsupportedPlatform,
     )
 }

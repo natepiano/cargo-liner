@@ -54,7 +54,11 @@ fn isolate_cargo(command: &mut Command) -> &mut Command {
 }
 
 pub(super) fn cargo_command() -> Command {
-    let mut command = Command::new("cargo");
+    let mut command = Command::new(
+        env::var_os("CARGO")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "cargo".into()),
+    );
     isolate_cargo(&mut command);
     command
 }
@@ -65,7 +69,12 @@ pub(crate) fn mend_command() -> Command {
     command
 }
 
-fn mend_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")) }
+fn mend_bin() -> PathBuf {
+    env::var_os("CARGO_MEND_TEST_EXECUTABLE").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")),
+        PathBuf::from,
+    )
+}
 
 pub(super) fn strip_ansi(input: &str) -> String {
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("compile ansi regex");

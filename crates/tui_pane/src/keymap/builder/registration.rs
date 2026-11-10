@@ -27,9 +27,9 @@ pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
         overlay::apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table, unknown)?;
     if matches!(vim_mode, VimMode::Enabled) {
         for (action, key) in P::vim_extras() {
-            let sequence = KeySequence::from(*key);
-            if !bindings.has_key(&sequence) {
-                bindings.bind(sequence, *action);
+            let key_sequence = KeySequence::from(*key);
+            if !bindings.has_key(&key_sequence) {
+                bindings.bind(key_sequence, *action);
             }
         }
     }
@@ -57,10 +57,10 @@ pub(super) fn reserved_vim_navigation_keys() -> Vec<KeySequence> {
 pub(super) fn check_reserved_vim_navigation_keys<A: crate::Action>(
     scope_name: &str,
     bindings: &Bindings<A>,
-    reserved_keys: &[KeySequence],
+    reserved_key_sequences: &[KeySequence],
 ) -> Result<(), KeymapError> {
     for (key, action) in bindings.entries() {
-        if let Some(reserved) = reserved_keys
+        if let Some(reserved) = reserved_key_sequences
             .iter()
             .find(|reserved| keys_conflict(key, reserved))
         {
@@ -75,6 +75,8 @@ pub(super) fn check_reserved_vim_navigation_keys<A: crate::Action>(
     Ok(())
 }
 
-fn keys_conflict(left: &KeySequence, right: &KeySequence) -> bool {
-    left == right || left.starts_with_strict(right.keys()) || right.starts_with_strict(left.keys())
+fn keys_conflict(left_key_sequence: &KeySequence, right: &KeySequence) -> bool {
+    left_key_sequence == right
+        || left_key_sequence.starts_with_strict(right.keys())
+        || right.starts_with_strict(left_key_sequence.keys())
 }

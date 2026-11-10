@@ -457,6 +457,26 @@ mod counter_tests {
         Ok(())
     }
 
+    #[derive(PartialEq, Eq)]
+    enum FindingPresence {
+        Present,
+        Absent,
+    }
+
+    fn finding_presence(
+        report: &StoredReport,
+        diagnostic_code: DiagnosticCode,
+        item: &str,
+    ) -> FindingPresence {
+        if report.findings.iter().any(|finding| {
+            finding.diagnostic_code == diagnostic_code && finding.item.as_deref() == Some(item)
+        }) {
+            FindingPresence::Present
+        } else {
+            FindingPresence::Absent
+        }
+    }
+
     fn assert_usage_findings(report_path: &Path) -> Result<()> {
         let report_bytes = fs::read(report_path)
             .with_context(|| format!("read counter report {}", report_path.display()))?;
@@ -471,15 +491,9 @@ mod counter_tests {
                 report.findings
             ));
         }
-        let first_is_stale = report.findings.iter().any(|finding| {
-            finding.diagnostic_code == DiagnosticCode::SuspiciousPub
-                && finding.item.as_deref() == Some("struct First")
-        });
-        let second_is_stale = report.findings.iter().any(|finding| {
-            finding.diagnostic_code == DiagnosticCode::SuspiciousPub
-                && finding.item.as_deref() == Some("struct Second")
-        });
-        if !first_is_stale || second_is_stale {
+        let first = finding_presence(&report, DiagnosticCode::SuspiciousPub, "struct First");
+        let second = finding_presence(&report, DiagnosticCode::SuspiciousPub, "struct Second");
+        if (first, second) != (FindingPresence::Present, FindingPresence::Absent) {
             return Err(anyhow!(
                 "glob usage was not attributed by export name: {:?}",
                 report.findings

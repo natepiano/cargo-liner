@@ -186,8 +186,8 @@ pub(in crate::compiler) fn load_report(
 
 fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
     intersection::apply_cross_compilation_intersection(reports);
-    let callers = caller_aware::apply_caller_aware_suppression(reports);
-    visibility_constraint::reconcile_visibility_constraints(reports, &callers);
+    let caller_map = caller_aware::apply_caller_aware_suppression(reports);
+    visibility_constraint::reconcile_visibility_constraints(reports, &caller_map);
     visibility_priority::apply_visibility_narrowing_priority(reports);
 }
 
@@ -197,8 +197,8 @@ fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
 /// and the facts are still untouched here. Mount evidence survives independently:
 /// a source's silent mounts can veto another crate's subtree re-export edit.
 fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
-    for report in reports {
-        let subtree_reexport_sites: BTreeSet<SubtreeReexportSite> = report
+    for stored_report in reports {
+        let subtree_reexport_sites: BTreeSet<SubtreeReexportSite> = stored_report
             .findings
             .iter()
             .filter(|finding| {
@@ -211,20 +211,20 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
                 column: finding.column,
             })
             .collect();
-        report
+        stored_report
             .subtree_reexport_fix_facts
             .retain(|fact| subtree_reexport_sites.contains(&SubtreeReexportSite::from(fact)));
 
-        let narrowing_sites: BTreeSet<PubUseNarrowingSite> = report
+        let narrowing_sites: BTreeSet<PubUseNarrowingSite> = stored_report
             .findings
             .iter()
             .filter(|finding| finding.fix_support == FixSupport::PubUse)
             .filter_map(PubUseNarrowingSite::for_finding)
             .collect();
-        report.pub_use_fix_facts.retain(|fact| {
+        stored_report.pub_use_fix_facts.retain(|fact| {
             PubUseNarrowingSite::advertising_sites(fact)
                 .iter()
-                .any(|site| narrowing_sites.contains(site))
+                .any(|pub_use_narrowing_site| narrowing_sites.contains(pub_use_narrowing_site))
         });
     }
 }
@@ -334,29 +334,29 @@ fn drop_conflicting_subtree_reexport_fix_facts(facts: &mut Vec<SubtreeReexportFi
 }
 
 fn stored_matches_selected_root(
-    stored: &StoredReport,
+    stored_report: &StoredReport,
     selected_roots: &[PathBuf],
     selected_root_strings: &[String],
     selected_canonical_roots: &[PathBuf],
 ) -> bool {
     selected_root_strings
         .iter()
-        .any(|root| root == &stored.package_root)
-        || fs::canonicalize(Path::new(&stored.package_root)).is_ok_and(|stored_root| {
+        .any(|root| root == &stored_report.package_root)
+        || fs::canonicalize(Path::new(&stored_report.package_root)).is_ok_and(|stored_root| {
             selected_canonical_roots
                 .iter()
                 .any(|selected_root| selected_root == &stored_root)
         })
-        || (stored.package_root.is_empty() && selected_roots.len() == 1)
+        || (stored_report.package_root.is_empty() && selected_roots.len() == 1)
 }
 
 fn extend_report_from_stored(
     findings: &mut Vec<Finding>,
     merged_fix_facts: &mut MergedFixFacts,
-    stored: StoredReport,
+    stored_report: StoredReport,
     analysis_root: &Path,
 ) {
-    for finding in stored.findings {
+    for finding in stored_report.findings {
         findings.push(Finding {
             disposition:     Finding::disposition(
                 finding.diagnostic_code,
@@ -385,7 +385,7 @@ fn extend_report_from_stored(
             },
         });
     }
-    for fact in stored.pub_use_fix_facts {
+    for fact in stored_report.pub_use_fix_facts {
         merged_fix_facts.pub_use.push(PubUseFixFact {
             child_path:      relativize_path(&fact.child_path, analysis_root),
             child_line:      fact.child_line,
@@ -395,12 +395,12 @@ fn extend_report_from_stored(
             child_module:    fact.child_module,
         });
     }
-    for fact in stored.subtree_reexport_fix_facts {
+    for fact in stored_report.subtree_reexport_fix_facts {
         merged_fix_facts
             .subtree_reexports
             .push(subtree_reexport_fix_fact(fact, analysis_root));
     }
-    for fact in stored.module_mount_facts {
+    for fact in stored_report.module_mount_facts {
         merged_fix_facts.module_mounts.push(ModuleMountFact {
             crate_root_file: relativize_path(&fact.crate_root_file, analysis_root),
             file:            relativize_path(&fact.file, analysis_root),
@@ -687,18 +687,18 @@ mod tests {
             "item",
             1,
         );
-        let mut report = fixture.report_with_findings(vec![finding]);
-        report.all_features_coverage = AllFeaturesCoverage::Superset;
+        let mut stored_report = fixture.report_with_findings(vec![finding]);
+        stored_report.all_features_coverage = AllFeaturesCoverage::Superset;
         let report_paths = [
             fixture.write_malformed_json(&format!("broken.{REPORT_FILE_EXTENSION}")),
-            fixture.write_report(&format!("valid.{REPORT_FILE_EXTENSION}"), &report),
+            fixture.write_report(&format!("valid.{REPORT_FILE_EXTENSION}"), &stored_report),
         ];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded_report.report.findings.len(), 1);
         assert_eq!(
-            loaded.report.facts.all_features_coverage,
+            loaded_report.report.facts.all_features_coverage,
             AllFeaturesCoverage::NotGuaranteed
         );
     }
@@ -710,16 +710,16 @@ mod tests {
             "libabsent-0000000000000000.{REPORT_FILE_EXTENSION}"
         ))];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert!(loaded.report.findings.is_empty());
+        assert!(loaded_report.report.findings.is_empty());
         assert_eq!(
-            loaded.analysis_evidence,
+            loaded_report.analysis_evidence,
             AnalysisEvidence::Absent,
             "no stored report means nothing was analyzed, not that the crate is clean"
         );
         assert_eq!(
-            loaded.report.facts.all_features_coverage,
+            loaded_report.report.facts.all_features_coverage,
             AllFeaturesCoverage::default(),
             "a listed unit the driver did not analyze must not lower coverage"
         );
@@ -749,10 +749,13 @@ mod tests {
             &sibling,
         );
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
-        assert_eq!(loaded.report.findings[0].item.as_deref(), Some("listed"));
+        assert_eq!(loaded_report.report.findings.len(), 1);
+        assert_eq!(
+            loaded_report.report.findings[0].item.as_deref(),
+            Some("listed")
+        );
     }
 
     #[test]
@@ -796,11 +799,11 @@ mod tests {
             fixture.write_report(&format!("config.{REPORT_FILE_EXTENSION}"), &wrong_config),
         ];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert!(loaded.report.findings.is_empty());
+        assert!(loaded_report.report.findings.is_empty());
         assert!(
-            loaded
+            loaded_report
                 .report
                 .facts
                 .pub_use_fix_facts
@@ -808,7 +811,7 @@ mod tests {
                 .next()
                 .is_none()
         );
-        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Absent);
+        assert_eq!(loaded_report.analysis_evidence, AnalysisEvidence::Absent);
     }
 
     #[test]
@@ -820,15 +823,17 @@ mod tests {
             "item",
             1,
         );
-        let mut report = fixture.report_with_findings(vec![finding]);
-        report.crate_root_file = format!("{SOURCE_DIR_SRC}/missing.rs");
-        let report_paths =
-            [fixture.write_report(&format!("missing-root.{REPORT_FILE_EXTENSION}"), &report)];
+        let mut stored_report = fixture.report_with_findings(vec![finding]);
+        stored_report.crate_root_file = format!("{SOURCE_DIR_SRC}/missing.rs");
+        let report_paths = [fixture.write_report(
+            &format!("missing-root.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert!(loaded.report.findings.is_empty());
-        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Absent);
+        assert!(loaded_report.report.findings.is_empty());
+        assert_eq!(loaded_report.analysis_evidence, AnalysisEvidence::Absent);
     }
 
     #[test]
@@ -840,15 +845,17 @@ mod tests {
             "item",
             1,
         );
-        let report = fixture.report_with_findings(vec![finding]);
-        let report_paths =
-            [fixture.write_report(&format!("canonical-root.{REPORT_FILE_EXTENSION}"), &report)];
+        let stored_report = fixture.report_with_findings(vec![finding]);
+        let report_paths = [fixture.write_report(
+            &format!("canonical-root.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
         let selected_root = fixture.package_root.join(SOURCE_DIR_SRC).join("..");
         let selection = fixture.selection_with_roots(vec![selected_root]);
 
-        let loaded = load_report(&report_paths, &selection, CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &selection, CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded_report.report.findings.len(), 1);
     }
 
     #[test]
@@ -860,15 +867,17 @@ mod tests {
             "item",
             1,
         );
-        let mut report = fixture.report_with_findings(vec![finding]);
-        report.package_root.clear();
-        report.crate_root_file.clear();
-        let report_paths =
-            [fixture.write_report(&format!("legacy-root.{REPORT_FILE_EXTENSION}"), &report)];
+        let mut stored_report = fixture.report_with_findings(vec![finding]);
+        stored_report.package_root.clear();
+        stored_report.crate_root_file.clear();
+        let report_paths = [fixture.write_report(
+            &format!("legacy-root.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded_report.report.findings.len(), 1);
     }
 
     #[test]
@@ -884,8 +893,8 @@ mod tests {
         );
         finding.item = Some(StoredFinding::render_item("struct", "Child"));
         finding.fix_support = FixSupport::PubUse;
-        let mut report = fixture.report_with_findings(vec![finding]);
-        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+        let mut stored_report = fixture.report_with_findings(vec![finding]);
+        stored_report.pub_use_fix_facts.push(StoredPubUseFixFact {
             child_path:      fixture.crate_root.to_string_lossy().into_owned(),
             child_line:      2,
             child_item_name: "Child".to_string(),
@@ -893,21 +902,23 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths =
-            [fixture.write_report(&format!("driver-report.{REPORT_FILE_EXTENSION}"), &report)];
+        let report_paths = [fixture.write_report(
+            &format!("driver-report.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
-        let facts = loaded
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let facts = loaded_report
             .report
             .facts
             .pub_use_fix_facts
             .iter()
             .collect::<Vec<_>>();
 
-        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Present);
-        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded_report.analysis_evidence, AnalysisEvidence::Present);
+        assert_eq!(loaded_report.report.findings.len(), 1);
         assert_eq!(
-            loaded.report.findings[0].path,
+            loaded_report.report.findings[0].path,
             format!("{SOURCE_DIR_SRC}/lib.rs")
         );
         assert_eq!(facts.len(), 1);
@@ -928,8 +939,8 @@ mod tests {
         // `apply_visibility_narrowing_priority` drops a `suspicious_pub`
         // finding that shares its path/line/column with an `unused_pub` one.
         let unused = stored_finding(DiagnosticCode::UnusedPub, &fixture.crate_root, "Child", 2);
-        let mut report = fixture.report_with_findings(vec![suspicious, unused]);
-        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+        let mut stored_report = fixture.report_with_findings(vec![suspicious, unused]);
+        stored_report.pub_use_fix_facts.push(StoredPubUseFixFact {
             child_path:      fixture.crate_root.to_string_lossy().into_owned(),
             child_line:      2,
             child_item_name: "Child".to_string(),
@@ -937,18 +948,20 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths =
-            [fixture.write_report(&format!("suppressed.{REPORT_FILE_EXTENSION}"), &report)];
+        let report_paths = [fixture.write_report(
+            &format!("suppressed.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded_report.report.findings.len(), 1);
         assert_eq!(
-            loaded.report.findings[0].diagnostic_code,
+            loaded_report.report.findings[0].diagnostic_code,
             DiagnosticCode::UnusedPub
         );
         assert!(
-            loaded
+            loaded_report
                 .report
                 .facts
                 .pub_use_fix_facts
@@ -970,8 +983,8 @@ mod tests {
         );
         suspicious.item = Some(StoredFinding::render_item("struct", "Child"));
         suspicious.fix_support = FixSupport::PubUse;
-        let mut report = fixture.report_with_findings(vec![suspicious]);
-        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+        let mut stored_report = fixture.report_with_findings(vec![suspicious]);
+        stored_report.pub_use_fix_facts.push(StoredPubUseFixFact {
             child_path:      fixture.crate_root.to_string_lossy().into_owned(),
             child_line:      2,
             child_item_name: "Child".to_string(),
@@ -979,13 +992,18 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths =
-            [fixture.write_report(&format!("surviving.{REPORT_FILE_EXTENSION}"), &report)];
+        let report_paths = [fixture.write_report(
+            &format!("surviving.{REPORT_FILE_EXTENSION}"),
+            &stored_report,
+        )];
 
-        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+        let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
-        assert_eq!(loaded.report.findings.len(), 1);
-        assert_eq!(loaded.report.facts.pub_use_fix_facts.iter().count(), 1);
+        assert_eq!(loaded_report.report.findings.len(), 1);
+        assert_eq!(
+            loaded_report.report.facts.pub_use_fix_facts.iter().count(),
+            1
+        );
     }
 
     #[test]
@@ -1004,14 +1022,14 @@ mod tests {
             "M",
             3,
         );
-        let mut report = fixture.report_with_findings(vec![fixable, unfixable]);
-        report.subtree_reexport_fix_facts = vec![
+        let mut stored_report = fixture.report_with_findings(vec![fixable, unfixable]);
+        stored_report.subtree_reexport_fix_facts = vec![
             stored_subtree_reexport_fix_fact(&fixture.crate_root, 2),
             stored_subtree_reexport_fix_fact(&fixture.crate_root, 3),
             stored_subtree_reexport_fix_fact(&fixture.crate_root, 4),
         ];
-        report.module_mount_facts = vec![stored_module_mount_fact(&fixture.crate_root)];
-        let mut reports = [report];
+        stored_report.module_mount_facts = vec![stored_module_mount_fact(&fixture.crate_root)];
+        let mut reports = [stored_report];
 
         discard_fix_facts_for_suppressed_findings(&mut reports);
 
@@ -1033,11 +1051,11 @@ mod tests {
             "N",
             2,
         );
-        let mut report = fixture.report_with_findings(vec![unfixable]);
-        report.subtree_reexport_fix_facts =
+        let mut stored_report = fixture.report_with_findings(vec![unfixable]);
+        stored_report.subtree_reexport_fix_facts =
             vec![stored_subtree_reexport_fix_fact(&fixture.crate_root, 2)];
-        report.module_mount_facts = vec![stored_module_mount_fact(&fixture.crate_root)];
-        let mut reports = [report];
+        stored_report.module_mount_facts = vec![stored_module_mount_fact(&fixture.crate_root)];
+        let mut reports = [stored_report];
 
         discard_fix_facts_for_suppressed_findings(&mut reports);
 

@@ -101,19 +101,19 @@ pub(crate) struct OperationMode {
 
 impl From<&FixCli> for OperationMode {
     fn from(fix_cli: &FixCli) -> Self {
-        let fixes = FixSelection::from(fix_cli);
+        let fix_selection = FixSelection::from(fix_cli);
         match fix_cli.execution {
             FixExecution::PreviewRequested | FixExecution::PreviewAll => Self {
                 intent: OperationIntent::DryRun,
-                fixes,
+                fixes:  fix_selection,
             },
             FixExecution::ReadOnly => Self {
                 intent: OperationIntent::ReadOnly,
-                fixes,
+                fixes:  fix_selection,
             },
             FixExecution::ApplyRequested | FixExecution::ApplyAll => Self {
                 intent: OperationIntent::Apply,
-                fixes,
+                fixes:  fix_selection,
             },
         }
     }

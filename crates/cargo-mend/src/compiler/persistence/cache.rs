@@ -42,13 +42,15 @@ impl ReportCacheState {
     }
 }
 
-fn stored_crate_root_exists(stored: &StoredReport) -> bool {
-    stored.crate_root_file.is_empty() || {
-        let crate_root = Path::new(&stored.crate_root_file);
+fn stored_crate_root_exists(stored_report: &StoredReport) -> bool {
+    stored_report.crate_root_file.is_empty() || {
+        let crate_root = Path::new(&stored_report.crate_root_file);
         if crate_root.is_absolute() {
             crate_root.exists()
         } else {
-            Path::new(&stored.package_root).join(crate_root).exists()
+            Path::new(&stored_report.package_root)
+                .join(crate_root)
+                .exists()
         }
     }
 }

@@ -32,7 +32,7 @@ clap   = { workspace = true }
 crossterm     = { workspace = true, features = ["use-dev-tty"] }
 dirs          = { workspace = true }
 ratatui       = { workspace = true }
-rustix        = { workspace = true, features = ["fs", "param", "process"] }
+rustix        = { workspace = true, features = ["fs", "param", "process", "time"] }
 serde         = { workspace = true, features = ["derive"] }
 signal-hook   = { workspace = true }
 sysinfo       = { workspace = true }

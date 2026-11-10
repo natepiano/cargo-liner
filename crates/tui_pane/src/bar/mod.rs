@@ -37,6 +37,8 @@ pub use render::render;
 pub use slot::BarSlot;
 pub use slot::ShortcutState;
 pub use status_bar::StatusBar;
+pub use status_line::HintToggleState;
+pub(crate) use status_line::HintValue;
 pub use status_line::ScanIndicator;
 pub use status_line::StatusLine;
 pub use status_line::StatusLineGlobal;

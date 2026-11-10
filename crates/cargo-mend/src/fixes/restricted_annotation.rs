@@ -23,12 +23,25 @@ enum VisibilityReplacement {
     Replace { annotation: String },
 }
 
+/// `Unchanged` would write identical bytes and falsely count a fix while leaving the file
+/// untouched and the same finding on the next run, preventing `--fix-all` convergence.
+/// `Required` changes the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnnotationRewrite {
+    Unchanged,
+    Required,
+}
+
 impl VisibilityReplacement {
-    fn is_noop(&self, source: &str, site: VisibilityAnnotationSite) -> bool {
+    fn rewrite(&self, source: &str, site: VisibilityAnnotationSite) -> AnnotationRewrite {
         match self {
-            Self::Remove => false,
+            Self::Remove => AnnotationRewrite::Required,
             Self::Replace { annotation } => {
-                source.get(site.start..site.end) == Some(annotation.as_str())
+                if source.get(site.start..site.end) == Some(annotation.as_str()) {
+                    AnnotationRewrite::Unchanged
+                } else {
+                    AnnotationRewrite::Required
+                }
             },
         }
     }
@@ -57,7 +70,7 @@ impl VisibilityReplacement {
 /// alongside it; every other finding is left alone.
 pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationScan> {
     let root = Path::new(&report.root);
-    let mut fixes = Vec::new();
+    let mut use_fixes = Vec::new();
     let mut rewritten_sites: BTreeSet<String> = BTreeSet::new();
     for finding in &report.findings {
         let replacement = match &finding.item_visibility.narrower_scope {
@@ -82,13 +95,14 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         // confirms they still say what the report said. It once refused any
         // restricted spelling but `pub(crate)` and `pub(in crate)`, which left
         // every `pub(in crate::a)` narrowing suggested and never written.
-        let (expected_form, expected_annotation) = match &finding.item_visibility.written {
-            WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
-            WrittenVisibility::Restricted(source) => {
-                (VisibilityAnnotationForm::Restricted, source.as_str())
-            },
-            WrittenVisibility::Unknown => continue,
-        };
+        let (expected_visibility_annotation_form, expected_annotation) =
+            match &finding.item_visibility.written {
+                WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
+                WrittenVisibility::Restricted(source) => {
+                    (VisibilityAnnotationForm::Restricted, source.as_str())
+                },
+                WrittenVisibility::Unknown => continue,
+            };
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
@@ -98,16 +112,17 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         };
         // `annotation_agreement` guards against source changes since the
         // report was written. Only edit the exact annotation the compiler pass classified.
-        if annotation_agreement(&source, site, expected_form, expected_annotation)
-            == AnnotationAgreement::Changed
+        if annotation_agreement(
+            &source,
+            site,
+            expected_visibility_annotation_form,
+            expected_annotation,
+        ) == AnnotationAgreement::Changed
         {
             continue;
         }
-        // `scan_from_report` rejects `replacement` when it writes back the bytes it
-        // replaces: that is not a fix. It would be counted as applied, leave the
-        // file untouched, and the finding would
-        // return unchanged on the next run — a `--fix-all` that never converges.
-        if replacement.is_noop(&source, site) {
+        // `AnnotationRewrite::Unchanged` cannot count as an applied fix.
+        if replacement.rewrite(&source, site) == AnnotationRewrite::Unchanged {
             continue;
         }
         // `rewritten_sites` limits `scan_from_report` to one rewrite per declaration
@@ -122,9 +137,9 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         if !rewritten_sites.insert(format!("{}:{}", finding.path, site.start)) {
             continue;
         }
-        fixes.push(replacement.into_fix(absolute_path, site));
+        use_fixes.push(replacement.into_fix(absolute_path, site));
     }
-    Ok(RestrictedAnnotationScan { fixes })
+    Ok(RestrictedAnnotationScan { fixes: use_fixes })
 }
 
 /// Guards against source changes since the report: edit only the exact annotation classified.
@@ -152,6 +167,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::AnnotationAgreement;
+    use super::AnnotationRewrite;
     use super::VisibilityAnnotationForm;
     use super::VisibilityAnnotationSite;
     use super::VisibilityReplacement;
@@ -177,7 +193,10 @@ mod tests {
         let source = "pub(crate)   fn item() {}\n";
         let result = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
             let replacement = VisibilityReplacement::Remove;
-            assert!(!replacement.is_noop(source, site));
+            assert_eq!(
+                replacement.rewrite(source, site),
+                AnnotationRewrite::Required
+            );
             let fix = replacement.into_fix(PathBuf::from("src/lib.rs"), site);
             format!(
                 "{}{}{}",
@@ -194,16 +213,20 @@ mod tests {
     fn replacing_visibility_preserves_the_separator_and_rejects_noops() {
         let source = "pub(crate)   fn item() {}\n";
         let result = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
-            assert!(
+            assert_eq!(
                 VisibilityReplacement::Replace {
                     annotation: String::from("pub(crate)"),
                 }
-                .is_noop(source, site)
+                .rewrite(source, site),
+                AnnotationRewrite::Unchanged
             );
             let replacement = VisibilityReplacement::Replace {
                 annotation: String::from("pub(super)"),
             };
-            assert!(!replacement.is_noop(source, site));
+            assert_eq!(
+                replacement.rewrite(source, site),
+                AnnotationRewrite::Required
+            );
             let fix = replacement.into_fix(PathBuf::from("src/lib.rs"), site);
             format!(
                 "{}{}{}",

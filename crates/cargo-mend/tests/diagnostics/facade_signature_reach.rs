@@ -27,6 +27,10 @@ fn facade_type_named_in_a_wider_signature_keeps_the_caller_boundary() {
 name = "facade_signature_reach_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             (

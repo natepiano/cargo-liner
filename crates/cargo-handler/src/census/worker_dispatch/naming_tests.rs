@@ -1,8 +1,8 @@
-//! A worker's first task locates its own roster without a surviving launcher.
+//! Staff membership names a worker after its launcher exits.
 
 #![expect(
     clippy::expect_used,
-    reason = "temporary rosters and rollouts must be readable"
+    reason = "temporary staff documents and rollouts must be readable"
 )]
 
 use std::time::Duration;
@@ -23,36 +23,34 @@ fn session(root: &Path) -> TempDir {
         .expect("isolated session")
 }
 
-fn write_roster(directory: &Path, thread: &str, seat: &str, modified: u64) {
-    let path = directory.join(ROSTER_FILE);
-    fs::write(
-        &path,
-        serde_json::to_vec(&serde_json::json!({
-            seat:{"thread_id":thread, "role":"fix", "launcher_pid":null}
-        }))
-        .expect("roster encodes"),
-    )
-    .expect("roster writes");
+fn write_staff_member(directory: &Path, thread: &str, seat: &str, modified: u64) {
+    let path = directory.join("staff.json");
+    write_worker_fixture(
+        directory,
+        &serde_json::json!({
+            seat:{"current_session":thread, "role":"fix"}
+        }),
+    );
     fs::File::options()
         .write(true)
         .open(&path)
-        .expect("roster opens")
+        .expect("staff document opens")
         .set_modified(UNIX_EPOCH + Duration::from_secs(modified))
         .expect("fixture mtime sets without sleeping");
 }
 
 #[test]
-fn worker_naming_launcher_gone_still_uses_its_session_roster_and_first_task_line() {
+fn worker_naming_launcher_gone_uses_staff_and_the_first_task_line() {
     let root = TempDir::new().expect("isolated session roots");
     let roots = SessionRoots::new([root.path().join("unit"), root.path().join("delegate")]);
     for family in ["unit", "delegate"] {
         let directory = session(&root.path().join(family));
-        write_roster(directory.path(), THREAD, "fixture-fix2", 100);
+        write_staff_member(directory.path(), THREAD, "fixture-fix2", 100);
         let prompt = format!(
             "{TASK}\n\nWrite the summary to {}/phases/4/impl_summary_fix.txt\nIgnore this later task line.",
             directory.path().display()
         );
-        let label = WorkerNames::default().name(
+        let label = fixture_names(directory.path()).name(
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
@@ -65,7 +63,7 @@ fn worker_naming_launcher_gone_still_uses_its_session_roster_and_first_task_line
 }
 
 #[test]
-fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
+fn worker_naming_unlisted_session_uses_role_and_task_or_role_alone() {
     let root = TempDir::new().expect("isolated session roots");
     let roots = SessionRoots::new([root.path().to_path_buf()]);
     let mut names = WorkerNames::default();
@@ -106,19 +104,19 @@ fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
 }
 
 #[test]
-fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() {
+fn worker_naming_follows_the_current_staff_name_after_handoff() {
     let root = TempDir::new().expect("isolated session roots");
     let roots = SessionRoots::new([root.path().join("unit"), root.path().join("delegate")]);
     let older = session(&root.path().join("unit"));
     let newer = session(&root.path().join("delegate"));
-    write_roster(older.path(), THREAD, "fixture-fix2", 100);
-    write_roster(newer.path(), "other-thread", "fixture-review", 200);
+    write_staff_member(older.path(), THREAD, "fixture-fix2", 100);
+    write_staff_member(newer.path(), "other-thread", "fixture-review", 200);
     let prompt = format!(
         "{TASK}\nBoard: {}/board.log\nSummary: {}/phases/4/summary.txt",
         older.path().display(),
         newer.path().display()
     );
-    let mut names = WorkerNames::default();
+    let mut names = fixture_names(older.path());
     assert_eq!(
         names.name(
             THREAD,
@@ -129,7 +127,8 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
         ),
         format!("fix2 · {TASK}")
     );
-    write_roster(newer.path(), THREAD, "fixture-review", 300);
+    write_staff_member(newer.path(), THREAD, "fixture-review", 300);
+    names.set_staff(fixture_names(newer.path()).staff_snapshot());
     assert_eq!(
         names.name(
             THREAD,
@@ -139,9 +138,10 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
             &roots
         ),
         format!("review · {TASK}"),
-        "mtime invalidates the previously nonmatching roster"
+        "the changed staff snapshot supplies the current worker name"
     );
-    write_roster(older.path(), THREAD, "fixture-impl", 400);
+    write_staff_member(older.path(), THREAD, "fixture-impl", 400);
+    names.set_staff(fixture_names(older.path()).staff_snapshot());
     assert_eq!(
         names.name(
             THREAD,
@@ -151,7 +151,7 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
             &roots
         ),
         format!("impl · {TASK}"),
-        "newest matching roster wins regardless of path order"
+        "the current staff snapshot supplies the worker name regardless of path order"
     );
 }
 
@@ -160,7 +160,7 @@ fn worker_naming_reads_the_first_task_from_rollout_after_injected_context() {
     let root = TempDir::new().expect("isolated session root");
     let roots = SessionRoots::new([root.path().join("unit")]);
     let directory = session(&root.path().join("unit"));
-    write_roster(directory.path(), THREAD, "fixture-impl", 100);
+    write_staff_member(directory.path(), THREAD, "fixture-impl", 100);
     let rollout = directory.path().join("rollout.jsonl");
     let prompt = format!(
         "{TASK}\nSummary: {}/phases/4/impl_summary.txt",
@@ -192,7 +192,7 @@ fn worker_naming_reads_the_first_task_from_rollout_after_injected_context() {
     .expect("rollout writes");
     let read = crate::census::tier::Rollouts::default().read(&rollout);
     assert_eq!(
-        WorkerNames::default().name(
+        fixture_names(directory.path()).name(
             THREAD,
             read.first_prompt.text(),
             &read.worktree,

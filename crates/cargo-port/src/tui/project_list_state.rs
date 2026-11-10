@@ -38,7 +38,7 @@ pub(super) struct LintRuntimeRootEntry {
 /// `ProjectList` is the single source of truth for project data and the
 /// per-pane state that navigates that data. Mutations go through its
 /// methods; derived state (e.g. `cached_visible_rows`) is computed from
-/// it on demand or refreshed by the `SelectionMutation` guard.
+/// it on demand or refreshed by the expansion methods after a change.
 ///
 /// Roots preserve insertion order in an `IndexMap`. `path_index` routes each
 /// project path to its root, checkout and nested node in constant time. Structural

@@ -18,7 +18,7 @@ pub(super) enum ScopedMergeConflictCoverage {
 
 pub(super) fn scoped_merge_conflict_coverage(
     merge_tree_output: &[u8],
-    scopes: &ReservationScopeSet,
+    reservation_scope_set: &ReservationScopeSet,
     protected_tip: &GitObjectId,
 ) -> ScopedMergeConflictCoverage {
     let mut records = merge_tree_output.split(|byte| *byte == b'\0');
@@ -50,7 +50,7 @@ pub(super) fn scoped_merge_conflict_coverage(
         if metadata.split(|byte| *byte == b' ').count() != 3 || path.is_empty() {
             return ScopedMergeConflictCoverage::Unreadable;
         }
-        if scoped_merge_conflict_path_is_covered(path, scopes) {
+        if scoped_merge_conflict_path_is_covered(path, reservation_scope_set) {
             return ScopedMergeConflictCoverage::CoveredByReservation;
         }
         conflict_paths.push(path);
@@ -92,7 +92,7 @@ pub(super) fn scoped_merge_conflict_coverage(
             && scoped_merge_displaced_reserved_file(
                 &conflict_paths,
                 &message_paths,
-                scopes,
+                reservation_scope_set,
                 protected_tip,
             )
         {
@@ -103,25 +103,28 @@ pub(super) fn scoped_merge_conflict_coverage(
 
 fn scoped_merge_conflict_path_is_covered(
     conflict_path: &[u8],
-    scopes: &ReservationScopeSet,
+    reservation_scope_set: &ReservationScopeSet,
 ) -> bool {
-    scopes.covers_path(conflict_path)
+    reservation_scope_set.covers_path(conflict_path)
 }
 
 fn scoped_merge_displaced_reserved_file(
     conflict_paths: &[&[u8]],
     message_paths: &[&[u8]],
-    scopes: &ReservationScopeSet,
+    reservation_scope_set: &ReservationScopeSet,
     protected_tip: &GitObjectId,
 ) -> bool {
-    scopes.as_slice().iter().any(|scope| {
-        if scope.kind != ScopeKind::File {
-            return false;
-        }
-        let reserved_path = scope.path.to_string();
-        let displaced_path = format!("{reserved_path}~{protected_tip}");
-        conflict_paths.contains(&displaced_path.as_bytes())
-            && message_paths.contains(&reserved_path.as_bytes())
-            && message_paths.contains(&displaced_path.as_bytes())
-    })
+    reservation_scope_set
+        .as_slice()
+        .iter()
+        .any(|reservation_scope| {
+            if reservation_scope.kind != ScopeKind::File {
+                return false;
+            }
+            let reserved_path = reservation_scope.path.to_string();
+            let displaced_path = format!("{reserved_path}~{protected_tip}");
+            conflict_paths.contains(&displaced_path.as_bytes())
+                && message_paths.contains(&reserved_path.as_bytes())
+                && message_paths.contains(&displaced_path.as_bytes())
+        })
 }

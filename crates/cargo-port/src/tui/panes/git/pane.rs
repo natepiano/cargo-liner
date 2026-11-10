@@ -67,14 +67,14 @@ impl GitPane {
         group_root: &Path,
         compute: impl FnOnce() -> Vec<WorktreeInfo>,
     ) -> Vec<WorktreeInfo> {
-        if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {
-            return infos.clone();
+        if let Some(worktree_infos) = self.worktree_summary_cache.borrow().get(group_root) {
+            return worktree_infos.clone();
         }
-        let infos = compute();
+        let worktree_infos = compute();
         self.worktree_summary_cache
             .borrow_mut()
-            .insert(AbsolutePath::from(group_root), infos.clone());
-        infos
+            .insert(AbsolutePath::from(group_root), worktree_infos.clone());
+        worktree_infos
     }
 
     pub fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
@@ -105,11 +105,17 @@ impl Renderable<PaneRenderCtx<'_>> for GitPane {
         area: Rect,
         ctx: &PaneRenderCtx<'_>,
     ) -> Option<PaneFrameChrome> {
-        let styles = RenderStyles {
+        let render_styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         tui_pane::default_pane_chrome(ctx.color_mode),
         };
-        Some(git::render_git_pane_body(frame, area, self, &styles, ctx))
+        Some(git::render_git_pane_body(
+            frame,
+            area,
+            self,
+            &render_styles,
+            ctx,
+        ))
     }
 }
 

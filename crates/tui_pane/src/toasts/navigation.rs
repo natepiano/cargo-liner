@@ -20,18 +20,20 @@ pub enum ToastFocus {
 impl<Ctx: AppContext> Toasts<Ctx> {
     /// Return toast focus using the embedding's current pane focus.
     #[must_use]
-    pub fn focused_id(&self, pane: PaneFocusState) -> ToastFocus { self.focused_toast_id(pane) }
+    pub fn focused_id(&self, pane_focus_state: PaneFocusState) -> ToastFocus {
+        self.focused_toast_id(pane_focus_state)
+    }
 
     /// Return toast focus using the embedding's current pane focus.
     #[must_use]
-    pub fn focused_toast_id(&self, pane: PaneFocusState) -> ToastFocus {
-        if pane != PaneFocusState::Active {
+    pub fn focused_toast_id(&self, pane_focus_state: PaneFocusState) -> ToastFocus {
+        if pane_focus_state != PaneFocusState::Active {
             return ToastFocus::PaneUnfocused;
         }
         self.active_now()
             .get(self.viewport.pos())
-            .map_or(ToastFocus::PaneFocusedWithoutToast, |toast| {
-                ToastFocus::PaneFocusedOn(toast.id())
+            .map_or(ToastFocus::PaneFocusedWithoutToast, |toast_view| {
+                ToastFocus::PaneFocusedOn(toast_view.id())
             })
     }
 
@@ -51,13 +53,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     }
 
     /// Apply list navigation while focus is on the Toasts pane.
-    pub fn on_navigation(&mut self, nav: ListNavigation) -> KeyOutcome {
+    pub fn on_navigation(&mut self, list_navigation: ListNavigation) -> KeyOutcome {
         let len = self.active_now().len();
         if len == 0 {
             return KeyOutcome::Unhandled;
         }
         self.viewport.set_len(len);
-        match nav {
+        match list_navigation {
             ListNavigation::Up => self.viewport.up(),
             ListNavigation::Down => self.viewport.down(),
             ListNavigation::Home => self.viewport.home(),
@@ -71,10 +73,10 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     }
 
     /// Consume a focus-cycle step as toast scrolling when possible.
-    pub fn try_consume_cycle_step(&mut self, direction: CycleDirection) -> bool {
+    pub fn try_consume_cycle_step(&mut self, cycle_direction: CycleDirection) -> bool {
         let len = self.active_now().len();
         self.viewport.set_len(len);
-        match direction {
+        match cycle_direction {
             CycleDirection::Next if self.viewport.pos() + 1 < len => {
                 self.viewport.down();
                 true

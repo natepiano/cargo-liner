@@ -10,6 +10,10 @@ fn canonical_field_visibility_follows_nested_policy() {
 name = "canonical_field_visibility_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -51,6 +55,10 @@ fn pub_field_on_private_struct_is_flagged() {
 name = "field_visibility_pub_on_private"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -88,6 +96,10 @@ fn pub_crate_field_on_private_struct_is_tightened_to_private() {
 name = "field_visibility_pub_crate_on_private"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -132,6 +144,10 @@ fn pub_field_on_pub_crate_struct_is_not_flagged() {
 name = "field_visibility_idiom_pub_crate"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -167,6 +183,10 @@ fn pub_field_on_pub_super_struct_is_not_flagged() {
 name = "field_visibility_idiom_pub_super"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -203,6 +223,10 @@ fn opaque_handle_pattern_is_not_flagged() {
 name = "field_visibility_opaque"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -237,6 +261,10 @@ fn private_field_on_any_struct_is_not_flagged() {
 name = "field_visibility_private"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -270,6 +298,10 @@ fn fix_removes_dead_pub_annotation() {
 name = "field_visibility_fix"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");

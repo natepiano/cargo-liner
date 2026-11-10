@@ -125,6 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compiler wrapper rows name their frontend and crate; command rows retain their process, argument pairs, directory, and toggle state.
+
 - Expanded cells keep their column header above scrolled rows. The row range excludes the pinned header.
 
 - Moving command cells keep toast cards clear of the visible summary footer. Global keys work before the first expanded frame.

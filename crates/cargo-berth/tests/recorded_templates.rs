@@ -38,6 +38,12 @@ mod git_configuration;
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
+#[path = "support/answers_fixtures.rs"]
+mod answers_fixtures;
+
+#[path = "support/compaction_fixture.rs"]
+mod compaction_fixture;
+
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
 #[path = "support/linked_checkout.rs"]
@@ -139,6 +145,10 @@ fn main() {
     let templates: Vec<_> = recorded_populations()
         .into_iter()
         .chain([
+            gate_fixtures::THREE_COMMIT_REBASE,
+            compaction_fixture::PREPARED_COMPACTION,
+            answers_fixtures::HOLDER_LIFECYCLE_START,
+            edges_fixtures::ORPHANED_MIDDLE_START,
             reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
             reanchoring_templates::ACTIVE_FIRST_SPLIT,
             reanchoring_templates::UPPER_FIRST_SPLIT,

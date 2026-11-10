@@ -40,10 +40,6 @@ enum SyncToastReadiness {
     Waiting,
 }
 
-impl SyncToastReadiness {
-    const fn is_ready(self) -> bool { matches!(self, Self::Ready) }
-}
-
 /// Three-state baseline for the per-project ahead/behind value.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 enum Baseline {
@@ -99,12 +95,19 @@ impl SyncTracker {
         let entry = self.entries.entry(path).or_default();
         let previous = entry.last_seen;
         entry.last_seen = Baseline::Seen(current);
-        match (entry.toast_readiness.is_ready(), previous) {
-            (true, Baseline::Seen(prev)) if prev != current => Some(SyncTransition {
-                previous: prev,
-                current,
-            }),
-            _ => None,
+        match (entry.toast_readiness, previous) {
+            (SyncToastReadiness::Ready, Baseline::Seen(prev)) => {
+                if prev == current {
+                    None
+                } else {
+                    Some(SyncTransition {
+                        previous: prev,
+                        current,
+                    })
+                }
+            },
+            (SyncToastReadiness::Ready, Baseline::Unseen)
+            | (SyncToastReadiness::Waiting, Baseline::Unseen | Baseline::Seen(_)) => None,
         }
     }
 

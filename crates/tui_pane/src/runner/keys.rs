@@ -31,32 +31,32 @@ pub fn dispatch_key<A: TerminalApp>(app: &mut A, key: KeyEvent) {
     // `keymap` is re-borrowed every key: rebinding in the keymap overlay
     // swaps the whole map out from under the dispatch.
     let keymap: Rc<Keymap<A>> = app.keymap();
-    let bind = KeyBind::from(key);
-    if app.modal_key(&keymap, &bind) == KeyOutcome::Consumed {
+    let key_bind = KeyBind::from(key);
+    if app.modal_key(&keymap, &key_bind) == KeyOutcome::Consumed {
         return;
     }
-    if let Some(overlay) = app.framework().overlay() {
-        let in_text_mode = overlay_is_in_text_mode(app.framework(), overlay);
-        if let Some(action) = keymap.framework_globals().action_for(&bind)
+    if let Some(framework_overlay_id) = app.framework().overlay() {
+        let in_text_mode = overlay_is_in_text_mode(app.framework(), framework_overlay_id);
+        if let Some(global_action) = keymap.framework_globals().action_for(&key_bind)
             && !in_text_mode
-            && matches_open_overlay_toggle(action, overlay)
+            && matches_open_overlay_toggle(global_action, framework_overlay_id)
         {
-            keymap.dispatch_framework_global(action, app);
+            keymap.dispatch_framework_global(global_action, app);
             return;
         }
-        dispatch_overlay_key(app, &keymap, overlay, bind);
+        dispatch_overlay_key(app, &keymap, framework_overlay_id, key_bind);
         return;
     }
-    if app.attract_key(&keymap, &bind) == KeyOutcome::Consumed {
+    if app.attract_key(&keymap, &key_bind) == KeyOutcome::Consumed {
         return;
     }
-    if let Some(action) = keymap.framework_globals().action_for(&bind) {
-        keymap.dispatch_framework_global(action, app);
+    if let Some(global_action) = keymap.framework_globals().action_for(&key_bind) {
+        keymap.dispatch_framework_global(global_action, app);
         return;
     }
     if let Some(action) = keymap
         .globals::<A::AppGlobals>()
-        .and_then(|scope| scope.action_for(&bind))
+        .and_then(|scope_map| scope_map.action_for(&key_bind))
     {
         A::AppGlobals::dispatcher()(action, app);
     }
@@ -70,18 +70,20 @@ pub fn dispatch_key<A: TerminalApp>(app: &mut A, key: KeyEvent) {
 fn dispatch_overlay_key<A: TerminalApp>(
     app: &mut A,
     keymap: &Keymap<A>,
-    overlay: FrameworkOverlayId,
-    bind: KeyBind,
+    framework_overlay_id: FrameworkOverlayId,
+    key_bind: KeyBind,
 ) {
-    if overlay == FrameworkOverlayId::Keymap && app.framework().keymap_pane.is_capturing() {
-        let command = app.framework_mut().keymap_pane.handle_capture_key(bind);
-        crate::handle_keymap_capture_command(app, keymap, command);
+    if framework_overlay_id == FrameworkOverlayId::Keymap
+        && app.framework().keymap_pane.is_capturing()
+    {
+        let keymap_capture_command = app.framework_mut().keymap_pane.handle_capture_key(key_bind);
+        crate::handle_keymap_capture_command(app, keymap, keymap_capture_command);
         return;
     }
-    match overlay {
-        FrameworkOverlayId::Settings => dispatch_settings_key(app, keymap, bind),
-        FrameworkOverlayId::Keymap => dispatch_keymap_key(app, keymap, bind),
-        FrameworkOverlayId::GlobalShortcuts => dispatch_global_shortcuts_key(app, keymap, bind),
+    match framework_overlay_id {
+        FrameworkOverlayId::Settings => dispatch_settings_key(app, keymap, key_bind),
+        FrameworkOverlayId::Keymap => dispatch_keymap_key(app, keymap, key_bind),
+        FrameworkOverlayId::GlobalShortcuts => dispatch_global_shortcuts_key(app, keymap, key_bind),
     }
 }
 
@@ -89,24 +91,28 @@ fn dispatch_overlay_key<A: TerminalApp>(
 /// selection, capture, conflict checks, and the write back to
 /// `keymap.toml` — through the app's
 /// [`KeymapEditContext`](crate::KeymapEditContext) impl.
-fn dispatch_keymap_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: KeyBind) {
-    if let Some(action) = keymap.overlay().action_for(&bind) {
-        crate::dispatch_keymap_action(action, app, keymap);
+fn dispatch_keymap_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, key_bind: KeyBind) {
+    if let Some(overlay_action) = keymap.overlay().action_for(&key_bind) {
+        crate::dispatch_keymap_action(overlay_action, app, keymap);
         return;
     }
-    crate::handle_keymap_navigation_key(app, keymap, bind.code);
+    crate::handle_keymap_navigation_key(app, keymap, key_bind.code);
 }
 
 /// Keys the `?` overlay owns. Editing a row here hands off to the full
 /// keymap editor with that row already selected.
-fn dispatch_global_shortcuts_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: KeyBind) {
-    match keymap.overlay().action_for(&bind) {
+fn dispatch_global_shortcuts_key<A: TerminalApp>(
+    app: &mut A,
+    keymap: &Keymap<A>,
+    key_bind: KeyBind,
+) {
+    match keymap.overlay().action_for(&key_bind) {
         Some(OverlayAction::StartEdit) => crate::edit_selected_global_shortcut(app, keymap),
         Some(OverlayAction::Cancel) => keymap.dispatch_framework_global(GlobalAction::Dismiss, app),
         None => app
             .framework_mut()
             .global_shortcuts_pane
-            .handle_navigation_key(bind.code),
+            .handle_navigation_key(key_bind.code),
     }
 }
 
@@ -120,9 +126,13 @@ fn dispatch_global_shortcuts_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>
 /// says they are. Enter and space stay here: they are this overlay's
 /// own way of saying "the next value", or "edit this" on a typed row,
 /// not a direction anyone would rebind.
-fn dispatch_settings_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: KeyBind) {
+fn dispatch_settings_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, key_bind: KeyBind) {
     if app.framework().settings_pane.is_editing() {
-        match app.framework_mut().settings_pane.handle_text_input(bind) {
+        match app
+            .framework_mut()
+            .settings_pane
+            .handle_text_input(key_bind)
+        {
             SettingsCommand::None => {},
             SettingsCommand::Save => {
                 let text = app.framework().settings_pane.edited_text().to_string();
@@ -133,19 +143,19 @@ fn dispatch_settings_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: 
         }
         return;
     }
-    if keymap.overlay().action_for(&bind) == Some(OverlayAction::Cancel) {
+    if keymap.overlay().action_for(&key_bind) == Some(OverlayAction::Cancel) {
         keymap.dispatch_framework_global(GlobalAction::Dismiss, app);
         return;
     }
-    if let Some(action) = keymap
+    if let Some(nav_action) = keymap
         .navigation()
-        .and_then(|scope| scope.action_for(&bind))
+        .and_then(|scope_map| scope_map.action_for(&key_bind))
     {
-        let focused = *app.framework().focused();
-        SettingsNavigation::<A>::dispatcher()(action, focused, app);
+        let focused_pane = *app.framework().focused();
+        SettingsNavigation::<A>::dispatcher()(nav_action, focused_pane, app);
         return;
     }
-    if matches!(bind.code, KeyCode::Enter | KeyCode::Char(' ')) {
+    if matches!(key_bind.code, KeyCode::Enter | KeyCode::Char(' ')) {
         match app.setting_text() {
             Some(text) => app.framework_mut().settings_pane.begin_editing(text),
             None => app.step_setting(SettingStep::Next),
@@ -330,7 +340,7 @@ mod tests {
         }
     }
 
-    fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
+    fn key(key_code: KeyCode) -> KeyEvent { KeyEvent::new(key_code, KeyModifiers::NONE) }
 
     #[test]
     fn app_modal_consumes_app_and_framework_globals_until_escape() {
@@ -356,7 +366,7 @@ mod tests {
     #[test]
     fn x_leaves_each_framework_overlay_open_while_escape_closes_it() {
         let mut app = TestApp::new();
-        for (overlay, opener) in [
+        for (framework_overlay_id, opener) in [
             (FrameworkOverlayId::Settings, key(KeyCode::Char('s'))),
             (
                 FrameworkOverlayId::Keymap,
@@ -365,9 +375,9 @@ mod tests {
             (FrameworkOverlayId::GlobalShortcuts, key(KeyCode::Char('?'))),
         ] {
             dispatch_key(&mut app, opener);
-            assert_eq!(app.framework.overlay(), Some(overlay));
+            assert_eq!(app.framework.overlay(), Some(framework_overlay_id));
             dispatch_key(&mut app, key(KeyCode::Char('x')));
-            assert_eq!(app.framework.overlay(), Some(overlay));
+            assert_eq!(app.framework.overlay(), Some(framework_overlay_id));
             dispatch_key(&mut app, key(KeyCode::Esc));
             assert_eq!(app.framework.overlay(), None);
         }
@@ -388,13 +398,13 @@ mod tests {
     fn settings_overlay_steps_on_enter_space_and_the_sideways_keys() {
         let mut app = TestApp::new();
         dispatch_key(&mut app, key(KeyCode::Char('s')));
-        for code in [
+        for key_code in [
             KeyCode::Enter,
             KeyCode::Char(' '),
             KeyCode::Left,
             KeyCode::Right,
         ] {
-            dispatch_key(&mut app, key(code));
+            dispatch_key(&mut app, key(key_code));
         }
         assert_eq!(
             app.steps,

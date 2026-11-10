@@ -134,30 +134,35 @@ bash ~/.claude/scripts/direct/verify.sh lint cargo-port
 bash ~/.claude/scripts/direct/verify.sh test cargo-port
 ```
 
-For a live check on natedev/Linux, build first (the first command below prints `binary: <path>`). The commands below create an absolute scratch XDG_CONFIG_HOME, removes an inherited configuration override, sets a scratch cache root and scans only the scratch project parent:
+For a live check on natedev/Linux, build first (the first command below prints `binary: <path>`). The whole check runs in one `TemporaryDirectory` block under `TMPDIR`, which removes the folder when cargo-port exits. The script creates an absolute scratch XDG_CONFIG_HOME, removes an inherited configuration override, sets a scratch cache root and scans only the scratch project parent:
 
 ```sh
 bash ~/.claude/scripts/direct/verify.sh build cargo-port
-port_scratch=$(mktemp -d /tmp/cargo-port-live.XXXXXX)
-mkdir -p "$port_scratch/config/cargo-port" "$port_scratch/projects/map-check/src"
-cat > "$port_scratch/projects/map-check/Cargo.toml" <<'TOML'
-[package]
-name = "map-check"
-version = "0.1.0"
-edition = "2024"
-TOML
-printf 'pub fn check() {}\n' > "$port_scratch/projects/map-check/src/lib.rs"
-cat > "$port_scratch/config/cargo-port/config.toml" <<TOML
-[tui]
-include_dirs = ["$port_scratch/projects"]
-[cache]
-root = "$port_scratch/cache"
-[lint]
-enabled = false
-TOML
-env -u CARGO_PORT_CONFIG_DIR XDG_CONFIG_HOME="$port_scratch/config" \
-  <binary path>
+python3 - <binary path> <<'PY'
+import os, pathlib, subprocess, sys, tempfile
+
+with tempfile.TemporaryDirectory(prefix="cargo-port-live.") as folder:
+    root = pathlib.Path(folder)
+    project = root / "projects" / "map-check"
+    (project / "src").mkdir(parents=True)
+    (project / "Cargo.toml").write_text(
+        '[package]\nname = "map-check"\nversion = "0.1.0"\nedition = "2024"\n'
+    )
+    (project / "src" / "lib.rs").write_text("pub fn check() {}\n")
+    config = root / "config" / "cargo-port"
+    config.mkdir(parents=True)
+    (config / "config.toml").write_text(
+        f'[tui]\ninclude_dirs = ["{root / "projects"}"]\n'
+        f'[cache]\nroot = "{root / "cache"}"\n[lint]\nenabled = false\n'
+    )
+    env = {key: value for key, value in os.environ.items() if key != "CARGO_PORT_CONFIG_DIR"}
+    env["XDG_CONFIG_HOME"] = str(root / "config")
+    with open("/dev/tty") as terminal:
+        subprocess.run([sys.argv[1]], env=env, stdin=terminal, check=False)
+PY
 ```
+
+The script reads its own text from standard input, so cargo-port takes its keys from `/dev/tty`.
 
 In a terminal, confirm map-check appears in the project list, then quit with q. Config and keymap resolve under the scratch configuration directory; saved tree state uses the scratch cache root.
 

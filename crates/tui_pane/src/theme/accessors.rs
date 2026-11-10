@@ -31,7 +31,7 @@ pub fn active_border_color() -> Color {
     theme()
         .pane_chrome
         .active_border
-        .map_or_else(title_color, |spec| spec.color)
+        .map_or_else(title_color, |style_spec| style_spec.color)
 }
 
 /// Background highlight for the currently focused pane row.
@@ -110,14 +110,22 @@ pub fn text_default() -> Color { theme().text.default.color }
 
 /// Client-defined role spec by app-owned key.
 #[must_use]
-pub fn role_spec(role: &str, fallback: StyleSpec) -> StyleSpec {
-    theme().roles.get(role).copied().unwrap_or(fallback)
+pub fn role_spec(role: &str, fallback_style_spec: StyleSpec) -> StyleSpec {
+    theme()
+        .roles
+        .get(role)
+        .copied()
+        .unwrap_or(fallback_style_spec)
 }
 
 /// Client-defined role style by app-owned key.
 #[must_use]
-pub fn role_style(role: &str, fallback: StyleSpec) -> Style { role_spec(role, fallback).style() }
+pub fn role_style(role: &str, fallback_style_spec: StyleSpec) -> Style {
+    role_spec(role, fallback_style_spec).style()
+}
 
 /// Client-defined role foreground color by app-owned key.
 #[must_use]
-pub fn role_color(role: &str, fallback: StyleSpec) -> Color { role_spec(role, fallback).color }
+pub fn role_color(role: &str, fallback_style_spec: StyleSpec) -> Color {
+    role_spec(role, fallback_style_spec).color
+}

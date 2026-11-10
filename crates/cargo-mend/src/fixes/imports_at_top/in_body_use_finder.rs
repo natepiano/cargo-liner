@@ -93,16 +93,12 @@ impl InBodyUseFinder<'_> {
         // conditionally compiled and the attributes travel with it to the top.
         let mut conditional_attributes = self.conditional_attributes.clone();
         conditional_attributes.extend(self.attributes(&use_item.attrs));
-        let insert = match self.imports.move_import(
+        let movement = self.imports.move_import(
             self.scope.insertion_offset,
             use_item,
             &conditional_attributes,
-        ) {
-            ImportMove::Blocked => return Ok(()),
-            ImportMove::Delete => false,
-            ImportMove::Insert => true,
-        };
-        self.emit_move(use_item, &bare_paths, &conditional_attributes, insert)
+        );
+        self.emit_move(use_item, &bare_paths, &conditional_attributes, movement)
     }
 
     /// Push the finding and the insertion/deletion fixes for a movable `use`.
@@ -113,8 +109,11 @@ impl InBodyUseFinder<'_> {
         use_item: &ItemUse,
         bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
-        insert: bool,
+        movement: ImportMove,
     ) -> anyhow::Result<()> {
+        if matches!(movement, ImportMove::Blocked) {
+            return Ok(());
+        }
         let use_span = use_item.span();
         // `use_span` includes the first attribute. Build the moved text from
         // `use_item.use_token` so `conditional_attributes` are emitted once.
@@ -163,13 +162,14 @@ impl InBodyUseFinder<'_> {
             item_visibility: ItemVisibility::default(),
         });
 
-        if insert {
-            self.emit_insertion(
+        match movement {
+            ImportMove::Blocked | ImportMove::Delete => {},
+            ImportMove::Insert => self.emit_insertion(
                 conditional_attributes,
                 use_kw_start,
                 use_end,
                 group.as_ref(),
-            );
+            ),
         }
 
         self.fixes.push(UseFix {
