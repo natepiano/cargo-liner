@@ -22,6 +22,7 @@ use super::GroupRowUse;
 use super::HashMap;
 use super::InvocationId;
 use super::Line;
+use super::PaintStage;
 use super::PaintedCellContents;
 use super::PathGroup;
 use super::PinnedGroup;
@@ -142,7 +143,9 @@ impl PreparedFrameTables {
         commands: Rc<RefCell<PreparedCommandCells>>,
     ) -> Self {
         commands.borrow_mut().retain_visible(&roster);
+        let grid_timer = probe::paint_timer(PaintStage::GridPreparation);
         let grids = FrameColumnGrids::for_frame(&roster, view, height, commands);
+        drop(grid_timer);
         Self {
             grids:      Rc::new(grids),
             roster:     Rc::new(roster),

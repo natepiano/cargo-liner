@@ -6,10 +6,7 @@
 //! machinery and no colors.
 
 pub(crate) mod builtins;
-
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
+mod family_palette;
 
 use ratatui::style::Color;
 use tui_pane::Theme;
@@ -111,12 +108,9 @@ const fn reserved_colors(theme: &Theme) -> [Color; 5] {
     ]
 }
 
-/// Palette entries clear of reserved inks and every previously selected hue.
-///
-/// Split out from [`family_palette`] so a test can aim it at a theme by
-/// name. The colours that matter are the ones this app ships, and the
-/// theme a test process runs under is the framework's fallback, whose
-/// label colour is a plain grey none of ours is.
+/// Select palette entries clear of reserved inks and previously selected hues.
+/// Tests supply shipped themes instead of the framework's fallback theme.
+/// [`family_palette::colors`] caches the result for the active theme.
 fn palette_clear_of<'theme>(
     theme: &'theme Theme,
     reserved: &'theme [Color],
@@ -142,46 +136,8 @@ fn palette_clear_of<'theme>(
         })
 }
 
-/// Family colors remain valid only for the complete immutable theme.
-#[derive(Default)]
-enum FamilyPalette {
-    #[default]
-    Unprepared,
-    Prepared {
-        theme:  Arc<Theme>,
-        colors: Rc<[Color]>,
-    },
-}
-
-thread_local! {
-    static FAMILY_PALETTE: RefCell<FamilyPalette> = const { RefCell::new(FamilyPalette::Unprepared) };
-}
-
-/// Reuse the family colors until any theme input changes.
-fn family_palette() -> impl Iterator<Item = Color> {
-    let theme = tui_pane::theme();
-    let colors = FAMILY_PALETTE.with_borrow_mut(|palette| {
-        if let FamilyPalette::Prepared {
-            theme: previous,
-            colors,
-        } = palette
-            && Arc::ptr_eq(previous, &theme)
-        {
-            return Rc::clone(colors);
-        }
-        let reserved = reserved_colors(&theme);
-        let colors: Rc<[Color]> = palette_clear_of(&theme, &reserved).collect();
-        *palette = FamilyPalette::Prepared {
-            theme,
-            colors: Rc::clone(&colors),
-        };
-        colors
-    });
-    (0..colors.len()).map(move |index| colors[index])
-}
-
 /// How many families can be told apart at once.
-pub(crate) fn family_color_count() -> usize { family_palette().count() }
+pub(crate) fn family_color_count() -> usize { family_palette::colors().count() }
 
 /// The colour a family holds, by the index the roster handed it.
 ///
@@ -201,19 +157,31 @@ pub(crate) fn family_color(index: usize) -> Color {
     if count == 0 {
         return label_color();
     }
-    family_palette()
+    family_palette::colors()
         .nth(index % count)
         .unwrap_or_else(label_color)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    struct ActiveThemeRestore {
+        original: Arc<Theme>,
+    }
+
+    impl Drop for ActiveThemeRestore {
+        fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.original)); }
+    }
 
     #[test]
     fn family_colors_follow_role_and_reserved_ink_changes() {
-        let original = tui_pane::theme();
-        let mut base = (*original).clone();
+        let restore = ActiveThemeRestore {
+            original: tui_pane::theme(),
+        };
+        let mut base = (*restore.original).clone();
         for role in FAMILY_ROLES {
             base.roles
                 .insert(role.into(), tui_pane::StyleSpec::from_color(Color::Reset));
@@ -252,7 +220,7 @@ mod tests {
         let mut fallback = base.clone();
         fallback.roles.remove(FAMILY_BLUE_ROLE);
         let mut expected = vec![Color::Reset; FAMILY_ROLES.len()];
-        expected[0] = Color::Rgb(140, 150, 255);
+        expected[0] = builtins::DARK_FAMILY_COLORS[0];
         cases.push((fallback, expected));
         cases.push((base, vec![Color::Reset; FAMILY_ROLES.len()]));
         for (theme, expected) in cases {
@@ -262,7 +230,6 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
-        tui_pane::set_active_theme(original);
     }
 
     pub(super) fn shipped_themes() -> Vec<(String, Theme)> {
