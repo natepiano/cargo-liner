@@ -843,7 +843,7 @@ At 60 columns the project list keeps CI, Type, Git, Sync and Main, and a name cu
 
 **Ruled out:** A Phase 4x split. One Work Order keeps one design check over all panes (director, 2026-11-10).
 
-### Phase 4w — Targets lists a binary whose name differs from its package  · status: todo
+### Phase 4w — Targets lists a binary whose name differs from its package  · status: done
 
 **Depends on:** Phase 4s (it edits `crates/cargo-port/src/tui/panes/targets/`).
 
@@ -868,7 +868,7 @@ At 60 columns the project list keeps CI, Type, Git, Sync and Main, and a name cu
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/targets/` — Spec 2
-- `crates/cargo-port/src/tui/terminal/processes.rs` — Spec 3
+- `crates/cargo-port/src/tui/terminal/processes.rs` and `crates/cargo-port/src/tui/constants.rs` (`CARGO_BIN_FLAG`) — Spec 3
 - `crates/cargo-port/CHANGELOG.md` — Spec 4
 
 **Workers:** 1 writer: Specs 2-4 and their tests.
