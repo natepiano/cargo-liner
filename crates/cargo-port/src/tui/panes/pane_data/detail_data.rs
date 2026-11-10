@@ -840,7 +840,7 @@ pub(super) fn collect_metadata_fields(
         if resolved.is_empty() {
             fallback_type.into_iter().collect()
         } else {
-            resolved.to_vec()
+            resolved
         }
     });
 
