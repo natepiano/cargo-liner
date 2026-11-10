@@ -301,6 +301,48 @@ fn binaries_named_apart_from_the_package_draw_rows_and_run_by_name() -> anyhow::
 }
 
 #[test]
+fn finder_offers_each_binary_by_name_and_selects_its_row() -> anyhow::Result<()> {
+    let mut fixture =
+        TargetFixture::with_binaries(false, FixtureBinaries::Named(&["serve", "migrate"]))?;
+    input::open_finder(&mut fixture.app);
+    // The fixture package has no examples or benches, so every target result is a binary.
+    let binary_names: Vec<_> = fixture
+        .app
+        .project_list
+        .finder
+        .index
+        .iter()
+        .filter(|item| item.target_name.is_some())
+        .map(|item| (item.display_name.as_str(), item.target_name.as_deref()))
+        .collect();
+    assert_eq!(
+        binary_names,
+        [("migrate", Some("migrate")), ("serve", Some("serve"))]
+    );
+    let item = fixture
+        .app
+        .project_list
+        .finder
+        .index
+        .iter()
+        .position(|item| item.target_name.as_deref() == Some("serve"))
+        .context("indexed serve binary")?;
+    fixture.app.project_list.finder.results = vec![item];
+    finder::dispatch_finder_action(FinderAction::Activate, &mut fixture.app);
+    assert!(fixture.app.focus_is(PaneId::Targets));
+    let text = target_text(&mut fixture.app)?;
+    assert!(text.contains("migrate") && text.contains("serve"), "{text}");
+    enter(&mut fixture.app);
+    let pending_example_run = fixture
+        .app
+        .inflight
+        .take_pending_example_run()
+        .context("selected binary run")?;
+    assert_eq!(pending_example_run.target_name, "serve");
+    Ok(())
+}
+
+#[test]
 fn workspace_root_draws_every_members_binaries() -> anyhow::Result<()> {
     let mut fixture =
         TargetFixture::with_binaries(true, FixtureBinaries::Named(&["serve", "migrate"]))?;

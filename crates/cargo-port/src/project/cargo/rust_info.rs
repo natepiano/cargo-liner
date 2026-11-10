@@ -59,33 +59,48 @@ impl PublishStatus {
 /// [`WorkspaceMetadata`](super::metadata_store::WorkspaceMetadata).
 ///
 /// Step 3b full retirement: these fields are no longer hand-parsed out
-/// of `Cargo.toml`. `types` / `examples` / `benches` stay
-/// empty until the metadata lands and gets stamped in via
+/// of `Cargo.toml`. `library_target_kind` / `binaries` / `examples` / `benches`
+/// stay empty until the metadata lands and gets stamped in via
 /// `Cargo::apply_package_record`; `publish_status` defaults to publishable so
 /// the crates.io scheduler continues firing for named packages
 /// pre-metadata (matches pre-retirement behavior; the metadata later
 /// marks it not publishable when `publish = false`).
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
-    pub types:          Vec<ProjectType>,
-    pub examples:       Vec<ExampleGroup>,
-    pub benches:        Vec<String>,
-    pub publish_status: PublishStatus,
+    pub library_target_kind: LibraryTargetKind,
+    /// Names of the package's bin targets, sorted.
+    pub binaries:            Vec<String>,
+    pub examples:            Vec<ExampleGroup>,
+    pub benches:             Vec<String>,
+    pub publish_status:      PublishStatus,
 }
 
 impl Default for Cargo {
     fn default() -> Self {
         Self {
-            types:          Vec::new(),
-            examples:       Vec::new(),
-            benches:        Vec::new(),
-            publish_status: PublishStatus::Publishable,
+            library_target_kind: LibraryTargetKind::Absent,
+            binaries:            Vec::new(),
+            examples:            Vec::new(),
+            benches:             Vec::new(),
+            publish_status:      PublishStatus::Publishable,
         }
     }
 }
 
 impl Cargo {
-    pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
+    /// The package's target types: its library kind first, then `ProjectType::Binary`
+    /// when it has a bin target.
+    pub(crate) fn types(&self) -> Vec<ProjectType> {
+        let library_type = match self.library_target_kind {
+            LibraryTargetKind::Absent => None,
+            LibraryTargetKind::Library => Some(ProjectType::Library),
+            LibraryTargetKind::ProcMacro => Some(ProjectType::ProcMacro),
+        };
+        let binary_type = (!self.binaries.is_empty()).then_some(ProjectType::Binary);
+        library_type.into_iter().chain(binary_type).collect()
+    }
+
+    pub(crate) fn binaries(&self) -> &[String] { &self.binaries }
 
     pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
@@ -102,16 +117,11 @@ impl Cargo {
 }
 
 /// `LibraryTargetKind` retains procedural-macro precedence across all Cargo targets.
-enum LibraryTargetKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryTargetKind {
     Absent,
     Library,
     ProcMacro,
-}
-
-/// `BinaryTargetPresence` records binary targets independently of the library kind.
-enum BinaryTargetPresence {
-    Absent,
-    Present,
 }
 
 impl From<&PackageRecord> for Cargo {
@@ -125,14 +135,14 @@ impl From<&PackageRecord> for Cargo {
     fn from(package_record: &PackageRecord) -> Self {
         let manifest_dir = package_record.manifest_path.as_path().parent();
         let mut library_target_kind = LibraryTargetKind::Absent;
-        let mut binary_target_presence = BinaryTargetPresence::Absent;
+        let mut binaries: Vec<String> = Vec::new();
         let mut example_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut benches: Vec<String> = Vec::new();
 
         for target_record in &package_record.targets {
             for target_kind in &target_record.kinds {
                 match target_kind {
-                    TargetKind::Bin => binary_target_presence = BinaryTargetPresence::Present,
+                    TargetKind::Bin => binaries.push(target_record.name.clone()),
                     TargetKind::Lib
                     | TargetKind::RLib
                     | TargetKind::DyLib
@@ -160,16 +170,7 @@ impl From<&PackageRecord> for Cargo {
             }
         }
 
-        let mut types = Vec::new();
-        match library_target_kind {
-            LibraryTargetKind::Absent => {},
-            LibraryTargetKind::Library => types.push(ProjectType::Library),
-            LibraryTargetKind::ProcMacro => types.push(ProjectType::ProcMacro),
-        }
-        match binary_target_presence {
-            BinaryTargetPresence::Absent => {},
-            BinaryTargetPresence::Present => types.push(ProjectType::Binary),
-        }
+        binaries.sort();
 
         let mut examples: Vec<ExampleGroup> = example_groups
             .into_iter()
@@ -200,7 +201,8 @@ impl From<&PackageRecord> for Cargo {
         };
 
         Self {
-            types,
+            library_target_kind,
+            binaries,
             examples,
             benches,
             publish_status,

@@ -4760,12 +4760,12 @@ mod tests {
         use crate::project::FirstCommit;
         use crate::project::GitStatus;
         use crate::project::HeadState;
+        use crate::project::LibraryTargetKind;
         use crate::project::ManifestFingerprint;
         use crate::project::MemberGroup;
         use crate::project::Package;
         use crate::project::PackageRecord;
         use crate::project::PinnedCommit;
-        use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
         use crate::project::RemoteInfo;
@@ -5898,7 +5898,7 @@ mod tests {
                 "demo",
                 &project_dir,
                 Cargo {
-                    types: vec![ProjectType::Binary],
+                    binaries: vec!["demo".to_string()],
                     examples: vec![ExampleGroup {
                         category: String::new(),
                         names:    vec!["example".to_string()],
@@ -6303,13 +6303,14 @@ mod tests {
             let project = tmp.path().join("app");
             std::fs::create_dir_all(&project).expect("create test directory");
             let cargo = Cargo {
-                types:          vec![ProjectType::Library],
-                examples:       vec![ExampleGroup {
+                library_target_kind: LibraryTargetKind::Library,
+                binaries:            Vec::new(),
+                examples:            vec![ExampleGroup {
                     category: String::new(),
                     names:    vec!["demo".to_string()],
                 }],
-                benches:        Vec::new(),
-                publish_status: PublishStatus::Publishable,
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::Publishable,
             };
             let root = make_package_with_cargo("app", &project, cargo);
             let mut app = make_app(&[root]);
@@ -8977,11 +8978,11 @@ mod tests {
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
+        use crate::project::LibraryTargetKind;
         use crate::project::ManifestFingerprint;
         use crate::project::PackageRecord;
         use crate::project::PinnedCommit;
         use crate::project::ProjectInfo;
-        use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
         use crate::project::RemoteList;
@@ -9085,20 +9086,22 @@ mod tests {
                 )],
             );
             core.rust.cargo = Cargo {
-                types:          vec![ProjectType::Library],
-                examples:       vec![ExampleGroup {
+                library_target_kind: LibraryTargetKind::Library,
+                binaries:            Vec::new(),
+                examples:            vec![ExampleGroup {
                     category: String::new(),
                     names:    vec!["demo".to_string()],
                 }],
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
             let mut cli = make_member(Some("cli"), "~/ws/crates/cli");
             cli.rust.cargo = Cargo {
-                types:          vec![ProjectType::Binary],
-                examples:       Vec::new(),
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            vec!["cli".to_string()],
+                examples:            Vec::new(),
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
 
             let mut root = make_workspace_with_members(
@@ -9110,10 +9113,11 @@ mod tests {
                 unreachable!("test root should be a workspace");
             };
             ws.rust.cargo = Cargo {
-                types:          vec![ProjectType::Workspace],
-                examples:       Vec::new(),
-                benches:        vec!["smoke".to_string()],
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            Vec::new(),
+                examples:            Vec::new(),
+                benches:             vec!["smoke".to_string()],
+                publish_status:      PublishStatus::NotPublishable,
             };
             ws.rust.vendored = vec![make_vendored(
                 Some("root-helper"),
@@ -9158,10 +9162,11 @@ mod tests {
                 ],
             );
             package.rust.cargo = Cargo {
-                types:          vec![ProjectType::Binary],
-                examples:       Vec::new(),
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            vec!["app".to_string()],
+                examples:            Vec::new(),
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
             let root = RootItem::Rust(RustProject::Package(package));
 

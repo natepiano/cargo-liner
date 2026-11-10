@@ -860,7 +860,7 @@ Targets lists every bin target of each included package, sorted by name, whateve
 
 **Ruled out:** A `default-run` marker or order (showrunner, 2026-11-10).
 
-### Phase 4y — The finder and Package Structure count each binary  · status: todo
+### Phase 4y — The finder and Package Structure count each binary  · status: done
 
 **Depends on:** Phase 4w (it lists every bin target in Targets).
 
