@@ -7,6 +7,10 @@
 
 pub(crate) mod builtins;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use ratatui::style::Color;
 use tui_pane::Theme;
 use tui_pane::label_color;
@@ -138,20 +142,42 @@ fn palette_clear_of<'theme>(
         })
 }
 
-/// Distinct family hues standing clear of [`reserved_colors`].
-///
-/// Read from the theme on each call rather than worked out once: the
-/// appearance can change under a running display, and a palette fixed
-/// at startup would go on handing out a colour the headers or the
-/// errors had since moved onto. A colour with no channels to read is
-/// kept -- there is nothing to measure it against, and emptying the
-/// palette over one unreadable colour is the worse failure.
+/// Family colors remain valid only for the complete immutable theme.
+#[derive(Default)]
+enum FamilyPalette {
+    #[default]
+    Unprepared,
+    Prepared {
+        theme:  Arc<Theme>,
+        colors: Rc<[Color]>,
+    },
+}
+
+thread_local! {
+    static FAMILY_PALETTE: RefCell<FamilyPalette> = const { RefCell::new(FamilyPalette::Unprepared) };
+}
+
+/// Reuse the family colors until any theme input changes.
 fn family_palette() -> impl Iterator<Item = Color> {
     let theme = tui_pane::theme();
-    let reserved = reserved_colors(&theme);
-    palette_clear_of(&theme, &reserved)
-        .collect::<Vec<Color>>()
-        .into_iter()
+    let colors = FAMILY_PALETTE.with_borrow_mut(|palette| {
+        if let FamilyPalette::Prepared {
+            theme: previous,
+            colors,
+        } = palette
+            && Arc::ptr_eq(previous, &theme)
+        {
+            return Rc::clone(colors);
+        }
+        let reserved = reserved_colors(&theme);
+        let colors: Rc<[Color]> = palette_clear_of(&theme, &reserved).collect();
+        *palette = FamilyPalette::Prepared {
+            theme,
+            colors: Rc::clone(&colors),
+        };
+        colors
+    });
+    (0..colors.len()).map(move |index| colors[index])
 }
 
 /// How many families can be told apart at once.
@@ -183,6 +209,61 @@ pub(crate) fn family_color(index: usize) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn family_colors_follow_role_and_reserved_ink_changes() {
+        let original = tui_pane::theme();
+        let mut base = (*original).clone();
+        for role in FAMILY_ROLES {
+            base.roles
+                .insert(role.into(), tui_pane::StyleSpec::from_color(Color::Reset));
+        }
+        base.semantic.label.color = Color::Reset;
+        base.semantic.error.color = Color::Reset;
+        base.semantic.accent.color = Color::Reset;
+        base.semantic.success.color = Color::Reset;
+        base.text.default.color = Color::Reset;
+        let blue = Color::Rgb(0, 128, 255);
+        let mut cases = vec![(base.clone(), vec![Color::Reset; FAMILY_ROLES.len()])];
+        for (index, role) in FAMILY_ROLES.into_iter().enumerate() {
+            let mut theme = base.clone();
+            theme
+                .roles
+                .insert(role.into(), tui_pane::StyleSpec::from_color(blue));
+            let mut expected = vec![Color::Reset; FAMILY_ROLES.len()];
+            expected[index] = blue;
+            cases.push((theme, expected));
+        }
+        for reserved in 0..5 {
+            let mut theme = base.clone();
+            theme.roles.insert(
+                FAMILY_BLUE_ROLE.into(),
+                tui_pane::StyleSpec::from_color(blue),
+            );
+            match reserved {
+                0 => theme.semantic.label.color = blue,
+                1 => theme.semantic.error.color = blue,
+                2 => theme.semantic.accent.color = blue,
+                3 => theme.semantic.success.color = blue,
+                _ => theme.text.default.color = blue,
+            }
+            cases.push((theme, vec![Color::Reset; FAMILY_ROLES.len() - 1]));
+        }
+        let mut fallback = base.clone();
+        fallback.roles.remove(FAMILY_BLUE_ROLE);
+        let mut expected = vec![Color::Reset; FAMILY_ROLES.len()];
+        expected[0] = Color::Rgb(140, 150, 255);
+        cases.push((fallback, expected));
+        cases.push((base, vec![Color::Reset; FAMILY_ROLES.len()]));
+        for (theme, expected) in cases {
+            tui_pane::set_active_theme(Arc::new(theme));
+            for _ in 0..2 {
+                let actual: Vec<_> = (0..family_color_count()).map(family_color).collect();
+                assert_eq!(actual, expected);
+            }
+        }
+        tui_pane::set_active_theme(original);
+    }
 
     pub(super) fn shipped_themes() -> Vec<(String, Theme)> {
         let mut themes: Vec<_> = builtins::builtins()

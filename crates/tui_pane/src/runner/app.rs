@@ -165,6 +165,9 @@ pub trait FrameProbe {
     /// Run `body`, recording how long it took as `phase`.
     fn timed<T>(_phase: FramePhase, body: impl FnOnce() -> T) -> T { body() }
 
+    /// Measure the application callback inside a terminal draw.
+    fn timed_callback<T>(body: impl FnOnce() -> T) -> T { body() }
+
     /// Write `line` to the probe's log as a line of its own, for what
     /// happens once rather than every frame.
     fn note(_line: &str) {}

@@ -65,6 +65,7 @@ use super::table_grid_for_whole_commands;
 use super::tests;
 use super::text_default;
 use crate::census::invocation_cpu_accounting::CompileMemoryShares;
+use crate::probe;
 use crate::roster::Roster;
 
 /// Retained table preparation, with its complete source identity.
@@ -318,6 +319,16 @@ impl PreparedTables {
     ) -> PreparedFrameTables {
         let revision = roster.revision();
         let theme = tui_pane::theme();
+        probe::paint_work(|work| match &self.state {
+            RetainedFrame::Unprepared => work.unprepared += 1,
+            RetainedFrame::Prepared(inputs) => {
+                work.revision += u64::from(inputs.revision != revision);
+                work.hidden += u64::from(inputs.hidden != hidden);
+                work.view += u64::from(inputs.view != *view);
+                work.height += u64::from(inputs.height != height);
+                work.theme += u64::from(!Arc::ptr_eq(&inputs.theme, &theme));
+            },
+        });
         let preparation = match &self.state {
             RetainedFrame::Prepared(inputs)
                 if inputs.revision == revision
@@ -345,12 +356,24 @@ impl PreparedTables {
         }
     }
     fn prepare(&mut self, inputs: FrameInputs<'_>) -> PreparedFrameTables {
-        let tables = PreparedFrameTables::new(
+        let mut tables = PreparedFrameTables::new(
             inputs.roster.visible(inputs.hidden),
             inputs.view,
             inputs.height,
             Rc::clone(&self.commands),
         );
+        if let RetainedFrame::Prepared(previous) = &self.state {
+            tables.paintings = Rc::clone(&previous.tables.paintings);
+            tables
+                .paintings
+                .borrow_mut()
+                .retain(|identity, _| match identity {
+                    CellRowIdentity::Command(id) => {
+                        tables.roster.groups().iter().any(|group| &group.id == id)
+                    },
+                    CellRowIdentity::Summary | CellRowIdentity::Empty => true,
+                });
+        }
         self.state = RetainedFrame::Prepared(Box::new(PreparedFrame {
             revision: inputs.revision,
             hidden:   inputs.hidden.to_vec(),
@@ -483,27 +506,29 @@ mod prepared_tables_tests {
 
     #[test]
     fn unchanged_frames_reuse_solved_table_layouts() {
-        let mut app = tests::argument_toggle_app();
-        let Ok(mut terminal) = Terminal::new(TestBackend::new(180, 40));
-        for _ in 0..4 {
-            app.tiles.settle_for_test();
+        for (width, height) in [(180, 40), (160, 80)] {
+            let mut app = tests::argument_toggle_app();
+            let Ok(mut terminal) = Terminal::new(TestBackend::new(width, height));
+            for _ in 0..4 {
+                app.tiles.settle_for_test();
+                let Ok(_) = terminal.draw(|frame| {
+                    render::draw_panes(frame, &mut app, frame.area(), TileGridContents::Shown);
+                });
+            }
+            let before = terminal.backend().buffer().clone();
+            TABLE_LAYOUT_PREPARATIONS.with(|count| count.set(0));
             let Ok(_) = terminal.draw(|frame| {
                 render::draw_panes(frame, &mut app, frame.area(), TileGridContents::Shown);
             });
+            assert_eq!(&before, terminal.backend().buffer());
+            TABLE_LAYOUT_PREPARATIONS.with(|count| {
+                assert_eq!(
+                    count.get(),
+                    0,
+                    "unchanged table inputs reuse their solved columns"
+                );
+            });
         }
-        let before = terminal.backend().buffer().clone();
-        TABLE_LAYOUT_PREPARATIONS.with(|count| count.set(0));
-        let Ok(_) = terminal.draw(|frame| {
-            render::draw_panes(frame, &mut app, frame.area(), TileGridContents::Shown);
-        });
-        assert_eq!(&before, terminal.backend().buffer());
-        TABLE_LAYOUT_PREPARATIONS.with(|count| {
-            assert_eq!(
-                count.get(),
-                0,
-                "unchanged table inputs reuse their solved columns"
-            );
-        });
     }
 
     #[test]

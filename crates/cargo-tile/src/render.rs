@@ -238,6 +238,7 @@ use crate::constants::TABLE_CONTINUATION_CLEARANCE;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
+use crate::probe;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -1633,14 +1634,13 @@ impl TileCells<InvocationId> for Cells<'_> {
                 .find(|(known, _)| known == content)
                 .map_or(narrowest, |(_, width)| *width)
         };
-        let summary = summary_rows(&self.roster);
         TileDemands {
             summary:       self.prepared_rows(
                 &TileContent::Summary,
                 width_of(&TileContent::Summary),
                 PreparedCellRows::demand,
             ),
-            summary_width: frame_summary_width(&summary, &self.grids.summary.0)
+            summary_width: frame_summary_width(&summary_rows(&self.roster), &self.grids.summary.0)
                 .max(summary_memory_width(&self.roster)),
             groups:        self
                 .roster
@@ -1678,16 +1678,34 @@ impl TileCells<InvocationId> for Cells<'_> {
             ground,
         };
         let mut paintings = self.paintings.borrow_mut();
-        if let Some(painted) = paintings.get(&CellRowIdentity::from(content))
-            && painted.inputs == inputs
-            && painted.before.matches(buffer)
-        {
+        let painted = paintings.get(&CellRowIdentity::from(content));
+        let reusable = painted.is_some_and(|painted| {
+            if painted.inputs != inputs {
+                probe::paint_work(|work| work.inputs += 1);
+                return false;
+            }
+            if !painted.source.matches(&self.roster, content, &self.grids) {
+                probe::paint_work(|work| work.source += 1);
+                return false;
+            }
+            if !painted.before.matches(buffer) {
+                probe::paint_work(|work| work.destination += 1);
+                return false;
+            }
+            true
+        });
+        if let Some(painted) = painted.filter(|_| reusable) {
+            probe::paint_work(|work| work.hits += 1);
             for command in &painted.commands {
                 command.show_in_roster(buffer, &self.roster);
             }
             painted.changes.apply(buffer);
             return;
         }
+        if painted.is_none() {
+            probe::paint_work(|work| work.missing += 1);
+        }
+        let source = cell_paint::CellPaintSource::read(&self.roster, content, &self.grids);
         let before = CellPaintSurface::read(buffer, inner);
         let reach = frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
         let before = before.with_reach(inner, &reach);
@@ -1695,6 +1713,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             CellRowIdentity::from(content),
             PaintedCellContents {
                 inputs,
+                source,
                 commands: reach.commands,
                 header: reach.header,
                 changes: CellPaintPatch::between(&before, buffer),
@@ -3873,6 +3892,7 @@ impl From<&TrackedRow> for InvocationContribution {
 }
 
 /// Numeric use owned by one visible row after hidden descendants join it.
+#[derive(PartialEq)]
 struct RowResourceReading {
     invocation: InvocationId,
     pid:        u32,
@@ -3917,7 +3937,7 @@ fn row_resource_readings(
             }
             let Some(ancestor) = contributions
                 .iter()
-                .find(|candidate| &candidate.invocation == invocation && candidate.pid == pid)
+                .find(|ancestor| &ancestor.invocation == invocation && ancestor.pid == pid)
             else {
                 break;
             };
@@ -4488,7 +4508,7 @@ enum CommandWidthBudget {
 }
 
 /// One actual table's name and state, kept together when fitting a frame.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct TableWidthBudget {
     short:        u16,
     full:         u16,
@@ -12020,8 +12040,9 @@ mod tests {
                     draw_panes(frame, &mut app, area, TileGridContents::Shown);
                 })
                 .expect("repeated draw");
-            FRAME_DEMAND_QUERIES
-                .with(|queries| assert_eq!(queries.get(), 2, "each probe width is measured once"));
+            FRAME_DEMAND_QUERIES.with(|queries| {
+                assert_eq!(queries.get(), 1, "only the drawn layout needs measurement");
+            });
             assert!(
                 !app.tiles.tick(),
                 "unchanged contents queued another motion"
