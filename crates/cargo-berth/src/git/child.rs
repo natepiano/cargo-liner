@@ -570,8 +570,7 @@ pub(super) fn wait_for_exit(
     }
     let deadline = ChildDeadline::new(command, "child exit", duration);
     let notification = ExitNotification::new(child.id())?;
-    notification.receive(&deadline)?;
-    child.wait()
+    notification.wait_for_child(child, &deadline)
 }
 
 /// A completed pipe task uses the same collection path without a worker.
@@ -589,6 +588,18 @@ enum ExitNotification {
 }
 
 impl ExitNotification {
+    fn wait_for_child(
+        &self,
+        child: &mut Child,
+        deadline: &ChildDeadline,
+    ) -> io::Result<ExitStatus> {
+        match self.receive(deadline) {
+            Ok(()) => child.wait(),
+            // The child can exit before its notification worker reports the exit.
+            Err(error) => child.try_wait()?.ok_or(error),
+        }
+    }
+
     fn new(child_id: u32) -> io::Result<Self> {
         let child_id = i32::try_from(child_id).map_err(io::Error::other)?;
         let child_id = rustix::process::Pid::from_raw(child_id)
@@ -639,15 +650,24 @@ impl ExitNotification {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::io::ErrorKind;
     use std::process::Command;
     use std::process::Stdio;
     use std::sync::mpsc;
+    use std::time::Duration;
 
+    use rustix::process;
+    use rustix::process::Pid;
+    use rustix::process::WaitIdOptions;
+
+    use super::ChildDeadline;
     use super::ChildProcess;
     use super::DRAINS_AFTER_CLEANUP;
     use super::DrainScheduling;
+    use super::ExitNotification;
     use super::GIT_COMMAND_DEADLINE;
     use super::NEXT_DRAIN;
+    use super::WaitId;
     use super::with_spawn_lock;
 
     #[derive(Clone, Copy)]
@@ -743,6 +763,46 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"stdout");
         assert_eq!(output.stderr, b"stderr");
+        Ok(())
+    }
+
+    #[test]
+    fn child_exit_deadline_checks_the_process_when_its_notification_is_delayed()
+    -> Result<(), Box<dyn Error>> {
+        for exited in [true, false] {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", if exited { "exit 7" } else { "read value" }])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let mut child = with_spawn_lock(|| ChildProcess::spawn(&mut command))??;
+            if exited {
+                let pid = Pid::from_raw(i32::try_from(child.child.id())?)
+                    .ok_or("child identifier must be positive")?;
+                let status = process::waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+                )?
+                .ok_or("the child must have an exit status")?;
+                assert_eq!(status.exit_status(), Some(7));
+            }
+            // Keep the notification pending after the child has a known exit status.
+            let (sender, receiver) = mpsc::channel();
+            let notification = ExitNotification::Waiter(receiver);
+            let deadline = ChildDeadline::new(child.command(), "child exit", Duration::ZERO);
+            let result = notification.wait_for_child(&mut child.child, &deadline);
+            drop(sender);
+            if exited {
+                assert_eq!(result?.code(), Some(7));
+            } else {
+                let Err(error) = result else {
+                    return Err("a running child must keep its deadline".into());
+                };
+                assert_eq!(error.kind(), ErrorKind::TimedOut);
+                assert!(error.to_string().contains("child exit"));
+            }
+        }
         Ok(())
     }
 }

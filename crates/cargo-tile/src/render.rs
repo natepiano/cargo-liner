@@ -177,8 +177,10 @@ use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::census::command_text::ArgumentOmission;
 use crate::census::command_text::CargoProfile;
+use crate::census::command_text::CommandHeadingState;
 use crate::census::command_text::CommandName;
 use crate::census::command_text::CommandText;
+use crate::census::command_text::CompilerArgumentLayout;
 use crate::census::scan::AncestryWalk;
 use crate::census::scan::FreeDiskSpace;
 use crate::census::scan::InvocationResourceUse;
@@ -6223,7 +6225,7 @@ fn displayed_command(command: &CommandText, view: &CommandView) -> String {
     tests::PROCESS_COMMAND_FORMATS.with(|count| count.set(count.get() + 1));
     let arguments = match view.arguments {
         ArgumentDetail::Default => command.selected_arguments(&view.defaults),
-        ArgumentDetail::All => command.line(),
+        ArgumentDetail::All => command.displayed_arguments(),
     };
     [
         profile_label(command),
@@ -6286,6 +6288,12 @@ enum StyledCommandWord {
     Independent(Span<'static>),
     /// An argv value remains whole even when it contains path punctuation.
     Argument(Span<'static>),
+    /// The compiler frontend and crate stay on the first row.
+    CompilerHeading {
+        frontend:   Span<'static>,
+        crate_name: Span<'static>,
+        arguments:  CompilerArgumentLayout,
+    },
     /// A cut must reach the value; it may never leave this flag by itself.
     BoundValue {
         flag:  Span<'static>,
@@ -6309,7 +6317,12 @@ impl StyledCommandWord {
     fn width(&self) -> u16 {
         match self {
             Self::Independent(span) | Self::Argument(span) => cell_width(&span.content),
-            Self::BoundValue { flag, value } => cell_width(&flag.content)
+            Self::BoundValue { flag, value }
+            | Self::CompilerHeading {
+                frontend: flag,
+                crate_name: value,
+                ..
+            } => cell_width(&flag.content)
                 .saturating_add(cell_width(COMMAND_WORD_SEPARATOR))
                 .saturating_add(cell_width(&value.content)),
         }
@@ -6318,7 +6331,12 @@ impl StyledCommandWord {
     fn write_to(self, line: &mut Line<'static>) {
         match self {
             Self::Independent(span) | Self::Argument(span) => line.spans.push(span),
-            Self::BoundValue { flag, value } => {
+            Self::BoundValue { flag, value }
+            | Self::CompilerHeading {
+                frontend: flag,
+                crate_name: value,
+                ..
+            } => {
                 line.spans.push(flag);
                 line.spans.push(Span::raw(COMMAND_WORD_SEPARATOR));
                 line.spans.push(value);
@@ -6358,9 +6376,16 @@ struct JoinedCommandWord {
 
 /// Wrapped units retain their boundaries until the row budget is known.
 struct WrappedCommand {
-    lines: Vec<WrappedCommandLine>,
-    width: u16,
-    cut:   Style,
+    lines:   Vec<WrappedCommandLine>,
+    width:   u16,
+    cut:     Style,
+    heading: CompilerHeadingPlacement,
+}
+
+/// Command tables reserve the compiler heading's first row.
+enum CompilerHeadingPlacement {
+    Inline,
+    SeparateRow,
 }
 
 /// One line's units; no painted cells are needed to decide a later height cut.
@@ -6376,7 +6401,7 @@ impl WrappedCommand {
         if budget == 0 {
             return Vec::new();
         }
-        let cut_words = if self.lines.len() > budget {
+        let mut cut_words = if self.lines.len() > budget {
             self.lines
                 .split_off(budget - 1)
                 .into_iter()
@@ -6385,18 +6410,19 @@ impl WrappedCommand {
         } else {
             Vec::new()
         };
+        let end = if budget == 1 && matches!(self.heading, CompilerHeadingPlacement::SeparateRow) {
+            cut_words.truncate(1);
+            CommandRowEnd::Whole
+        } else {
+            CommandRowEnd::Cut
+        };
         let mut lines: Vec<_> = self
             .lines
             .into_iter()
             .map(|line| command_unit_line(line.words, self.width, self.cut, CommandRowEnd::Whole))
             .collect();
         if !cut_words.is_empty() {
-            lines.push(command_unit_line(
-                cut_words,
-                self.width,
-                self.cut,
-                CommandRowEnd::Cut,
-            ));
+            lines.push(command_unit_line(cut_words, self.width, self.cut, end));
         }
         lines
     }
@@ -6436,7 +6462,42 @@ fn wrapped_command(words: Vec<StyledCommandWord>, width: u16, cut: Style) -> Wra
     if !line.is_empty() {
         lines.push(WrappedCommandLine { words: line });
     }
-    WrappedCommand { lines, width, cut }
+    WrappedCommand {
+        lines,
+        width,
+        cut,
+        heading: CompilerHeadingPlacement::Inline,
+    }
+}
+
+/// Keep compiler arguments below their heading in the all-arguments command table.
+fn wrapped_process_command(
+    mut words: Vec<StyledCommandWord>,
+    width: u16,
+    cut: Style,
+    view: &CommandView,
+    kind: TableKind,
+) -> WrappedCommand {
+    if matches!(kind, TableKind::Command)
+        && matches!(view.arguments, ArgumentDetail::All)
+        && matches!(
+            words.first(),
+            Some(StyledCommandWord::CompilerHeading {
+                arguments: CompilerArgumentLayout::ForwardedExecutable,
+                ..
+            })
+        )
+    {
+        let arguments = words.split_off(1);
+        let mut heading = wrapped_command(words, width, cut);
+        heading
+            .lines
+            .extend(wrapped_command(arguments, width, cut).lines);
+        heading.heading = CompilerHeadingPlacement::SeparateRow;
+        heading
+    } else {
+        wrapped_command(words, width, cut)
+    }
 }
 
 /// Keep oversized values whole while preserving source whitespace boundaries.
@@ -6572,6 +6633,27 @@ fn command_span_prefix(span: &Span<'static>, room: u16) -> Span<'static> {
 
 fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
     match word {
+        StyledCommandWord::CompilerHeading {
+            frontend,
+            crate_name,
+            arguments,
+        } => {
+            let frontend_room = cell_width(&frontend.content);
+            if room <= frontend_room {
+                return CutCommandUnit::Prefix(StyledCommandWord::Independent(
+                    command_span_prefix(&frontend, room),
+                ));
+            }
+            CutCommandUnit::Prefix(StyledCommandWord::CompilerHeading {
+                crate_name: command_span_prefix(
+                    &crate_name,
+                    room.saturating_sub(frontend_room)
+                        .saturating_sub(cell_width(COMMAND_WORD_SEPARATOR)),
+                ),
+                frontend,
+                arguments,
+            })
+        },
         StyledCommandWord::Independent(span) | StyledCommandWord::Argument(span) => {
             let prefix = command_span_prefix(&span, room);
             if prefix
@@ -6709,6 +6791,7 @@ struct LaidOutProcessRow<'a> {
     /// Display mode used to prepare the command cell.
     view:         CommandView,
     command_form: CommandForm,
+    kind:         TableKind,
 }
 
 impl LaidOutProcessRow<'_> {
@@ -6716,10 +6799,12 @@ impl LaidOutProcessRow<'_> {
     fn cut_command_continuation(&self, visible_lines: usize) -> Line<'static> {
         let words =
             styled_process_command_words(self.source, &self.view, self.ground, self.command_form);
-        wrapped_command(
+        wrapped_process_command(
             words,
             self.command_width,
             cut_mark_style(self.ground, self.source.ink()),
+            &self.view,
+            self.kind,
         )
         .into_rows(visible_lines)
         .pop()
@@ -6745,10 +6830,6 @@ fn process_command_words(
             cut_mark_style(ground, faded),
         )));
     }
-    spans.push(StyledCommandWord::Independent(Span::styled(
-        displayed_program(command, view).to_string(),
-        program,
-    )));
     let words: Vec<_> = match form {
         CommandForm::Full => match view.arguments {
             ArgumentDetail::All => command.display_words().collect(),
@@ -6756,9 +6837,25 @@ fn process_command_words(
         },
         CommandForm::WithoutArguments => command.named_words().collect(),
     };
+    let frontend = Span::styled(displayed_program(command, view).to_string(), program);
+    let heading_words = match command.heading() {
+        CommandHeadingState::Compiler { crate_name } => {
+            spans.push(StyledCommandWord::CompilerHeading {
+                frontend,
+                crate_name: Span::styled(crate_name.into_owned(), arguments),
+                arguments: command.compiler_argument_layout(),
+            });
+            1
+        },
+        CommandHeadingState::Program => {
+            spans.push(StyledCommandWord::Independent(frontend));
+            0
+        },
+    };
     spans.extend(
         words
             .into_iter()
+            .skip(heading_words)
             .map(|word| StyledCommandWord::argument(word, arguments)),
     );
     spans
@@ -6817,10 +6914,12 @@ fn wrap_command_cell(
         Text::default()
     } else {
         let spans = styled_process_command_words(row, &layout.view, layout.ground, form);
-        wrapped_command(
+        wrapped_process_command(
             spans,
             command_width,
             cut_mark_style(layout.ground, row.ink()),
+            &layout.view,
+            layout.kind,
         )
         .into_text()
     }
@@ -6905,6 +7004,7 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
             ground:        layout.ground,
             view:          layout.view.clone(),
             command_form:  cached.command_form,
+            kind:          layout.kind,
         };
     }
 
@@ -6938,6 +7038,7 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         ground: layout.ground,
         view: layout.view.clone(),
         command_form: prepared.form,
+        kind: layout.kind,
     }
 }
 
@@ -7672,18 +7773,20 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     // short setting is where the display starts, so a cell full of
     // ancestry is a key that was pressed rather than a command with a
     // long history. Say which.
+    let mut hint_notes = Vec::new();
     if app.tree == ProcessHierarchy::Shown {
-        notes.push(StatusLineNote::flag(PROCESS_TREE_NOTE_LABEL));
+        hint_notes.push(StatusLineNote::flag(PROCESS_TREE_NOTE_LABEL));
     }
     if app.arguments == ArgumentDetail::All {
-        notes.push(StatusLineNote::flag(ALL_ARGUMENTS_NOTE_LABEL));
+        hint_notes.push(StatusLineNote::flag(ALL_ARGUMENTS_NOTE_LABEL));
     }
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
         ScanIndicator::Hidden,
         &notes,
         &globals,
-    );
+    )
+    .with_hint_notes(&hint_notes);
     render_status_line::<App, AppGlobalAction>(
         frame,
         area,
@@ -21282,7 +21385,7 @@ mod tests {
 
     #[test]
     fn the_status_line_omits_the_display_shortcuts() {
-        let app = App::new_for_test().expect("test app should build");
+        let mut app = App::new_for_test().expect("test app should build");
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal =
             Terminal::new(TestBackend::new(160, 40)).expect("the test terminal opens");
@@ -21293,6 +21396,54 @@ mod tests {
         assert!(!status.contains("p process_tree"), "{status:?}");
         assert!(!status.contains("h arguments"), "{status:?}");
         assert!(status.contains("? shortcuts"), "{status:?}");
+        for (hierarchy, arguments, labels) in [
+            (
+                ProcessHierarchy::Shown,
+                ArgumentDetail::Default,
+                vec!["processes"],
+            ),
+            (
+                ProcessHierarchy::Hidden,
+                ArgumentDetail::All,
+                vec!["all arguments"],
+            ),
+            (
+                ProcessHierarchy::Shown,
+                ArgumentDetail::All,
+                vec!["processes", "all arguments"],
+            ),
+        ] {
+            app.tree = hierarchy;
+            app.arguments = arguments;
+            app.updates = Updates::Frozen;
+            terminal
+                .draw(|frame| draw_status_line(frame, &app, &keymap, Rect::new(0, 39, 160, 1)))
+                .expect("the mode notes draw");
+            let buffer = terminal.backend().buffer();
+            let status = buffer_line(buffer, 39);
+            let palette = BarPalette::themed();
+            for (label, style) in labels
+                .into_iter()
+                .map(|label| (label, palette.enabled_label_style))
+                .chain([
+                    ("cargo-tile", palette.status_label_style),
+                    ("frozen", palette.status_label_style),
+                ])
+            {
+                let start = status
+                    .find(label)
+                    .unwrap_or_else(|| panic!("missing {label}: {status}"));
+                for column in start..start + label.len() {
+                    let cell = &buffer[(u16::try_from(column).expect("status column"), 39)];
+                    assert_eq!(
+                        cell.fg,
+                        style.fg.expect("the note has ink"),
+                        "{label}: {status}"
+                    );
+                    assert_eq!(cell.modifier, style.add_modifier, "{label}: {status}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -22167,14 +22318,234 @@ mod tests {
     mod command_display_tests {
         use super::*;
 
+        fn compiler_census_roster() -> Roster {
+            let cargo = ["cargo", "clippy", "--workspace"].map(OsString::from);
+            let check = ["cargo", "check", "--workspace"].map(OsString::from);
+            let compilers = [
+                "phase32_crate_03",
+                "phase32_crate_11",
+                "phase32_crate_15",
+                "___",
+            ]
+            .map(|name| {
+                let arguments = live_compiler_arguments()[usize::from(name == "___")];
+                arguments
+                    .iter()
+                    .map(|word| OsString::from(word.replace("phase32_crate_15", name)))
+                    .collect::<Vec<_>>()
+            });
+            let shims = compilers.each_ref().map(|compiler| {
+                ["/bin/sh", "/wrapper/cargo-tile-real"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .chain(compiler.iter().cloned())
+                    .collect::<Vec<_>>()
+            });
+            let mut processes = vec![
+                (1000, 1, "cargo", cargo.as_slice()),
+                (1001, 1000, "cargo", check.as_slice()),
+            ];
+            for (index, (shim, compiler)) in shims.iter().zip(&compilers).enumerate() {
+                let pid = 2000 + u32::try_from(index).expect("fixture pid") * 10;
+                processes.push((pid, 1001, "cargo-tile-real", shim.as_slice()));
+                processes.push((pid + 1, pid, "clippy-driver", compiler.as_slice()));
+            }
+            let records =
+                ProcessObservations::new(processes.into_iter().map(|(pid, parent, name, argv)| {
+                    let mut process = ProcessObservation::cargo(pid, argv);
+                    process.name = ProcessField::Observed(OsStr::new(name));
+                    process.parent = ProcessField::Observed(Pid::from_u32(parent));
+                    process.directory = ProcessField::Observed(Path::new("/workspace"));
+                    process
+                }));
+            let mut roster = Roster::new();
+            roster.observe(CensusSequence::default().sample(&records), Instant::now());
+            roster
+        }
+
+        fn assert_compiler_census_rows() {
+            let roster = compiler_census_roster();
+            let id = roster.groups()[0].id.clone();
+            let mut painted = Vec::new();
+            for view in [CommandView::short(), CommandView::long()] {
+                for height in [8, 9, 12, 40] {
+                    let area = Rect::new(0, 0, 80, height);
+                    let mut buffer = Buffer::empty(area);
+                    draw_group(&mut buffer, &roster, &id, area, Color::Reset, &[], view);
+                    let text = buffer_rows(&buffer).join("\n");
+                    let named = text.lines().any(|line| {
+                        line.contains("2000") && line.contains("clippy-driver phase32_crate_03")
+                    });
+                    let fitting_probe = text.lines().find(|line| line.contains("2030"));
+                    let unmarked = fitting_probe.is_some_and(|line| {
+                        line.contains("clippy-driver ___") && !line.trim_end().ends_with("___…")
+                    });
+                    let lines = text.lines().collect::<Vec<_>>();
+                    let first = lines
+                        .iter()
+                        .position(|line| line.contains("2000"))
+                        .expect("compiler row");
+                    let arguments = lines
+                        .get(first + 1)
+                        .is_some_and(|line| line.contains("/home/natepiano/"));
+                    let expected_arguments = view.arguments == ArgumentDetail::All && height >= 9;
+                    painted.push((
+                        view.arguments,
+                        height,
+                        named,
+                        unmarked,
+                        arguments == expected_arguments,
+                        text,
+                    ));
+                }
+            }
+            assert!(
+                painted
+                    .iter()
+                    .all(|(_, _, named, unmarked, arguments, _)| *named && *unmarked && *arguments),
+                "{painted:#?}"
+            );
+        }
+
+        fn assert_live_compiler_headings() {
+            let mut painted = Vec::new();
+            let mut expected = Vec::new();
+            for (arguments, (headings, tail)) in live_compiler_arguments().into_iter().zip([
+                (
+                    [
+                        "clippy-driver phase32_cr…",
+                        "clippy-driver phase…",
+                        "clippy-driver phase32_crate_15",
+                    ],
+                    " --edition=2024",
+                ),
+                (
+                    [
+                        "clippy-driver ___",
+                        "clippy-driver ___",
+                        "clippy-driver ___",
+                    ],
+                    " - --print=file-names",
+                ),
+            ]) {
+                for (width, heading) in [25, 20, 100].into_iter().zip(headings) {
+                    let buffer = argument_command_buffer(arguments, CommandView::long(), width, 6);
+                    let first = buffer_line(&buffer, 0).trim().to_string();
+                    let second = buffer_line(&buffer, 1).trim().to_string();
+                    painted.push((width, first, second));
+                    let path = arguments[1];
+                    let path_prefix: String = path.chars().take(usize::from(width - 1)).collect();
+                    let path_row = if path.len() < usize::from(width) {
+                        format!("{path}{tail}")
+                    } else {
+                        format!("{path_prefix}{ELISION}")
+                    };
+                    expected.push((width, heading.to_string(), path_row));
+                }
+            }
+            assert_eq!(painted, expected);
+        }
+
+        fn live_compiler_arguments() -> [&'static [&'static str]; 2] {
+            [
+                &[
+                    "/home/natepiano/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                    "/home/natepiano/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc",
+                    "--crate-name",
+                    "phase32_crate_15",
+                    "--edition=2024",
+                    "phase32_crate_15/src/lib.rs",
+                    "--error-format=json",
+                    "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+                    "--crate-type",
+                    "lib",
+                    "--emit=dep-info,metadata",
+                    "-C",
+                    "embed-bitcode=no",
+                    "-C",
+                    "debuginfo=2",
+                    "--check-cfg",
+                    "cfg(docsrs,test)",
+                    "--check-cfg",
+                    "cfg(feature, values())",
+                    "-C",
+                    "metadata=96e2679a2e005084",
+                    "-C",
+                    "extra-filename=-fb6ce7ea3b3de996",
+                    "--out-dir",
+                    "/tmp/claude/session/da82452f-3640-4dec-b6c5-0c783d77e79f/phase32c-live-76mqmxe0/target/debug/deps",
+                    "-C",
+                    "incremental=/tmp/claude/session/da82452f-3640-4dec-b6c5-0c783d77e79f/phase32c-live-76mqmxe0/target/debug/incremental",
+                    "-L",
+                    "dependency=/tmp/claude/session/da82452f-3640-4dec-b6c5-0c783d77e79f/phase32c-live-76mqmxe0/target/debug/deps",
+                    "-C",
+                    "target-cpu=x86-64-v3",
+                    "-C",
+                    "link-arg=-fuse-ld=mold",
+                ],
+                &[
+                    "/home/natepiano/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                    "/home/natepiano/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc",
+                    "-",
+                    "--crate-name",
+                    "___",
+                    "--print=file-names",
+                    "-C",
+                    "target-cpu=x86-64-v3",
+                    "--crate-type",
+                    "bin",
+                    "--crate-type",
+                    "rlib",
+                    "--crate-type",
+                    "dylib",
+                    "--crate-type",
+                    "cdylib",
+                    "--crate-type",
+                    "staticlib",
+                    "--crate-type",
+                    "proc-macro",
+                    "--print=sysroot",
+                    "--print=split-debuginfo",
+                    "--print=crate-name",
+                    "--print=cfg",
+                    "-Wwarnings",
+                ],
+            ]
+        }
+
         #[test]
         fn a_rustc_wrapper_row_shows_rustc_and_its_crate() {
+            assert_compiler_census_rows();
+            assert_live_compiler_headings();
+            for (width, expected) in [
+                (25, "clippy-driver hana_diege…"),
+                (20, "clippy-driver hana_…"),
+            ] {
+                let buffer = argument_command_buffer(
+                    &[
+                        "/toolchain/bin/clippy-driver",
+                        "/toolchain/bin/rustc",
+                        "--crate-name",
+                        "hana_diegetic",
+                        "--edition",
+                        "2024",
+                    ],
+                    CommandView::long(),
+                    width,
+                    6,
+                );
+                assert_eq!(buffer_line(&buffer, 0).trim(), expected, "width {width}");
+                let lines = buffer_rows(&buffer);
+                assert_eq!(lines[1].trim(), "/toolchain/bin/rustc", "{lines:?}");
+                assert_eq!(lines[2].trim(), "--edition 2024", "{lines:?}");
+                assert!(
+                    !lines.iter().any(|line| line.contains("--crate-name")),
+                    "{lines:?}"
+                );
+            }
             for (view, expected) in [
                 (CommandView::short(), "rustc hana_diegetic"),
-                (
-                    CommandView::long(),
-                    "rustc --crate-name hana_diegetic --edition 2024",
-                ),
+                (CommandView::long(), "rustc hana_diegetic --edition 2024"),
             ] {
                 let buffer = argument_command_buffer(
                     &[
@@ -22707,16 +23078,33 @@ mod tests {
 
         #[test]
         fn a_wide_summary_keeps_arguments_on_one_member_row() {
-            let row = nextest_row();
-            let layout = command_column_layout(&row, TableKind::Summary, 29);
-            let measured = process_row_lines(&row, &layout);
-            let painted = process_row(&row, &layout);
-            assert_eq!(measured, 1);
-            assert_eq!(painted.lines, measured);
-            assert_eq!(
-                painted.cells[COMMAND_COLUMN].to_string(),
-                "cargo nextest run --workspace"
-            );
+            for (arguments, width, expected) in [
+                (
+                    vec!["nextest", "run", "--workspace"],
+                    29,
+                    "cargo nextest run --workspace",
+                ),
+                (
+                    vec![
+                        "/toolchain/bin/rustc",
+                        "--crate-name",
+                        "hana_diegetic",
+                        "--edition",
+                        "2024",
+                    ],
+                    40,
+                    "rustc hana_diegetic --edition 2024",
+                ),
+            ] {
+                let mut row = nextest_row();
+                row.process.command = CommandText::of("cargo", &arguments);
+                let layout = command_column_layout(&row, TableKind::Summary, width);
+                let measured = process_row_lines(&row, &layout);
+                let painted = process_row(&row, &layout);
+                assert_eq!(measured, 1);
+                assert_eq!(painted.lines, measured);
+                assert_eq!(painted.cells[COMMAND_COLUMN].to_string(), expected);
+            }
         }
 
         #[test]

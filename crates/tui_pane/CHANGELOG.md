@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `StatusLine::with_hint_notes` draws mode notes in the enabled shortcut label ink. Other notes keep their styles.
 - Global shortcut hints can show toggle values independently of shortcut availability.
 
 - Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.

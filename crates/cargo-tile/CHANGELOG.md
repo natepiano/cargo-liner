@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Shim version 4 uses native capture setup to reduce the cost of each cargo call.
 
+### Fixed
+
+- Compiler rows retain their crate with all arguments shown. The status bar uses `processes` and hint ink for display modes.
+
 ### Added
 
 - Enter expands the focused cell over the grid. Esc returns it with focus kept. Navigation keys scroll its rows.
