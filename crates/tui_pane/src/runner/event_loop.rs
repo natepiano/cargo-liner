@@ -1,6 +1,4 @@
-//! The paced loop: draw when something changed, wait for the next
-//! frame or event, fold the app's work in, and repaint the whole screen
-//! on a cadence.
+//! Draw scheduled frames and recover terminal rows in bounded batches.
 
 use std::io;
 use std::sync::mpsc;
@@ -10,15 +8,20 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::cursor::RestorePosition;
+use crossterm::cursor::SavePosition;
 use crossterm::event;
 use crossterm::event::Event;
 use crossterm::event::KeyEventKind;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
+use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
+use ratatui::buffer::Cell;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
@@ -27,7 +30,7 @@ use super::app::FrameProbe;
 use super::app::PollWork;
 use super::app::Repaint;
 use super::app::TerminalApp;
-use super::constants::FULL_REPAINT_SECONDS;
+use super::constants::RECOVERY_BATCH_MILLIS;
 use super::constants::REPAINT_SENTINEL;
 use super::deadline::VisualDeadline;
 use super::keys;
@@ -54,7 +57,10 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
 ) -> io::Result<()> {
     let input = spawn_input_thread();
     let mut dirty = true;
-    let mut repainted = Instant::now();
+    let mut recovery = Rect::default();
+    let mut last_completed = Buffer::empty(Rect::default());
+    let mut resize_recovery = Resized::No;
+    let mut row_recovery = RowRecovery::new(Instant::now());
     let mut previous = Instant::now();
     let period = Duration::from_millis(FRAME_POLL_MILLIS);
     let mut deadline = Instant::now() + period;
@@ -66,16 +72,31 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
         // here can cost far longer than a frame, and `terminal.draw` is
         // no place to spend it.
         app.before_draw();
-        if dirty {
-            // Re-borrowed every frame: rebinding a key in the keymap
-            // overlay swaps the whole map out from under the loop.
-            let keymap = app.keymap();
-            A::Probe::timed(FramePhase::Draw, || {
-                terminal.draw(|frame| A::Probe::timed_callback(|| app.draw(frame, &keymap)))
-            })
-            .inspect_err(|_| A::Probe::frame_started(previous.elapsed()))?;
-            dirty = false;
+        if recovery.is_empty() && !app.holds_full_repaint() {
+            recovery = row_recovery.batch(Instant::now(), terminal.current_buffer_mut().area);
         }
+        let repaint = if dirty {
+            Repaint::Needed
+        } else {
+            Repaint::NotNeeded
+        };
+        let repaired = prepare_frame::<_, A::Probe>(
+            terminal,
+            &mut last_completed,
+            repaint,
+            recovery,
+            resize_recovery,
+            |frame| {
+                let keymap = app.keymap();
+                app.draw(frame, &keymap);
+            },
+        )
+        .inspect_err(|_| A::Probe::frame_started(previous.elapsed()))?;
+        write_recovery::<A::Probe>(terminal, &repaired)
+            .inspect_err(|_| A::Probe::frame_started(previous.elapsed()))?;
+        recovery = Rect::default();
+        resize_recovery = Resized::No;
+        dirty = false;
         // When the next frame is due, carried forward from when the
         // last one was due rather than worked out afresh from the top
         // of this one.
@@ -114,6 +135,8 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
                 }
                 if resized == Resized::Yes {
                     app.resize_settled();
+                    resize_recovery = Resized::Yes;
+                    recovery = terminal.current_buffer_mut().area;
                     force_repaint(terminal);
                 }
                 dirty = true;
@@ -122,7 +145,7 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
             // The reader hit an unrecoverable crossterm error. A TUI that
             // cannot read input is dead, and without this the loop would
             // spin on a disconnected channel.
-            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(RecvTimeoutError::Disconnected) => break,
         }
         let now = Instant::now();
         app.framework_mut().toasts.prune(now);
@@ -135,25 +158,51 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
         if work.poll(app, now) == Repaint::Needed {
             dirty = true;
         }
-        // Whatever else has written to this terminal is written over
-        // here, because a difference-based draw would leave it standing.
-        //
-        // Never while the app holds it off. Marking every cell for
-        // redraw puts a write of the whole grid into one frame of an
-        // animation, which the terminal shows as a tear rather than as
-        // a repaint -- and there is nothing to write over anyway when
-        // the animation already paints every cell it covers. The moment
-        // the hold lifts, the wait is long overdue and one fires.
-        if !app.holds_full_repaint()
-            && repainted.elapsed() >= Duration::from_secs(FULL_REPAINT_SECONDS)
-        {
-            force_repaint(terminal);
-            repainted = Instant::now();
-            dirty = true;
-        }
     }
     A::Probe::frame_started(previous.elapsed());
     Ok(())
+}
+
+/// Draw a requested app frame or recover rows from its last completed buffer.
+fn prepare_frame<B: Backend, P: FrameProbe>(
+    terminal: &mut Terminal<B>,
+    last_completed: &mut Buffer,
+    repaint: Repaint,
+    recovery: Rect,
+    resize_recovery: Resized,
+    draw: impl FnOnce(&mut Frame<'_>),
+) -> Result<RecoveryBatch, B::Error> {
+    if repaint == Repaint::Needed {
+        let completed = P::timed(FramePhase::Draw, || {
+            terminal.draw(|frame| P::timed_callback(|| draw(frame)))
+        })?;
+        P::completed_frame(completed.buffer, recovery);
+        P::timed(FramePhase::Draw, || {
+            last_completed.clone_from(completed.buffer);
+        });
+    }
+    if recovery.is_empty() || resize_recovery == Resized::Yes {
+        return Ok(RecoveryBatch::default());
+    }
+    Ok(P::timed(FramePhase::Draw, || {
+        RecoveryBatch::read(last_completed, recovery)
+    }))
+}
+
+/// Write recovery rows without changing the app's cursor position.
+fn write_recovery<P: FrameProbe>(
+    terminal: &mut Terminal<ProbeBackend<P>>,
+    repaired: &RecoveryBatch,
+) -> io::Result<()> {
+    if repaired.0.is_empty() {
+        return Ok(());
+    }
+    P::timed(FramePhase::Draw, || {
+        crossterm::queue!(terminal.backend_mut(), SavePosition)?;
+        repaired.draw(terminal.backend_mut())?;
+        crossterm::queue!(terminal.backend_mut(), RestorePosition)?;
+        io::Write::flush(terminal.backend_mut())
+    })
 }
 
 /// Read events on their own thread and forward them to the render loop.
@@ -219,27 +268,84 @@ fn handle_mouse<A: TerminalApp>(app: &mut A, mouse: MouseEvent) {
     }
 }
 
-/// Reset the buffer the next frame is compared against, so that draw
-/// writes every cell.
-///
-/// Neither [`Terminal::clear`] nor [`Terminal::resize`]: both blank the
-/// screen before the repaint lands, and at this cadence that blank is a
-/// visible blink every couple of seconds. Blanking is also the half of
-/// the job that is not needed -- what forces the redraw is the *other*
-/// thing those two do, resetting the buffer the next frame is compared
-/// against.
-///
-/// That reset is reachable on its own. Marking every cell of the buffer
-/// the next frame will be compared against with [`REPAINT_SENTINEL`]
-/// makes all of them differ, so the next draw writes all of them, in
-/// one pass, over what is already there. Same repaint, no blank in
-/// front of it.
-///
-/// [`Terminal::swap_buffers`] is what moves the filled buffer into the
-/// comparison slot; the frame renders into the other one.
+/// Recover half the terminal rows at each fixed deadline.
+struct RowRecovery {
+    deadline: Instant,
+    next_row: u16,
+}
+
+impl RowRecovery {
+    fn new(now: Instant) -> Self {
+        Self {
+            deadline: now + Duration::from_millis(RECOVERY_BATCH_MILLIS),
+            next_row: 0,
+        }
+    }
+
+    fn batch(&mut self, now: Instant, area: Rect) -> Rect {
+        if now < self.deadline || area.is_empty() {
+            return Rect::default();
+        }
+        let period = Duration::from_millis(RECOVERY_BATCH_MILLIS);
+        while self.deadline <= now {
+            self.deadline += period;
+        }
+        let start = self.next_row.min(area.height);
+        let height = area
+            .height
+            .div_ceil(2)
+            .min(area.height.saturating_sub(start));
+        self.next_row = if start.saturating_add(height) >= area.height {
+            0
+        } else {
+            start + height
+        };
+        Rect::new(area.x, area.y.saturating_add(start), area.width, height)
+    }
+}
+
+/// Resize recovery writes the whole screen without first clearing it.
 fn force_repaint<B: Backend>(terminal: &mut Terminal<B>) {
+    let area = terminal.current_buffer_mut().area;
+    invalidate_rows(terminal, area);
+}
+
+/// Prepare only the selected rows, using the terminal library's wide-cell rules.
+#[derive(Default)]
+struct RecoveryBatch(Vec<(u16, u16, Cell)>);
+
+impl RecoveryBatch {
+    fn read(buffer: &Buffer, rows: Rect) -> Self {
+        let area = rows.intersection(buffer.area);
+        let mut wanted = Buffer::empty(area);
+        for y in area.top()..area.bottom() {
+            let from = buffer.index_of(area.x, y);
+            let to = wanted.index_of(area.x, y);
+            let width = usize::from(area.width);
+            wanted.content[to..to + width].clone_from_slice(&buffer.content[from..from + width]);
+        }
+        let mut comparison = Buffer::empty(area);
+        for cell in &mut comparison.content {
+            cell.modifier.insert(REPAINT_SENTINEL);
+        }
+        Self(
+            comparison
+                .diff(&wanted)
+                .into_iter()
+                .map(|(x, y, cell)| (x, y, cell.clone()))
+                .collect(),
+        )
+    }
+
+    fn draw<B: Backend>(&self, backend: &mut B) -> Result<(), B::Error> {
+        backend.draw(self.0.iter().map(|(x, y, cell)| (*x, *y, cell)))
+    }
+}
+
+/// Mark the full comparison buffer for resize recovery.
+fn invalidate_rows<B: Backend>(terminal: &mut Terminal<B>, rows: Rect) {
     let buffer = terminal.current_buffer_mut();
-    let area = buffer.area;
+    let area = rows.intersection(buffer.area);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             buffer[(x, y)].modifier.insert(REPAINT_SENTINEL);
@@ -250,9 +356,11 @@ fn force_repaint<B: Backend>(terminal: &mut Terminal<B>) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Frame;
     use ratatui::Terminal;
     use ratatui::backend::Backend;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::buffer::Cell;
 
     use super::force_repaint;
@@ -302,5 +410,132 @@ mod tests {
             symbols(&terminal).iter().all(|symbol| symbol == " "),
             "after force_repaint the next draw writes over every cell"
         );
+    }
+    #[test]
+    fn periodic_recovery_repairs_idle_damage_within_two_seconds() {
+        for height in [3_u16, 4, 80] {
+            for repaint in [super::Repaint::Needed, super::Repaint::NotNeeded] {
+                for first_batch_millis in [1000, 1001] {
+                    check_idle_recovery(height, repaint, first_batch_millis);
+                }
+            }
+        }
+    }
+
+    fn check_idle_recovery(height: u16, repaint: super::Repaint, first_batch_millis: u64) {
+        let mut terminal = Terminal::new(TestBackend::new(6, height)).expect("test terminal");
+        let draw_calls = std::cell::Cell::new(0);
+        let draw = |frame: &mut Frame<'_>| {
+            draw_calls.set(draw_calls.get() + 1);
+            let area = frame.area();
+            for y in area.top()..area.bottom() {
+                frame.buffer_mut().set_string(
+                    area.x,
+                    y,
+                    "界 tile",
+                    ratatui::style::Style::default(),
+                );
+            }
+        };
+        let mut last_completed = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::default());
+        super::prepare_frame::<_, super::super::app::NoProbe>(
+            &mut terminal,
+            &mut last_completed,
+            super::Repaint::Needed,
+            ratatui::layout::Rect::default(),
+            super::Resized::No,
+            draw,
+        )
+        .expect("the initial screen draws");
+        let expected = terminal.backend().buffer().clone();
+        stray_everywhere(&mut terminal);
+        let start = std::time::Instant::now();
+        let mut recovery = super::RowRecovery::new(start);
+        for (index, (millis, repaired_rows)) in [
+            (0, 0),
+            (999, 0),
+            (first_batch_millis, height.div_ceil(2)),
+            (1999, height.div_ceil(2)),
+            (2000, height),
+            (3000, height),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rows = recovery.batch(
+                start + std::time::Duration::from_millis(millis),
+                expected.area,
+            );
+            let batch = super::prepare_frame::<_, super::super::app::NoProbe>(
+                &mut terminal,
+                &mut last_completed,
+                repaint,
+                rows,
+                super::Resized::No,
+                draw,
+            )
+            .expect("a scheduled idle frame draws");
+            batch
+                .draw(terminal.backend_mut())
+                .expect("the recovery rows draw");
+            check_repaired_rows(&terminal, &expected, &batch, millis, repaired_rows);
+            assert_eq!(
+                draw_calls.get(),
+                if repaint == super::Repaint::Needed {
+                    index + 2
+                } else {
+                    1
+                },
+                "recovery adds no app frame at {millis} ms"
+            );
+        }
+    }
+
+    fn check_repaired_rows(
+        terminal: &Terminal<TestBackend>,
+        expected: &Buffer,
+        batch: &super::RecoveryBatch,
+        millis: u64,
+        repaired_rows: u16,
+    ) {
+        let height = expected.area.height;
+        for y in 0..height {
+            for x in 0..6 {
+                if y < repaired_rows {
+                    let cover = (0..x).rev().find(|&lead| {
+                        unicode_width::UnicodeWidthStr::width(expected[(lead, y)].symbol())
+                            > usize::from(x - lead)
+                    });
+                    if let Some(lead) = cover {
+                        assert!(
+                            unicode_width::UnicodeWidthStr::width(
+                                terminal.backend().buffer()[(lead, y)].symbol()
+                            ) > usize::from(x - lead),
+                            "the wide glyph covers column {x} at {millis} ms"
+                        );
+                        assert!(
+                            batch
+                                .0
+                                .iter()
+                                .all(|(written_x, written_y, _)| *written_x != x
+                                    || *written_y != y),
+                            "the batch writes no other symbol inside the wide glyph"
+                        );
+                    } else {
+                        assert_eq!(
+                            terminal.backend().buffer()[(x, y)],
+                            expected[(x, y)],
+                            "row {y} at {millis} ms"
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        terminal.backend().buffer()[(x, y)].symbol(),
+                        "Z",
+                        "row {y} waits for its scheduled batch"
+                    );
+                }
+            }
+        }
     }
 }

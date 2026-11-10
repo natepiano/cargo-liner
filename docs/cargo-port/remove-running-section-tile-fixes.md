@@ -2056,7 +2056,11 @@ Phase 58a landed its fixture repairs with its goal open. Its gate passed on both
 **Open from Phase 57** (landed under the three-round rule, 2026-11-10; Mac package run `--no-cache`, load 14.51 on 12 CPUs, 6 threads; log `S/phases/57/mac_gate.log`):
 1. `git::read::tests::installation_probe_seals_its_pipes_before_another_git_child_starts` failed on the Mac: "installation probe did not start". The child waits 250 ms of wall time for the shim's `ready` file (`src/git/read.rs:1172`). Remove the wall deadline from the proof.
 2. Five Phase 57 tests are green but over 1 s on the Mac: lifecycle `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` 1.414 s; ledger `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` 1.243 s; board `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` 1.526 s, `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` 1.277 s and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` 1.199 s. On natedev all six are under 1 s.
-3. Approach (Astra review, `/tmp/claude/astra/20261110T145250Z-307455/review.md`): measure fixture restore, process start, live commands, lock diagnostics and cleanup apart for each named test at 6 threads and Mac load 14 to 18. Replace the timing waits in the installation probe proof with an explicit event at the spawn boundary. Split the two ledger cases into two tests. Prepare the lifecycle foreign holder and the board competitor history in registered templates. The 406 to 330 counts are Phase 58 evidence at load 7 to 8.
+3. Approach (Astra review, `/tmp/claude/astra/20261110T145250Z-307455/review.md`): measure fixture restore, process start, live commands, lock diagnostics and cleanup apart for each named test at 6 threads and Mac load 14 to 18. Replace the timing waits in the installation probe proof with an explicit event at the spawn boundary. Split the two ledger cases into two tests. Prepare the lifecycle foreign holder and the board competitor history in registered templates. The remaining board competitor is the one that the second deferred pass creates during the test (`tests/board.rs:4626`). Keep both deferred passes, both trunk advances and the live proof validations. The 406 to 330 counts are Phase 58 evidence at load 7 to 8.
+4. Keep `PREPARED_LOCK_REPOSITORIES`, `ACTIVE_FIRST_SPLIT`, `UPPER_FIRST_SPLIT`, `LOWER_FIRST_SPLIT`, their registrations in `tests/recorded_templates.rs` and `cold_single_target_setup_builds_every_recorded_template`. The recorded first splits stay prerequisites. Marker processing and the second rebase (`tests/support/reanchoring.rs:1049`) stay live.
+5. `PreparedProofHistory<Commits>` (`crates/cargo-berth-test-support/fixtures/prepared_lock_tests.rs:78`) names preparation, not a state. Replace it with an active-history type and a released-proof type. Settlement produces the released-proof type.
+6. Each Mac gate record names the executable paths and build identities of the Mac test binaries and `cargo-berth`. A measurement from a binary without the candidate code does not count.
+7. The Phase 57 repair makes `ExitNotification::wait_for_child` (`src/git/child.rs`) check the process after a notification deadline. natedev passed 10 of 10 runs with the repair and 10 of 10 without it, so no run proves that the repair removes the Mac failure. If a Mac run shows the six tests that Phase 57 names fail again, they come first in this phase with a Mac-side diagnosis (showrunner, 2026-11-10).
 
 **Spec:**
 1. **Find the cause first.** Read the attempts log for Phase 43c: Mac test processes stall 1.9 to 4 s in full runs and take 0.01 s alone. This can be the same cause. Measure what a concurrent test waits on, and quote the line that takes the time.
@@ -2356,7 +2360,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 
 **Ruled out:** A wall-clock gate, because run-queue wait on a loaded machine is not draw cost.
 
-### Phase 32e — The last tile frames over 4 ms of CPU  · status: todo
+### Phase 32e — The last tile frames over 4 ms of CPU  · status: done
 
 **Depends on:** Phase 32b (it adds the per-frame CPU counters and the retained paintings that this phase measures).
 
@@ -2398,6 +2402,44 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
 - The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Phase 32b's final result stays beside it.
 - A gate capture counts only when the 1-minute load is below 32 at its start and at its end. `capture.py` records both loads in the result. A capture outside the limit is void, not red. Do not wait idle for a low load: continue the repair round, and run the gate capture when the load is below the limit (showrunner, 2026-11-10).
+- Change-Review: none — draw time only, with no visible change.
+
+### Phase 32h — Tile frames stay under 4 ms after layout, view and value changes  · status: todo
+
+**Depends on:** Phase 32e.
+
+Phase 32e landed under the three-round rule with its gate open (finding F010). Its counted capture had on-CPU maximums of 3.24, 4.46 and 4.81 ms at 24, 40 and 80 rows, with 0 of 1720, 1 of 1668 and 13 of 1681 frames over 4 ms. Three interleaved pairs against main showed no change larger than the spread between pairs. The Astra review of F010 is `/tmp/claude/astra/20261110T183059Z-942485/review.md`.
+
+#### Work Order
+
+**Goal:** In the fixed busy capture, no `cargo-tile` frame spends more than 4 ms of on-CPU draw time at 24, 40 and 80 rows. This includes the first frame after a layout change, a view change, a duration change and a resource change.
+
+**Spec:**
+
+1. **Measure before you change.** The `capture_cpu_ns` timer surrounds `frame_draw_contents` (`crates/cargo-tile/src/render.rs:1728`), so it includes table preparation and text drawing. It also runs when `InkCapture::without_ink()` turns recording off. Measure foreground recording apart from ordinary painting. Keep source capture, destination scan, patch construction and ink binding as separate costs.
+2. **Value changes count.** Frames over 4 ms also come after a duration change (`00:05` to `00:06`) and after a memory reading change, with `invalid_view=0`. `CellPaintSource::matches` checks layout before these source values (`crates/cargo-tile/src/render/cell_paint.rs:355`). Cover these frames, not only view changes.
+3. **Make the recording areas small.** `paint_ink` saves and marks every foreground in its rectangle, then scans that rectangle again (`crates/cargo-tile/src/render/cell_paint.rs:591`). Ancestry recording gets the remaining pane (`crates/cargo-tile/src/render.rs:2443`): prepare the ancestry lines once, record only their drawn rectangle, and record nothing when there are no lines. Continuation recording gets the table area (`crates/cargo-tile/src/render.rs:2804`): resolve the continuation search first, then record only the selected row. Keep the full search dependency in `CellPaintReach`.
+4. **Limits.** Do not skip recording only because the current fade is zero: a finished row can fade during later cache replays. Keep destination validation: continuation placement reads existing symbols, and retained patches use absolute buffer positions. Do not move the work into `before_draw`: that hides the cost from the draw measurement and does not reduce CPU work.
+5. **Deterministic proof.** Add a fixture at 160 columns and 24, 40 and 80 rows. Make argument, hierarchy, duration and resource changes. Check the first frame after each change, not `settled_frame` (`crates/cargo-tile/src/render.rs:8754`), which draws four times. Compare each buffer with a fresh painting. Count foreground recording visits apart from the snapshot and patch counters. Empty ancestry needs zero recording visits. Continuation recording stays at one row as the table height grows. Include mixed live and finished rows, Brighten, wide glyphs and shifted buffers.
+6. **The shifted-buffer test runs.** The loop at `crates/cargo-tile/src/render/cell_paint.rs:991` supplies only `Reset` and `Black`, so the shifted-buffer branch never runs. Add `Indexed(16)` to that loop.
+7. **Constant order (finding F009).** Put `RECOVERY_BATCH_MILLIS` in `crates/tui_pane/src/runner/constants.rs` with the related repaint constants, in the module order that the style guide gives.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — recording areas, the timer split and the first-frame fixture.
+- `crates/cargo-tile/src/render/cell_paint.rs` — `paint_ink`, `CellPaintReach` and the shifted-buffer test.
+- `crates/cargo-tile/src/render/frame_preparation.rs`, `crates/cargo-tile/src/render/command_cache.rs` — only if the measurement in item 1 names them.
+- `crates/cargo-tile/src/probe.rs` — the separate recording costs.
+- `crates/tui_pane/src/runner/constants.rs` — item 7.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32e: retained cells recolor from separate ink sources; keep them separate. Phase 32e: a frame outside the gate load limit is void, not red. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green. When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
+- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build.
+- A gate capture counts only when the 1-minute load is below 32 at its start and at its end. A capture outside the limit is void, not red.
+- Three interleaved pairs against main for any CPU claim, with the median change and the spread.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: todo
@@ -2444,9 +2486,15 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 2. If the ink comes from the `tui_pane` palette, fix it there, not in `cargo-tile`. If it comes from `cargo-tile`, fix it in `cargo-tile`.
 3. If the fix is in `tui_pane`, read how `cargo-port` uses the same ink, and include `cargo-port` in the shots.
 4. Change only what a light background needs. Every dark-background ink stays the same value. Test, red first: read the drawn ink of an active crate label from the buffer on a light and a dark background. The light ink has a contrast of at least 4.5:1 against the background, and the dark ink equals the current value.
+5. Dimmed labels on a light background have a contrast of at least 3:1. The Phase 32c design check measured the column header `pid` at 2.01:1, the summary `pid` at 1.91:1 and the footer `content rows` at 1.96:1. Apply items 2 to 4 to the dimmed label ink, with the 3:1 limit.
+6. Row text is visible on a light background. In the Phase 32c shots on a white terminal, the pid and command text of crate rows measured pure white on white, so the rows looked empty. The light theme in `crates/cargo-tile/src/theme/builtins.rs` already has black default text, and white default text belongs to the dark theme. So those shots probably show the dark theme on a white terminal: the capture set the terminal colors and selected no appearance.
+7. Do this before any ink change, because the measurements in the Goal and items 5 and 6 came from those shots. Record the resolved theme and the terminal settings. Repeat the capture with matching light settings. If the measured defects go away, close the items they name and fix theme selection only if the theme was selected wrongly. If white text persists, read theme selection and the retained painting first. If palette values change, change the theme templates too: existing tests require matching constructors and templates.
 
 **Files:**
+- `crates/cargo-tile/src/render.rs` — the drawn-label tests and their buffer fixtures. `styled_process_command_words` assigns `success_color()` to crate labels.
+- `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/default_dark.toml`, `crates/cargo-tile/themes/default_light.toml`, `crates/cargo-tile/themes/high_contrast.toml`, `crates/cargo-tile/themes/starter.toml` — items 6 and 7, if palette values change.
 - `crates/cargo-tile/src/theme/family_palette.rs`, `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/render/cell_paint.rs` — when the ink is in `cargo-tile`.
+- `crates/tui_pane/src/app_config/theme_install.rs`, `crates/tui_pane/src/theme/resolver.rs`, `crates/tui_pane/src/theme/state.rs` — only if item 7 reproduces a theme-selection fault.
 - `crates/tui_pane/src/bar/palette.rs` — when the ink is in `tui_pane`. `crates/tui_pane/CHANGELOG.md` — one line if `tui_pane` changes.
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
 
@@ -2459,6 +2507,40 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
 - Shots of a live tile with active crates on a light and a dark background; when `tui_pane` changes, shots of `cargo-port` with the same ink. A fresh helper's design check passes.
 - Change-review line: active crate labels read on a light background.
+
+### Phase 32g — The hidden-process row reads whole and matches its cell  · status: todo
+
+**Depends on:** Phase 32c, Phase 32e
+
+#### Work Order
+
+**Goal:** Defects from the Phase 32c design check (2026-11-10) moved here under the hard landing. The row that counts hidden processes loses its last letter at 24 rows (`+18 mor`), and it draws as a full-width black bar with white text on a white cell. Items 4 to 7 name the other rows the check reported.
+
+**Spec:**
+
+1. The label `+N more` is whole at every count and every cell width that shows the row. Quote the source line in `draw_hidden_process_count` that cuts the label, and fix the cause there. Test, red first: add rows that read the whole label from the buffer at the 24-row cell width, with one-digit and two-digit counts.
+2. The row draws on the background of its cell, in the normal row ink. It has no cut mark at its right end unless the label is cut. Test, red first: read the background and ink of the row from the buffer on a light and a dark background.
+
+3. A cargo probe row keeps its real crate name: `clippy-driver ___`. It is the real value, and it marks the probe (showrunner, 2026-11-10). Make no change for this item. Tell the design check that this is the ruling.
+4. A process row that fades after its process ends stays readable until the row goes. The Phase 32c design check measured a fading frontend name at 3.32:1 down to 1.60:1, on a terminal whose appearance was not recorded (Phase 32f item 7). Keep the existing removal time, and clamp the visible text contrast at 4.5:1 against its resolved background. Keep the retained ink handling of Phase 32e: `PaintedCellContents::recolor` reapplies `RowInk::color` from retained source colors, apart from fresh text drawing, so the clamp applies on both paths. Test, red first: read the drawn ink at intermediate fade samples on a light and a dark background. In the retained-versus-fresh fixture, the buffers are equal, the contrast is at least 4.5:1, and the replay does not repaint.
+5. Check whether the path placement of a compiler call with no `--crate-name` is a defect. In the Phase 32c shots at 80 rows with `h` on, the path sits on the second row. `WrappedCommand::into_rows` combines continuation units into the last row when height is limited, so a row budget can change the placement. Compare the same argv and command width with only the row budget changed. If argv order and the available-space rules hold, close this item with no change.
+6. With `h` off, a shortened crate name keeps its `…` directly after the name, at the solved command-column width. In the Phase 32c shot at 24 rows, the name `phase32_crate_00_with_a` stopped two cells early, and the only `…` was at the right margin. `mark_table_continuation` deletes existing ellipses when rows are omitted, then places one at the table margin. Keep both marks (showrunner, 2026-11-10): the name's own mark stays directly after the name, and the hidden-rows mark stands at the right margin. Stop the deletion for rows omitted. `reserve_command_rows` keeps returning 0 for single-line Default rows, so no process row is lost, and the Phase 35 rule stays. Test, red first: read a shortened final name and the margin mark from the buffer while more process rows stay hidden.
+7. A flag and its value stay together on argument rows. In the Phase 32c shot at 80 rows, `-L` and `--out-dir` sat alone on a row, and `--check-cfg` ended a row while its value started the next. `COMMAND_VALUED_OPTIONS` omits these three options. Add them to the table, and reuse the existing `BoundValue` wrapping and cut behavior. Do not add a second classification in the renderer. These options are not lint options, so rename `ValuedOptionScope::RustcLint` and `ArgumentOwner::RustcLint` to `Rustc`, and `RUSTC_LINT_OWNERS` to `RUSTC_ARGUMENT_OWNERS`. Keep the Cargo and nextest boundaries. Test, red first: parser cases, and the argument rows of a recorded argv, for fitting pairs and for oversized values.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — items 1, 2 and 4 to 6.
+- `crates/cargo-tile/src/render/cell_paint.rs` — item 4's retained-versus-fresh fixture.
+- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/census/command_text.rs` — item 7 and its parser cases.
+- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32c: `compiler_argument_layout` identifies forwarded compiler executables, and `wrapped_process_command` reserves the heading row. A capture that sets terminal colors and selects no appearance can draw the dark theme on a white terminal. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- Shots of a live tile with hidden processes at 24 and 40 rows on a light background, and at 80 rows with `h` on with matched light and dark appearances. Record the resolved theme and the terminal settings before judging missing text, placement or contrast. A fresh helper's design check passes.
+- Change-review line: the hidden-process row reads whole on the background of its cell.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 

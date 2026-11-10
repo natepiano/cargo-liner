@@ -239,6 +239,7 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
 use crate::probe;
+use crate::probe::PaintStage;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -427,18 +428,21 @@ fn draw_panes(
 }
 
 fn prepare_panes(app: &mut App, height: u16) -> PreparedPaneFrame {
+    let timer = probe::paint_timer(PaintStage::Preparation);
     let view = CommandView::new(
         app.tree,
         app.arguments,
         &app.loaded_config.config.commands.default_arguments,
     );
-    app.prepared_tables.for_frame(
+    let prepared = app.prepared_tables.for_frame(
         &mut app.roster,
         &app.loaded_config.config.commands.hidden,
         &view,
         height.saturating_sub(3),
         app.free_disk_space,
-    )
+    );
+    drop(timer);
+    prepared
 }
 
 fn draw_visible_panes(
@@ -1406,6 +1410,7 @@ impl<'a> Cells<'a> {
             tables: prepared,
             summary_foot,
         } = prepared;
+        let setup = probe::paint_timer(PaintStage::FrameSetup);
         let grids = (*prepared.grids).clone();
         for grid in [&grids.commands.0, &grids.summary.0] {
             grid.row_end.set(TableRowEnd::Unresolved);
@@ -1417,6 +1422,7 @@ impl<'a> Cells<'a> {
             grid.whole_short_tables.borrow_mut().clear();
             grid.prepared_plans.borrow_mut().clear();
         }
+        drop(setup);
         Self {
             summary_foot,
             sccache,
@@ -1465,12 +1471,14 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        let allocation_timer = probe::paint_timer(PaintStage::Allocation);
         let allocations = allocations();
         if let FrameAllocationPreparation::Prepared(prepared) = &*self.allocation.borrow()
             && prepared.allocations == allocations
         {
             prepared.summary.apply(&self.grids.summary.0);
             prepared.commands.apply(&self.grids.commands.0);
+            drop(allocation_timer);
             #[cfg(test)]
             tests::ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
             return;
@@ -1554,6 +1562,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             .frame_row_end
             .set(self.grids.commands.0.row_end.get());
         self.settle_command_column_spacing(&allocations);
+        drop(allocation_timer);
         *self.allocation.borrow_mut() =
             FrameAllocationPreparation::Prepared(Box::new(PreparedFrameAllocation {
                 allocations,
@@ -1621,6 +1630,7 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
+        let demand_timer = probe::paint_timer(PaintStage::Demand);
         #[cfg(test)]
         tests::FRAME_DEMAND_QUERIES.with(|queries| queries.set(queries.get().saturating_add(1)));
         let narrowest = widths
@@ -1634,7 +1644,7 @@ impl TileCells<InvocationId> for Cells<'_> {
                 .find(|(known, _)| known == content)
                 .map_or(narrowest, |(_, width)| *width)
         };
-        TileDemands {
+        let demands = TileDemands {
             summary:       self.prepared_rows(
                 &TileContent::Summary,
                 width_of(&TileContent::Summary),
@@ -1658,7 +1668,9 @@ impl TileCells<InvocationId> for Cells<'_> {
                     }
                 })
                 .collect(),
-        }
+        };
+        drop(demand_timer);
+        demands
     }
 
     fn rows_drawn(&self, content: &TileContent, area: Rect) -> u16 {
@@ -1678,8 +1690,9 @@ impl TileCells<InvocationId> for Cells<'_> {
             ground,
         };
         let mut paintings = self.paintings.borrow_mut();
-        let painted = paintings.get(&CellRowIdentity::from(content));
-        let reusable = painted.is_some_and(|painted| {
+        let mut painted = paintings.get_mut(&CellRowIdentity::from(content));
+        let validation = probe::paint_timer(PaintStage::Validation);
+        let reusable = painted.as_deref_mut().is_some_and(|painted| {
             if painted.inputs != inputs {
                 probe::paint_work(|work| work.inputs += 1);
                 return false;
@@ -1692,9 +1705,11 @@ impl TileCells<InvocationId> for Cells<'_> {
                 probe::paint_work(|work| work.destination += 1);
                 return false;
             }
+            painted.recolor(&self.roster, content);
             true
         });
-        if let Some(painted) = painted.filter(|_| reusable) {
+        drop(validation);
+        if let Some(painted) = painted.as_deref().filter(|_| reusable) {
             probe::paint_work(|work| work.hits += 1);
             for command in &painted.commands {
                 command.show_in_roster(buffer, &self.roster);
@@ -1705,10 +1720,28 @@ impl TileCells<InvocationId> for Cells<'_> {
         if painted.is_none() {
             probe::paint_work(|work| work.missing += 1);
         }
-        let source = cell_paint::CellPaintSource::read(&self.roster, content, &self.grids);
+        let repaint = probe::paint_timer(PaintStage::Repaint);
+        let mut source = cell_paint::CellPaintSource::read(&self.roster, content, &self.grids);
+        let surface_timer = probe::paint_timer(PaintStage::Surface);
         let before = CellPaintSurface::read(buffer, inner);
+        drop(surface_timer);
+        let capture_timer = probe::paint_timer(PaintStage::Capture);
+        let capture = if source.has_finished_rows() {
+            cell_paint::InkCapture::start()
+        } else {
+            cell_paint::InkCapture::without_ink()
+        };
         let reach = frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
+        let mut ink = capture.finish();
+        drop(capture_timer);
+        source.record_resources(&reach);
         let before = before.with_reach(inner, &reach);
+        let patch_timer = probe::paint_timer(PaintStage::Patch);
+        let changes = CellPaintPatch::between(&before, buffer, &ink);
+        drop(patch_timer);
+        let binding_timer = probe::paint_timer(PaintStage::InkBinding);
+        ink.bind(&changes);
+        drop(binding_timer);
         paintings.insert(
             CellRowIdentity::from(content),
             PaintedCellContents {
@@ -1716,10 +1749,12 @@ impl TileCells<InvocationId> for Cells<'_> {
                 source,
                 commands: reach.commands,
                 header: reach.header,
-                changes: CellPaintPatch::between(&before, buffer),
+                changes,
+                ink,
                 before,
             },
         );
+        drop(repaint);
     }
 
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
@@ -2188,9 +2223,10 @@ fn frame_draw_summary(
     .unwrap_or(u16::MAX);
     let mut reach = if rows.is_empty() {
         CellPaintReach {
-            rows:     0,
-            commands: Vec::new(),
-            header:   CellColumnHeader::Absent,
+            rows:      0,
+            commands:  Vec::new(),
+            resources: Vec::new(),
+            header:    CellColumnHeader::Absent,
         }
     } else {
         frame_draw_process_table(
@@ -2388,10 +2424,10 @@ fn frame_draw_group(
     let group = group.for_painting();
     let group = group.as_ref();
     let content_origin = inner.y;
-    let inner = CommandHeading::for_group(group, inner.width, ground).draw(buffer, inner);
-    let reading_origin = (inner.x, inner.y);
-    let inner = CommandReading::for_group(group, inner.width, grid, ground).draw(buffer, inner);
     let rows: Vec<&TrackedRow> = group.rows().collect();
+    let inner = paint_command_heading(buffer, inner, group, ground);
+    let reading_origin = (inner.x, inner.y);
+    let inner = paint_command_reading(buffer, inner, group, grid, ground);
     let ancestry = drawn_ancestry(group, &grid.view);
     // The chain and table fade together when their command finishes.
     let faded = group_fade(group, &rows);
@@ -2404,13 +2440,22 @@ fn frame_draw_group(
         PinnedGroup::Lead(&group.lead.process),
         grid,
     );
-    let used = draw_ancestry_source(
+    let used = cell_paint::paint_ink(
         buffer,
         inner,
-        AncestrySource::for_group(&ancestry, group, &grid.view),
-        faded,
+        cell_paint::InkSource::heading(&rows),
+        RowInk::Ordinary(faded),
         ground,
-        table_rows,
+        |buffer| {
+            draw_ancestry_source(
+                buffer,
+                inner,
+                AncestrySource::for_group(&ancestry, group, &grid.view),
+                faded,
+                cell_paint::ink_ground(ground),
+                table_rows,
+            )
+        },
     );
     let table = Rect {
         y: inner.y.saturating_add(used),
@@ -2432,9 +2477,18 @@ fn frame_draw_group(
         && table_rows > usize::from(table.height)
     {
         // Use the reading's margin when no process row can carry the cut mark.
-        buffer[reading_origin]
-            .set_symbol(ELISION)
-            .set_style(cut_mark_style(ground, faded));
+        cell_paint::paint_ink(
+            buffer,
+            Rect::new(reading_origin.0, reading_origin.1, 1, 1),
+            cell_paint::InkSource::heading(&rows),
+            RowInk::Ordinary(faded),
+            ground,
+            |buffer| {
+                buffer[reading_origin]
+                    .set_symbol(ELISION)
+                    .set_style(cut_mark_style(cell_paint::ink_ground(ground), faded));
+            },
+        );
     }
     table_reach.rows = inner
         .y
@@ -2700,6 +2754,56 @@ fn mark_table_continuation(
         },
         buffer,
     );
+}
+
+/// Continuation marks follow either the table heading or its final process row.
+#[derive(Clone, Copy)]
+enum ContinuationInk {
+    Heading,
+    LastRow,
+}
+
+fn paint_table_continuation(
+    buffer: &mut Buffer,
+    area: Rect,
+    layout: &CellTableLayout,
+    continuation: TableContinuation,
+    rows: &[&TrackedRow],
+    owner: ContinuationInk,
+) {
+    let last = rows.last().copied();
+    let faded = match owner {
+        ContinuationInk::Heading => heading_fade(rows),
+        ContinuationInk::LastRow => last.map_or(0, TrackedRow::faded),
+    };
+    let cut = matches!(continuation, TableContinuation::CommandWasCut { .. });
+    if !cell_paint::records_ink() || (cut && last.is_none_or(|row| !row.is_ended())) {
+        mark_table_continuation(buffer, area, layout, continuation, faded);
+        return;
+    }
+    let source = match owner {
+        ContinuationInk::Heading => cell_paint::InkSource::heading(rows),
+        ContinuationInk::LastRow => last.map_or_else(
+            || cell_paint::InkSource::heading(rows),
+            |row| {
+                if cut {
+                    cell_paint::InkSource::row(row)
+                } else {
+                    cell_paint::InkSource::ordinary(row)
+                }
+            },
+        ),
+    };
+    let ink = if cut {
+        last.map_or(RowInk::Ordinary(0), TrackedRow::ink)
+    } else {
+        RowInk::Ordinary(faded)
+    };
+    let mut base = layout.clone();
+    base.ground = Color::Reset;
+    cell_paint::paint_ink(buffer, area, source, ink, layout.ground, |buffer| {
+        mark_table_continuation(buffer, area, &base, continuation, faded);
+    });
 }
 
 /// What stood between adjacent wrapped command lines before wrapping.
@@ -3824,7 +3928,7 @@ impl AncestryParentLinks {
 }
 
 /// Whether a parent column carries any process relationship.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum ParentColumnContent {
     NoParentReadings,
     NamesParents,
@@ -3992,7 +4096,7 @@ pub(crate) enum RemovableTableColumn {
 }
 
 /// A state slot's owner determines whether it can participate in width reduction.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum TableStateColumn {
     Absent,
     BlankAlignment,
@@ -4508,7 +4612,7 @@ enum CommandWidthBudget {
 }
 
 /// One actual table's name and state, kept together when fitting a frame.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 struct TableWidthBudget {
     short:        u16,
     full:         u16,
@@ -4940,29 +5044,34 @@ fn group_fade(group: &TrackedGroup, rows: &[&TrackedRow]) -> u8 {
     heading_fade(rows).min(group.lead.faded())
 }
 
-/// Render a cargo table: one working-directory header per distinct path,
-/// with that directory's invocations tabulated beneath it.
-///
-/// `pinned` is the directory that heads the cell whatever the rest sort
-/// to. A command's own cell pins the command's: the invocations under
-/// it are often somewhere else entirely -- a test run drives cargo in a
-/// temporary directory per case, each one alive for seconds -- and
-/// sorted with the rest those come out ahead of a home-relative path
-/// and push the command being watched off the bottom of its own cell.
-/// The summary pins nothing: every row there leads a command of its
+/// Keep numeric contributions until every selected row owns its full total.
+fn planned_resource_readings(
+    plan: &ProcessTablePlan<'_>,
+    grid: &FrameTableColumnGrid,
+) -> Vec<RowResourceReading> {
+    match &plan.visible_rows {
+        PlannedVisibleRows::NoProcessRows => Vec::new(),
+        PlannedVisibleRows::ProcessRows(rows) => row_resource_readings(rows, &grid.contributions),
+    }
+}
+
 /// Apply contributor totals and family ink after the table selects its rows.
 fn apply_planned_row_readings(
     drawn_groups: &mut [Vec<LaidOutProcessRow<'_>>],
     plan: &mut ProcessTablePlan<'_>,
     layout: &CellTableLayout,
-    grid: &FrameTableColumnGrid,
+    readings: &[RowResourceReading],
 ) {
-    let readings = match &plan.visible_rows {
-        PlannedVisibleRows::NoProcessRows => Vec::new(),
-        PlannedVisibleRows::ProcessRows(rows) => row_resource_readings(rows, &grid.contributions),
-    };
     let family_links = AllocationFamilyLinks::from_plan(plan);
     for row in drawn_groups.iter_mut().flatten() {
+        let mut source_layout;
+        let layout = if cell_paint::records_ink() && row.source.is_ended() {
+            source_layout = layout.clone();
+            source_layout.ground = Color::Reset;
+            &source_layout
+        } else {
+            layout
+        };
         if let Some(reading) = readings.iter().find(|reading| {
             reading.invocation == row.source.process.invocation_id
                 && reading.pid == row.source.process.pid
@@ -5043,9 +5152,10 @@ fn frame_draw_process_table(
     if rows.is_empty() {
         draw_empty_process_table(buffer, area, grid.kind);
         return CellPaintReach {
-            rows:     area.height,
-            commands: Vec::new(),
-            header:   CellColumnHeader::Absent,
+            rows:      area.height,
+            commands:  Vec::new(),
+            resources: Vec::new(),
+            header:    CellColumnHeader::Absent,
         };
     }
 
@@ -5057,7 +5167,6 @@ fn frame_draw_process_table(
         height: TABLE_HEADER_HEIGHT.min(area.height),
         ..indented(area)
     };
-    let faded = heading_fade(rows);
     let groups = group_by_path(rows, pinned);
     let available_height = area.height.saturating_sub(TABLE_HEADER_HEIGHT);
     let PreparedTableViewport {
@@ -5068,23 +5177,17 @@ fn frame_draw_process_table(
     } = prepare_table_viewport(&groups, available_height, &layout, grid);
     let headings = TableAccountHeadings::for_table(&groups, pinned, plan.visible_group_count, area);
     if layout.columns.is_empty() {
-        Paragraph::new(Line::from(Span::styled(
-            ELISION,
-            column_header_style(&layout, faded),
-        )))
-        .render(header_area, buffer);
+        paint_table_header(buffer, header_area, rows, &layout, &plan);
         return CellPaintReach {
-            rows:     header_area.height,
-            commands: Vec::new(),
-            header:   CellColumnHeader::Row(header_area.y),
+            rows:      header_area.height,
+            commands:  Vec::new(),
+            resources: Vec::new(),
+            header:    CellColumnHeader::Row(header_area.y),
         };
     }
-    apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, grid);
-    layout.draw_columns(
-        buffer,
-        header_area,
-        column_header_cells(&layout, faded, &plan),
-    );
+    let resources = planned_resource_readings(&plan, grid);
+    apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, &resources);
+    paint_table_header(buffer, header_area, rows, &layout, &plan);
     let drawn = draw_table_groups(
         buffer,
         area,
@@ -5095,21 +5198,23 @@ fn frame_draw_process_table(
         &plan,
     );
     if hidden > 0 && count_row == HiddenProcessCountRow::Reserved {
-        mark_table_continuation(
+        paint_table_continuation(
             buffer,
             area,
             &layout,
             TableContinuation::RowsWereOmitted,
-            faded,
+            rows,
+            ContinuationInk::Heading,
         );
         draw_hidden_process_count(buffer, area, ground, hidden);
         return CellPaintReach {
-            rows:     area.height,
+            rows: area.height,
             commands: drawn.commands,
-            header:   CellColumnHeader::Row(header_area.y),
+            resources,
+            header: CellColumnHeader::Row(header_area.y),
         };
     }
-    table_draw_reach(
+    let mut reach = table_draw_reach(
         buffer,
         area,
         &layout,
@@ -5117,7 +5222,44 @@ fn frame_draw_process_table(
         &plan,
         groups.len(),
         rows.len(),
-    )
+    );
+    reach.resources = resources;
+    reach
+}
+
+/// Column labels retain one shared ink source.
+fn paint_table_header(
+    buffer: &mut Buffer,
+    area: Rect,
+    rows: &[&TrackedRow],
+    layout: &CellTableLayout,
+    plan: &ProcessTablePlan<'_>,
+) {
+    let faded = heading_fade(rows);
+    let mut source_layout = layout.clone();
+    source_layout.ground = cell_paint::ink_ground(layout.ground);
+    cell_paint::paint_ink(
+        buffer,
+        area,
+        cell_paint::InkSource::heading(rows),
+        RowInk::Ordinary(faded),
+        layout.ground,
+        |buffer| {
+            if layout.columns.is_empty() {
+                Paragraph::new(Line::from(Span::styled(
+                    ELISION,
+                    column_header_style(&source_layout, faded),
+                )))
+                .render(area, buffer);
+            } else {
+                source_layout.draw_columns(
+                    buffer,
+                    area,
+                    column_header_cells(&source_layout, faded, plan),
+                );
+            }
+        },
+    );
 }
 
 /// `HiddenProcessCountRow` records whether the table plan assigns a row to the hidden count.
@@ -5201,21 +5343,30 @@ fn table_draw_reach(
     }
     if matches!(continuation, TableContinuation::FullyDrawn) {
         CellPaintReach {
-            rows:     drawn.height,
-            commands: drawn.commands,
-            header:   CellColumnHeader::Row(area.y),
+            rows:      drawn.height,
+            commands:  drawn.commands,
+            resources: Vec::new(),
+            header:    CellColumnHeader::Row(area.y),
         }
     } else {
-        let faded = match &plan.visible_rows {
-            PlannedVisibleRows::NoProcessRows => 0,
-            PlannedVisibleRows::ProcessRows(rows) => rows.last().map_or(0, |row| row.faded()),
+        let rows = match &plan.visible_rows {
+            PlannedVisibleRows::NoProcessRows => &[][..],
+            PlannedVisibleRows::ProcessRows(rows) => rows.as_slice(),
         };
-        mark_table_continuation(buffer, area, layout, continuation, faded);
+        paint_table_continuation(
+            buffer,
+            area,
+            layout,
+            continuation,
+            rows,
+            ContinuationInk::LastRow,
+        );
         // The marker searches the entire allocation for the final command symbol.
         CellPaintReach {
-            rows:     area.height,
-            commands: drawn.commands,
-            header:   CellColumnHeader::Row(area.y),
+            rows:      area.height,
+            commands:  drawn.commands,
+            resources: Vec::new(),
+            header:    CellColumnHeader::Row(area.y),
         }
     }
 }
@@ -5251,6 +5402,14 @@ fn prepared_table_groups<'row>(
                 .rows
                 .iter()
                 .map(|row| {
+                    let mut source_layout;
+                    let layout = if cell_paint::records_ink() && row.is_ended() {
+                        source_layout = layout.clone();
+                        source_layout.ground = Color::Reset;
+                        &source_layout
+                    } else {
+                        layout
+                    };
                     let mut prepared = process_row(row, layout);
                     if layout.kind == TableKind::Summary {
                         let command = layout.commands.borrow_mut().for_summary_row(row, layout);
@@ -5319,7 +5478,7 @@ enum PlannedVisibleRows<'a> {
 }
 
 /// Whether the table's separators can lend independently to a command cell.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum DirectorySeparation {
     KeepTogether,
     YieldEarliest,
@@ -5862,18 +6021,32 @@ fn draw_path_group(
 ) -> PathGroupDraw {
     let heading_rows = group.heading.rows();
     if group.heading == DirectoryHeading::Body {
-        let heading_area = cleared(area);
-        let mut heading = headings.line(group, heading_area.width, layout.ground);
-        heading
-            .spans
-            .extend(heading_gauge(group, heading_area.width, layout));
-        Paragraph::new(heading).render(
-            Rect {
-                height: GROUP_HEADER_HEIGHT.min(area.height),
-                ..heading_area
-            },
-            buffer,
+        let heading_area = Rect {
+            height: GROUP_HEADER_HEIGHT.min(area.height),
+            ..cleared(area)
+        };
+        let heading = headings.line(
+            group,
+            heading_area.width,
+            cell_paint::ink_ground(layout.ground),
         );
+        let taken = cell_width(&heading.to_string());
+        cell_paint::paint_ink(
+            buffer,
+            heading_area,
+            cell_paint::InkSource::heading(&group.rows),
+            RowInk::Ordinary(heading_fade(&group.rows)),
+            layout.ground,
+            |buffer| {
+                Paragraph::new(heading).render(heading_area, buffer);
+            },
+        );
+        let gauge_area = Rect {
+            x: heading_area.x.saturating_add(taken),
+            width: heading_area.width.saturating_sub(taken),
+            ..heading_area
+        };
+        paint_heading_gauge(buffer, gauge_area, group, layout, heading_area.width);
     }
 
     // No header on this table: the column labels are drawn once for the
@@ -5939,21 +6112,35 @@ fn draw_solved_process_rows(
             break;
         }
         let height = row.lines.min(area.height);
-        layout.draw_columns(
-            buffer,
-            Rect { height, ..area },
-            row.cells
-                .iter()
-                .enumerate()
-                .filter(|(column, _)| layout.columns.contains(column))
-                .map(|(column, cell)| {
-                    if numeric_column(column) {
-                        Cow::Owned(cell.clone().right_aligned())
-                    } else {
-                        Cow::Borrowed(cell)
-                    }
-                }),
-        );
+        let draw = |buffer: &mut Buffer| {
+            layout.draw_columns(
+                buffer,
+                Rect { height, ..area },
+                row.cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(column, _)| layout.columns.contains(column))
+                    .map(|(column, cell)| {
+                        if numeric_column(column) {
+                            Cow::Owned(cell.clone().right_aligned())
+                        } else {
+                            Cow::Borrowed(cell)
+                        }
+                    }),
+            );
+        };
+        if row.source.is_ended() {
+            cell_paint::paint_ink(
+                buffer,
+                Rect { height, ..area },
+                cell_paint::InkSource::row(row.source),
+                row.source.ink(),
+                layout.ground,
+                draw,
+            );
+        } else {
+            draw(buffer);
+        }
         area.y = area.y.saturating_add(height);
         area.height = area.height.saturating_sub(height);
     }
@@ -7031,6 +7218,7 @@ fn percent_reading(progress: Progress) -> String {
 }
 
 /// Which invocation owns the capture's numeric progress.
+#[derive(Debug, Eq, PartialEq)]
 enum InvocationProgressOwnership {
     OwnInvocation,
     EnclosingInvocation,
@@ -7113,6 +7301,117 @@ impl CommandHeading {
             buffer,
         );
         remaining
+    }
+}
+
+/// A command heading uses the minimum ink of its directory rows.
+fn paint_command_heading(
+    buffer: &mut Buffer,
+    area: Rect,
+    group: &TrackedGroup,
+    ground: Color,
+) -> Rect {
+    let rows: Vec<_> = group.rows().collect();
+    let groups = group_by_path(&rows, PinnedGroup::Lead(&group.lead.process));
+    let heading_rows = groups
+        .first()
+        .map_or_else(Vec::new, |group| group.rows.clone());
+    let heading_area = Rect {
+        height: GROUP_HEADER_HEIGHT.min(area.height),
+        ..area
+    };
+    cell_paint::paint_ink(
+        buffer,
+        heading_area,
+        cell_paint::InkSource::heading(&heading_rows),
+        RowInk::Ordinary(heading_fade(&heading_rows)),
+        ground,
+        |buffer| {
+            CommandHeading::for_group(group, area.width, cell_paint::ink_ground(ground))
+                .draw(buffer, area)
+        },
+    )
+}
+
+/// Draw the command reading with the ink of its one progress owner.
+fn paint_command_reading(
+    buffer: &mut Buffer,
+    area: Rect,
+    group: &TrackedGroup,
+    grid: &FrameTableColumnGrid,
+    ground: Color,
+) -> Rect {
+    let rows: Vec<_> = group.rows().collect();
+    let groups = group_by_path(&rows, PinnedGroup::Lead(&group.lead.process));
+    let reading = groups
+        .iter()
+        .find(|group| group.heading == DirectoryHeading::Lead)
+        .map(|group| group.rows.as_slice())
+        .unwrap_or_default();
+    let owners: Vec<_> = reading
+        .iter()
+        .copied()
+        .filter(|row| {
+            !grid.row_progress.contains(&row.process.invocation_id)
+                && matches!(own_counter(row), CounterState::Working { .. })
+        })
+        .collect();
+    if let [row] = owners.as_slice()
+        && row.is_ended()
+    {
+        cell_paint::paint_ink(
+            buffer,
+            Rect {
+                height: area.height.min(1),
+                ..area
+            },
+            cell_paint::InkSource::row(row),
+            row.ink(),
+            ground,
+            |buffer| {
+                CommandReading::for_group(group, area.width, grid, cell_paint::ink_ground(ground))
+                    .draw(buffer, area)
+            },
+        )
+    } else {
+        CommandReading::for_group(group, area.width, grid, ground).draw(buffer, area)
+    }
+}
+
+/// A directory gauge retains the ink of its progress owner.
+fn paint_heading_gauge(
+    buffer: &mut Buffer,
+    area: Rect,
+    group: &PathGroup<'_>,
+    layout: &CellTableLayout,
+    width: u16,
+) {
+    let owners: Vec<_> = group
+        .rows
+        .iter()
+        .copied()
+        .filter(|row| {
+            !layout.row_progress.contains(&row.process.invocation_id)
+                && matches!(own_counter(row), CounterState::Working { .. })
+        })
+        .collect();
+    if let [row] = owners.as_slice()
+        && row.is_ended()
+    {
+        let mut base = layout.clone();
+        base.ground = cell_paint::ink_ground(layout.ground);
+        cell_paint::paint_ink(
+            buffer,
+            area,
+            cell_paint::InkSource::row(row),
+            row.ink(),
+            layout.ground,
+            |buffer| {
+                Paragraph::new(Line::from(heading_gauge(group, width, &base))).render(area, buffer);
+            },
+        );
+    } else {
+        Paragraph::new(Line::from(heading_gauge(group, width, layout))).render(area, buffer);
     }
 }
 

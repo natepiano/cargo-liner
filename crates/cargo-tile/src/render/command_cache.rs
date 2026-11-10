@@ -1,6 +1,7 @@
 //! Keep command measurements and text for unchanged source inputs.
 
 use super::Arc;
+use super::ArgumentDetail;
 use super::COMMAND_COLUMN;
 use super::CellTableGap;
 use super::CellTableLayout;
@@ -16,6 +17,7 @@ use super::IndexMut;
 use super::InvocationId;
 use super::InvocationSnapshot;
 use super::OnceCell;
+use super::PaintStage;
 use super::ParentColumnContent;
 use super::Rc;
 use super::RowInk;
@@ -35,6 +37,7 @@ use super::displayed_subcommand_name;
 #[cfg(test)]
 use super::tests;
 use super::wrap_command_cell;
+use crate::probe;
 
 /// Solved columns for one unchanged source snapshot, including frame spacing decisions.
 #[derive(Clone)]
@@ -162,13 +165,21 @@ pub(super) struct MeasuredCommandWidths {
 
 impl MeasuredCommandWidths {
     fn new(command: &CommandText, view: &CommandView) -> Self {
-        Self {
-            selected:   cell_width(&displayed_command(command, view)),
-            full:       cell_width(&displayed_command(command, CommandView::long()))
-                .saturating_add(TABLE_CONTINUATION_CLEARANCE),
+        let timer = probe::paint_timer(PaintStage::CommandWidths);
+        let full = cell_width(&displayed_command(command, CommandView::long()));
+        let selected = if view.arguments == ArgumentDetail::All {
+            full
+        } else {
+            cell_width(&displayed_command(command, view))
+        };
+        let widths = Self {
+            selected,
+            full: full.saturating_add(TABLE_CONTINUATION_CLEARANCE),
             subcommand: cell_width(&displayed_subcommand_name(command).words)
                 .saturating_add(TABLE_CONTINUATION_CLEARANCE),
-        }
+        };
+        drop(timer);
+        widths
     }
 }
 
@@ -237,7 +248,8 @@ impl PreparedCommandCells {
         if (!Rc::ptr_eq(&source.source, &row.snapshot())
             && (source.source.process.command != row.process.command
                 || source.source.process.path != row.process.path))
-            || source.view != *view
+            || source.view.arguments != view.arguments
+            || source.view.defaults != view.defaults
         {
             *source = UnchangedCommandInputs::new(row, view);
         } else {
@@ -342,6 +354,7 @@ mod prepared_command_cells_tests {
     use crate::render::App;
     use crate::render::BYTES_PER_GIBIBYTE;
     use crate::render::Measurement;
+    use crate::render::ProcessHierarchy;
     use crate::render::tests;
     use crate::render::tests::COMMAND_CELL_WRAPS;
     use crate::render::tests::PROCESS_COMMAND_FORMATS;
@@ -389,6 +402,21 @@ mod prepared_command_cells_tests {
                 "resource updates cannot change command widths"
             );
         });
+        for hierarchy in [ProcessHierarchy::Hidden, ProcessHierarchy::Shown] {
+            app.tree = hierarchy;
+            PROCESS_COMMAND_FORMATS.with(|count| count.set(0));
+            let retained = tests::settled_frame(&mut app);
+            PROCESS_COMMAND_FORMATS.with(|count| {
+                assert_eq!(
+                    count.get(),
+                    0,
+                    "hierarchy changes keep command measurements"
+                );
+            });
+            app.prepared_tables = render::PreparedTables::default();
+            let fresh = tests::settled_frame(&mut app);
+            assert_eq!(retained, fresh, "hierarchy changes match fresh preparation");
+        }
         Ok(())
     }
 
