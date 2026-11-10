@@ -5,6 +5,9 @@
 
 //! End-to-end ledger durability tests against disposable git repositories.
 
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -13,6 +16,16 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::copy_git_repository_seed;
 use cargo_berth_test_support::json;
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -2525,14 +2538,94 @@ fn explicit_retention_write_reports_its_lock_and_keeps_the_appended_checkpoint()
 
 #[test]
 fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open() {
-    let (repo, id) = successor_with_packed_predecessor();
+    let repo = IntegrationRepository::from_recorded_template(prepared_lock_tests::PACKED_SUCCESSOR);
+    let info: prepared_lock_tests::RetainedPredecessorHistory =
+        prepared_lock_tests::read_history(repo.root())
+            .expect("prepared retention history should read");
+    let id = info.successor_id.as_str();
+    let ledger_path = repo.root().join(".git/cargo-berth");
+    let refs_path = repo.root().join(".git/refs");
+    let marker_path = repo.root().join(".git/cargo-berth-run-id");
+    let ledger_before = cargo_berth_test_support::DirectorySnapshot::capture(&ledger_path);
+    let refs_before = cargo_berth_test_support::DirectorySnapshot::capture(&refs_path);
+    let marker_before = fs::read(&marker_path).expect("active successor marker should read");
+    let packed_path = repo.root().join(".git/packed-refs");
+    let packed_before = fs::read(&packed_path).expect("packed predecessor should read");
+    for (row, write_access) in [true, false].into_iter().enumerate() {
+        if row > 0 {
+            ledger_before.restore(&ledger_path);
+            refs_before.restore(&refs_path);
+            fs::write(&marker_path, &marker_before)
+                .expect("active successor marker should restore");
+        }
+        let lock = repo.root().join(".git/packed-refs.lock");
+        fs::write(&lock, "").expect("held lock writes");
+        let held = fs::File::options()
+            .read(true)
+            .write(write_access)
+            .open(&lock)
+            .expect("held lock opens");
+        let output = repo.run(
+            repo.root(),
+            &[
+                "resolve",
+                id,
+                "--abandon",
+                "--why",
+                "discard held checkpoint",
+                "--json",
+            ],
+        );
+        assert!(!output.status.success());
+        let message = json(&output)["message"]
+            .as_str()
+            .expect("message")
+            .to_owned();
+        assert!(message.contains("held open by processes"), "{message}");
+        assert!(
+            message.contains(&std::process::id().to_string()),
+            "{message}"
+        );
+        assert!(lock.exists());
+        assert_eq!(
+            fs::read(&packed_path).expect("packed refs should read"),
+            packed_before
+        );
+        drop(held);
+    }
+}
+
+#[test]
+fn explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open() {
+    let repo = IntegrationRepository::from_recorded_template(prepared_lock_tests::PACKED_SUCCESSOR);
+    let info: prepared_lock_tests::RetainedPredecessorHistory =
+        prepared_lock_tests::read_history(repo.root())
+            .expect("prepared retention history should read");
+    let id = info.successor_id.as_str();
     let lock = repo.root().join(".git/packed-refs.lock");
-    let held = fs::File::create(&lock).expect("held lock writes");
+    fs::write(&lock, "").expect("held lock writes");
+    let mut command = cargo_berth_test_support::FixtureCommand::new("/bin/sh");
+    command
+        .args(["-c", "exec 3<\"$1\"; printf r; read -r line", "lock-holder"])
+        .arg(&lock)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut holder = cargo_berth_test_support::TestProcessGroup::spawn(&mut command)
+        .expect("unrelated holder should start");
+    let holder_id = holder.child_mut().id();
+    let mut ready = [0];
+    std::io::Read::read_exact(
+        holder.child_mut().stdout.as_mut().expect("holder output"),
+        &mut ready,
+    )
+    .expect("holder should open the lock");
+    assert_eq!(ready, [b'r']);
     let output = repo.run(
         repo.root(),
         &[
             "resolve",
-            &id,
+            id,
             "--abandon",
             "--why",
             "discard held checkpoint",
@@ -2545,12 +2638,9 @@ fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open() {
         .expect("message")
         .to_owned();
     assert!(message.contains("held open by processes"), "{message}");
-    assert!(
-        message.contains(&std::process::id().to_string()),
-        "{message}"
-    );
+    assert!(message.contains(&holder_id.to_string()), "{message}");
     assert!(lock.exists());
-    drop(held);
+    drop(holder);
 }
 
 #[test]

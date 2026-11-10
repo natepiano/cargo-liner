@@ -5,6 +5,9 @@
 
 //! nextest setup entry point and the cold single-target setup regression.
 
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -19,6 +22,16 @@ use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::fixture_output_with_deadline;
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
 
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
@@ -82,6 +95,7 @@ pub use gate_templates::set_gate_mode;
 #[path = "support/reanchoring_templates.rs"]
 mod reanchoring_templates;
 pub use reanchoring_templates::SplitRefChange;
+pub use reanchoring_templates::SplitWorkflow;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
@@ -126,6 +140,9 @@ fn main() {
         .into_iter()
         .chain([
             reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
+            reanchoring_templates::ACTIVE_FIRST_SPLIT,
+            reanchoring_templates::UPPER_FIRST_SPLIT,
+            reanchoring_templates::LOWER_FIRST_SPLIT,
             gate_templates::MAIN_PREDECESSOR_INTEGRATION_SUCCESSOR,
             gate_templates::DEFAULT_ANSWERED_GATE,
             gate_templates::ENROLLED_BEFORE_EDITS,
@@ -135,6 +152,7 @@ fn main() {
             parallel_templates::NAMED_OVERLAP,
             parallel_templates::NAMED_METADATA,
         ])
+        .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
         .chain(GATE_SLOW_HISTORIES.iter().copied())
         .chain(EDGES_SLOW_HISTORIES.iter().copied())
         .chain(OVERLAP_SLOW_HISTORIES.iter().copied())

@@ -443,6 +443,15 @@ impl IntegrationRepository {
         }
     }
 
+    /// Copy a prepared history with its linked checkouts into a recorded template.
+    ///
+    /// # Panics
+    /// Panics when a fixture path or its snapshot cannot be copied.
+    pub fn write_recorded_template(&self, root: &Path) {
+        let relocations = crate::copy_recorded_repository(self.executable, root, self.root());
+        crate::relocate_tree(root, &relocations);
+    }
+
     /// Prepare the active cover and committed lane before testing either landing mode.
     ///
     /// # Panics
