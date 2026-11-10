@@ -1681,7 +1681,7 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 
 #### Work Order
 
-**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` runs under 1 s in a loaded Mac full suite.
+**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` and `reader_scenario_sigkill_ends_its_waiting_writer_group` run under 1 s in a loaded Mac full suite.
 
 **Spec:**
 1. The test took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
@@ -1695,8 +1695,9 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 3. Keep every assertion and readiness wait. Keep the product `CARGOTILE_NESTED`, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace.
 4. `progress::capture::tests::unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` took 1.009 s on the Mac in a 43i round 2 suite. Its largest stage starts at `progress/capture.rs:2088` (`phases/43i/fix3_stages.md`). Measure it again; if it is at 1 s or more in a gate suite, fix its cause.
 5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
-6. `reader_scenario_cases.py:178` copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
+6. `copy_named_shell` (`reader_scenario_cases.py:313`) copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
 7. The Phase 32 round 1 Mac suite (2026-11-09, `phases/32/repair_summary_round1.txt`) had twelve `shim_registration::installed` tests at 1.458-1.570 s, all finishing together, and one leaky test, `cli_lifecycle::tests::uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`. Phase 32 does not touch these files. Measure them in a loaded Mac full suite. Fix the shared cost at its cause, and stop the process that outlives the leaky test. Do not raise a limit.
+8. `shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group` took 3.349 s in the Phase 59 Mac gate (`phases/59/mac_gate_r3.log`). The four ownership tests took 0.57-0.69 s in the same suite. Measure startup and cleanup apart, then fix the largest cost at its cause. Keep every assertion at `reader_scenario_cases.py:2024-2065`.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/installed.rs` — item 7, test module only.
@@ -1704,14 +1705,14 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 - `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
 - `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
-- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — item 6, the named-shell preparation.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — items 6 and 8, the named-shell preparation and the SIGKILL scenario.
 - `crates/cargo-tile/src/progress/capture.rs` — item 4, test module only.
 
 **Workers:** 1 writer — `test`.
 
-**Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it.
+**Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it. Phase 59: a reader scenario runs under an owner process that holds a lifetime pipe (`reader_scenarios.rs:180-222`). A group registers before its session is created, and the owner ends the groups before it removes the folder. Keep this order and the four ownership tests (`reader_scenarios.rs:265-286`).
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4 and item 7 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s, and no leaky test; lint.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s, and no leaky test; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -2025,38 +2026,22 @@ Another product file of a cause needs director routing.
 
 **Ruled out:** a product pipe-collection repair based on these measurements.
 
-### Phase 59 — A reader scenario stops its processes and removes its folder on every exit path  · status: todo
+### Phase 59 — A reader scenario stops its processes and removes its folder on every exit path  · status: done
 
-**Depends on:** none. It runs ahead of Phases 32 and 58b (showrunner, 2026-11-09). It shares `reader_scenario_cases.py` with Phase 43j; berth settles that order.
+#### As-built
 
-#### Work Order
-
-**Goal:** When a reader scenario ends, by a pass, a failure, a timeout or a kill, no process that it started stays alive and its temporary folder is gone. User rule, 2026-11-09: a process removes the folders it makes, and the same holds for the processes it starts.
-
-**Evidence:** On the Mac, a process group stayed alive for 3 d 21 h and its folder stayed too (52 MB; natedev stopped the group and removed the folder at the user's request).
-- Pid 58772, ppid 1, session leader: `sh .../T/.tmpEfFiRo/bin/cargo build probe-first-.tmpEfFiRo`.
-- Its children were `cargo-tile-real build` and `tee -a .../capture/501/run-20261105-163421-...log`.
-- It started on 2026-11-05 at 16:34. Phase 51's guardian reached main on 2026-11-05 at 15:33. The Mac run may have used a checkout from before that merge.
-
-**Spec:**
-
-1. Find the exit path that left this group. First establish whether the 16:34 run had the guardian. Then find each way that a writer group outlives its scenario with the guardian in place, for example when the guardian itself dies. Write the result in the phase report.
-2. Every process group that a scenario starts ends when the scenario ends, on all four exit paths. This covers writers and cache servers. A scenario or test process killed with SIGKILL runs no cleanup of its own, so the fix sits where the processes start, as Phase 51's guardian does. Add no sweep and no name-based search.
-3. The scenario's `tempfile::tempdir` folder is removed on all four exit paths, after its processes end. A killed owner cannot remove it, so a process that outlives the owner removes it. Use the mechanism of item 2 for this.
-4. A normal end keeps its release order and its time.
-
-**Tests:** One test for each exit path: pass, failed assertion, deadline timeout and SIGKILL of the scenario. Each one proves two facts: no process of the group is alive, and the folder does not exist. Each test fails without the fix and takes less than 1 s. Keep `reader_scenario_sigkill_ends_its_waiting_writer_group` as it is.
+- A reader scenario runs under an owner process that outlives it. The owner holds a lifetime pipe from the scenario.
+- When the scenario ends, the owner ends every registered writer and cache-server group, then removes the scenario folder.
+- This holds on a pass, a failed assertion, a deadline timeout and a SIGKILL of the scenario.
+- Group selection works on Linux and macOS. An all-zombie group ends without an error. A stalled registration client cannot block the owner.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the owner process and the four exit-path scenarios.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the lifetime pipe and the four ownership tests.
 
-**Workers:** 1 writer.
+**Binds later work:** A group registers before its session is created. The owner ends the groups before it removes the folder. The four ownership tests in `reader_scenarios.rs` stay as the acceptance checks of this lifecycle. `copy_named_shell` in `reader_scenario_cases.py` copies `/bin/bash` and signs it with codesign on Darwin.
 
-**Acceptance gate:**
-- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac, with no new test at 1 s or more.
-- After the Mac pass, no process from a scenario folder stays on the Mac, and no scenario folder stays in its `TMPDIR`.
-- Change-review line: none (test support only).
+**Gotchas:** On the Mac, `reader_scenario_sigkill_ends_its_waiting_writer_group` takes 3.349 s. Startup of the scenario and its caller is most of that time. "The Mac source-switch reader test runs under 1 s" owns this time.
 
 ### Phase 58b — cargo-berth tests stay under a second when they run together  · status: todo
 
@@ -2067,6 +2052,11 @@ Phase 58a landed its fixture repairs with its goal open. Its gate passed on both
 #### Work Order
 
 **Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. A test of 1 s or more under load is a test defect. Fix the cost per test. Do not raise a limit, and do not call it a load flake.
+
+**Open from Phase 57** (landed under the three-round rule, 2026-11-10; Mac package run `--no-cache`, load 14.51 on 12 CPUs, 6 threads; log `S/phases/57/mac_gate.log`):
+1. `git::read::tests::installation_probe_seals_its_pipes_before_another_git_child_starts` failed on the Mac: "installation probe did not start". The child waits 250 ms of wall time for the shim's `ready` file (`src/git/read.rs:1172`). Remove the wall deadline from the proof.
+2. Five Phase 57 tests are green but over 1 s on the Mac: lifecycle `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` 1.414 s; ledger `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` 1.243 s; board `a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof` 1.526 s, `a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward` 1.277 s and `a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof` 1.199 s. On natedev all six are under 1 s.
+3. Approach (Astra review, `/tmp/claude/astra/20261110T145250Z-307455/review.md`): measure fixture restore, process start, live commands, lock diagnostics and cleanup apart for each named test at 6 threads and Mac load 14 to 18. Replace the timing waits in the installation probe proof with an explicit event at the spawn boundary. Split the two ledger cases into two tests. Prepare the lifecycle foreign holder and the board competitor history in registered templates. The 406 to 330 counts are Phase 58 evidence at load 7 to 8.
 
 **Spec:**
 1. **Find the cause first.** Read the attempts log for Phase 43c: Mac test processes stall 1.9 to 4 s in full runs and take 0.01 s alone. This can be the same cause. Measure what a concurrent test waits on, and quote the line that takes the time.
@@ -2407,6 +2397,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
 - The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Phase 32b's final result stays beside it.
+- A gate capture counts only when the 1-minute load is below 32 at its start and at its end. `capture.py` records both loads in the result. A capture outside the limit is void, not red. Do not wait idle for a low load: continue the repair round, and run the gate capture when the load is below the limit (showrunner, 2026-11-10).
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
@@ -2438,6 +2429,36 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - Shots of a live tile with a `cargo clippy` whose children run as the compiler wrapper, with `h` off and on, at 24 and 40 rows; a fresh helper's design check passes.
 - Change-review line: with all arguments on, a compiler row names its crate on its first row.
 - Change-review line: the status bar says `processes` when the process tree is on.
+
+### Phase 32f — Active crate labels read on a light background  · status: todo
+
+**Depends on:** Phase 32c, Phase 32e
+
+#### Work Order
+
+**Goal:** The green active crate labels read on a white background. The Phase 32c design check measured them at 2.16:1 against white (showrunner, 2026-11-10). The dark-background look does not change.
+
+**Spec:**
+
+1. Find where the green comes from. Quote the source line that sets the ink for an active crate label.
+2. If the ink comes from the `tui_pane` palette, fix it there, not in `cargo-tile`. If it comes from `cargo-tile`, fix it in `cargo-tile`.
+3. If the fix is in `tui_pane`, read how `cargo-port` uses the same ink, and include `cargo-port` in the shots.
+4. Change only what a light background needs. Every dark-background ink stays the same value. Test, red first: read the drawn ink of an active crate label from the buffer on a light and a dark background. The light ink has a contrast of at least 4.5:1 against the background, and the dark ink equals the current value.
+
+**Files:**
+- `crates/cargo-tile/src/theme/family_palette.rs`, `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/render/cell_paint.rs` — when the ink is in `cargo-tile`.
+- `crates/tui_pane/src/bar/palette.rs` — when the ink is in `tui_pane`. `crates/tui_pane/CHANGELOG.md` — one line if `tui_pane` changes.
+- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32e: retained cells recolor from separate ink sources; keep them separate. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
+- Shots of a live tile with active crates on a light and a dark background; when `tui_pane` changes, shots of `cargo-port` with the same ink. A fresh helper's design check passes.
+- Change-review line: active crate labels read on a light background.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 
