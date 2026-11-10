@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
+use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -1052,4 +1053,222 @@ fn retained_tip(fixture: &RewriteRepository, id: &str) -> String {
         fixture.root(),
         &format!("refs/cargo-berth/reservations/{id}"),
     )
+}
+
+/// The interval witnesses after the first real split.
+#[derive(Serialize, Deserialize)]
+pub(super) struct CompletedSplitState {
+    pub(super) id:              String,
+    pub(super) old_tip:         String,
+    pub(super) first_split_tip: String,
+    pub(super) expected_start:  String,
+    pub(super) split_tip:       String,
+}
+
+/// The upper reservation and branch witnesses after the first stacked split.
+#[derive(Serialize, Deserialize)]
+pub(super) struct CompletedStackedSplitState {
+    pub(super) trunk:       String,
+    pub(super) upper:       String,
+    pub(super) old_upper:   String,
+    pub(super) first_split: String,
+    pub(super) split_tip:   String,
+    pub(super) new_upper:   String,
+}
+
+/// An active reservation after its first real interactive split.
+pub(super) const ACTIVE_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-first-split",
+        build: build_active_first_split,
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+/// An upper checkpoint after Git writes the upper branch first.
+pub(super) const UPPER_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "upper-first-split",
+        build: |root| build_first_stacked_split(root, StackedBranchWriteOrder::UpperFirst),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+/// An upper checkpoint after Git writes the lower branch first.
+pub(super) const LOWER_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "lower-first-split",
+        build: |root| build_first_stacked_split(root, StackedBranchWriteOrder::LowerFirst),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+fn build_active_first_split(root: &Path) {
+    SPLIT_ACTIVE_PHASE.restore_into(root);
+    let state = prepare_first_split(
+        root,
+        SplitWorkflow::InteractiveRebase,
+        SplitReservationStage::Active,
+    );
+    write_state(root, &state);
+}
+
+fn build_first_stacked_split(root: &Path, order: StackedBranchWriteOrder) {
+    STACKED_UPPER_CHECKPOINT.restore_into(root);
+    let state = prepare_first_stacked_split(root, order);
+    write_state(root, &state);
+}
+
+/// Both Git workflows nominate only the last commit of the two-commit split.
+#[derive(Clone, Copy)]
+pub enum SplitWorkflow {
+    /// Split through the real interactive rebase hooks.
+    InteractiveRebase,
+    /// Split through a soft reset and a final branch update.
+    SoftReset,
+}
+
+impl SplitWorkflow {
+    pub(super) fn stop_before_split(self, fixture: &RewriteRepository, editor: &Path) {
+        match self {
+            Self::InteractiveRebase => {
+                split_rebase::stop_with_editor(
+                    &fixture.holder,
+                    editor,
+                    &["--onto", "main", "HEAD^"],
+                );
+            },
+            Self::SoftReset => {
+                // Keep the old branch tip until the replacement is complete, so its
+                // real ref transaction captures the old-to-new fallback map.
+                GIT.run(&fixture.holder, ["switch", "--quiet", "--detach"]);
+                GIT.run(&fixture.holder, ["reset", "--soft", "HEAD~1"]);
+            },
+        }
+    }
+
+    pub(super) fn complete_split(
+        self,
+        fixture: &RewriteRepository,
+        old_tip: &str,
+        split_tip: &str,
+    ) {
+        match self {
+            Self::InteractiveRebase => {
+                split_rebase::continue_rebase(&fixture.holder);
+            },
+            Self::SoftReset => {
+                GIT.run(
+                    &fixture.holder,
+                    ["update-ref", "refs/heads/holder", split_tip, old_tip],
+                );
+                GIT.run(&fixture.holder, ["switch", "--quiet", "holder"]);
+            },
+        }
+    }
+}
+
+/// Branch writes within one rebase must observe the same operation boundary.
+#[derive(Clone, Copy)]
+pub(super) enum StackedBranchWriteOrder {
+    UpperFirst,
+    LowerFirst,
+}
+
+/// Move lower after the full map is flushed by exec, before Git writes upper.
+fn write_stacked_rebase_editor(editor: &Path, order: StackedBranchWriteOrder, old_lower: &str) {
+    if matches!(order, StackedBranchWriteOrder::UpperFirst) {
+        split_rebase::write_first_rebase_action(editor, "edit");
+        return;
+    }
+    fs::write(editor.with_extension("lower"), old_lower)
+        .expect("lower-first editor's private reference should write");
+    DirectorySnapshot::write_shared_shell_script(
+        editor,
+        r#"#!/bin/sh
+IFS= read -r old_lower < "$0.lower" || [ -n "$old_lower" ] || exit 1
+sed -e '1s/^pick /edit /' -e '/^update-ref refs\/heads\/lower$/d' "$1" > "$1.edited"
+printf '%s\n' "exec git update-ref refs/heads/lower HEAD^ $old_lower" >> "$1.edited"
+mv "$1.edited" "$1"
+"#,
+    );
+}
+
+/// Run the first real split and retain its interval witnesses.
+pub(super) fn prepare_first_split(
+    root: &Path,
+    workflow: SplitWorkflow,
+    stage: SplitReservationStage,
+) -> CompletedSplitState {
+    let fixture = RewriteRepository::at_root(root);
+    let editor_directory = cargo_berth_test_support::fixture_tempdir("first-split-editor-");
+    let SplitPhaseState { id, old_tip } = serde_json::from_slice(
+        &fs::read(fixture.root().join(STATE_PATH)).expect("split state should read"),
+    )
+    .expect("split state should decode");
+    if matches!(
+        (stage, workflow),
+        (
+            SplitReservationStage::Active,
+            SplitWorkflow::InteractiveRebase
+        )
+    ) {
+        commit_file(
+            fixture.root(),
+            "upstream.txt",
+            "new trunk base\n",
+            "advance the active rebase base",
+        );
+    }
+    let editor = editor_directory.path().join("sequence-editor");
+    split_rebase::write_first_rebase_action(&editor, "edit");
+    workflow.stop_before_split(&fixture, &editor);
+    fixture.commit("one", "base");
+    let first_split_tip = fixture.head();
+    let expected_start = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
+    fixture.commit("one", "two");
+    let split_tip = fixture.head();
+    workflow.complete_split(&fixture, &old_tip, &split_tip);
+    CompletedSplitState {
+        id,
+        old_tip,
+        first_split_tip,
+        expected_start,
+        split_tip,
+    }
+}
+
+fn prepare_first_stacked_split(
+    root: &Path,
+    order: StackedBranchWriteOrder,
+) -> CompletedStackedSplitState {
+    let fixture = RewriteRepository::at_root(root);
+    let editor_directory = cargo_berth_test_support::fixture_tempdir("stacked-split-editor-");
+    let StackedUpperCheckpointState {
+        trunk,
+        upper,
+        old_lower,
+        old_upper,
+    } = serde_json::from_slice(
+        &fs::read(fixture.root().join(STATE_PATH)).expect("stacked state should read"),
+    )
+    .expect("stacked state should decode");
+    let editor = editor_directory.path().join("stacked-order-editor");
+    write_stacked_rebase_editor(&editor, order, &old_lower);
+    stop_stacked_split_rebase(&fixture, SplitRefChange::UpdatedSibling, &editor, &trunk);
+    fixture.commit("one", "base");
+    let first_split = fixture.head();
+    fixture.commit("one", "two");
+    let split_tip = fixture.head();
+    SplitWorkflow::InteractiveRebase.complete_split(&fixture, &old_lower, &split_tip);
+    let new_upper = fixture.head();
+    CompletedStackedSplitState {
+        trunk,
+        upper,
+        old_upper,
+        first_split,
+        split_tip,
+        new_upper,
+    }
 }

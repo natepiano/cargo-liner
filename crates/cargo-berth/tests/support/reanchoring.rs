@@ -36,13 +36,12 @@ use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
 use super::reanchoring_templates::SPLIT_OUTSTANDING_PHASE;
-use super::reanchoring_templates::STACKED_UPPER_CHECKPOINT;
 use super::reanchoring_templates::STATE_PATH;
 use super::reanchoring_templates::SplitLowerCheckpointState;
-use super::reanchoring_templates::SplitPhaseState;
 use super::reanchoring_templates::SplitRefChange;
 use super::reanchoring_templates::SplitReservationStage;
-use super::reanchoring_templates::StackedUpperCheckpointState;
+use super::reanchoring_templates::SplitWorkflow;
+use super::reanchoring_templates::StackedBranchWriteOrder;
 use super::reanchoring_templates::TWO_REBASE_HISTORY;
 use super::reanchoring_templates::TwoRebaseHistoryState;
 use super::reservation_id;
@@ -972,48 +971,6 @@ pub(super) fn drift_cleans_up_rewrite_markers_without_reporting_bypasses() {
     );
 }
 
-/// Both Git workflows nominate only the last commit of the two-commit split.
-#[derive(Clone, Copy)]
-enum SplitWorkflow {
-    InteractiveRebase,
-    SoftReset,
-}
-
-impl SplitWorkflow {
-    fn stop_before_split(self, fixture: &RewriteFixture, editor: &Path) {
-        match self {
-            Self::InteractiveRebase => {
-                split_rebase::stop_with_editor(
-                    &fixture.holder,
-                    editor,
-                    &["--onto", "main", "HEAD^"],
-                );
-            },
-            Self::SoftReset => {
-                // Keep the old branch tip until the replacement is complete, so its
-                // real ref transaction captures the old-to-new fallback map.
-                GIT.run(&fixture.holder, ["switch", "--quiet", "--detach"]);
-                GIT.run(&fixture.holder, ["reset", "--soft", "HEAD~1"]);
-            },
-        }
-    }
-
-    fn complete_split(self, fixture: &RewriteFixture, old_tip: &str, split_tip: &str) {
-        match self {
-            Self::InteractiveRebase => {
-                split_rebase::continue_rebase(&fixture.holder);
-            },
-            Self::SoftReset => {
-                GIT.run(
-                    &fixture.holder,
-                    ["update-ref", "refs/heads/holder", split_tip, old_tip],
-                );
-                GIT.run(&fixture.holder, ["switch", "--quiet", "holder"]);
-            },
-        }
-    }
-}
-
 pub(super) fn interactive_split_keeps_both_protected_hunks_in_the_checkpoint() {
     assert_split_keeps_both_hunks(
         SplitWorkflow::InteractiveRebase,
@@ -1037,35 +994,33 @@ pub(super) fn soft_reset_split_keeps_both_protected_hunks_in_the_active_phase() 
 }
 
 fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservationStage) {
-    let template = match stage {
-        SplitReservationStage::Active => SPLIT_ACTIVE_PHASE,
-        SplitReservationStage::Outstanding => SPLIT_OUTSTANDING_PHASE,
-    };
-    let fixture = RewriteFixture::from_repository(template.instantiate());
-    let SplitPhaseState { id, old_tip } = read_state(fixture.root());
-    if matches!(
+    let recorded = matches!(
         (stage, workflow),
         (
             SplitReservationStage::Active,
             SplitWorkflow::InteractiveRebase
         )
-    ) {
-        commit_file(
-            fixture.root(),
-            "upstream.txt",
-            "new trunk base\n",
-            "advance the active rebase base",
-        );
-    }
+    );
+    let template = match (stage, workflow) {
+        (SplitReservationStage::Active, SplitWorkflow::InteractiveRebase) => {
+            reanchoring_templates::ACTIVE_FIRST_SPLIT
+        },
+        (SplitReservationStage::Active, SplitWorkflow::SoftReset) => SPLIT_ACTIVE_PHASE,
+        (SplitReservationStage::Outstanding, _) => SPLIT_OUTSTANDING_PHASE,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let reanchoring_templates::CompletedSplitState {
+        id,
+        old_tip,
+        first_split_tip,
+        expected_start,
+        split_tip,
+    } = if recorded {
+        read_state(fixture.root())
+    } else {
+        reanchoring_templates::prepare_first_split(fixture.root(), workflow, stage)
+    };
     let editor = fixture.worktrees.path().join("sequence-editor");
-    split_rebase::write_first_rebase_action(&editor, "edit");
-    workflow.stop_before_split(&fixture, &editor);
-    fixture.commit("one", "base");
-    let first_split_tip = fixture.head();
-    let expected_start = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
-    fixture.commit("one", "two");
-    let split_tip = fixture.head();
-    workflow.complete_split(&fixture, &old_tip, &split_tip);
     let markers = reanchoring_templates::pending_markers(fixture.root());
     assert_eq!(
         markers.len(),
@@ -1129,13 +1084,6 @@ pub(super) fn split_checkpoint_survives_stacked_branches_rewritten_with_update_r
     assert_split_survives_ref_change(SplitRefChange::UpdatedSibling);
 }
 
-/// Branch writes within one rebase must observe the same operation boundary.
-#[derive(Clone, Copy)]
-enum StackedBranchWriteOrder {
-    UpperFirst,
-    LowerFirst,
-}
-
 pub(super) fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first() {
     assert_upper_checkpoint_survives_stacked_split(StackedBranchWriteOrder::UpperFirst);
 }
@@ -1145,27 +1093,20 @@ pub(super) fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_wr
 }
 
 fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder) {
-    let fixture = RewriteFixture::from_repository(STACKED_UPPER_CHECKPOINT.instantiate());
-    let StackedUpperCheckpointState {
+    let template = match order {
+        StackedBranchWriteOrder::UpperFirst => reanchoring_templates::UPPER_FIRST_SPLIT,
+        StackedBranchWriteOrder::LowerFirst => reanchoring_templates::LOWER_FIRST_SPLIT,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let reanchoring_templates::CompletedStackedSplitState {
         trunk,
         upper,
-        old_lower,
         old_upper,
+        first_split,
+        split_tip,
+        new_upper,
     } = read_state(fixture.root());
     let editor = fixture.worktrees.path().join("stacked-order-editor");
-    write_stacked_rebase_editor(&editor, order, &old_lower);
-    reanchoring_templates::stop_stacked_split_rebase(
-        &fixture,
-        SplitRefChange::UpdatedSibling,
-        &editor,
-        &trunk,
-    );
-    fixture.commit("one", "base");
-    let first_split = fixture.head();
-    fixture.commit("one", "two");
-    let split_tip = fixture.head();
-    SplitWorkflow::InteractiveRebase.complete_split(&fixture, &old_lower, &split_tip);
-    let new_upper = fixture.head();
     assert_ne!(old_upper, new_upper);
     assert_eq!(
         GIT.stdout(&fixture.holder, ["rev-parse", "lower"]),
@@ -1205,25 +1146,6 @@ fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder
         &new_upper,
         &first_split,
         &editor,
-    );
-}
-
-/// Move lower after the full map is flushed by exec, before Git writes upper.
-fn write_stacked_rebase_editor(editor: &Path, order: StackedBranchWriteOrder, old_lower: &str) {
-    if matches!(order, StackedBranchWriteOrder::UpperFirst) {
-        split_rebase::write_first_rebase_action(editor, "edit");
-        return;
-    }
-    fs::write(editor.with_extension("lower"), old_lower)
-        .expect("lower-first editor's private reference should write");
-    DirectorySnapshot::write_shared_shell_script(
-        editor,
-        r#"#!/bin/sh
-IFS= read -r old_lower < "$0.lower" || [ -n "$old_lower" ] || exit 1
-sed -e '1s/^pick /edit /' -e '/^update-ref refs\/heads\/lower$/d' "$1" > "$1.edited"
-printf '%s\n' "exec git update-ref refs/heads/lower HEAD^ $old_lower" >> "$1.edited"
-mv "$1.edited" "$1"
-"#,
     );
 }
 
