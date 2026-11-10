@@ -1949,7 +1949,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Binds later work:** “Three cargo-berth lock tests pass under load” and “cargo-berth tests run under a second” preserve the shared-reservation lifecycle tests.
 
-### Phase 57 — Three cargo-berth lock tests pass under load  · status: todo
+### Phase 57 — Three cargo-berth lock tests pass under load  · status: done
 
 **Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
 
@@ -2400,7 +2400,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - A gate capture counts only when the 1-minute load is below 32 at its start and at its end. `capture.py` records both loads in the result. A capture outside the limit is void, not red. Do not wait idle for a low load: continue the repair round, and run the gate capture when the load is below the limit (showrunner, 2026-11-10).
 - Change-Review: none — draw time only, with no visible change.
 
-### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: todo
+### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
 **Depends on:** Phase 32 (it adds the compiler wrapper layout and the toggle state). Phase 32b measures the same files, so this phase starts after it.
 

@@ -407,7 +407,7 @@ pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
 /// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
 /// whose rows wrap three deep in manifest paths is doing it because it
 /// was asked to, not because the commands grew.
-pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "tree";
+pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "processes";
 /// The process every tree on this machine roots at -- `launchd` on
 /// macOS, `init` on Linux. An ancestry walk stops short of it: a row
 /// naming the one process everything descends from tells one command
