@@ -234,11 +234,14 @@ impl PreparedCommandCells {
             .by_invocation
             .entry((row.process.invocation_id.clone(), row.process.pid))
             .or_insert_with(|| UnchangedCommandInputs::new(row, view));
-        if source.source.process.command != row.process.command
-            || source.source.process.path != row.process.path
+        if (!Rc::ptr_eq(&source.source, &row.snapshot())
+            && (source.source.process.command != row.process.command
+                || source.source.process.path != row.process.path))
             || source.view != *view
         {
             *source = UnchangedCommandInputs::new(row, view);
+        } else {
+            source.source = row.snapshot();
         }
         source
     }

@@ -71,8 +71,9 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
             // overlay swaps the whole map out from under the loop.
             let keymap = app.keymap();
             A::Probe::timed(FramePhase::Draw, || {
-                terminal.draw(|frame| app.draw(frame, &keymap))
-            })?;
+                terminal.draw(|frame| A::Probe::timed_callback(|| app.draw(frame, &keymap)))
+            })
+            .inspect_err(|_| A::Probe::frame_started(previous.elapsed()))?;
             dirty = false;
         }
         // When the next frame is due, carried forward from when the
@@ -151,6 +152,7 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
             dirty = true;
         }
     }
+    A::Probe::frame_started(previous.elapsed());
     Ok(())
 }
 

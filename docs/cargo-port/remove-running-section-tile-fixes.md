@@ -2342,7 +2342,7 @@ A row for cargo running as the compiler wrapper names the compiler and its crate
 
 **Gotchas:** `ArgumentOwner` in `census/command_text.rs` keeps its own table, because it decides more than this rule.
 
-### Phase 32b — No tile frame draws for more than 4 ms  · status: todo
+### Phase 32b — No tile frame draws for more than 4 ms  · status: done
 
 **Depends on:** Phase 32 (it changes the summary command cell and the row budgets that this phase measures), Phase 32d.
 
@@ -2373,6 +2373,8 @@ A row for cargo running as the compiler wrapper names the compiler and its crate
 - A Mac run of `cargo-tile` is owed from Phase 32's final tree. Run `verify.sh test cargo-tile --mac` when the Mac is available and record the tested revision. Phase 59's process cleanup is the prerequisite while a reader scenario holds the Mac copy lease. A wait on the Mac does not block this phase.
 - Change-Review: none — draw time only, with no visible change.
 
+**Result at landing:** The on-CPU capture bar is NOT met: 2 of 822, 1 of 752 and 17 of 730 frames exceed 4 ms at 24, 40 and 80 rows. Three repair rounds ran, and the work moved to Phase 32e with the limit unchanged. The Mac run of `cargo-tile` is still owed.
+
 ### Phase 32e — The last tile frames over 4 ms of CPU  · status: todo
 
 **Depends on:** Phase 32b (it adds the per-frame CPU counters and the retained paintings that this phase measures).
@@ -2392,12 +2394,21 @@ A row for cargo running as the compiler wrapper names the compiler and its crate
 **Files:**
 - `crates/cargo-tile/src/render/{cell_paint,frame_preparation}.rs`, `crates/cargo-tile/src/render.rs` — the display signature and the retained paintings.
 - `crates/cargo-tile/src/probe.rs` — the measurements of step 1.
-- `crates/tui_pane/src/runner/{event_loop,constants}.rs` — the repaint trigger.
+- `crates/tui_pane/src/runner/{event_loop,constants}.rs` — the repaint trigger and the final draw measurement.
+- `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/theme/family_palette.rs` — the palette cache move and its test fixture.
 - `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only.
 
 **Workers:** 1 writer — `impl`, every file above.
 
 **Constraints from prior phases:** Phase 32b: `cpu_ns` reads `CLOCK_THREAD_CPUTIME_ID`, and run-queue wait is context only. Extend the retained-versus-fresh table in `cell_paint.rs` with subsecond clock changes and resource changes around rounding boundaries. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Review items from Phase 32b, fixed in this phase:**
+1. The disconnected-input return in `event_loop.rs` loses the final draw measurement.
+2. The command-change case of `roster_revisions_keep_only_unchanged_cell_paintings` draws a different invocation. Change the command on the same invocation.
+3. `PaintedRowSource::ended` stores a `bool`. Use a named completion enum.
+4. `family_colors_follow_role_and_reserved_ink_changes` restores the theme without a `Drop` fixture.
+5. The fallback expectation in that test duplicates `builtins::DARK_FAMILY_COLORS[0]`.
+6. `FamilyPalette` sits in the `theme/mod.rs` module root. Move it to a child module.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
