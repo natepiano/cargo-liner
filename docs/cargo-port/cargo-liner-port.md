@@ -818,59 +818,30 @@ At 80 and 95 columns the Targets `Source` header draws whole while a target name
 
 ### Phase 4v — Returned narrow-width, border and lint column fixes  · status: done
 
-**Depends on:** Phase 4s (both edit `crates/cargo-port/src/tui/panes/`). It runs after Phase 4s (showrunner, 2026-11-09).
+#### As-built
 
-#### Work Order
+At 60 columns the project list keeps CI, Type, Git, Sync and Main, and a name cuts with `…` first. From 60 to 80 columns Disk draws whole units (`52 GiB`), and the name column gets 8 cells. At 80 columns Package labels and pane titles draw whole, and the Git list keeps its height with 13 worktrees under a `Worktrees (N)` divider. Sccache draws a thick border in colour and under NO_COLOR. Lint Runs and CI runs fit their headers and dates at 60, 80 and 160 columns.
 
-**Goal:** at 60 and 80 columns a project name gives way before any list column goes, Package labels and pane titles draw whole, the Git list keeps usable height, Sccache draws one border, and the Lint Runs and CI runs tables show their columns.
-
-**Source:** showrunner validation of C222-C229, 2026-11-09. C222, C224 and C227 return; items 4 and 5 are new defects.
-1. C222: at 60 columns Type, Git, Sync and Main drop while names grow: `│   Projects    CI      Disk │`, `│ ▶ bevy-0.20.0    142.1 MiB │`. The user's rule: names get `…` before any column goes.
-2. C224: at 80 columns a Package label is cut (`│  integ… 1294  │`, page 3) and the pane title is cut (`┌Worktree Gr… ┐`). With 13 worktrees the Git list area is one row tall (`▲ 18 of 28 ▼`) and the divider has no `Worktrees (N)` title.
-3. C227: NO_COLOR draws the thick Sccache border; color mode draws a thin one (`┌ Sccache stats ───┐`).
-4. Lint Runs columns are cut at every width. 160: `│2026-10-  19:00:55  19:00:55`. 80: `ration`, `2026-1`. 60: `art  End  ion  ize  Res`.
-5. At 80 columns under NO_COLOR, `CI runs (466)` (not branch mode) shows only Commit, with no Total column.
-6. Phase 4s final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4s/live/shots_4s_3/`: in `quota80-*-loading-git-2_of_3`, the popup title draws `! crates.io unreacha…` in the 29-cell card. It needs 2 more cells. `! GitHub unreachable` draws whole.
-
-**Decision:** showrunner, 2026-11-09: one fix phase for all five, after Phase 4s. Each fix returns as a new Change-Review row. Item 6 moved here from Phase 4s under the landing rule: it is older than that phase and outside its Spec. Rulings from the design check, showrunner, 2026-11-09: a worktree group row keeps `▶ `, the letters that fit and the tree, and drops the count when the slot is short; the Git list draws only the columns whose whole labels fit; the older defects move to Phase 4x. Showrunner, 2026-11-09, on the list labels: from 60 to 80 columns Disk drops its decimal, the name column gets 8 cells, and the labels line up with Lint off.
-
-**Constraints:**
-- Never cut a label. Cut a value, a name or a message first.
-- Colours come from the theme, not from code.
-- Keep the Phase 4o rules: no space or ` ·` before `…`; the five-cell Main reserve; the `Projects` header on the name start cell; a cut name keeps one letter.
-- Change no other look at widths where nothing is cut now.
-
-**Spec:**
-1. **Project list columns.** At 60 columns a name gets `…` before Type, Git, Sync or Main drops (`tui/columns/`, `tui/panes/project_list/`).
-2. **Package and Git.** At 80 columns no Package label or pane title is cut. With 13 worktrees the Git list area keeps more than one row, and the divider carries `Worktrees (N)` (`tui/panes/package/`, `tui/panes/git/`). `git_lower_content_height` (`panes/git/render.rs`) omits the stacked rate rows, and `pane_data/detail_data.rs` shares that estimate: count those rows in both. Replace the two `Option<Rect>` fields of `GitAboutLayout` with a named type for its three outcomes: no description, a description with no separator space, and a description with a separator. Convert at the drawing and viewport boundaries.
-3. **Sccache border.** Draw the thick border in color mode and under NO_COLOR (`tui/sccache/render.rs`). `PopupFrame::render` in `tui_pane/src/pane/popup.rs` selects the border, and the shared tests require a plain coloured border. Add a named border policy that Sccache selects. Every other popup keeps its border.
-4. **Lint Runs.** At 60, 80 and 160 columns no Lint Runs header or date is cut inside a word (`tui/panes/lints/render.rs`).
-5. **CI runs.** At 80 columns under NO_COLOR, outside branch mode, the CI runs table shows a Total column (`tui/panes/ci/`).
-6. **Popup title.** At 80 columns the popup title `crates.io unreachable` draws whole. Keep `[x]` and the card border. A longer title still cuts with `…`. (`crates/tui_pane/src/toasts/render/card.rs`). `toasts/render/drawing.rs` caps the card width before `card.rs` fits the title, so the fix covers that width too. Extend `an_error_title_grows_before_it_uses_an_ellipsis` (`toasts/render/repair_tests.rs`, now a 32-cell area) with the recorded 29-cell layout, a whole title and a working close hit area.
-7. **Changelog.** Add the cargo-port and `tui_pane` entries.
-
-**Constraints from prior phases:**
-- Keep the Phase 4s rules: the Targets `Source` header draws whole before a name cuts; a cut ahead/behind value drops whole tokens; every Package `—` uses `dim_value_color()`; `fit_package_title` never leaves ` - ` before `…`.
-- A Git `Core` or `GraphQL` value that does not fit inline takes two rows. `fit_rate_limit_value` keeps the row shape steady as the reset counts down.
-- A new test that overrides the theme uses the `ThemeOverride` fixture (`tui/test_support/readability.rs`).
-- Keep `startup_page_footer_meets_contrast_in_every_registered_theme` (`tui/theme_roles.rs`) green: Spec 6 edits the file that draws the footer.
+- `package_field_label_width` is the one label-width rule for one-row Package fields. Path and Disk keep their own arms; other fields narrow above `NARROW_FIELD_INNER_WIDTH` when label, value and 3 cells fit. Statistics stack through `PackageStatisticRow` and `inline_stat_height`. A Lint `NoLog` value trims its leading space when too wide.
+- `git_lower_content_height` counts the stacked rate rows, and `pane_data/detail_data.rs` shares that estimate. `GitAboutLayout` names its three description outcomes: no description, a description with no separator space, and a description with a separator.
+- `PopupBorder` and `PopupFrame::render_with_border` select the popup border. Sccache selects the thick border; every other popup keeps its border. A popup title that uses all inner cells draws without side spaces.
+- The toast card fits `crates.io unreachable` whole in its 29-cell card; a longer title still cuts with `…`.
+- The CI runs table shows a Total column at 80 columns under NO_COLOR outside branch mode.
 
 **Files:**
-- `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
-- `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/panes/pane_data/detail_data.rs` and `crates/cargo-port/src/tui/render/readability_tests.rs` — Spec 2
-- `crates/cargo-port/src/tui/sccache/render.rs` and `crates/tui_pane/src/pane/popup.rs` — Spec 3
-- `crates/cargo-port/src/tui/panes/lints/render.rs` — Spec 4
-- `crates/cargo-port/src/tui/panes/ci/` — Spec 5
-- `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` and `crates/tui_pane/src/toasts/render/repair_tests.rs` — Spec 6
-- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 7
+- `crates/cargo-port/src/tui/columns/project.rs` and `columns/constants.rs` — list column fit and the 8-cell name floor
+- `crates/cargo-port/src/tui/render/mod.rs` — shared decimal and whole-unit Disk thresholds
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs`, `tree_render.rs` — measured Disk bytes, totals and Available
+- `crates/cargo-port/src/tui/panes/package/render.rs` — `package_field_label_width`, `PackageStatisticRow`
+- `crates/cargo-port/src/tui/panes/git/render.rs`, `git/constants.rs` — Git list height, `GitAboutLayout`
+- `crates/cargo-port/src/tui/panes/lints/render.rs`, `lints/constants.rs` — Lint Runs columns
+- `crates/cargo-port/src/tui/panes/ci/render.rs` — CI runs columns
+- `crates/tui_pane/src/pane/popup.rs` — `PopupBorder`
+- `crates/tui_pane/src/toasts/render/card.rs`, `drawing.rs` — toast title fit
 
-**Workers:** 2 writers.
-- Slot 1: Specs 1, 2, 4 and 5, their tests and `crates/cargo-port/CHANGELOG.md`, with the Spec 3 line.
-- Slot 2: Specs 3 and 6, their tests and `crates/tui_pane/CHANGELOG.md`.
+**Gotchas:** A cut Path value still narrows its label column, because Path keeps its own arm in `package_field_label_width`.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each of the six defects at the width that showed it. The Git test uses 13 worktrees, stacked rate rows and a description, and it scrolls. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries one `Change-Review:` line per fix.
+**Ruled out:** A Phase 4x split. One Work Order keeps one design check over all panes (director, 2026-11-10).
 
 ### Phase 4w — Targets lists a binary whose name differs from its package  · status: todo
 
@@ -882,28 +853,29 @@ At 80 and 95 columns the Targets `Source` header draws whole while a target name
 
 **Source:** live capture for Phase 4s, 2026-11-09. `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists a `TargetKind::Bin` only when `target.name == record.name`, and `primary_binary_matches_package_name_only` asserts that rule. A package with only a differently named `[[bin]]` shows `No Targets` and has a runnable binary.
 
-**Decision:** showrunner, 2026-11-09: this phase runs with its own selection-rule design.
+**Decision:** showrunner, 2026-11-09: this phase runs with its own selection-rule design. Showrunner, 2026-11-10: the selection rule is the one in Spec 1, all five points.
 
 **Constraints:**
-- A package with one binary named for the package keeps its present row and launch.
-- Do not change how examples and benches are listed.
+- A package with one binary named for the package keeps its present row. Its launch adds `--bin <name>`, which runs the same target.
+- Do not change how examples and benches are listed or launched.
 - `primary_binary_matches_package_name_only` changes only as the approved rule states, with an `Assertion-Change:` line.
 
 **Spec:**
-1. **Selection rule.** Before any code, the unit director writes the rule and sends it to the showrunner. The rule covers a package with several binaries, `default-run`, a workspace member and a workspace root. Build only the approved rule.
-2. **Listing.** `TargetsData::from_workspace_metadata` lists the binaries that the approved rule selects.
-3. **Launch.** Each listed binary launches its own target (`--bin <name>` with its package).
+1. **Selection rule** (approved). 1. List every bin target of each included package, sorted by name as today. 2. Each row launches `cargo run --bin <name> -p <package>`. 3. `default-run` gets no marker and no special order. 4. With the workspace root selected, list every member's binaries, as for examples. With a member selected, list that member's binaries only. 5. A package whose one binary has the package name keeps its row.
+2. **Listing.** `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists every `TargetKind::Bin` target. It now keeps only the bin whose name equals the package name. Update its doc comment.
+3. **Launch.** `cargo_command_for_owned_run` (`tui/terminal/processes.rs`) adds `--bin <target_name>` for `RunTargetKind::Binary`. It now runs plain `cargo run`. Keep the `-p <package>` and features arguments.
 4. **Changelog.** Add the cargo-port entry.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/targets/` — Specs 2 and 3
+- `crates/cargo-port/src/tui/panes/targets/` — Spec 2
+- `crates/cargo-port/src/tui/terminal/processes.rs` — Spec 3
 - `crates/cargo-port/CHANGELOG.md` — Spec 4
 
 **Workers:** 1 writer: Specs 2-4 and their tests.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Metadata and drawing tests show the selected binaries in place of `No Targets`. A launch test selects the correct target. A live capture of a package with a differently named `[[bin]]`, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Metadata and drawing tests show the selected binaries in place of `No Targets`, for a package with several binaries and for a workspace root. A launch test shows `--bin <name>` and `-p <package>` in the command. A live capture of a package with a differently named `[[bin]]`, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4x — CI job header and table margins read clean  · status: todo
 
@@ -944,6 +916,14 @@ At 80 and 95 columns the Targets `Source` header draws whole while a target name
 - Never cut a label. Cut a value, a name or a message first.
 - Change no other look.
 
+**Constraints from prior phases:**
+- Phase 4v: `package_field_label_width` (`panes/package/render.rs`) is the one label-width rule for one-row Package fields. Path and Disk keep their own arms. Spec 15 changes the Path arm only.
+- Phase 4v: from 60 to 80 columns Disk draws whole units (`52 GiB`). Spec 6 starts from those widths.
+- Phase 4v: Git and Lint Runs column widths live in `panes/git/constants.rs` and `panes/lints/constants.rs`.
+- Phase 4v: `GitAboutLayout` names its three description outcomes. Spec 7 keeps that type.
+- Phase 4v: `PopupBorder` selects the Sccache border. Every other popup keeps its border.
+- `crates/tui_pane/` is owned by tile-unit. Edit it through cargo-berth, and trial-merge the tile tip before the checkpoint notice.
+
 **Spec:**
 1. **CI job header.** At 160 columns each CI job header draws whole, and the cells come from the Commit column (`tui/panes/ci/render.rs`).
 2. **Table margin.** Lint Runs at every width and CI runs at 60 columns keep one cell between the left border and the text (`tui/panes/lints/render.rs`, `tui/panes/ci/render.rs`).
@@ -978,10 +958,12 @@ At 80 and 95 columns the Targets `Source` header draws whole while a target name
 - `crates/cargo-port/src/tui/panes/project_list/` — Specs 8 and 16
 - `crates/cargo-port/src/tui/panes/layout.rs` — Specs 14 and 19
 - `crates/tui_pane/src/toasts/` — Spec 17
-- the pane title renderer — Spec 11
+- `crates/tui_pane/src/pane/title.rs` and `crates/cargo-port/src/tui/panes/package/render.rs` — Spec 11 (`fit_package_title`)
 - `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 22
 
-**Workers:** 1 writer: Specs 1-22 and their tests.
+**Workers:** 2 writers.
+- Slot 1: Specs 1-16 and 18-21, their tests and `crates/cargo-port/CHANGELOG.md`. It owns `panes/package/render.rs`, so Spec 11 stays here with `tui_pane/src/pane/title.rs`.
+- Slot 2: Spec 17, its tests and `crates/tui_pane/CHANGELOG.md`, with the Spec 11 line.
 
 **State:** none.
 
