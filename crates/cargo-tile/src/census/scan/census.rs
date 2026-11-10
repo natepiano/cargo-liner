@@ -66,12 +66,14 @@ use crate::census::invocation_cpu_accounting::CompilerRequest;
 use crate::census::invocation_cpu_accounting::CpuAssignment;
 #[cfg(any(not(target_os = "linux"), test))]
 use crate::census::invocation_cpu_accounting::CpuBaseline;
+use crate::census::invocation_cpu_accounting::CpuReaper;
 use crate::census::invocation_cpu_accounting::InvocationCpuAccounting;
 use crate::census::invocation_cpu_accounting::InvocationCpuContributions;
 use crate::census::invocation_cpu_accounting::InvocationMeasurements;
 use crate::census::invocation_cpu_accounting::Measurement;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::invocation_cpu_accounting::MemoryReport;
+use crate::census::invocation_cpu_accounting::ProcessCpuCounter;
 use crate::census::process_identity;
 use crate::census::process_identity::CaptureMembership;
 use crate::census::process_identity::DispatchedProcess;
@@ -1105,6 +1107,10 @@ impl Census {
                 // InvocationCpuHistory still reports FirstObservation for the first sample.
                 evidence.insert(owner, Measurement::Reading(0.0));
             }
+            let counter = ProcessCpuCounter {
+                elapsed,
+                reaper: self.cpu_reaper(pid),
+            };
             match assignment {
                 CpuAssignment::Detached { compiler, .. } => {
                     if let Ok(root) = self.cpu_identity(compiler)
@@ -1113,24 +1119,32 @@ impl Census {
                         work.detached
                             .entry(root)
                             .or_default()
-                            .insert(identity, elapsed);
+                            .insert(identity, counter);
                     }
                 },
                 CpuAssignment::Direct(_) => {
                     #[cfg(target_os = "linux")]
                     for ancestor in self.cpu_owners(owner) {
                         if let Some(work) = work.get_mut(&ancestor) {
-                            work.tree.insert(identity.clone(), elapsed);
+                            work.tree.insert(identity.clone(), counter.clone());
                         }
                     }
                     #[cfg(not(target_os = "linux"))]
                     if let Some(work) = work.get_mut(&owner) {
-                        work.tree.insert(identity, elapsed);
+                        work.tree.insert(identity, counter);
                     }
                 },
                 CpuAssignment::Unassigned => {},
             }
         }
+    }
+
+    /// The parent that reaps a process; an unproven parent receives no time.
+    fn cpu_reaper(&self, pid: Pid) -> CpuReaper {
+        self.parents
+            .get(&pid)
+            .and_then(|&parent| self.cpu_identity(parent).ok())
+            .map_or(CpuReaper::Unproven, CpuReaper::Parent)
     }
 
     /// Keep the manager's full tree and the nested invocations' prior credits separate.
@@ -1149,7 +1163,10 @@ impl Census {
                     .and_then(|process| smoothing.owners.get(&process))
                     .and_then(|identity| smoothing.invocations.get(identity))
                     .map_or(Duration::ZERO, |cpu| cpu.tree.total);
-                (pid, retained.max(work.tree.values().sum()))
+                (
+                    pid,
+                    retained.max(work.tree.values().map(|counter| counter.elapsed).sum()),
+                )
             })
             .collect();
         for (&pid, &total) in &totals {

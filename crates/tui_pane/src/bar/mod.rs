@@ -19,6 +19,7 @@
 //! 3. Concatenate the per-region span vectors into one [`StatusBar`].
 
 mod constants;
+pub(crate) mod cpu;
 mod global_region;
 mod nav_region;
 mod palette;

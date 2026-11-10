@@ -16,6 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use tui_pane::Keymap;
 use tui_pane::PERF_LOG_TARGET;
+use tui_pane::Repaint;
 use tui_pane::ToastCountdownState;
 use tui_pane::ToastId;
 use tui_pane::ToastLingerState;
@@ -24,6 +25,7 @@ use tui_pane::ToastVisualDeadline;
 use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
 use tui_pane::TrackedItemLifecycle;
+use tui_pane::VisualDeadline;
 
 use super::frame_metrics::FrameMetrics;
 use super::frame_metrics::FrameSpeed;
@@ -116,6 +118,7 @@ pub(super) fn event_loop(
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
         let tick_now = Instant::now();
+        let status_changed = app.framework.tick_status(tick_now) == Repaint::Needed;
         let cpu_started = Instant::now();
         let cpu_changed = app.panes.cpu_tick();
         let cpu_elapsed = cpu_started.elapsed();
@@ -123,6 +126,7 @@ pub(super) fn event_loop(
 
         let changed = frame_state.needs_draw(app, tick_now);
         let inspect_frame = changed
+            || status_changed
             || input.count > 0
             || cpu_changed
             || bg_stats.bg_msgs > 0
@@ -193,10 +197,22 @@ pub(super) fn event_loop(
 /// busy-spin the loop (PD8). The four App-held background senders never
 /// disconnect (App keeps a clone of each), so only input and CPU samples
 /// are at risk; input disconnect is handled in [`process_input_frame`].
+/// Cut `wait` short so the loop wakes at the status line's next second.
+fn status_wait(app: &App, now: Instant, wait: Duration) -> Duration {
+    match app.framework.status_visual_deadline() {
+        VisualDeadline::NoVisualChangeScheduled => wait,
+        VisualDeadline::At(deadline) => wait.min(deadline.saturating_duration_since(now)),
+    }
+}
+
 fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
-    let timeout = app.github_quota_timeout_at(SystemTime::now()).map_or_else(
-        || app.animation_timeout(),
-        |quota| quota.min(app.animation_timeout()),
+    let timeout = status_wait(
+        app,
+        Instant::now(),
+        app.github_quota_timeout_at(SystemTime::now()).map_or_else(
+            || app.animation_timeout(),
+            |quota| quota.min(app.animation_timeout()),
+        ),
     );
     let mut select = Select::new();
     select.recv(input_rx);

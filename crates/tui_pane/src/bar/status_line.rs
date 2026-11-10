@@ -321,6 +321,12 @@ pub fn render<Ctx, G>(
         palette.status_value_style,
     ));
 
+    uptime_spans.push(Span::styled("CPU: ", palette.status_label_style));
+    uptime_spans.push(Span::styled(
+        format!("{} ", framework.status_cpu_reading().label()),
+        palette.status_value_style,
+    ));
+
     let navigation_spans = bar.nav;
     let center_spans = bar.pane_action;
     let note_items = status

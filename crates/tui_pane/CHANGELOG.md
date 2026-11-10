@@ -9,6 +9,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Show the process CPU beside uptime in each framework status line. Update both once each second.
+- Add `Framework::tick_status` and `Framework::status_visual_deadline` so an app with its own event loop keeps the status line current.
+
 - `PopupBorder` and `PopupFrame::render_with_border` let a popup select a thick border in both colour modes.
 - `StatusLine::with_hint_notes` draws mode notes in the enabled shortcut label ink. Other notes keep their styles.
 - Global shortcut hints can show toggle values independently of shortcut availability.
