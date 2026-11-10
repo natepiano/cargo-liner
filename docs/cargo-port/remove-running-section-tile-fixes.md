@@ -2409,7 +2409,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Phase 32b's final result stays beside it.
 - Change-Review: none — draw time only, with no visible change.
 
-### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: todo
+### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
 **Depends on:** Phase 32 (it adds the compiler wrapper layout and the toggle state). Phase 32b measures the same files, so this phase starts after it.
 
