@@ -11,6 +11,7 @@ mod status_bar_contrast_tests;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -239,6 +240,7 @@ pub struct StatusLine<'a, A: Action> {
     /// Ordered global slots for the right side of the status line.
     pub globals:        &'a [StatusLineGlobal<A>],
     hint_fit:           HintFit,
+    hint_notes:         &'a [StatusLineNote],
 }
 
 struct StatusLineItems {
@@ -266,6 +268,7 @@ impl<'a, A: Action> StatusLine<'a, A> {
             notes,
             globals,
             hint_fit: HintFit::WholeGroups,
+            hint_notes: &[],
         }
     }
 
@@ -276,6 +279,13 @@ impl<'a, A: Action> StatusLine<'a, A> {
     #[must_use]
     pub const fn with_individual_note_hints(mut self) -> Self {
         self.hint_fit = HintFit::IndividualHints;
+        self
+    }
+
+    /// Append mode notes with the enabled shortcut label style.
+    #[must_use]
+    pub const fn with_hint_notes(mut self, notes: &'a [StatusLineNote]) -> Self {
+        self.hint_notes = notes;
         self
     }
 }
@@ -317,6 +327,14 @@ pub fn render<Ctx, G>(
         .notes
         .iter()
         .map(|note| status_line_note_spans(std::slice::from_ref(note), palette))
+        .chain(status.hint_notes.iter().map(|note| {
+            note_spans(
+                note,
+                palette.enabled_label_style,
+                palette.enabled_label_style,
+            )
+            .to_vec()
+        }))
         .collect();
     let required_globals = status
         .globals
@@ -356,13 +374,16 @@ pub fn status_line_note_spans(
 ) -> Vec<Span<'static>> {
     notes
         .iter()
-        .flat_map(|note| {
-            [
-                Span::styled(note.label.clone(), palette.status_label_style),
-                Span::styled(format!("{} ", note.value), palette.status_value_style),
-            ]
-        })
+        .flat_map(|note| note_spans(note, palette.status_label_style, palette.status_value_style))
         .collect()
+}
+
+/// Format a note with its label style and value style.
+fn note_spans(note: &StatusLineNote, label: Style, value: Style) -> [Span<'static>; 2] {
+    [
+        Span::styled(note.label.clone(), label),
+        Span::styled(format!("{} ", note.value), value),
+    ]
 }
 
 /// Resolve and style status-line global slots.
