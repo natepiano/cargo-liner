@@ -20,6 +20,7 @@ pub(super) const MAX_FINDER_RESULTS: usize = 50;
 // `CARGO_*_FLAG` and `CARGO_*_SUBCOMMAND` constants supply Cargo invocation arguments.
 pub(super) const CARGO_BENCH_FLAG: &str = "--bench";
 pub(super) const CARGO_BENCH_SUBCOMMAND: &str = "bench";
+pub(super) const CARGO_BIN_FLAG: &str = "--bin";
 pub(super) const CARGO_CLEAN_SUBCOMMAND: &str = "clean";
 pub(super) const CARGO_COLOR_ALWAYS_FLAG: &str = "--color=always";
 pub(super) const CARGO_EXAMPLE_FLAG: &str = "--example";

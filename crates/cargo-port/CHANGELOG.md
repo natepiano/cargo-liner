@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- List every binary target in Targets, including one whose name differs from its package. Run each with `cargo run --bin <name>` and the package flag.
 - Round Projects Disk values to whole units at 60–80 columns and align the headers when Lint is off.
 - Keep Projects columns at 60 cells. Shorten project names before column labels.
 - Keep Package labels and pane titles whole. Place counts below labels when the row is narrow.

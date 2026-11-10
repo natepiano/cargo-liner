@@ -22,6 +22,7 @@ use crate::tui::app::App;
 use crate::tui::app::PendingClean;
 use crate::tui::constants::CARGO_BENCH_FLAG;
 use crate::tui::constants::CARGO_BENCH_SUBCOMMAND;
+use crate::tui::constants::CARGO_BIN_FLAG;
 use crate::tui::constants::CARGO_CLEAN_SUBCOMMAND;
 use crate::tui::constants::CARGO_COLOR_ALWAYS_FLAG;
 use crate::tui::constants::CARGO_EXAMPLE_FLAG;
@@ -168,7 +169,10 @@ fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Comma
     let mut command = Command::new(CARGO_COMMAND_NAME);
     match pending_example_run.run_target_kind {
         RunTargetKind::Binary => {
-            command.arg(CARGO_RUN_SUBCOMMAND);
+            command
+                .arg(CARGO_RUN_SUBCOMMAND)
+                .arg(CARGO_BIN_FLAG)
+                .arg(&pending_example_run.target_name);
         },
         RunTargetKind::Example => {
             command
@@ -401,11 +405,14 @@ mod tests {
         }
     }
 
-    fn pending_example_run(cargo_package_invocation: CargoPackageInvocation) -> PendingExampleRun {
+    fn pending_binary_run(
+        target_name: &str,
+        cargo_package_invocation: CargoPackageInvocation,
+    ) -> PendingExampleRun {
         PendingExampleRun {
             abs_path: "/tmp/demo".to_string(),
             package_path: AbsolutePath::from(Path::new("/tmp/demo")),
-            target_name: "demo".to_string(),
+            target_name: target_name.to_string(),
             display_path: "demo".to_string(),
             cargo_package_invocation,
             run_target_kind: RunTargetKind::Binary,
@@ -423,7 +430,8 @@ mod tests {
 
     #[test]
     fn workspace_default_invocation_omits_the_package_flag() {
-        let command = cargo_command_for_owned_run(&pending_example_run(
+        let command = cargo_command_for_owned_run(&pending_binary_run(
+            "demo",
             CargoPackageInvocation::WorkspaceDefault,
         ));
 
@@ -431,6 +439,8 @@ mod tests {
             cargo_arguments(&command),
             vec![
                 CARGO_RUN_SUBCOMMAND.to_string(),
+                CARGO_BIN_FLAG.to_string(),
+                "demo".to_string(),
                 CARGO_COLOR_ALWAYS_FLAG.to_string()
             ]
         );
@@ -438,7 +448,8 @@ mod tests {
 
     #[test]
     fn named_package_invocation_passes_the_package_flag_and_name() {
-        let command = cargo_command_for_owned_run(&pending_example_run(
+        let command = cargo_command_for_owned_run(&pending_binary_run(
+            "demo",
             CargoPackageInvocation::Named("demo-member".to_string()),
         ));
 
@@ -446,8 +457,30 @@ mod tests {
             cargo_arguments(&command),
             vec![
                 CARGO_RUN_SUBCOMMAND.to_string(),
+                CARGO_BIN_FLAG.to_string(),
+                "demo".to_string(),
                 CARGO_PACKAGE_FLAG.to_string(),
                 "demo-member".to_string(),
+                CARGO_COLOR_ALWAYS_FLAG.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn binary_named_apart_from_its_package_runs_by_bin_and_package() {
+        let command = cargo_command_for_owned_run(&pending_binary_run(
+            "serve",
+            CargoPackageInvocation::Named("engine".to_string()),
+        ));
+
+        assert_eq!(
+            cargo_arguments(&command),
+            vec![
+                CARGO_RUN_SUBCOMMAND.to_string(),
+                CARGO_BIN_FLAG.to_string(),
+                "serve".to_string(),
+                CARGO_PACKAGE_FLAG.to_string(),
+                "engine".to_string(),
                 CARGO_COLOR_ALWAYS_FLAG.to_string(),
             ]
         );

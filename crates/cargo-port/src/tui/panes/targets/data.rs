@@ -218,9 +218,8 @@ impl TargetsData {
     /// appear — selecting a member narrows the view to that member's
     /// own targets.
     ///
-    /// Per included package: lift the bin target whose name matches
-    /// the package name (cargo's "default-run" convention) as a
-    /// `Binary` entry; every `Example` target becomes an entry with
+    /// Per included package: every `Bin` target becomes a `Binary`
+    /// entry, whatever its name; every `Example` target becomes an entry with
     /// category derived from `examples/<category>/<file>.rs`; every
     /// `Bench` becomes a flat entry. An entry's source is
     /// [`TargetSource::workspace_root`] only when the metadata describes
@@ -258,7 +257,7 @@ impl TargetsData {
             };
 
             for target in &record.targets {
-                if target.kinds.contains(&TargetKind::Bin) && target.name == record.name {
+                if target.kinds.contains(&TargetKind::Bin) {
                     binaries.push(TargetEntry {
                         name:              target.name.clone(),
                         display_name:      target.name.clone(),
@@ -681,27 +680,38 @@ mod targets_from_metadata {
     }
 
     #[test]
-    fn primary_binary_matches_package_name_only() {
-        // `TargetsData::from_workspace_metadata` lifts the `TargetKind::Bin` named "demo" as the
-        // default-run binary because it matches the package name; other binary targets stay outside
-        // the workspace-aggregated list.
-        let with_match = record(
+    fn lists_every_binary_target_sorted_by_name() {
+        // `TargetsData::from_workspace_metadata` lists each `TargetKind::Bin`, whatever its name,
+        // so a binary named "other" in package "demo" gets a row beside the package-named one.
+        let package_record = record(
             "demo",
             "/ws/demo/Cargo.toml",
-            vec![target(
-                "demo",
-                vec![TargetKind::Bin],
-                "/ws/demo/src/main.rs",
-            )],
+            vec![
+                target("zeta", vec![TargetKind::Bin], "/ws/demo/src/bin/zeta.rs"),
+                target("demo", vec![TargetKind::Bin], "/ws/demo/src/main.rs"),
+                target("other", vec![TargetKind::Bin], "/ws/demo/src/bin/other.rs"),
+            ],
         );
         let data = TargetsData::from_workspace_metadata(
-            &workspace("/ws/demo", vec![with_match]),
+            &workspace("/ws/demo", vec![package_record]),
             &path("/ws/demo"),
         );
-        assert_eq!(data.binaries.len(), 1);
-        assert_eq!(data.binaries[0].name, "demo");
+        let names: Vec<&str> = data
+            .binaries
+            .iter()
+            .map(|target_entry| target_entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["demo", "other", "zeta"]);
+        assert!(
+            data.binaries
+                .iter()
+                .all(|target_entry| target_entry.package_name == "demo")
+        );
+    }
 
-        let without_match = record(
+    #[test]
+    fn lists_a_sole_binary_whose_name_differs_from_its_package() {
+        let package_record = record(
             "demo",
             "/ws/demo/Cargo.toml",
             vec![target(
@@ -711,10 +721,12 @@ mod targets_from_metadata {
             )],
         );
         let data = TargetsData::from_workspace_metadata(
-            &workspace("/ws/demo", vec![without_match]),
+            &workspace("/ws/demo", vec![package_record]),
             &path("/ws/demo"),
         );
-        assert!(data.binaries.is_empty());
+        assert_eq!(data.binaries.len(), 1);
+        assert_eq!(data.binaries[0].name, "other");
+        assert_eq!(data.binaries[0].package_name, "demo");
     }
 
     #[test]
@@ -742,8 +754,9 @@ mod targets_from_metadata {
     }
 
     /// Three-package workspace: root "ws-root" plus members "core"
-    /// and "engine". Used by both the workspace-root and member-filter
-    /// tests below.
+    /// and "engine". Member "engine" has two binaries whose names differ
+    /// from the package name. Used by both the workspace-root and
+    /// member-filter tests below.
     fn three_package_workspace() -> WorkspaceMetadata {
         let ws_root = record(
             "ws-root",
@@ -772,11 +785,23 @@ mod targets_from_metadata {
         let engine = record(
             "engine",
             "/ws/crates/engine/Cargo.toml",
-            vec![target(
-                "engine-ex",
-                vec![TargetKind::Example],
-                "/ws/crates/engine/examples/engine-ex.rs",
-            )],
+            vec![
+                target(
+                    "engine-ex",
+                    vec![TargetKind::Example],
+                    "/ws/crates/engine/examples/engine-ex.rs",
+                ),
+                target(
+                    "serve",
+                    vec![TargetKind::Bin],
+                    "/ws/crates/engine/src/bin/serve.rs",
+                ),
+                target(
+                    "migrate",
+                    vec![TargetKind::Bin],
+                    "/ws/crates/engine/src/bin/migrate.rs",
+                ),
+            ],
         );
         workspace("/ws", vec![ws_root, core, engine])
     }
@@ -793,7 +818,12 @@ mod targets_from_metadata {
             .collect();
         assert!(binary_sources.contains(&&TargetSource::workspace_root("ws-root".into())));
         assert!(binary_sources.contains(&&TargetSource::member("core".into())));
-        assert_eq!(data.binaries.len(), 2);
+        let binary_names: Vec<&str> = data
+            .binaries
+            .iter()
+            .map(|target_entry| target_entry.name.as_str())
+            .collect();
+        assert_eq!(binary_names, vec!["ws-root", "core", "migrate", "serve"]);
         assert_eq!(
             data.examples[0].source,
             TargetSource::workspace_root("ws-root".into())
@@ -825,6 +855,25 @@ mod targets_from_metadata {
             data.examples
                 .iter()
                 .all(|e| e.source.is_member_named("core"))
+        );
+    }
+
+    #[test]
+    fn member_selection_lists_only_that_members_binaries() {
+        let workspace_metadata = three_package_workspace();
+        let data =
+            TargetsData::from_workspace_metadata(&workspace_metadata, &path("/ws/crates/engine"));
+
+        let names: Vec<&str> = data
+            .binaries
+            .iter()
+            .map(|target_entry| target_entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["migrate", "serve"]);
+        assert!(
+            data.binaries
+                .iter()
+                .all(|target_entry| target_entry.source.is_member_named("engine"))
         );
     }
 
