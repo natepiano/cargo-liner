@@ -5,6 +5,8 @@
 //! take optional locks, and which variables the test process must keep out of a
 //! hook — so the policy stays with each file and the invoking lives here.
 
+mod history;
+
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;

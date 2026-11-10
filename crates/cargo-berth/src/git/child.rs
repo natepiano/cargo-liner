@@ -677,7 +677,7 @@ mod tests {
                     "head -c 131072 /dev/zero >&2; head -c 131072 /dev/zero"
                 },
                 OutputWorkload::ContinuousStdout => {
-                    "cat /dev/zero & writer=$!; head -c 262144 /dev/zero >&2; kill \"$writer\"; wait \"$writer\" 2>/dev/null; exit 0"
+                    "head -c 1 /dev/zero; cat /dev/zero & writer=$!; head -c 262144 /dev/zero >&2; kill \"$writer\"; wait \"$writer\" 2>/dev/null; exit 0"
                 },
             };
             command
