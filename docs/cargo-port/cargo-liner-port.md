@@ -862,41 +862,25 @@ Targets lists every bin target of each included package, sorted by name, whateve
 
 ### Phase 4y — The finder and Package Structure count each binary  · status: done
 
-**Depends on:** Phase 4w (it lists every bin target in Targets).
+#### As-built
 
-#### Work Order
+The finder offers each binary by its own name, and Package Structure counts the same binaries that Targets lists. For package `multibin` with binaries `migrate` and `serve`, the finder shows a `migrate` and a `serve` result, and Structure shows `binary 2`.
 
-**Goal:** the finder offers each binary by its own name, and Package Structure counts the same binaries that Targets lists.
-
-**Source:** Phase 4w add-ons. The finder makes one Binary result per package, named for the package (`tui/finder/index.rs` ≈345 and ≈455). For package `multibin` with binaries `migrate` and `serve`, that result matches no Targets row. Package Structure counts `ProjectType::Binary` once per package (`tui/panes/pane_data/package_data.rs` ≈71), so it shows `binary 1` for `multibin` and 3 for a workspace whose Targets lists 4.
-
-**Decision:** showrunner, 2026-11-10: both are current, choice (a) for each. This phase runs directly after Phase 4w and before Phase 4x.
-
-**Constraints:**
-- Targets keeps the Phase 4w rule: every bin target, sorted by name, launched with `--bin <name>` and the package flag.
-- `ProjectType::Binary` keeps its present meaning for the Type column and other consumers.
-- Do not change how examples and benches are counted or found.
-
-**Constraints from prior phases:**
-- Phase 4w: `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists every `TargetKind::Bin` target. A workspace root lists the binaries of every member; a member lists its own.
-
-**Spec:**
-1. **Binary names.** `Cargo` (`project/cargo/rust_info.rs`) keeps the name of each bin target, as it keeps `benches`. This replaces `BinaryTargetPresence`; `ProjectType::Binary` follows from a non-empty list.
-2. **Finder.** The finder adds one Binary result per bin target, named for the target, at both sites in `tui/finder/index.rs`. Choosing a result focuses Targets with that binary's row selected.
-3. **Package Structure.** `StructureCounts` (`tui/panes/pane_data/package_data.rs`) counts bin targets. For a package and for a workspace root, the `binary` count equals the number of binary rows in Targets.
-4. **Changelog.** Add the cargo-port entry.
+- `Cargo` (`project/cargo/rust_info.rs`) keeps `binaries: Vec<String>` (sorted bin target names) and `library_target_kind: LibraryTargetKind` (`Absent`, `Library`, `ProcMacro`). `Cargo::types()` derives the target types from them; `ProjectType::Binary` follows from a non-empty `binaries` list and keeps its meaning for the Type column.
+- The finder adds one `FinderKind::Binary` result per bin target, named for the target, for packages, workspace members and vendored packages. Choosing a result focuses Targets with that binary's row selected.
+- `StructureCounts` adds `cargo.binaries().len()` to the binary count. For a package and for a workspace root, it equals the number of binary rows in Targets.
 
 **Files:**
-- `crates/cargo-port/src/project/cargo/rust_info.rs` — Spec 1
-- `crates/cargo-port/src/tui/finder/` — Spec 2
-- `crates/cargo-port/src/tui/panes/pane_data/package_data.rs` — Spec 3
-- `crates/cargo-port/CHANGELOG.md` — Spec 4
+- `crates/cargo-port/src/project/cargo/rust_info.rs` — `Cargo`, `LibraryTargetKind`, `types()`
+- `crates/cargo-port/src/tui/finder/index.rs` — Binary results per bin target
+- `crates/cargo-port/src/tui/panes/pane_data/package_data.rs` — Structure counts and `structure_count_tests`
+- `crates/cargo-port/src/tui/panes/targets/availability_tests.rs` — `finder_offers_each_binary_by_name_and_selects_its_row`
 
-**Workers:** 1 writer: Specs 1-4 and their tests.
+**Gotchas:** `ExampleGroup` is re-exported only under `#[cfg(test)]`. Production code reads examples through `Cargo::examples()`, and clippy's lint fix removes a re-export that only tests use.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A finder test shows one result per bin target for a package whose binaries have other names, and choosing one selects its Targets row. A Package Structure test shows the bin-target count for a package and a workspace root. A live capture of the finder and Package Structure, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Ruled out:**
+- A separate binary flag beside the names list, because the two can disagree.
+- A plural `binaries` Structure label. The label names a target kind, as `lib 3` does (showrunner, 2026-11-10).
 
 ### Phase 4x — CI job header and table margins read clean  · status: todo
 
@@ -967,7 +951,9 @@ Targets lists every bin target of each included package, sorted by name, whateve
 19. **Free rows.** A detail pane takes the free rows of its column before it pages (`tui/panes/layout.rs`).
 20. **Git loading.** The Git pane draws `loading…` until its data arrives (`tui/panes/git/render.rs`).
 21. **Tests total.** The Workspace Tests sum row has the `Total` label (`tui/panes/package/render.rs`).
-22. **Changelog.** Add the cargo-port and tui_pane entries.
+22. **Finder selection ink.** The selected finder row draws its Type cell in the selection foreground, at 4.5:1 contrast or more (`tui/finder/`).
+23. **Finder Dir cut.** A finder Dir path that does not fit cuts from the left with a leading `…`, as in `…/binws/crates/engine` (`tui/finder/`).
+24. **Changelog.** Add the cargo-port and tui_pane entries.
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/ci/` — Specs 1, 2 and 5
@@ -980,15 +966,16 @@ Targets lists every bin target of each included package, sorted by name, whateve
 - `crates/cargo-port/src/tui/panes/layout.rs` — Specs 14 and 19
 - `crates/tui_pane/src/toasts/` — Spec 17
 - `crates/tui_pane/src/pane/title.rs` and `crates/cargo-port/src/tui/panes/package/render.rs` — Spec 11 (`fit_package_title`)
-- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 22
+- `crates/cargo-port/src/tui/finder/` — Specs 22 and 23
+- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 24
 
 **Workers:** 2 writers.
-- Slot 1: Specs 1-16 and 18-21, their tests and `crates/cargo-port/CHANGELOG.md`. It owns `panes/package/render.rs`, so Spec 11 stays here with `tui_pane/src/pane/title.rs`.
+- Slot 1: Specs 1-16 and 18-23, their tests and `crates/cargo-port/CHANGELOG.md`. It owns `panes/package/render.rs`, so Spec 11 stays here with `tui_pane/src/pane/title.rs`.
 - Slot 2: Spec 17, its tests and `crates/tui_pane/CHANGELOG.md`, with the Spec 11 line.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each defect at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each defect at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The 80-column captures page the Package pane to show the Structure box. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
