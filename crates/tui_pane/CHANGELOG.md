@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `PopupBorder` and `PopupFrame::render_with_border` let a popup select a thick border in both colour modes.
 - Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.
 - `ExpansionModel::press_row` and `RowPressResult` share branch toggling and leaf handling across applications.
 - `TileGrid::cell_index` resolves current content identity without painted coordinates.
@@ -45,6 +46,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Toast cards use available side-gap space to keep warning titles and close buttons whole.
 - Opaque toast cards paint the theme background and use theme colours. Transparent cards keep their existing colours.
 - Draw normal toast page marks in the theme's default text colour so the footer remains readable.
 

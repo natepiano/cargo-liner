@@ -32,59 +32,53 @@ pub(super) fn assert_worktree_columns(
         .collect();
     let headers: Vec<_> = header_row.split_whitespace().collect();
     let values: Vec<_> = value_row.split_whitespace().collect();
-    assert_eq!(headers.len(), 4, "{header_row}");
-    assert_eq!(values.len(), 4, "{value_row}");
-    assert_fitting_headers(buffer, area, header_y, &headers)?;
-    for (tokens, whole) in [
-        (&headers, ["Name", "Branch", "Tracked", "Sync"]),
-        (&values, expected),
-    ] {
-        for (index, (token, original)) in tokens.iter().zip(whole).enumerate() {
-            if *token != original {
-                let prefix = token.strip_suffix('…').context("Cut column ellipsis")?;
-                assert!(
-                    !prefix.is_empty() && original.starts_with(prefix),
-                    "{token}: {original}"
-                );
-                if index > 0 {
-                    assert_eq!(
-                        tokens[0],
-                        format!("{}…", whole[0].chars().next().context("Name")?)
-                    );
-                }
-            }
+    let indices: Vec<usize> = headers
+        .iter()
+        .map(|header| {
+            ["Name", "Branch", "Tracked", "Sync"]
+                .iter()
+                .position(|whole| whole == header)
+                .context("whole header")
+        })
+        .collect::<anyhow::Result<_>>()?;
+    assert_eq!(values.len(), headers.len(), "{value_row}");
+    assert!(
+        matches!(indices.as_slice(), [0, 1, 2, 3] | [0, 1, 3] | [1, 3] | [1]),
+        "{header_row}"
+    );
+    for (token, index) in values.iter().zip(indices) {
+        let original = expected[index];
+        if *token != original {
+            let prefix = token.strip_suffix('…').context("Cut column ellipsis")?;
+            assert!(
+                !prefix.is_empty() && original.starts_with(prefix),
+                "{token}: {original}"
+            );
         }
     }
     Ok(())
 }
 
-fn assert_fitting_headers(
-    buffer: &Buffer,
-    area: Rect,
-    y: u16,
-    headers: &[&str],
-) -> anyhow::Result<()> {
-    let row = Rect::new(area.x, y, area.width, 1);
-    let starts = headers
-        .iter()
-        .map(|header| test_support::find_text_cell(buffer, row, header).context("Header position"))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let gap = 1;
-    for (index, whole) in ["Name", "Branch", "Tracked", "Sync"]
-        .into_iter()
-        .enumerate()
-    {
-        let end = if index == 3 {
-            area.right() - 2
+fn row_tokens(buffer: &Buffer, area: Rect, y: u16) -> anyhow::Result<Vec<(String, u16)>> {
+    let mut tokens: Vec<(String, u16)> = Vec::new();
+    let mut in_token = false;
+    for x in area.x + 1..area.right() - 1 {
+        let symbol = buffer[(x, y)].symbol();
+        if symbol.trim().is_empty() {
+            in_token = false;
         } else {
-            starts[index + 1].0 - gap
-        };
-        let available = usize::from(end - starts[index].0);
-        if whole.width() <= available {
-            assert_eq!(headers[index], whole, "{available}: {headers:?}");
+            if !in_token {
+                tokens.push((String::new(), x));
+                in_token = true;
+            }
+            tokens
+                .last_mut()
+                .context("Current token")?
+                .0
+                .push_str(symbol);
         }
     }
-    Ok(())
+    Ok(tokens)
 }
 
 pub(super) fn assert_shared_remote_columns(
@@ -93,31 +87,53 @@ pub(super) fn assert_shared_remote_columns(
     remote_header_y: u16,
     worktree_header_y: u16,
 ) -> anyhow::Result<()> {
-    let row_tokens = |y| -> anyhow::Result<Vec<(String, u16)>> {
-        let mut tokens: Vec<(String, u16)> = Vec::new();
-        let mut in_token = false;
-        for x in area.x + 1..area.right() - 1 {
-            let symbol = buffer[(x, y)].symbol();
-            if symbol.trim().is_empty() {
-                in_token = false;
-            } else {
-                if !in_token {
-                    tokens.push((String::new(), x));
-                    in_token = true;
-                }
-                tokens
-                    .last_mut()
-                    .context("Current token")?
-                    .0
-                    .push_str(symbol);
+    let remote_headers = row_tokens(buffer, area, remote_header_y)?;
+    let worktree_headers = row_tokens(buffer, area, worktree_header_y)?;
+    let remote_values = row_tokens(buffer, area, remote_header_y + 1)?;
+    let worktree_values = row_tokens(buffer, area, worktree_header_y + 1)?;
+    if worktree_headers.len() < 4 {
+        let expected: &[&str] = match worktree_headers.len() {
+            1 => &["Branch"],
+            2 => &["Branch", "Sync"],
+            3 => &["Name", "Branch", "Sync"],
+            _ => anyhow::bail!(
+                "unexpected worktree column count: {}",
+                worktree_headers.len()
+            ),
+        };
+        assert_eq!(
+            worktree_headers
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let remote_expected: &[&str] = match remote_headers.len() {
+            1 => &["Remote"],
+            2 => &["Remote", "Sync"],
+            3 => &["Remote", "Branch", "Sync"],
+            _ => anyhow::bail!("unexpected remote column count: {}", remote_headers.len()),
+        };
+        assert_eq!(
+            remote_headers
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            remote_expected
+        );
+        assert_eq!(remote_values.len(), remote_headers.len());
+        assert_eq!(worktree_values.len(), worktree_headers.len());
+        for label in ["Branch", "Sync"] {
+            if let (Some(remote), Some(worktree)) = (
+                remote_headers.iter().position(|(text, _)| text == label),
+                worktree_headers.iter().position(|(text, _)| text == label),
+            ) {
+                assert_eq!(remote_headers[remote].1, worktree_headers[worktree].1);
+                assert_eq!(remote_values[remote].1, worktree_values[worktree].1);
             }
         }
-        Ok(tokens)
-    };
-    let remote_headers = row_tokens(remote_header_y)?;
-    let worktree_headers = row_tokens(worktree_header_y)?;
-    let remote_values = row_tokens(remote_header_y + 1)?;
-    let worktree_values = row_tokens(worktree_header_y + 1)?;
+        return Ok(());
+    }
     for tokens in [&worktree_headers, &worktree_values] {
         assert_eq!(tokens.len(), 4, "{tokens:?}");
     }
@@ -180,15 +196,24 @@ pub(super) fn assert_fitted_column(
     let value_row = row_text(value_y);
     let headers: Vec<_> = header_row.split_whitespace().collect();
     let values: Vec<_> = value_row.split_whitespace().collect();
-    assert_eq!(headers.len(), 4, "{header_row}");
-    assert_eq!(values.len(), 4, "{value_row}");
+    assert!(!headers.is_empty(), "{header_row}");
+    assert!(
+        headers.iter().all(|header| !header.contains('…')),
+        "{header_row}"
+    );
+    assert_eq!(values.len(), headers.len(), "{value_row}");
     let area = Rect::new(buffer.area.x, header_y, buffer.area.width, 1);
     let start =
         test_support::find_text_cell(buffer, area, headers[column]).context("Column header")?;
-    let next =
-        test_support::find_text_cell(buffer, area, headers[column + 1]).context("Next header")?;
-    let gap = 1;
-    let width = usize::from(next.0 - start.0 - gap);
+    let end = if let Some(next) = headers.get(column + 1) {
+        test_support::find_text_cell(buffer, area, next)
+            .context("Next header")?
+            .0
+            - 1
+    } else {
+        buffer.area.right() - 2
+    };
+    let width = usize::from(end - start.0);
     let token = values[column];
     if whole.width() <= width {
         assert_eq!(token, whole, "{value_row}");
@@ -204,7 +229,8 @@ pub(super) fn assert_fitted_column(
 }
 
 #[test]
-fn worktrees_keep_all_columns_and_share_sync_columns_with_remotes() -> anyhow::Result<()> {
+fn worktrees_keep_whole_headers_and_share_visible_sync_columns_with_remotes() -> anyhow::Result<()>
+{
     for (width, pane_width) in [(80, 17), (95, 24)] {
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
@@ -261,7 +287,15 @@ fn worktrees_keep_all_columns_and_share_sync_columns_with_remotes() -> anyhow::R
         let remote_y = test_support::find_text_cell(&buffer, remote_area, "☑️")
             .context("Remote Sync")?
             .1;
-        for (worktree_value, remote_value) in [("a", "c"), ("b", "d"), ("☑️", "☑️")] {
+        for (label, worktree_value, remote_value) in [
+            ("Branch", "a", "c"),
+            ("Tracked", "b", "d"),
+            ("Sync", "☑️", "☑️"),
+        ] {
+            let remote_header = Rect::new(0, remotes.1 + 1, pane_width, 1);
+            if test_support::find_text_cell(&buffer, remote_header, label).is_none() {
+                continue;
+            }
             let worktree = test_support::find_text_cell(
                 &buffer,
                 Rect::new(0, worktree_y, pane_width, 1),
@@ -319,7 +353,7 @@ fn compact_worktree_tables_keep_both_blank_margins() -> anyhow::Result<()> {
 }
 
 #[test]
-fn compact_worktree_wide_branch_keeps_all_four_columns_and_whole_sync() -> anyhow::Result<()> {
+fn compact_worktree_tables_keep_wide_branch_text_and_whole_sync() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
@@ -348,16 +382,20 @@ fn compact_worktree_wide_branch_keeps_all_four_columns_and_whole_sync() -> anyho
     let header = text(title.1 + 1)?;
     let row = text(title.1 + 2)?;
     let values: Vec<_> = row.split_whitespace().collect();
-    assert_eq!(header.split_whitespace().count(), 4, "{header}");
-    assert_eq!(values.len(), 4, "{row}");
-    assert_eq!(values[1], "界界", "{row}");
-    assert_eq!(values[3], "──", "{row}");
+    assert_eq!(
+        header.split_whitespace().collect::<Vec<_>>(),
+        ["Branch", "Sync"],
+        "{header}"
+    );
+    assert_eq!(values.len(), 2, "{row}");
+    assert_eq!(values[0], "界界", "{row}");
+    assert_eq!(values[1], "──", "{row}");
     Ok(())
 }
 
 #[test]
-fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Result<()> {
-    for (window, pane_width) in [(80, 17), (95, 24)] {
+fn long_branches_keep_visible_values_whole_or_marked_in_both_tables() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 17), (95, 24), (160, 80)] {
         let tracked = if window == 80 { "ma" } else { "main" };
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
@@ -395,15 +433,33 @@ fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Res
             assert_shared_remote_columns(&buffer, area, remote.1 + 1, worktree.1 + 1)?;
             for section in [remote, worktree] {
                 let row = Rect::new(0, section.1 + 2, pane_width, 1);
-                test_support::find_text_cell(&buffer, row, tracked)
-                    .context("Whole short Tracked value")?;
+                let header = Rect::new(0, section.1 + 1, pane_width, 1);
+                let header_text: String = (1..pane_width - 1)
+                    .map(|x| buffer[(x, header.y)].symbol())
+                    .collect();
+                let headers: Vec<_> = header_text.split_whitespace().collect();
+                if headers.contains(&"Tracked") {
+                    test_support::find_text_cell(&buffer, row, tracked)
+                        .context("Whole short Tracked value")?;
+                } else {
+                    assert!(pane_width < 29, "{header_text}");
+                    assert!(
+                        !headers.iter().any(|label| label.contains('…')),
+                        "{header_text}"
+                    );
+                }
                 let text: String = (1..pane_width - 1)
                     .map(|x| buffer[(x, row.y)].symbol())
                     .collect();
                 let values: Vec<_> = text.split_whitespace().collect();
-                assert_eq!(values.len(), 4, "{text}");
-                assert!(values[1].ends_with('…'), "{text}");
-                assert_eq!(values[3], "──");
+                if let Some(branch) = headers.iter().position(|label| *label == "Branch") {
+                    assert!(
+                        values[branch] == "verify_a_very_long_branch"
+                            || values[branch].ends_with('…'),
+                        "{text}"
+                    );
+                }
+                assert_eq!(values.last(), Some(&"──"));
                 assert_eq!(buffer[(1, row.y)].symbol(), " ");
                 assert_eq!(buffer[(pane_width - 2, row.y)].symbol(), " ");
             }
@@ -420,13 +476,13 @@ fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Res
 }
 
 #[test]
-fn worktree_tracked_header_uses_a_spare_branch_cell_at_ninety_five_columns() -> anyhow::Result<()> {
-    for (pane_width, tracked_header) in [
-        (23, "Track…"),
-        (24, "Tracked"),
-        (27, "Tracked"),
-        (28, "Tracked"),
-        (29, "Tracked"),
+fn worktree_tables_drop_columns_before_cutting_headers() -> anyhow::Result<()> {
+    for (pane_width, expected) in [
+        (23, vec!["Name", "Branch", "Sync"]),
+        (24, vec!["Name", "Branch", "Sync"]),
+        (27, vec!["Name", "Branch", "Sync"]),
+        (28, vec!["Name", "Branch", "Tracked", "Sync"]),
+        (29, vec!["Name", "Branch", "Tracked", "Sync"]),
     ] {
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
@@ -455,22 +511,14 @@ fn worktree_tracked_header_uses_a_spare_branch_cell_at_ninety_five_columns() -> 
         let title = test_support::position(&buffer, "Worktrees")?;
         let row = Rect::new(0, title.1 + 1, pane_width, 1);
         test_support::find_text_cell(&buffer, row, "Branch").context("whole Branch header")?;
-        test_support::find_text_cell(&buffer, row, tracked_header)
-            .with_context(|| format!("{pane_width}: {:?}", test_support::rows(&buffer)))?;
-        if pane_width == 23 {
-            for labels in ["N…", "Branch", "Track…", "S…"].windows(2) {
-                let left =
-                    test_support::find_text_cell(&buffer, row, labels[0]).context("left header")?;
-                let right = test_support::find_text_cell(&buffer, row, labels[1])
-                    .context("right header")?;
-                assert_eq!(
-                    usize::from(right.0 - left.0),
-                    labels[0].width() + 1,
-                    "one gap, with no spare Branch cell: {:?}",
-                    test_support::rows(&buffer)
-                );
-            }
-        }
+        let header: String = (1..pane_width - 1)
+            .map(|x| buffer[(x, row.y)].symbol())
+            .collect();
+        assert_eq!(
+            header.split_whitespace().collect::<Vec<_>>(),
+            expected,
+            "{header}"
+        );
     }
     Ok(())
 }

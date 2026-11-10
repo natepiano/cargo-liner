@@ -12,9 +12,11 @@ use ratatui::style::Color;
 use super::ToastsRenderCtx;
 use super::test_support::TestApp;
 use crate::ColorMode;
+use crate::Hittable;
 use crate::PaneFocusState;
 use crate::Renderable;
 use crate::ToastActivation;
+use crate::ToastHit;
 use crate::ToastId;
 use crate::ToastStyle;
 use crate::Toasts;
@@ -132,9 +134,12 @@ fn timed_and_persistent_sentence_toasts_shrink_during_exit() -> Result<(), Box<d
 #[test]
 fn an_error_title_grows_before_it_uses_an_ellipsis() -> Result<(), Box<dyn Error>> {
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
-        for title in [
-            "crates.io unreachable",
-            "crates.io unreachable beyond this pane width",
+        for (area_width, title) in [
+            (32, "crates.io unreachable"),
+            (31, "crates.io unreachable"),
+            (31, "GitHub unreachable"),
+            (32, "crates.io unreachable beyond this pane width"),
+            (31, "crates.io unreachable beyond this pane width"),
         ] {
             let mut toasts = Toasts::<TestApp>::new();
             let id = toasts.push_persistent(
@@ -145,7 +150,7 @@ fn an_error_title_grows_before_it_uses_an_ellipsis() -> Result<(), Box<dyn Error
                 1,
             );
             let now = toasts.entries[0].created_at + Duration::from_secs(1);
-            let area = Rect::new(47, 23, 32, 5);
+            let area = Rect::new(79 - area_width, 23, area_width, 5);
             let buffer = draw(&mut toasts, now, mode, area, &[])?;
             let hit = toasts
                 .hits()
@@ -158,8 +163,12 @@ fn an_error_title_grows_before_it_uses_an_ellipsis() -> Result<(), Box<dyn Error
             if title == "crates.io unreachable" {
                 assert!(
                     title_row.contains("! crates.io unreachable [x]"),
-                    "{mode:?}: {title_row}"
+                    "{mode:?}, width={area_width}: {title_row}"
                 );
+            } else if title == "GitHub unreachable" {
+                assert!(title_row.contains("! GitHub unreachable"), "{title_row}");
+                assert!(title_row.contains("[x]"), "{title_row}");
+                assert!(!title_row.contains('…'), "{title_row}");
             } else {
                 assert!(title_row.contains("… [x]"), "{mode:?}: {title_row}");
             }
@@ -169,6 +178,24 @@ fn an_error_title_grows_before_it_uses_an_ellipsis() -> Result<(), Box<dyn Error
             );
             assert!(area.contains((hit.card_rect.left(), hit.card_rect.top()).into()));
             assert!(hit.card_rect.right() <= area.right());
+            if area_width == 32 || title == "GitHub unreachable" {
+                assert_eq!(hit.card_rect.width, area_width - 2, "{title_row}");
+            }
+            for (position, corner) in [
+                ((hit.card_rect.left(), hit.card_rect.top()), "┌"),
+                ((hit.card_rect.right() - 1, hit.card_rect.top()), "┐"),
+                ((hit.card_rect.left(), hit.card_rect.bottom() - 1), "└"),
+                ((hit.card_rect.right() - 1, hit.card_rect.bottom() - 1), "┘"),
+            ] {
+                assert_eq!(buffer[position].symbol(), corner, "{title_row}");
+            }
+            for x in hit.close_rect.left()..hit.close_rect.left() + 3 {
+                assert_eq!(
+                    toasts.hit_test_at((x, hit.close_rect.y).into()),
+                    Some(ToastHit::Close(id)),
+                    "{mode:?}, width={area_width}: {title_row}"
+                );
+            }
         }
     }
     Ok(())

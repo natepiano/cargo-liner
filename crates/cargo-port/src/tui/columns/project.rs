@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -20,14 +22,21 @@ use super::constants::COL_LINT;
 use super::constants::COL_MAIN;
 use super::constants::COL_NAME;
 use super::constants::COL_SYNC;
+use super::constants::COMPACT_DISK_MAX_WIDTH;
+use super::constants::COMPLETE_PROJECT_HEADERS_WIDTH;
+use super::constants::CUT_PROJECT_NAME_MIN_WIDTH;
+use super::constants::LINT_PROJECT_HEADER_RESERVE;
 use super::constants::MAIN_COMPARISON_VALUE_RESERVE;
+use super::constants::NARROW_PROJECT_WINDOWS;
 use super::constants::NUM_COLS;
+use super::constants::WHOLE_DETAIL_TITLES_WIDTH;
 use crate::ci::CiStatus;
 use crate::config::LintIndicator;
 use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use crate::tui::panes;
 use crate::tui::render;
 use crate::tui::theme_roles;
 
@@ -36,6 +45,14 @@ pub(in crate::tui) const PROJECTS_HEADER: &str = "   Projects";
 // Imported `COL_*` constants index the `ColumnDef` array returned by `column_defs`.
 
 // `ColumnWidth`, `Align` and `HeaderMode` describe each `ColumnDef` layout policy.
+
+/// Set the Projects width and preserve space for the Lint column.
+#[derive(Clone, Copy)]
+pub(in crate::tui) struct ProjectColumnLayout {
+    pub preferred_width: u16,
+    pub minimum_width:   u16,
+    pub lint_column:     LintColumnStatus,
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum ColumnWidth {
@@ -327,7 +344,14 @@ pub(in crate::tui) struct RowCells {
 pub(in crate::tui) struct ProjectListWidths {
     inner:          ColumnWidths,
     lint_column:    LintColumnStatus,
+    disk_format:    DiskFormat,
     pub generation: u64,
+}
+
+/// Keep whole storage units in narrow windows and decimals elsewhere.
+enum DiskFormat {
+    Decimal,
+    Whole,
 }
 
 impl Default for ProjectListWidths {
@@ -341,6 +365,7 @@ impl ProjectListWidths {
         Self {
             inner: ColumnWidths::new(project_list_specs(lint_column)),
             lint_column,
+            disk_format: DiskFormat::Decimal,
             generation: u64::MAX,
         }
     }
@@ -377,9 +402,24 @@ impl ProjectListWidths {
         Self::columns_total(&widths, &defs)
     }
 
-    /// Reserve two 15-cell detail panes when the window can hold them.
-    pub(in crate::tui) const fn pane_width_limit(window_width: u16) -> u16 {
-        if window_width > 30 {
+    /// Keep complete headers while reserving space for the detail titles.
+    pub(in crate::tui) const fn pane_width_limit(
+        window_width: u16,
+        lint_column: LintColumnStatus,
+    ) -> u16 {
+        if window_width >= *NARROW_PROJECT_WINDOWS.start() {
+            let detail_reserve = window_width.saturating_sub(WHOLE_DETAIL_TITLES_WIDTH);
+            let header_floor = COMPLETE_PROJECT_HEADERS_WIDTH
+                + match lint_column {
+                    LintColumnStatus::Enabled => LINT_PROJECT_HEADER_RESERVE,
+                    LintColumnStatus::Hidden => 0,
+                };
+            if detail_reserve < header_floor {
+                header_floor
+            } else {
+                detail_reserve
+            }
+        } else if window_width > 30 {
             window_width - 30
         } else {
             window_width
@@ -388,13 +428,30 @@ impl ProjectListWidths {
 
     /// Fit the measured columns to the available row width.
     pub(in crate::tui) fn fitted(&self, available: usize, window_width: u16) -> Self {
-        let available = available.min(usize::from(Self::pane_width_limit(window_width)));
+        let available = available.min(usize::from(Self::pane_width_limit(
+            window_width,
+            self.lint_column,
+        )));
         let defs = column_defs(self.lint_column);
         let mut widths = std::array::from_fn::<_, NUM_COLS, _>(|index| self.get(index));
+        let narrow = NARROW_PROJECT_WINDOWS.contains(&window_width);
+        if narrow {
+            widths[COL_DISK] = widths[COL_DISK].min(COMPACT_DISK_MAX_WIDTH);
+        }
         let excess = Self::columns_total(&widths, &defs).saturating_sub(available);
-        widths[COL_NAME] = widths[COL_NAME]
-            .saturating_sub(excess)
-            .max(name_heading_floor(&defs));
+        let name_floor = if narrow && self.lint_column == LintColumnStatus::Enabled {
+            CUT_PROJECT_NAME_MIN_WIDTH
+        } else {
+            name_heading_floor(&defs)
+        };
+        widths[COL_NAME] = widths[COL_NAME].saturating_sub(excess).max(name_floor);
+        if NARROW_PROJECT_WINDOWS.contains(&window_width) {
+            for index in [COL_MAIN, COL_SYNC, COL_DISK] {
+                let excess = Self::columns_total(&widths, &defs).saturating_sub(available);
+                let removable = widths[index].saturating_sub(defs[index].seed_width());
+                widths[index] -= excess.min(removable);
+            }
+        }
         for index in [COL_MAIN, COL_SYNC, COL_GIT_PATH, COL_LANG, COL_CI, COL_LINT] {
             if Self::columns_total(&widths, &defs) <= available {
                 break;
@@ -414,11 +471,23 @@ impl ProjectListWidths {
                     .collect(),
             ),
             lint_column: self.lint_column,
+            disk_format: if narrow {
+                DiskFormat::Whole
+            } else {
+                DiskFormat::Decimal
+            },
             generation:  self.generation,
         }
     }
 
     pub(in crate::tui) const fn lint_column_status(&self) -> LintColumnStatus { self.lint_column }
+
+    pub(in crate::tui) fn format_disk_bytes(&self, bytes: u64) -> String {
+        match self.disk_format {
+            DiskFormat::Decimal => render::format_bytes(bytes),
+            DiskFormat::Whole => render::format_bytes_compact(bytes),
+        }
+    }
 }
 
 /// Keep the Projects heading and the cells that the Lint heading borrows.
@@ -467,6 +536,41 @@ fn pad_center(s: &str, target: usize) -> String {
     format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
 }
 
+/// Keep the first visible grapheme and its ellipsis inside a cut name.
+fn minimum_cut_name_width(name: &str) -> usize {
+    let name = name.find(" [").map_or(name, |start| &name[start + 1..]);
+    let label = Span::raw(name);
+    let mut graphemes = label.styled_graphemes(Style::default());
+    let first = graphemes
+        .next()
+        .map_or(0, |value| display_width(value.symbol));
+    let letter = if name.starts_with('[') {
+        graphemes
+            .next()
+            .map_or(0, |value| display_width(value.symbol))
+    } else {
+        0
+    };
+    first + letter + 1
+}
+
+/// Keep the mark styles when the complete mark fits.
+fn append_name_mark(spans: &mut Vec<Span<'static>>, segments: &[StyledSegment], mark_start: usize) {
+    let mut byte_offset = 0;
+    for segment in segments {
+        let start = mark_start
+            .saturating_sub(byte_offset)
+            .min(segment.text.len());
+        if start < segment.text.len() {
+            spans.push(Span::styled(
+                segment.text[start..].to_string(),
+                segment.style,
+            ));
+        }
+        byte_offset += segment.text.len();
+    }
+}
+
 /// Keep the prefix and the worktree mark outside the shortened name.
 fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'static>> {
     let fallback = [StyledSegment {
@@ -484,11 +588,19 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
     let mark_start = mark_start
         .filter(|start| display_width(&text[*start..]) < width)
         .unwrap_or(text.len());
-    let mark = &text[mark_start..];
     let name = &text[..mark_start];
+    let letter_reserve = minimum_cut_name_width(name);
+    let original_mark = &text[mark_start..];
+    let mark = if original_mark.starts_with(" 🌲:")
+        && display_width(prefix) + letter_reserve + display_width(original_mark) > width
+    {
+        " 🌲"
+    } else {
+        original_mark
+    };
     let prefix = render::truncate_with_ellipsis(
         prefix,
-        width.saturating_sub(display_width(mark) + usize::from(!name.is_empty())),
+        width.saturating_sub(display_width(mark) + display_width(name).min(letter_reserve)),
         "",
     );
     let available = width.saturating_sub(display_width(&prefix) + display_width(mark));
@@ -532,18 +644,10 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
     if cut && available > 0 {
         spans.push(Span::styled("…", cell.style));
     }
-    let mut byte_offset = 0;
-    for segment in segments {
-        let start = mark_start
-            .saturating_sub(byte_offset)
-            .min(segment.text.len());
-        if start < segment.text.len() {
-            spans.push(Span::styled(
-                segment.text[start..].to_string(),
-                segment.style,
-            ));
-        }
-        byte_offset += segment.text.len();
+    if mark == original_mark {
+        append_name_mark(&mut spans, segments, mark_start);
+    } else {
+        spans.push(Span::styled(mark.to_string(), cell.style));
     }
     let padding = available.saturating_sub(display_width(name));
     spans.push(Span::styled(" ".repeat(padding), cell.style));
@@ -598,14 +702,29 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             continue;
         }
 
-        let content = if (i == COL_SYNC || i == COL_MAIN) && cell.text == IN_SYNC {
-            let padded = pad_left(&cell.text, col_width);
+        let content = if i == COL_SYNC || i == COL_MAIN {
+            let value = if display_width(&cell.text) > col_width {
+                Cow::Owned(panes::fit_sync_text(&cell.text, col_width))
+            } else {
+                Cow::Borrowed(cell.text.as_str())
+            };
+            let padded = match align {
+                _ if cell.text == IN_SYNC => pad_left(&value, col_width),
+                Align::Left => pad_right(&value, col_width),
+                Align::Right => pad_left(&value, col_width),
+                Align::Center => pad_center(&value, col_width),
+            };
             format!("{}{padded}", " ".repeat(defs[i].gap))
         } else {
+            let value = if i == COL_DISK && display_width(&cell.text) > col_width {
+                Cow::Owned(render::truncate_with_ellipsis(&cell.text, col_width, "…"))
+            } else {
+                Cow::Borrowed(cell.text.as_str())
+            };
             let padded = match align {
-                Align::Left => pad_right(&cell.text, col_width),
-                Align::Right => pad_left(&cell.text, col_width),
-                Align::Center => pad_center(&cell.text, col_width),
+                Align::Left => pad_right(&value, col_width),
+                Align::Right => pad_left(&value, col_width),
+                Align::Center => pad_center(&value, col_width),
             };
             format!("{}{padded}", " ".repeat(defs[i].gap))
         };
@@ -677,6 +796,16 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
             defs[i].gap + widths.get(i)
         }
     });
+
+    let heading_width = name_heading_floor(&defs) + usize::from(widths.get(COL_LINT) > 0);
+    let mut needed = heading_width.saturating_sub(widths.get(COL_NAME));
+    for index in (COL_CI..NUM_COLS).rev() {
+        let floor = defs[index].gap + display_width(defs[index].header_max());
+        let borrowed = slot_widths[index].saturating_sub(floor).min(needed);
+        slot_widths[index] -= borrowed;
+        slot_widths[COL_NAME] += borrowed;
+        needed -= borrowed;
+    }
 
     for (i, def) in defs.iter().enumerate() {
         if widths.get(i) == 0 || def.header_mode != HeaderMode::BorrowLeft {
@@ -1028,7 +1157,10 @@ pub(in crate::tui) fn build_available_line(
         let disk_cell = format!(
             "{}{}",
             " ".repeat(defs[COL_DISK].gap),
-            pad_left(disk, disk_width)
+            pad_left(
+                &render::truncate_with_ellipsis(disk, disk_width, "…"),
+                disk_width
+            )
         );
         spans.push(Span::styled(disk_cell, style));
     }
@@ -1433,6 +1565,7 @@ mod tests {
                     .collect(),
             ),
             lint_column: LintColumnStatus::Hidden,
+            disk_format: DiskFormat::Decimal,
             generation:  0,
         };
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 1))?;

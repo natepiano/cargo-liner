@@ -4,6 +4,8 @@ use tui_pane::ColorMode;
 use super::constants::SOURCE_HEADER;
 use super::render;
 use crate::tui::columns;
+use crate::tui::columns::LintColumnStatus;
+use crate::tui::columns::ProjectColumnLayout;
 use crate::tui::panes;
 use crate::tui::panes::BottomRow;
 use crate::tui::panes::PaneId;
@@ -149,8 +151,11 @@ fn empty_targets_keep_the_project_column_at_its_measured_width() {
     for project_width in [66, 69, 80] {
         let layout = panes::resolve_layout(
             ratatui::layout::Rect::new(0, 0, 160, 44),
-            project_width,
-            46,
+            ProjectColumnLayout {
+                preferred_width: project_width,
+                minimum_width:   46,
+                lint_column:     LintColumnStatus::Hidden,
+            },
             32,
             BottomRow::Diagnostics,
             14,
@@ -188,8 +193,11 @@ fn wide_layout_reserves_target_names_before_project_names_grow() -> anyhow::Resu
             let preferred = app.panes.targets.preferred_width();
             let layout = panes::resolve_layout(
                 ratatui::layout::Rect::new(0, 0, 160, 44),
-                project_width,
-                46,
+                ProjectColumnLayout {
+                    preferred_width: project_width,
+                    minimum_width:   46,
+                    lint_column:     app.config.current().lint.enabled.into(),
+                },
                 32,
                 BottomRow::Diagnostics,
                 14,

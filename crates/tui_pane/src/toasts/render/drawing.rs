@@ -18,6 +18,7 @@ use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
+use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::body;
 use crate::toasts::manager;
@@ -116,6 +117,12 @@ fn render_toasts(
         .map(card::title_card_width)
         .fold(manager::toast_card_width(settings, area.width), u16::max)
         .min(area.width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2)));
+    let width = visible_toasts
+        .iter()
+        .filter(|toast| toast.style() != ToastStyle::Normal)
+        .map(card::minimum_title_card_width)
+        .filter(|required| *required <= area.width.saturating_sub(TOAST_SIDE_GAP))
+        .fold(width, u16::max);
     for toast in &mut complete_toasts {
         if toast.exit_state == ToastExitState::Visible {
             toast.min_height = toast.min_height.max(first_sentence_height(toast, width));

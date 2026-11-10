@@ -139,7 +139,7 @@ fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
                 &buffer,
                 worktrees.1 + 1,
                 worktrees.1 + 2 + u16::try_from(offset)?,
-                1,
+                0,
                 branch,
             )?;
         }
@@ -601,7 +601,7 @@ fn worktree_branches_keep_an_ellipsis_at_medium_widths() -> anyhow::Result<()> {
             let row = &rows[usize::from(y)];
             let values: Vec<_> = row.trim_matches('│').split_whitespace().collect();
             assert!(values[1].ends_with('…'), "{row}");
-            assert_eq!(&values[2..], &["──", "──"], "{row}");
+            assert_eq!(&values[2..], &["──"], "{row}");
             assert_eq!(buffer[(width - 2, y)].symbol(), " ");
         }
     }

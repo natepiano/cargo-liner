@@ -439,6 +439,14 @@ fn row_metadata_state<'a>(
 pub(in crate::tui) struct ProjectRowPresentation {
     cells:           RowCells,
     name_decoration: NameDecoration,
+    disk_size:       ProjectDiskSize,
+}
+
+/// Preserve status text when a row has no displayed storage measurement.
+#[derive(PartialEq)]
+enum ProjectDiskSize {
+    Measured(u64),
+    StatusText,
 }
 
 #[derive(PartialEq)]
@@ -459,7 +467,15 @@ impl ProjectRowPresentation {
         Self {
             cells,
             name_decoration: NameDecoration::Plain,
+            disk_size: ProjectDiskSize::StatusText,
         }
+    }
+
+    fn with_disk_bytes(mut self, bytes: Option<u64>) -> Self {
+        if self.cells.lifecycle == RowLifecycle::Present {
+            self.disk_size = bytes.map_or(ProjectDiskSize::StatusText, ProjectDiskSize::Measured);
+        }
+        self
     }
 
     pub(in crate::tui) fn into_width_input(self) -> ProjectRowWidthInput {
@@ -486,7 +502,10 @@ impl ProjectRowPresentation {
         }
     }
 
-    fn into_item(self, widths: &ProjectListWidths, selection: Style) -> ListItem<'static> {
+    fn into_item(mut self, widths: &ProjectListWidths, selection: Style) -> ListItem<'static> {
+        if let ProjectDiskSize::Measured(bytes) = self.disk_size {
+            self.cells.cells[columns::COL_DISK].text = widths.format_disk_bytes(bytes);
+        }
         let mut line = columns::row_to_line(&self.cells, widths);
         if self.name_decoration == NameDecoration::MetadataError {
             // Preserve deletion strike-through while keeping the error role
@@ -526,6 +545,7 @@ fn project_row_item(
     ProjectRowPresentation {
         cells,
         name_decoration,
+        disk_size: ProjectDiskSize::StatusText,
     }
 }
 
@@ -588,7 +608,7 @@ fn render_root_item(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health,
     });
-    project_row_item(ctx, item.path(), row, DiscoveryRowKind::Root)
+    project_row_item(ctx, item.path(), row, DiscoveryRowKind::Root).with_disk_bytes(disk_bytes)
 }
 
 /// Build a `ListItem` for a child project (workspace member, vendored crate,
@@ -672,7 +692,7 @@ fn render_child_item<P: project::ProjectFields>(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health: project.worktree_health(),
     });
-    project_row_item(ctx, path, row, DiscoveryRowKind::PathOnly)
+    project_row_item(ctx, path, row, DiscoveryRowKind::PathOnly).with_disk_bytes(disk_bytes)
 }
 
 fn render_worktree_entry(
@@ -751,6 +771,7 @@ fn render_worktree_entry(
         worktree_health,
     });
     project_row_item(ctx, worktree_path, row, DiscoveryRowKind::WorktreeEntry)
+        .with_disk_bytes(disk_bytes)
 }
 
 fn worktree_entry_disk_bytes(item: &RootItem, wi: usize) -> Option<u64> {
@@ -1023,6 +1044,7 @@ fn render_path_only_entry(
         worktree_health: entry.info().worktree_health,
     });
     project_row_item(ctx, path, row, DiscoveryRowKind::PathOnly)
+        .with_disk_bytes(entry.info().disk.total())
 }
 
 fn render_wt_vendored_item(

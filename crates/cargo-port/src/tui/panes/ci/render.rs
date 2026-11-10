@@ -9,6 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Cell;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
@@ -20,6 +21,7 @@ use tui_pane::label_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
+use super::data::CiEmptyState;
 use crate::ci;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
@@ -36,6 +38,7 @@ use crate::tui::panes::constants::CI_JOB_LABEL_MIN_WIDTH;
 use crate::tui::panes::constants::CI_STATUS_GAP_WIDTH;
 use crate::tui::panes::constants::OTHER_JOBS_HEADER;
 use crate::tui::panes::pane_data;
+use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::Ci;
@@ -694,6 +697,37 @@ fn paint_ci_row_selections(
     }
 }
 
+fn render_empty_ci(frame: &mut Frame, area: Rect, data: &CiData) -> PaneFrameChrome {
+    let title = empty_ci_title(data);
+    let text = title.trim();
+    let (message, required_width) = text.strip_prefix("CI runs — ").map_or_else(
+        || {
+            let fixed_words = match data.empty_state {
+                CiEmptyState::NoRunsForBranch(_) => "No CI runs for branch",
+                _ => text,
+            };
+            (text, fixed_words.width())
+        },
+        |message| (message, "CI runs — ".width() + 2),
+    );
+    if required_width > usize::from(area.width.saturating_sub(4)) {
+        let inner = tui_pane::frame_inner(area);
+        let lines = support::word_wrap(message, usize::from(inner.width.saturating_sub(2)));
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .map(|line| Line::from(format!(" {line}")))
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().fg(label_color())),
+            inner,
+        );
+        return empty_ci_chrome(" CI runs ");
+    }
+    empty_ci_chrome(&title)
+}
+
 pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -701,15 +735,18 @@ pub fn render_ci_pane_body(
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let mode = pane_render_ctx.color_mode;
-    let Some(ci_data) = pane.content().cloned() else {
-        return empty_ci_chrome(" No CI runs ");
-    };
+    let ci_data = pane.content().cloned().unwrap_or_else(|| CiData {
+        runs:           Vec::new(),
+        mode_label:     None,
+        current_branch: None,
+        empty_state:    CiEmptyState::NoRuns,
+    });
 
     if !ci_data.has_runs() {
         let viewport = &mut pane.viewport;
         viewport.set_len(0);
         viewport.set_content_area(Rect::ZERO);
-        return empty_ci_chrome(&empty_ci_title(&ci_data));
+        return render_empty_ci(frame, area, &ci_data);
     }
 
     let ci_focused = pane.focus.is_focused();
@@ -928,7 +965,7 @@ fn ci_widths_for_mode(
             Constraint::Length(status),
         ]);
     }
-    if all || data.mode_label.as_deref() == Some("branch") {
+    if all || data.mode_label.as_deref() == Some("branch") || widths.len() < cols.len() + 4 {
         if width < label_width("Commit").saturating_add(status) {
             return CiTableLayout::StatusSummary(vec![Constraint::Length(status)]);
         }
@@ -1422,6 +1459,58 @@ mod margin_title_tests {
                 if branch {
                     assert!(title.contains('…'), "{title}");
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_empty_ci_titles_move_the_message_into_the_body() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            app.framework.color_mode = mode;
+            for (width, state) in [
+                (15, CiEmptyState::Fetching),
+                (15, CiEmptyState::Loading),
+                (15, CiEmptyState::NotGitRepo),
+                (15, CiEmptyState::RequiresGithubRemote),
+                (15, CiEmptyState::Unreadable),
+                (13, CiEmptyState::Fetching),
+                (13, CiEmptyState::Loading),
+                (13, CiEmptyState::NotGitRepo),
+                (13, CiEmptyState::RequiresGithubRemote),
+                (13, CiEmptyState::Unreadable),
+                (13, CiEmptyState::NoRuns),
+                (13, CiEmptyState::NoWorkflowConfigured),
+                (13, CiEmptyState::NoRunsForBranch("fleet".to_string())),
+            ] {
+                let title = state.title();
+                let message = title
+                    .trim()
+                    .strip_prefix("CI runs — ")
+                    .unwrap_or_else(|| title.trim())
+                    .to_string();
+                app.ci.set_content(CiData {
+                    runs:           Vec::new(),
+                    mode_label:     None,
+                    current_branch: None,
+                    empty_state:    state,
+                });
+                let buffer =
+                    test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, 60, width)?;
+                let rows = test_support::rows(&buffer);
+                assert!(rows[0].contains(" CI runs "), "{rows:?}");
+                assert!(!rows[0].contains('…'), "{rows:?}");
+                let body = rows[1..rows.len() - 1]
+                    .iter()
+                    .map(|row| row.trim_matches(['│', '┃', ' ']))
+                    .filter(|row| !row.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert_eq!(
+                    body.split_whitespace().collect::<String>(),
+                    message.split_whitespace().collect::<String>()
+                );
             }
         }
         Ok(())

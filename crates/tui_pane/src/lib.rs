@@ -441,6 +441,7 @@ pub use pane::PaneRenderStyles;
 pub use pane::PaneSelectionState;
 pub use pane::PaneTitleCount;
 pub use pane::PaneTitleGroup;
+pub use pane::PopupBorder;
 pub use pane::PopupFrame;
 pub use pane::RenderFocus;
 pub use pane::RuleTitle;

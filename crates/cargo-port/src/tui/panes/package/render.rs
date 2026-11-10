@@ -336,17 +336,26 @@ fn stats_label_width(data: &PackageData) -> u16 {
 pub(in crate::tui::panes) fn package_lower_metadata_height(
     data: &PackageData,
     rows: &[PackageRow],
+    inner_width: u16,
 ) -> usize {
     let metadata_line_count = rows
         .iter()
         .filter(|row| {
             !matches!(
                 row,
-                PackageRow::Description | PackageRow::Structure(_) | PackageRow::Tests(_)
+                PackageRow::Description
+                    | PackageRow::Structure(_)
+                    | PackageRow::Tests(_)
+                    | PackageRow::CratesIo(_)
             )
         })
         .count();
-    metadata_line_count.max(stats_column_line_count(data))
+    let statistics = stats_column_line_count(data, inner_width);
+    if inner_width < MIN_TWO_COLUMN_INNER_WIDTH {
+        metadata_line_count + statistics
+    } else {
+        metadata_line_count.max(statistics)
+    }
 }
 
 /// Total vertical rows the Package pane's content occupies: the synced
@@ -366,21 +375,48 @@ pub(in crate::tui::panes) fn package_content_height(
 /// (when present) the Tests section and the crates.io section, each
 /// preceded by a blank spacer when a section above it has rows, plus its
 /// own title rule.
-const fn stats_column_line_count(data: &PackageData) -> usize {
+fn stats_column_line_count(data: &PackageData, inner_width: u16) -> usize {
+    if inner_width < MIN_TWO_COLUMN_INNER_WIDTH {
+        let heading_rows = |heading: &str| {
+            support::word_wrap(heading, usize::from(inner_width.saturating_sub(2))).len()
+        };
+        let count_section = |heading: &str, rows: &[(&str, usize)]| {
+            if rows.is_empty() {
+                0
+            } else {
+                heading_rows(heading)
+                    + rows
+                        .iter()
+                        .map(|(label, count)| {
+                            inline_stat_height(label, &count.to_string(), inner_width)
+                        })
+                        .sum::<usize>()
+            }
+        };
+        let crates_io = if data.crates_io_rows.is_empty() {
+            0
+        } else {
+            heading_rows("crates.io")
+                + data
+                    .crates_io_rows
+                    .iter()
+                    .map(|(label, value)| inline_stat_height(label, value, inner_width))
+                    .sum::<usize>()
+        };
+        return count_section("Structure", &data.stats_rows)
+            + count_section("Tests", &data.test_rows)
+            + crates_io;
+    }
     let tests = if data.test_rows.is_empty() {
         0
     } else {
-        let spacer = if data.stats_rows.is_empty() { 0 } else { 1 };
+        let spacer = usize::from(!data.stats_rows.is_empty());
         spacer + 1 + data.test_rows.len()
     };
     let crates_io = if data.crates_io_rows.is_empty() {
         0
     } else {
-        let spacer = if data.stats_rows.is_empty() && data.test_rows.is_empty() {
-            0
-        } else {
-            1
-        };
+        let spacer = usize::from(!(data.stats_rows.is_empty() && data.test_rows.is_empty()));
         spacer + 1 + data.crates_io_rows.len()
     };
     data.stats_rows.len() + tests + crates_io
@@ -458,11 +494,12 @@ fn render_column_inner(
     let mut repeated_headers = Vec::new();
     let label_width = package_row_label_width(rows).min(usize::from(area.width).saturating_sub(3));
     for (i, row) in rows.iter().enumerate() {
-        match row {
+        let statistic = match row {
             PackageRow::Description => {
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = 0;
                 }
+                continue;
             },
             PackageRow::Field(field) => {
                 let row_start = lines.len();
@@ -479,46 +516,13 @@ fn render_column_inner(
                     height:  lines.len() - row_start,
                 });
                 row_line_ys.extend((row_start..lines.len()).map(|y| (i, y)));
+                continue;
             },
-            PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
-                if matches!(ctx.statistics_layout, StatisticsLayout::Stacked) {
-                    if matches!(
-                        row,
-                        PackageRow::Structure(0) | PackageRow::Tests(0) | PackageRow::CratesIo(0)
-                    ) {
-                        header_starts.push(lines.len());
-                    }
-                    append_inline_stat(&mut lines, ctx, *row, area.width);
-                    let start = lines.len().saturating_sub(1);
-                    if let Some(&start_y) = header_starts.last()
-                        && start_y < start
-                        && matches!(
-                            row,
-                            PackageRow::Structure(0)
-                                | PackageRow::Tests(0)
-                                | PackageRow::CratesIo(0)
-                        )
-                    {
-                        repeated_headers.push(VisualRowSpan {
-                            start_y,
-                            height: start - start_y,
-                        });
-                    }
-                    field_spans.push(VisualRowSpan {
-                        start_y: start,
-                        height:  1,
-                    });
-                    row_line_ys.push((i, start));
-                    if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-                        focused_output_line = start;
-                    }
-                } else if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-                    focused_output_line = lines.len().saturating_sub(1);
-                }
-            },
+            PackageRow::Structure(index) => PackageStatisticRow::Structure(*index),
+            PackageRow::Tests(index) => PackageStatisticRow::Tests(*index),
+            PackageRow::CratesIo(index) => PackageStatisticRow::CratesIo(*index),
             PackageRow::Section(section) => {
-                // For `PackageSection::PrimaryPackage` and `PrimaryWorkspace`, push a blank `Line`
-                // to separate that block from the Worktree Group Summary above.
+                // Separate primary package and workspace sections from the worktree group summary.
                 if matches!(
                     section,
                     PackageSection::PrimaryPackage | PackageSection::PrimaryWorkspace
@@ -527,7 +531,31 @@ fn render_column_inner(
                 }
                 header_starts.push(lines.len());
                 append_package_heading(&mut lines, section.label(), area.width, ctx);
+                continue;
             },
+        };
+        if matches!(ctx.statistics_layout, StatisticsLayout::Stacked) {
+            if starts_statistics_section(*row) {
+                header_starts.push(lines.len());
+            }
+            let span = append_inline_stat(&mut lines, ctx, statistic, area.width);
+            let start = span.start_y;
+            if let Some(&start_y) = header_starts.last()
+                && start_y < start
+                && starts_statistics_section(*row)
+            {
+                repeated_headers.push(VisualRowSpan {
+                    start_y,
+                    height: start - start_y,
+                });
+            }
+            row_line_ys.extend((start..start + span.height).map(|y| (i, y)));
+            field_spans.push(span);
+            if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+                focused_output_line = start;
+            }
+        } else if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+            focused_output_line = lines.len().saturating_sub(1);
         }
     }
 
@@ -566,37 +594,63 @@ fn draw_package_column(
     }
 }
 
+const fn starts_statistics_section(row: PackageRow) -> bool {
+    matches!(
+        row,
+        PackageRow::Structure(0) | PackageRow::Tests(0) | PackageRow::CratesIo(0)
+    )
+}
+
+/// Identify a row within one Package statistics section.
+#[derive(Clone, Copy)]
+enum PackageStatisticRow {
+    Structure(usize),
+    Tests(usize),
+    CratesIo(usize),
+}
+
 fn append_inline_stat(
     lines: &mut Vec<Line<'static>>,
     ctx: &PackageRenderCtx<'_>,
-    row: PackageRow,
+    row: PackageStatisticRow,
     width: u16,
-) {
+) -> VisualRowSpan {
     let (heading, index, label, value) = match row {
-        PackageRow::Structure(index) => {
+        PackageStatisticRow::Structure(index) => {
             let (label, value) = ctx.data.stats_rows[index];
             ("Structure", index, label, value.to_string())
         },
-        PackageRow::Tests(index) => {
+        PackageStatisticRow::Tests(index) => {
             let (label, value) = ctx.data.test_rows[index];
             ("Tests", index, label, value.to_string())
         },
-        PackageRow::CratesIo(index) => {
+        PackageStatisticRow::CratesIo(index) => {
             let (label, value) = &ctx.data.crates_io_rows[index];
             ("crates.io", index, *label, value.clone())
         },
-        _ => return,
     };
     if index == 0 {
         append_package_heading(lines, heading, width, ctx);
     }
+    let start_y = lines.len();
     let available = usize::from(width.saturating_sub(3));
     let label = if label.is_empty() { "Total" } else { label };
+    if inline_stat_height(label, &value, width) == 2 {
+        let value_width = available.saturating_add(1);
+        lines.push(Line::from(format!(" {label}")));
+        lines.push(Line::from(format!(" {value:>value_width$} ")));
+        return VisualRowSpan { start_y, height: 2 };
+    }
     let label_width = available.saturating_sub(value.width());
-    let label = render::truncate_with_ellipsis(label, label_width, "…");
     let padding = " ".repeat(label_width.saturating_sub(label.width()));
     let text = format!(" {label}{padding} {value} ");
     lines.push(Line::from(text));
+    VisualRowSpan { start_y, height: 1 }
+}
+
+fn inline_stat_height(label: &str, value: &str, width: u16) -> usize {
+    let label = if label.is_empty() { "Total" } else { label };
+    1 + usize::from(label.width() + value.width() > usize::from(width.saturating_sub(3)))
 }
 
 fn append_package_heading(
@@ -826,6 +880,16 @@ fn push_wrapped_package_field_lines(
 }
 
 fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &PackageFieldRender) {
+    let prefix = package_field_prefix(render);
+    let available = render.area_width.saturating_sub(prefix.width() + 1);
+    let value = if render.field == DetailField::Lint
+        && render.value.width() > available
+        && render.value.starts_with(LINT_NO_LOG)
+    {
+        render.value.trim_start()
+    } else {
+        &render.value
+    };
     let separate_value = render.area_width <= support::NARROW_FIELD_INNER_WIDTH
         || matches!(
             render.field,
@@ -836,8 +900,8 @@ fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &Packa
                 | DetailField::DiskOutOfTreeTarget
         );
     lines.extend(support::field_value_lines(
-        package_field_prefix(render),
-        &render.value,
+        prefix,
+        value,
         render.area_width,
         render.label_style,
         render.value_style,
@@ -858,11 +922,18 @@ fn package_field_prefix(render: &PackageFieldRender) -> String {
 
 fn package_field_label_width(render: &PackageFieldRender) -> usize {
     let label_width = render.label_width.min(render.area_width.saturating_sub(3));
+    let value_width = render.value.trim_start().width();
     match render.field {
         DetailField::Path => label_width.min(render.area_width.saturating_sub(PATH_VALUE_RESERVE)),
-        DetailField::Ci => label_width
-            .min(render.area_width.saturating_sub(render.value.width() + 3))
-            .max(render.label.trim().width()),
+        DetailField::Disk
+        | DetailField::DiskTarget
+        | DetailField::DiskNonTarget
+        | DetailField::DiskOutOfTreeTarget => label_width,
+        _ if render.area_width > support::NARROW_FIELD_INNER_WIDTH
+            && render.label.trim().width() + value_width + 3 <= render.area_width =>
+        {
+            label_width.min(render.area_width.saturating_sub(value_width + 3))
+        },
         _ => label_width,
     }
 }
@@ -969,20 +1040,20 @@ pub(super) fn render_package_pane_body(
 ) -> PaneFrameChrome {
     let mode = ctx.color_mode;
     let pane_focus_state = pane.focus.pane_focus_state;
-    let PaneRenderCtx {
-        animation_elapsed,
-        config,
-        synced_description_height,
-        ..
-    } = ctx;
-    let lint_mode = LintRenderMode::from(config.current().lint.enabled.is_enabled());
+    let lint_mode = LintRenderMode::from(ctx.config.current().lint.enabled.is_enabled());
 
     let Some(pkg_data) = pane.content().cloned() else {
         return render_no_project_selected(frame, area, pane);
     };
 
     let rows = panes::package_rows_from_data(&pkg_data);
-    sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
+    sync_package_viewport(
+        pane,
+        &pkg_data,
+        &rows,
+        ctx.synced_description_height,
+        area.width.saturating_sub(2),
+    );
     let mut chrome = package_chrome(&pkg_data, pane_focus_state);
     chrome.title = fit_package_title(&pkg_data, usize::from(area.width.saturating_sub(2)));
     let pane_inner = tui_pane::frame_inner(area);
@@ -1003,7 +1074,7 @@ pub(super) fn render_package_pane_body(
         pane: &pane.viewport,
         focus: pane_focus_state,
         styles,
-        synced_description_height: *synced_description_height,
+        synced_description_height: ctx.synced_description_height,
         empty_description: ctx.empty_package_description,
     };
 
@@ -1040,7 +1111,7 @@ pub(super) fn render_package_pane_body(
         pane: &pane.viewport,
         focus: pane_focus_state,
         styles,
-        animation_elapsed: *animation_elapsed,
+        animation_elapsed: ctx.animation_elapsed,
         lint_mode,
         statistics_layout: columns.boxes.statistics_layout(),
     };
@@ -1052,16 +1123,33 @@ pub(super) fn render_package_pane_body(
         separator,
         &mut chrome,
     );
-    pane.viewport.set_content_height(
-        usize::from(description_height + separator)
-            + layout
-                .content_height
-                .max(stats_column_line_count(&pkg_data)),
-    );
     chrome
         .labels
         .extend(package_page_label(area, &layout, &columns, &pkg_data));
-    let mut row_rects = layout.row_rects;
+    let row_rects = finish_package_viewport(
+        pane,
+        layout,
+        &columns,
+        description_height,
+        separator,
+        stats_column_line_count(&pkg_data, project_inner.width),
+    );
+    paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
+    pane.set_row_rects(row_rects);
+    chrome
+}
+
+fn finish_package_viewport(
+    pane: &mut PackagePane,
+    layout: PackageRenderLayout,
+    columns: &PackageColumnLayout,
+    description_height: u16,
+    separator: u16,
+    statistics_height: usize,
+) -> Vec<(Rect, usize)> {
+    pane.viewport.set_content_height(
+        usize::from(description_height + separator) + layout.content_height.max(statistics_height),
+    );
     pane.viewport.set_scroll_offset(layout.scroll_offset);
     pane.set_tests_scroll_offset(
         columns
@@ -1069,12 +1157,11 @@ pub(super) fn render_package_pane_body(
             .tests
             .map_or(0, |tests| columns.placed[tests].scroll_offset),
     );
+    let mut row_rects = layout.row_rects;
     if description_height > 0 {
         row_rects.push((columns.placed[DESCRIPTION_BOX].content, 0));
     }
-    paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
-    pane.set_row_rects(row_rects);
-    chrome
+    row_rects
 }
 
 fn package_page_label(
@@ -1097,7 +1184,9 @@ fn package_page_label(
     tui_pane::overflow_affordance_label(
         label_area,
         ViewportOverflow::for_paged_content(
-            layout.content_height.max(stats_column_line_count(data)),
+            layout
+                .content_height
+                .max(stats_column_line_count(data, area.width.saturating_sub(2))),
             layout.scroll_offset,
             usize::from(columns.placed[METADATA_BOX].content.height),
         ),
@@ -1277,6 +1366,7 @@ fn sync_package_viewport(
     pkg_data: &PackageData,
     rows: &[PackageRow],
     synced_description_height: SyncedDescriptionHeight,
+    inner_width: u16,
 ) {
     pane.viewport.set_len(rows.len());
     // `pane.viewport.set_content_height(package_content_height(...))` uses the taller
@@ -1284,7 +1374,7 @@ fn sync_package_viewport(
     // not count their rows as vertically stacked.
     pane.viewport.set_content_height(package_content_height(
         usize::from(synced_description_height.rows()),
-        package_lower_metadata_height(pkg_data, rows),
+        package_lower_metadata_height(pkg_data, rows, inner_width),
     ));
     if !rows
         .get(pane.viewport.pos())
@@ -1305,7 +1395,8 @@ fn render_project_description(
     metadata_state: &ProjectMetadataState,
     mode: ColorMode,
 ) -> u16 {
-    let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
+    let lower_metadata_height =
+        package_lower_metadata_height(context.pkg_data, context.rows, project_inner.width);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
     let reserved_separator_height =
         u16::from(project_inner.height > reserved_lower_height.saturating_add(1));

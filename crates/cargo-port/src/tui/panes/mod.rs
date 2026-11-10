@@ -114,6 +114,7 @@ pub(super) use pane_data::copy_payload_for_lints;
 pub(super) use pane_data::copy_payload_for_output;
 pub(super) use pane_data::copy_payload_for_package;
 pub(super) use pane_data::copy_payload_for_targets;
+pub(super) use pane_data::fit_sync_text;
 pub(super) use pane_data::format_ahead_behind;
 pub(super) use pane_data::format_date;
 pub(super) use pane_data::format_duration;

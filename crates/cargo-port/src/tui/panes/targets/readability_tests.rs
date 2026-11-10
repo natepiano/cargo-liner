@@ -139,9 +139,8 @@ fn binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()
     }
     let narrow = test_support::draw_ui(&mut app, 60)?;
     let area = app.panes.tiled_layout.area(PaneId::Targets);
-    test_support::find_text_cell(&narrow, area, "Target")
-        .context("target priority at 60 columns")?;
-    test_support::find_text_cell(&narrow, area, "binary").context("whole Kind at 60 columns")?;
+    assert!(area.is_empty(), "{:?}", test_support::rows(&narrow));
+    assert!(!app.tabbable_panes().contains(&PaneId::Targets));
     let hidden = test_support::draw_pane(&mut app, PaneId::Targets, 23)?;
     assert!(!test_support::rows(&hidden).join("\n").contains("Source"));
     data.examples.push(TargetEntry {

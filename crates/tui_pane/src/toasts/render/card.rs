@@ -201,6 +201,11 @@ pub(super) fn title_card_width(toast: &ToastView) -> u16 {
     u16::try_from(toast_title(toast).width().saturating_add(8)).unwrap_or(u16::MAX)
 }
 
+pub(super) fn minimum_title_card_width(toast: &ToastView) -> u16 {
+    // Keep the title whole when the close button needs the last padding cell.
+    u16::try_from(toast_title(toast).width().saturating_add(7)).unwrap_or(u16::MAX)
+}
+
 /// Draw the close button with one blank cell before it.
 fn render_close_button(frame: &mut Frame, close_rect: Rect, style: Style) {
     frame.render_widget(

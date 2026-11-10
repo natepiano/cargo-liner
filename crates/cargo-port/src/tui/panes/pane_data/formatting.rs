@@ -508,7 +508,7 @@ pub fn format_ahead_behind(comparison: Comparison) -> String {
 }
 
 /// Fit sync text with whole counts and whole words.
-pub(in crate::tui::panes) fn fit_sync_text(text: &str, width: usize) -> String {
+pub(in crate::tui) fn fit_sync_text(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_string();
     }
