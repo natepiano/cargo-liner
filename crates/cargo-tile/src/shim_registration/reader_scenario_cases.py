@@ -4,8 +4,12 @@ import json
 import os
 import select
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
+
+GROUP_REGISTRATION_TIMEOUT_SECONDS = 0.1
 
 class ChildEvents:
     """Wake the parent when a child changes state."""
@@ -31,15 +35,144 @@ class ChildEvents:
         os.close(self.read_descriptor)
         os.close(self.write_descriptor)
 
+def register_owned_group() -> None:
+    """Register a future group while its process remains in a protected group."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(os.environ['CARGO_TILE_SCENARIO_OWNER'])
+        connection.sendall(str(os.getpid()).encode() + b'\n')
+        if connection.recv(1) != b'R':
+            raise RuntimeError('The scenario owner ended before group registration')
+
+def start_owned_group(arguments: list[str], **options) -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, '-S', sys.argv[0], '--owned-exec', *arguments],
+                            **options)
+
+def fork_owned_terminal() -> tuple[int, int]:
+    """Register the reader before it creates its terminal session."""
+    import pty
+    master, slave = pty.openpty()
+    try:
+        pid = os.fork()
+    except BaseException:
+        os.close(master)
+        os.close(slave)
+        raise
+    if pid == 0:
+        os.close(master)
+        register_owned_group()
+        os.login_tty(slave)
+    else:
+        os.close(slave)
+    return pid, master
+
+def end_owned_groups(groups: set[int], events: ChildEvents) -> None:
+    """Stop only registered groups, including children of an exited group leader."""
+    while True:
+        permission_denied_groups = set()
+        for group in groups:
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                permission_denied_groups.add(group)
+        result = subprocess.run(['ps', '-axo', 'pgid=,stat='],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode not in (0, 1):
+            raise RuntimeError('Cannot read the owned groups: ' + result.stderr)
+        live_groups = {int(group)
+                       for group, state in (line.split() for line in result.stdout.splitlines())
+                       if int(group) in groups and not state.startswith('Z')}
+        for group in permission_denied_groups & live_groups:
+            raise RuntimeError(f'Cannot stop the live owned group {group}: permission denied')
+        if not live_groups:
+            return
+        events.wait(0.005)
+
+def run_owned_scenario() -> int:
+    """Own the folder and groups independently of the Rust test and scenario."""
+    from pathlib import Path
+    events = ChildEvents()
+    try:
+        with tempfile.TemporaryDirectory(prefix='ct-') as directory:
+            root = Path(directory)
+            source = root / 'capture-shim.sh'
+            source.write_text(os.environ['CARGO_TILE_SCENARIO_SHIM'])
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                address = str(root / 'owner')
+                listener.bind(address)
+                listener.listen()
+                environment = dict(os.environ, CARGO_TILE_SCENARIO_OWNER=address)
+                inherited = tuple(int(environment[key]) for key in ('SCENARIO_RELEASE_DESCRIPTOR',)
+                                  if key in environment)
+                arguments = [sys.executable, '-S', sys.argv[0], directory,
+                             sys.argv[2], str(source), *sys.argv[3:]]
+                child = subprocess.Popen(arguments, env=environment, stdin=subprocess.DEVNULL,
+                                         pass_fds=inherited, start_new_session=True)
+                groups = {child.pid}
+                try:
+                    while child.poll() is None:
+                        ready, _, _ = select.select(
+                            [listener, sys.stdin, events.read_descriptor], [], [])
+                        if sys.stdin in ready and not os.read(sys.stdin.fileno(), 1):
+                            break
+                        if events.read_descriptor in ready:
+                            _ = os.read(events.read_descriptor, 4096)
+                        if listener in ready:
+                            with listener.accept()[0] as connection:
+                                connection.settimeout(GROUP_REGISTRATION_TIMEOUT_SECONDS)
+                                try:
+                                    with connection.makefile('rb') as request_stream:
+                                        request = request_stream.readline(64)
+                                except TimeoutError:
+                                    continue
+                                if request:
+                                    groups.add(int(request))
+                                    try:
+                                        connection.sendall(b'R')
+                                    except (BrokenPipeError, ConnectionResetError):
+                                        pass
+                finally:
+                    # Refuse late launches before stopping the registered groups.
+                    listener.close()
+                    end_owned_groups(groups, events)
+                    status = child.wait()
+            return status
+    finally:
+        events.close()
+
+if sys.argv[1:2] == ['--scenario-owner']:
+    os.setsid()
+    scenario_status = run_owned_scenario()
+    if scenario_status < 0:
+        signal.raise_signal(-scenario_status)
+    sys.exit(scenario_status)
+
+if sys.argv[1:2] == ['--ownership-caller']:
+    with subprocess.Popen(
+        [sys.executable, '-S', sys.argv[0], '--scenario-owner', *sys.argv[2:]],
+        stdin=subprocess.PIPE,
+        pass_fds=(int(os.environ['SCENARIO_RELEASE_DESCRIPTOR']),)) as caller_owner:
+        if caller_owner.stdin is None:
+            raise RuntimeError('The scenario caller has no lifetime pipe')
+        with caller_owner.stdin:
+            signal.pause()
+    sys.exit(0)
+
+if sys.argv[1:2] == ['--owned-exec']:
+    register_owned_group()
+    os.setsid()
+    os.execvpe(sys.argv[2], sys.argv[2:], os.environ)
+
 def guard_writer_group() -> int:
     """Keep the writer group inside the scenario's lifetime."""
     request = json.loads(sys.stdin.buffer.readline())
     scenario_descriptor = sys.stdin.fileno()
     child_events = ChildEvents()
     with open(request['output'], 'wb') as output:
-        child = subprocess.Popen(request['arguments'], cwd=request['directory'],
+        child = start_owned_group(request['arguments'], cwd=request['directory'],
                                  env=request['environment'], stdin=subprocess.DEVNULL,
-                                 stdout=output, stderr=output, start_new_session=True)
+                                 stdout=output, stderr=output)
     try:
         print(child.pid, flush=True)
         while child.poll() is None:
@@ -50,16 +183,17 @@ def guard_writer_group() -> int:
                 break
     finally:
         # A failed startup reply must not leave an unprotected writer.
-        if child.poll() is None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         status = child.wait()
         child_events.close()
     return status
 
 if sys.argv[1:] == ['--writer-guardian']:
+    register_owned_group()
+    os.setsid()
     writer_status = guard_writer_group()
     if writer_status < 0:
         signal.raise_signal(-writer_status)
@@ -79,7 +213,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 from pathlib import Path
-import pty
 import pwd
 import re
 import shlex
@@ -138,6 +271,8 @@ SELF_CHECK_SCENARIOS = (
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
     '--writer-kill-self-check', '--writer-kill-victim',
+    '--ownership-pass-self-check', '--ownership-failure-self-check',
+    '--ownership-timeout-self-check', '--ownership-sigkill-self-check', '--ownership-victim',
 )
 assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
 assert len(deadline_arguments) <= 1, deadline_arguments
@@ -357,7 +492,7 @@ def reader_terminal() -> int:
 def start_reader_process(reader_environment: dict[str, str]) -> None:
     global reader, terminal
     record_timestamp('reader exec')
-    reader, terminal = pty.fork()
+    reader, terminal = fork_owned_terminal()
     if reader == 0:
         _ = fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
@@ -441,7 +576,7 @@ class ScenarioOwnedWriter:
                  child_environment: dict[str, str], output: Path) -> None:
         self.guardian = subprocess.Popen(
             [sys.executable, '-S', sys.argv[0], '--writer-guardian'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         lifetime = required(self.guardian.stdin, 'writer guardian has no lifetime pipe')
         reply = required(self.guardian.stdout, 'writer guardian has no startup reply')
         try:
@@ -669,9 +804,9 @@ IFS= read -r notification < "$OBSERVED/notification"
                               CPU_COMPILE=str(compiler))
     # A new session keeps the compiler server outside every cargo process tree.
     with (server / 'output').open('wb') as output:
-        server_process = subprocess.Popen(
+        server_process = start_owned_group(
             [str(bin_directory / 'sccache'), str(service)], env=server_environment,
-            stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
+            stdin=subprocess.DEVNULL, stdout=output, stderr=output)
     cache_server_process = server_process
     detached_servers.append(server_process)
     record_timestamp('cache server launched')
@@ -1872,7 +2007,7 @@ def assert_completed_terminal_frames() -> None:
 
 def assert_reader_end_bounds_output_writer() -> None:
     global reader, terminal
-    reader, terminal = pty.fork()
+    reader, terminal = fork_owned_terminal()
     if reader == 0:
         _ = signal.setitimer(signal.ITIMER_REAL, 0)
         _ = signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -1956,7 +2091,106 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         release_second.set()
         executor.shutdown()
 
+def ownership_victim() -> None:
+    """Start small writer and server groups before the selected exit."""
+    writer = ScenarioOwnedWriter(
+        [sys.executable, '-S', '-c',
+         'import os, signal; os.fork(); print(os.getpid(), flush=True); signal.pause()'],
+        root, dict(os.environ), root / 'writer-output')
+    server = start_owned_group([sys.executable, '-S', '-c',
+                                'import signal; print("ready", flush=True); signal.pause()'],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    assert required(server.stdout, 'server has no readiness pipe').readline() == b'ready\n'
+    wait_for_files(lambda: (root / 'writer-output').read_bytes(), 'writer to start')
+    print(json.dumps(dict(scenario=os.getpid(), writer=writer.pid,
+                          guardian=writer.guardian.pid, server=server.pid, root=str(root))), flush=True)
+    # The caller checks that both groups exist before it releases this barrier.
+    _ = sys.stdin.buffer.read(1)
+    exit_path = os.environ['SCENARIO_EXIT_PATH']
+    if exit_path == 'failure':
+        writer.guardian.kill()
+        _ = writer.guardian.wait()
+        raise AssertionError('requested scenario assertion')
+    if exit_path == 'timeout':
+        _ = signal.signal(signal.SIGALRM, scenario_deadline_reached)
+        _ = signal.setitimer(signal.ITIMER_REAL, 0.001)
+        signal.pause()
+    if exit_path == 'sigkill':
+        os.kill(os.getpid(), signal.SIGKILL)
+
+def assert_scenario_releases_resources(exit_path: str) -> None:
+    """Check group termination and folder removal after the real launch boundary."""
+    killed_processes = ('scenario', 'caller') if exit_path == 'sigkill' else ('scenario',)
+    def check_exit(killed_process: str) -> None:
+        mode = '--ownership-caller' if killed_process == 'caller' else '--scenario-owner'
+        arguments = [sys.executable, '-S', sys.argv[0], mode,
+                     binary, '--ownership-victim', '0', '0']
+        release_read, release_write = os.pipe()
+        victim_environment = dict(os.environ, SCENARIO_EXIT_PATH=exit_path,
+                                  SCENARIO_RELEASE_DESCRIPTOR=str(release_read),
+                                  CARGO_TILE_SCENARIO_SHIM=Path(source).read_text())
+        victim = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, env=victim_environment,
+                                  pass_fds=(release_read,))
+        os.close(release_read)
+        groups: tuple[int, ...] = ()
+        lifetime = required(victim.stdin, 'owner has no lifetime pipe')
+        victim.stdin = None
+        try:
+            ready = required(victim.stdout, 'scenario has no readiness pipe')
+            identities = json.loads(ready.readline())
+            directory = identities['root']
+            groups = (identities['writer'], identities['server'])
+            for group in groups:
+                os.killpg(group, 0)
+            if killed_process == 'caller':
+                victim.kill()
+            else:
+                os.write(release_write, b'R')
+            _, error = victim.communicate(timeout=5)
+            expected = {'pass': 0, 'failure': 1, 'timeout': 1, 'sigkill': -signal.SIGKILL}[exit_path]
+            assert victim.returncode == expected, (exit_path, victim.returncode, error)
+            table = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], text=True)
+            alive = [int(pid) for pid, group, state in (line.split() for line in table.splitlines())
+                     if int(group) in groups and not state.startswith('Z')]
+            assert not alive and not Path(directory).exists(), (
+                exit_path, 'live group members', alive, 'folder remains', Path(directory).exists())
+        finally:
+            lifetime.close()
+            os.close(release_write)
+            if victim.poll() is None:
+                victim.kill()
+                _ = victim.communicate()
+            for group in groups:
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    if len(killed_processes) == 1:
+        check_exit(killed_processes[0])
+    else:
+        # Each exit owns separate groups and a separate folder.
+        with ThreadPoolExecutor(max_workers=len(killed_processes)) as executor:
+            results = [executor.submit(check_exit, killed_process)
+                       for killed_process in killed_processes]
+            for result in results:
+                result.result()
+
 arm_scenario_deadline()
+
+if scenario == '--ownership-victim':
+    # The owner must keep its own lifetime input separate from the scenario barrier.
+    sys.stdin = os.fdopen(int(os.environ['SCENARIO_RELEASE_DESCRIPTOR']), 'r')
+    ownership_victim()
+    cancel_scenario_deadline()
+    sys.exit(0)
+
+if scenario.startswith('--ownership-'):
+    assert_scenario_releases_resources(scenario.removeprefix('--ownership-').removesuffix('-self-check'))
+    cancel_scenario_deadline()
+    sys.exit(0)
 
 if scenario == '--writer-kill-victim':
     prepare_fixture()
