@@ -2328,7 +2328,7 @@ A row for cargo running as the compiler wrapper names the compiler and its crate
 
 **Gotchas:** The count row takes one row under arguments All whenever a cell overflows, so a fixture that needs full capacity uses Default.
 
-### Phase 32d — The capture shim skips every option that cargo accepts before its subcommand  · status: todo
+### Phase 32d — The capture shim skips every option that cargo accepts before its subcommand  · status: done
 
 **Depends on:** Phase 32 (it added the scope that the shim does not read).
 

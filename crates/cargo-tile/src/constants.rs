@@ -559,6 +559,16 @@ pub(crate) enum ValuedOptionScope {
     Nextest,
 }
 
+impl ValuedOptionScope {
+    /// Whether Cargo accepts this scope before its subcommand.
+    pub(crate) const fn accepted_before_subcommand(self) -> bool {
+        match self {
+            Self::Global | Self::GlobalAndRustc => true,
+            Self::CargoAndRustc | Self::Cargo | Self::RustcLint | Self::Nextest => false,
+        }
+    }
+}
+
 /// Select the crate name in a compiler command.
 pub(crate) const RUSTC_CRATE_NAME_FLAG: &str = "--crate-name";
 /// Select the crate name in one compiler argument.
