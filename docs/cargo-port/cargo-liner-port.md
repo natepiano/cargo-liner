@@ -845,41 +845,62 @@ At 60 columns the project list keeps CI, Type, Git, Sync and Main, and a name cu
 
 ### Phase 4w — Targets lists a binary whose name differs from its package  · status: done
 
-**Depends on:** Phase 4s (it edits `crates/cargo-port/src/tui/panes/targets/`).
+#### As-built
+
+Targets lists every bin target of each included package, sorted by name, whatever the binary's name. A package whose only binaries have other names (for example `src/bin/migrate.rs` in package `multibin`) shows its binary rows in place of `No Targets`. With the workspace root selected, Targets lists the binaries of every member; with a member selected, it lists that member's own. Enter on a binary row runs `cargo run --bin <name>` with the package flag and features.
+
+- `TargetsData::from_workspace_metadata` makes a `Binary` entry for every `TargetKind::Bin` target. `default-run` gets no marker and no special order.
+- A sole binary named for its package keeps its row and also launches with `--bin <name>`, which runs the same target.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/targets/data.rs` — binary listing rule
+- `crates/cargo-port/src/tui/panes/targets/availability_tests.rs` — `FixtureBinaries` fixture for differently named binaries
+- `crates/cargo-port/src/tui/terminal/processes.rs` — `--bin <name>` in the Binary launch
+- `crates/cargo-port/src/tui/constants.rs` — `CARGO_BIN_FLAG`
+
+**Ruled out:** A `default-run` marker or order (showrunner, 2026-11-10).
+
+### Phase 4y — The finder and Package Structure count each binary  · status: todo
+
+**Depends on:** Phase 4w (it lists every bin target in Targets).
 
 #### Work Order
 
-**Goal:** a package whose binary has a different name from the package lists that binary in Targets and does not show `No Targets`.
+**Goal:** the finder offers each binary by its own name, and Package Structure counts the same binaries that Targets lists.
 
-**Source:** live capture for Phase 4s, 2026-11-09. `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists a `TargetKind::Bin` only when `target.name == record.name`, and `primary_binary_matches_package_name_only` asserts that rule. A package with only a differently named `[[bin]]` shows `No Targets` and has a runnable binary.
+**Source:** Phase 4w add-ons. The finder makes one Binary result per package, named for the package (`tui/finder/index.rs` ≈345 and ≈455). For package `multibin` with binaries `migrate` and `serve`, that result matches no Targets row. Package Structure counts `ProjectType::Binary` once per package (`tui/panes/pane_data/package_data.rs` ≈71), so it shows `binary 1` for `multibin` and 3 for a workspace whose Targets lists 4.
 
-**Decision:** showrunner, 2026-11-09: this phase runs with its own selection-rule design. Showrunner, 2026-11-10: the selection rule is the one in Spec 1, all five points.
+**Decision:** showrunner, 2026-11-10: both are current, choice (a) for each. This phase runs directly after Phase 4w and before Phase 4x.
 
 **Constraints:**
-- A package with one binary named for the package keeps its present row. Its launch adds `--bin <name>`, which runs the same target.
-- Do not change how examples and benches are listed or launched.
-- `primary_binary_matches_package_name_only` changes only as the approved rule states, with an `Assertion-Change:` line.
+- Targets keeps the Phase 4w rule: every bin target, sorted by name, launched with `--bin <name>` and the package flag.
+- `ProjectType::Binary` keeps its present meaning for the Type column and other consumers.
+- Do not change how examples and benches are counted or found.
+
+**Constraints from prior phases:**
+- Phase 4w: `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists every `TargetKind::Bin` target. A workspace root lists the binaries of every member; a member lists its own.
 
 **Spec:**
-1. **Selection rule** (approved). 1. List every bin target of each included package, sorted by name as today. 2. Each row launches `cargo run --bin <name> -p <package>`. 3. `default-run` gets no marker and no special order. 4. With the workspace root selected, list every member's binaries, as for examples. With a member selected, list that member's binaries only. 5. A package whose one binary has the package name keeps its row.
-2. **Listing.** `TargetsData::from_workspace_metadata` (`panes/targets/data.rs`) lists every `TargetKind::Bin` target. It now keeps only the bin whose name equals the package name. Update its doc comment.
-3. **Launch.** `cargo_command_for_owned_run` (`tui/terminal/processes.rs`) adds `--bin <target_name>` for `RunTargetKind::Binary`. It now runs plain `cargo run`. Keep the `-p <package>` and features arguments.
+1. **Binary names.** `Cargo` (`project/cargo/rust_info.rs`) keeps the name of each bin target, as it keeps `benches`. This replaces `BinaryTargetPresence`; `ProjectType::Binary` follows from a non-empty list.
+2. **Finder.** The finder adds one Binary result per bin target, named for the target, at both sites in `tui/finder/index.rs`. Choosing a result focuses Targets with that binary's row selected.
+3. **Package Structure.** `StructureCounts` (`tui/panes/pane_data/package_data.rs`) counts bin targets. For a package and for a workspace root, the `binary` count equals the number of binary rows in Targets.
 4. **Changelog.** Add the cargo-port entry.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/targets/` — Spec 2
-- `crates/cargo-port/src/tui/terminal/processes.rs` and `crates/cargo-port/src/tui/constants.rs` (`CARGO_BIN_FLAG`) — Spec 3
+- `crates/cargo-port/src/project/cargo/rust_info.rs` — Spec 1
+- `crates/cargo-port/src/tui/finder/` — Spec 2
+- `crates/cargo-port/src/tui/panes/pane_data/package_data.rs` — Spec 3
 - `crates/cargo-port/CHANGELOG.md` — Spec 4
 
-**Workers:** 1 writer: Specs 2-4 and their tests.
+**Workers:** 1 writer: Specs 1-4 and their tests.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Metadata and drawing tests show the selected binaries in place of `No Targets`, for a package with several binaries and for a workspace root. A launch test shows `--bin <name>` and `-p <package>` in the command. A live capture of a package with a differently named `[[bin]]`, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A finder test shows one result per bin target for a package whose binaries have other names, and choosing one selects its Targets row. A Package Structure test shows the bin-target count for a package and a workspace root. A live capture of the finder and Package Structure, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4x — CI job header and table margins read clean  · status: todo
 
-**Depends on:** Phase 4v (both edit `crates/cargo-port/src/tui/panes/ci/`, `panes/lints/` and `sccache/`).
+**Depends on:** Phase 4v (both edit `crates/cargo-port/src/tui/panes/ci/`, `panes/lints/` and `sccache/`) and Phase 4y (the showrunner orders it first, 2026-11-10).
 
 #### Work Order
 
