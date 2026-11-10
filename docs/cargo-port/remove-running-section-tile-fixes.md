@@ -2369,8 +2369,40 @@ A row for cargo running as the compiler wrapper names the compiler and its crate
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- The fixed capture shows no frame over 4 ms at 24, 40 and 80 rows on the final release build, beside the same script's result on the parent tree.
+- The fixed capture shows no frame over 4 ms of on-CPU draw time (`cpu_ns`) at 24, 40 and 80 rows on the final release build. Run-queue wait (`runq_ns`) is recorded beside it as context and is not a gate value (showrunner ruling, 2026-11-09). The parent tree's wall-clock result stays beside it.
 - A Mac run of `cargo-tile` is owed from Phase 32's final tree. Run `verify.sh test cargo-tile --mac` when the Mac is available and record the tested revision. Phase 59's process cleanup is the prerequisite while a reader scenario holds the Mac copy lease. A wait on the Mac does not block this phase.
+- Change-Review: none — draw time only, with no visible change.
+
+### Phase 32e — The last tile frames over 4 ms of CPU  · status: todo
+
+**Depends on:** Phase 32b (it adds the per-frame CPU counters and the retained paintings that this phase measures).
+
+#### Work Order
+
+**Goal:** In the fixed busy capture, no `cargo-tile` frame spends more than 4 ms of on-CPU draw time. Phase 32b's final capture has 2 of 822, 1 of 752 and 17 of 730 frames over the limit at 24, 40 and 80 rows, with a maximum of 5.723, 4.011 and 5.295 ms. Sixteen of these frames spend their time in the draw callback, with paintings rejected. Four frames write about 16 kB.
+
+**Spec:**
+
+1. **Measure first.** For a slow frame that writes 19 bytes, record the first rejected source field with its old and new display values. Record preparation CPU apart from validation and repaint CPU. Record the repaint trigger beside the terminal diff cell count. Compare total draw time with and without the per-write clock reads.
+2. **Validate paintings by what they display.** The source check compares the complete `CargoProcess` and raw resource values. Compare the values that determine the painting: the displayed duration and the formatted resource totals. Keep full precision in the accounting data. Aggregate contributions before rounding. Keep the layout, command visibility and destination checks.
+3. **Remove the periodic full output.** The runner forces a repaint every two seconds, and unchanged cells then differ. Replace this with bounded row batches if periodic recovery is still necessary. Keep recovery for resize and external terminal damage.
+4. **Buffer terminal output** before the counted stdout writer, if step 1 shows that small writes cost CPU.
+5. **Compare with the same script on the final tree.** Report the before and after maximum, p99, count over 4 ms and sample count at each size.
+
+**Files:**
+- `crates/cargo-tile/src/render/{cell_paint,frame_preparation}.rs`, `crates/cargo-tile/src/render.rs` — the display signature and the retained paintings.
+- `crates/cargo-tile/src/probe.rs` — the measurements of step 1.
+- `crates/tui_pane/src/runner/{event_loop,constants}.rs` — the repaint trigger.
+- `crates/cargo-handler/src/`, `crates/cargo-port/src/` — consumer test gates only.
+
+**Workers:** 1 writer — `impl`, every file above.
+
+**Constraints from prior phases:** Phase 32b: `cpu_ns` reads `CLOCK_THREAD_CPUTIME_ID`, and run-queue wait is context only. Extend the retained-versus-fresh table in `cell_paint.rs` with subsecond clock changes and resource changes around rounding boundaries. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
+- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Phase 32b's final result stays beside it.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: todo
