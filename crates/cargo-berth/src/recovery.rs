@@ -41,6 +41,7 @@ use crate::ledger::ReservationJudgingBranch;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
+use crate::ledger::WorktreeRecoveryAudit;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::ResolvePayload;
@@ -62,7 +63,11 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
+use crate::reservation::WorktreeRecoveryReason;
 use crate::session::SessionIdentityMappingPublication;
+use crate::worktree::HolderIdentityPresence;
+use crate::worktree::WorktreeRegistry;
+use crate::worktree::liveness::WorktreeRegistryError;
 
 /// A parsed resolution request whose variant contains exactly its required evidence.
 pub(crate) struct ResolveRequest {
@@ -98,6 +103,8 @@ pub(crate) enum IncursionAnswerScope {
 pub(crate) enum ReservationRecoveryDecision {
     /// Move surviving work to the invoking replacement worktree.
     Recovered,
+    /// Recover an absent holder at the same canonical path with an audit reason.
+    Rehome(WorktreeRecoveryReason),
     /// Record a verified alternate commit already reachable from the reservation's target.
     IntegratedAs(RewrittenIntegrationTrunkCommit),
     /// Record deliberate user-confirmed abandonment.
@@ -115,6 +122,13 @@ pub(crate) struct RenewRequest {
 
 /// Execute one user-confirmed recovery decision.
 pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
+    if matches!(
+        resolve_request.decision,
+        ResolveDecision::Reservation(ReservationRecoveryDecision::Rehome(_))
+    ) {
+        // Recovery validates the old holder before ordinary session validation can refuse it.
+        return resolution_output(execute_resolution(resolve_request));
+    }
     resolve_reservation(resolve_request)
 }
 
@@ -139,25 +153,31 @@ fn resolve_reservation(resolve_request: ResolveRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Resolve),
         };
-    let output_envelope = match execute_resolution(resolve_request) {
-        Ok(Enrollment::Enrolled(resolve_payload)) => {
-            if !matches!(
-                resolve_payload,
-                ResolvePayload::RecordedNow { .. }
-                    | ResolvePayload::AlreadyRecordedBySameCoordinationActor { .. }
-            ) {
-                reconciliation_report
-                    .alerts
-                    .retain(|alert| alert.reservation_id() != resolved_reservation_id);
-            }
-            OutputEnvelope::resolved(resolve_payload)
-        },
+    let resolution = execute_resolution(resolve_request);
+    if let Ok(Enrollment::Enrolled(resolve_payload)) = &resolution
+        && !matches!(
+            resolve_payload,
+            ResolvePayload::RecordedNow { .. }
+                | ResolvePayload::AlreadyRecordedBySameCoordinationActor { .. }
+        )
+    {
+        reconciliation_report
+            .alerts
+            .retain(|alert| alert.reservation_id() != resolved_reservation_id);
+    }
+    resolution_output(resolution).with_alerts(reconciliation_report.alerts)
+}
+
+fn resolution_output(
+    resolution: Result<Enrollment<ResolvePayload>, RecoveryError>,
+) -> OutputEnvelope {
+    match resolution {
+        Ok(Enrollment::Enrolled(resolve_payload)) => OutputEnvelope::resolved(resolve_payload),
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Resolve, &expected_configuration_path),
         Err(error) => error.into_output(CommandVerb::Resolve),
-    };
-    output_envelope.with_alerts(reconciliation_report.alerts)
+    }
 }
 
 /// Append one activity renewal without changing scopes, edges, or lifecycle.
@@ -638,8 +658,17 @@ fn recovery_operation(
     ),
     RecoveryRejection,
 > {
+    let recovery = match &recovery_request {
+        ReservationRecoveryDecision::Rehome(reason) => {
+            validate_recreated_holder(repository_root, reservation, &current_worktree_root)?;
+            WorktreeRecoveryAudit::RecreatedHolder {
+                why: reason.clone(),
+            }
+        },
+        _ => WorktreeRecoveryAudit::ReplacementWorktree,
+    };
     match recovery_request {
-        ReservationRecoveryDecision::Recovered => {
+        ReservationRecoveryDecision::Recovered | ReservationRecoveryDecision::Rehome(_) => {
             if reservation.actor().worktree == current_worktree_id {
                 return Err(RecoveryRejection::SameWorktreeRecovery);
             }
@@ -661,6 +690,7 @@ fn recovery_operation(
                     current_worktree_id,
                     current_worktree_root,
                     current_worktree_administrative_locator,
+                    recovery,
                 },
                 ResolvePayloadSeed::Recovered {
                     reservation_id,
@@ -669,56 +699,12 @@ fn recovery_operation(
                 committed_action,
             ))
         },
-        ReservationRecoveryDecision::IntegratedAs(trunk_commit) => {
-            let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit.clone());
-            let evidence_state = reservation
-                .evidence_state()
-                .map_err(RecoveryRejection::Replay)?;
-            let (operation, protected_tip) = match evidence_state {
-                ReservationEvidenceState::Outstanding { protected_tip, .. } => (
-                    JournalOperation::Release {
-                        reservation_id,
-                        disposition: disposition.clone(),
-                        source: Some(ReleaseSource::Command),
-                    },
-                    protected_tip,
-                ),
-                ReservationEvidenceState::Released {
-                    protected_tip,
-                    disposition: superseded,
-                    integration_status,
-                    ..
-                } if release_evidence_is_lost(&superseded, &integration_status) => (
-                    JournalOperation::ReplaceReleaseDisposition {
-                        reservation_id,
-                        superseded,
-                        replacement: disposition.clone(),
-                    },
-                    protected_tip,
-                ),
-                ReservationEvidenceState::Released { .. }
-                | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
-                    return Err(RecoveryRejection::AlreadyResolved);
-                },
-                ReservationEvidenceState::Active { .. } => {
-                    return Err(RecoveryRejection::CheckpointRequired);
-                },
-            };
-            verify_integration_commit_carries_work(
-                repository_root,
-                reservation,
-                &protected_tip,
-                &trunk_commit,
-            )?;
-            Ok((
-                operation,
-                ResolvePayloadSeed::Released {
-                    reservation_id,
-                    disposition,
-                },
-                PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
-            ))
-        },
+        ReservationRecoveryDecision::IntegratedAs(trunk_commit) => rewritten_integration_operation(
+            repository_root,
+            reservation,
+            reservation_id,
+            &trunk_commit,
+        ),
         ReservationRecoveryDecision::Abandon(reason) => disposition_operation(
             reservation,
             reservation_id,
@@ -727,6 +713,89 @@ fn recovery_operation(
         ReservationRecoveryDecision::RetireOrphan(reason) => {
             retire_orphan_operation(reservation, reservation_id, reason)
         },
+    }
+}
+
+/// Record an alternate integration witness only after checking the protected work.
+fn rewritten_integration_operation(
+    repository_root: &Path,
+    reservation: &Reservation,
+    reservation_id: ReservationId,
+    trunk_commit: &RewrittenIntegrationTrunkCommit,
+) -> Result<
+    (
+        JournalOperation,
+        ResolvePayloadSeed,
+        PostCommitRecoveryMarkerAction,
+    ),
+    RecoveryRejection,
+> {
+    let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit.clone());
+    let evidence_state = reservation
+        .evidence_state()
+        .map_err(RecoveryRejection::Replay)?;
+    let (operation, protected_tip) = match evidence_state {
+        ReservationEvidenceState::Outstanding { protected_tip, .. } => (
+            JournalOperation::Release {
+                reservation_id,
+                disposition: disposition.clone(),
+                source: Some(ReleaseSource::Command),
+            },
+            protected_tip,
+        ),
+        ReservationEvidenceState::Released {
+            protected_tip,
+            disposition: superseded,
+            integration_status,
+            ..
+        } if release_evidence_is_lost(&superseded, &integration_status) => (
+            JournalOperation::ReplaceReleaseDisposition {
+                reservation_id,
+                superseded,
+                replacement: disposition.clone(),
+            },
+            protected_tip,
+        ),
+        ReservationEvidenceState::Released { .. }
+        | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
+            return Err(RecoveryRejection::AlreadyResolved);
+        },
+        ReservationEvidenceState::Active { .. } => {
+            return Err(RecoveryRejection::CheckpointRequired);
+        },
+    };
+    verify_integration_commit_carries_work(
+        repository_root,
+        reservation,
+        &protected_tip,
+        trunk_commit,
+    )?;
+    Ok((
+        operation,
+        ResolvePayloadSeed::Released {
+            reservation_id,
+            disposition,
+        },
+        PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
+    ))
+}
+
+/// Validate the recorded path and search every registration before changing its holder.
+fn validate_recreated_holder(
+    repository_root: &Path,
+    reservation: &Reservation,
+    current_root: &CanonicalWorktreeRoot,
+) -> Result<(), RecoveryRejection> {
+    if reservation.worktree_root() != current_root {
+        return Err(RecoveryRejection::RecoveryPathMismatch);
+    }
+    let context = WorktreeContext::discover(repository_root).map_err(RecoveryRejection::Ledger)?;
+    let registry = WorktreeRegistry::read(&RepositorySnapshot::new(context))
+        .map_err(RecoveryRejection::Registry)?;
+    match registry.holder_identity_presence(reservation.actor().worktree) {
+        HolderIdentityPresence::Live => Err(RecoveryRejection::OldHolderStillLive),
+        HolderIdentityPresence::Unverifiable => Err(RecoveryRejection::OldHolderUnverifiable),
+        HolderIdentityPresence::Absent => Ok(()),
     }
 }
 
@@ -959,6 +1028,11 @@ enum RecoveryRejection {
     CheckpointRequired,
     AlreadyResolved,
     SameWorktreeRecovery,
+    RecoveryPathMismatch,
+    OldHolderStillLive,
+    OldHolderUnverifiable,
+    Registry(WorktreeRegistryError),
+    Ledger(LedgerError),
     UnreachableIntegrationEvidence(IntegrationEvidenceReachabilityBasis),
     IntegrationCommitLacksWork {
         reservation_id: ReservationId,
@@ -1056,6 +1130,11 @@ impl Display for RecoveryRejection {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownReservation => formatter.write_str("the reservation does not exist"),
+            Self::RecoveryPathMismatch => formatter.write_str("--rehome must run at the reservation's recorded holder path"),
+            Self::OldHolderStillLive => formatter.write_str("the old holder identity is still live; recover from its current worktree"),
+            Self::OldHolderUnverifiable => formatter.write_str("the old holder identity cannot be checked; repair the unavailable worktree registration first"),
+            Self::Registry(error) => error.fmt(formatter),
+            Self::Ledger(error) => error.fmt(formatter),
             Self::UnknownIncursionIncident(incident_id) => {
                 write!(formatter, "incursion incident {incident_id} does not exist")
             },

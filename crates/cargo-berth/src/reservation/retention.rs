@@ -1269,6 +1269,7 @@ impl RetainedReservationSet {
                 current_worktree_id,
                 current_worktree_root,
                 current_worktree_administrative_locator,
+                ..
             } => self.apply_worktree_rebinding(
                 *reservation_id,
                 *previous_worktree_id,
