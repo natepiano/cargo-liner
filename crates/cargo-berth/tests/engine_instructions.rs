@@ -1,5 +1,6 @@
 //! Real-binary acceptance guard for executable engine instructions.
 
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
@@ -47,7 +48,6 @@ const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const CHECK_LEDGER_UNREADABLE_SCENARIO: &str = "check ledger-unreadable";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const POST_TOOL_USE_INVALID_PAYLOAD_SCENARIO: &str = "post-tool-use invalid payload";
 const POST_TOOL_USE_SCENARIO: &str = "post-tool-use coordination identity recovery";

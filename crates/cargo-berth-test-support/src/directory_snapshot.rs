@@ -244,7 +244,14 @@ mod tests {
 
     #[test]
     fn shared_script_replacement_keeps_its_other_copy_and_mutable_files_private() {
-        let root = crate::fixture_tempdir("shared-script-");
+        // The inode assertion requires both installed scripts on the cache filesystem.
+        let executable = env::current_exe().expect("test executable should resolve");
+        let parent = repository_template::fixture_cache_root(&executable).join("private");
+        fs::create_dir_all(&parent).expect("cache fixture parent should exist");
+        let root = tempfile::Builder::new()
+            .prefix("shared-script-")
+            .tempdir_in(parent)
+            .expect("script fixture should share the cache filesystem");
         let first = root.path().join("first");
         let second = root.path().join("second");
         let script = "#!/bin/sh\nprintf '%s' original\n";

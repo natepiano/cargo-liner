@@ -4,6 +4,7 @@ use std::error::Error;
 use std::path::Path;
 use std::process::Output;
 
+use cargo_berth_test_support::FIRST_RUN as HOLDER_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -32,7 +33,6 @@ const GIT: GitDriver = GitDriver {
 const HOOKS_DISABLED: &str = "core.hooksPath=/dev/null";
 pub(super) const HELD_PATH: &str = "src/held.rs";
 const HOLDER_COMMITS: usize = 3;
-const HOLDER_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const STRAYING_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a2c";
 
 /// A committed policy with no journal records, before the holder/incursion scenario begins.

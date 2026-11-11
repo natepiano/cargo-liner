@@ -23,6 +23,7 @@ use answers_fixtures::initialized_repository;
 use answers_fixtures::json_output;
 use answers_fixtures::reservation_id;
 use answers_fixtures::run_berth;
+use cargo_berth_test_support::SECOND_RUN;
 
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
@@ -63,7 +64,6 @@ const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const RERULED_ORDER_REASON: &str = "the holder must land first after all";
 
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const SHELL_BINARY: &str = "sh";
