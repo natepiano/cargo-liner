@@ -530,6 +530,8 @@ mod tests {
     use crate::reporting::ReportFacts;
     use crate::reporting::SubtreeReexportFixFact;
     use crate::rust_syntax::ParsedSources;
+    #[cfg(unix)]
+    use crate::selection::PackageMetadata;
     use crate::selection::Selection;
     use crate::selection::SelectionScope;
 
@@ -613,7 +615,7 @@ mod tests {
     }
 
     fn fixes(selection: &Selection, report: &Report) -> Result<ValidatedFixSet> {
-        let sources = ParsedSources::default();
+        let sources = ParsedSources::for_selection(selection);
         let plan = |scan: &SubtreeReexportScan| {
             imports::plan_module_imports(
                 scan.fixes.tagged().cloned().collect(),
@@ -653,6 +655,51 @@ mod tests {
         Removed,
     }
 
+    type CallerCase<'a> = (
+        &'a str,
+        &'a str,
+        ReexportExpectation,
+        &'a [(&'a str, &'a str)],
+    );
+
+    fn assert_callers(cases: &[CallerCase<'_>]) -> Result<()> {
+        std::thread::scope(|scope| {
+            let handles = cases
+                .iter()
+                .map(|&(caller, expected, retention, extra)| {
+                    scope.spawn(move || assert_caller_fix(caller, expected, retention, extra))
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                match handle.join() {
+                    Ok(result) => result?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn assert_all_callers(cases: &[CallerCase<'_>], linked: (&str, &str)) -> Result<()> {
+        std::thread::scope(|scope| {
+            let mut handles = vec![
+                scope.spawn(|| assert_callers(cases)),
+                scope.spawn(assert_review_alias_callers),
+            ];
+            #[cfg(unix)]
+            handles.push(scope.spawn(|| assert_symlinked_callers(&[linked])));
+            #[cfg(not(unix))]
+            let _ = linked;
+            for handle in handles {
+                match handle.join() {
+                    Ok(result) => result?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn assert_caller_fix(
         caller: &str,
         expected: &str,
@@ -660,26 +707,119 @@ mod tests {
         extra: &[(&str, &str)],
     ) -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let selection = fixture(dir.path(), caller)?;
+        assert_caller_fix_at(dir.path(), caller, expected, retention, extra)
+    }
+
+    fn assert_caller_fix_at(
+        root: &Path,
+        caller: &str,
+        expected: &str,
+        retention: ReexportExpectation,
+        extra: &[(&str, &str)],
+    ) -> Result<()> {
+        let selection = fixture(root, caller)?;
         for (file, source) in extra {
-            fs::write(dir.path().join(file), source)?;
+            fs::write(root.join(file), source)?;
         }
         let report = report()?;
         imports::apply_fixes(&fixes(&selection, &report)?)?;
-        let caller_path = dir.path().join("src/rig_plugin/look.rs");
+        let caller_path = root.join("src/rig_plugin/look.rs");
         assert_eq!(fs::read_to_string(&caller_path)?, expected, "{caller}");
-        let constants = fs::read_to_string(dir.path().join("src/rig_plugin/constants.rs"))?;
+        let constants = fs::read_to_string(root.join("src/rig_plugin/constants.rs"))?;
         let actual = if constants.contains(REEXPORT) {
             ReexportExpectation::Retained
         } else {
             ReexportExpectation::Removed
         };
         assert_eq!(actual, retention, "{caller}");
-        assert_compiles(dir.path())?;
+        assert_compiles(root)?;
         assert!(
             fixes(&selection, &report)?.iter().next().is_none(),
             "The second pass must propose no edit."
         );
+        assert_eq!(fs::read_to_string(caller_path)?, expected);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn assert_symlinked_callers(cases: &[(&str, &str)]) -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let physical = dir.path().join("physical");
+        fs::create_dir(&physical)?;
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&physical, &linked)?;
+        for (caller, expected) in cases {
+            assert_caller_fix_at(&linked, caller, expected, Removed, &[])?;
+            assert_custom_target_caller(&linked, caller, expected)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn assert_custom_target_caller(root: &Path, caller: &str, expected: &str) -> Result<()> {
+        let mut selection = fixture(root, caller)?;
+        fs::rename(root.join("src"), root.join("library"))?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"glob_caller\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\npath = \"library/lib.rs\"\n",
+        )?;
+        selection.packages.push(PackageMetadata {
+            id:            "glob_caller".to_string(),
+            manifest_path: root.join("Cargo.toml"),
+            root:          root.to_path_buf(),
+            targets:       vec![crate::selection::TargetMetadata {
+                kind:              vec!["lib".to_string()],
+                crate_types:       vec!["lib".to_string()],
+                name:              "glob_caller".to_string(),
+                src_path:          root.join("library/lib.rs"),
+                edition:           "2024".to_string(),
+                required_features: Vec::new(),
+                doc:               crate::selection::TargetSupport::Enabled,
+                doctest:           crate::selection::TargetSupport::Enabled,
+                test:              crate::selection::TargetSupport::Enabled,
+            }],
+        });
+        let mut report = report()?;
+        report.findings[0].path = "library/rig_plugin/constants.rs".to_string();
+        report.facts.subtree_reexport_fix_facts = report
+            .facts
+            .subtree_reexport_fix_facts
+            .iter()
+            .cloned()
+            .map(|mut fact| {
+                fact.use_path = "library/rig_plugin/constants.rs".to_string();
+                fact.crate_root_file = "library/lib.rs".to_string();
+                fact
+            })
+            .collect::<Vec<_>>()
+            .into();
+        imports::apply_fixes(&fixes(&selection, &report)?)?;
+        let caller_path = root.join("library/rig_plugin/look.rs");
+        assert_eq!(
+            fs::read_to_string(&caller_path)?,
+            expected,
+            "custom target: {caller}"
+        );
+        assert!(
+            !fs::read_to_string(root.join("library/rig_plugin/constants.rs"))?.contains(REEXPORT)
+        );
+        let output = Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "--crate-type=lib",
+                "--emit=metadata",
+                "-Dunused-imports",
+            ])
+            .arg(root.join("library/lib.rs"))
+            .arg("-o")
+            .arg(root.join("fixture.rmeta"))
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(fixes(&selection, &report)?.iter().next().is_none());
         assert_eq!(fs::read_to_string(caller_path)?, expected);
         Ok(())
     }
@@ -751,21 +891,7 @@ mod tests {
                 &[("src/rig_plugin/mod.rs", cycle_glob_parent)],
             ),
         ];
-        std::thread::scope(|scope| {
-            let handles = cases
-                .into_iter()
-                .map(|(caller, expected, retention, extra)| {
-                    scope.spawn(move || assert_caller_fix(caller, expected, retention, extra))
-                })
-                .collect::<Vec<_>>();
-            for handle in handles {
-                match handle.join() {
-                    Ok(result) => result?,
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
-            }
-            Ok(())
-        })
+        assert_callers(&cases)
     }
 
     #[test]
@@ -853,21 +979,6 @@ mod tests {
             (block_glob, block_glob_fixed, Removed, none),
             (block_explicit, block_explicit_fixed, Removed, none),
         ];
-        std::thread::scope(|scope| -> Result<()> {
-            let handles = cases
-                .into_iter()
-                .map(|(caller, expected, retention, extra)| {
-                    scope.spawn(move || assert_caller_fix(caller, expected, retention, extra))
-                })
-                .collect::<Vec<_>>();
-            for handle in handles {
-                match handle.join() {
-                    Ok(result) => result?,
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
-            }
-            Ok(())
-        })?;
-        assert_review_alias_callers()
+        assert_all_callers(&cases, (&alias_explicit, &alias_explicit_fixed))
     }
 }

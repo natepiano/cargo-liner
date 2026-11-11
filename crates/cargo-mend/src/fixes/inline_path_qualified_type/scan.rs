@@ -64,7 +64,7 @@ pub(crate) fn scan_selection(
     all_findings.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
     Ok(InlinePathScan {
         findings: all_findings,
-        fixes:    ValidatedFixSet::try_from(all_fixes)?,
+        fixes:    ValidatedFixSet::try_from((all_fixes, parsed_sources))?,
     })
 }
 

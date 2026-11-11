@@ -125,7 +125,7 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Acceptance gate:** `verify.sh test cargo-mend` on natedev passes with every test under 1 s, and each timing has its load average. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
-### Phase 4 — mend --fix redirects `extern crate self` alias callers on macOS  · status: todo
+### Phase 4 — mend --fix redirects `extern crate self` alias callers on macOS  · status: done
 
 **Depends on:** Phase 2. Runs beside Phase 3 in its own worktree, and checkpoints first (showrunner, 2026-11-11: hana waits on the Phase 1 fix, and a Phase 3 checkpoint carries the same red).
 
