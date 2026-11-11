@@ -79,6 +79,7 @@ fn tile_title_suffixes_use_showrunner_and_unit_role_colors() {
             &colors,
             &HashMap::new(),
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let tile = cells
             .tiles
@@ -153,8 +154,8 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
         colors,
         &sorts,
         SummarySort::default(),
-    )
-    .with_accounts(&accounts);
+        &accounts,
+    );
     let mut app = App::new_for_test().expect("test app");
     let area = Rect::new(0, 0, 104, 34);
     let mut buffer = Buffer::empty(area);
@@ -633,6 +634,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
         &colors,
         &app.tree_sorts,
         SummarySort::default(),
+        &AccountsTable::NotConfigured,
     );
     let keys: Vec<_> = cells.tiles.iter().map(AgentTile::key).collect();
     for key in keys {
@@ -642,6 +644,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             &colors,
             &app.tree_sorts,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let mut before = Buffer::empty(area);
         cells.draw(
@@ -662,6 +665,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             position(&before, alpha).1 < position(&before, zeta).1,
             "default {key:?}: {before:?}"
         );
+        position(&before, "session ▲");
         let (x, y) = position(&before, "session");
         app.painted_surfaces = cells.painted_surfaces.into_inner();
         cell_clicked(
@@ -682,12 +686,14 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             &colors,
             &app.tree_sorts,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let mut after = Buffer::empty(area);
         cells.draw(&mut after, &TileContent::Group(key), area, Color::Reset);
+        position(&after, "session ▼");
         assert!(
             position(&after, zeta).1 < position(&after, alpha).1,
-            "first click reverses: {after:?}"
+            "first click reverses names: {after:?}"
         );
     }
 }
@@ -1051,6 +1057,7 @@ fn check_session_palette(variant_name: &str) {
             &colors,
             &HashMap::new(),
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         check.check_drawn(&cells, &palette, pane_ground);
         if let SessionResetFloor::HeldLight(minimum_distance) = check.floors.reset_distance {
@@ -1187,6 +1194,7 @@ fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts()
                 &colors,
                 &sorts,
                 SummarySort::default(),
+                &AccountsTable::NotConfigured,
             );
             let keys: Vec<_> = first.tiles.iter().map(AgentTile::key).collect();
             drop(first);
@@ -1211,6 +1219,7 @@ fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts()
                     column: SummaryColumn::Name,
                     direction,
                 },
+                &AccountsTable::NotConfigured,
             );
             let area = Rect::new(0, 0, 200, 48);
             let ground = tui_pane::pane_background(false);

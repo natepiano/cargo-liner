@@ -31,6 +31,8 @@ use super::ServiceTier;
 use super::ShellTimerObservation;
 use super::Timer;
 use super::WorkIdentity;
+#[cfg(test)]
+use super::accounts::EMPTY_SESSION_STATES;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -1707,10 +1709,13 @@ mod tests {
             "thread children keep their app server's account through flattening",
         );
         let state = MachineState::Answered(rows, super::super::HierarchyEdges::default().into());
-        let placement = super::super::AgentPlacement::from_machines(&[Machine {
-            name:  "local",
-            state: &state,
-        }]);
+        let placement = super::super::AgentPlacement::from_machines(
+            &[Machine {
+                name:  "local",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert_eq!(placement.rows.len(), 1);
         assert!(placement.threads.is_empty());
     }

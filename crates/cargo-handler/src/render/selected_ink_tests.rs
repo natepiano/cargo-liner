@@ -20,6 +20,7 @@ use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
+use crate::census::accounts::AccountsTable;
 use crate::census::transcript::SubagentRole;
 use crate::theme;
 use crate::theme::Role;
@@ -132,6 +133,19 @@ fn covered_contrast(ink: Color, ground: Color) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
+fn source_states(app: &mut App) {
+    app.accounts.table = AccountsTable::Ready(
+        crate::census::accounts::AccountsReading::parse(
+            br#"{
+            "accounts":[{"label":"claude1","roles":[],"use_credits":false,"sessions":[
+                {"session":"owner","state":"busy"},{"session":"colored","state":"busy"},
+                {"session":"other","state":"idle"}
+            ]}],"problems":[]}"#,
+        )
+        .expect("source states"),
+    );
+}
+
 fn fixture() -> Vec<AgentRow> {
     serde_json::from_value(serde_json::json!([
         {"agent":"claude","pid":10,"name":"ink-owner","session_id":"owner","started":100,
@@ -203,15 +217,16 @@ fn check_theme(theme_name: &str) {
             .into(),
             stage:     ScanStage::Completed,
         });
+        source_states(&mut app);
         // Selection and timer words keep the settled row positions fixed.
         let mut renderer = SelectedRowRenderer::new(&mut app, 48);
         let layout = renderer.terminal.backend().buffer().clone();
         for (label, now, word) in [
-            ("colored-session", CLOCK, "thinking"),
+            ("colored-session", CLOCK, "busy"),
             ("timed-shell", CLOCK - 1, "0:01"),
-            ("timed-shell", CLOCK, "running"),
-            ("timed-shell", CLOCK + 90, "running"),
-            ("untimed-shell", CLOCK, "running"),
+            ("timed-shell", CLOCK, "busy"),
+            ("timed-shell", CLOCK + 90, "busy"),
+            ("untimed-shell", CLOCK, "busy"),
         ] {
             app.click(position(&layout, label));
             for focused in [true, false] {
@@ -287,6 +302,7 @@ fn selection_application(palette: &Path) -> App {
         .into(),
         stage:     ScanStage::Completed,
     });
+    source_states(&mut app);
     app
 }
 
@@ -625,7 +641,7 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
                     "colored-session",
                     vec![
                         ("colored-session", 0),
-                        ("thinking", 1),
+                        ("busy", 1),
                         ("unit", 3),
                         ("claude1", 4),
                     ],
@@ -638,12 +654,12 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
                 (
                     CLOCK,
                     "timed-shell",
-                    vec![("running", 1), ("shell", 5), ("claude1", 4)],
+                    vec![("busy", 1), ("shell", 5), ("claude1", 4)],
                 ),
                 (
                     CLOCK + 90,
                     "timed-shell",
-                    vec![("running", 1), ("shell", 5), ("claude1", 4)],
+                    vec![("busy", 1), ("shell", 5), ("claude1", 4)],
                 ),
             ] {
                 let buffer = renderer.paint(&mut app, now);

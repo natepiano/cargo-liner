@@ -13,6 +13,7 @@ use worker_dispatch::WorkerDispatch;
 
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::accounts::EMPTY_SESSION_STATES;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::*;
@@ -39,7 +40,7 @@ fn grouped(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000)
         .iter()
@@ -109,7 +110,7 @@ fn reviewer_plan_process_without_session_record_draws_review_in_the_unassigned_t
             name:  "fixture",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
         let grouped_tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000);
         assert!(matches!(
@@ -126,8 +127,8 @@ fn reviewer_plan_process_without_session_record_draws_review_in_the_unassigned_t
             .position(|line| line.contains("session") && line.contains("role"))
             .expect("tree column header");
         let header_text = text.lines().nth(header).expect("header");
-        assert!(!header_text.split_whitespace().any(|word| word == "status"));
-        let role_column = header_text[..header_text.find("role").expect("role column")]
+        assert!(header_text.split_whitespace().any(|word| word == "status"));
+        let role_column = header_text[..header_text.find("activity").expect("activity column")]
             .chars()
             .count();
         let row = text
@@ -139,7 +140,7 @@ fn reviewer_plan_process_without_session_record_draws_review_in_the_unassigned_t
             .skip(role_column)
             .take_while(|character| !character.is_whitespace())
             .collect();
-        assert_eq!(role, "review", "{text}");
+        assert_eq!(role, "reviewer", "{text}");
     }
 }
 
@@ -293,8 +294,8 @@ fn reviewer_claude_seat_review_pass_overrides_its_impl_slot_role() {
         .lines()
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header")
-        .find("role")
-        .expect("role column");
+        .find("activity")
+        .expect("activity column");
     let worker = text
         .lines()
         .find(|line| line.contains("impl · Repair the Claude seat"))
@@ -304,6 +305,6 @@ fn reviewer_claude_seat_review_pass_overrides_its_impl_slot_role() {
         .skip(column)
         .take_while(|character| !character.is_whitespace())
         .collect();
-    assert_eq!(role, "review", "{text}");
+    assert_eq!(role, "reviewer", "{text}");
     assert!(!text.contains("Claude dispatch shell"), "{text}");
 }

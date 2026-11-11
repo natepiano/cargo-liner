@@ -7,6 +7,7 @@ mod census;
 mod cli;
 mod config;
 mod constants;
+mod details;
 mod footer_colors;
 mod globals;
 mod interaction;

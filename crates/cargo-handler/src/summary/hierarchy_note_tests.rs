@@ -14,6 +14,7 @@ use crate::app::App;
 use crate::census::Census;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::hierarchy::HierarchyError;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::HierarchySnapshot;
@@ -74,7 +75,7 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
             name:  "fixture",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
         let accounts = accounts_below_diagnostic();
         let colors = FooterColors::default();

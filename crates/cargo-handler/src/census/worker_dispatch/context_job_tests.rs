@@ -18,6 +18,7 @@ use crate::census::AgentRow;
 use crate::census::HierarchySnapshot;
 use crate::census::Machine;
 use crate::census::MachineState;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::footer_colors::FooterColors;
 
 fn drawn_job(prompt: &str) -> String {
@@ -32,7 +33,7 @@ fn drawn_job(prompt: &str) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let agents = agent_cell::cell_order_placed(&placement);
     let tiles = agent_cell::group_tiles(&placement, &agents, &HashMap::new(), 1000);
     let entry = tiles

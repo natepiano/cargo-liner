@@ -89,9 +89,15 @@ pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
 /// glyph the way the space leading [`SUMMARY_CELL_TITLE`] does.
 pub(crate) const AGENT_CELL_TITLE_LEAD: &str = " ";
 
+/// The title of the selected row popup.
+pub(crate) const ROW_DETAILS_TITLE: &str = " Row details ";
+
 // agent cells
 /// The account column of an agent tile tree.
 pub(crate) const TREE_ACCOUNT_HEADER: &str = "account";
+/// The work assigned to a tree row.
+pub(crate) const TREE_ACTIVITY_HEADER: &str = "activity";
+
 /// The age column of an agent tile tree.
 pub(crate) const TREE_AGE_HEADER: &str = "age";
 /// The branch column of an agent tile tree.
@@ -192,6 +198,10 @@ pub(crate) const IDLE_ROLE: &str = "idle";
 /// `[variants.roles]` key for why a remote machine gave no answer.
 pub(crate) const UNREACHABLE_ROLE: &str = "unreachable";
 // census
+/// Directory that stores each session's detached run records.
+pub(crate) const DETACHED_RUNS_DIRECTORY: &str = "detached_runs";
+/// Supervisor script that proves a detached run remains live.
+pub(crate) const DETACHED_RUNS_SCRIPT: &str = "detached_runs.py";
 /// Verification launcher whose detached runs may override conversation activity.
 pub(crate) const VERIFY_SCRIPT: &str = "verify.sh";
 /// Mesh launcher used to select fresh and existing worker seats.

@@ -16,6 +16,7 @@ use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::StaffRowNames;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::model::ModelName;
 use crate::census::model::ReasoningEffort;
 use crate::footer_colors::FooterColors;
@@ -105,7 +106,7 @@ fn rendered_with_colors(
         name: "natedev",
         state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let area = Rect::new(
         0,
         0,

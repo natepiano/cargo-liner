@@ -26,6 +26,7 @@ use crate::census::HierarchyEdges;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::account::ConfigHome;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::classify::ProcessEntry;
 use crate::census::scan;
 use crate::footer_colors::FooterColors;
@@ -141,7 +142,7 @@ fn grouped_text(dispatch: &WorkerDispatch) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let agents = agent_cell::cell_order_placed(&placement);
     let tiles = agent_cell::group_tiles(&placement, &agents, &HashMap::new(), 1000);
     let AgentTile::Agent(entry) = &tiles[0] else {

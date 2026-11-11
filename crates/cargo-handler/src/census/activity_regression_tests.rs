@@ -19,6 +19,7 @@ use notify::event::ModifyKind;
 
 use super::*;
 use crate::census::AgentRow;
+use crate::census::MachineState;
 use crate::census::account::ConfigHome;
 use crate::render;
 
@@ -299,7 +300,7 @@ fn write_captured_tile_runs(
     directory: &Path,
     implementation: CapturedImplRun,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let runs = directory.join("mesh_runs");
+    let runs = directory.join("detached_runs");
     fs::create_dir(&runs)?;
     for mut run in serde_json::from_value::<Vec<Value>>(captured["runs"].clone())? {
         run["status"] = serde_json::json!(if run["worker"] == "impl"
@@ -515,7 +516,7 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
                 member:  "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a".into(),
                 role:    HierarchyRole::AstraDesigner,
             }]);
-            let buffer = render::astra_frame_for_test(rows, edges);
+            let buffer = render::astra_frame_for_test(rows.clone(), edges.clone());
             let line = buffer
                 .content
                 .chunks(220)
@@ -532,8 +533,30 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
                 CapturedImplRun::Finished => without_run,
             };
             assert!(
-                line.split_whitespace().any(|word| word == expected),
+                line.contains("worker"),
                 "{status}, {implementation:?}: {line}"
+            );
+            let name = &rows
+                .iter()
+                .find(|row| {
+                    row.session_id
+                        .ids()
+                        .any(|id| id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+                })
+                .ok_or("Astra worker")?
+                .name;
+            let state = MachineState::Answered(rows.clone(), edges.into());
+            assert_eq!(
+                crate::agent_cell::detail_property_for_test(
+                    &[crate::census::Machine {
+                        name:  "fixture",
+                        state: &state,
+                    }],
+                    name,
+                    "state",
+                    crate::census::unix_now()
+                ),
+                expected
             );
         }
     }
@@ -688,7 +711,7 @@ fn record(pid: u32, started_at: f64, command: &[&str]) -> Result<RunRecord, serd
     }))
     .map(|record| {
         record.at_file(&PathBuf::from(format!(
-            "/fixture/session/mesh_runs/run-{pid}.json"
+            "/fixture/session/detached_runs/run-{pid}.json"
         )))
     })
 }
@@ -701,9 +724,9 @@ fn unrelated_detached_commands_never_override_a_tool_or_an_older_gate() -> TestR
             1,
             &[
                 "python3",
-                "mesh_runs.py",
+                "detached_runs.py",
                 "supervise",
-                "/fixture/session/mesh_runs/run-100.json",
+                "/fixture/session/detached_runs/run-100.json",
             ],
         ),
         process(101, 100, &["cargo", "clippy"]),
@@ -833,9 +856,9 @@ fn remote_step_unknown_uses_the_verify_request_without_changing_local_waits() ->
             1,
             &[
                 "python3",
-                "mesh_runs.py",
+                "detached_runs.py",
                 "supervise",
-                "/fixture/session/mesh_runs/run-100.json",
+                "/fixture/session/detached_runs/run-100.json",
             ],
         ),
         process(101, 100, &["ssh", "mac", "remote-dispatch"]),
@@ -893,9 +916,9 @@ fn remote_verification_finds_a_step_after_shell_setup_without_matching_substring
 }
 
 fn run_file(directory: &Path, name: &str, pid: u32) -> TestResult {
-    fs::create_dir_all(directory.join("mesh_runs"))?;
+    fs::create_dir_all(directory.join("detached_runs"))?;
     fs::write(
-        directory.join("mesh_runs").join(name),
+        directory.join("detached_runs").join(name),
         serde_json::to_vec(&serde_json::json!({
             "pid":pid,"started_at":1,"thread_id":"worker","status":"running",
             "command":["bash","verify.sh","test"]
@@ -954,7 +977,7 @@ fn idle_run_records_remove_deleted_files_from_the_cache() -> TestResult {
     run_file(directory.path(), "one.json", 1)?;
     let mut records = RunRecords::for_test();
     assert_eq!(records.read(directory.path()).len(), 1);
-    fs::remove_file(directory.path().join("mesh_runs/one.json"))?;
+    fs::remove_file(directory.path().join("detached_runs/one.json"))?;
     assert!(
         records.read(directory.path()).is_empty(),
         "removed records leave the cache"
@@ -971,7 +994,7 @@ fn idle_run_records_keep_sessions_separate_and_retry_revised_partial_json() -> T
     let mut records = RunRecords::for_test();
     assert_eq!(records.read(first.path()).len(), 1);
     assert_eq!(records.read(second.path()).len(), 1);
-    let partial = first.path().join("mesh_runs/partial.json");
+    let partial = first.path().join("detached_runs/partial.json");
     fs::write(&partial, "{")?;
     let mut parses = 0;
     for _ in 0..2 {
@@ -997,14 +1020,17 @@ fn idle_run_records_keep_sessions_separate_and_retry_revised_partial_json() -> T
 fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
     let directory = tempfile::tempdir()?;
     run_file(directory.path(), "one.json", 1)?;
-    let path = directory.path().join("mesh_runs/one.json");
+    let path = directory.path().join("detached_runs/one.json");
     let modified = fs::metadata(&path)?.modified()?;
     let mut records = RunRecords::for_test();
     records.read(directory.path());
     for (pid, replace) in [(2, false), (3, true)] {
         if replace {
             run_file(directory.path(), "replacement.json", pid)?;
-            fs::rename(directory.path().join("mesh_runs/replacement.json"), &path)?;
+            fs::rename(
+                directory.path().join("detached_runs/replacement.json"),
+                &path,
+            )?;
         } else {
             run_file(directory.path(), "one.json", pid)?;
         }
@@ -1039,7 +1065,7 @@ fn idle_run_records_retry_failed_io_but_keep_malformed_revisions() -> TestResult
         1,
         "a transient read failure must retry even with unchanged metadata"
     );
-    fs::write(directory.path().join("mesh_runs/one.json"), "{")?;
+    fs::write(directory.path().join("detached_runs/one.json"), "{")?;
     let mut parses = 0;
     for _ in 0..2 {
         records.read_with(directory.path(), |bytes| {
@@ -1093,7 +1119,7 @@ fn idle_run_watch_recovery_reuses_its_unchanged_directory() -> TestResult {
         "recovery keeps the healthy OS watch"
     );
     fs::rename(
-        directory.path().join("mesh_runs"),
+        directory.path().join("detached_runs"),
         directory.path().join("old-runs"),
     )?;
     run_file(directory.path(), "two.json", 2)?;
@@ -1153,7 +1179,7 @@ fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
     );
     assert_eq!(records.directory_reads, 3);
 
-    fs::remove_dir_all(directory.path().join("mesh_runs"))?;
+    fs::remove_dir_all(directory.path().join("detached_runs"))?;
     records
         .watches
         .get_mut(directory.path())
@@ -1226,7 +1252,7 @@ fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> Test
         records.directory_reads, 1,
         "a file event does not list its unchanged mates"
     );
-    fs::remove_file(directory.path().join("mesh_runs/1.json"))?;
+    fs::remove_file(directory.path().join("detached_runs/1.json"))?;
     records.watches[directory.path()].record_changed("1.json".into());
     assert_eq!(records.read_for_processes(directory.path(), &live).len(), 2);
     run_file(directory.path(), "new.json", 1)?;
@@ -1240,7 +1266,7 @@ fn assert_live_detached_run_waits(encoded: &str) -> TestResult {
     let mut payload: Value = serde_json::from_str(encoded)?;
     payload["status"] = serde_json::json!("running");
     let directory = tempfile::tempdir()?;
-    let runs = directory.path().join("mesh_runs");
+    let runs = directory.path().join("detached_runs");
     fs::create_dir(&runs)?;
     let path = runs.join("run.json");
     fs::write(&path, serde_json::to_vec(&payload)?)?;
@@ -1252,7 +1278,7 @@ fn assert_live_detached_run_waits(encoded: &str) -> TestResult {
         1,
         &[
             "python3",
-            "mesh_runs.py",
+            "detached_runs.py",
             "supervise",
             &path.to_string_lossy(),
         ],

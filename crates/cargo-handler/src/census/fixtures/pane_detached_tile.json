@@ -49,7 +49,7 @@
       "director_dir": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e",
       "done_message_file": "",
       "label": "Phase 30m repair 3 package checks",
-      "log": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/mesh_runs/20261108T115054-992260-70a7.log",
+      "log": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/detached_runs/20261108T115054-992260-70a7.log",
       "pid": 994014,
       "run_id": "20261108T115054-992260-70a7",
       "session_dir": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e",
@@ -70,7 +70,7 @@
       "exit_code": 143,
       "finished_at": "2026-11-08T17:00:41+00:00",
       "label": "phase43i corrected interrupt observations and final workspace gate",
-      "log": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/mesh_runs/20261108T023429-1572060-047c.log",
+      "log": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/detached_runs/20261108T023429-1572060-047c.log",
       "pid": 1572988,
       "run_id": "20261108T023429-1572060-047c",
       "session_dir": "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e",
@@ -138,9 +138,9 @@
       "name": "python3",
       "arguments": [
         "/run/current-system/sw/bin/python3",
-        "/home/natepiano/.claude/scripts/agents/mesh_runs.py",
+        "/home/natepiano/.claude/scripts/agents/detached_runs.py",
         "supervise",
-        "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/mesh_runs/20261108T115054-992260-70a7.json"
+        "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/detached_runs/20261108T115054-992260-70a7.json"
       ],
       "started": 1794156654,
       "directory": "/home/natepiano/rust/cargo-liner-tile"
@@ -181,9 +181,9 @@
       "name": "python3",
       "arguments": [
         "/run/current-system/sw/bin/python3",
-        "/home/natepiano/.claude/scripts/agents/mesh_runs.py",
+        "/home/natepiano/.claude/scripts/agents/detached_runs.py",
         "supervise",
-        "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/mesh_runs/20261108T023429-1572060-047c.json"
+        "/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/detached_runs/20261108T023429-1572060-047c.json"
       ],
       "started": 1794123269,
       "directory": null
