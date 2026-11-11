@@ -2454,7 +2454,8 @@ Phase 32i did not land (showrunner, 2026-11-11). Its findings F003, F004 and F00
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - A counted capture with no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows. A capture counts only when the 1-minute load is below 32 at its start and end.
-- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32i/pairs.sh`).
+- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32j/pairs.sh`). Each row count uses two measures from `cpu_ns`: the number of frames over 4 ms, and the median frame CPU. Both must be equal to or better than main in all three pairs.
+- Draw time over 4 ms does not gate (showrunner, 2026-11-11). Run-queue wait, not code, caused most of those frames: 93/84/157 of 96/87/169 at 24/40/80 rows in capture phase32j-gate-5. The checkpoint reports the draw-over-4-ms counts.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 58c — A reservation whose holder worktree id changed can be released  · status: done
