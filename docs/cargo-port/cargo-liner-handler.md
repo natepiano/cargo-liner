@@ -47,9 +47,9 @@ Director decisions:
 2. The role cell shows `unit`, `showrunner`, `worker` or `producer`. A worker row shows `worker`. Subagents and threads do work for a session, so their role is `worker` (showrunner, 2026-11-11). A shell (a timer or a command) has an empty role cell. An unlabeled session also has an empty role cell, because no source names its role. This replaces the C230 behavior, where a subagent row showed its role word in the role cell. That word now goes to the activity cell (showrunner, 2026-11-11).
 3. The activity cell names the work: `impl`, `test`, `fix`, `reviewer`, `astra designer`, `astra reviewer`, `timer`, or the subagent's or thread's work. The user's word `reviewer` replaces the old `review` text. A unit, showrunner or producer row with no job has an empty activity cell. Any agent session row (unit, showrunner, producer, worker or unlabeled) shows `compacting` in the activity cell while that session compacts (the user, via the showrunner, 2026-11-11: "also the activity for any agent session row of any time can be compacting").
 4. A timer row keeps its countdown. The countdown moves from the status cell to the activity cell (`timer 9:48`). Its status is `busy`.
-5. Status is one of `busy`, `idle`, `paused`, `exited`, read from a per-session list in the accounts report: `"sessions": [{"session": "<id>", "state": "..."}]`. The list comes from `~/.claude/scripts/accounts/session_state.py` `classify`, so the tile and the accounts table cannot disagree. cargo-handler never copies `classify` (showrunner, 2026-11-11). sdlc adds the export; until it lands, a row with no entry has an empty status cell. The detailed words (writing, reading, thinking, waiting) move to the details view as a `state:` line.
-6. Age stays computed for each row. It remains the default sort order, oldest first, with no header marker, because no age column is drawn. A clicked column header still sorts by that column.
-7. `d` opens the details view for the selected row in a tile tree and in the top-level agents table. It lists each property as `name: value`, in the order the row draws them, then the values no column shows (pid, directory, branch, model, effort where present), and last `age:` in the long form `32 days, 14 hours, 44 minutes`. Drop leading zero units: `14 hours, 44 minutes`; under one minute shows `0 minutes`. `Esc` closes it. Use the existing tui_pane overlay pattern that the favorites and shortcuts overlays use. If `d` is already bound, report it and stop.
+5. Status is one of `busy`, `idle`, `paused`, `exited`, read from a per-session list in the accounts report: `"sessions": [{"session": "<id>", "state": "..."}]`. The list comes from `~/.claude/scripts/accounts/session_state.py` `classify`, so the tile and the accounts table cannot disagree. cargo-handler never copies `classify` (showrunner, 2026-11-11). sdlc adds the export; until it lands, a row with no entry has an empty status cell. The detailed words (writing, reading, thinking, waiting) move to the details view as a `state:` line. Showrunner ruling, 2026-11-11: a Claude subagent row draws `busy` while it runs, and its activity can still show `compacting`. A Codex row with no recorded thread id draws `idle` when its process is live, and `exited` when it is not. The accounts export does not change.
+6. Age stays computed for each row. It remains the default sort order, oldest first, with no header marker, because no age column is drawn. The unassigned and showrunner tiles keep main's default, session name ascending. A clicked column header still sorts by that column.
+7. `d` opens the details view for the selected row in a tile tree and in the top-level agents table. It lists each property as `name: value`, in the order the row draws them, then the values no column shows (pid, directory, branch, model, effort where present). Model and effort stay tile columns where the tile has room; the details view lists them in drawn order when they draw, and with the undrawn values when the tile drops them (Phase 4 records Claude effort, C263), and last `age:` in the long form `32 days, 14 hours, 44 minutes`. Drop leading zero units: `14 hours, 44 minutes`; under one minute shows `0 minutes`. `Esc` closes it. Use the existing tui_pane overlay pattern that the favorites and shortcuts overlays use. If `d` is already bound, report it and stop.
 
 Tasks:
 1. Tile tree: move `TreeColumn::Account` first, split `TreeColumn::Role` into `Role` (four-word type) and a new `Activity` column, and remove `TreeColumn::Age` from the drawn columns. Update `ColumnDrop::ORDER` and `GroupFitStep::ORDER` so narrow tiles drop the new column sets in a sensible order: Directory, Branch, Activity, Account.
@@ -178,3 +178,45 @@ Tests (red first, each under one second):
 **State:** none
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows the producers tile and no producer in the unassigned tile.
+
+### Phase 4 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+
+**Depends on:** Phase 1 (it uses the details view and the new column order)
+
+#### Work Order
+
+**Goal:** every tile with room draws the effort column for Claude and Codex rows. A shell command row takes no more width than the agent rows beside it.
+
+**Source:** the user, via the showrunner, 2026-11-11 (C263): "there are a few problems with the current setup so think about these 4 the future: why does effort only show in the unassigned when the rest have plenty of space - also we shouldn't allow a long python script description to take up so much space as it does in the natedev showrunner." Screenshot: `/tmp/claude/scratch/until-2026-11-15T0500Z-handler-shot-c263/handler_c263_followup.png`.
+
+**Spec:**
+
+Director decisions:
+1. Cause of the effort gap: Claude writes `effort` at the top level of each assistant record (`{"type":"assistant","effort":"high","message":{...}}`). `ConversationModel::take_claude` reads effort from `message`, so no Claude row has an effort, and the fitter drops the empty column. Codex rows record effort, so only the unassigned tile drew it. Fix the reader: take effort from the top-level record, and the model from `message.model`.
+2. The effort column keeps its place in the drop order. No column-set change. With effort recorded, it draws wherever the tile has room.
+3. A shell command row's session cell cuts each path argument to its file name: `python3 /tmp/…/scratchpad/watchgates.py 2>&1` draws `python3 watchgates.py 2>&1`.
+4. The session column width comes from the agent rows of the tile. A shell row wider than that width ends in `…` at the column edge. The details view `name:` line keeps the full command.
+
+Tests (red first, each under one second):
+1. A Claude assistant record with a top-level `effort` gives that effort; its `message.model` gives the model.
+2. A Claude tile with recorded effort draws the effort column at a width that fits it.
+3. A path argument draws as its file name; other arguments are unchanged.
+4. A shell row longer than the widest agent row does not widen the session column, and it ends in `…`.
+5. The details view of that shell row shows the full command.
+
+**Live check (director):** before the checkpoint, capture the natedev showrunner tile and the hana showrunner tile from a build of this branch and from main, under the safety rule.
+
+**Change-Review line:** Claude rows show their effort, and a long shell command no longer pushes the columns to the right | On natedev, run cargo-handler and look at the natedev and hana showrunner tiles | The effort column shows on Claude rows where the tile has room; a shell command shows its script name and ends in … at the session column edge; d shows the full command
+
+**Files:**
+- `crates/cargo-handler/src/census/model.rs` — `ConversationModel::take_claude`
+- `crates/cargo-handler/src/agent_cell.rs` — the shell row text and the session column width
+- `docs/cargo-handler/as-built/hierarchy.md` — the effort source and the shell row text
+- `docs/cargo-handler/as-built/tile-layout.md` — the session column width
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the five tests above. The live check shows effort on Claude rows and a shell row that does not widen the session column.
