@@ -33,6 +33,11 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::GitPane;
+use super::constants::GIT_DATE_CENTURY_DIGITS;
+use super::constants::GIT_DATE_PATTERN;
+use super::constants::GIT_EMPTY_TEXT_MARGIN;
+use super::constants::GIT_LOADING_TEXT;
+use super::constants::GIT_NOT_REPOSITORY_TEXT;
 use crate::constants::GIT_LOCAL;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SECONDS_PER_MINUTE;
@@ -440,16 +445,12 @@ fn append_pull_requests_section(
     accum.lines.push(Line::from(Span::raw(String::new())));
 
     if section.rows.is_empty() {
-        accum.lines.push(Line::from(Span::styled(
-            format!(
-                " {}",
-                fit_text(
-                    &pull_request_status_text(section),
-                    usize::from(area_width).saturating_sub(2)
-                )
-            ),
-            Style::default().fg(inactive_title_color()),
-        )));
+        let style = Style::default().fg(inactive_title_color());
+        accum.lines.extend(
+            message_rows(&pull_request_status_text(section), area_width)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(format!(" {row}"), style))),
+        );
         return;
     }
 
@@ -764,6 +765,17 @@ fn push_section_overlays(
                 .add_modifier(Modifier::BOLD),
             SectionFocus::Unfocused => Style::default().fg(inactive_title_color()),
         };
+        // The first content row sits under the top border or under the description
+        // divider, so the section names itself in text there and draws no second rule.
+        if abs_y == inner_area.y {
+            let width = inner_area.width.saturating_sub(1);
+            chrome.labels.push(PaneFrameLabel {
+                area:  Rect::new(inner_area.x.saturating_add(1), abs_y, width, 1),
+                text:  section_title_with_count(&rule.title, usize::from(width)),
+                style: title_style,
+            });
+            continue;
+        }
         let rule_area = Rect {
             x:      outer_area.x,
             y:      abs_y,
@@ -999,16 +1011,21 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     }
 }
 
-fn github_status_line(args: &RenderFlatArgs<'_>, row_index: usize) -> Line<'static> {
+/// The GitHub status message, wrapped onto more rows instead of cut.
+fn github_status_lines(args: &RenderFlatArgs<'_>, row_index: usize) -> Vec<Line<'static>> {
     let selection = tui_pane::selection_state(args.pane, row_index, args.focus);
     let overlay = theme_roles::selection_style(selection, args.styles.chrome.color_mode);
     let value = DetailField::GithubStatus.git_value(args.data);
-    let width = usize::from(args.area_width).saturating_sub(2);
-    Line::from(Span::styled(
-        format!(" {}", fit_text(&value, width)),
-        field_value_style(args.data, DetailField::GithubStatus).patch(overlay),
-    ))
-    .style(overlay)
+    let style = field_value_style(args.data, DetailField::GithubStatus).patch(overlay);
+    message_rows(&value, args.area_width)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(format!(" {row}"), style)).style(overlay))
+        .collect()
+}
+
+/// A message split on words to the inner width less one cell on each side.
+fn message_rows(message: &str, area_width: u16) -> Vec<String> {
+    support::word_wrap(message, usize::from(area_width).saturating_sub(2))
 }
 
 fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize {
@@ -1090,7 +1107,7 @@ fn flat_field_lines(
 ) -> Vec<Line<'static>> {
     let mode = args.styles.chrome.color_mode;
     if field == DetailField::GithubStatus {
-        return vec![github_status_line(args, row_index)];
+        return github_status_lines(args, row_index);
     }
     let value = build_field_value(args.data, field);
     let compact_prefix = usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH
@@ -1193,11 +1210,53 @@ fn wrapped_field_lines(
 }
 
 fn fit_field_value(field: DetailField, value: &str, width: usize) -> String {
-    if field == DetailField::VsLocal {
+    match field {
+        DetailField::VsLocal => fit_ahead_behind_value(value, width),
+        DetailField::Inception | DetailField::LastCommit | DetailField::LastFetched => {
+            fit_date_value(value, width)
+        },
+        _ => fit_text(value, width).into_owned(),
+    }
+}
+
+/// Fit an Ahead/Behind value. The counts stay whole, and the words after
+/// them take every free cell before the cut.
+fn fit_ahead_behind_value(value: &str, width: usize) -> String {
+    let counts_end = value.find(char::is_alphabetic).unwrap_or(value.len());
+    if value[..counts_end].trim_end().width() < width {
+        fit_text(value, width).into_owned()
+    } else {
         pane_data::fit_sync_text(value, width)
+    }
+}
+
+/// Fit a `YYYY-MM-DD HH:MM` value: drop the time, then the century.
+fn fit_date_value(value: &str, width: usize) -> String {
+    let date = value.split_once(' ').map_or(value, |(date, _)| date);
+    if value.width() <= width || !is_calendar_date(date) {
+        return fit_text(value, width).into_owned();
+    }
+    if date.len() <= width {
+        return date.to_string();
+    }
+    let short = &date[GIT_DATE_CENTURY_DIGITS..];
+    if short.len() <= width {
+        short.to_string()
     } else {
         fit_text(value, width).into_owned()
     }
+}
+
+/// Whether `text` has the `YYYY-MM-DD` form of [`GIT_DATE_PATTERN`].
+fn is_calendar_date(text: &str) -> bool {
+    text.len() == GIT_DATE_PATTERN.len()
+        && text
+            .bytes()
+            .zip(GIT_DATE_PATTERN.bytes())
+            .all(|(byte, pattern)| match pattern {
+                b'0' => byte.is_ascii_digit(),
+                _ => byte == pattern,
+            })
 }
 
 fn style_rate_limit_reset(line: &mut Line<'static>, reset_style: Style) {
@@ -1381,7 +1440,7 @@ fn sync_col_layout(
     let budget = available.saturating_sub(1);
     let columns = SyncColumns::for_width(lead_header, budget);
     if let SyncColumns::Reduced(columns) = columns {
-        return SyncColLayout::reduced(columns, lead_header, budget);
+        return reduced_sync_col_layout(remotes, worktrees, columns, lead_header, budget);
     }
     let mut remote_name = remotes
         .iter()
@@ -1456,6 +1515,38 @@ fn sync_col_layout(
         sync,
     };
     layout.fitted(values, natural_lead)
+}
+
+fn reduced_sync_col_layout(
+    remotes: &[RemoteRow],
+    worktrees: &[WorktreeInfo],
+    columns: ReducedSyncColumns,
+    lead_header: usize,
+    budget: usize,
+) -> SyncColLayout {
+    let mut layout = SyncColLayout::reduced(columns, lead_header, budget);
+    let reserved = match columns {
+        ReducedSyncColumns::WithoutTracked => 3 + lead_header + BRANCH_HEADER.width(),
+        ReducedSyncColumns::PrimaryAndSync => {
+            let primary = remotes
+                .iter()
+                .map(|remote| remote.name.width().max(REMOTES_NAME_HEADER.width()))
+                .chain(worktrees.iter().map(|worktree| {
+                    worktree_branch_text(worktree)
+                        .width()
+                        .max(BRANCH_HEADER.width())
+                }))
+                .max()
+                .unwrap_or(lead_header);
+            2 + primary.min(budget.saturating_sub(2 + SYNC_HEADER.width()))
+        },
+        ReducedSyncColumns::Primary => budget,
+    };
+    layout.sync = sync_value_widths(remotes, worktrees)
+        .2
+        .max(SYNC_HEADER.width())
+        .min(budget.saturating_sub(reserved).max(SYNC_HEADER.width()));
+    layout
 }
 
 impl SyncColLayout {
@@ -1643,6 +1734,18 @@ fn fit_table_line(mut line: Line<'static>, width: usize) -> Line<'static> {
     line
 }
 
+fn fit_table_sync_text(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let counts = text
+        .split_whitespace()
+        .filter(|word| !matches!(*word, "ahead" | "behind"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    pane_data::fit_sync_text(&counts, width)
+}
+
 fn reduced_sync_text(
     layout: &SyncColLayout,
     columns: ReducedSyncColumns,
@@ -1664,7 +1767,7 @@ fn reduced_sync_text(
                 " {} {} {}",
                 left_column(leading, layout.lead),
                 left_column(branch, branch_width),
-                right_column(&pane_data::fit_sync_text(sync, layout.sync), layout.sync)
+                right_column(&fit_table_sync_text(sync, layout.sync), layout.sync)
             )
         },
         ReducedSyncColumns::PrimaryAndSync => {
@@ -1672,7 +1775,7 @@ fn reduced_sync_text(
             format!(
                 " {} {}",
                 left_column(primary, primary_width),
-                right_column(&pane_data::fit_sync_text(sync, layout.sync), layout.sync)
+                right_column(&fit_table_sync_text(sync, layout.sync), layout.sync)
             )
         },
         ReducedSyncColumns::Primary => format!(
@@ -1851,7 +1954,7 @@ fn remote_row_line(
                 format!(
                     "{gap}{}",
                     right_column(
-                        &pane_data::fit_sync_text(&row.status_text(), layout.sync),
+                        &fit_table_sync_text(&row.status_text(), layout.sync),
                         layout.sync,
                     ),
                     gap = " ".repeat(layout.column_gap())
@@ -1942,10 +2045,7 @@ fn worktree_row_line(
         );
     }
     let sync_text = panes::format_ahead_behind(row.ahead_behind);
-    let sync = right_column(
-        &pane_data::fit_sync_text(&sync_text, layout.sync),
-        layout.sync,
-    );
+    let sync = right_column(&fit_table_sync_text(&sync_text, layout.sync), layout.sync);
     let leading = format!(" {}", left_column(&row.name, layout.worktree_name));
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let prefix = format!(
@@ -1980,8 +2080,43 @@ fn git_panel_title(data: &GitData) -> String {
         | GitCheckout::Unborn
         | GitCheckout::UnreadableHead
         | GitCheckout::Broken
-        | GitCheckout::AwaitingProbe => tui_pane::pane_title("Git", &PaneTitleCount::None),
+        | GitCheckout::AwaitingProbe
+        | GitCheckout::NotRepository => tui_pane::pane_title("Git", &PaneTitleCount::None),
     }
+}
+
+/// The state text an empty Git pane draws, so the body never stays blank.
+const fn git_empty_text(checkout: &GitCheckout) -> Option<&'static str> {
+    match checkout {
+        GitCheckout::AwaitingProbe => Some(GIT_LOADING_TEXT),
+        GitCheckout::NotRepository => Some(GIT_NOT_REPOSITORY_TEXT),
+        GitCheckout::Broken
+        | GitCheckout::UnreadableHead
+        | GitCheckout::Unborn
+        | GitCheckout::Detached { .. }
+        | GitCheckout::Branch { .. } => None,
+    }
+}
+
+/// Wrap the empty pane state with one cell on each side.
+fn render_git_empty_text(frame: &mut Frame, area: Rect, checkout: &GitCheckout) {
+    let Some(text) = git_empty_text(checkout) else {
+        return;
+    };
+    let inner = tui_pane::frame_inner(area);
+    let row = Rect {
+        x: inner.x.saturating_add(GIT_EMPTY_TEXT_MARGIN),
+        width: inner.width.saturating_sub(GIT_EMPTY_TEXT_MARGIN * 2),
+        ..inner
+    };
+    let rows = message_rows(text, inner.width);
+    let rows =
+        render::clip_rows_with_ellipsis(&rows, usize::from(row.height), usize::from(row.width));
+    let lines: Vec<Line<'static>> = rows.into_iter().map(Line::from).collect();
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(label_color())),
+        row,
+    );
 }
 
 /// Body of `GitPane::render`. Same pattern as
@@ -2011,6 +2146,7 @@ pub(super) fn render_git_pane_body(
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
+        render_git_empty_text(frame, area, &git_data.checkout);
         return empty_git_chrome(tui_pane::pane_title("Git", &PaneTitleCount::None));
     }
 
@@ -2264,7 +2400,14 @@ pub(in crate::tui::panes) fn git_lower_content_height(
     } else {
         3 + data.worktrees.len()
     };
-    let pr_block = pull_request_block_height(&data.pull_requests);
+    let pr_block = pull_request_block_height(&data.pull_requests, inner_width);
+    let status_rows = if fields.contains(&DetailField::GithubStatus) {
+        message_rows(&DetailField::GithubStatus.git_value(data), inner_width)
+            .len()
+            .saturating_sub(1)
+    } else {
+        0
+    };
     let area = Rect::new(0, 0, inner_width, u16::MAX);
     let label_width = git_label_width(fields);
     let rate_rows = [DetailField::RateLimitCore, DetailField::RateLimitGraphQl]
@@ -2285,7 +2428,7 @@ pub(in crate::tui::panes) fn git_lower_content_height(
             )
         })
         .count();
-    fields.len() + rate_rows + pr_block + remotes_block + worktrees_block
+    fields.len() + rate_rows + status_rows + pr_block + remotes_block + worktrees_block
 }
 
 /// `GitDescription::Present` includes the About section in `git_content_height`;
@@ -2322,14 +2465,14 @@ pub(in crate::tui::panes) const fn git_content_height(
     }
 }
 
-fn pull_request_block_height(section: &PullRequestSection) -> usize {
+fn pull_request_block_height(section: &PullRequestSection, inner_width: u16) -> usize {
     if section.rows.is_empty()
         && matches!(section.state, PullRequestSectionState::HiddenConfirmedEmpty)
     {
         return 0;
     }
     let row_height = if section.rows.is_empty() {
-        1
+        message_rows(&pull_request_status_text(section), inner_width).len()
     } else {
         1 + section.rows.len()
     };

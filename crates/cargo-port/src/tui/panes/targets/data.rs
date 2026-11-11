@@ -186,6 +186,17 @@ impl TargetsData {
         !self.binaries.is_empty() || !self.examples.is_empty() || !self.benches.is_empty()
     }
 
+    /// The inner rows of the Targets pane: the header and one row for each
+    /// target, or none when there are no targets.
+    pub fn inner_rows(&self) -> u16 {
+        if !self.has_targets() {
+            return 0;
+        }
+        u16::try_from(self.binaries.len() + self.examples.len() + self.benches.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1)
+    }
+
     fn append(&mut self, mut other: Self) {
         self.binaries.append(&mut other.binaries);
         self.examples.append(&mut other.examples);

@@ -13,6 +13,7 @@ use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PaneSelectionState;
+use tui_pane::PaneTitleCount;
 use tui_pane::Placed;
 use tui_pane::Region;
 use tui_pane::RuleTitle;
@@ -32,7 +33,7 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::PackagePane;
-use super::constants::PATH_VALUE_RESERVE;
+use super::constants::MIN_TWO_COLUMN_INNER_WIDTH;
 use super::constants::STATS_VALUE_WIDTH;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
@@ -71,16 +72,10 @@ use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
 use crate::tui::theme_roles;
 
-const MIN_TWO_COLUMN_INNER_WIDTH: u16 = 37;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
     Enabled,
     Disabled,
-}
-
-impl LintRenderMode {
-    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for LintRenderMode {
@@ -120,14 +115,15 @@ struct PackageRenderLayout {
 }
 
 struct PackageFieldRender {
-    field:        DetailField,
-    label:        &'static str,
-    label_width:  usize,
-    area_width:   usize,
-    label_style:  Style,
-    value_style:  Style,
-    value:        String,
-    continuation: String,
+    field:             DetailField,
+    label:             &'static str,
+    label_width:       usize,
+    disk_value_indent: usize,
+    area_width:        usize,
+    label_style:       Style,
+    value_style:       Style,
+    value:             String,
+    continuation:      String,
 }
 
 struct StatsColumnRender<'a> {
@@ -634,7 +630,6 @@ fn append_inline_stat(
     }
     let start_y = lines.len();
     let available = usize::from(width.saturating_sub(3));
-    let label = if label.is_empty() { "Total" } else { label };
     if inline_stat_height(label, &value, width) == 2 {
         let value_width = available.saturating_add(1);
         lines.push(Line::from(format!(" {label}")));
@@ -649,7 +644,6 @@ fn append_inline_stat(
 }
 
 fn inline_stat_height(label: &str, value: &str, width: u16) -> usize {
-    let label = if label.is_empty() { "Total" } else { label };
     1 + usize::from(label.width() + value.width() > usize::from(width.saturating_sub(3)))
 }
 
@@ -668,38 +662,11 @@ fn append_package_heading(
     }
 }
 
-fn package_field_label(
-    ctx: &PackageRenderCtx<'_>,
-    field: DetailField,
-    label_width: usize,
-) -> &'static str {
-    let label = field.label();
-    if !matches!(
+const fn is_disk_child(field: DetailField) -> bool {
+    matches!(
         field,
         DetailField::DiskTarget | DetailField::DiskNonTarget | DetailField::DiskOutOfTreeTarget
-    ) {
-        return label;
-    }
-    let original_indent = label.len() - label.trim_start().len();
-    let indent = ctx
-        .rows
-        .iter()
-        .filter_map(|row| match row {
-            PackageRow::Field(
-                child @ (DetailField::DiskTarget
-                | DetailField::DiskNonTarget
-                | DetailField::DiskOutOfTreeTarget),
-            ) => {
-                let child_label = child.label();
-                let text = child_label.trim_start();
-                let available_indent = label_width.checked_sub(text.width())?;
-                Some((child_label.len() - text.len()).min(available_indent))
-            },
-            _ => None,
-        })
-        .min()
-        .unwrap_or(original_indent);
-    &label[original_indent.saturating_sub(indent)..]
+    )
 }
 
 fn package_field_render(
@@ -710,21 +677,20 @@ fn package_field_render(
     selection: PaneSelectionState,
 ) -> PackageFieldRender {
     let mode = ctx.styles.chrome.color_mode;
-    let label_width = if matches!(
-        field,
-        DetailField::Disk
-            | DetailField::DiskTarget
-            | DetailField::DiskNonTarget
-            | DetailField::DiskOutOfTreeTarget
-    ) {
+    let label = field.label();
+    let disk_value_indent = label_width
+        .min(usize::from(area_width).saturating_sub(package_disk_value_width(ctx) + 3))
+        + 2;
+    let label_width = if field == DetailField::Disk {
         label_width.min(usize::from(area_width).saturating_sub(package_disk_value_width(ctx) + 3))
     } else {
         label_width
     };
     PackageFieldRender {
         field,
-        label: package_field_label(ctx, field, label_width),
+        label,
         label_width,
+        disk_value_indent,
         area_width: usize::from(area_width),
         label_style: ctx
             .styles
@@ -790,7 +756,9 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
     let start = lines.len();
     let mut render = render;
     let style = render.label_style;
-    if render.label.trim_start().width() > package_field_label_width(&render)
+    let required_label_width =
+        render.label.trim_start().width() + usize::from(is_disk_child(render.field));
+    if required_label_width > package_field_label_width(&render)
         && render.label.width() < render.area_width
     {
         lines.push(Line::from(Span::styled(
@@ -899,14 +867,23 @@ fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &Packa
                 | DetailField::DiskNonTarget
                 | DetailField::DiskOutOfTreeTarget
         );
-    lines.extend(support::field_value_lines(
+    let mut field_lines = support::field_value_lines(
         prefix,
         value,
         render.area_width,
         render.label_style,
         render.value_style,
         separate_value,
-    ));
+    );
+    if is_disk_child(render.field) && field_lines.len() == 2 {
+        let indent = render
+            .disk_value_indent
+            .min(render.area_width.saturating_sub(value.width() + 1));
+        field_lines[1]
+            .spans
+            .insert(0, Span::raw(" ".repeat(indent.saturating_sub(1))));
+    }
+    lines.extend(field_lines);
 }
 
 fn package_field_prefix(render: &PackageFieldRender) -> String {
@@ -924,11 +901,15 @@ fn package_field_label_width(render: &PackageFieldRender) -> usize {
     let label_width = render.label_width.min(render.area_width.saturating_sub(3));
     let value_width = render.value.trim_start().width();
     match render.field {
-        DetailField::Path => label_width.min(render.area_width.saturating_sub(PATH_VALUE_RESERVE)),
-        DetailField::Disk
-        | DetailField::DiskTarget
-        | DetailField::DiskNonTarget
-        | DetailField::DiskOutOfTreeTarget => label_width,
+        DetailField::DiskTarget | DetailField::DiskNonTarget | DetailField::DiskOutOfTreeTarget => {
+            let fitted = render.area_width.saturating_sub(value_width + 3);
+            if fitted > render.label.trim_start().width() {
+                label_width.min(fitted)
+            } else {
+                label_width
+            }
+        },
+        DetailField::Path | DetailField::Disk => label_width,
         _ if render.area_width > support::NARROW_FIELD_INNER_WIDTH
             && render.label.trim().width() + value_width + 3 <= render.area_width =>
         {
@@ -1304,7 +1285,8 @@ fn paint_package_selection(
 
 fn fit_package_title(data: &PackageData, width: usize) -> String {
     let title = package_chrome(data, PaneFocusState::Inactive).title;
-    if title.trim_end().width() <= width {
+    // The frame drops the side spaces of a title that fits only without them.
+    if title.trim().width() <= width {
         return title;
     }
     let label = if data.title.width() < width {
@@ -1318,8 +1300,8 @@ fn fit_package_title(data: &PackageData, width: usize) -> String {
             "{label} - {} ",
             render::truncate_with_ellipsis(&data.name, available - 3, "…")
         )
-    } else if label.width() < width {
-        format!("{label} ")
+    } else if data.title.width() <= width {
+        tui_pane::pane_title(&data.title, &PaneTitleCount::None)
     } else {
         label
     }
@@ -1666,7 +1648,7 @@ fn render_tests_affordance(frame: &mut Frame, context: &StatsColumnRender<'_>, p
 fn structure_value_style(_: &str, _: &str) -> Style { Style::default().fg(title_color()) }
 
 /// Value-cell style for a Tests row: `unit` / `integration` / `doc`
-/// counts render in primary white; the unlabelled `total` renders in bold
+/// counts render in primary white; the `Total` row renders in bold
 /// accent color (matching the Languages pane footer); the `(ignored)`
 /// annotation renders dimmed, since rustdoc registers but never runs it.
 fn tests_value_style(label: &str, _: &str) -> Style {
@@ -1800,6 +1782,11 @@ fn lint_display_style(display: &LintDisplay) -> Style {
     }
 }
 
+enum LintIconDisplay {
+    Hidden,
+    Status,
+}
+
 /// Render a typed [`LintDisplay`] to the string shown in the
 /// Package detail row. The icon is framed at render time using
 /// the current animation tick (the typed `LintDisplay` carries
@@ -1814,15 +1801,22 @@ fn lint_display_to_string(
         LintDisplay::NotRust => "Not a Rust project".to_string(),
         LintDisplay::NoRuns => "—".to_string(),
         LintDisplay::Runs { count, status } => {
-            let icon = if lint_mode.is_enabled() {
+            let icon_display = match (lint_mode, status) {
+                (LintRenderMode::Disabled, _) | (_, LintStatus::NoLog) => LintIconDisplay::Hidden,
+                (LintRenderMode::Enabled, _) => LintIconDisplay::Status,
+            };
+            let icon = if matches!(icon_display, LintIconDisplay::Status) {
                 integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
                 LINT_NO_LOG
             };
             // When `count` on `LintDisplay::Runs` is zero during the first in-progress run, show
             // `icon` alone because there is no completed count yet, rather than a bare "0".
+            // An empty icon slot draws nothing, so the count starts in the value column.
             if *count == 0 {
                 icon.to_string()
+            } else if matches!(icon_display, LintIconDisplay::Hidden) {
+                count.to_string()
             } else {
                 format!("{icon} {count}")
             }
@@ -2031,6 +2025,21 @@ mod tests {
             lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             ACTIVITY_SPINNER.frame_at(elapsed).to_string()
         );
+    }
+
+    #[test]
+    fn package_lint_count_skips_the_empty_icon_slot() {
+        let display = LintDisplay::Runs {
+            count:  60,
+            status: LintStatus::NoLog,
+        };
+
+        for mode in [
+            super::LintRenderMode::Enabled,
+            super::LintRenderMode::Disabled,
+        ] {
+            assert_eq!(lint_display_to_string(&display, Duration::ZERO, mode), "60");
+        }
     }
 }
 

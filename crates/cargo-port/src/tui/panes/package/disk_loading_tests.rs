@@ -63,11 +63,11 @@ fn disk_rows_and_project_sum_change_from_loading_to_measured() -> anyhow::Result
             let value_position =
                 test_support::find_text_cell(&measured, column, value).context(value)?;
             let label_end = label_position.0 + u16::try_from(label.len())?;
-            let value_end = disk_value.0 + u16::try_from(value.len())?;
-            let fits = label_end < disk_value.0 && value_end <= right;
+            let column_fits = label_end + 1 + u16::try_from(value.len())? < right;
+            assert!(value_position.0 + u16::try_from(value.len())? < right);
             assert_eq!(
                 value_position.1,
-                label_position.1 + u16::from(!fits),
+                label_position.1 + u16::from(!column_fits),
                 "{width}: {label}: {:?}",
                 test_support::rows(&measured)
             );

@@ -187,6 +187,8 @@ pub enum GitCheckout {
     Broken,
     #[default]
     AwaitingProbe,
+    /// The scan found no git checkout at the project path.
+    NotRepository,
     UnreadableHead,
     Unborn,
     Detached {
@@ -208,6 +210,7 @@ impl GitCheckout {
             } => GitReadHealth::Unreadable,
             Self::Broken
             | Self::AwaitingProbe
+            | Self::NotRepository
             | Self::Unborn
             | Self::Detached { .. }
             | Self::Branch {
@@ -219,6 +222,26 @@ impl GitCheckout {
                 ..
             } => GitReadHealth::Readable,
         }
+    }
+
+    fn for_project(
+        status: Option<&WorktreeStatus>,
+        health: WorktreeHealth,
+        head: HeadProbe<'_>,
+        default_branch: RepoBranchProbe<'_>,
+    ) -> Self {
+        if matches!(
+            (status, &head),
+            (Some(WorktreeStatus::NotGit), HeadProbe::Awaiting)
+        ) {
+            return Self::NotRepository;
+        }
+        Self::from_probe(
+            health,
+            head,
+            default_branch,
+            WorktreePlacement::from(status),
+        )
     }
 
     fn from_probe(
@@ -376,7 +399,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
         | GitCheckout::Unborn
         | GitCheckout::Detached { .. }
         | GitCheckout::Branch { .. } => fields.push(DetailField::Head),
-        GitCheckout::AwaitingProbe => {},
+        GitCheckout::AwaitingProbe | GitCheckout::NotRepository => {},
     }
     if data.bisect.is_some() {
         fields.push(DetailField::Bisect);
@@ -589,14 +612,14 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
         failed_reads: GitReadFailures::of(checkout, repo_info),
-        checkout: GitCheckout::from_probe(
+        checkout: GitCheckout::for_project(
+            app.project_list.worktree_status_for(abs_path),
             match app.project_list.at_path(abs_path) {
                 Found(info) => info.worktree_health,
                 UnknownPath | StaleRoute => WorktreeHealth::Normal,
             },
             head,
             local_main_probe,
-            WorktreePlacement::from(app.project_list.worktree_status_for(abs_path)),
         ),
         bisect,
         path: app.project_list.git_status_for(abs_path),
@@ -1033,28 +1056,37 @@ mod git_field_tests {
         use crate::tui::test_support;
         for dimensions in [(80, 17), (95, 24)] {
             for mode in [ColorMode::Colored, ColorMode::NoColor] {
+                let mut app = pull_request_app(mode)?;
+                let repository = app
+                    .project_list
+                    .ensure_git_repo_for(Path::new(test_support::PROJECT_PATH))
+                    .context("repo")?
+                    .repo_info
+                    .clone();
+                let unfetched = draw_pull_request_frame(
+                    &mut app,
+                    ProjectPrData::Unfetched,
+                    PullRequestSectionState::Loading,
+                    dimensions,
+                )?;
+                let loading = draw_pull_request_frame(
+                    &mut app,
+                    ProjectPrData::Loading(None),
+                    PullRequestSectionState::Loading,
+                    dimensions,
+                )?;
+                assert_eq!(
+                    unfetched, loading,
+                    "{dimensions:?}: unfetched and loading pages"
+                );
                 for (finished, expected) in completed_pull_requests() {
-                    let mut app = pull_request_app(mode)?;
-                    let mut frames = Vec::new();
-                    for (state, section_state) in [
-                        (ProjectPrData::Unfetched, PullRequestSectionState::Loading),
-                        (
-                            ProjectPrData::Loading(None),
-                            PullRequestSectionState::Loading,
-                        ),
-                        (finished.clone(), expected),
-                    ] {
-                        frames.push(draw_pull_request_frame(
-                            &mut app,
-                            state,
-                            section_state,
-                            dimensions,
-                        )?);
-                    }
-                    assert_eq!(
-                        frames[0], frames[1],
-                        "{dimensions:?}: unfetched and loading pages"
-                    );
+                    app.project_list
+                        .ensure_git_repo_for(Path::new(test_support::PROJECT_PATH))
+                        .context("repo")?
+                        .repo_info = repository.clone();
+                    app.panes.git = crate::tui::panes::GitPane::new();
+                    let finished_frame =
+                        draw_pull_request_frame(&mut app, finished.clone(), expected, dimensions)?;
                     if matches!(
                         expected,
                         PullRequestSectionState::Loaded | PullRequestSectionState::Stale
@@ -1073,8 +1105,7 @@ mod git_field_tests {
                             dimensions,
                         )?;
                         assert_eq!(
-                            frames.last().context("finished frame")?,
-                            &after,
+                            finished_frame, after,
                             "unreadable remotes retain the finished frame"
                         );
                         let buffer =

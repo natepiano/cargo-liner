@@ -33,7 +33,6 @@ use crate::tui::panes::constants::CI_BRANCH_LONG_MIN_WIDTH;
 use crate::tui::panes::constants::CI_BRANCH_MIN_WIDTH;
 use crate::tui::panes::constants::CI_COMMIT_LONG_MIN_WIDTH;
 use crate::tui::panes::constants::CI_COMMIT_MIN_WIDTH;
-use crate::tui::panes::constants::CI_JOB_LABEL_MAX_WIDTH;
 use crate::tui::panes::constants::CI_JOB_LABEL_MIN_WIDTH;
 use crate::tui::panes::constants::CI_STATUS_GAP_WIDTH;
 use crate::tui::panes::constants::OTHER_JOBS_HEADER;
@@ -67,7 +66,7 @@ impl CiDisplayColumn {
 
     fn header_target_width(&self) -> usize {
         match self {
-            Self::Job(name) => name.width().min(CI_JOB_LABEL_MAX_WIDTH),
+            Self::Job(name) => name.width(),
             Self::Other { .. } => OTHER_JOBS_HEADER.width(),
         }
     }
@@ -382,7 +381,10 @@ fn build_ci_widths(
     }
 
     let mut resolved: Vec<u16> = (0..spec_len).map(|i| column_widths.get(i)).collect();
-    widen_ci_header_columns(&mut resolved, cols, inner_width);
+    let commit_floor = u16::try_from(ci_commit_min_width(ci_runs))
+        .unwrap_or(u16::MAX)
+        .max(label_width(" Commit"));
+    widen_ci_header_columns(&mut resolved, cols, inner_width, commit_floor);
     if let Some(slack) = ci_width_slack(&resolved, inner_width) {
         let title_width = ci_runs
             .iter()
@@ -413,22 +415,34 @@ fn ci_header_label_for_width(label: &str, width: usize) -> String {
     render::truncate_with_ellipsis(label, width, "\u{2026}")
 }
 
-fn widen_ci_header_columns(widths: &mut [u16], cols: &[CiDisplayColumn], inner_width: u16) {
-    let Some(mut slack) = ci_width_slack(widths, inner_width) else {
+/// Grows each job header toward its whole label. Free cells go first, then the
+/// Commit column gives cells down to `commit_floor`.
+fn widen_ci_header_columns(
+    widths: &mut [u16],
+    cols: &[CiDisplayColumn],
+    inner_width: u16,
+    commit_floor: u16,
+) {
+    let Some(slack) = ci_width_slack(widths, inner_width) else {
         return;
     };
+    let mut spare = slack + usize::from(widths[0].saturating_sub(commit_floor));
+    let mut grown = 0;
 
     for (i, ci_display_column) in cols.iter().enumerate() {
-        if slack == 0 {
+        if spare == 0 {
             break;
         }
         let idx = 3 + i;
         let target = ci_display_column.header_target_width();
         let current = usize::from(widths[idx]);
-        let grow_by = target.saturating_sub(current).min(slack);
+        let grow_by = target.saturating_sub(current).min(spare);
         widths[idx] = widths[idx].saturating_add(u16::try_from(grow_by).unwrap_or(u16::MAX));
-        slack -= grow_by;
+        spare -= grow_by;
+        grown += grow_by;
     }
+    let from_commit = u16::try_from(grown.saturating_sub(slack)).unwrap_or(u16::MAX);
+    widths[0] = widths[0].saturating_sub(from_commit);
 }
 
 fn ci_width_slack(widths: &[u16], inner_width: u16) -> Option<usize> {
@@ -625,7 +639,10 @@ fn ci_non_description_width(
     let base = usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
-        .map(|ci_display_column| ci_duration_width(ci_runs, ci_display_column, show_durations))
+        .map(|ci_display_column| {
+            ci_duration_width(ci_runs, ci_display_column, show_durations)
+                .max(ci_display_column.header_target_width())
+        })
         .sum();
     let total = ci_total_width(ci_runs, show_durations);
     base + job_columns + total + column_count.saturating_sub(1)
@@ -815,7 +832,7 @@ pub fn render_ci_pane_body(
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     *table_state.offset_mut() = pane.viewport.scroll_offset();
-    frame.render_stateful_widget(table, inner, &mut table_state);
+    frame.render_stateful_widget(table, layout.table_area(inner), &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
     paint_ci_row_selections(frame, inner, pane, ci_data.runs.len(), mode);
     pane_frame_chrome
@@ -915,6 +932,25 @@ impl CiTableLayout {
                     .fg(theme_roles::column_header_color())
                     .add_modifier(Modifier::BOLD),
             ),
+        }
+    }
+
+    /// A status-only table has no leading-space Commit cell, so it keeps the
+    /// one-cell left margin itself when the pane has the room.
+    fn table_area(&self, inner: Rect) -> Rect {
+        let table_width: usize = self
+            .widths()
+            .iter()
+            .filter_map(|width| constraint_width(Some(width)))
+            .sum();
+        if matches!(self, Self::StatusSummary(_)) && usize::from(inner.width) > table_width {
+            Rect {
+                x: inner.x.saturating_add(1),
+                width: inner.width.saturating_sub(1),
+                ..inner
+            }
+        } else {
+            inner
         }
     }
 

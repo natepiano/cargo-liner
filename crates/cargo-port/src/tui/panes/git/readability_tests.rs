@@ -32,6 +32,7 @@ use crate::tui::panes::pane_data::QuotaObservation;
 use crate::tui::panes::pane_data::RemoteRow;
 use crate::tui::panes::pane_data::RemoteRows;
 use crate::tui::panes::pane_data::WorktreeInfo;
+use crate::tui::render;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
@@ -715,12 +716,12 @@ fn narrow_worktree_divider_keeps_its_count() -> anyhow::Result<()> {
 }
 
 #[test]
-fn narrow_git_fields_keep_ahead_behind_whole_and_loading_has_an_ellipsis() -> anyhow::Result<()> {
+fn narrow_git_fields_keep_ahead_behind_whole_and_loading_wraps() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
         app.framework.color_mode = mode;
         for (window, pane_width, ahead, behind, expected) in [
-            (80, 17, 123, 456, "↑123 ↓456…"),
+            (80, 17, 123, 456, "↑123 ↓456 di…"),
             (95, 24, 123, 456, "↑123…"),
         ] {
             app.panes.git.set_content(GitData {
@@ -740,16 +741,18 @@ fn narrow_git_fields_keep_ahead_behind_whole_and_loading_has_an_ellipsis() -> an
                 .into_iter()
                 .find(|row| row.contains("loading pull"))
                 .context("Pull request loading row")?;
-            let body: String = loading.chars().take(usize::from(pane_width - 1)).collect();
-            assert!(body.trim_end().ends_with('…'), "{loading}");
-            let y = test_support::position(&buffer, "loading pull")?.1;
-            assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+            assert!(!loading.contains('…'), "{loading}");
+            let (_, loading_y) = test_support::position(&buffer, "loading pull")?;
+            let (_, requests_y) = test_support::position(&buffer, "requests")?;
+            for y in loading_y..=requests_y {
+                assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+            }
         }
         for (window, pane_width, ahead, behind, expected) in [
             (80, 15, 1234, 5678, "↑1234…"),
             (95, 16, 1234, 5678, "↑1234 ↓5678…"),
-            (80, 16, 1, 91, "↑1 ↓91…"),
-            (95, 17, 1, 91, "↑1 ↓91…"),
+            (80, 16, 1, 91, "↑1 ↓91 dive…"),
+            (95, 17, 1, 91, "↑1 ↓91 diver…"),
         ] {
             app.panes.git.set_content(GitData {
                 description: DescriptionState::KnownEmpty,
@@ -816,5 +819,156 @@ fn cut_sync_values_keep_each_visible_count_whole() -> anyhow::Result<()> {
         (saw_cut, saw_whole),
         (CountCoverage::Seen, CountCoverage::Seen)
     );
+    Ok(())
+}
+
+#[test]
+fn a_section_at_the_top_of_a_page_draws_no_second_rule() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        description: DescriptionState::Known("a fleet of cargo tools".to_string()),
+        remotes: RemoteRows::Listed(vec![RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "",
+            display_url:     "github.com/nate/fleet".to_string(),
+            branch:          "main".to_string(),
+            tracked_ref:     TrackedRef::Untracked,
+            status:          Comparison::NotCompared,
+            full_url:        None,
+            push_annotation: None,
+        }]),
+        worktrees: (0..13)
+            .map(|i| WorktreeInfo {
+                name:         format!("tree-{i}"),
+                path:         format!("/tmp/tree-{i}"),
+                branch:       Some("main".to_string()),
+                tracked:      None,
+                ahead_behind: Comparison::NotCompared,
+            })
+            .collect(),
+        ..GitData::default()
+    });
+    app.set_focus_to_pane(PaneId::Git);
+    for pos in 0..20 {
+        app.panes.git.viewport.set_pos(pos);
+        let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Git, 17, 9)?;
+        let rows = test_support::rows(&buffer);
+        for pair in rows.windows(2) {
+            assert!(
+                !(pair[1].starts_with('├')
+                    && (pair[0].starts_with('├') || pair[0].starts_with('┌'))),
+                "pos {pos}: {rows:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_empty_git_pane_names_its_state() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for (checkout, text) in [
+            (GitCheckout::AwaitingProbe, "loading…"),
+            (GitCheckout::NotRepository, "not a git repo"),
+        ] {
+            app.panes.git.set_content(GitData {
+                checkout,
+                description: DescriptionState::KnownEmpty,
+                ..GitData::default()
+            });
+            for width in [17, 18] {
+                let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Git, width, 9)?;
+                let first = if width == 17 && text == "not a git repo" {
+                    "not a git"
+                } else {
+                    text
+                };
+                assert_eq!(test_support::position(&buffer, first)?, (2, 1));
+                if first != text {
+                    assert_eq!(test_support::position(&buffer, "repo")?, (2, 2));
+                }
+                for y in 1..3 {
+                    assert_eq!(buffer[(width - 2, y)].symbol(), " ");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_git_date_that_does_not_fit_drops_the_time_then_the_century() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
+        checkout: GitCheckout::Branch {
+            name:     "main".to_string(),
+            relation: HeadRelation::Default,
+        },
+        inception: FirstCommit::Probed(CommitDate::At("2026-03-07 09:12".to_string())),
+        ..GitData::default()
+    });
+    for (pane_width, expected) in [(17, "2026-03-07"), (12, "26-03-07")] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, pane_width)?;
+        let rows = test_support::rows(&buffer);
+        let date = rows
+            .iter()
+            .find(|row| row.contains("03-07"))
+            .with_context(|| format!("{pane_width}: {rows:?}"))?;
+        assert!(date.contains(expected), "{pane_width}: {rows:?}");
+        assert!(
+            !date.contains('…') && !date.contains("09:"),
+            "{pane_width}: {rows:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_long_git_description_keeps_the_short_cap_in_a_taller_pane() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        description: DescriptionState::Known(
+            "a fleet of cargo tools - cargo-port (project TUI), cargo-mend (visibility \
+             auditing), tui_pane (ratatui pane framework)"
+                .to_string(),
+        ),
+        status: Some(GitStatus::Clean),
+        ..GitData::default()
+    });
+    for (window, height) in [(80, 13), (80, 15)] {
+        let buffer =
+            test_support::draw_pane_in_window_at_size(&mut app, PaneId::Git, window, 17, height)?;
+        let rows = test_support::rows(&buffer);
+        let separator = rows
+            .iter()
+            .position(|row| row.starts_with('├'))
+            .with_context(|| format!("{height}: {rows:?}"))?;
+        assert_eq!(separator, 3, "{height}: {rows:?}");
+    }
+    let mut descriptions = Vec::new();
+    for height in [30, 45] {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, height))?;
+        let frame = terminal.draw(|frame| render::ui(frame, &mut app))?;
+        let area = app.panes.tiled_layout.area(PaneId::Git);
+        let separator = (area.y + 1..area.bottom() - 1)
+            .find(|y| matches!(frame.buffer[(area.x, *y)].symbol(), "├" | "┝"))
+            .with_context(|| format!("Git divider at 80×{height}"))?;
+        assert_eq!(separator - area.y, 3, "80×{height}: {area:?}");
+        let rows: Vec<String> = (area.y + 1..separator)
+            .map(|y| {
+                (area.x + 1..area.right() - 1)
+                    .map(|x| frame.buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        descriptions.push(rows);
+    }
+    assert_eq!(descriptions[0], descriptions[1]);
     Ok(())
 }

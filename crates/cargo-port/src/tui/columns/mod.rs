@@ -20,6 +20,7 @@ pub(super) use project::header_line;
 pub(super) use project::project_name_shimmer_style;
 pub(super) use project::project_name_style;
 pub(super) use project::row_to_line;
+pub(super) use project::shared_name_prefix;
 pub(super) use tui_pane::ColumnSpec;
 pub(super) use tui_pane::ColumnWidths;
 

@@ -52,6 +52,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- A pane title that fits only without its side spaces draws without them, so the whole title shows.
+- A toast message cuts with `…`, never with ASCII dots, and never after a rule piece or a space.
 - Toast cards use available side-gap space to keep warning titles and close buttons whole.
 - Opaque toast cards paint the theme background and use theme colours. Transparent cards keep their existing colours.
 - Draw normal toast page marks in the theme's default text colour so the footer remains readable.

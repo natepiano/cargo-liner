@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hide Source when its whole header cannot fit beside whole Target names. Restore Source when the pane has enough cells.
+
+- Keep the Projects header indent when the name column cuts its label.
+- Keep whole CI job headers inside their columns. Align Path values and keep both Disk child labels indented. Keep Disk child values inline when they fit.
+- Preserve both title spaces or remove both when the title needs them. Wrap empty Git messages inside both margins.
+- Reduce the widest Finder column first. Mark every cut Finder name with `…`. Remove trailing separators before ellipses and give spare Git cells to Sync values.
+- Draw Git Sync counts without `ahead` and `behind` when the full text does not fit.
+
+- Readability fixes at 60, 80 and 160 columns: Lint, Git, Package, CI, Lint Runs, sccache and finder values stay whole or cut with `…`, and labels keep one column.
+- The Languages and Targets panes take only the Projects cells that no shown name needs. Targets shows whole Source labels and Languages shows whole names when the cells are free.
+- Keep the Languages minimum width and shown project names whole. Shorten Targets Source names when the row cannot fit.
+- Give Package and Git the rows that the selected Targets entries do not need when CPU and Languages are hidden.
 - List every binary target in Targets, including one whose name differs from its package. Run each with `cargo run --bin <name>` and the package flag.
 - Show one finder result for each binary target, named for that target. Choosing it selects its Targets row. Package Structure counts binary targets the same way Targets lists them.
 - Round Projects Disk values to whole units at 60–80 columns and align the headers when Lint is off.
@@ -32,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Drop Git table columns before cutting their headers. Show narrow CI empty messages below the title.
 - Keep the CI Total column when the runs have no branch mode.
 - Sccache stats uses one thick border in color mode and under NO_COLOR. Every other popup keeps its default border.
-- Keep the Targets Source header whole before target names. Drop whole ahead/behind tokens instead of cutting numbers.
+- Keep Target names and the visible Source header whole. Drop whole ahead/behind tokens instead of cutting numbers.
 - Stack Git rate values when they do not fit inline, and keep the row shape steady as the reset counts down. Keep a name letter after the Package title separator.
 - Draw all empty Package values in the dim value colour. Keep Startup page marks readable under every registered theme.
 - Restore test themes through the shared Drop fixture after failures.

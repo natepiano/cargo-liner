@@ -47,8 +47,13 @@ fn non_git_pane_keeps_its_title_when_quotas_arrive() -> anyhow::Result<()> {
             .set_content(super::build_pane_data(&app, &item).git);
         let before = test_support::rows(&test_support::draw_pane(&mut app, PaneId::Git, width)?);
         assert!(before[0].contains(" Git "), "{before:?}");
+        assert_eq!(
+            before[1].trim_matches('│').trim(),
+            "not a git repo",
+            "{before:?}"
+        );
         assert!(
-            before[1..before.len() - 1]
+            before[2..before.len() - 1]
                 .iter()
                 .all(|row| row.trim_matches('│').trim().is_empty()),
             "{before:?}"

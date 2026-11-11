@@ -58,6 +58,9 @@ pub(super) struct ProjectList {
     pub(super) cached_fit_widths:   ProjectListWidths,
     pub(super) fit_widths_state:    ListCacheState<FitWidthsCacheKey>,
     pub(super) storage:             ProjectStorage,
+    /// The most language table rows of any project. A language batch can
+    /// raise it and nothing lowers it, so the pane row line stays fixed.
+    pub(super) most_language_rows:  usize,
     #[cfg(test)]
     pub(super) disk_cache_builds:   u64,
     #[cfg(test)]

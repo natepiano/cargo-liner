@@ -77,17 +77,20 @@ fn target_names_take_width_before_the_source_at_eighty_columns() -> anyhow::Resu
         let buffer = test_support::draw_ui(&mut app, 80)?;
         let area = app.panes.tiled_layout.area(PaneId::Targets);
 
-        let row = (area.y + 2..area.bottom() - 1)
+        let (row_y, row) = (area.y + 2..area.bottom() - 1)
             .find_map(|y| {
                 let text: String = (area.x + 1..area.right() - 1)
                     .map(|x| buffer[(x, y)].symbol())
                     .collect();
-                text.contains("binary").then_some(text)
+                text.contains("binary").then_some((y, text))
             })
             .context("Target row")?;
-        let source_header = "Source";
-        let (source_x, _) =
-            test_support::find_text_cell(&buffer, area, source_header).context("Source header")?;
+        let source = test_support::find_text_cell(&buffer, area, "Source");
+        assert_eq!(source.is_some(), name == "proof_crate");
+        let data_row = ratatui::layout::Rect::new(area.x, row_y, area.width, 1);
+        let binary =
+            test_support::find_text_cell(&buffer, data_row, "binary").context("Binary value")?;
+        let source_x = source.map_or(binary.0, |position| position.0);
         let target: String = row
             .chars()
             .take(usize::from(source_x - area.x - 1))
@@ -165,15 +168,14 @@ fn workspace_sources_keep_their_column_at_ninety_five_columns() -> anyhow::Resul
     }
     app.panes.targets.set_content(data);
     let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Targets, 95, 29)?;
-    let source = test_support::position(&buffer, "Source")?;
-    let kind = test_support::position(&buffer, "Kind")?;
-    for y in source.1 + 1..=source.1 + 2 {
-        let name: String = (1..source.0).map(|x| buffer[(x, y)].symbol()).collect();
-        let source_value: String = (source.0..kind.0)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect();
+    assert!(test_support::find_text_cell(&buffer, buffer.area, "Source").is_none());
+    let (_, header_y) = test_support::position(&buffer, "Kind")?;
+    let data_row = ratatui::layout::Rect::new(0, header_y + 1, 29, 1);
+    let binary =
+        test_support::find_text_cell(&buffer, data_row, "binary").context("Binary value")?;
+    for y in binary.1..=binary.1 + 1 {
+        let name: String = (1..binary.0).map(|x| buffer[(x, y)].symbol()).collect();
         assert!(name.trim_end().ends_with('…'), "{name}");
-        assert!(!source_value.trim().is_empty(), "{source_value}");
     }
     Ok(())
 }

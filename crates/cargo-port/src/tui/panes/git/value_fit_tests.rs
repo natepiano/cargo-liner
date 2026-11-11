@@ -75,10 +75,17 @@ fn git_description_at_80_columns_keeps_the_middle_of_fleet() -> anyhow::Result<(
             ..GitData::default()
         };
         let rows = render_git_value(data, pane_width)?;
-        assert!(
-            rows.iter().any(|row| row.contains(BRANCH)),
-            "the description column can hold fleet at width {pane_width}: {rows:?}"
-        );
+        if pane_width == 9 {
+            assert!(
+                rows.iter().any(|row| row.trim() == "flee…"),
+                "the two-row cap keeps exactly flee… at width 9: {rows:?}"
+            );
+        } else {
+            assert!(
+                rows.iter().any(|row| row.contains(BRANCH)),
+                "the description column can hold fleet at width {pane_width}: {rows:?}"
+            );
+        }
     }
     Ok(())
 }

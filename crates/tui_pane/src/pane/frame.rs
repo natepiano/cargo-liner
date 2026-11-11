@@ -48,6 +48,7 @@ use unicode_width::UnicodeWidthStr;
 use super::chrome;
 use super::chrome::PaneChrome;
 use super::constants::BORDER_LINE_WIDTH;
+use super::title;
 use crate::ColorMode;
 use crate::constants::ELISION;
 
@@ -623,8 +624,14 @@ impl GridLines {
     /// [`Block`]: ratatui::widgets::Block
     pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Line<'a>>) {
         self.add(frame);
-        let title = title.into();
         let rect = frame.rect;
+        let title = title::fit_title_sides(
+            title.into(),
+            usize::from(
+                rect.width
+                    .saturating_sub(BORDER_LINE_WIDTH.saturating_mul(2)),
+            ),
+        );
         self.titles.push(Overlay {
             frame,
             rect: Rect {

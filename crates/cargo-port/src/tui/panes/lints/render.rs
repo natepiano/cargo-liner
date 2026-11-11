@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -25,6 +26,7 @@ use tui_pane::success_color;
 use tui_pane::title_color;
 use tui_pane::warning_color;
 
+use super::constants::TABLE_LEFT_MARGIN;
 use super::data::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunPhase;
@@ -238,7 +240,12 @@ pub fn render_lints_pane_body(
     };
 
     let inner = tui_pane::frame_inner(area);
-    let layout = LintRowLayout::for_width(inner.width);
+    let table_inner = Rect {
+        x: inner.x.saturating_add(TABLE_LEFT_MARGIN),
+        width: inner.width.saturating_sub(TABLE_LEFT_MARGIN),
+        ..inner
+    };
+    let layout = LintRowLayout::for_width(table_inner.width);
     let row_height = layout.row_height(inner.height);
     {
         let viewport = &mut pane.viewport;
@@ -284,30 +291,30 @@ pub fn render_lints_pane_body(
                 .unwrap_or(u16::MAX)
                 .saturating_mul(row_height))
         .min(inner.height),
-        ..inner
+        ..table_inner
     };
     frame.render_stateful_widget(table, table_area, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    let offset = table_state.offset();
-    pane.set_row_rects(
-        (offset..lints_data.runs.len())
-            .take(pane.viewport.visible_rows())
-            .enumerate()
-            .map(|(slot, row)| {
-                (
-                    Rect::new(
-                        inner.x,
-                        inner.y
-                            + header_height
-                            + u16::try_from(slot).unwrap_or(u16::MAX) * row_height,
-                        inner.width,
-                        row_height,
-                    ),
-                    row,
-                )
-            })
-            .collect(),
+    let row_rects = lint_row_rects(
+        inner,
+        header_height,
+        row_height,
+        table_state.offset()..lints_data.runs.len(),
+        pane.viewport.visible_rows(),
     );
+    // The selection bar reaches the left border across the margin cell.
+    for (rect, row) in &row_rects {
+        theme_roles::paint_selection(
+            frame,
+            Rect {
+                width: TABLE_LEFT_MARGIN.min(rect.width),
+                ..*rect
+            },
+            tui_pane::selection_state(&pane.viewport, *row, pane_focus_state),
+            mode,
+        );
+    }
+    pane.set_row_rects(row_rects);
     pane_frame_chrome
         .labels
         .extend(tui_pane::overflow_affordance_label(
@@ -317,6 +324,30 @@ pub fn render_lints_pane_body(
         ));
 
     pane_frame_chrome
+}
+
+/// Full-width hit rects for the visible runs, one per run.
+fn lint_row_rects(
+    inner: Rect,
+    header_height: u16,
+    row_height: u16,
+    runs: Range<usize>,
+    visible_rows: usize,
+) -> Vec<(Rect, usize)> {
+    runs.take(visible_rows)
+        .enumerate()
+        .map(|(slot, row)| {
+            (
+                Rect::new(
+                    inner.x,
+                    inner.y + header_height + u16::try_from(slot).unwrap_or(u16::MAX) * row_height,
+                    inner.width,
+                    row_height,
+                ),
+                row,
+            )
+        })
+        .collect()
 }
 
 fn lint_table(rows: Vec<Row<'static>>, layout: LintRowLayout) -> Table<'static> {
@@ -351,7 +382,7 @@ fn lint_table(rows: Vec<Row<'static>>, layout: LintRowLayout) -> Table<'static> 
     } else {
         table.header(
             Row::new(vec![
-                Cell::from(""),
+                Cell::from("Date"),
                 Cell::from(Line::from("Start").alignment(Alignment::Right)),
                 Cell::from(Line::from("End").alignment(Alignment::Right)),
                 Cell::from(Line::from("Duration").alignment(Alignment::Right)),
@@ -419,6 +450,38 @@ mod tests {
                     test_support::find_text_cell(&buffer, area, value).with_context(|| {
                         format!("width {width}, {value}: {:?}", test_support::rows(&buffer))
                     })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lint_runs_keep_one_cell_after_the_left_border_under_a_date_header() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        app.lint.set_content(LintsData {
+            runs: vec![LintRun {
+                run_id:        "recorded-run".to_string(),
+                started_at:    "2026-10-31T19:00:55-04:00".to_string(),
+                finished_at:   Some("2026-10-31T19:02:55-04:00".to_string()),
+                duration_ms:   Some(120_000),
+                status:        LintRunStatus::Passed,
+                commands:      Vec::new(),
+                archive_bytes: 1024,
+            }],
+            sizes: vec![Some(1024)],
+            ..LintsData::default()
+        });
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            app.framework.color_mode = mode;
+            for width in [60, 80, 160] {
+                let buffer = test_support::draw_ui(&mut app, width)?;
+                let area = app.panes.tiled_layout.area(PaneId::Lints);
+                let rows = test_support::rows(&buffer);
+                for text in ["Date", "2026-10-31"] {
+                    let (x, _) = test_support::find_text_cell(&buffer, area, text)
+                        .with_context(|| format!("width {width}, {text}: {rows:?}"))?;
+                    assert_eq!(x, area.x + 2, "width {width}, {text}: {rows:?}");
                 }
             }
         }

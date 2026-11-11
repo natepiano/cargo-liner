@@ -8,6 +8,7 @@ use super::ProjectListPane;
 use super::disk;
 use crate::project;
 use crate::project::GitStatus;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -462,6 +463,16 @@ pub(in crate::tui) struct ProjectRowWidthInput {
     cells:  Vec<String>,
 }
 
+impl ProjectRowWidthInput {
+    fn name_width(&self) -> usize {
+        let name = self
+            .cells
+            .get(columns::COL_NAME)
+            .map_or(0, |text| columns::display_width(text));
+        widths::name_width_with_gutter(columns::display_width(&self.prefix) + name)
+    }
+}
+
 impl ProjectRowPresentation {
     const fn plain(cells: RowCells) -> Self {
         Self {
@@ -827,16 +838,21 @@ fn render_wt_member(
     } = row;
     let item = &ctx.project_list[ni];
 
-    let (member, member_name) = match &item.root_item {
+    let (member, member_name, root_name, sibling_prefix) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
             RustProject::Workspace(ws) => {
                 let g = &ws.groups()[gi];
                 let m = &g.members()[mi];
-                (Some(m), m.package_name().into_string())
+                (
+                    Some(m),
+                    m.package_name().into_string(),
+                    ws.package_name().into_string(),
+                    member_sibling_prefix(&m.package_name().into_string(), g.members()),
+                )
             },
-            RustProject::Package(_) => (None, String::new()),
+            RustProject::Package(_) => (None, String::new(), String::new(), 0),
         },
-        _ => (None, String::new()),
+        _ => (None, String::new(), String::new(), 0),
     };
     member.map_or_else(
         || {
@@ -850,9 +866,38 @@ fn render_wt_member(
                     .is_deleted(group.entry(wi).unwrap_or(&group.primary).path()),
                 _ => false,
             };
-            render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted)
+            with_shared_prefix(
+                render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted),
+                &member_name,
+                &root_name,
+                sibling_prefix,
+            )
         },
     )
+}
+
+/// Find the longest sibling prefix at a word separator.
+fn member_sibling_prefix(name: &str, siblings: &[Package]) -> usize {
+    siblings
+        .iter()
+        .map(|sibling| sibling.package_name().into_string())
+        .filter(|sibling| sibling != name)
+        .map(|sibling| columns::shared_name_prefix(name, &sibling))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Let a member name that does not fit drop the prefix it shares with its root.
+fn with_shared_prefix(
+    mut presentation: ProjectRowPresentation,
+    member_name: &str,
+    root_name: &str,
+    sibling_prefix: usize,
+) -> ProjectRowPresentation {
+    presentation.cells.cells[columns::COL_NAME].shared_prefix =
+        columns::shared_name_prefix(member_name, root_name);
+    presentation.cells.cells[columns::COL_NAME].sibling_prefix = sibling_prefix;
+    presentation
 }
 
 fn render_member_item(
@@ -864,11 +909,16 @@ fn render_member_item(
     sorted: &[u64],
 ) -> ProjectRowPresentation {
     let item = &ctx.project_list[node_index];
-    let (member, member_name) = match &item.root_item {
+    let (member, member_name, root_name, sibling_prefix) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.package_name().into_string())
+            (
+                Some(m),
+                m.package_name().into_string(),
+                ws.package_name().into_string(),
+                member_sibling_prefix(&m.package_name().into_string(), group.members()),
+            )
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
@@ -878,9 +928,14 @@ fn render_member_item(
             };
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.package_name().into_string())
+            (
+                Some(m),
+                m.package_name().into_string(),
+                ws.package_name().into_string(),
+                member_sibling_prefix(&m.package_name().into_string(), group.members()),
+            )
         },
-        _ => (None, String::new()),
+        _ => (None, String::new(), String::new(), 0),
     };
     member.map_or_else(
         || {
@@ -889,7 +944,12 @@ fn render_member_item(
         },
         |m| {
             let inherited_deleted = ctx.project_list.is_deleted(item.path());
-            render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted)
+            with_shared_prefix(
+                render_child_item(ctx, m, &member_name, sorted, prefix, inherited_deleted),
+                &member_name,
+                &root_name,
+                sibling_prefix,
+            )
         },
     )
 }
@@ -1334,6 +1394,16 @@ pub(super) fn render_tree_items(
 
 fn project_row_presentations(ctx: &PaneRenderCtx<'_>) -> Vec<ProjectRowPresentation> {
     project_row_presentations_for(ctx, ctx.project_list.visible_rows())
+}
+
+/// The name width of the widest row on screen, measured as the fit widths
+/// measure a name.
+pub(in crate::tui) fn shown_name_width(ctx: &PaneRenderCtx<'_>) -> usize {
+    project_row_presentations(ctx)
+        .into_iter()
+        .map(|row| row.into_width_input().name_width())
+        .max()
+        .unwrap_or(0)
 }
 
 pub(in crate::tui) fn project_width_presentations(

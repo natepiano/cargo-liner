@@ -125,7 +125,12 @@ fn assert_columns_and_disk_edges(app: &App, buffer: &Buffer, long: bool) -> anyh
     let area = app.panes.project_list.body_rect;
     let header = text_row(buffer, area, area.y - 1);
     for heading in HEADINGS {
-        assert!(header.contains(heading), "missing {heading}: {header}");
+        let expected = if heading == "Projects" && header.starts_with("   Proj…") {
+            "Proj…"
+        } else {
+            heading
+        };
+        assert!(header.contains(expected), "missing {expected}: {header}");
     }
     let mut edges = Vec::new();
     let values = if (60..=80).contains(&buffer.area.width) {
@@ -197,7 +202,12 @@ fn worktree_names_shrink_before_columns_and_keep_disk_alignment() -> anyhow::Res
         let area = app.panes.project_list.body_rect;
         let header = text_row(&buffer, area, area.y - 1);
         for heading in HEADINGS {
-            assert!(header.contains(heading), "{header}");
+            let expected = if heading == "Projects" && header.starts_with("   Proj…") {
+                "Proj…"
+            } else {
+                heading
+            };
+            assert!(header.contains(expected), "{header}");
         }
         for y in area.y..area.y + 3 {
             let row = text_row(&buffer, area, y);
@@ -222,11 +232,11 @@ fn narrow_project_columns_drop_in_order_after_the_name_floor() -> anyhow::Result
     let scratch = tempfile::tempdir()?;
     let mut app = app_with_names(scratch.path(), LONG_NAME)?;
     for (width, last, removed) in [
-        (44, "Sync", "Main"),
-        (38, "Git", "Sync"),
-        (34, "Type", "Git"),
-        (29, "CI", "Type"),
-        (26, "Lint", "CI"),
+        (45, "Sync", "Main"),
+        (39, "Git", "Sync"),
+        (35, "Type", "Git"),
+        (30, "CI", "Type"),
+        (27, "Lint", "CI"),
         (24, "Projects", "Lint"),
     ] {
         let buffer = test_support::draw_pane(&mut app, PaneId::ProjectList, width)?;
@@ -293,11 +303,7 @@ fn deep_worktree_prefix_keeps_the_disk_column_at_the_name_floor() -> anyhow::Res
     Ok(())
 }
 
-#[test]
-fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Result<()> {
-    let scratch = tempfile::tempdir()?;
-    let mut app = app_with_names(scratch.path(), LONG_NAME)?;
-    install_targets(&mut app)?;
+fn install_git_quotas(app: &mut App) -> anyhow::Result<()> {
     let quota = QuotaObservation::Observed(RateLimitQuota {
         limit:     5000,
         used:      42,
@@ -308,6 +314,15 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
     git.rate_limit_core = quota;
     git.rate_limit_graphql = quota;
     app.panes.git.set_content(git);
+    Ok(())
+}
+
+#[test]
+fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let mut app = app_with_names(scratch.path(), LONG_NAME)?;
+    install_targets(&mut app)?;
+    install_git_quotas(&mut app)?;
     for (width, lint) in [
         (95, LintIndicator::Enabled),
         (80, LintIndicator::Enabled),
@@ -334,7 +349,12 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
         let projects = app.panes.project_list.body_rect;
         let header = text_row(&buffer, projects, projects.y - 1);
         assert!(!header.contains("ProjectsLint"), "{width}: {header}");
-        let end = header.find("Projects").context("Projects heading")? + "Projects".len();
+        let heading = if header.starts_with("   Proj…") {
+            "Proj…"
+        } else {
+            "Projects"
+        };
+        let end = header.find(heading).context("Projects heading")? + heading.len();
         assert!(header[end..].starts_with(' '), "{width}: {header}");
 
         for pane in [
@@ -391,6 +411,33 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
                     .context("whole CPU row")?;
                 assert!(app.tabbable_panes().contains(&PaneId::Cpu));
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn lint_on_headings_sit_over_their_columns_at_sixty_and_eighty() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let mut app = app_with_names(scratch.path(), LONG_NAME)?;
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        for width in [60, 80] {
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            let area = app.panes.project_list.body_rect;
+            let header = Rect::new(area.x, area.y - 1, area.width, 1);
+            let type_heading =
+                test_support::find_text_cell(&buffer, header, "Type").context("Type heading")?;
+            let icon = test_support::find_text_cell(&buffer, area, "🦀").context("Rust icon")?;
+            assert_eq!(
+                type_heading.0,
+                icon.0,
+                "{mode:?} {width}: {:?}",
+                test_support::rows(&buffer)
+            );
+            let header_text = text_row(&buffer, area, area.y - 1);
+            assert!(header_text.starts_with("   Proj… Lint CI"), "{header_text}");
+            assert_eq!(buffer[(area.x, area.y - 1)].symbol(), " ");
         }
     }
     Ok(())
@@ -471,7 +518,12 @@ fn assert_sixty_column_project_priority(app: &App, buffer: &Buffer) -> anyhow::R
     }
     let header = text_row(buffer, projects, projects.y - 1);
     for retained in HEADINGS {
-        assert!(header.contains(retained), "{header}");
+        let expected = if retained == "Projects" {
+            "Proj…"
+        } else {
+            retained
+        };
+        assert!(header.contains(expected), "{header}");
     }
     let lints = app.panes.tiled_layout.area(PaneId::Lints);
     test_support::find_text_cell(buffer, lints, "No lint runs").context("visible Lints pane")?;
@@ -486,7 +538,9 @@ fn assert_drawn_pane_widths(app: &App, width: u16) {
     let expected_projects = if width <= 80 {
         ProjectListWidths::pane_width_limit(width, app.config.current().lint.enabled.into())
     } else {
-        49
+        // The list sits at its minimum: the whole `Projects` heading, a gap,
+        // and the `Lint` column as wide as its heading.
+        50
     };
     assert_eq!(projects.width, expected_projects);
     assert_eq!(
@@ -498,9 +552,9 @@ fn assert_drawn_pane_widths(app: &App, width: u16) {
     let targets = app.panes.tiled_layout.area(PaneId::Targets);
     match width {
         95 => {
-            assert_eq!((package.width, git.width), (23, 23));
+            assert_eq!((package.width, git.width), (23, 22));
             assert_eq!(app.panes.tiled_layout.area(PaneId::Cpu).width, 19);
-            assert_eq!(targets.width, 27);
+            assert_eq!(targets.width, 26);
         },
         80 => {
             assert_eq!((package.width, git.width), (17, 16));
@@ -626,7 +680,12 @@ fn long_worktrees_keep_columns_and_git_at_sixty_columns() -> anyhow::Result<()> 
         let header = text_row(&buffer, area, area.y - 1);
         for heading in HEADINGS {
             if heading != "Lint" || lint == LintIndicator::Enabled {
-                assert!(header.contains(heading), "{header}");
+                let expected = if heading == "Projects" && header.starts_with("   Proj…") {
+                    "Proj…"
+                } else {
+                    heading
+                };
+                assert!(header.contains(expected), "{header}");
             }
         }
         for y in area.y..area.y + 4 {
@@ -658,8 +717,13 @@ fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()>
     let buffer = test_support::draw_ui(&mut app, 80)?;
     let area = app.panes.project_list.body_rect;
     let group = text_row(&buffer, area, area.y);
-    test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "… 🌲:3")
-        .with_context(|| format!("the shortened group keeps its mark: {group}"))?;
+    // With Lint on, the name keeps one letter and the group drops its count.
+    test_support::find_text_cell(
+        &buffer,
+        Rect::new(area.x, area.y, area.width, 1),
+        "▼ p… 🌲 ",
+    )
+    .with_context(|| format!("the shortened group keeps its mark: {group}"))?;
     let primary = text_row(&buffer, area, area.y + 1);
     assert!(primary.contains("… (p)"), "{primary}");
     let mut disk_edge = None;
@@ -691,20 +755,20 @@ fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()>
         entries.collect(),
     ))]);
     app.ensure_visible_rows_cached();
-    for width in [60, 80, 95] {
+    for (width, count_draws) in [(60, false), (80, false), (95, false), (110, true)] {
         let buffer = test_support::draw_ui(&mut app, width)?;
         let area = app.panes.project_list.body_rect;
         let group = text_row(&buffer, area, area.y);
         let prefix = group
             .find("▶ ")
-            .with_context(|| format!("whole group prefix: {group}"))?;
+            .with_context(|| format!("whole group prefix at {width}: {group}"))?;
         let mark = group
             .find(" 🌲")
             .with_context(|| format!("spaced tree mark: {group}"))?;
         let name = &group[prefix + "▶ ".len()..mark];
         assert!(name.chars().any(char::is_alphabetic), "{width}: {group}");
         assert!(name.ends_with('…'), "{width}: {group}");
-        if width == 95 {
+        if count_draws {
             test_support::find_text_cell(
                 &buffer,
                 Rect::new(area.x, area.y, area.width, 1),
@@ -835,7 +899,8 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
             .with_context(|| format!("cut tree name: {name}: {:?}", test_support::rows(&buffer)))?;
         assert!(name[..cut].chars().any(char::is_alphabetic), "{name}");
     }
-    for (offset, text) in [(1, "[a… 🌲"), (2, "p… (p)"), (5, "[w… 🌲")] {
+    // A group drops its count, so the name keeps more than one letter.
+    for (offset, text) in [(1, "[alp… 🌲 "), (2, "p… (p)"), (5, "[wor… 🌲 ")] {
         test_support::find_text_cell(
             &buffer,
             Rect::new(area.x, area.y + offset, area.width, 1),
@@ -849,9 +914,19 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
         test_support::find_text_cell(&buffer, area, "東")
             .with_context(|| format!("wide name keeps its first letter at {width}"))?;
     }
-    let buffer = test_support::draw_ui(&mut app, 95)?;
-    test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, " 🌲:3")
-        .context("the group count draws when its slot fits")?;
+    for (width, count_draws) in [(95, false), (110, true)] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.project_list.body_rect;
+        if count_draws {
+            test_support::find_text_cell(&buffer, area, " 🌲:3")
+                .context("the group count draws when its slot fits")?;
+        } else {
+            let group = text_row(&buffer, area, area.y + 1);
+            assert!(!group.contains(":3"), "{width}: {group}");
+            assert!(group.contains("▼ "), "{width}: {group}");
+            assert!(group.contains("[alp… 🌲"), "{width}: {group}");
+        }
+    }
 
     Ok(())
 }

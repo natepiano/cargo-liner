@@ -353,14 +353,27 @@ impl App {
     /// state and width inputs have one presentation owner. Freeze animation time.
     fn project_row_presentation(&self) -> ProjectListPresentation {
         let lookup = self.ci.status_lookup();
-        let ctx = PaneRenderCtx {
+        ProjectListPresentation(panes::project_width_presentations(
+            &self.presentation_ctx(&lookup),
+        ))
+    }
+
+    /// The name width of the widest project row on screen.
+    fn shown_name_width(&self) -> usize {
+        let lookup = self.ci.status_lookup();
+        panes::shown_name_width(&self.presentation_ctx(&lookup))
+    }
+
+    /// The render context for row presentations, with animation time frozen.
+    fn presentation_ctx<'a>(&'a self, lookup: &'a CiStatusLookup) -> PaneRenderCtx<'a> {
+        PaneRenderCtx {
             color_mode:                self.framework.color_mode,
             animation_elapsed:         Duration::ZERO,
             config:                    &self.config,
             project_list:              &self.project_list,
             selected_project_path:     self.selected_project_path_for_render(),
             scan:                      &self.scan,
-            ci_status_lookup:          &lookup,
+            ci_status_lookup:          lookup,
             settings_render_inputs:    None,
             synced_description_height: SyncedDescriptionHeight::default(),
             empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
@@ -368,8 +381,7 @@ impl App {
                 self.inflight.owned_run().output_state(),
                 self.inflight.owned_run().running_label(),
             ),
-        };
-        ProjectListPresentation(panes::project_width_presentations(&ctx))
+        }
     }
 
     /// Constructor entry — declared here in `mod.rs` so `pub(super)`
@@ -1335,8 +1347,10 @@ impl App {
                         .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
-                    !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
-                        || !g.remotes.listed().is_empty()
+                    !matches!(
+                        g.checkout,
+                        panes::GitCheckout::AwaitingProbe | panes::GitCheckout::NotRepository
+                    ) || !g.remotes.listed().is_empty()
                         || !g.worktrees.is_empty()
                 }),
                 _ => false,
