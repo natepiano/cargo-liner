@@ -2483,7 +2483,7 @@ Checkpoint 868e5e1e4 on `tile-phase-58c`.
 
 ### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
 
-**Depends on:** Phase 58c (order only; showrunner, 2026-11-11).
+**Depends on:** Phase 58e (order only; showrunner, 2026-11-11).
 
 The showrunner reported two intermittent failures on the Mac at style tip ad23f4563 (1,358 passed, 2 failed). Earlier runs at the same tip passed. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T033213-2377391-406a.log`, lines 719-800. An intermittent test is a defect.
 
@@ -2524,7 +2524,7 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 ### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: todo
 
-**Depends on:** Phase 58d (order only; showrunner, 2026-11-11).
+**Depends on:** none. It runs first among the cargo-berth phases, beside Phase 32j (showrunner, 2026-11-11: a 509-path extent can refuse edits to every unit).
 
 On 2026-11-11, handler reservation 01a1caa4-7b2b-7433-9e96-c0e59669a370 (`refs/heads/cargo-liner-handler`) held 509 paths in its protected merge extent. Its key was trunk 07621aedb and head 500c5f862. The branch has no own content in those paths: `git diff --name-only $(git merge-base origin/main 500c5f862) 500c5f862` lists 0 paths. Its only commits after its merge base are merge 48a5ef138 (main at a6cc171fe), the as-built 1eeb0ae9d and merge 500c5f862. Main moved past the branch after that merge. The port and tile units were refused edits to their own plan docs, and each needed an `--override` from the showrunner.
 
