@@ -2522,6 +2522,31 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
 
+### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
+
+**Depends on:** Phase 58d (order only; showrunner, 2026-11-11).
+
+On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main (4a6d4d3b7, 5c0778b96) and their worktrees were removed. `cargo-berth resolve <id> --integrated-as <full oid>` refused with exit 5: "the reservation must have a protected checkpoint first; cargo-berth release records one". Release runs only from the holder worktree, and `--rehome` needs a worktree at the recorded path. Both were retired with `--retire-orphan`, which records no integration.
+
+#### Work Order
+
+**Goal:** when the holder worktree is gone and the reservation head is an ancestor of the trunk, `resolve --integrated-as` records the integration with no checkpoint.
+
+**Spec:**
+
+1. Quote the line that refuses `--integrated-as` without a checkpoint.
+2. Accept it only when both are true: the holder worktree is unavailable, and the reservation's recorded head is an ancestor of the given target, which is on the trunk. Otherwise keep the current refusal.
+3. Record the actor and the reason in the journal, as the Phase 58c rehome does.
+4. Tests, each under 1 s, with a recorded template: the accepted case; a head not reachable from the target is refused; a live holder worktree keeps the current refusal.
+
+**Files:** `crates/cargo-berth/src/` — the resolve path; `crates/cargo-berth/tests/` — item 4.
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev.
+
 ### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: todo
 
 **Depends on:** none. It runs first among the cargo-berth phases, beside Phase 32j (showrunner, 2026-11-11: a 509-path extent can refuse edits to every unit).
