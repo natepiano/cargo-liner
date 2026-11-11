@@ -8,22 +8,36 @@
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
+#[path = "support/ledger_templates.rs"]
+mod ledger_templates;
+
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
+use cargo_berth_test_support::MAIN_COORDINATION_RUN_ID;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::copy_git_repository_seed;
 use cargo_berth_test_support::json;
+use ledger_templates::PROJECTION_HISTORY;
+use ledger_templates::PROJECTION_HISTORY_STATE;
+use ledger_templates::RELEASE_ENROLLMENT;
+use ledger_templates::SHARED_ENROLLMENT;
+use ledger_templates::STACKED_ENROLLMENT;
+use ledger_templates::claim;
+use ledger_templates::commit_enrollment_work;
+use ledger_templates::run_berth_with_session;
 pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
 pub use prepared_lock_tests::AncestorProofCommits;
 pub use prepared_lock_tests::CONTENT_CHECKPOINT;
 pub use prepared_lock_tests::ContentProofCommits;
 pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER_CHECKOUT;
 pub use prepared_lock_tests::PACKED_SUCCESSOR;
 pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
-pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::ReleasedProofHistory;
 pub use prepared_lock_tests::RetainedPredecessorHistory;
 pub use prepared_lock_tests::read_history;
 
@@ -60,7 +74,6 @@ const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
 const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.\n";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
-const MAIN_COORDINATION_RUN_ID: &str = "01a03f63-03e7-7fb2-ae63-5b297177f59f";
 const MAIN_WORKTREE_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c00";
 const OVERSIZED_IDENTITY_INPUT_BYTES: usize = 32 * 1_024;
 const MISMATCHED_PROJECTION_SCHEMA_VERSION: u64 = 2;
@@ -68,7 +81,6 @@ const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const PROJECTION_REPLAY_METADATA_FIELDS: [&str; 3] =
     ["generation", "journal_end_offset", "journal_fingerprint"];
 const PROJECTION_SIZE_ADDITIONAL_RENEWALS: usize = 9;
-const PROJECTION_SIZE_INITIAL_RENEWALS: usize = 18;
 const RECORDED_INCIDENT_COORDINATION_RUN_ID: &str = "01a03f60-2e87-7b93-b933-e3dc5e9211d9";
 const RECORDED_INCIDENT_WORKTREE_ID: &str = "01a03f1f-6d9c-7383-8389-a6fd541e79d5";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
@@ -167,20 +179,10 @@ fn linked_worktree_uses_main_configuration_for_repository_trunk() {
 
 #[test]
 fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {
-    let repository = scratch_repository();
+    let repository = SHARED_ENROLLMENT.instantiate();
     let root = repository.path();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let first = add_worktree(root, worktrees.path(), "first");
-    let second = add_worktree(root, worktrees.path(), "second");
-    for (checkout, contents) in [
-        (&first, "first committed\n"),
-        (&second, "second committed\n"),
-    ] {
-        commit_enrollment_work(checkout, "README.md", contents);
-        fs::write(checkout.join("README.md"), format!("{contents}dirty\n"))
-            .expect("shared dirty work should write");
-    }
-    fs::write(root.join("README.md"), "trunk dirty\n").expect("trunk work should write");
+    let first = root.join(".git/fixture-worktrees/first");
+    let second = root.join(".git/fixture-worktrees/second");
 
     let enrollment = enrollment_report(&first);
     assert_eq!(
@@ -257,10 +259,8 @@ fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {
 
 #[test]
 fn init_never_reenrolls_a_released_worktree() {
-    let repository = scratch_repository();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let checkout = add_worktree(repository.path(), worktrees.path(), "released");
-    commit_enrollment_work(&checkout, "README.md", "committed work\n");
+    let repository = RELEASE_ENROLLMENT.instantiate();
+    let checkout = repository.path().join(".git/fixture-worktrees/released");
     let first = enrollment_report(repository.path());
     let reservation_id = enrolled_reservation(&first, &checkout);
     let released = run_berth(&checkout, ["release", &reservation_id, "--json"]);
@@ -381,14 +381,9 @@ fn init_reports_unavailable_worktrees_and_enrolls_locked_worktrees() {
 
 #[test]
 fn init_keeps_stacked_footprints_without_a_contained_overlap() {
-    let repository = scratch_repository();
+    let repository = STACKED_ENROLLMENT.instantiate();
     let root = repository.path();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let parent = add_worktree(root, worktrees.path(), "parent");
-    commit_enrollment_work(&parent, "parent.txt", "parent work\n");
-    let child = worktrees.path().join("child");
-    GIT.add_worktree_without_hooks(root, &child, "child", "parent");
-    commit_enrollment_work(&child, "child.txt", "child work\n");
+    let child = root.join(".git/fixture-worktrees/child");
 
     let enrollment = enrollment_report(root);
 
@@ -824,22 +819,15 @@ fn a_torn_projection_rebuilds_from_the_journal_on_the_next_read()
 #[test]
 fn projection_size_does_not_grow_with_journal_event_count() -> Result<(), Box<dyn std::error::Error>>
 {
-    let repository = initialized_repository();
-    let reservation_id = claim(
+    let repository = PROJECTION_HISTORY.instantiate();
+    let reservation_id = fs::read_to_string(repository.path().join(PROJECTION_HISTORY_STATE))?;
+
+    let renewed = run_berth_with_session(
         repository.path(),
-        "file:projection-size.rs",
-        MAIN_COORDINATION_RUN_ID,
+        &["renew", &reservation_id, "--json"],
         "projection-size",
     );
-
-    for _ in 0..PROJECTION_SIZE_INITIAL_RENEWALS {
-        let renewed = run_berth_with_session(
-            repository.path(),
-            &["renew", &reservation_id, "--json"],
-            "projection-size",
-        );
-        assert!(renewed.status.success());
-    }
+    assert!(renewed.status.success());
     let short_journal_events = journal_events(repository.path());
     let short_projection_size = projection_size_with_replay_metadata_normalized(&fs::read(
         repository.path().join(PROJECTION_PATH),
@@ -1739,12 +1727,7 @@ fn separate_git_directory_repository() -> SeparateGitDirectoryRepository {
 
 fn scratch_repository() -> TempDir {
     copy_git_repository_seed("ledger-scratch-main", |root| {
-        git(root, &["init", "--quiet", "--initial-branch", "main"]);
-        git(root, &["config", "user.email", "test@example.invalid"]);
-        git(root, &["config", "user.name", "Berth Test"]);
-        fs::write(root.join("README.md"), "scratch\n")?;
-        git(root, &["add", "README.md"]);
-        git(root, &["commit", "--quiet", "-m", "initial"]);
+        ledger_templates::build_git_repository(root);
         Ok::<(), std::io::Error>(())
     })
 }
@@ -1793,31 +1776,6 @@ fn write_identity_markers(
         format!("{coordination_run_id}\n"),
     )
     .expect("coordination run marker should write");
-}
-
-fn claim(repository_root: &Path, scope: &str, run: &str, session_id: &str) -> String {
-    let claimed = run_berth_with_session(
-        repository_root,
-        &[
-            "claim",
-            scope,
-            "--run",
-            run,
-            "--why",
-            "identity fixture",
-            "--json",
-        ],
-        session_id,
-    );
-    assert!(
-        claimed.status.success(),
-        "claim failed: {}",
-        String::from_utf8_lossy(&claimed.stdout)
-    );
-    json_output(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("claim should return a reservation id")
-        .to_owned()
 }
 
 fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
@@ -1925,18 +1883,6 @@ fn run_berth<const ARGUMENT_COUNT: usize>(
         .expect("cargo-berth should run")
 }
 
-fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(RUN_ENVIRONMENT)
-        .env(SESSION_ENVIRONMENT, session_id)
-        .env_remove(GIT_DIRECTORY_ENVIRONMENT)
-        .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run")
-}
-
 /// Run under only `CLAUDE_CODE_SESSION_ID`, as a Claude Code session's own command does.
 fn run_berth_with_claude_code_session(
     repository_root: &Path,
@@ -2024,22 +1970,6 @@ fn assert_enrollment_failure(report: &serde_json::Value, root: &Path, reason: &s
         failure["diagnostic"]
             .as_str()
             .is_some_and(|diagnostic| !diagnostic.is_empty())
-    );
-}
-
-fn commit_enrollment_work(root: &Path, path: &str, contents: &str) {
-    fs::write(root.join(path), contents).expect("work should write");
-    git(root, &["add", path]);
-    git(
-        root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "work before enrollment",
-        ],
     );
 }
 
@@ -2537,62 +2467,65 @@ fn explicit_retention_write_reports_its_lock_and_keeps_the_appended_checkpoint()
 }
 
 #[test]
-fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open() {
+fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open_for_writing() {
+    assert_held_retention_lock_names_this_process(LockAccess::Write);
+}
+
+#[test]
+fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open_for_reading() {
+    assert_held_retention_lock_names_this_process(LockAccess::Read);
+}
+
+/// How this test process holds the packed-refs lock open.
+#[derive(Clone, Copy)]
+enum LockAccess {
+    Write,
+    Read,
+}
+
+/// Each access mode starts from its own restored template, so no case restores state.
+fn assert_held_retention_lock_names_this_process(access: LockAccess) {
     let repo = IntegrationRepository::from_recorded_template(prepared_lock_tests::PACKED_SUCCESSOR);
     let info: prepared_lock_tests::RetainedPredecessorHistory =
         prepared_lock_tests::read_history(repo.root())
             .expect("prepared retention history should read");
     let id = info.successor_id.as_str();
-    let ledger_path = repo.root().join(".git/cargo-berth");
-    let refs_path = repo.root().join(".git/refs");
-    let marker_path = repo.root().join(".git/cargo-berth-run-id");
-    let ledger_before = cargo_berth_test_support::DirectorySnapshot::capture(&ledger_path);
-    let refs_before = cargo_berth_test_support::DirectorySnapshot::capture(&refs_path);
-    let marker_before = fs::read(&marker_path).expect("active successor marker should read");
     let packed_path = repo.root().join(".git/packed-refs");
     let packed_before = fs::read(&packed_path).expect("packed predecessor should read");
-    for (row, write_access) in [true, false].into_iter().enumerate() {
-        if row > 0 {
-            ledger_before.restore(&ledger_path);
-            refs_before.restore(&refs_path);
-            fs::write(&marker_path, &marker_before)
-                .expect("active successor marker should restore");
-        }
-        let lock = repo.root().join(".git/packed-refs.lock");
-        fs::write(&lock, "").expect("held lock writes");
-        let held = fs::File::options()
-            .read(true)
-            .write(write_access)
-            .open(&lock)
-            .expect("held lock opens");
-        let output = repo.run(
-            repo.root(),
-            &[
-                "resolve",
-                id,
-                "--abandon",
-                "--why",
-                "discard held checkpoint",
-                "--json",
-            ],
-        );
-        assert!(!output.status.success());
-        let message = json(&output)["message"]
-            .as_str()
-            .expect("message")
-            .to_owned();
-        assert!(message.contains("held open by processes"), "{message}");
-        assert!(
-            message.contains(&std::process::id().to_string()),
-            "{message}"
-        );
-        assert!(lock.exists());
-        assert_eq!(
-            fs::read(&packed_path).expect("packed refs should read"),
-            packed_before
-        );
-        drop(held);
-    }
+    let lock = repo.root().join(".git/packed-refs.lock");
+    fs::write(&lock, "").expect("held lock writes");
+    let held = fs::File::options()
+        .read(true)
+        .write(matches!(access, LockAccess::Write))
+        .open(&lock)
+        .expect("held lock opens");
+    let output = repo.run(
+        repo.root(),
+        &[
+            "resolve",
+            id,
+            "--abandon",
+            "--why",
+            "discard held checkpoint",
+            "--json",
+        ],
+    );
+    assert!(!output.status.success());
+    let message = json(&output)["message"]
+        .as_str()
+        .expect("message")
+        .to_owned();
+    assert!(message.contains("held open by processes"), "{message}");
+    assert!(
+        message.contains(&std::process::id().to_string()),
+        "{message}"
+    );
+    assert!(lock.exists());
+    assert_eq!(
+        fs::read(&packed_path).expect("packed refs should read"),
+        packed_before
+    );
+    drop(held);
 }
 
 #[test]

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerFixture;
@@ -15,7 +16,6 @@ use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Refused,

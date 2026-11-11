@@ -24,6 +24,8 @@ use crate::DirectorySnapshot;
 use crate::LedgerTemplate;
 use crate::RepositoryTemplate;
 use crate::berth_command;
+use crate::constants::FIRST_RUN;
+use crate::constants::SECOND_RUN;
 use crate::fixture_tempdir;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
@@ -211,7 +213,7 @@ impl IntegrationRepository {
         let initialized = berth_command::berth_command(executable)
             .args(["init", "--json"])
             .current_dir(root)
-            .env("CARGO_BERTH_RUN", "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b")
+            .env("CARGO_BERTH_RUN", FIRST_RUN)
             .env_remove("CARGO_BERTH_SESSION_ID")
             .env_remove("CARGO_BERTH_BYPASS")
             .bounded_output()
@@ -331,8 +333,8 @@ impl IntegrationRepository {
             assert_success(&output);
             output
         };
-        let first_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-        let second_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+        let first_run = FIRST_RUN;
+        let second_run = SECOND_RUN;
         write_file(&predecessor, "shared.txt", "A\n");
         let predecessor_id = claim_id(&run(
             &predecessor,
@@ -459,12 +461,7 @@ impl IntegrationRepository {
     pub fn build_cover_landing(root: &Path, executable: &'static str) {
         let repository = Self::new(executable);
         let lane = repository.lane("landing-lane", "integration");
-        let claimed = repository.claim(
-            &lane,
-            "file:lane.txt",
-            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
-            None,
-        );
+        let claimed = repository.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
         let _ = repository.board();
         let lane_id = json(&claimed)["payload"]["data"]["reservation_id"].clone();
@@ -501,12 +498,7 @@ impl IntegrationRepository {
     pub fn build_covered_branch_hook(root: &Path, executable: &'static str) {
         let repository = Self::new(executable);
         let lane = repository.lane("cover-hook-lane", "integration");
-        assert_success(&repository.claim(
-            &lane,
-            "file:lane.txt",
-            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
-            None,
-        ));
+        assert_success(&repository.claim(&lane, "file:lane.txt", SECOND_RUN, None));
         // Observe the cover before the merge: a later board could settle it.
         drop(repository.board());
         let cover = repository.cover_claims()[0]["reservation_id"].clone();

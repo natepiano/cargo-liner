@@ -6,20 +6,21 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::Output;
 
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
+use cargo_berth_test_support::MAIN_COORDINATION_RUN_ID;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const MAIN_COORDINATION_RUN_ID: &str = "01a03f63-03e7-7fb2-ae63-5b297177f59f";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
@@ -34,6 +35,13 @@ pub const HOOK_WORKTREE: LedgerTemplate = template("lock-hook-worktree", |root| 
     let built = prepare_hook(root);
     assert!(built.is_ok(), "prepared hook history failed: {built:?}");
 });
+/// A private foreign checkout whose live claim holds work, before the held-path checks.
+pub const LIVE_FOREIGN_HOLDER: LedgerTemplate = template("lock-live-foreign-holder", |root| {
+    let built = prepare_live_holder(root);
+    assert!(built.is_ok(), "prepared live holder failed: {built:?}");
+});
+/// The foreign checkout inside a `LIVE_FOREIGN_HOLDER` repository.
+pub const LIVE_FOREIGN_HOLDER_CHECKOUT: &str = ".git/fixture-worktrees/live-holder";
 /// A packed released predecessor and its active successor, before live abandonment.
 pub const PACKED_SUCCESSOR: LedgerTemplate = template("lock-packed-successor", |root| {
     let built = prepare_retention(root);
@@ -52,9 +60,10 @@ pub const CONTENT_CHECKPOINT: LedgerTemplate = template("lock-content-checkpoint
     let built = prepare_content(root);
     assert!(built.is_ok(), "prepared content history failed: {built:?}");
 });
-/// The four histories that the nextest setup prepares for these tests.
-pub const PREPARED_LOCK_REPOSITORIES: [LedgerTemplate; 4] = [
+/// The five histories that the nextest setup prepares for these tests.
+pub const PREPARED_LOCK_REPOSITORIES: [LedgerTemplate; 5] = [
     HOOK_WORKTREE,
+    LIVE_FOREIGN_HOLDER,
     PACKED_SUCCESSOR,
     ANCESTOR_CHECKPOINT,
     CONTENT_CHECKPOINT,
@@ -73,9 +82,17 @@ const fn template(name: &'static str, build: fn(&Path)) -> LedgerTemplate {
     }
 }
 
-/// A settled reservation and the commits that test its integration proof.
+/// A claimed reservation whose protected work is committed and not yet settled.
+struct ActiveProofHistory {
+    reservation_id:   String,
+    phase_start_head: String,
+    protected_tip:    String,
+}
+
+/// A released reservation and the commits that test its integration proof.
+/// Only settlement of an active history produces this type.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct PreparedProofHistory<Commits> {
+pub struct ReleasedProofHistory<Commits> {
     /// The reservation whose proof the test observes.
     pub reservation_id:   String,
     /// The base of the reservation's protected work.
@@ -86,11 +103,25 @@ pub struct PreparedProofHistory<Commits> {
     pub commits:          Commits,
 }
 
-/// A competitor whose committed scope differs from the protected scope.
+impl ReleasedProofHistory<()> {
+    /// Attach the commits that the proof under test reads.
+    fn with_commits<Commits>(self, commits: Commits) -> ReleasedProofHistory<Commits> {
+        ReleasedProofHistory {
+            reservation_id: self.reservation_id,
+            phase_start_head: self.phase_start_head,
+            protected_tip: self.protected_tip,
+            commits,
+        }
+    }
+}
+
+/// Two competitors whose committed scope differs from the protected scope.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct AncestorProofCommits {
-    /// The competitor's protected tip.
-    pub competitor: String,
+    /// The protected tip of the competitor that the first deferred pass reads.
+    pub competitor:       String,
+    /// The protected tip of the competitor that the second deferred pass adds.
+    pub later_competitor: String,
 }
 
 /// Equivalent content targets and two later trunk commits.
@@ -157,19 +188,38 @@ fn initialize(root: &Path, file: &str, contents: &str) -> FixtureResult<()> {
 
 fn prepare_hook(root: &Path) -> FixtureResult<()> {
     initialize(root, "README.md", "hook fixture\n")?;
-    let foreign = root.join(".git/fixture-worktrees/busy-ledger-holder");
+    add_foreign_checkout(root, "busy-ledger-holder")?;
+    Ok(())
+}
+
+fn prepare_live_holder(root: &Path) -> FixtureResult<()> {
+    initialize(root, "README.md", "held path fixture\n")?;
+    let foreign = add_foreign_checkout(root, "live-holder")?;
+    assert_eq!(foreign, root.join(LIVE_FOREIGN_HOLDER_CHECKOUT));
+    assert_success(&run(
+        &foreign,
+        &["claim", "file:foreign.rs", "--run", SECOND_RUN, "--json"],
+    )?);
+    fs::write(foreign.join("foreign.rs"), "live foreign work\n")
+        .map_err(|error| format!("foreign work should write: {error}"))?;
+    Ok(())
+}
+
+/// Add a private linked checkout that shares the repository's policy.
+fn add_foreign_checkout(root: &Path, name: &str) -> FixtureResult<std::path::PathBuf> {
+    let foreign = root.join(".git/fixture-worktrees").join(name);
     fs::create_dir_all(foreign.parent().ok_or("linked checkout parent")?)
         .map_err(|error| format!("linked checkout parent should exist: {error}"))?;
-    GIT.add_worktree_without_hooks(root, &foreign, "busy-ledger-holder", "HEAD");
+    GIT.add_worktree_without_hooks(root, &foreign, name, "HEAD");
     let policy = foreign.join(CONFIGURATION_PATH);
     fs::create_dir_all(policy.parent().ok_or("policy parent")?)
         .map_err(|error| format!("policy parent should exist: {error}"))?;
     fs::copy(root.join(CONFIGURATION_PATH), policy)
         .map_err(|error| format!("linked policy should copy: {error}"))?;
-    Ok(())
+    Ok(foreign)
 }
 
-fn protected_phase(root: &Path) -> FixtureResult<PreparedProofHistory<()>> {
+fn protected_phase(root: &Path) -> FixtureResult<ActiveProofHistory> {
     initialize(root, "src/lib.rs", "pub fn value() {}\n")?;
     let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
     let claimed = run(
@@ -204,35 +254,32 @@ fn protected_phase(root: &Path) -> FixtureResult<PreparedProofHistory<()>> {
         ],
     );
     let protected_tip = git_stdout(root, &["rev-parse", "HEAD"]);
-    Ok(PreparedProofHistory {
+    Ok(ActiveProofHistory {
         reservation_id,
         phase_start_head,
         protected_tip,
-        commits: (),
     })
 }
 
 fn prepare_ancestor(root: &Path) -> FixtureResult<()> {
-    let subject = protected_phase(root)?;
-    settle_protected_phase(root, &subject)?;
+    let released = settle_protected_phase(root, protected_phase(root)?)?;
     let competitor =
-        GIT.commit_competitor_scope(root, "src/distinct-0.rs", &subject.phase_start_head, 0);
+        GIT.commit_competitor_scope(root, "src/distinct-0.rs", &released.phase_start_head, 0);
+    let later_competitor =
+        GIT.commit_competitor_scope(root, "src/distinct-0.rs", &released.phase_start_head, 1);
     write_history(
         root,
-        &PreparedProofHistory {
-            reservation_id:   subject.reservation_id,
-            phase_start_head: subject.phase_start_head,
-            protected_tip:    subject.protected_tip,
-            commits:          AncestorProofCommits { competitor },
-        },
+        &released.with_commits(AncestorProofCommits {
+            competitor,
+            later_competitor,
+        }),
     )?;
     Ok(())
 }
 
 fn prepare_content(root: &Path) -> FixtureResult<()> {
-    let info = protected_phase(root)?;
-    settle_protected_phase(root, &info)?;
-    let base = &info.phase_start_head;
+    let released = settle_protected_phase(root, protected_phase(root)?)?;
+    let base = &released.phase_start_head;
     let warmed = GIT.commit_library_target_from_base(
         root,
         base,
@@ -242,7 +289,7 @@ fn prepare_content(root: &Path) -> FixtureResult<()> {
     let output = run(root, &["board", "--json"])?;
     assert_success(&output);
     let board = json(&output);
-    let row = cargo_berth_test_support::reservation_row(&board, &info.reservation_id);
+    let row = cargo_berth_test_support::reservation_row(&board, &released.reservation_id);
     let status = &row["integration_evidence"]["status"];
     assert_eq!(status["status"], "integrated");
     assert_eq!(status["proof"], "scoped_patch_equivalent");
@@ -278,21 +325,19 @@ fn prepare_content(root: &Path) -> FixtureResult<()> {
     );
     write_history(
         root,
-        &PreparedProofHistory {
-            reservation_id:   info.reservation_id,
-            phase_start_head: info.phase_start_head,
-            protected_tip:    info.protected_tip,
-            commits:          ContentProofCommits {
-                warmed_target:  warmed,
-                amended_target: amended,
-                advances:       [first, second],
-            },
-        },
+        &released.with_commits(ContentProofCommits {
+            warmed_target:  warmed,
+            amended_target: amended,
+            advances:       [first, second],
+        }),
     )?;
     Ok(())
 }
 
-fn settle_protected_phase(root: &Path, info: &PreparedProofHistory<()>) -> FixtureResult<()> {
+fn settle_protected_phase(
+    root: &Path,
+    active: ActiveProofHistory,
+) -> FixtureResult<ReleasedProofHistory<()>> {
     let journal_path = root.join(".git/cargo-berth/journal.ndjson");
     let text = fs::read_to_string(&journal_path)
         .map_err(|error| format!("journal should read: {error}"))?;
@@ -308,8 +353,8 @@ fn settle_protected_phase(root: &Path, info: &PreparedProofHistory<()>) -> Fixtu
         "actor":previous["actor"], "at":previous["at"],
         "projection_generation":previous["projection_generation"].as_u64()
             .ok_or("generation should be numeric")? + 1,
-        "op":"checkpoint", "reservation_id":info.reservation_id,
-        "protected_tip":info.protected_tip, "trunk_snapshot":info.protected_tip});
+        "op":"checkpoint", "reservation_id":active.reservation_id,
+        "protected_tip":active.protected_tip, "trunk_snapshot":active.protected_tip});
     let mut journal = fs::OpenOptions::new()
         .append(true)
         .open(journal_path)
@@ -320,7 +365,7 @@ fn settle_protected_phase(root: &Path, info: &PreparedProofHistory<()>) -> Fixtu
     let output = run(root, &["board", "--json"])?;
     assert_success(&output);
     let board = json(&output);
-    let row = cargo_berth_test_support::reservation_row(&board, &info.reservation_id);
+    let row = cargo_berth_test_support::reservation_row(&board, &active.reservation_id);
     assert_eq!(
         row["lifecycle"]["stage"], "released",
         "ordinary reconciliation should settle the reachable checkpoint"
@@ -329,7 +374,12 @@ fn settle_protected_phase(root: &Path, info: &PreparedProofHistory<()>) -> Fixtu
         row["integration_evidence"]["status"]["proof"],
         "protected_tip_ancestor"
     );
-    Ok(())
+    Ok(ReleasedProofHistory {
+        reservation_id:   active.reservation_id,
+        phase_start_head: active.phase_start_head,
+        protected_tip:    active.protected_tip,
+        commits:          (),
+    })
 }
 
 fn prepare_retention(root: &Path) -> FixtureResult<()> {

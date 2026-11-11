@@ -11,10 +11,12 @@ mod edges_templates;
 mod prepared_lock_tests;
 
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::deferring_run_scope;
@@ -51,9 +53,11 @@ pub use prepared_lock_tests::AncestorProofCommits;
 pub use prepared_lock_tests::CONTENT_CHECKPOINT;
 pub use prepared_lock_tests::ContentProofCommits;
 pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER_CHECKOUT;
 pub use prepared_lock_tests::PACKED_SUCCESSOR;
 pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
-pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::ReleasedProofHistory;
 pub use prepared_lock_tests::RetainedPredecessorHistory;
 pub use prepared_lock_tests::read_history;
 
@@ -94,7 +98,6 @@ use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const BOARD_LOCKED_READ_TIMEOUT: Duration = Duration::from_secs(60);
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 /// The rendered report's key for a live merge extent.
@@ -299,7 +302,6 @@ fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() 
         }
     }
 }
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
@@ -4628,7 +4630,8 @@ fn a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof() {
     // only once the ledger's own status has gone proofless, which is a pass that ran the comparison
     // -- covered by
     // `liveness::recovery_dispositions_validate_evidence_and_remain_distinct_after_replay`.
-    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
+    // The template prepared this competitor's commit; the pass and its reservation stay live.
+    append_prepared_released_competitor(&fixture, &history.later_competitor);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
@@ -5622,16 +5625,22 @@ fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject(
 }
 
 #[test]
-fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
+fn historical_candidate_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
     let historical = historical_integration_fixture();
     let repository = DirectorySnapshot::capture(historical.reservation.repository.path());
     let worktrees = DirectorySnapshot::capture(historical.worktrees.path());
     assert_historical_candidate_subject_budget(&historical, &repository, &worktrees);
-    repository.restore(historical.reservation.repository.path());
-    worktrees.restore(historical.worktrees.path());
+}
+
+#[test]
+fn mapped_acceptance_defers_historical_subjects_until_the_next_pass() {
+    let historical = historical_integration_fixture();
     assert_mapped_acceptance_defers_historical_subjects(&historical);
-    repository.restore(historical.reservation.repository.path());
-    worktrees.restore(historical.worktrees.path());
+}
+
+#[test]
+fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
+    let historical = historical_integration_fixture();
     let mut one = released_historical_subject(historical);
     let equivalent = DirectorySnapshot::capture(one.repository.path());
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
@@ -6941,7 +6950,7 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> (
     prepared_lock_tests::AncestorProofCommits,
 ) {
     let repository = prepared_lock_tests::ANCESTOR_CHECKPOINT.instantiate();
-    let info: prepared_lock_tests::PreparedProofHistory<prepared_lock_tests::AncestorProofCommits> =
+    let info: prepared_lock_tests::ReleasedProofHistory<prepared_lock_tests::AncestorProofCommits> =
         prepared_lock_tests::read_history(repository.path())
             .expect("prepared proof history should read");
     let phase_start_head = info.phase_start_head;
@@ -7010,7 +7019,7 @@ fn warmed_scoped_patch_proof_after_release() -> (
     prepared_lock_tests::ContentProofCommits,
 ) {
     let repository = prepared_lock_tests::CONTENT_CHECKPOINT.instantiate();
-    let info: prepared_lock_tests::PreparedProofHistory<prepared_lock_tests::ContentProofCommits> =
+    let info: prepared_lock_tests::ReleasedProofHistory<prepared_lock_tests::ContentProofCommits> =
         prepared_lock_tests::read_history(repository.path())
             .expect("prepared proof history should read");
     let phase_start_head = info.phase_start_head;
