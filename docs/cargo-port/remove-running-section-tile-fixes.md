@@ -1691,7 +1691,7 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 
 #### Work Order
 
-**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` and `reader_scenario_sigkill_ends_its_waiting_writer_group` run under 1 s in a loaded Mac full suite and a loaded natedev full suite.
+**Goal:** Every `shim_registration::reader_scenarios` test runs under 1 s in a loaded Mac full suite and a loaded natedev full suite. This includes `reader_keeps_parent_family_across_its_only_childs_source_switch`, `reader_scenario_sigkill_ends_its_waiting_writer_group` and the two tests in item 9.
 
 **Spec:**
 1. The test took 1.374 s on natedev in a cargo-port run (`20261110T233054-4094787-d0c2`, reported by the showrunner 2026-11-10). It took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
@@ -1708,6 +1708,7 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 6. `copy_named_shell` (`reader_scenario_cases.py:313`) copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
 7. The Phase 32 round 1 Mac suite (2026-11-09, `phases/32/repair_summary_round1.txt`) had twelve `shim_registration::installed` tests at 1.458-1.570 s, all finishing together, and one leaky test, `cli_lifecycle::tests::uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`. Phase 32 does not touch these files. Measure them in a loaded Mac full suite. Fix the shared cost at its cause, and stop the process that outlives the leaky test. Do not raise a limit.
 8. `shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group` took 3.349 s in the Phase 59 Mac gate (`phases/59/mac_gate_r3.log`). The four ownership tests took 0.57-0.69 s in the same suite. Measure startup and cleanup apart, then fix the largest cost at its cause. Keep every assertion at `reader_scenario_cases.py:2024-2065`.
+9. The Phase 32i round 3 natedev gate suite (2026-11-11, run `20261111T011717-1578511-7053`) had three reader scenarios over 1 s. Phase 32i does not touch these tests. The source-switch test took 1.088 s. `reader_accepts_live_writer_under_different_locale_and_timezone` took 1.103 s. `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.592 s. Measure both new tests with the item 2 timeline. Fix each cost at its cause.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/installed.rs` — item 7, test module only.
