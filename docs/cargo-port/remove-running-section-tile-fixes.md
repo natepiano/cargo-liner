@@ -2454,7 +2454,8 @@ Phase 32i did not land (showrunner, 2026-11-11). Its findings F003, F004 and F00
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - A counted capture with no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows. A capture counts only when the 1-minute load is below 32 at its start and end.
-- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32i/pairs.sh`).
+- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32j/pairs.sh`). Each row count uses two measures from `cpu_ns`: the number of frames over 4 ms, and the median frame CPU. Both must be equal to or better than main in all three pairs.
+- Draw time over 4 ms does not gate (showrunner, 2026-11-11). Run-queue wait, not code, caused most of those frames: 93/84/157 of 96/87/169 at 24/40/80 rows in capture phase32j-gate-5. The checkpoint reports the draw-over-4-ms counts.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 58c — A reservation whose holder worktree id changed can be released  · status: done
@@ -2482,13 +2483,13 @@ Checkpoint 868e5e1e4 on `tile-phase-58c`.
 
 ### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
 
-**Depends on:** Phase 58c (order only; showrunner, 2026-11-11).
+**Depends on:** Phase 58e (order only; showrunner, 2026-11-11).
 
 The showrunner reported two intermittent failures on the Mac at style tip ad23f4563 (1,358 passed, 2 failed). Earlier runs at the same tip passed. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T033213-2377391-406a.log`, lines 719-800. An intermittent test is a defect.
 
 #### Work Order
 
-**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s.
+**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s. Each item 6 test also runs under 1 s.
 
 **Spec:**
 
@@ -2497,14 +2498,57 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 3. Find each cause before a change. Record it with the line that takes the lock. Do not add a retry, a sleep or a longer wait to hide the race. Do not raise a limit.
 4. Keep every assertion. A test that checks contention keeps checking it, with the contention under the test's control.
 5. Make each test run under 1 s. The first took 1.498 s, the second 4.142 s.
+6. **Slow tests from the Phase 58c reruns** (showrunner, 2026-11-11). On natedev at load 44 to 161, these untouched tests took 1 s or more. Find each cause and make each test run under 1 s. Items 3 and 4 apply.
+   - `gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 2.088 s.
+   - `gate::trunk_gate_remembers_first_target_landing_after_target_revalidation` — 1.233 s.
+   - `lifecycle::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding` — 1.12 to 1.14 s.
+   - `lifecycle::integration_cover::cover_ends_after_integration_lands_by_merge_or_fast_forward` — 1.12 to 1.14 s.
+   - `lifecycle::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.002 s.
+   - `hooks::a_contended_ledger_states_the_engine_message` — 1.613 s.
+   - `hooks::a_claim_under_only_the_claude_code_session_binds_that_session` — 1.394 s.
+   - `hooks::a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file` — 1.323 s.
+   - `hooks::a_commit_outside_the_covered_branch_still_reports_the_cover_incursion` — 1.296 s.
+   - `hooks::a_covered_merge_keeps_another_holders_incursion_visible` — 1.241 s.
+   - `hooks::a_defer_claim_under_the_claude_code_session_authorizes_its_edit` — 1.165 s.
+   - `hooks::a_payload_without_session_identity_ignores_the_ambient_variable` — 1.005 s.
+   - `liveness::active_checkpoint_release_reconciles_outstanding_retention_refs` — 1.074 s.
+   - `liveness::active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint` — 1.009 s.
 
-**Files:** `crates/cargo-berth/tests/hooks.rs` and `crates/cargo-berth/tests/ledger.rs` — the two tests; `crates/cargo-berth/src/` — the lock paths, chosen by items 1 and 2.
+**Files:** `crates/cargo-berth/tests/hooks.rs`, `ledger.rs`, `gate.rs`, `lifecycle.rs` and `liveness.rs` — the tests; `crates/cargo-berth/src/` — the lock paths and slow paths, chosen by items 1, 2 and 6.
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
 **Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s.
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
+
+### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: todo
+
+**Depends on:** none. It runs first among the cargo-berth phases, beside Phase 32j (showrunner, 2026-11-11: a 509-path extent can refuse edits to every unit).
+
+On 2026-11-11, handler reservation 01a1caa4-7b2b-7433-9e96-c0e59669a370 (`refs/heads/cargo-liner-handler`) held 509 paths in its protected merge extent. Its key was trunk 07621aedb and head 500c5f862. The branch has no own content in those paths: `git diff --name-only $(git merge-base origin/main 500c5f862) 500c5f862` lists 0 paths. Its only commits after its merge base are merge 48a5ef138 (main at a6cc171fe), the as-built 1eeb0ae9d and merge 500c5f862. Main moved past the branch after that merge. The port and tile units were refused edits to their own plan docs, and each needed an `--override` from the showrunner.
+
+#### Work Order
+
+**Goal:** a reservation's merge extent holds only paths with the branch's own content. Paths that differ only because the merge branch moved, or that came in only through a merge of the merge branch, are not in the extent.
+
+**Spec:**
+
+1. **Find the cause first.** Quote the line that derives the merge extent. Say whether it compares the head with the trunk tip or with the merge base. Record it before a change.
+2. **Fix it where the extent is derived.** Do not add an exception list. Do not filter paths at the edit hook.
+3. **Keep real protection.** A path the branch changed on its own stays in the extent. This includes a path changed both by the branch and by a merge of the merge branch.
+4. **Regression tests,** each under 1 s, with a recorded template (Phase 58b):
+   - A branch merges the trunk, then the trunk moves on. Another worktree edits a file only the trunk changed; the edit is allowed.
+   - A branch changes a file, then merges the trunk. That file stays protected.
+5. Keep every existing assertion.
+
+**Files:** `crates/cargo-berth/src/` — the merge-extent derivation, chosen by item 1; `crates/cargo-berth/tests/` — item 4.
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev. The item 4 tests fail before the fix and pass after it.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 

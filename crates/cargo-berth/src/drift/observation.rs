@@ -27,6 +27,7 @@ use crate::git::CommitTargetReachability;
 use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::Reachability;
 use crate::git::RepositorySnapshot;
+use crate::git::TrunkMergeIndex;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -640,15 +641,25 @@ fn observe_full(
 /// repository setup, not lane work, whether the file is untracked or tracked and modified, so
 /// every partition drops it. A committed change to that file still counts through
 /// `git::unmerged_branch_paths`.
+/// `TrunkMergeIndex` removes imported target content from `status.staged` because it is not branch
+/// work. It keeps conflicts in `status.staged` and manual edits in `status.unstaged`.
 pub(crate) fn observe_merge_working_tree(
     repository: &RepositorySnapshot,
     repository_root: &Path,
+    trunk: &GitObjectId,
 ) -> Result<WorkingTreeFingerprint, String> {
     let output = repository
         .working_tree_status_at(repository_root)
         .map_err(|error| error.to_string())?;
     let mut status = git_output::parse_working_tree_status(&output.porcelain)
         .map_err(|error| error.to_string())?;
+    if !status.staged.is_empty()
+        && let TrunkMergeIndex::Pending { own_paths } =
+            git::TrunkMergeIndex::observe(repository_root, trunk)
+                .map_err(|error| error.to_string())?
+    {
+        status.staged.retain(|path| own_paths.contains(path));
+    }
     let configuration_path = BerthConfig::relative_path();
     for paths in [
         &mut status.staged,
