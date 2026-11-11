@@ -2373,42 +2373,60 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - `capture_cpu_ns` surrounds all of `frame_draw_contents`, so foreground recording counts with painting.
 - A gate capture counts only when the 1-minute load is below 32 at its start and at its end; outside the limit it is void, not red.
 
-### Phase 32h — Tile frames stay under 4 ms after layout, view and value changes  · status: todo
+### Phase 32h — Tile frames stay under 4 ms after layout, view and value changes  · status: done
 
-**Depends on:** Phase 32e.
+#### As-built
 
-Phase 32e landed under the three-round rule with its gate open (finding F010). Its counted capture had on-CPU maximums of 3.24, 4.46 and 4.81 ms at 24, 40 and 80 rows, with 0 of 1720, 1 of 1668 and 13 of 1681 frames over 4 ms. Three interleaved pairs against main showed no change larger than the spread between pairs. The Astra review of F010 is `/tmp/claude/astra/20261110T183059Z-942485/review.md`.
+- `render/placed_values.rs` draws the duration, CPU and memory columns (`ValueColumn`) over a retained cell painting at their recorded positions. A value change does not reject the painting.
+- A painting is rejected only when its inputs change (`render.rs:1709`). `cell_paint.rs` records the first changed input field, and the probe logs it.
+- The heading, the reading and the table share one prepared directory group.
+- Printable ASCII text draws on a fast path without wide-glyph width work.
+- `probe.rs` reports recording, capture, table preparation, patch, ink binding and repaint CPU as separate counters.
+- `RECOVERY_BATCH_MILLIS` sits with the repaint constants in `tui_pane/src/runner/constants.rs`.
+- The 4 ms gate is not met. Three interleaved pairs against main: frames over 4 ms per pair fell from 131/74/144 to 33/5/1 at 24 rows, 107/67/69 to 19/26/1 at 40 rows and 138/80/41 to 70/19/1 at 80 rows. p99 and median are lower in all 9 cells. The pair-3 candidate had about 820 samples against about 2000 for main.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — input rejection, shared groups and the ASCII path.
+- `crates/cargo-tile/src/render/placed_values.rs` — the value columns.
+- `crates/cargo-tile/src/render/cell_paint.rs`, `crates/cargo-tile/src/render/frame_preparation.rs` — the input record and preparation.
+- `crates/cargo-tile/src/probe.rs` — the split counters.
+- `crates/tui_pane/src/runner/constants.rs` — constant order.
+
+**Binds later work:** a value change draws through `placed_values`; do not add value text to the painting inputs.
+
+**Gotchas:**
+- Most frames over 4 ms at 40 rows repaint all cells after an input rejection (`cache_inputs=6`).
+- A doc link to a `#[cfg(test)]` function fails rustdoc in the product build.
+
+### Phase 32i — The last tile frames over 4 ms after 32h  · status: todo
+
+**Depends on:** Phase 32h.
+
+Phase 32h landed at the repair cap with its gate open. Its findings F005, F006 and F007 come here.
 
 #### Work Order
 
-**Goal:** In the fixed busy capture, no `cargo-tile` frame spends more than 4 ms of on-CPU draw time at 24, 40 and 80 rows. This includes the first frame after a layout change, a view change, a duration change and a resource change.
+**Goal:** In the fixed busy capture, no `cargo-tile` frame spends more than 4 ms of on-CPU draw time at 24, 40 and 80 rows.
 
 **Spec:**
 
-1. **Measure before you change.** The `capture_cpu_ns` timer surrounds `frame_draw_contents` (`crates/cargo-tile/src/render.rs:1728`), so it includes table preparation and text drawing. It also runs when `InkCapture::without_ink()` turns recording off. Measure foreground recording apart from ordinary painting. Keep source capture, destination scan, patch construction and ink binding as separate costs.
-2. **Value changes count.** Frames over 4 ms also come after a duration change (`00:05` to `00:06`) and after a memory reading change, with `invalid_view=0`. `CellPaintSource::matches` checks layout before these source values (`crates/cargo-tile/src/render/cell_paint.rs:355`). Cover these frames, not only view changes.
-3. **Make the recording areas small.** `paint_ink` saves and marks every foreground in its rectangle, then scans that rectangle again (`crates/cargo-tile/src/render/cell_paint.rs:591`). Ancestry recording gets the remaining pane (`crates/cargo-tile/src/render.rs:2443`): prepare the ancestry lines once, record only their drawn rectangle, and record nothing when there are no lines. Continuation recording gets the table area (`crates/cargo-tile/src/render.rs:2804`): resolve the continuation search first, then record only the selected row. Keep the full search dependency in `CellPaintReach`.
-4. **Limits.** Do not skip recording only because the current fade is zero: a finished row can fade during later cache replays. Keep destination validation: continuation placement reads existing symbols, and retained patches use absolute buffer positions. Do not move the work into `before_draw`: that hides the cost from the draw measurement and does not reduce CPU work.
-5. **Deterministic proof.** Add a fixture at 160 columns and 24, 40 and 80 rows. Make argument, hierarchy, duration and resource changes. Also resize the tile, move a cell, and change the destination symbols so that the continuation target moves: patches use absolute positions (`crates/cargo-tile/src/render/cell_paint.rs:836`), and continuation placement searches destination symbols (`crates/cargo-tile/src/render.rs:2722`). Check the first frame after each change, not `settled_frame` (`crates/cargo-tile/src/render.rs:8754`), which draws four times. Compare each buffer with a fresh painting. Count foreground recording visits apart from the snapshot and patch counters. Empty ancestry needs zero recording visits. Continuation recording stays at one row as the table height grows. Include mixed live and finished rows, Brighten, wide glyphs and shifted buffers.
-6. **The shifted-buffer test runs.** The loop at `crates/cargo-tile/src/render/cell_paint.rs:991` supplies only `Reset` and `Black`, so the shifted-buffer branch never runs. Add `Indexed(16)` to that loop.
-7. **Constant order (finding F009).** Put `RECOVERY_BATCH_MILLIS` in `crates/tui_pane/src/runner/constants.rs` with the related repaint constants, in the module order that the style guide gives.
+1. **All-cell repaints (F005).** The 32h counted capture had maximums of 9.67, 12.38 and 7.37 ms, with 5, 59 and 8 frames over 4 ms. 55 of the 59 slow 40-row frames have `cache_inputs=6`: every cell repaints, with repaint 1.6 to 2.8 ms and capture 1.3 to 2.3 ms. Find which input changes on those frames. Keep a cell's painting when its own inputs do not change. Duration changes still repaint (`first_rejection=duration`); remove that repaint.
+2. **Named value states (F006).** `ValueColumn::reading` (`crates/cargo-tile/src/render/placed_values.rs:32`) takes and returns `Option`. Replace them with enums that name each state.
+3. **Text drawing scope (F007).** `text_drawing_cpu_ns` (`crates/cargo-tile/src/probe.rs:675`) includes recording and grouping. Measure text drawing alone.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs` — recording areas, the timer split and the first-frame fixture.
-- `crates/cargo-tile/src/render/cell_paint.rs` — `paint_ink`, `CellPaintReach` and the shifted-buffer test.
-- `crates/cargo-tile/src/render/frame_preparation.rs`, `crates/cargo-tile/src/render/command_cache.rs` — only if the measurement in item 1 names them.
-- `crates/cargo-tile/src/probe.rs` — the separate recording costs.
-- `crates/tui_pane/src/runner/constants.rs` — item 7.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/cell_paint.rs` — painting inputs.
+- `crates/cargo-tile/src/render/placed_values.rs` — item 2.
+- `crates/cargo-tile/src/probe.rs` — item 3.
 
 **Workers:** 1 writer — `impl`, every file above.
 
-**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32e: retained cells recolor from separate ink sources; keep them separate. Phase 32e: a frame outside the gate load limit is void, not red. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32e: retained cells recolor from separate ink sources. Phase 32h: value changes draw through `placed_values`. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green. When `tui_pane` changes: `verify.sh lint tui_pane`, then `verify.sh test` for `tui_pane`, `cargo-handler` and `cargo-port`, green.
-- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Run `python3 /tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/32b/capture/cpu_build_capture.py <label>` from the phase worktree. It builds the release binary, runs `capture.py` with its `terminal_bridge.py`, and writes `<label>-results.json` in the same folder. Keep the tree unchanged during a capture. Phase 32e's counted capture is the before result. Report the before and after maximum, p99, count over 4 ms and sample count at each size.
-- A gate capture counts only when the 1-minute load is below 32 at its start and at its end. A capture outside the limit is void, not red.
-- Three interleaved pairs against main for any CPU claim, with the median change and the spread. Record the candidate and main revisions beside each pair.
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- The fixed capture shows no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows on the final release build. Run `python3 /tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/32b/capture/cpu_build_capture.py <label>` from the phase worktree. A capture counts only when the 1-minute load is below 32 at its start and end.
+- Three interleaved pairs against main for any CPU claim, with the median change and the spread.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
