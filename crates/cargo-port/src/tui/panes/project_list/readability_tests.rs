@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use tui_pane::ColorMode;
 
@@ -132,7 +133,7 @@ fn projects_reserve_main_width_before_comparisons_arrive() -> anyhow::Result<()>
         if width == 80 {
             assert_eq!(
                 before[0].width - 2,
-                45,
+                43,
                 "live Projects inner width before data"
             );
         }
@@ -146,7 +147,7 @@ fn projects_reserve_main_width_before_comparisons_arrive() -> anyhow::Result<()>
             if width == 80 && (ahead, behind) == (1, 17) {
                 assert_eq!(
                     after[0].width - 2,
-                    45,
+                    43,
                     "live Projects inner width after data"
                 );
                 let live_values_share_row = (after[0].y..after[0].bottom()).any(|y| {
@@ -172,12 +173,13 @@ fn projects_reserve_main_width_before_comparisons_arrive() -> anyhow::Result<()>
         test_support::draw_ui(&mut app, width)?;
         assert!(app.project_list.cached_fit_widths.get(COL_SYNC) > sync_reserved);
         let grown = app.panes.tiled_layout.area(PaneId::ProjectList);
-        test_support::draw_ui(&mut app, width)?;
+        let buffer = test_support::draw_ui(&mut app, width)?;
         assert_eq!(app.panes.tiled_layout.area(PaneId::ProjectList), grown);
         if width == 160 {
+            test_support::position(&buffer, PROJECT)?;
             assert!(
                 app.panes.tiled_layout.area(PaneId::Targets).width
-                    >= app.panes.targets.preferred_width()
+                    >= crate::tui::panes::targets::minimum_width()
             );
         }
     }
@@ -242,65 +244,60 @@ fn disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Resu
 
 #[test]
 fn selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
-    let result = (|| -> anyhow::Result<()> {
-        for status in [GitStatus::Clean, GitStatus::Untracked, GitStatus::Modified] {
-            let mut app = test_support::project_app();
-            app.framework.color_mode = ColorMode::Colored;
-            app.project_list
-                .at_path_mut(Path::new(PROJECT_PATH))
-                .expect_found("project")
-                .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-                status,
-                head: HeadState::Branch("fleet".to_string()),
-                last_commit: CommitDate::At("2026-11-05 12:00".to_string()),
-                ahead_behind_local: Comparison::Counted(AheadBehind {
-                    ahead:  0,
-                    behind: 0,
-                }),
-                primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
-                bisect: None,
-            }));
-            let run = serde_json::from_value(serde_json::json!({
-                "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
-                "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
-            }))?;
-            app.project_list
-                .ensure_git_repo_for(Path::new(PROJECT_PATH))
-                .context("Git repo")?
-                .repo_info = RepositoryProbe::Repository(RepoInfo {
-                local_main_branch: ResolvedBranch::Named("fleet".to_string()),
-                default_branch: ResolvedBranch::Named("fleet".to_string()),
-                ..crate::project::RepoInfo::default()
-            });
-            app.project_list
-                .ensure_git_repo_for(Path::new(PROJECT_PATH))
-                .context("Git repo")?
-                .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
-                runs:          vec![run],
-                github_total:  GithubRunCount::Known(1),
-                ci_pagination: CiPagination::Exhausted,
-            });
-            let buffer = test_support::draw_ui(&mut app, WIDTH)?;
-            let body = app.panes.project_list.body_rect;
-            let (_, y) =
-                test_support::find_text_cell(&buffer, body, PROJECT).context("selected row")?;
-            let mut row = Buffer::empty(ratatui::layout::Rect::new(body.x, y, body.width, 1));
-            for x in body.x..body.right() {
-                row[(x, y)] = buffer[(x, y)].clone();
-            }
-            let mut words = vec!["🟢", status.icon(), "1.0 GiB"];
-            if status == GitStatus::Clean {
-                words.push("☑");
-            }
-            let failures = test_support::contrast_failures(&row, &words, "selected status cells");
-            assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let _theme = test_support::ThemeOverride::install(test_support::shipped_dark_theme()?);
+    for status in [GitStatus::Clean, GitStatus::Untracked, GitStatus::Modified] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.project_list
+            .at_path_mut(Path::new(PROJECT_PATH))
+            .expect_found("project")
+            .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+            status,
+            head: HeadState::Branch("fleet".to_string()),
+            last_commit: CommitDate::At("2026-11-05 12:00".to_string()),
+            ahead_behind_local: Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
+            primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
+            bisect: None,
+        }));
+        let run = serde_json::from_value(serde_json::json!({
+            "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
+            "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
+        }))?;
+        app.project_list
+            .ensure_git_repo_for(Path::new(PROJECT_PATH))
+            .context("Git repo")?
+            .repo_info = RepositoryProbe::Repository(RepoInfo {
+            local_main_branch: ResolvedBranch::Named("fleet".to_string()),
+            default_branch: ResolvedBranch::Named("fleet".to_string()),
+            ..crate::project::RepoInfo::default()
+        });
+        app.project_list
+            .ensure_git_repo_for(Path::new(PROJECT_PATH))
+            .context("Git repo")?
+            .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+            runs:          vec![run],
+            github_total:  GithubRunCount::Known(1),
+            ci_pagination: CiPagination::Exhausted,
+        });
+        let buffer = test_support::draw_ui(&mut app, WIDTH)?;
+        let body = app.panes.project_list.body_rect;
+        let (_, y) =
+            test_support::find_text_cell(&buffer, body, PROJECT).context("selected row")?;
+        let mut row = Buffer::empty(ratatui::layout::Rect::new(body.x, y, body.width, 1));
+        for x in body.x..body.right() {
+            row[(x, y)] = buffer[(x, y)].clone();
         }
-        Ok(())
-    })();
-    tui_pane::set_active_theme(previous);
-    result
+        let mut words = vec!["🟢", status.icon(), "1.0 GiB"];
+        if status == GitStatus::Clean {
+            words.push("☑");
+        }
+        let failures = test_support::contrast_failures(&row, &words, "selected status cells");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    Ok(())
 }
 
 #[test]
@@ -459,11 +456,10 @@ fn project_type_icons_have_a_heading() -> anyhow::Result<()> {
 #[test]
 fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()> {
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
     let mut failures = Vec::new();
     for deleted in [false, true] {
         let mut app = test_support::project_app();
-        tui_pane::set_active_theme(std::sync::Arc::new(theme.clone()));
+        let _theme = test_support::ThemeOverride::install(theme.clone());
         let info = app
             .project_list
             .at_path_mut(Path::new(PROJECT_PATH))
@@ -500,7 +496,6 @@ fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()>
             ));
         }
     }
-    tui_pane::set_active_theme(previous);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }
@@ -509,10 +504,8 @@ fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()>
 fn project_selection_has_visible_fill_and_one_text_color() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     let theme = test_support::shipped_dark_theme()?;
-    let previous = tui_pane::theme();
-    tui_pane::set_active_theme(std::sync::Arc::new(theme));
+    let _theme = test_support::ThemeOverride::install(theme);
     let buffer = test_support::draw_ui(&mut app, WIDTH)?;
-    tui_pane::set_active_theme(previous);
     let name = test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, PROJECT)
         .context("the selected project name")?;
     let disk = test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, "1.0 GiB")
@@ -573,16 +566,106 @@ fn project_expand_mark_has_a_left_margin() -> anyhow::Result<()> {
 
 #[test]
 fn project_disk_units_stay_whole_at_eighty_columns() -> anyhow::Result<()> {
-    let mut app = test_support::project_app();
-    app.project_list
+    let mut app = disk_alignment_app()?;
+    for (bytes, compact, decimal) in [
+        (25_555_055_411, "24 GiB", "23.8 GiB"),
+        (46_815_143_526, "44 GiB", "43.6 GiB"),
+        (135_168, "132 KiB", "132.0 KiB"),
+        (73, "73 B", "73 B"),
+    ] {
+        app.project_list
+            .at_path_mut(Path::new(PROJECT_PATH))
+            .expect_found("the project")
+            .disk = DiskMeasurement::TotalOnly(bytes);
+        let paths = app.project_list.visible_project_storage_paths();
+        app.project_list
+            .set_project_storage(&paths, ProjectStorage::Available(bytes));
+        app.scan.bump_generation();
+        app.ensure_visible_rows_cached();
+        for width in [60, 80, 81] {
+            let buffer = test_support::draw_ui(&mut app, width)?;
+            let area = app.panes.project_list.body_rect;
+            let expected = if width == 81 { decimal } else { compact };
+            let summary = test_support::find_text_cell(&buffer, area, "Σ").context("Σ")?;
+            let available =
+                test_support::find_text_cell(&buffer, area, "Available").context("Available")?;
+            for (label, y) in [
+                ("project", area.y),
+                ("Σ", summary.1),
+                ("Available", available.1),
+            ] {
+                test_support::find_text_cell(
+                    &buffer,
+                    ratatui::layout::Rect::new(area.x, y, area.width, 1),
+                    expected,
+                )
+                .with_context(|| format!("whole Disk value for {label} at {width}"))?;
+            }
+            if width != 81 {
+                assert_project_headers_align(&buffer, area, expected)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn disk_alignment_app() -> anyhow::Result<App> {
+    let (mut app, remote) = sync_width_app()?;
+    app.config.current_mut().lint.enabled = LintIndicator::Disabled;
+    set_sync_comparison(
+        &mut app,
+        &remote,
+        Comparison::Counted(AheadBehind {
+            ahead:  1,
+            behind: 1,
+        }),
+    )?;
+    set_main_comparison(
+        &mut app,
+        Comparison::Counted(AheadBehind {
+            ahead:  1,
+            behind: 1,
+        }),
+    )?;
+    if let LocalGitState::Detected(checkout) = &mut app
+        .project_list
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("the project")
-        .disk = DiskMeasurement::TotalOnly(25_555_055_411);
-    app.scan.bump_generation();
-    app.ensure_visible_rows_cached();
-    let buffer = test_support::draw_ui(&mut app, 80)?;
-    test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, "23.8 GiB")
-        .context("the disk value must include the whole unit")?;
+        .local_git_state
+    {
+        checkout.status = GitStatus::Modified;
+    }
+    let run = serde_json::from_value(serde_json::json!({
+        "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
+        "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
+    }))?;
+    app.project_list
+        .ensure_git_repo_for(Path::new(PROJECT_PATH))
+        .context("repo")?
+        .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+        runs:          vec![run],
+        github_total:  GithubRunCount::Known(1),
+        ci_pagination: CiPagination::Exhausted,
+    });
+    Ok(app)
+}
+
+fn assert_project_headers_align(buffer: &Buffer, area: Rect, disk: &str) -> anyhow::Result<()> {
+    let header = ratatui::layout::Rect::new(area.x, area.y - 1, area.width, 1);
+    let row = ratatui::layout::Rect::new(area.x, area.y, area.width, 1);
+    for (label, value) in [("CI", "🟢"), ("Type", "🦀"), ("Git", "🟠")] {
+        let heading = test_support::find_text_cell(buffer, header, label).context(label)?;
+        let value = test_support::find_text_cell(buffer, row, value).context(value)?;
+        assert_eq!(heading.0, value.0, "{label}");
+    }
+    for label in ["Sync", "Main"] {
+        let (x, _) = test_support::find_text_cell(buffer, header, label).context(label)?;
+        test_support::find_text_cell(buffer, ratatui::layout::Rect::new(x, area.y, 4, 1), "↑1↓1")
+            .with_context(|| format!("the {label} value ends below its header"))?;
+    }
+    let (x, _) = test_support::find_text_cell(buffer, header, "Disk").context("Disk")?;
+    let value = test_support::find_text_cell(buffer, row, disk).context("Disk value")?;
+    assert_eq!(x + 4, value.0 + u16::try_from(disk.len())?);
     Ok(())
 }
 

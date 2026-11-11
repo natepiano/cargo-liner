@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -22,6 +24,8 @@ use unicode_width::UnicodeWidthStr;
 use super::constants::LANG_COLUMN_GAP;
 use super::constants::LANG_HEADERS;
 use super::constants::LANG_ICON_WIDTH;
+use super::constants::LANG_RIGHT_MARGIN;
+use super::constants::LANG_SUBTOTAL_MARK;
 use super::pane::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
@@ -29,6 +33,7 @@ use crate::tui::panes::ProjectPresentation;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
 use crate::tui::project_list::ProjectPathLookup::UnknownPath;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
@@ -65,6 +70,64 @@ pub fn language_icon(language: &str) -> &'static str {
         "rusty object notation" => "RON",
         _ => "  ",
     }
+}
+
+/// The pane width that draws every language name whole.
+pub(in crate::tui::panes) fn preferred_width(stats: &LanguageStats) -> u16 {
+    let name_width = stats
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            std::iter::once(entry.language.width()).chain(
+                entry
+                    .children
+                    .iter()
+                    .map(|child| LANG_SUBTOTAL_MARK.width() + child.language.width()),
+            )
+        })
+        .max()
+        .unwrap_or(0);
+    let width = fixed_columns_width(&lang_table_widths(stats))
+        + name_width
+        + usize::from(LANG_RIGHT_MARGIN)
+        + tui_pane::BLOCK_BORDER_WIDTH;
+    u16::try_from(width)
+        .unwrap_or(u16::MAX)
+        .max(minimum_width())
+}
+
+/// The inner rows of the Languages pane for `language_rows` table rows: the
+/// header, the rows and the footer, or one row for a message.
+pub(in crate::tui::panes) fn inner_rows(language_rows: usize) -> u16 {
+    if language_rows == 0 {
+        return 1;
+    }
+    u16::try_from(language_rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+}
+
+/// The language stats of the selected project, when the scan has them.
+pub(in crate::tui) fn selected_language_stats<'a>(
+    projects: &'a ProjectList,
+    selected: Option<&Path>,
+) -> Option<&'a LanguageStats> {
+    match projects.at_path(selected.unwrap_or_else(|| Path::new(""))) {
+        Found(project) => project.language_stats.as_ref(),
+        UnknownPath | StaleRoute => None,
+    }
+}
+
+/// Cells of the fixed-width columns and of every gap between columns.
+fn fixed_columns_width(widths: &[Constraint; 7]) -> usize {
+    widths
+        .iter()
+        .map(|constraint| match constraint {
+            Constraint::Length(width) => usize::from(*width),
+            _ => 0,
+        })
+        .sum::<usize>()
+        + (widths.len() - 1) * usize::from(LANG_COLUMN_GAP)
 }
 
 pub(in crate::tui::panes) fn minimum_width() -> u16 {
@@ -182,7 +245,7 @@ fn lang_entry_row(render_entry: &LangRenderEntry<'_>, name_width: usize) -> Row<
         String::new()
     };
     let label = if parent.is_some() {
-        format!("└ {}", lang_entry.language)
+        format!("{LANG_SUBTOTAL_MARK}{}", lang_entry.language)
     } else {
         lang_entry.language.clone()
     };
@@ -340,15 +403,11 @@ pub fn render_lang_pane_body(
             ..PaneFrameChrome::default()
         };
     }
-    let lang_stats =
-        match projects.at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new(""))) {
-            Found(p) => p.language_stats.as_ref(),
-            UnknownPath | StaleRoute => None,
-        };
+    let lang_stats = selected_language_stats(projects, *selected_project_path);
 
     let title = lang_pane_title(lang_stats, pane);
     let mut inner = tui_pane::frame_inner(area);
-    inner.width = inner.width.saturating_sub(1);
+    inner.width = inner.width.saturating_sub(LANG_RIGHT_MARGIN);
     let mut pane_frame_chrome = PaneFrameChrome {
         title,
         focused: is_focused,
@@ -376,15 +435,7 @@ pub fn render_lang_pane_body(
     let entries = flatten_lang_entries(stats);
     let entry_count = entries.len();
 
-    let fixed_cols = widths
-        .iter()
-        .map(|constraint| match constraint {
-            Constraint::Length(width) => usize::from(*width),
-            _ => 0,
-        })
-        .sum::<usize>()
-        + (widths.len() - 1) * usize::from(LANG_COLUMN_GAP);
-    let name_width = usize::from(inner.width).saturating_sub(fixed_cols);
+    let name_width = usize::from(inner.width).saturating_sub(fixed_columns_width(&widths));
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(

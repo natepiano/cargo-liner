@@ -138,6 +138,12 @@ fn reader_cpu_oracle_publishes_at_each_exact_report_deadline() {
     run_reader_script("--cpu-boundary-self-check");
 }
 
+/// Departures retain work without delaying later process contributions.
+#[test]
+fn reader_cpu_oracle_follows_an_orphan_departure_and_a_reaped_child() {
+    run_reader_script("--cpu-retention-self-check");
+}
+
 /// Samples drawn close together cannot end CPU observation before its report windows pass.
 #[test]
 fn reader_cpu_observation_waits_for_samples_to_span_reporting_windows() {

@@ -14,8 +14,10 @@ use super::TrackedGroup;
 use super::TrackedRow;
 use super::VisibleCommandText;
 use super::VisibleRoster;
+use super::placed_values::PlacedValueText;
 use crate::app::GridView;
 use crate::probe;
+use crate::probe::PaintStage;
 use crate::roster::ParentFamily;
 
 /// Rows read or written by the painter, including continuation-marker searches.
@@ -25,6 +27,7 @@ pub(super) struct CellPaintReach {
     pub(super) commands:  Vec<PlacedCommandText>,
     pub(super) header:    CellColumnHeader,
     pub(super) resources: Vec<super::RowResourceReading>,
+    pub(super) values:    Vec<PlacedValueText>,
 }
 
 /// The table painter identifies its column header in source coordinates.
@@ -70,6 +73,31 @@ pub(super) struct CellPaintInputs {
     pub(super) inner:       Rect,
     pub(super) buffer_area: Rect,
     pub(super) ground:      Color,
+}
+
+impl CellPaintInputs {
+    pub(super) fn describe_change(&self, after: &Self) -> String {
+        macro_rules! changed {
+            ($field:ident) => {
+                if self.$field != after.$field {
+                    return format!(
+                        "input {}: {:?} -> {:?}",
+                        stringify!($field),
+                        self.$field,
+                        after.$field
+                    );
+                }
+            };
+        }
+        changed!(inner);
+        changed!(buffer_area);
+        changed!(view);
+        changed!(ground);
+        format!(
+            "input measurement: {:?} -> {:?}",
+            self.measurement, after.measurement
+        )
+    }
 }
 
 /// Completion changes the row's display and resource ownership.
@@ -128,8 +156,7 @@ impl PaintedRowSource {
                     && before.command == after.command
                     && super::managed_text(before) == super::managed_text(after)
                     && (before.origin_start == after.origin_start
-                        || (before.origin_start.same_duration(after.origin_start)
-                            && before.start() == after.start()))));
+                        || before.start() == after.start())));
         if !matches {
             probe::source_rejection(|| self.describe_change(row));
         }
@@ -185,19 +212,7 @@ impl PaintedRowSource {
         if before.start() != after.start() {
             return format!("start: {:?} -> {:?}", before.start(), after.start());
         }
-        if before.duration() != after.duration() {
-            return format!(
-                "duration: {:?} -> {:?}",
-                before.duration(),
-                after.duration()
-            );
-        }
-        format!(
-            "row {} duration: {:?} -> {:?}",
-            before.pid,
-            before.duration(),
-            after.duration()
-        )
+        format!("row {} source changed", before.pid)
     }
 }
 
@@ -206,7 +221,7 @@ impl PaintedRowSource {
 enum CellSourceDetails {
     Empty,
     Group(super::AncestryWalk<super::Ancestor>),
-    Summary(Vec<(&'static str, String)>),
+    Summary(Vec<&'static str>),
 }
 
 /// A painting retains its row inputs and the frame's column decisions.
@@ -217,20 +232,17 @@ pub(super) struct CellPaintSource {
     resources: Vec<PaintedResourceReading>,
 }
 
-/// Selected resource readings either keep or change their displayed values.
-#[derive(Eq, PartialEq)]
-enum ResourceDisplayMatch {
-    Unchanged,
+/// A painting is valid for the current source, with the readings its live values show.
+pub(super) enum CellSourceMatch {
+    Unchanged(Vec<super::RowResourceReading>),
     Changed,
 }
 
-/// Resource text follows aggregation over the rows the painter selected.
+/// The painting retains compiler observations. Live values draw on each frame.
 #[derive(Debug, PartialEq)]
 struct PaintedResourceReading {
     invocation: InvocationId,
     pid:        u32,
-    cpu:        String,
-    memory:     String,
     compiler:   super::CompilerObservation,
 }
 
@@ -239,11 +251,6 @@ impl From<&super::RowResourceReading> for PaintedResourceReading {
         Self {
             invocation: reading.invocation.clone(),
             pid:        reading.pid,
-            cpu:        super::measurement_text(
-                reading.resources.cpu,
-                super::census::scan::cpu_label,
-            ),
-            memory:     super::measurement_text(reading.resources.memory, super::memory_label),
             compiler:   reading.resources.compiler.clone(),
         }
     }
@@ -270,7 +277,7 @@ impl CellPaintSource {
         match content {
             super::TileContent::Summary => CellSourceDetails::Summary(
                 super::summary_memory_rows(roster)
-                    .map(|(label, bytes)| (label, super::memory_label(bytes)))
+                    .map(|(label, _)| label)
                     .collect(),
             ),
             super::TileContent::Group(id) => roster
@@ -327,7 +334,7 @@ impl CellPaintSource {
         &self,
         rows: &[&TrackedRow],
         grid: &super::FrameTableColumnGrid,
-    ) -> ResourceDisplayMatch {
+    ) -> CellSourceMatch {
         let selected: Vec<_> = self
             .resources
             .iter()
@@ -339,17 +346,17 @@ impl CellPaintSource {
             .collect();
         if selected.len() != self.resources.len() {
             probe::source_rejection(|| "resource row identity changed".to_owned());
-            return ResourceDisplayMatch::Changed;
+            return CellSourceMatch::Changed;
         }
         let readings = super::row_resource_readings(&selected, &grid.contributions);
         for (before, reading) in self.resources.iter().zip(&readings) {
             let after = PaintedResourceReading::from(reading);
             if *before != after {
                 probe::source_rejection(|| format!("resources: {before:?} -> {after:?}"));
-                return ResourceDisplayMatch::Changed;
+                return CellSourceMatch::Changed;
             }
         }
-        ResourceDisplayMatch::Unchanged
+        CellSourceMatch::Unchanged(readings)
     }
 
     pub(super) fn matches(
@@ -357,19 +364,22 @@ impl CellPaintSource {
         roster: &VisibleRoster,
         content: &super::TileContent,
         grids: &super::FrameColumnGrids,
-    ) -> bool {
+    ) -> CellSourceMatch {
         let grid = Self::grid(grids, content);
         if !self.layout_matches(grid) || self.details != Self::details(roster, content) {
-            return false;
+            return CellSourceMatch::Changed;
         }
         let rows = Self::rows(roster, content);
-        self.rows.len() == rows.len()
-            && self
+        if self.rows.len() != rows.len()
+            || !self
                 .rows
                 .iter()
                 .zip(&rows)
                 .all(|(before, row)| before.matches(row))
-            && self.resources_match(&rows, grid) == ResourceDisplayMatch::Unchanged
+        {
+            return CellSourceMatch::Changed;
+        }
+        self.resources_match(&rows, grid)
     }
 
     fn layout_matches(&self, grid: &super::FrameTableColumnGrid) -> bool {
@@ -583,7 +593,15 @@ pub(super) fn paint_ink<T>(
     if !records_ink() {
         return draw(buffer);
     }
+    let recording_timer = probe::paint_timer(PaintStage::Recording);
     let area = area.intersection(buffer.area);
+    probe::paint_work(|work| {
+        work.recording_visits += 2 * usize::from(area.width) * usize::from(area.height);
+    });
+    #[cfg(test)]
+    super::tests::FOREGROUND_RECORDING_VISITS.with(|count| {
+        count.set(count.get() + 2 * usize::from(area.width) * usize::from(area.height));
+    });
     let marker = INK_RECORDING.with_borrow(|state| match state {
         InkRecording::Recording { marker, .. } => *marker,
         InkRecording::Disabled => Color::Reset,
@@ -596,7 +614,9 @@ pub(super) fn paint_ink<T>(
             cell.fg = marker;
         }
     }
+    drop(recording_timer);
     let result = draw(buffer);
+    let recording_timer = probe::paint_timer(PaintStage::Recording);
     let mut pixels = Vec::new();
     let mut roles: Vec<RetainedInkRole> = Vec::new();
     let mut previous = before.into_iter();
@@ -636,6 +656,7 @@ pub(super) fn paint_ink<T>(
             });
         }
     });
+    drop(recording_timer);
     result
 }
 
@@ -691,25 +712,35 @@ pub(super) struct PaintedCellContents {
     pub(super) before:   CellPaintSurface,
     pub(super) changes:  CellPaintPatch,
     pub(super) commands: Vec<PlacedCommandText>,
+    pub(super) values:   Vec<PlacedValueText>,
     pub(super) ink:      RetainedInk,
 }
 
+/// Run `read` over the rows whose ink the cell painter used.
+pub(super) fn with_painted_rows<T>(
+    roster: &VisibleRoster,
+    content: &super::TileContent,
+    read: impl FnOnce(&[&TrackedRow]) -> T,
+) -> T {
+    let group = match content {
+        super::TileContent::Group(id) => roster
+            .groups()
+            .iter()
+            .find(|group| &group.id == id)
+            .map(|group| group.for_painting()),
+        super::TileContent::Summary | super::TileContent::Empty(_) => None,
+    };
+    let rows = group.as_ref().map_or_else(
+        || CellPaintSource::rows(roster, content),
+        |group| group.rows().collect(),
+    );
+    read(&rows)
+}
+
 impl PaintedCellContents {
-    pub(super) fn recolor(&mut self, roster: &VisibleRoster, content: &super::TileContent) {
-        let rows = match content {
-            super::TileContent::Group(id) => roster
-                .groups()
-                .iter()
-                .find(|group| &group.id == id)
-                .map(|group| group.for_painting()),
-            super::TileContent::Summary | super::TileContent::Empty(_) => None,
-        };
-        let rows = rows.as_ref().map_or_else(
-            || CellPaintSource::rows(roster, content),
-            |group| group.rows().collect(),
-        );
+    pub(super) fn recolor(&mut self, rows: &[&TrackedRow]) {
         for layer in &mut self.ink.layers {
-            let ink = layer.source.ink(&rows);
+            let ink = layer.source.ink(rows);
             let mut changed = false;
             for role in &mut layer.roles {
                 let next = ink.color(role.source, self.inputs.ground);
@@ -903,10 +934,13 @@ mod cell_paint_tests {
     use std::time::Instant;
 
     use crate::census::CargoGroup;
+    use crate::census::CompilerObservation;
     use crate::census::Measurement;
     use crate::census::invocation_cpu_accounting::CompileMemoryShares;
     use crate::census::process_identity::CaptureMembership;
+    use crate::census::scan::Compiler;
     use crate::census::scan::OriginStart;
+    use crate::constants::BYTES_PER_GIBIBYTE;
     use crate::render;
     use crate::render::Buffer;
     use crate::render::CaptureLookup;
@@ -918,6 +952,7 @@ mod cell_paint_tests {
     use crate::render::Phase;
     use crate::render::Progress;
     use crate::render::Rect;
+    use crate::render::Roster;
     use crate::render::RunState;
     use crate::render::SccacheStats;
     use crate::render::TileCells;
@@ -957,7 +992,7 @@ mod cell_paint_tests {
                 app.roster.observe(vec![group], Instant::now());
             } else {
                 app.roster.observe_memory_shares(CompileMemoryShares {
-                    shared_compiler_cache: super::super::BYTES_PER_GIBIBYTE,
+                    shared_compiler_cache: BYTES_PER_GIBIBYTE,
                     unattributed:          0,
                 });
             }
@@ -975,7 +1010,7 @@ mod cell_paint_tests {
                 );
             });
             let mut fresh = original.clone();
-            render::frame_draw_contents(
+            render::frame_draw_contents_and_values(
                 &mut fresh,
                 &cells.roster,
                 &content,
@@ -988,9 +1023,10 @@ mod cell_paint_tests {
                 "retained paintings match the current visible source"
             );
         }
-        for ground in [Color::Reset, Color::Black] {
+        for ground in [Color::Reset, Color::Black, Color::Indexed(16)] {
             assert_brighten_revision(ground);
         }
+        tests::assert_first_frame_painting_revisions();
         for change in [
             DisplayRevision::Subsecond,
             DisplayRevision::Second,
@@ -1001,6 +1037,9 @@ mod cell_paint_tests {
             DisplayRevision::HiddenCpuAcrossBoundary,
             DisplayRevision::HiddenCpuSameTotal,
             DisplayRevision::ProgressOwnership,
+            DisplayRevision::CpuShorterValue,
+            DisplayRevision::MemoryWider,
+            DisplayRevision::CompilerStarts,
         ] {
             assert_display_revision(change);
         }
@@ -1017,16 +1056,28 @@ mod cell_paint_tests {
         HiddenCpuAcrossBoundary,
         HiddenCpuSameTotal,
         ProgressOwnership,
+        CpuShorterValue,
+        MemoryWider,
+        CompilerStarts,
     }
 
-    fn display_groups(change: DisplayRevision) -> (CargoGroup, CargoGroup, usize, u16) {
+    /// Whether a revision changes what the cell shows.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DisplayedValue {
+        Changes,
+        Stays,
+    }
+
+    fn display_groups(
+        change: DisplayRevision,
+    ) -> (CargoGroup, CargoGroup, usize, DisplayedValue, u16) {
         let mut lead = tests::invocation(4100, &["build"]);
         lead.origin_start = OriginStart::Process {
             epoch:   1_790_000_000,
             elapsed: Duration::from_millis(18_100),
         };
         lead.resource_use.cpu = Measurement::Reading(12.1);
-        lead.resource_use.memory = Measurement::Reading(super::super::BYTES_PER_GIBIBYTE);
+        lead.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         if matches!(change, DisplayRevision::ProgressOwnership) {
             lead.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Working {
                 phase:    Phase::Building,
@@ -1051,7 +1102,31 @@ mod cell_paint_tests {
             child.resource_use.cpu = Measurement::Reading(0.26);
             before.rest.push(child);
         }
+        if matches!(change, DisplayRevision::CpuShorterValue) {
+            // A sibling at 100% holds the CPU column width.
+            before.lead.resource_use.cpu = Measurement::Reading(100.0);
+            let mut child = tests::invocation(4101, &["check"]);
+            child.parent = VisibleParent::Invocation {
+                id:  before.lead.invocation_id.clone(),
+                pid: before.lead.pid,
+            };
+            child.resource_use.cpu = Measurement::Reading(100.0);
+            before.rest.push(child);
+        }
         let mut after = before.clone();
+        revise(change, &mut after);
+        let (paints, displayed) = expected(change);
+        (
+            before,
+            after,
+            paints,
+            displayed,
+            if hidden { 3 } else { 80 },
+        )
+    }
+
+    /// Apply one revision to the group drawn second.
+    fn revise(change: DisplayRevision, after: &mut CargoGroup) {
         match change {
             DisplayRevision::Subsecond => {
                 after.lead.origin_start = OriginStart::Process {
@@ -1073,11 +1148,11 @@ mod cell_paint_tests {
             },
             DisplayRevision::MemoryBelowBoundary => {
                 after.lead.resource_use.memory =
-                    Measurement::Reading(super::super::BYTES_PER_GIBIBYTE * 104 / 100);
+                    Measurement::Reading(BYTES_PER_GIBIBYTE * 104 / 100);
             },
             DisplayRevision::MemoryAcrossBoundary => {
                 after.lead.resource_use.memory =
-                    Measurement::Reading(super::super::BYTES_PER_GIBIBYTE * 106 / 100);
+                    Measurement::Reading(BYTES_PER_GIBIBYTE * 106 / 100);
             },
             DisplayRevision::HiddenCpuAcrossBoundary => {
                 after.rest[0].resource_use.cpu = Measurement::Reading(0.20);
@@ -1089,20 +1164,51 @@ mod cell_paint_tests {
                 after.lead.resource_use.cpu = Measurement::Reading(0.20);
                 after.rest[0].resource_use.cpu = Measurement::Reading(0.32);
             },
+            DisplayRevision::CpuShorterValue => {
+                after.lead.resource_use.cpu = Measurement::Reading(9.5);
+            },
+            DisplayRevision::MemoryWider => {
+                after.lead.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 10);
+            },
+            DisplayRevision::CompilerStarts => {
+                after.lead.resource_use.compiler = CompilerObservation::Running(Compiler {
+                    name:  "sccache",
+                    count: 1,
+                });
+            },
         }
+    }
+
+    /// The paints and the displayed change that one revision causes.
+    fn expected(change: DisplayRevision) -> (usize, DisplayedValue) {
+        // Live CPU and memory values draw over the painting. Only a wider
+        // value column or a compiler change repaints it.
         let paints = usize::from(matches!(
+            change,
+            DisplayRevision::ProgressOwnership
+                | DisplayRevision::MemoryWider
+                | DisplayRevision::CompilerStarts
+        ));
+        let displayed = if matches!(
             change,
             DisplayRevision::Second
                 | DisplayRevision::CpuAcrossBoundary
                 | DisplayRevision::MemoryAcrossBoundary
                 | DisplayRevision::HiddenCpuAcrossBoundary
                 | DisplayRevision::ProgressOwnership
-        ));
-        (before, after, paints, if hidden { 3 } else { 80 })
+                | DisplayRevision::CpuShorterValue
+                | DisplayRevision::MemoryWider
+                | DisplayRevision::CompilerStarts
+        ) {
+            DisplayedValue::Changes
+        } else {
+            DisplayedValue::Stays
+        };
+        (paints, displayed)
     }
 
     fn assert_display_revision(change: DisplayRevision) {
-        let (before, after, expected_paints, height) = display_groups(change);
+        let (before, after, expected_paints, displayed, height) = display_groups(change);
         let mut roster = super::super::Roster::default();
         let now = Instant::now();
         roster.observe(vec![before], now);
@@ -1123,12 +1229,23 @@ mod cell_paint_tests {
             tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
             &stats,
         );
+        // Each frame starts from the grid the painting was recorded over.
         let mut actual = original.clone();
         CELL_CONTENT_PAINTS.with(|count| count.set(0));
         cells.draw(&mut actual, &content, area, Color::Black);
         CELL_CONTENT_PAINTS.with(|count| assert_eq!(count.get(), expected_paints, "{change:?}"));
+        if matches!(change, DisplayRevision::CpuShorterValue) {
+            let full = |buffer: &Buffer| {
+                tests::buffer_rows(buffer)
+                    .iter()
+                    .map(|row| row.matches("100%").count())
+                    .sum::<usize>()
+            };
+            assert_eq!(full(&first), 2, "both rows first show 100%");
+            assert_eq!(full(&actual), 1, "only the sibling still shows 100%");
+        }
         let mut fresh = original;
-        render::frame_draw_contents(
+        render::frame_draw_contents_and_values(
             &mut fresh,
             &cells.roster,
             &content,
@@ -1140,10 +1257,13 @@ mod cell_paint_tests {
             actual, fresh,
             "{change:?}: retained and fresh paintings agree"
         );
-        if expected_paints > 0 {
-            assert_ne!(first, fresh, "{change:?}: the displayed value changes");
-        } else {
-            assert_eq!(first, fresh, "{change:?}: the displayed value stays equal");
+        match displayed {
+            DisplayedValue::Changes => {
+                assert_ne!(first, fresh, "{change:?}: the displayed value changes");
+            },
+            DisplayedValue::Stays => {
+                assert_eq!(first, fresh, "{change:?}: the displayed value stays equal");
+            },
         }
     }
 
@@ -1203,7 +1323,7 @@ mod cell_paint_tests {
             );
         });
         let mut fresh = original;
-        render::frame_draw_contents(
+        render::frame_draw_contents_and_values(
             &mut fresh,
             &cells.roster,
             &content,
@@ -1238,7 +1358,7 @@ mod cell_paint_tests {
                 let tail = (inner.right() - 1, inner.bottom() - 1);
                 actual[tail].set_symbol("界").set_fg(Color::Green);
                 let mut fresh = actual.clone();
-                render::frame_draw_contents(
+                render::frame_draw_contents_and_values(
                     &mut fresh,
                     &cells.roster,
                     &content,
@@ -1262,5 +1382,105 @@ mod cell_paint_tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn live_values_keep_the_row_background() -> Result<(), &'static str> {
+        let ground = Color::Indexed(16);
+        let mut lead = tests::invocation(4100, &["build"]);
+        lead.resource_use.cpu = Measurement::Reading(12.1);
+        lead.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
+        let before = tests::cargo_group(lead);
+        let mut after = before.clone();
+        after.lead.resource_use.cpu = Measurement::Reading(30.2);
+        let mut roster = super::super::Roster::default();
+        let now = Instant::now();
+        roster.observe(vec![before], now);
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Group(roster.visible(&[]).groups()[0].id.clone());
+        let view = CommandView::long();
+        let area = Rect::new(3, 5, 160, 80);
+        let original = Buffer::empty(Rect::new(0, 0, 180, 90));
+        let cells = Cells::from_prepared(
+            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        let mut first = original.clone();
+        cells.draw(&mut first, &content, area, ground);
+        roster.observe(vec![after], now);
+        let cells = Cells::from_prepared(
+            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        let mut actual = original;
+        CELL_CONTENT_PAINTS.with(|count| count.set(0));
+        cells.draw(&mut actual, &content, area, ground);
+        CELL_CONTENT_PAINTS.with(|count| {
+            assert_eq!(count.get(), 0, "a CPU value change keeps the painting");
+        });
+        let rows = tests::buffer_rows(&actual);
+        let (row, column) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, text)| {
+                text.find("30%")
+                    .map(|byte| (row, text[..byte].chars().count()))
+            })
+            .ok_or("the new CPU value is drawn")?;
+        let row = u16::try_from(row).map_err(|_| "the row fits the buffer")?;
+        let column = u16::try_from(column).map_err(|_| "the column fits the buffer")?;
+        let row_ground = actual[(area.x, row)].bg;
+        for x in area.left()..area.right() {
+            assert_eq!(
+                actual[(x, row)].bg,
+                row_ground,
+                "cell {x} takes the background of its row"
+            );
+        }
+        assert!((column..column + 3).all(|x| actual[(x, row)].bg == row_ground));
+        Ok(())
+    }
+
+    #[test]
+    fn summary_memory_changes_keep_the_painting() {
+        let mut app = tests::argument_toggle_app();
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Summary;
+        let view = CommandView::long();
+        let area = Rect::new(0, 0, 160, 80);
+        let original = Buffer::empty(area);
+        let mut share = |roster: &mut Roster, bytes: u64| {
+            roster.observe_memory_shares(CompileMemoryShares {
+                shared_compiler_cache: bytes,
+                unattributed:          0,
+            });
+            Cells::from_prepared(
+                tables.for_frame(roster, &[], view, 80, FreeDiskSpace::Unavailable),
+                &stats,
+            )
+        };
+        let cells = share(&mut app.roster, BYTES_PER_GIBIBYTE);
+        let mut first = original.clone();
+        cells.draw(&mut first, &content, area, Color::Black);
+        let cells = share(&mut app.roster, BYTES_PER_GIBIBYTE * 3 / 2);
+        let mut actual = original.clone();
+        CELL_CONTENT_PAINTS.with(|count| count.set(0));
+        cells.draw(&mut actual, &content, area, Color::Black);
+        CELL_CONTENT_PAINTS.with(|count| {
+            assert_eq!(count.get(), 0, "a summary memory change keeps the painting");
+        });
+        let mut fresh = original;
+        render::frame_draw_contents_and_values(
+            &mut fresh,
+            &cells.roster,
+            &content,
+            area,
+            Color::Black,
+            &cells.grids,
+        );
+        assert_eq!(actual, fresh, "the replayed summary matches a fresh draw");
+        assert_ne!(first, fresh, "the summary memory value changes");
     }
 }

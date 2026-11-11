@@ -113,6 +113,7 @@ pub(in crate::tui) struct Lint {
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
     content:          Option<LintsData>,
+    row_rects:        Vec<(Rect, usize)>,
 }
 
 impl Lint {
@@ -129,7 +130,12 @@ impl Lint {
             viewport: Viewport::new(),
             focus: RenderFocus::inactive(),
             content: None,
+            row_rects: Vec::new(),
         }
+    }
+
+    pub(in crate::tui) fn set_row_rects(&mut self, rows: Vec<(Rect, usize)>) {
+        self.row_rects = rows;
     }
 
     // `Lint::viewport` stores the Lints pane viewport.
@@ -443,7 +449,10 @@ impl Renderable<PaneRenderCtx<'_>> for Lint {
 
 impl Hittable<HoverTarget> for Lint {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = panes::hit_test_table_row(&self.viewport, pos)?;
+        let row = self
+            .row_rects
+            .iter()
+            .find_map(|(area, row)| area.contains(pos).then_some(*row))?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Lints,
             row,

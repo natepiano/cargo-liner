@@ -1,4 +1,7 @@
 pub(super) use std::os::unix::fs::PermissionsExt;
+
+pub(super) use cargo_berth_test_support::FIRST_RUN;
+pub(super) use cargo_berth_test_support::SECOND_RUN;
 const FIXTURE_USER_NAME: &str = "Test User";
 
 const FIXTURE_USER_EMAIL: &str = "test@example.com";
@@ -65,8 +68,6 @@ pub(super) const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
-pub(super) const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-
 pub(super) const HOOK_PATH: &str = ".git/hooks/reference-transaction";
 
 pub(super) const MARKER_PATH: &str = ".git/cargo-berth-run-id";
@@ -76,8 +77,6 @@ pub(super) const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 pub(super) const RETENTION_TRACE_BRANCH: &str = "retention-trace";
 
 pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-
-pub(super) const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 
 pub(super) const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 

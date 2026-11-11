@@ -29,9 +29,9 @@ fn sccache_popup_widest_row_has_equal_padding_at_160_columns() -> anyhow::Result
         })
         .find(|line| line.contains("Cache location"))
         .context("the cache location row must render")?;
-    let left_border = row.find('│').context("left popup border")?;
-    let right_border = row.rfind('│').context("right popup border")?;
-    let body = &row[left_border + '│'.len_utf8()..right_border];
+    let left_border = row.find('┃').context("left popup border")?;
+    let right_border = row.rfind('┃').context("right popup border")?;
+    let body = &row[left_border + '┃'.len_utf8()..right_border];
     assert!(
         body.contains(CACHE_LOCATION),
         "the widest value must fit: {row}"

@@ -27,8 +27,10 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
+use unicode_width::UnicodeWidthStr;
 
 use super::constants::FINDER_COLUMN_COUNT;
+use super::constants::FINDER_DIR_COLUMN;
 use super::constants::FINDER_HEADERS;
 use super::constants::MIN_POPUP_WIDTH;
 use super::index::FinderItem;
@@ -36,6 +38,7 @@ use super::index::FinderKind;
 use crate::ci;
 use crate::tui::app::App;
 use crate::tui::constants::FINDER_POPUP_HEIGHT;
+use crate::tui::constants::FIT_ELLIPSIS;
 use crate::tui::constants::MAX_FINDER_RESULTS;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::FinderAction;
@@ -44,7 +47,9 @@ use crate::tui::overlays::PopupFrame;
 use crate::tui::panes;
 use crate::tui::panes::GitRow;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::theme_roles;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
 pub(super) fn search_finder(
@@ -508,6 +513,8 @@ fn render_finder_results(
         return;
     }
 
+    let col_widths = fit_dir_column(col_widths, usize::from(area.width));
+    let dir_width = col_widths[FINDER_DIR_COLUMN];
     let query = pane_render_ctx.project_list.finder.query.clone();
     let rows: Vec<Row> = pane_render_ctx
         .project_list
@@ -522,29 +529,31 @@ fn render_finder_results(
             } else {
                 finder_item.parent_label.clone()
             };
+            let selection =
+                tui_pane::selection_state(&pane.viewport, row_index, pane.focus.pane_focus_state);
+            let row_style = theme_roles::selection_style(selection, mode);
+            let kind_color = row_style.fg.unwrap_or_else(|| finder_item.kind.color());
+            let name = render::truncate_with_ellipsis(
+                &finder_item.display_name,
+                col_widths[0],
+                FIT_ELLIPSIS,
+            );
+            let parent = render::truncate_with_ellipsis(&parent, col_widths[1], FIT_ELLIPSIS);
+            let branch =
+                render::truncate_with_ellipsis(&finder_item.branch, col_widths[2], FIT_ELLIPSIS);
+            let dir = render::cut_path_from_left(&finder_item.dir, dir_width);
             Row::new(vec![
-                Cell::from(highlighted_spans(
-                    &finder_item.display_name,
-                    &query,
-                    text_default(),
-                )),
+                Cell::from(highlighted_spans(&name, &query, text_default())),
                 Cell::from(highlighted_spans(&parent, &query, text_default())),
-                Cell::from(highlighted_spans(
-                    &finder_item.branch,
-                    &query,
-                    text_default(),
-                )),
-                Cell::from(highlighted_spans(&finder_item.dir, &query, text_default())),
+                Cell::from(highlighted_spans(&branch, &query, text_default())),
+                Cell::from(highlighted_spans(&dir, &query, text_default())),
                 Cell::from(highlighted_spans(
                     finder_item.kind.label(),
                     &query,
-                    finder_item.kind.color(),
+                    kind_color,
                 )),
             ])
-            .style(
-                tui_pane::selection_state(&pane.viewport, row_index, pane.focus.pane_focus_state)
-                    .overlay_style(mode),
-            )
+            .style(selection.overlay_style(mode))
         })
         .collect();
 
@@ -576,15 +585,49 @@ fn render_finder_results(
     );
 }
 
+/// Cut the widest column first and keep every header label.
+fn fit_dir_column(
+    col_widths: [usize; FINDER_COLUMN_COUNT],
+    area_width: usize,
+) -> [usize; FINDER_COLUMN_COUNT] {
+    let gaps = FINDER_COLUMN_COUNT - 1;
+    let mut fitted = col_widths;
+    let budget = area_width.saturating_sub(gaps);
+    let mut excess = fitted.iter().sum::<usize>().saturating_sub(budget);
+    while excess > 0 {
+        let widest = fitted
+            .iter()
+            .enumerate()
+            .filter(|(index, width)| **width > FINDER_HEADERS[*index].width())
+            .max_by_key(|(_, width)| **width);
+        let Some((index, _)) = widest else {
+            break;
+        };
+        fitted[index] -= 1;
+        excess -= 1;
+    }
+    fitted
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use tui_pane::ColorMode;
+    use tui_pane::PaneSelectionState;
+
+    use super::fit_dir_column;
     use super::search_finder;
     use crate::project::AbsolutePath;
     use crate::tui::finder::index;
     use crate::tui::finder::index::FinderItem;
     use crate::tui::finder::index::FinderKind;
+    use crate::tui::input;
+    use crate::tui::render;
+    use crate::tui::test_support;
+    use crate::tui::theme_roles;
 
     fn test_path(path: &str) -> AbsolutePath {
         let pb = if path == "~" {
@@ -701,5 +744,97 @@ mod tests {
         let (with_path, total_path) = search_finder(&index, "rust/bevy", 50);
         assert_eq!(with_path, vec![0]);
         assert_eq!(total_path, 1);
+    }
+
+    #[test]
+    fn the_widest_column_gives_up_cells_first() {
+        let natural = [7, 8, 6, 60, 6];
+
+        assert_eq!(fit_dir_column(natural, 78), [7, 8, 6, 47, 6]);
+        assert_eq!(fit_dir_column(natural, 200), natural);
+        {
+            let (widths, expected) = ([80, 5, 6, 40, 7], [28, 5, 6, 28, 7]);
+            assert_eq!(fit_dir_column(widths, 78), expected);
+            assert_eq!(
+                render::cut_path_from_left("/tmp/project", expected[3]),
+                "/tmp/project"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_finder_cuts_dir_from_the_left_and_selected_type_uses_selection_ink()
+    -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let dir = tmp
+            .path()
+            .join("a-long-folder-name-that-the-finder-cannot-fit")
+            .join("another-long-folder-name")
+            .join("binws");
+        std::fs::create_dir_all(&dir)?;
+        for (window, name) in [(80, "binws"), (60, "cargo-berth-test-support")] {
+            let projects = vec![test_support::make_package(name, &dir)];
+            let mut app = test_support::make_app(&projects);
+            input::open_finder(&mut app);
+            for item in &mut app.project_list.finder.index {
+                if item.kind == FinderKind::Project {
+                    item.display_name = name.to_string();
+                }
+            }
+            app.project_list.finder.col_widths[0] = name.len();
+            let result_count = app.project_list.finder.index.len();
+            app.project_list.finder.results = (0..result_count).collect();
+            app.project_list.finder.total = result_count;
+            let backend = TestBackend::new(window, 30);
+            let mut terminal = Terminal::new(backend)?;
+            terminal.draw(|frame| render::ui(frame, &mut app))?;
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<String> = (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect()
+                })
+                .collect();
+            let (row_y, row) = rows
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.contains("binws") && row.contains("…/"))
+                .ok_or_else(|| anyhow::anyhow!("no cut Dir row:\n{}", rows.join("\n")))?;
+            assert!(row.contains("/binws "), "the cut Dir keeps its end:\n{row}");
+            if window == 60 {
+                let header = rows
+                    .iter()
+                    .find(|row| row.contains("Name") && row.contains("Project"))
+                    .ok_or_else(|| anyhow::anyhow!("missing finder headers"))?;
+                let name_x = header
+                    .find("Name")
+                    .ok_or_else(|| anyhow::anyhow!("Name header"))?;
+                let project_x = header
+                    .find("Project")
+                    .ok_or_else(|| anyhow::anyhow!("Project header"))?;
+                let name_column = header[..name_x].chars().count();
+                let name_width = header[name_x..project_x].chars().count();
+                let drawn: String = row.chars().skip(name_column).take(name_width).collect();
+                assert!(drawn.trim().starts_with("cargo-berth"), "{row}");
+                assert!(
+                    drawn.trim().ends_with('…'),
+                    "a cut Name ends with an ellipsis: {row}"
+                );
+            }
+
+            let label = FinderKind::Project.label();
+            let label_x = row
+                .char_indices()
+                .filter_map(|(byte, _)| row[byte..].starts_with(label).then_some(byte))
+                .next_back()
+                .map(|byte| row[..byte].chars().count())
+                .ok_or_else(|| anyhow::anyhow!("no Type cell:\n{row}"))?;
+            let selection_ink =
+                theme_roles::selection_style(PaneSelectionState::Active, ColorMode::Colored).fg;
+            let type_cell = &buffer[(u16::try_from(label_x)?, u16::try_from(row_y)?)];
+            assert_eq!(Some(type_cell.fg), selection_ink);
+        }
+        Ok(())
     }
 }

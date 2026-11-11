@@ -20,6 +20,7 @@ pub(crate) use metadata_store::WorkspaceMetadata;
 pub(crate) use metadata_store::WorkspaceMetadataStore;
 pub(crate) use package::Package;
 pub(crate) use parse::CargoParseResult;
+#[cfg(test)]
 pub(crate) use parse::ExampleGroup;
 pub(crate) use parse::ManifestTargets;
 pub(crate) use parse::ProjectType;
@@ -27,6 +28,7 @@ pub(crate) use parse::from_cargo_toml;
 pub(crate) use parse::from_git_dir;
 pub(crate) use parse::manifest_targets;
 pub(crate) use rust_info::Cargo;
+pub(crate) use rust_info::LibraryTargetKind;
 #[cfg(test)]
 pub(crate) use rust_info::PublishStatus;
 pub(crate) use rust_info::RustInfo;

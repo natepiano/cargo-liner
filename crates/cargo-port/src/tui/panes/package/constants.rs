@@ -1,5 +1,5 @@
-/// Reserve five Path value cells and three cells for gaps and the margin.
-pub(super) const PATH_VALUE_RESERVE: usize = 8;
+// layout
+pub(super) const MIN_TWO_COLUMN_INNER_WIDTH: u16 = 37;
 
-/// Keep the statistics values within eight cells unless a count needs more cells.
+// statistics
 pub(super) const STATS_VALUE_WIDTH: u16 = 8;

@@ -188,6 +188,7 @@ impl DetailField {
                 GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
                 GitCheckout::Broken
                 | GitCheckout::AwaitingProbe
+                | GitCheckout::NotRepository
                 | GitCheckout::Unborn
                 | GitCheckout::Detached { .. } => GIT_UNREADABLE_LABEL.to_string(),
             };
@@ -195,7 +196,9 @@ impl DetailField {
         match self {
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             Self::Head => match &data.checkout {
-                GitCheckout::Broken | GitCheckout::AwaitingProbe => String::new(),
+                GitCheckout::Broken | GitCheckout::AwaitingProbe | GitCheckout::NotRepository => {
+                    String::new()
+                },
                 GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
                 GitCheckout::Unborn => "unborn".to_string(),
                 GitCheckout::Detached { short_sha } => format!("detached @ {short_sha}"),

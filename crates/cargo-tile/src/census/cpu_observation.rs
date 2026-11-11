@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use sysinfo::Pid;
 
+use super::invocation_cpu_accounting::CpuReaper;
 use super::invocation_cpu_accounting::InvocationCpuContributions;
 use super::invocation_cpu_accounting::Measurement;
 use super::process_identity::InvocationId;
@@ -84,20 +85,21 @@ pub(super) fn work(
         let owner = owner.as_u32();
         let result = writeln!(inputs, "owner\t{owner}\t{evidence:?}\t{invocation:?}");
         assert!(result.is_ok());
-        for (identity, counter) in &work.tree {
-            let result = writeln!(
-                inputs,
-                "counter\t{owner}\ttree\t{identity:?}\t{}",
-                counter.as_secs_f64()
-            );
-            assert!(result.is_ok());
-        }
-        for (root, counters) in &work.detached {
+        let groups = std::iter::once(("tree".to_string(), &work.tree)).chain(
+            work.detached
+                .iter()
+                .map(|(root, counters)| (format!("{root:?}"), counters)),
+        );
+        for (group, counters) in groups {
             for (identity, counter) in counters {
+                let reaper = match &counter.reaper {
+                    CpuReaper::Parent(reaper) => format!("{reaper:?}"),
+                    CpuReaper::Unproven => String::new(),
+                };
                 let result = writeln!(
                     inputs,
-                    "counter\t{owner}\t{root:?}\t{identity:?}\t{}",
-                    counter.as_secs_f64()
+                    "counter\t{owner}\t{group}\t{identity:?}\t{}\t{reaper}",
+                    counter.elapsed.as_secs_f64()
                 );
                 assert!(result.is_ok());
             }

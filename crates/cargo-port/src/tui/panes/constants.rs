@@ -24,6 +24,13 @@ use crate::project::WorktreeHealth;
 use crate::tui::columns;
 use crate::tui::columns::RowLifecycle;
 
+// description
+pub(super) const DESCRIPTION_INSET: u16 = 1;
+pub(super) const DESCRIPTION_MARGIN_COUNT: u16 = 2;
+/// An 80×30 terminal on main draws at most two description rows.
+pub(super) const DESCRIPTION_MAX_ROWS: u16 = 2;
+pub(super) const SHORT_NO_DESCRIPTION: &str = "No description";
+
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "…";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
@@ -178,11 +185,10 @@ pub(super) fn tree_prefix_width(tree_row_depth: TreeRowDepth) -> usize {
 /// with the renderer, which dims this row's value (the count is a
 /// registered-but-skipped doctest tally, not a runnable test).
 pub(super) const TESTS_IGNORED_LABEL: &str = "(ignored)";
-/// Label of the runnable-total row in the Tests section — intentionally
-/// blank. The Languages pane shows its grand total as an unlabelled bold
-/// bottom value; the Tests total matches, so the renderer keys off this
-/// empty label to render the value in bold accent color.
-pub(super) const TESTS_TOTAL_LABEL: &str = "";
+/// Label of the runnable-total row in the Tests section. The Languages pane
+/// labels its grand total `Total` too; the renderer keys off this label to
+/// draw the value in bold accent color.
+pub(super) const TESTS_TOTAL_LABEL: &str = "Total";
 
 // `CI_BRANCH_*`, `CI_COMMIT_*` and `CI_JOB_LABEL_*` bound CI pane columns; `OTHER_JOBS_HEADER`
 // labels remaining jobs.
@@ -190,7 +196,6 @@ pub(super) const CI_BRANCH_LONG_MIN_WIDTH: usize = 16;
 pub(super) const CI_BRANCH_MIN_WIDTH: usize = 6;
 pub(super) const CI_COMMIT_LONG_MIN_WIDTH: usize = 22;
 pub(super) const CI_COMMIT_MIN_WIDTH: usize = 7;
-pub(super) const CI_JOB_LABEL_MAX_WIDTH: usize = 16;
 pub(super) const CI_JOB_LABEL_MIN_WIDTH: usize = 8;
 pub(super) const CI_STATUS_GAP_WIDTH: usize = 1;
 pub(super) const OTHER_JOBS_HEADER: &str = "Other";

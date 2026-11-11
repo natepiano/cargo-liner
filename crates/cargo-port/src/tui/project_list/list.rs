@@ -2801,15 +2801,20 @@ impl ProjectList {
         changed
     }
 
+    /// The most language table rows of any project that has stats.
+    pub(in crate::tui) const fn most_language_rows(&self) -> usize { self.most_language_rows }
+
     /// Apply a batch of `LanguageStats` to matching projects.
     pub(in crate::tui) fn handle_language_stats_batch(
         &mut self,
         entries: Vec<(AbsolutePath, LanguageStats)>,
     ) {
         for (path, stats) in entries {
+            let rows = stats.row_count();
             match self.at_path_mut(path.as_path()) {
                 ProjectPathLookup::Found(project) => {
                     project.language_stats = Some(stats);
+                    self.most_language_rows = self.most_language_rows.max(rows);
                 },
                 ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
             }

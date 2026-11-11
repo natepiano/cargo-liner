@@ -561,7 +561,7 @@ mod prepared_tables_tests {
 }
 
 /// A measured cell is valid only for the reservation and gap policy that produced it.
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub(super) struct CellMeasurementKey {
     identity: CellRowIdentity,
     width:    u16,
@@ -583,7 +583,7 @@ impl CellMeasurementKey {
 }
 
 /// All mutable policy inputs to one table's width and height measurements.
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub(super) struct CellMeasurementPolicy {
     row_end:            TableRowEnd,
     frame_row_end:      TableRowEnd,
@@ -624,7 +624,7 @@ pub(super) struct PreparedFrameAllocation {
 }
 
 /// Stable cell identity for the frame's indexed width layouts.
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub(super) enum CellRowIdentity {
     Summary,
     Command(InvocationId),

@@ -17,18 +17,30 @@ use super::BERTH_EXECUTABLE;
 use super::GIT;
 use super::JOURNAL_PATH;
 use super::RETENTION_REF_PREFIX;
-use super::claim;
-use super::commit_file;
 use super::git_command;
 use super::journal_events;
 use super::json_output;
 use super::loose_refs;
 use super::reanchoring_templates;
+use super::reanchoring_templates::ABORTABLE_CHECKPOINT;
+use super::reanchoring_templates::ACTIVE_BEFORE_OTHER_REBASE;
+use super::reanchoring_templates::ACTIVE_FIRST_SPLIT;
+use super::reanchoring_templates::APPLY_CONFLICTED_CHECKPOINT;
+use super::reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
+use super::reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
+use super::reanchoring_templates::CHECKPOINT_BEFORE_OTHER_REBASE;
+use super::reanchoring_templates::CONFLICTING_TWO_HUNK_CHECKPOINT;
 use super::reanchoring_templates::CheckpointPlacement;
 use super::reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
 use super::reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
+use super::reanchoring_templates::DRAINED_SPLIT_SWITCHED_CHECKPOINT;
 use super::reanchoring_templates::DrainedSplitCheckpointState;
+use super::reanchoring_templates::LOWER_FIRST_SPLIT;
+use super::reanchoring_templates::ONE_HUNK_CHECKPOINT;
 use super::reanchoring_templates::PENDING_PREFIX;
+use super::reanchoring_templates::RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT;
+use super::reanchoring_templates::RECONCILED_SOFT_ACTIVE_SPLIT;
+use super::reanchoring_templates::RECONCILED_SOFT_CHECKPOINT_SPLIT;
 use super::reanchoring_templates::REWRITE_MAIN;
 use super::reanchoring_templates::RewriteRepository;
 use super::reanchoring_templates::SPLIT_ACTIVE_PHASE;
@@ -44,7 +56,8 @@ use super::reanchoring_templates::SplitWorkflow;
 use super::reanchoring_templates::StackedBranchWriteOrder;
 use super::reanchoring_templates::TWO_REBASE_HISTORY;
 use super::reanchoring_templates::TwoRebaseHistoryState;
-use super::reservation_id;
+use super::reanchoring_templates::UNRESERVED_REBASE_PREFIX;
+use super::reanchoring_templates::UPPER_FIRST_SPLIT;
 use super::run_berth;
 use super::split_rebase;
 
@@ -213,24 +226,19 @@ pub(super) fn conflicted_apply_rebase_reanchors_only_the_checkpoint_commit() {
 
 /// Creating another branch during stopped apply must leave the holder's map usable.
 pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    let first_tip = fixture.head();
-    let old_tip = commit_conflicting_second_hunk(&fixture, &first_tip);
-    fixture.checkpoint(&id);
+    let fixture = RewriteFixture::from_repository(APPLY_SIDE_BRANCH_CHECKPOINT.instantiate());
+    let reanchoring_templates::ApplyCheckpointState {
+        id,
+        first_tip,
+        old_tip,
+        trunk,
+        ..
+    } = read_state(fixture.root());
     assert!(
         !journal_events(fixture.root())
             .iter()
-            .any(|event| { event["op"] == "widen" && event["reservation_id"] == id })
+            .any(|event| event["op"] == "widen" && event["reservation_id"] == id)
     );
-    commit_file(
-        fixture.root(),
-        "unreserved.txt",
-        "trunk addition\n",
-        "advance trunk",
-    );
-    let trunk = GIT.stdout(fixture.root(), ["rev-parse", "main"]);
     let observation = tempdir().expect("apply observation should exist");
     create_side_branch_during_stopped_apply(&fixture, observation.path(), &trunk, &old_tip);
     fs::write(fixture.holder.join("unreserved.txt"), "trunk addition\n")
@@ -303,37 +311,6 @@ fn assert_reanchored_checkpoint_is_outstanding(
             ["stage"],
         "outstanding"
     );
-}
-
-/// Commit the protected hunk and conflict path without widening the reservation.
-fn commit_conflicting_second_hunk(fixture: &RewriteFixture, first_tip: &str) -> String {
-    // Replay this first commit before the conflict so Git itself writes the map.
-    fs::write(
-        fixture.holder.join("phase.txt"),
-        reanchoring_templates::contents("one", "two"),
-    )
-    .expect("second protected hunk should write");
-    fs::write(fixture.holder.join("unreserved.txt"), "holder addition\n")
-        .expect("unreserved conflict should write");
-    GIT.run(&fixture.holder, ["add", "phase.txt", "unreserved.txt"]);
-    let tree = GIT.stdout(&fixture.holder, ["write-tree"]);
-    // Avoid post-commit drift widening the reservation into the conflict path.
-    let old_tip = GIT.stdout(
-        &fixture.holder,
-        [
-            "commit-tree",
-            &tree,
-            "-p",
-            first_tip,
-            "-m",
-            "second phase hunk",
-        ],
-    );
-    GIT.run(
-        &fixture.holder,
-        ["update-ref", "refs/heads/holder", &old_tip, first_tip],
-    );
-    old_tip
 }
 
 /// Observe the branch command separately: Git ignores a committed hook's failure.
@@ -422,48 +399,24 @@ enum ApplyRebaseProgress {
 
 /// Exercise both apply state lifetimes with the same protected checkpoint.
 fn apply_rebase_reanchors_checkpoint(progress: ApplyRebaseProgress) {
-    let fixture = RewriteFixture::new();
-    let old_start = fixture.head();
-    let id = fixture.start_phase();
-    if matches!(progress, ApplyRebaseProgress::Conflicted) {
-        fs::write(fixture.holder.join("unreserved.txt"), "holder addition\n")
-            .expect("unreserved conflicting change should write");
-        fs::write(
-            fixture.holder.join("phase.txt"),
-            reanchoring_templates::contents("one", "base"),
-        )
-        .expect("protected hunk should write");
-        GIT.run(&fixture.holder, ["add", "phase.txt", "unreserved.txt"]);
-        // The conflict must stay outside the reservation: ordinary post-commit
-        // drift would widen its scope to include unreserved.txt. Construct A with
-        // plumbing while retaining the managed hook on the actual branch update.
-        let tree = GIT.stdout(&fixture.holder, ["write-tree"]);
-        let tip = GIT.stdout(
-            &fixture.holder,
-            ["commit-tree", &tree, "-p", &old_start, "-m", "holder phase"],
-        );
-        GIT.run(
-            &fixture.holder,
-            ["update-ref", "refs/heads/holder", &tip, &old_start],
-        );
-    } else {
-        fixture.commit("one", "base");
-    }
-    let old_tip = fixture.head();
-    fixture.checkpoint(&id);
+    let template = match progress {
+        ApplyRebaseProgress::Uninterrupted => APPLY_UNINTERRUPTED_CHECKPOINT,
+        ApplyRebaseProgress::Conflicted => APPLY_CONFLICTED_CHECKPOINT,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let reanchoring_templates::ApplyCheckpointState {
+        id,
+        old_start,
+        old_tip,
+        trunk,
+        ..
+    } = read_state(fixture.root());
     assert!(
         !journal_events(fixture.root())
             .iter()
             .any(|event| { event["op"] == "widen" && event["reservation_id"] == id }),
         "the conflicting path must remain outside the protected scope"
     );
-    commit_file(
-        fixture.root(),
-        "unreserved.txt",
-        "trunk addition\n",
-        "advance trunk outside the reserved scope",
-    );
-    let trunk = GIT.stdout(fixture.root(), ["rev-parse", "main"]);
     assert_ne!(trunk, old_start);
     assert_eq!(
         reanchoring_templates::pending_markers(fixture.root()),
@@ -617,13 +570,11 @@ exit "$result"
 }
 
 pub(super) fn aborted_rebase_does_not_leave_a_rewrite_marker() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
-    fixture.commit("one", "two");
-    let old_head = fixture.head();
-    fixture.upstream_conflict();
+    let fixture = RewriteFixture::from_repository(ABORTABLE_CHECKPOINT.instantiate());
+    let reanchoring_templates::SplitPhaseState {
+        id,
+        old_tip: old_head,
+    } = read_state(fixture.root());
     fixture.stop_rebase();
     assert_eq!(
         reanchoring_templates::pending_markers(fixture.root()),
@@ -651,30 +602,18 @@ pub(super) fn rebase_onto_another_reservation_keeps_its_work_outside_the_checkpo
 }
 
 fn rebase_onto_another_reservation(stage: SplitReservationStage) {
-    let fixture = RewriteFixture::new();
-    let trunk = GIT.stdout(fixture.root(), ["rev-parse", "main"]);
-    let other = fixture.worktrees.path().join("other-reservation");
-    GIT.add_worktree_without_hooks(fixture.root(), &other, "other-reservation", "HEAD");
-    let other_claim = claim(&other, "file:other.txt", super::SECOND_RUN);
-    assert!(
-        other_claim.status.success(),
-        "{}",
-        json_output(&other_claim)
-    );
-    let other_id = reservation_id(&other_claim);
-    commit_file(
-        &other,
-        "other.txt",
-        "other reservation's work\n",
-        "other phase",
-    );
-    let other_tip = GIT.stdout(&other, ["rev-parse", "HEAD"]);
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    let old_tip = fixture.head();
-    if matches!(stage, SplitReservationStage::Outstanding) {
-        fixture.checkpoint(&id);
-    }
+    let template = match stage {
+        SplitReservationStage::Active => ACTIVE_BEFORE_OTHER_REBASE,
+        SplitReservationStage::Outstanding => CHECKPOINT_BEFORE_OTHER_REBASE,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let reanchoring_templates::OtherReservationState {
+        id,
+        other_id,
+        other_tip,
+        old_tip,
+        trunk,
+    } = read_state(fixture.root());
 
     GIT.run(&fixture.holder, ["rebase", "other-reservation"]);
     let rewritten_tip = fixture.head();
@@ -713,15 +652,8 @@ fn rebase_onto_another_reservation(stage: SplitReservationStage) {
 }
 
 pub(super) fn pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement() {
-    let fixture = RewriteFixture::new();
-    fixture.commit("unreserved", "base");
-    let old_tip = fixture.head();
-    commit_file(
-        fixture.root(),
-        "upstream.txt",
-        "upstream\n",
-        "advance trunk",
-    );
+    let fixture = RewriteFixture::from_repository(UNRESERVED_REBASE_PREFIX.instantiate());
+    let old_tip: String = read_state(fixture.root());
     GIT.run(&fixture.holder, ["rebase", "main"]);
     let markers = reanchoring_templates::pending_markers(fixture.root());
     assert_eq!(markers.len(), 1, "real rebase must capture its map");
@@ -754,11 +686,8 @@ pub(super) fn pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement() 
 }
 
 pub(super) fn stopped_rebase_defers_a_pending_reanchor() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "two");
-    fixture.checkpoint(&id);
-    fixture.upstream_conflict();
+    let fixture = RewriteFixture::from_repository(CONFLICTING_TWO_HUNK_CHECKPOINT.instantiate());
+    let reanchoring_templates::SplitPhaseState { id, .. } = read_state(fixture.root());
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "two");
     let amended_tip = fixture.head();
@@ -797,9 +726,7 @@ pub(super) fn stopped_rebase_defers_a_pending_reanchor() {
 
 pub(super) fn failed_append_preserves_rewrite_marker_and_retention() {
     let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let id = fixture.start_checkpoint("one", "base");
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "base");
     let marker_bytes = fs::read(&marker).expect("rewrite marker should read");
@@ -831,9 +758,7 @@ pub(super) fn failed_append_preserves_rewrite_marker_and_retention() {
 
 pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() {
     let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let id = fixture.start_checkpoint("one", "base");
     let before = reanchoring_templates::board(fixture.root());
     let old_tip = retained_tip(&fixture, &id);
     let prepared_repository = DirectorySnapshot::capture(fixture.root());
@@ -904,10 +829,8 @@ pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() 
 }
 
 pub(super) fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let fixture = RewriteFixture::from_repository(ONE_HUNK_CHECKPOINT.instantiate());
+    let reanchoring_templates::SplitPhaseState { id, .. } = read_state(fixture.root());
     let rewrite_marker = fixture.deferred_amend("one", "base");
     let bypass_name = format!("{PENDING_PREFIX}mixed-bypass.json");
     let bypass_marker = fixture.root().join(".git").join(&bypass_name);
@@ -943,9 +866,7 @@ pub(super) fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
 
 pub(super) fn drift_cleans_up_rewrite_markers_without_reporting_bypasses() {
     let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let id = fixture.start_checkpoint("one", "base");
     let active_id = fixture.start_phase();
     let marker = fixture.deferred_amend("one", "base");
     let drift = run_berth(
@@ -1002,9 +923,7 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         )
     );
     let template = match (stage, workflow) {
-        (SplitReservationStage::Active, SplitWorkflow::InteractiveRebase) => {
-            reanchoring_templates::ACTIVE_FIRST_SPLIT
-        },
+        (SplitReservationStage::Active, SplitWorkflow::InteractiveRebase) => ACTIVE_FIRST_SPLIT,
         (SplitReservationStage::Active, SplitWorkflow::SoftReset) => SPLIT_ACTIVE_PHASE,
         (SplitReservationStage::Outstanding, _) => SPLIT_OUTSTANDING_PHASE,
     };
@@ -1020,7 +939,6 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
     } else {
         reanchoring_templates::prepare_first_split(fixture.root(), workflow, stage)
     };
-    let editor = fixture.worktrees.path().join("sequence-editor");
     let markers = reanchoring_templates::pending_markers(fixture.root());
     assert_eq!(
         markers.len(),
@@ -1033,18 +951,58 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         marker["pairs"],
         serde_json::json!([{"old": old_tip, "new": split_tip}])
     );
-    reanchoring_templates::drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
-    reanchoring_templates::assert_split_anchors(
-        &fixture,
-        &id,
-        &expected_start,
-        &split_tip,
-        &first_split_tip,
+    reanchoring_templates::reconcile_first_split(
+        fixture.root(),
+        &reanchoring_templates::CompletedSplitState {
+            id:              id.clone(),
+            old_tip:         old_tip.clone(),
+            first_split_tip: first_split_tip.clone(),
+            expected_start:  expected_start.clone(),
+            split_tip:       split_tip.clone(),
+        },
         stage,
     );
-    if matches!(stage, SplitReservationStage::Active) {
-        fixture.checkpoint(&id);
+
+    if recorded {
+        assert_lost_split_hunk_stays_outstanding(
+            &fixture,
+            reanchoring_templates::CompletedSplitState {
+                id,
+                old_tip,
+                first_split_tip,
+                expected_start,
+                split_tip,
+            },
+        );
     }
+}
+
+pub(super) fn dropping_a_hunk_after_interactive_checkpoint_split_keeps_it_outstanding() {
+    assert_recorded_split_survives_hunk_loss(RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT);
+}
+
+pub(super) fn dropping_a_hunk_after_soft_active_split_keeps_it_outstanding() {
+    assert_recorded_split_survives_hunk_loss(RECONCILED_SOFT_ACTIVE_SPLIT);
+}
+
+pub(super) fn dropping_a_hunk_after_soft_checkpoint_split_keeps_it_outstanding() {
+    assert_recorded_split_survives_hunk_loss(RECONCILED_SOFT_CHECKPOINT_SPLIT);
+}
+
+fn assert_recorded_split_survives_hunk_loss(template: cargo_berth_test_support::LedgerTemplate) {
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let state = read_state(fixture.root());
+    assert_lost_split_hunk_stays_outstanding(&fixture, state);
+}
+
+fn assert_lost_split_hunk_stays_outstanding(
+    fixture: &RewriteFixture,
+    state: reanchoring_templates::CompletedSplitState,
+) {
+    let reanchoring_templates::CompletedSplitState {
+        id, expected_start, ..
+    } = state;
+    let editor = fixture.worktrees.path().join("sequence-editor");
 
     split_rebase::write_first_rebase_action(&editor, "drop");
     let dropped = git_command(BERTH_EXECUTABLE)
@@ -1094,8 +1052,8 @@ pub(super) fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_wr
 
 fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder) {
     let template = match order {
-        StackedBranchWriteOrder::UpperFirst => reanchoring_templates::UPPER_FIRST_SPLIT,
-        StackedBranchWriteOrder::LowerFirst => reanchoring_templates::LOWER_FIRST_SPLIT,
+        StackedBranchWriteOrder::UpperFirst => UPPER_FIRST_SPLIT,
+        StackedBranchWriteOrder::LowerFirst => LOWER_FIRST_SPLIT,
     };
     let fixture = RewriteFixture::from_repository(template.instantiate());
     let reanchoring_templates::CompletedStackedSplitState {
@@ -1156,17 +1114,11 @@ pub(super) fn split_checkpoint_survives_switching_the_issuing_checkout_before_bo
 fn assert_split_survives_ref_change(change: SplitRefChange) {
     let (fixture, state) = split_checkpoint_before_ref_change(change);
     let editor = fixture.worktrees.path().join("split-editor");
-    let drained = reanchoring_templates::prepare_split_checkpoint(&fixture, state, &editor, change);
-    if matches!(change, SplitRefChange::SwitchedCheckout) {
-        assert_dropping_split_preserves_checkpoint(
-            &fixture,
-            &drained.checkpoint,
-            &drained.trunk,
-            &drained.protected_tip,
-            &drained.first_split,
-            &editor,
-        );
-    }
+    reanchoring_templates::prepare_split_checkpoint(&fixture, state, &editor, change);
+}
+
+pub(super) fn dropping_a_split_hunk_keeps_the_switched_checkout_checkpoint_outstanding() {
+    assert_drained_checkpoint_survives_drop(DRAINED_SPLIT_SWITCHED_CHECKPOINT);
 }
 
 pub(super) fn dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding() {
@@ -1272,9 +1224,7 @@ fn assert_dropping_split_preserves_checkpoint(
 
 pub(super) fn unreadable_bypass_marker_does_not_block_rewrite_reconciliation() {
     let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let id = fixture.start_checkpoint("one", "base");
     let rewrite_marker = fixture.deferred_amend("one", "base");
     let bypass_marker = fixture
         .root()
@@ -1343,11 +1293,8 @@ enum CaptureReadFailure {
 }
 
 fn assert_capture_read_failure_writes_no_marker(failure: CaptureReadFailure) {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "two");
-    let old_tip = fixture.head();
-    fixture.checkpoint(&id);
+    let fixture = RewriteFixture::from_repository(SPLIT_OUTSTANDING_PHASE.instantiate());
+    let reanchoring_templates::SplitPhaseState { id, old_tip } = read_state(fixture.root());
     let editor = fixture.worktrees.path().join("capture-failure-editor");
     split_rebase::write_first_rebase_action(&editor, "edit");
     SplitWorkflow::InteractiveRebase.stop_before_split(&fixture, &editor);
@@ -1488,9 +1435,7 @@ enum RewriteReadFailure {
 
 fn assert_transient_rewrite_failure_is_retryable(failure: RewriteReadFailure) {
     let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "base");
-    fixture.checkpoint(&id);
+    let id = fixture.start_checkpoint("one", "base");
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "base");
     let wrapper_directory = tempdir().expect("Git wrapper directory should exist");

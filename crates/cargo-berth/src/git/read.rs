@@ -859,7 +859,6 @@ mod tests {
     use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
-    use std::time::Instant;
 
     use cargo_berth_test_support::CommandDeadlineExt as _;
     use cargo_berth_test_support::TestProcessGroup;
@@ -1139,7 +1138,7 @@ mod tests {
         let path = std::env::join_paths(std::iter::once(shim.path().to_path_buf()).chain(
             std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?),
         ))?;
-        let mut process = TestProcessGroup::spawn(
+        let process = TestProcessGroup::spawn(
             cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
                 .args([TEST, "--nocapture"])
                 .env("CARGO_BERTH_PROBE_SERIALIZATION_ROOT", fixture.root())
@@ -1149,14 +1148,7 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
         )?;
-        let deadline = Instant::now() + Duration::from_millis(750);
-        while process.child_mut().try_wait()?.is_none() {
-            assert!(
-                Instant::now() < deadline,
-                "installation probe test did not finish"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // The group's command deadline is the watchdog; the proof itself has no time window.
         let output = process.wait_with_output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
@@ -1169,32 +1161,34 @@ mod tests {
         );
         std::thread::scope(|scope| -> FixtureResult {
             let observation = scope.spawn(|| super::worktrees(root));
-            let deadline = Instant::now() + Duration::from_millis(250);
+            // The shim marks the spawn boundary: the probe child runs and waits for `continue`.
             while !shim.join("ready").exists() {
-                if Instant::now() >= deadline {
-                    std::fs::write(shim.join("continue"), "")?;
+                if observation.is_finished() {
                     return Err("installation probe did not start".into());
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
-            let (started, attempting) = mpsc::channel();
-            let (finished, completed) = mpsc::channel();
+            let (attempting, attempted) = mpsc::channel();
             let other = scope.spawn(move || {
-                started.send(()).map_err(std::io::Error::other)?;
-                let output = command::git_output(root, ["--version"]);
-                finished.send(()).map_err(std::io::Error::other)?;
-                output
+                cargo_berth_test_support::observe_spawn_contention(attempting, || {
+                    let mut git = command::git_command(root)?;
+                    git.arg("--version");
+                    command::spawn_with_piped_output(&mut git)?.output(
+                        Vec::new(),
+                        super::super::child::GIT_COMMAND_DEADLINE,
+                        |_| {},
+                    )
+                })
             });
-            let attempted = attempting.recv_timeout(Duration::from_millis(100));
-            let premature = completed.recv_timeout(Duration::from_millis(25));
+            let contended = attempted.recv();
             // Always continue before asserting, so a failing proof also joins both workers.
             std::fs::write(shim.join("continue"), "")?;
             let observed = observation.join().map_err(|_| "observation panicked")?;
             let output = other.join().map_err(|_| "Git worker panicked")??;
-            attempted?;
-            assert!(
-                premature.is_err(),
-                "another child started during the installation probe"
+            assert_eq!(
+                contended?,
+                cargo_berth_test_support::SpawnContention::Waiting,
+                "another child could start during the installation probe"
             );
             assert!(output.status.success(), "{output:?}");
             assert_ne!(in_process(observed?)?, [] as [u8; 0]);

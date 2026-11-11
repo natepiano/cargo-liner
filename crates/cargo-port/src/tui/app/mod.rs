@@ -353,14 +353,27 @@ impl App {
     /// state and width inputs have one presentation owner. Freeze animation time.
     fn project_row_presentation(&self) -> ProjectListPresentation {
         let lookup = self.ci.status_lookup();
-        let ctx = PaneRenderCtx {
+        ProjectListPresentation(panes::project_width_presentations(
+            &self.presentation_ctx(&lookup),
+        ))
+    }
+
+    /// The name width of the widest project row on screen.
+    fn shown_name_width(&self) -> usize {
+        let lookup = self.ci.status_lookup();
+        panes::shown_name_width(&self.presentation_ctx(&lookup))
+    }
+
+    /// The render context for row presentations, with animation time frozen.
+    fn presentation_ctx<'a>(&'a self, lookup: &'a CiStatusLookup) -> PaneRenderCtx<'a> {
+        PaneRenderCtx {
             color_mode:                self.framework.color_mode,
             animation_elapsed:         Duration::ZERO,
             config:                    &self.config,
             project_list:              &self.project_list,
             selected_project_path:     self.selected_project_path_for_render(),
             scan:                      &self.scan,
-            ci_status_lookup:          &lookup,
+            ci_status_lookup:          lookup,
             settings_render_inputs:    None,
             synced_description_height: SyncedDescriptionHeight::default(),
             empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
@@ -368,8 +381,7 @@ impl App {
                 self.inflight.owned_run().output_state(),
                 self.inflight.owned_run().running_label(),
             ),
-        };
-        ProjectListPresentation(panes::project_width_presentations(&ctx))
+        }
     }
 
     /// Constructor entry — declared here in `mod.rs` so `pub(super)`
@@ -1335,8 +1347,10 @@ impl App {
                         .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
-                    !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
-                        || !g.remotes.listed().is_empty()
+                    !matches!(
+                        g.checkout,
+                        panes::GitCheckout::AwaitingProbe | panes::GitCheckout::NotRepository
+                    ) || !g.remotes.listed().is_empty()
                         || !g.worktrees.is_empty()
                 }),
                 _ => false,
@@ -4692,7 +4706,6 @@ mod tests {
         use std::path::PathBuf;
         use std::process::Command;
         use std::rc::Rc;
-        use std::sync::Arc;
         use std::time::Duration;
         use std::time::Instant;
 
@@ -4728,7 +4741,6 @@ mod tests {
         use tui_pane::RenderFocus;
         use tui_pane::SettingsLineTarget;
         use tui_pane::SettingsRowPayload;
-        use tui_pane::Theme;
         use tui_pane::ToastActivation;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
@@ -4762,12 +4774,12 @@ mod tests {
         use crate::project::FirstCommit;
         use crate::project::GitStatus;
         use crate::project::HeadState;
+        use crate::project::LibraryTargetKind;
         use crate::project::ManifestFingerprint;
         use crate::project::MemberGroup;
         use crate::project::Package;
         use crate::project::PackageRecord;
         use crate::project::PinnedCommit;
-        use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
         use crate::project::RemoteInfo;
@@ -5900,7 +5912,7 @@ mod tests {
                 "demo",
                 &project_dir,
                 Cargo {
-                    types: vec![ProjectType::Binary],
+                    binaries: vec!["demo".to_string()],
                     examples: vec![ExampleGroup {
                         category: String::new(),
                         names:    vec!["example".to_string()],
@@ -6305,13 +6317,14 @@ mod tests {
             let project = tmp.path().join("app");
             std::fs::create_dir_all(&project).expect("create test directory");
             let cargo = Cargo {
-                types:          vec![ProjectType::Library],
-                examples:       vec![ExampleGroup {
+                library_target_kind: LibraryTargetKind::Library,
+                binaries:            Vec::new(),
+                examples:            vec![ExampleGroup {
                     category: String::new(),
                     names:    vec!["demo".to_string()],
                 }],
-                benches:        Vec::new(),
-                publish_status: PublishStatus::Publishable,
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::Publishable,
             };
             let root = make_package_with_cargo("app", &project, cargo);
             let mut app = make_app(&[root]);
@@ -6432,24 +6445,6 @@ mod tests {
             terminal.backend().buffer().clone()
         }
 
-        struct ActiveThemeOverride {
-            saved: Arc<Theme>,
-        }
-
-        impl ActiveThemeOverride {
-            fn set(appearance: Appearance) -> Self {
-                let saved = tui_pane::theme();
-                tui_pane::set_active_theme(std::sync::Arc::new(tui_pane::fallback_theme(
-                    appearance,
-                )));
-                Self { saved }
-            }
-        }
-
-        impl Drop for ActiveThemeOverride {
-            fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
-        }
-
         fn find_text_cell_in_row(buffer: &Buffer, y: u16, text: &str) -> Option<(u16, u16)> {
             crate::tui::test_support::find_text_cell(
                 buffer,
@@ -6460,7 +6455,9 @@ mod tests {
 
         fn assert_git_error_colors(app: &mut App, error_value: &str) {
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(app, 8);
                 let value_position =
                     crate::tui::test_support::find_text_cell(&buffer, buffer.area, error_value)
@@ -6499,7 +6496,9 @@ mod tests {
                 },
             );
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(&mut app, 8);
                 let data = app.panes.git.content().expect("selected Git pane content");
                 assert!(matches!(data.checkout, panes::GitCheckout::UnreadableHead));
@@ -6563,7 +6562,9 @@ mod tests {
             app.project_list.set_cursor(1);
             app.sync_selected_project();
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 app.ensure_detail_cached();
                 let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("terminal");
                 let selected_path = app
@@ -6895,7 +6896,9 @@ mod tests {
                 app.sync_selected_project();
                 super::apply_git_info(&mut app, &path, (checkout, repo));
                 for appearance in [Appearance::Dark, Appearance::Light] {
-                    let _theme = ActiveThemeOverride::set(appearance);
+                    let _theme = crate::tui::test_support::ThemeOverride::install(
+                        tui_pane::fallback_theme(appearance),
+                    );
                     let buffer = render_selected_git(&mut app, 16);
                     let (_, y) = crate::tui::test_support::find_text_cell(
                         &buffer,
@@ -6945,7 +6948,9 @@ mod tests {
             let checkout = CheckoutInfo::get(path, &repo.local_main_branch).expect("checkout");
             super::apply_git_info(&mut app, path, (checkout, repo));
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let buffer = render_selected_git(&mut app, 12);
                 let data = app.panes.git.content().expect("Git pane content");
                 let fields = panes::git_fields_from_data(data);
@@ -7569,7 +7574,9 @@ mod tests {
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 app.ensure_visible_rows_cached();
                 app.ensure_disk_cache();
                 app.ensure_fit_widths_cached();
@@ -7625,7 +7632,9 @@ mod tests {
             ))]);
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
                     let (column, y) =
@@ -7668,7 +7677,9 @@ mod tests {
             super::apply_git_info(&mut app, &linked_path, (checkout, repo));
             app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
-                let _theme = ActiveThemeOverride::set(appearance);
+                let _theme = crate::tui::test_support::ThemeOverride::install(
+                    tui_pane::fallback_theme(appearance),
+                );
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 let (_, row) =
                     crate::tui::test_support::find_text_cell(&buffer, buffer.area, linked_name)
@@ -8981,11 +8992,11 @@ mod tests {
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
+        use crate::project::LibraryTargetKind;
         use crate::project::ManifestFingerprint;
         use crate::project::PackageRecord;
         use crate::project::PinnedCommit;
         use crate::project::ProjectInfo;
-        use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
         use crate::project::RemoteList;
@@ -9089,20 +9100,22 @@ mod tests {
                 )],
             );
             core.rust.cargo = Cargo {
-                types:          vec![ProjectType::Library],
-                examples:       vec![ExampleGroup {
+                library_target_kind: LibraryTargetKind::Library,
+                binaries:            Vec::new(),
+                examples:            vec![ExampleGroup {
                     category: String::new(),
                     names:    vec!["demo".to_string()],
                 }],
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
             let mut cli = make_member(Some("cli"), "~/ws/crates/cli");
             cli.rust.cargo = Cargo {
-                types:          vec![ProjectType::Binary],
-                examples:       Vec::new(),
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            vec!["cli".to_string()],
+                examples:            Vec::new(),
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
 
             let mut root = make_workspace_with_members(
@@ -9114,10 +9127,11 @@ mod tests {
                 unreachable!("test root should be a workspace");
             };
             ws.rust.cargo = Cargo {
-                types:          vec![ProjectType::Workspace],
-                examples:       Vec::new(),
-                benches:        vec!["smoke".to_string()],
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            Vec::new(),
+                examples:            Vec::new(),
+                benches:             vec!["smoke".to_string()],
+                publish_status:      PublishStatus::NotPublishable,
             };
             ws.rust.vendored = vec![make_vendored(
                 Some("root-helper"),
@@ -9162,10 +9176,11 @@ mod tests {
                 ],
             );
             package.rust.cargo = Cargo {
-                types:          vec![ProjectType::Binary],
-                examples:       Vec::new(),
-                benches:        Vec::new(),
-                publish_status: PublishStatus::NotPublishable,
+                library_target_kind: LibraryTargetKind::Absent,
+                binaries:            vec!["app".to_string()],
+                examples:            Vec::new(),
+                benches:             Vec::new(),
+                publish_status:      PublishStatus::NotPublishable,
             };
             let root = RootItem::Rust(RustProject::Package(package));
 

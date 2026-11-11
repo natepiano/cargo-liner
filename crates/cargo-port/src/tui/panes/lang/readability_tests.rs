@@ -225,7 +225,8 @@ fn phase4e_language_names_keep_their_meaning_at_normal_width() -> anyhow::Result
     }
     let frame = test_support::draw_ui(&mut app, 160)?;
     let area = app.panes.tiled_layout.area(PaneId::Lang);
-    test_support::find_text_cell(&frame, area, "└ integr…").context("shortened child name")?;
+    test_support::find_text_cell(&frame, area, "└ integration")
+        .context("whole child name at 160 columns")?;
     let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 60)?;
     let area = buffer.area;
     for name in ["└ integration", "Python", "Markdown", "Autoconf"] {
@@ -284,7 +285,7 @@ fn language_width_uses_real_names_and_numeric_values() -> anyhow::Result<()> {
     stats.entries[0].children.push(integration);
     let frame = test_support::draw_ui(&mut app, 160)?;
     let area = app.panes.tiled_layout.area(PaneId::Lang);
-    for label in ["└ uni…", "└ int…", "163601"] {
+    for label in ["└ unit tests", "└ integration", "163601"] {
         test_support::find_text_cell(&frame, area, label)
             .with_context(|| format!("{label}: {:?}", test_support::rows(&frame)))?;
     }

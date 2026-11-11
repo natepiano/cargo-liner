@@ -4,6 +4,7 @@ mod project;
 pub(super) use project::LintCell;
 pub(super) use project::LintColumnStatus;
 pub(super) use project::PROJECTS_HEADER;
+pub(super) use project::ProjectColumnLayout;
 pub(super) use project::ProjectListWidths;
 pub(super) use project::ProjectRow;
 pub(super) use project::RowCells;
@@ -19,6 +20,7 @@ pub(super) use project::header_line;
 pub(super) use project::project_name_shimmer_style;
 pub(super) use project::project_name_style;
 pub(super) use project::row_to_line;
+pub(super) use project::shared_name_prefix;
 pub(super) use tui_pane::ColumnSpec;
 pub(super) use tui_pane::ColumnWidths;
 
@@ -26,3 +28,5 @@ pub(super) use self::constants::COL_DISK;
 pub(super) use self::constants::COL_MAIN;
 pub(super) use self::constants::COL_NAME;
 pub(super) use self::constants::COL_SYNC;
+#[cfg(test)]
+pub(super) use self::constants::COMPLETE_PROJECT_HEADERS_WIDTH;

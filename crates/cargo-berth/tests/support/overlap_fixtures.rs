@@ -1,9 +1,11 @@
 // Shared starting histories and fixture operations.
 
+pub(super) use cargo_berth_test_support::FIRST_RUN;
 pub(super) use cargo_berth_test_support::GitDriver;
 pub(super) use cargo_berth_test_support::IntegrationRepository;
 pub(super) use cargo_berth_test_support::OptionalLocks;
 pub(super) use cargo_berth_test_support::RepositoryTemplate;
+pub(super) use cargo_berth_test_support::SECOND_RUN;
 pub(super) use cargo_berth_test_support::assert_success;
 pub(super) use cargo_berth_test_support::berth_command;
 pub(super) use cargo_berth_test_support::json;
@@ -45,11 +47,7 @@ use crate::recorded_history;
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
-pub(super) const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-
 pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-
-pub(super) const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 
 pub(super) const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 

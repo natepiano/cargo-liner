@@ -5,12 +5,14 @@ pub(super) use std::path::Path;
 pub(super) use std::path::PathBuf;
 pub(super) use std::process::Output;
 
+pub(super) use cargo_berth_test_support::FIRST_RUN;
 pub(super) use cargo_berth_test_support::GitDriver;
 pub(super) use cargo_berth_test_support::IntegrationRepository;
 pub(super) use cargo_berth_test_support::LedgerFixture;
 pub(super) use cargo_berth_test_support::LedgerTemplate;
 pub(super) use cargo_berth_test_support::OptionalLocks;
 pub(super) use cargo_berth_test_support::RepositoryTemplate;
+pub(super) use cargo_berth_test_support::SECOND_RUN;
 pub(super) use cargo_berth_test_support::TemplateBuildTiming;
 pub(super) use cargo_berth_test_support::assert_success;
 pub(super) use cargo_berth_test_support::berth_command;
@@ -58,10 +60,6 @@ pub(super) const RECOVERY_SOURCES: RepositoryTemplate = RepositoryTemplate {
     name:             "recovery-sources",
     build:            build_recovery_sources,
 };
-
-pub(super) const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-
-pub(super) const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 
 pub(super) const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 
