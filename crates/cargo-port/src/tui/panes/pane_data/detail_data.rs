@@ -28,6 +28,7 @@ use super::constants::CRATES_IO_PRE_LABEL;
 use super::constants::CRATES_IO_RC_LABEL;
 use super::constants::CRATES_IO_VERSION_LABEL;
 use super::git;
+use super::git::GitDescription;
 use super::git_data;
 use super::git_data::GitData;
 use super::git_data::GitDetailFields;
@@ -111,27 +112,53 @@ fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
 /// (descriptions wrap to those widths), so the result is valid only for the
 /// layout that produced them. The caller caches this against the scan
 /// generation and the widths, since it rebuilds every project's pane data.
-pub fn max_top_pane_inner_height(app: &App, package_width: u16, git_width: u16) -> u16 {
+/// The same pass measures the Targets rows of the project that needs the most.
+pub fn max_top_pane_inner_height(
+    app: &App,
+    package_width: u16,
+    git_width: u16,
+) -> CrossProjectRows {
     app.project_list
         .iter()
-        .map(|entry| project_top_inner_height(app, &entry.root_item, package_width, git_width))
-        .max()
-        .unwrap_or(0)
+        .map(|entry| project_rows(app, &entry.root_item, package_width, git_width))
+        .fold(CrossProjectRows::default(), |most, rows| CrossProjectRows {
+            top_inner:     most.top_inner.max(rows.top_inner),
+            targets_inner: most.targets_inner.max(rows.targets_inner),
+        })
+}
+
+/// The inner rows that one cross-project pass measures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CrossProjectRows {
+    /// The inner height of the Details and Git row.
+    pub top_inner:     u16,
+    /// The inner height of the Targets pane.
+    pub targets_inner: u16,
 }
 
 /// Inner height the Details and Git panes need to render `item`'s content
 /// without clipping: the taller of the two panes. Each pane is its
 /// About-section description (wrapped to the pane width and raised to the
 /// shared sync height) plus the separator plus its lower content block.
-fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_width: u16) -> u16 {
+/// The Targets inner height comes from the same pane data.
+fn project_rows(
+    app: &App,
+    item: &RootItem,
+    package_width: u16,
+    git_width: u16,
+) -> CrossProjectRows {
     let data = build_pane_data(app, item);
 
     let package_lower = package::package_lower_metadata_height(
         &data.package,
         &package_data::package_rows_from_data(&data.package),
+        package_width.saturating_sub(2),
     );
-    let git_lower =
-        git::git_lower_content_height(&data.git, git_data::git_fields_from_data(&data.git).len());
+    let git_lower = git::git_lower_content_height(
+        &data.git,
+        &git_data::git_fields_from_data(&data.git),
+        git_width.saturating_sub(2),
+    );
 
     let package_desc = description_natural_rows(
         &data.package.description,
@@ -182,9 +209,17 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     let package_total =
         package::package_content_height(package_desc.max(synced_desc), package_lower)
             .saturating_add(error_height);
-    let git_total = git::git_content_height(git_desc.max(synced_desc), git_desc > 0, git_lower);
+    let description = if git_desc > 0 {
+        GitDescription::Present
+    } else {
+        GitDescription::Absent
+    };
+    let git_total = git::git_content_height(git_desc.max(synced_desc), description, git_lower);
 
-    u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
+    CrossProjectRows {
+        top_inner:     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX),
+        targets_inner: data.targets.inner_rows(),
+    }
 }
 
 /// Natural (uncapped) wrapped row count for an About-section description at
@@ -213,10 +248,9 @@ enum WorktreeRootDisplay {
 
 impl From<&RootItem> for WorktreeRootDisplay {
     fn from(item: &RootItem) -> Self {
-        if git_data::is_worktree_group(item) {
-            Self::Grouped
-        } else {
-            Self::Single
+        match item {
+            RootItem::Worktrees(group) if group.renders_as_group() => Self::Grouped,
+            RootItem::Worktrees(_) | RootItem::Rust(_) | RootItem::NonRust(_) => Self::Single,
         }
     }
 }
@@ -831,7 +865,7 @@ pub(super) fn collect_metadata_fields(
         if resolved.is_empty() {
             fallback_type.into_iter().collect()
         } else {
-            resolved.to_vec()
+            resolved
         }
     });
 

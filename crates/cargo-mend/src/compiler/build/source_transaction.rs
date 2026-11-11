@@ -8,6 +8,7 @@ use anyhow::Context;
 use anyhow::Result;
 use walkdir::WalkDir;
 
+use crate::reporting::PassEdits;
 use crate::selection::Selection;
 
 pub(super) struct CompilerFixTransaction {
@@ -48,6 +49,15 @@ impl CompilerFixTransaction {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self { snapshots })
+    }
+
+    pub(super) fn has_changes(&self) -> Result<PassEdits> {
+        for (path, original) in &self.snapshots {
+            if fs::read_to_string(path)? != *original {
+                return Ok(PassEdits::Written);
+            }
+        }
+        Ok(PassEdits::Unchanged)
     }
 
     pub(super) fn restore(&self) -> Result<()> {

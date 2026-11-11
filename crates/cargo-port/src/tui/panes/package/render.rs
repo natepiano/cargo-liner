@@ -13,6 +13,7 @@ use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PaneSelectionState;
+use tui_pane::PaneTitleCount;
 use tui_pane::Placed;
 use tui_pane::Region;
 use tui_pane::RuleTitle;
@@ -32,7 +33,7 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::PackagePane;
-use super::constants::PATH_VALUE_RESERVE;
+use super::constants::MIN_TWO_COLUMN_INNER_WIDTH;
 use super::constants::STATS_VALUE_WIDTH;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
@@ -71,16 +72,10 @@ use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
 use crate::tui::theme_roles;
 
-const MIN_TWO_COLUMN_INNER_WIDTH: u16 = 37;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
     Enabled,
     Disabled,
-}
-
-impl LintRenderMode {
-    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for LintRenderMode {
@@ -120,14 +115,15 @@ struct PackageRenderLayout {
 }
 
 struct PackageFieldRender {
-    field:        DetailField,
-    label:        &'static str,
-    label_width:  usize,
-    area_width:   usize,
-    label_style:  Style,
-    value_style:  Style,
-    value:        String,
-    continuation: String,
+    field:             DetailField,
+    label:             &'static str,
+    label_width:       usize,
+    disk_value_indent: usize,
+    area_width:        usize,
+    label_style:       Style,
+    value_style:       Style,
+    value:             String,
+    continuation:      String,
 }
 
 struct StatsColumnRender<'a> {
@@ -336,17 +332,26 @@ fn stats_label_width(data: &PackageData) -> u16 {
 pub(in crate::tui::panes) fn package_lower_metadata_height(
     data: &PackageData,
     rows: &[PackageRow],
+    inner_width: u16,
 ) -> usize {
     let metadata_line_count = rows
         .iter()
         .filter(|row| {
             !matches!(
                 row,
-                PackageRow::Description | PackageRow::Structure(_) | PackageRow::Tests(_)
+                PackageRow::Description
+                    | PackageRow::Structure(_)
+                    | PackageRow::Tests(_)
+                    | PackageRow::CratesIo(_)
             )
         })
         .count();
-    metadata_line_count.max(stats_column_line_count(data))
+    let statistics = stats_column_line_count(data, inner_width);
+    if inner_width < MIN_TWO_COLUMN_INNER_WIDTH {
+        metadata_line_count + statistics
+    } else {
+        metadata_line_count.max(statistics)
+    }
 }
 
 /// Total vertical rows the Package pane's content occupies: the synced
@@ -366,21 +371,48 @@ pub(in crate::tui::panes) fn package_content_height(
 /// (when present) the Tests section and the crates.io section, each
 /// preceded by a blank spacer when a section above it has rows, plus its
 /// own title rule.
-const fn stats_column_line_count(data: &PackageData) -> usize {
+fn stats_column_line_count(data: &PackageData, inner_width: u16) -> usize {
+    if inner_width < MIN_TWO_COLUMN_INNER_WIDTH {
+        let heading_rows = |heading: &str| {
+            support::word_wrap(heading, usize::from(inner_width.saturating_sub(2))).len()
+        };
+        let count_section = |heading: &str, rows: &[(&str, usize)]| {
+            if rows.is_empty() {
+                0
+            } else {
+                heading_rows(heading)
+                    + rows
+                        .iter()
+                        .map(|(label, count)| {
+                            inline_stat_height(label, &count.to_string(), inner_width)
+                        })
+                        .sum::<usize>()
+            }
+        };
+        let crates_io = if data.crates_io_rows.is_empty() {
+            0
+        } else {
+            heading_rows("crates.io")
+                + data
+                    .crates_io_rows
+                    .iter()
+                    .map(|(label, value)| inline_stat_height(label, value, inner_width))
+                    .sum::<usize>()
+        };
+        return count_section("Structure", &data.stats_rows)
+            + count_section("Tests", &data.test_rows)
+            + crates_io;
+    }
     let tests = if data.test_rows.is_empty() {
         0
     } else {
-        let spacer = if data.stats_rows.is_empty() { 0 } else { 1 };
+        let spacer = usize::from(!data.stats_rows.is_empty());
         spacer + 1 + data.test_rows.len()
     };
     let crates_io = if data.crates_io_rows.is_empty() {
         0
     } else {
-        let spacer = if data.stats_rows.is_empty() && data.test_rows.is_empty() {
-            0
-        } else {
-            1
-        };
+        let spacer = usize::from(!(data.stats_rows.is_empty() && data.test_rows.is_empty()));
         spacer + 1 + data.crates_io_rows.len()
     };
     data.stats_rows.len() + tests + crates_io
@@ -458,11 +490,12 @@ fn render_column_inner(
     let mut repeated_headers = Vec::new();
     let label_width = package_row_label_width(rows).min(usize::from(area.width).saturating_sub(3));
     for (i, row) in rows.iter().enumerate() {
-        match row {
+        let statistic = match row {
             PackageRow::Description => {
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = 0;
                 }
+                continue;
             },
             PackageRow::Field(field) => {
                 let row_start = lines.len();
@@ -479,46 +512,13 @@ fn render_column_inner(
                     height:  lines.len() - row_start,
                 });
                 row_line_ys.extend((row_start..lines.len()).map(|y| (i, y)));
+                continue;
             },
-            PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
-                if matches!(ctx.statistics_layout, StatisticsLayout::Stacked) {
-                    if matches!(
-                        row,
-                        PackageRow::Structure(0) | PackageRow::Tests(0) | PackageRow::CratesIo(0)
-                    ) {
-                        header_starts.push(lines.len());
-                    }
-                    append_inline_stat(&mut lines, ctx, *row, area.width);
-                    let start = lines.len().saturating_sub(1);
-                    if let Some(&start_y) = header_starts.last()
-                        && start_y < start
-                        && matches!(
-                            row,
-                            PackageRow::Structure(0)
-                                | PackageRow::Tests(0)
-                                | PackageRow::CratesIo(0)
-                        )
-                    {
-                        repeated_headers.push(VisualRowSpan {
-                            start_y,
-                            height: start - start_y,
-                        });
-                    }
-                    field_spans.push(VisualRowSpan {
-                        start_y: start,
-                        height:  1,
-                    });
-                    row_line_ys.push((i, start));
-                    if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-                        focused_output_line = start;
-                    }
-                } else if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-                    focused_output_line = lines.len().saturating_sub(1);
-                }
-            },
+            PackageRow::Structure(index) => PackageStatisticRow::Structure(*index),
+            PackageRow::Tests(index) => PackageStatisticRow::Tests(*index),
+            PackageRow::CratesIo(index) => PackageStatisticRow::CratesIo(*index),
             PackageRow::Section(section) => {
-                // For `PackageSection::PrimaryPackage` and `PrimaryWorkspace`, push a blank `Line`
-                // to separate that block from the Worktree Group Summary above.
+                // Separate primary package and workspace sections from the worktree group summary.
                 if matches!(
                     section,
                     PackageSection::PrimaryPackage | PackageSection::PrimaryWorkspace
@@ -527,7 +527,31 @@ fn render_column_inner(
                 }
                 header_starts.push(lines.len());
                 append_package_heading(&mut lines, section.label(), area.width, ctx);
+                continue;
             },
+        };
+        if matches!(ctx.statistics_layout, StatisticsLayout::Stacked) {
+            if starts_statistics_section(*row) {
+                header_starts.push(lines.len());
+            }
+            let span = append_inline_stat(&mut lines, ctx, statistic, area.width);
+            let start = span.start_y;
+            if let Some(&start_y) = header_starts.last()
+                && start_y < start
+                && starts_statistics_section(*row)
+            {
+                repeated_headers.push(VisualRowSpan {
+                    start_y,
+                    height: start - start_y,
+                });
+            }
+            row_line_ys.extend((start..start + span.height).map(|y| (i, y)));
+            field_spans.push(span);
+            if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+                focused_output_line = start;
+            }
+        } else if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+            focused_output_line = lines.len().saturating_sub(1);
         }
     }
 
@@ -566,37 +590,61 @@ fn draw_package_column(
     }
 }
 
+const fn starts_statistics_section(row: PackageRow) -> bool {
+    matches!(
+        row,
+        PackageRow::Structure(0) | PackageRow::Tests(0) | PackageRow::CratesIo(0)
+    )
+}
+
+/// Identify a row within one Package statistics section.
+#[derive(Clone, Copy)]
+enum PackageStatisticRow {
+    Structure(usize),
+    Tests(usize),
+    CratesIo(usize),
+}
+
 fn append_inline_stat(
     lines: &mut Vec<Line<'static>>,
     ctx: &PackageRenderCtx<'_>,
-    row: PackageRow,
+    row: PackageStatisticRow,
     width: u16,
-) {
+) -> VisualRowSpan {
     let (heading, index, label, value) = match row {
-        PackageRow::Structure(index) => {
+        PackageStatisticRow::Structure(index) => {
             let (label, value) = ctx.data.stats_rows[index];
             ("Structure", index, label, value.to_string())
         },
-        PackageRow::Tests(index) => {
+        PackageStatisticRow::Tests(index) => {
             let (label, value) = ctx.data.test_rows[index];
             ("Tests", index, label, value.to_string())
         },
-        PackageRow::CratesIo(index) => {
+        PackageStatisticRow::CratesIo(index) => {
             let (label, value) = &ctx.data.crates_io_rows[index];
             ("crates.io", index, *label, value.clone())
         },
-        _ => return,
     };
     if index == 0 {
         append_package_heading(lines, heading, width, ctx);
     }
+    let start_y = lines.len();
     let available = usize::from(width.saturating_sub(3));
-    let label = if label.is_empty() { "Total" } else { label };
+    if inline_stat_height(label, &value, width) == 2 {
+        let value_width = available.saturating_add(1);
+        lines.push(Line::from(format!(" {label}")));
+        lines.push(Line::from(format!(" {value:>value_width$} ")));
+        return VisualRowSpan { start_y, height: 2 };
+    }
     let label_width = available.saturating_sub(value.width());
-    let label = render::truncate_with_ellipsis(label, label_width, "…");
     let padding = " ".repeat(label_width.saturating_sub(label.width()));
     let text = format!(" {label}{padding} {value} ");
     lines.push(Line::from(text));
+    VisualRowSpan { start_y, height: 1 }
+}
+
+fn inline_stat_height(label: &str, value: &str, width: u16) -> usize {
+    1 + usize::from(label.width() + value.width() > usize::from(width.saturating_sub(3)))
 }
 
 fn append_package_heading(
@@ -614,38 +662,11 @@ fn append_package_heading(
     }
 }
 
-fn package_field_label(
-    ctx: &PackageRenderCtx<'_>,
-    field: DetailField,
-    label_width: usize,
-) -> &'static str {
-    let label = field.label();
-    if !matches!(
+const fn is_disk_child(field: DetailField) -> bool {
+    matches!(
         field,
         DetailField::DiskTarget | DetailField::DiskNonTarget | DetailField::DiskOutOfTreeTarget
-    ) {
-        return label;
-    }
-    let original_indent = label.len() - label.trim_start().len();
-    let indent = ctx
-        .rows
-        .iter()
-        .filter_map(|row| match row {
-            PackageRow::Field(
-                child @ (DetailField::DiskTarget
-                | DetailField::DiskNonTarget
-                | DetailField::DiskOutOfTreeTarget),
-            ) => {
-                let child_label = child.label();
-                let text = child_label.trim_start();
-                let available_indent = label_width.checked_sub(text.width())?;
-                Some((child_label.len() - text.len()).min(available_indent))
-            },
-            _ => None,
-        })
-        .min()
-        .unwrap_or(original_indent);
-    &label[original_indent.saturating_sub(indent)..]
+    )
 }
 
 fn package_field_render(
@@ -656,21 +677,20 @@ fn package_field_render(
     selection: PaneSelectionState,
 ) -> PackageFieldRender {
     let mode = ctx.styles.chrome.color_mode;
-    let label_width = if matches!(
-        field,
-        DetailField::Disk
-            | DetailField::DiskTarget
-            | DetailField::DiskNonTarget
-            | DetailField::DiskOutOfTreeTarget
-    ) {
+    let label = field.label();
+    let disk_value_indent = label_width
+        .min(usize::from(area_width).saturating_sub(package_disk_value_width(ctx) + 3))
+        + 2;
+    let label_width = if field == DetailField::Disk {
         label_width.min(usize::from(area_width).saturating_sub(package_disk_value_width(ctx) + 3))
     } else {
         label_width
     };
     PackageFieldRender {
         field,
-        label: package_field_label(ctx, field, label_width),
+        label,
         label_width,
+        disk_value_indent,
         area_width: usize::from(area_width),
         label_style: ctx
             .styles
@@ -705,6 +725,9 @@ fn package_field_value(ctx: &PackageRenderCtx<'_>, field: DetailField) -> String
 }
 
 fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> Style {
+    if package_field_value(ctx, field) == "—" {
+        return Style::default().fg(tui_pane::dim_value_color());
+    }
     match field {
         DetailField::Ci => ci_display_style(&ctx.data.ci_display),
         DetailField::Lint => lint_display_style(&ctx.data.lint_display),
@@ -733,7 +756,9 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
     let start = lines.len();
     let mut render = render;
     let style = render.label_style;
-    if render.label.trim_start().width() > package_field_label_width(&render)
+    let required_label_width =
+        render.label.trim_start().width() + usize::from(is_disk_child(render.field));
+    if required_label_width > package_field_label_width(&render)
         && render.label.width() < render.area_width
     {
         lines.push(Line::from(Span::styled(
@@ -823,6 +848,16 @@ fn push_wrapped_package_field_lines(
 }
 
 fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &PackageFieldRender) {
+    let prefix = package_field_prefix(render);
+    let available = render.area_width.saturating_sub(prefix.width() + 1);
+    let value = if render.field == DetailField::Lint
+        && render.value.width() > available
+        && render.value.starts_with(LINT_NO_LOG)
+    {
+        render.value.trim_start()
+    } else {
+        &render.value
+    };
     let separate_value = render.area_width <= support::NARROW_FIELD_INNER_WIDTH
         || matches!(
             render.field,
@@ -832,14 +867,23 @@ fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &Packa
                 | DetailField::DiskNonTarget
                 | DetailField::DiskOutOfTreeTarget
         );
-    lines.extend(support::field_value_lines(
-        package_field_prefix(render),
-        &render.value,
+    let mut field_lines = support::field_value_lines(
+        prefix,
+        value,
         render.area_width,
         render.label_style,
         render.value_style,
         separate_value,
-    ));
+    );
+    if is_disk_child(render.field) && field_lines.len() == 2 {
+        let indent = render
+            .disk_value_indent
+            .min(render.area_width.saturating_sub(value.width() + 1));
+        field_lines[1]
+            .spans
+            .insert(0, Span::raw(" ".repeat(indent.saturating_sub(1))));
+    }
+    lines.extend(field_lines);
 }
 
 fn package_field_prefix(render: &PackageFieldRender) -> String {
@@ -855,11 +899,22 @@ fn package_field_prefix(render: &PackageFieldRender) -> String {
 
 fn package_field_label_width(render: &PackageFieldRender) -> usize {
     let label_width = render.label_width.min(render.area_width.saturating_sub(3));
+    let value_width = render.value.trim_start().width();
     match render.field {
-        DetailField::Path => label_width.min(render.area_width.saturating_sub(PATH_VALUE_RESERVE)),
-        DetailField::Ci => label_width
-            .min(render.area_width.saturating_sub(render.value.width() + 3))
-            .max(render.label.trim().width()),
+        DetailField::DiskTarget | DetailField::DiskNonTarget | DetailField::DiskOutOfTreeTarget => {
+            let fitted = render.area_width.saturating_sub(value_width + 3);
+            if fitted > render.label.trim_start().width() {
+                label_width.min(fitted)
+            } else {
+                label_width
+            }
+        },
+        DetailField::Path | DetailField::Disk => label_width,
+        _ if render.area_width > support::NARROW_FIELD_INNER_WIDTH
+            && render.label.trim().width() + value_width + 3 <= render.area_width =>
+        {
+            label_width.min(render.area_width.saturating_sub(value_width + 3))
+        },
         _ => label_width,
     }
 }
@@ -966,20 +1021,20 @@ pub(super) fn render_package_pane_body(
 ) -> PaneFrameChrome {
     let mode = ctx.color_mode;
     let pane_focus_state = pane.focus.pane_focus_state;
-    let PaneRenderCtx {
-        animation_elapsed,
-        config,
-        synced_description_height,
-        ..
-    } = ctx;
-    let lint_mode = LintRenderMode::from(config.current().lint.enabled.is_enabled());
+    let lint_mode = LintRenderMode::from(ctx.config.current().lint.enabled.is_enabled());
 
     let Some(pkg_data) = pane.content().cloned() else {
         return render_no_project_selected(frame, area, pane);
     };
 
     let rows = panes::package_rows_from_data(&pkg_data);
-    sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
+    sync_package_viewport(
+        pane,
+        &pkg_data,
+        &rows,
+        ctx.synced_description_height,
+        area.width.saturating_sub(2),
+    );
     let mut chrome = package_chrome(&pkg_data, pane_focus_state);
     chrome.title = fit_package_title(&pkg_data, usize::from(area.width.saturating_sub(2)));
     let pane_inner = tui_pane::frame_inner(area);
@@ -1000,7 +1055,7 @@ pub(super) fn render_package_pane_body(
         pane: &pane.viewport,
         focus: pane_focus_state,
         styles,
-        synced_description_height: *synced_description_height,
+        synced_description_height: ctx.synced_description_height,
         empty_description: ctx.empty_package_description,
     };
 
@@ -1037,7 +1092,7 @@ pub(super) fn render_package_pane_body(
         pane: &pane.viewport,
         focus: pane_focus_state,
         styles,
-        animation_elapsed: *animation_elapsed,
+        animation_elapsed: ctx.animation_elapsed,
         lint_mode,
         statistics_layout: columns.boxes.statistics_layout(),
     };
@@ -1049,16 +1104,33 @@ pub(super) fn render_package_pane_body(
         separator,
         &mut chrome,
     );
-    pane.viewport.set_content_height(
-        usize::from(description_height + separator)
-            + layout
-                .content_height
-                .max(stats_column_line_count(&pkg_data)),
-    );
     chrome
         .labels
         .extend(package_page_label(area, &layout, &columns, &pkg_data));
-    let mut row_rects = layout.row_rects;
+    let row_rects = finish_package_viewport(
+        pane,
+        layout,
+        &columns,
+        description_height,
+        separator,
+        stats_column_line_count(&pkg_data, project_inner.width),
+    );
+    paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
+    pane.set_row_rects(row_rects);
+    chrome
+}
+
+fn finish_package_viewport(
+    pane: &mut PackagePane,
+    layout: PackageRenderLayout,
+    columns: &PackageColumnLayout,
+    description_height: u16,
+    separator: u16,
+    statistics_height: usize,
+) -> Vec<(Rect, usize)> {
+    pane.viewport.set_content_height(
+        usize::from(description_height + separator) + layout.content_height.max(statistics_height),
+    );
     pane.viewport.set_scroll_offset(layout.scroll_offset);
     pane.set_tests_scroll_offset(
         columns
@@ -1066,12 +1138,11 @@ pub(super) fn render_package_pane_body(
             .tests
             .map_or(0, |tests| columns.placed[tests].scroll_offset),
     );
+    let mut row_rects = layout.row_rects;
     if description_height > 0 {
         row_rects.push((columns.placed[DESCRIPTION_BOX].content, 0));
     }
-    paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
-    pane.set_row_rects(row_rects);
-    chrome
+    row_rects
 }
 
 fn package_page_label(
@@ -1094,7 +1165,9 @@ fn package_page_label(
     tui_pane::overflow_affordance_label(
         label_area,
         ViewportOverflow::for_paged_content(
-            layout.content_height.max(stats_column_line_count(data)),
+            layout
+                .content_height
+                .max(stats_column_line_count(data, area.width.saturating_sub(2))),
             layout.scroll_offset,
             usize::from(columns.placed[METADATA_BOX].content.height),
         ),
@@ -1212,7 +1285,8 @@ fn paint_package_selection(
 
 fn fit_package_title(data: &PackageData, width: usize) -> String {
     let title = package_chrome(data, PaneFocusState::Inactive).title;
-    if title.trim_end().width() <= width {
+    // The frame drops the side spaces of a title that fits only without them.
+    if title.trim().width() <= width {
         return title;
     }
     let label = if data.title.width() < width {
@@ -1221,13 +1295,13 @@ fn fit_package_title(data: &PackageData, width: usize) -> String {
         data.title.clone()
     };
     let available = width.saturating_sub(label.width()).saturating_sub(1);
-    if available > 3 {
+    if available > 4 {
         format!(
             "{label} - {} ",
             render::truncate_with_ellipsis(&data.name, available - 3, "…")
         )
-    } else if label.width() < width {
-        format!("{label} ")
+    } else if data.title.width() <= width {
+        tui_pane::pane_title(&data.title, &PaneTitleCount::None)
     } else {
         label
     }
@@ -1274,6 +1348,7 @@ fn sync_package_viewport(
     pkg_data: &PackageData,
     rows: &[PackageRow],
     synced_description_height: SyncedDescriptionHeight,
+    inner_width: u16,
 ) {
     pane.viewport.set_len(rows.len());
     // `pane.viewport.set_content_height(package_content_height(...))` uses the taller
@@ -1281,7 +1356,7 @@ fn sync_package_viewport(
     // not count their rows as vertically stacked.
     pane.viewport.set_content_height(package_content_height(
         usize::from(synced_description_height.rows()),
-        package_lower_metadata_height(pkg_data, rows),
+        package_lower_metadata_height(pkg_data, rows, inner_width),
     ));
     if !rows
         .get(pane.viewport.pos())
@@ -1302,7 +1377,8 @@ fn render_project_description(
     metadata_state: &ProjectMetadataState,
     mode: ColorMode,
 ) -> u16 {
-    let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
+    let lower_metadata_height =
+        package_lower_metadata_height(context.pkg_data, context.rows, project_inner.width);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
     let reserved_separator_height =
         u16::from(project_inner.height > reserved_lower_height.saturating_add(1));
@@ -1572,7 +1648,7 @@ fn render_tests_affordance(frame: &mut Frame, context: &StatsColumnRender<'_>, p
 fn structure_value_style(_: &str, _: &str) -> Style { Style::default().fg(title_color()) }
 
 /// Value-cell style for a Tests row: `unit` / `integration` / `doc`
-/// counts render in primary white; the unlabelled `total` renders in bold
+/// counts render in primary white; the `Total` row renders in bold
 /// accent color (matching the Languages pane footer); the `(ignored)`
 /// annotation renders dimmed, since rustdoc registers but never runs it.
 fn tests_value_style(label: &str, _: &str) -> Style {
@@ -1706,6 +1782,11 @@ fn lint_display_style(display: &LintDisplay) -> Style {
     }
 }
 
+enum LintIconDisplay {
+    Hidden,
+    Status,
+}
+
 /// Render a typed [`LintDisplay`] to the string shown in the
 /// Package detail row. The icon is framed at render time using
 /// the current animation tick (the typed `LintDisplay` carries
@@ -1720,15 +1801,22 @@ fn lint_display_to_string(
         LintDisplay::NotRust => "Not a Rust project".to_string(),
         LintDisplay::NoRuns => "—".to_string(),
         LintDisplay::Runs { count, status } => {
-            let icon = if lint_mode.is_enabled() {
+            let icon_display = match (lint_mode, status) {
+                (LintRenderMode::Disabled, _) | (_, LintStatus::NoLog) => LintIconDisplay::Hidden,
+                (LintRenderMode::Enabled, _) => LintIconDisplay::Status,
+            };
+            let icon = if matches!(icon_display, LintIconDisplay::Status) {
                 integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
                 LINT_NO_LOG
             };
             // When `count` on `LintDisplay::Runs` is zero during the first in-progress run, show
             // `icon` alone because there is no completed count yet, rather than a bare "0".
+            // An empty icon slot draws nothing, so the count starts in the value column.
             if *count == 0 {
                 icon.to_string()
+            } else if matches!(icon_display, LintIconDisplay::Hidden) {
+                count.to_string()
             } else {
                 format!("{icon} {count}")
             }
@@ -1937,6 +2025,21 @@ mod tests {
             lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             ACTIVITY_SPINNER.frame_at(elapsed).to_string()
         );
+    }
+
+    #[test]
+    fn package_lint_count_skips_the_empty_icon_slot() {
+        let display = LintDisplay::Runs {
+            count:  60,
+            status: LintStatus::NoLog,
+        };
+
+        for mode in [
+            super::LintRenderMode::Enabled,
+            super::LintRenderMode::Disabled,
+        ] {
+            assert_eq!(lint_display_to_string(&display, Duration::ZERO, mode), "60");
+        }
     }
 }
 

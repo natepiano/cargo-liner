@@ -36,6 +36,7 @@ use tui_pane::Viewport;
 use super::Config;
 use super::constants::CATCH_UP_LINT_TOAST_TITLE;
 use super::constants::NORMAL_LINT_TOAST_TITLE;
+use crate::config::LintIndicator;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintRunOrigin;
@@ -112,6 +113,7 @@ pub(in crate::tui) struct Lint {
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
     content:          Option<LintsData>,
+    row_rects:        Vec<(Rect, usize)>,
 }
 
 impl Lint {
@@ -128,7 +130,12 @@ impl Lint {
             viewport: Viewport::new(),
             focus: RenderFocus::inactive(),
             content: None,
+            row_rects: Vec::new(),
         }
+    }
+
+    pub(in crate::tui) fn set_row_rects(&mut self, rows: Vec<(Rect, usize)>) {
+        self.row_rects = rows;
     }
 
     // `Lint::viewport` stores the Lints pane viewport.
@@ -409,7 +416,7 @@ pub(in crate::tui) fn lint_cell_for(
     config: &Config,
     animation_elapsed: Duration,
 ) -> LintCell {
-    if !config.lint_enabled() {
+    if config.lint_enabled() == LintIndicator::Disabled {
         return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
     }
     let icon = integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
@@ -442,7 +449,10 @@ impl Renderable<PaneRenderCtx<'_>> for Lint {
 
 impl Hittable<HoverTarget> for Lint {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = panes::hit_test_table_row(&self.viewport, pos)?;
+        let row = self
+            .row_rects
+            .iter()
+            .find_map(|(area, row)| area.contains(pos).then_some(*row))?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Lints,
             row,

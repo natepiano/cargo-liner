@@ -34,6 +34,7 @@ use syn::parse_file;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::constants::MIN_PARALLEL_SOURCE_FILES;
 use super::constants::SOURCE_DIR_BENCHES;
 use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
@@ -210,13 +211,16 @@ impl SourceCache {
         // The Vec snapshot preserves the original hash iteration order, and Rayon's
         // indexed collection keeps it when the results are inserted below.
         let content_entries: Vec<(PathBuf, String)> = contents.into_iter().collect();
-        let scans: Vec<(PathBuf, FxHashSet<u64>, LexicalRegions)> = content_entries
-            .into_par_iter()
-            .map(|(path, source)| {
-                let names = mentionable_names_in(&source);
-                (path, names, LexicalRegions::from(source))
-            })
-            .collect();
+        let index = |(path, source): (PathBuf, String)| {
+            let names = mentionable_names_in(&source);
+            (path, names, LexicalRegions::from(source))
+        };
+        let scans: Vec<(PathBuf, FxHashSet<u64>, LexicalRegions)> =
+            if content_entries.len() < MIN_PARALLEL_SOURCE_FILES {
+                content_entries.into_iter().map(index).collect()
+            } else {
+                content_entries.into_par_iter().map(index).collect()
+            };
         let mut contents = FxHashMap::default();
         let mut mentionable_names = FxHashMap::default();
         for (path, names, regions) in scans {
@@ -356,9 +360,9 @@ fn mentionable_names_in(source: &str) -> FxHashSet<u64> {
 }
 
 fn name_hash(name: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    hasher.finish()
+    let mut default_hasher = DefaultHasher::new();
+    name.hash(&mut default_hasher);
+    default_hasher.finish()
 }
 
 fn collect_declared_module_files(
@@ -393,7 +397,7 @@ fn collect_declared_module_files(
 
 fn collect_module_items(
     items: &[Item],
-    directories: &ModuleDirectories,
+    module_directories: &ModuleDirectories,
     module_path: &[String],
     visited: &mut FxHashSet<PathBuf>,
     source_files: &mut Vec<PathBuf>,
@@ -407,10 +411,10 @@ fn collect_module_items(
         let mut child_module_path = module_path.to_vec();
         child_module_path.push(module_name.clone());
         if let Some((_, child_items)) = &item_mod.content {
-            for directory in directories.inside_inline_module(item_mod) {
+            for child_module_directories in module_directories.inside_inline_module(item_mod) {
                 collect_module_items(
                     child_items,
-                    &directory,
+                    &child_module_directories,
                     &child_module_path,
                     visited,
                     source_files,
@@ -420,7 +424,7 @@ fn collect_module_items(
             continue;
         }
 
-        for module_file in directories.declared_module_files(item_mod) {
+        for module_file in module_directories.declared_module_files(item_mod) {
             if !module_file.is_file() {
                 continue;
             }
@@ -451,13 +455,13 @@ fn source_all_features_coverage(
     if contents.len() != parsed.len() {
         return AllFeaturesCoverage::NotGuaranteed;
     }
-    let mut visitor = NegatedFeatureGateVisitor {
+    let mut negated_feature_gate_visitor = NegatedFeatureGateVisitor {
         coverage: AllFeaturesCoverage::Superset,
     };
     for file in parsed.values() {
-        visitor.visit_file(file);
+        negated_feature_gate_visitor.visit_file(file);
     }
-    visitor.coverage
+    negated_feature_gate_visitor.coverage
 }
 
 struct NegatedFeatureGateVisitor {
@@ -568,10 +572,10 @@ enum PredicatePolarity {
 
 fn cfg_predicate_all_features_coverage(
     meta: &Meta,
-    polarity: PredicatePolarity,
+    predicate_polarity: PredicatePolarity,
 ) -> AllFeaturesCoverage {
     if meta.path().is_ident("feature") {
-        return match polarity {
+        return match predicate_polarity {
             PredicatePolarity::Positive => AllFeaturesCoverage::Superset,
             PredicatePolarity::Negated => AllFeaturesCoverage::NotGuaranteed,
         };
@@ -585,7 +589,7 @@ fn cfg_predicate_all_features_coverage(
     let nested_polarity = if meta.path().is_ident("not") {
         PredicatePolarity::Negated
     } else {
-        polarity
+        predicate_polarity
     };
     metas
         .iter()
@@ -924,8 +928,8 @@ mod tests {
 
     #[test]
     fn source_cache_excludes_cargo_target_directory() -> Result<()> {
-        let temp = tempdir()?;
-        let workspace_root = temp.path().join("workspace");
+        let temp_dir = tempdir()?;
+        let workspace_root = temp_dir.path().join("workspace");
         let source_directory = workspace_root.join("app").join(SOURCE_DIR_SRC);
         let target_directory = workspace_root.join("target");
         let source_file = source_directory.join("lib.rs");
@@ -988,10 +992,10 @@ emit!();
 
     fn assert_macro_body_coverage(
         crate_root_source: &str,
-        expected_coverage: AllFeaturesCoverage,
+        expected_all_features_coverage: AllFeaturesCoverage,
     ) -> Result<()> {
-        let temp = tempdir()?;
-        let source_directory = temp.path().join(SOURCE_DIR_SRC);
+        let temp_dir = tempdir()?;
+        let source_directory = temp_dir.path().join(SOURCE_DIR_SRC);
         fs::create_dir_all(&source_directory)?;
         let crate_root = source_directory.join("lib.rs");
         fs::write(&crate_root, crate_root_source)?;
@@ -999,7 +1003,10 @@ emit!();
         let source_cache =
             SourceCache::build_crate(&crate_root, std::slice::from_ref(&crate_root))?;
 
-        assert_eq!(source_cache.all_features_coverage(), expected_coverage);
+        assert_eq!(
+            source_cache.all_features_coverage(),
+            expected_all_features_coverage
+        );
         Ok(())
     }
 
@@ -1007,8 +1014,8 @@ emit!();
         crate_root_source: &str,
         module_name: &str,
     ) -> Result<()> {
-        let temp = tempdir()?;
-        let source_directory = temp.path().join(SOURCE_DIR_SRC);
+        let temp_dir = tempdir()?;
+        let source_directory = temp_dir.path().join(SOURCE_DIR_SRC);
         let binary_directory = source_directory.join("bin");
         fs::create_dir_all(&binary_directory)?;
         let crate_root = source_directory.join("lib.rs");
@@ -1061,8 +1068,8 @@ emit!();
 
     #[test]
     fn module_path_from_source_file_treats_main_rs_as_crate_root() -> Result<()> {
-        let temp = tempdir()?;
-        let source_dir = temp.path().join(SOURCE_DIR_SRC);
+        let temp_dir = tempdir()?;
+        let source_dir = temp_dir.path().join(SOURCE_DIR_SRC);
         fs::create_dir_all(&source_dir)?;
         let main_rs = source_dir.join("main.rs");
         fs::write(&main_rs, "fn main() {}\n")?;

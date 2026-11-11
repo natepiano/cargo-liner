@@ -90,14 +90,12 @@ pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetad
         CARGO_TOML => Some(CargoMetadataTriggerKind::Manifest),
         CARGO_LOCK => Some(CargoMetadataTriggerKind::Lockfile),
         RUST_TOOLCHAIN | RUST_TOOLCHAIN_TOML => Some(CargoMetadataTriggerKind::Toolchain),
-        CARGO_CONFIG | CARGO_CONFIG_TOML => {
-            let parent_is_dot_cargo = path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name == DOT_CARGO_DIR);
-            parent_is_dot_cargo.then_some(CargoMetadataTriggerKind::Config)
-        },
+        CARGO_CONFIG | CARGO_CONFIG_TOML => path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| *name == DOT_CARGO_DIR)
+            .map(|_| CargoMetadataTriggerKind::Config),
         _ => None,
     }
 }
@@ -128,21 +126,19 @@ pub(crate) fn classify_event_path(
         return None;
     };
 
-    let removal = matches!(event_kind, EventKind::Remove(_));
-    let event_kind = if removal {
-        LintEventKind::Remove
-    } else if matches!(
-        event_kind,
-        EventKind::Any | EventKind::Create(_) | EventKind::Modify(_)
-    ) {
-        LintEventKind::CreateOrModify
-    } else {
-        // Access events (file opens/reads/closes) are not a reason to re-lint.
-        // The Linux inotify backend can surface these; ignore them so a bare
-        // read never triggers a run. The watcher already masks them out via
-        // `EventKindMask::CORE`; this keeps the classifier correct regardless
-        // of the watcher's config.
-        return None;
+    let event_kind = match event_kind {
+        EventKind::Remove(_) => LintEventKind::Remove,
+        EventKind::Any | EventKind::Create(_) | EventKind::Modify(_) => {
+            LintEventKind::CreateOrModify
+        },
+        EventKind::Access(_) | EventKind::Other => {
+            // EventKind::Access (file opens/reads/closes) is not a reason to re-lint.
+            // The Linux inotify backend can surface these; ignore them so a bare
+            // read never triggers a run. The watcher already masks them out via
+            // `EventKindMask::CORE`; this keeps the classifier correct regardless
+            // of the watcher's config. EventKind::Other remains ignored too.
+            return None;
+        },
     };
 
     Some(LintTriggerEvent {

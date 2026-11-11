@@ -39,3 +39,4 @@ pub(super) fn render_tree_items(
 pub(in crate::tui) use tree_rows::ProjectRowPresentation;
 pub(in crate::tui) use tree_rows::ProjectRowWidthInput;
 pub(in crate::tui) use tree_rows::project_width_presentations;
+pub(in crate::tui) use tree_rows::shown_name_width;

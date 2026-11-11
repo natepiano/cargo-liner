@@ -118,10 +118,20 @@ pub(super) fn resolve_to_absolute(
     }
 }
 
-pub(super) fn leaf_is_module(
+/// `module_resolution` returns `ModuleResolution::Module` for a path resolved through files,
+/// inline blocks or re-exports, and `ModuleResolution::NotModule` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModuleResolution {
+    Module,
+    NotModule,
+}
+
+/// Classifies `absolute_segments` as `ModuleResolution::Module` or
+/// `ModuleResolution::NotModule` through `resolves_to_module`, with a fresh cycle check.
+pub(super) fn module_resolution(
     crate_sources: CrateSources<'_>,
     absolute_segments: &[String],
-) -> bool {
+) -> ModuleResolution {
     let mut visited = BTreeSet::new();
     resolves_to_module(crate_sources, absolute_segments, &mut visited)
 }
@@ -132,12 +142,12 @@ fn resolves_to_module(
     crate_sources: CrateSources<'_>,
     absolute_segments: &[String],
     visited: &mut BTreeSet<Vec<String>>,
-) -> bool {
+) -> ModuleResolution {
     if absolute_segments.is_empty() || !visited.insert(absolute_segments.to_vec()) {
-        return false;
+        return ModuleResolution::NotModule;
     }
 
-    crate_sources
+    if crate_sources
         .sources
         .module_map(crate_sources.source_root)
         .module_ancestors(absolute_segments)
@@ -145,79 +155,94 @@ fn resolves_to_module(
             let remainder = &absolute_segments[module_path.len()..];
             remainder.is_empty()
                 || declares_module(crate_sources, file, module_path, remainder, visited)
+                    == ModuleResolution::Module
         })
+    {
+        ModuleResolution::Module
+    } else {
+        ModuleResolution::NotModule
+    }
 }
 
-/// True when the module defined by `file` — whose absolute path is
-/// `module_path` — makes `segments` reachable, either as inline `mod` blocks or
-/// through a `use` re-export naming the first segment.
+/// `declares_module` returns `ModuleResolution::Module` when `file`, at absolute `module_path`,
+/// makes `segments` reachable through inline `mod` blocks or a `use` re-export naming the first
+/// segment, and `ModuleResolution::NotModule` otherwise.
 fn declares_module(
     crate_sources: CrateSources<'_>,
     file: &Path,
     module_path: &[String],
     segments: &[String],
     visited: &mut BTreeSet<Vec<String>>,
-) -> bool {
+) -> ModuleResolution {
     let Some(first) = segments.first() else {
-        return false;
+        return ModuleResolution::NotModule;
     };
-    let Ok(source) = crate_sources.sources.source(file) else {
-        return false;
+    let Ok(parsed_source) = crate_sources.sources.source(file) else {
+        return ModuleResolution::NotModule;
     };
-    if !source.text().contains(first.as_str()) {
-        return false;
+    if !parsed_source.text().contains(first.as_str()) {
+        return ModuleResolution::NotModule;
     }
-    let Ok(syntax) = source.syntax() else {
-        return false;
+    let Ok(parsed_file) = parsed_source.syntax() else {
+        return ModuleResolution::NotModule;
     };
-    declares_inline_mod_path(syntax, segments)
-        || reexports_module(crate_sources, syntax, module_path, segments, visited)
+    match declares_inline_mod_path(parsed_file, segments) {
+        ModuleResolution::Module => ModuleResolution::Module,
+        ModuleResolution::NotModule => {
+            reexports_module(crate_sources, parsed_file, module_path, segments, visited)
+        },
+    }
 }
 
-/// True when `syntax` declares `segments` as a chain of nested `mod` items,
+/// `declares_inline_mod_path` classifies nested module declarations with `ModuleResolution`.
 /// e.g. `["parameter_fields"]` matches an inline `pub mod parameter_fields
 /// { ... }`. Intermediate segments must be inline blocks (`mod x { ... }`); the
 /// final segment may also be a boundary declaration (`mod x;`).
-fn declares_inline_mod_path(syntax: &File, segments: &[String]) -> bool {
+fn declares_inline_mod_path(syntax: &File, segments: &[String]) -> ModuleResolution {
     let Some((leaf, parents)) = segments.split_last() else {
-        return false;
+        return ModuleResolution::NotModule;
     };
 
     let mut items = &syntax.items;
     for segment in parents {
         match find_mod_item(items, segment).and_then(|item_mod| item_mod.content.as_ref()) {
             Some((_, content)) => items = content,
-            None => return false,
+            None => return ModuleResolution::NotModule,
         }
     }
-    find_mod_item(items, leaf).is_some()
+    find_mod_item(items, leaf).map_or(ModuleResolution::NotModule, |_| ModuleResolution::Module)
 }
 
-/// True when `syntax` re-exports `segments[0]` with a `use` whose target
-/// resolves to a module, e.g. `pub(crate) use self::plane::proof_fixture;`
-/// naming the inline `mod proof_fixture` a file further down. A private `use`
-/// binds nothing outside its own module, so only a `pub`-flavoured one counts.
+/// `reexports_module` returns `ModuleResolution::Module` when `syntax` re-exports `segments[0]`
+/// with a `use` whose target resolves to a module, e.g. `pub(crate) use
+/// self::plane::proof_fixture;` naming the inline `mod proof_fixture` a file further down. A
+/// private `use` binds nothing outside its own module, so only a `pub`-flavoured one counts.
+/// Unresolved targets return `ModuleResolution::NotModule`.
 fn reexports_module(
     crate_sources: CrateSources<'_>,
     syntax: &File,
     module_path: &[String],
     segments: &[String],
     visited: &mut BTreeSet<Vec<String>>,
-) -> bool {
+) -> ModuleResolution {
     let Some((name, tail)) = segments.split_first() else {
-        return false;
+        return ModuleResolution::NotModule;
     };
 
-    syntax.items.iter().any(|item| match item {
+    if syntax.items.iter().any(|item| match item {
         Item::Use(item_use) if !matches!(item_use.vis, Visibility::Inherited) => {
             reexport_target(item_use, module_path, name).is_some_and(|target| {
                 let mut target = target;
                 target.extend(tail.iter().cloned());
-                resolves_to_module(crate_sources, &target, visited)
+                resolves_to_module(crate_sources, &target, visited) == ModuleResolution::Module
             })
         },
         _ => false,
-    })
+    }) {
+        ModuleResolution::Module
+    } else {
+        ModuleResolution::NotModule
+    }
 }
 
 /// The absolute crate path `item_use` binds `name` to, when it binds `name` at
@@ -225,22 +250,25 @@ fn reexports_module(
 /// and `super::` targets; a bare-name target is another crate and resolves to
 /// `None`.
 fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Option<Vec<String>> {
-    let flat = flatten_use_tree(&item_use.tree)?;
-    let bound = flat.rename.as_ref().unwrap_or(&flat.leaf);
+    let flattened_import = flatten_use_tree(&item_use.tree)?;
+    let bound = flattened_import
+        .rename
+        .as_ref()
+        .unwrap_or(&flattened_import.leaf);
     if bound != name {
         return None;
     }
-    match flat.anchor() {
+    match flattened_import.anchor() {
         PathAnchor::SelfMod => {
             let mut absolute = module_path.to_vec();
-            absolute.extend(flat.prefix.iter().skip(1).cloned());
-            if !flat.prefix.is_empty() {
-                absolute.push(flat.leaf.clone());
+            absolute.extend(flattened_import.prefix.iter().skip(1).cloned());
+            if !flattened_import.prefix.is_empty() {
+                absolute.push(flattened_import.leaf.clone());
             }
             Some(absolute)
         },
         PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType | PathAnchor::Name => {
-            flat.absolute_path(module_path)
+            flattened_import.absolute_path(module_path)
         },
     }
 }
@@ -299,14 +327,14 @@ pub(super) fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .count()
 }
 
-pub(super) fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
+pub(super) fn flatten_use_tree(use_tree: &UseTree) -> Option<FlattenedImport> {
     let mut segments = Vec::new();
-    let mut cursor = tree;
+    let mut use_tree = use_tree;
     loop {
-        match cursor {
+        match use_tree {
             UseTree::Path(path) => {
                 segments.push(path.ident.to_string());
-                cursor = &path.tree;
+                use_tree = &path.tree;
             },
             UseTree::Name(name) => {
                 break Some(FlattenedImport {
@@ -327,24 +355,36 @@ pub(super) fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
     }
 }
 
-pub(super) fn is_snake_case_function_name(name: &str) -> bool {
+/// `import_name_case` uses `ImportNameCase::SnakeCase` and `ImportNameCase::NotSnakeCase`
+/// for the shared ASCII spelling rule for function and module import names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImportNameCase {
+    SnakeCase,
+    NotSnakeCase,
+}
+
+/// Returns `ImportNameCase::SnakeCase` when `name` passes the shared ASCII spelling rule,
+/// and `ImportNameCase::NotSnakeCase` otherwise.
+pub(super) fn import_name_case(name: &str) -> ImportNameCase {
     let Some(first) = name.chars().next() else {
-        return false;
+        return ImportNameCase::NotSnakeCase;
     };
     if !first.is_ascii_lowercase() && first != '_' {
-        return false;
+        return ImportNameCase::NotSnakeCase;
     }
     if name.chars().all(|character| {
         character.is_ascii_uppercase() || character == '_' || character.is_ascii_digit()
     }) {
-        return false;
+        return ImportNameCase::NotSnakeCase;
     }
-    name.chars().all(|character| {
+    if name.chars().all(|character| {
         character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
-    })
+    }) {
+        ImportNameCase::SnakeCase
+    } else {
+        ImportNameCase::NotSnakeCase
+    }
 }
-
-pub(super) fn is_snake_case_module_name(name: &str) -> bool { is_snake_case_function_name(name) }
 
 pub(super) fn offset<'a>(
     source: &ImportSource<'a>,
@@ -358,7 +398,8 @@ mod tests {
     use proc_macro2::LineColumn;
     use syn::ItemUse;
 
-    use super::is_snake_case_function_name;
+    use super::ImportNameCase;
+    use super::import_name_case;
     use super::shorten_module_path;
 
     #[test]
@@ -401,10 +442,19 @@ mod tests {
             source_root: &source_root,
             sources:     &sources,
         };
-        assert!(super::leaf_is_module(crate_sources, &mounted));
-        assert!(super::leaf_is_module(crate_sources, &child));
+        assert_eq!(
+            super::module_resolution(crate_sources, &mounted),
+            super::ModuleResolution::Module
+        );
+        assert_eq!(
+            super::module_resolution(crate_sources, &child),
+            super::ModuleResolution::Module
+        );
         child.push("value".to_string());
-        assert!(!super::leaf_is_module(crate_sources, &child));
+        assert_eq!(
+            super::module_resolution(crate_sources, &child),
+            super::ModuleResolution::NotModule
+        );
         Ok(())
     }
 
@@ -424,18 +474,24 @@ mod tests {
             sources:     &sources,
         };
         let child = ["child".to_string(), "leaf".to_string()];
-        assert!(!super::leaf_is_module(crate_sources, &child));
+        assert_eq!(
+            super::module_resolution(crate_sources, &child),
+            super::ModuleResolution::NotModule
+        );
         std::fs::remove_file(dir.path().join("child.rs"))?;
         let sources = crate::rust_syntax::ParsedSources::default();
         let crate_sources = super::CrateSources {
             source_root: dir.path(),
             sources:     &sources,
         };
-        assert!(super::leaf_is_module(crate_sources, &child));
-        assert!(super::leaf_is_module(
-            crate_sources,
-            &["inline".to_string(), "leaf".to_string()]
-        ));
+        assert_eq!(
+            super::module_resolution(crate_sources, &child),
+            super::ModuleResolution::Module
+        );
+        assert_eq!(
+            super::module_resolution(crate_sources, &["inline".to_string(), "leaf".to_string()]),
+            super::ModuleResolution::Module
+        );
         Ok(())
     }
 
@@ -474,28 +530,34 @@ mod tests {
 
     #[test]
     fn snake_case_detects_functions() {
-        assert!(is_snake_case_function_name("do_thing"));
-        assert!(is_snake_case_function_name("func_a"));
-        assert!(is_snake_case_function_name("process_data"));
-        assert!(is_snake_case_function_name("a"));
+        assert_eq!(import_name_case("do_thing"), ImportNameCase::SnakeCase);
+        assert_eq!(import_name_case("func_a"), ImportNameCase::SnakeCase);
+        assert_eq!(import_name_case("process_data"), ImportNameCase::SnakeCase);
+        assert_eq!(import_name_case("a"), ImportNameCase::SnakeCase);
     }
 
     #[test]
     fn snake_case_rejects_types() {
-        assert!(!is_snake_case_function_name("MyType"));
-        assert!(!is_snake_case_function_name("Thing"));
-        assert!(!is_snake_case_function_name("PublicContainer"));
+        assert_eq!(import_name_case("MyType"), ImportNameCase::NotSnakeCase);
+        assert_eq!(import_name_case("Thing"), ImportNameCase::NotSnakeCase);
+        assert_eq!(
+            import_name_case("PublicContainer"),
+            ImportNameCase::NotSnakeCase
+        );
     }
 
     #[test]
     fn snake_case_rejects_constants() {
-        assert!(!is_snake_case_function_name("MAX_SIZE"));
-        assert!(!is_snake_case_function_name("DEFAULT_PORT"));
+        assert_eq!(import_name_case("MAX_SIZE"), ImportNameCase::NotSnakeCase);
+        assert_eq!(
+            import_name_case("DEFAULT_PORT"),
+            ImportNameCase::NotSnakeCase
+        );
     }
 
     #[test]
     fn snake_case_rejects_empty() {
-        assert!(!is_snake_case_function_name(""));
+        assert_eq!(import_name_case(""), ImportNameCase::NotSnakeCase);
     }
     #[test]
     fn checked_positions_reject_missing_coordinates_and_preserve_byte_boundaries()

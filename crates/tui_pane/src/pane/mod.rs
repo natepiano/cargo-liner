@@ -36,6 +36,7 @@ pub use id::FrameworkOverlayId;
 pub(crate) use mode::CycleStep;
 pub use mode::Mode;
 pub(crate) use mode::ModeQuery;
+pub use popup::PopupBorder;
 pub use popup::PopupFrame;
 pub use render_styles::PaneRenderStyles;
 pub use rules::RuleTitle;

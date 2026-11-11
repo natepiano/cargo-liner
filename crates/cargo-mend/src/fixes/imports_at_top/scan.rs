@@ -19,19 +19,23 @@ pub(crate) struct ImportsAtTopScan {
 
 pub(crate) fn scan_selection(
     selection: &Selection,
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<ImportsAtTopScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        for path in ModuleImports::source_files(sources, package_root) {
+        for path in ModuleImports::source_files(parsed_sources, package_root) {
             let ModuleContext::Known(module) =
-                ModuleImports::file_module(sources, &selection.package_roots, &path)
+                ModuleImports::file_module(parsed_sources, &selection.package_roots, &path)
             else {
                 continue;
             };
-            let (findings, fixes) =
-                scan_file(selection.analysis_root.as_path(), &path, sources, &module)?;
+            let (findings, fixes) = scan_file(
+                selection.analysis_root.as_path(),
+                &path,
+                parsed_sources,
+                &module,
+            )?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -51,13 +55,13 @@ pub(crate) fn scan_selection(
 fn scan_file(
     analysis_root: &Path,
     path: &Path,
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
     module: &[String],
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
-    let source = sources
+    let parsed_source = parsed_sources
         .source(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax = source
+    let file = parsed_source
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let display_path = path
@@ -66,7 +70,7 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    in_body_use_finder::scan_at_module(syntax, source.text(), path, &display_path, module)
+    in_body_use_finder::scan_at_module(file, parsed_source.text(), path, &display_path, module)
 }
 
 #[cfg(test)]

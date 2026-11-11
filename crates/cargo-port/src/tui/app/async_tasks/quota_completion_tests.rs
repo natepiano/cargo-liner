@@ -9,6 +9,7 @@ use super::QuotaFetchAdmission;
 use super::QuotaFetchCompletion;
 use super::QuotaFetchReason;
 use super::QuotaScreenUpdate;
+use crate::config::GitHubRateLimitMode;
 use crate::http::GitHubRateLimit;
 use crate::http::RateLimitQuota;
 use crate::tui::panes::PaneId;
@@ -357,7 +358,8 @@ fn new_window_survives_a_late_completion_and_reaches_the_git_pane() -> anyhow::R
 fn completed_fetch_keeps_the_forced_core_quota() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.net.set_force_github_rate_limit(true);
+    app.net
+        .set_force_github_rate_limit(GitHubRateLimitMode::Forced);
     let before = app.net.rate_limit();
     let now = SystemTime::now();
     let QuotaFetchAdmission::Start(permit) =

@@ -5,40 +5,33 @@
 
 //! Built-binary tests for overlap answers, which record in the claim that carries them.
 
+#[path = "support/answers_fixtures.rs"]
+mod answers_fixtures;
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
+use answers_fixtures::BERTH_EXECUTABLE;
+use answers_fixtures::CONFIGURATION_PATH;
+use answers_fixtures::FIRST_RUN;
+use answers_fixtures::GIT;
+use answers_fixtures::RUN_ENVIRONMENT;
+use answers_fixtures::claim;
+use answers_fixtures::commit_file;
+use answers_fixtures::foreign_worktree;
+use answers_fixtures::git;
+use answers_fixtures::initialized_repository;
+use answers_fixtures::json_output;
+use answers_fixtures::reservation_id;
+use answers_fixtures::run_berth;
+use cargo_berth_test_support::SECOND_RUN;
+
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
 
 #[path = "support/overlap_refusal.rs"]
 mod overlap_refusal;
 
-use cargo_berth_test_support::GitDriver;
-use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
-use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
-use cargo_berth_test_support::berth_command;
-use cargo_berth_test_support::observes_merge_extent_of;
-use overlap_refusal::assert_one_refusal_appended;
-
-/// The `cargo-berth` a managed hook must run, in place of any installed copy.
-const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-
-/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
-const GIT: GitDriver = GitDriver {
-    executable:          BERTH_EXECUTABLE,
-    optional_locks:      OptionalLocks::Taken,
-    cleared_environment: &[],
-};
-
-/// An initialized main checkout with untracked policy and no reservations.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
-    build:            build_initialized_repository,
-};
-
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -52,12 +45,15 @@ use std::time::Duration;
 use std::time::Instant;
 
 use cargo_berth_test_support::FixtureCommand as Command;
+use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
+use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::observes_merge_extent_of;
+use overlap_refusal::assert_one_refusal_appended;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
 const AFTER_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
-const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
 const GIT_BINARY: &str = "git";
 const GIT_LOOKUP_COMMAND: &str = "command -v git";
 const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
@@ -67,8 +63,7 @@ const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds on this claim";
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const RERULED_ORDER_REASON: &str = "the holder must land first after all";
-const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const SHELL_BINARY: &str = "sh";
@@ -485,24 +480,11 @@ fn every_permissive_answer_requires_a_reason() {
 
 #[test]
 fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), ["switch", "--quiet", "-c", "phase"]);
-    commit_file(
-        repository.path(),
-        "src/lib.rs",
-        "phase work\n",
-        "phase work",
-    );
-    let holder = claim(
-        repository.path(),
-        "tree:src",
-        FIRST_RUN,
-        "docs/holder.md",
-        "phase-a",
-        "protect source",
-    );
-    let holder_id = reservation_id(&holder);
+    let repository = answers_fixtures::HOLDER_LIFECYCLE_START.instantiate();
+    let answers_fixtures::HolderLifecycleStart {
+        second_root,
+        holder_id,
+    } = recorded_history::read(repository.path());
     let applied = answer_claim(
         &second_root,
         "file:src/lib.rs",
@@ -2647,24 +2629,6 @@ fn replace_with_nothing_to_replace_is_invalid_input() {
     assert_eq!(without_answer.status.code(), Some(5));
 }
 
-/// Add a real worktree beside the repository, the second party berth has always refused.
-///
-/// A distinct `--run` inside one worktree now names a second party too, but only a real
-/// worktree can hold a reservation of its own alongside another run's. The returned
-/// directory owns the worktree and must outlive its use.
-fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
-    let directory = tempdir().expect("foreign worktree parent should exist");
-    let root = directory.path().join(name);
-    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
-    let configuration = root.join(CONFIGURATION_PATH);
-    if let Some(parent) = configuration.parent() {
-        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
-    }
-    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
-        .expect("foreign worktree should share the repository configuration");
-    (directory, root)
-}
-
 /// A foreign refusal requires work the holder would bring to a merge.
 fn dirty_source(root: &Path, path: &str) {
     let target = root.join(path);
@@ -2676,40 +2640,6 @@ fn dirty_source(root: &Path, path: &str) {
 /// Publish initial derived observations before comparing refusal journal bytes.
 fn reconcile_fixture(root: &Path) {
     assert!(run_berth(root, ["board", "--json"]).status.success());
-}
-
-fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
-
-fn build_initialized_repository(root: &Path) {
-    git(root, ["init", "--quiet", "--initial-branch=main"]);
-    git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[core]\n ignoreCase = false\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
-    fs::write(root.join("README.md"), "scratch repository\n").expect("scratch file should write");
-    git(root, ["add", "README.md"]);
-    git(root, ["commit", "--quiet", "-m", "initial"]);
-    assert!(run_berth(root, ["init", "--json"]).status.success());
-}
-
-fn claim(
-    repository_root: &Path,
-    scope: &str,
-    run: &str,
-    plan: &str,
-    phase: &str,
-    purpose: &str,
-) -> Output {
-    let output = run_berth(
-        repository_root,
-        [
-            "claim", "--run", run, "--plan", plan, "--phase", phase, "--why", purpose, scope,
-            "--json",
-        ],
-    );
-    assert!(
-        output.status.success(),
-        "claim failed: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    output
 }
 
 fn claim_explicit(repository_root: &Path, scope: &str, run: &str, purpose: &str) -> Output {
@@ -2905,26 +2835,6 @@ fn assert_coordination_identity_rejection(
     }
 }
 
-fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str) {
-    let file_path = repository_root.join(path);
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent).expect("file parent should exist");
-    }
-    fs::write(file_path, contents).expect("committed file should write");
-    git(repository_root, ["add", path]);
-    git(
-        repository_root,
-        [
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            message,
-        ],
-    );
-}
-
 fn append_widen(repository_root: &Path, reservation_id: &str, added_scope: &str) {
     let journal_path = repository_root.join(JOURNAL_PATH);
     let events = journal_events(repository_root);
@@ -2984,39 +2894,11 @@ fn journal_bytes(repository_root: &Path) -> Vec<u8> {
     fs::read(repository_root.join(JOURNAL_PATH)).expect("journal should read")
 }
 
-fn reservation_id(output: &Output) -> String {
-    json_output(output)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("claim should return a reservation id")
-        .to_owned()
-}
-
 fn refusal_detail(envelope: &serde_json::Value) -> &str {
     envelope
         .pointer("/presentation/blocks/0/detail")
         .and_then(serde_json::Value::as_str)
         .expect("a refusal should render its detail")
-}
-
-fn run_berth<Arguments, Argument>(repository_root: &Path, arguments: Arguments) -> Output
-where
-    Arguments: IntoIterator<Item = Argument>,
-    Argument: AsRef<OsStr>,
-{
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(RUN_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run")
-}
-
-fn git<Arguments, Argument>(repository_root: &Path, arguments: Arguments)
-where
-    Arguments: IntoIterator<Item = Argument>,
-    Argument: AsRef<OsStr>,
-{
-    GIT.run(repository_root, arguments);
 }
 
 fn paused_git_wrapper() -> String {
@@ -3059,10 +2941,6 @@ fn wait_for_path(path: &Path, child: &mut Child) {
         assert!(child.wait().is_ok(), "stopped command should be reaped");
     }
     assert!(path.exists(), "git wrapper did not reach its pause point");
-}
-
-fn json_output(output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).expect("command should render a JSON envelope")
 }
 
 fn set_default_answer(repository: &Path) {

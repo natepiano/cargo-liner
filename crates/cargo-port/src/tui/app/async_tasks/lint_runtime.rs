@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use tui_pane::PERF_LOG_TARGET;
 
+use crate::config::LintIndicator;
 use crate::lint;
 use crate::lint::LintRun;
 use crate::lint::RegisterProjectRequest;
@@ -112,7 +113,7 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
-        if !self.config.lint_enabled() {
+        if self.config.lint_enabled() == LintIndicator::Disabled {
             return;
         }
         if !self.project_list.is_rust_at_path(project_path) {

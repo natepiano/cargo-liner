@@ -9,12 +9,11 @@ use super::constants::FINDER_HEADERS;
 use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
+use crate::project::Cargo;
 use crate::project::CheckoutInfo;
-use crate::project::ExampleGroup;
 use crate::project::Package;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
-use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
@@ -120,7 +119,7 @@ pub(in crate::tui) fn build_finder_index(
                     display_path: &dp,
                     branch:       &branch,
                 };
-                add_project_items_from_typed(&mut finder_items, &context, &[], &[], &[]);
+                add_project_items_from_typed(&mut finder_items, &context, &Cargo::default());
             },
             RootItem::Worktrees(worktree_group) => {
                 let primary_path = worktree_group.primary.path().clone();
@@ -240,13 +239,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
         branch:       &root_branch,
     };
 
-    add_project_items_from_typed(
-        items,
-        &root_typed_project_context,
-        cargo.types(),
-        cargo.examples(),
-        cargo.benches(),
-    );
+    add_project_items_from_typed(items, &root_typed_project_context, cargo);
 
     for member_group in ws.groups() {
         for package in member_group.members() {
@@ -261,13 +254,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
                 display_path: member_display_path.as_str(),
                 branch:       &root_branch,
             };
-            add_project_items_from_typed(
-                items,
-                &member_typed_project_context,
-                member_cargo.types(),
-                member_cargo.examples(),
-                member_cargo.benches(),
-            );
+            add_project_items_from_typed(items, &member_typed_project_context, member_cargo);
             for vendored_package in package.vendored() {
                 add_vendored_items_typed(items, vendored_package, &member_name);
             }
@@ -296,13 +283,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
         branch:       &root_branch,
     };
 
-    add_project_items_from_typed(
-        items,
-        &root_typed_project_context,
-        cargo.types(),
-        cargo.examples(),
-        cargo.benches(),
-    );
+    add_project_items_from_typed(items, &root_typed_project_context, cargo);
 
     let pkg_parent_name = pkg.package_name().into_string();
     for vendored_package in pkg.vendored() {
@@ -342,21 +323,21 @@ fn add_vendored_items_typed(
 
     let cargo = &project.cargo;
 
-    if cargo.types().contains(&ProjectType::Binary) {
+    for name in cargo.binaries() {
         let kind = FinderKind::Binary;
         items.push(FinderItem {
             search_tokens: build_search_tokens(&[
-                &project_name,
+                name,
                 &project_name,
                 parent_name,
                 &dir,
                 "vendored",
                 kind.label(),
             ]),
-            display_name: project_name.clone(),
+            display_name: name.clone(),
             kind,
             project_path: project_path.clone(),
-            target_name: Some(project_name.clone()),
+            target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
@@ -419,9 +400,7 @@ fn add_vendored_items_typed(
 fn add_project_items_from_typed(
     items: &mut Vec<FinderItem>,
     context: &TypedProjectContext<'_>,
-    types: &[ProjectType],
-    examples: &[ExampleGroup],
-    benches: &[String],
+    cargo: &Cargo,
 ) {
     let project_name = context.project_name.to_string();
     let cargo_name = context.cargo_name.map(str::to_string);
@@ -451,17 +430,18 @@ fn add_project_items_from_typed(
         pr_target: None,
     });
 
-    // Add a `FinderKind::Binary` result when `types` contains `ProjectType::Binary`.
-    if types.contains(&ProjectType::Binary) {
+    // Add a `FinderKind::Binary` result for each name in `Cargo::binaries`.
+    for name in cargo.binaries() {
         let kind = FinderKind::Binary;
-        let mut tokens = base_fields.clone();
+        let mut tokens = vec![name.as_str()];
+        tokens.extend_from_slice(&base_fields);
         tokens.push(kind.label());
         items.push(FinderItem {
             search_tokens: build_search_tokens(&tokens),
-            display_name: project_name.clone(),
+            display_name: name.clone(),
             kind,
             project_path: context.abs_path.into(),
-            target_name: Some(project_name.clone()),
+            target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
@@ -469,9 +449,9 @@ fn add_project_items_from_typed(
         });
     }
 
-    // Add `FinderKind::Example` results from `examples`, prefixing `display` with
+    // Add `FinderKind::Example` results from `Cargo::examples`, prefixing `display` with
     // `ExampleGroup::category` when present.
-    for example_group in examples {
+    for example_group in cargo.examples() {
         for name in &example_group.names {
             let display = if example_group.category.is_empty() {
                 name.clone()
@@ -496,8 +476,8 @@ fn add_project_items_from_typed(
         }
     }
 
-    // Add a `FinderKind::Bench` result for each name in `benches`.
-    for name in benches {
+    // Add a `FinderKind::Bench` result for each name in `Cargo::benches`.
+    for name in cargo.benches() {
         let kind = FinderKind::Bench;
         let mut tokens = vec![name.as_str()];
         tokens.extend_from_slice(&base_fields);
@@ -561,7 +541,6 @@ mod tests {
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
     use crate::project::Package;
-    use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustInfo;
     use crate::project::RustProject;
@@ -615,7 +594,7 @@ mod tests {
             name: Some("build-easefunction-graphs".to_string()),
             rust: RustInfo {
                 cargo: Cargo {
-                    types: vec![ProjectType::Binary],
+                    binaries: vec!["build-easefunction-graphs".to_string()],
                     examples: vec![ExampleGroup {
                         category: String::new(),
                         names:    vec!["raylib_renderer".to_string()],

@@ -47,8 +47,13 @@ fn non_git_pane_keeps_its_title_when_quotas_arrive() -> anyhow::Result<()> {
             .set_content(super::build_pane_data(&app, &item).git);
         let before = test_support::rows(&test_support::draw_pane(&mut app, PaneId::Git, width)?);
         assert!(before[0].contains(" Git "), "{before:?}");
+        assert_eq!(
+            before[1].trim_matches('│').trim(),
+            "not a git repo",
+            "{before:?}"
+        );
         assert!(
-            before[1..before.len() - 1]
+            before[2..before.len() - 1]
                 .iter()
                 .all(|row| row.trim_matches('│').trim().is_empty()),
             "{before:?}"
@@ -163,7 +168,7 @@ fn quota_rows_wait_for_each_bucket_and_keep_data_after_failure() -> anyhow::Resu
 }
 
 #[test]
-fn narrow_quota_values_stay_beside_their_labels() -> anyhow::Result<()> {
+fn narrow_quota_values_keep_whole_labels_above_whole_counts() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     let quota = |remaining| RateLimitQuota {
@@ -208,13 +213,16 @@ fn narrow_quota_values_stay_beside_their_labels() -> anyhow::Result<()> {
     let rows: Vec<String> = (1..14)
         .map(|y| (64..79).map(|x| frame.buffer[(x, y)].symbol()).collect())
         .collect();
-    for expected in [" Core     4848 ", " GraphQL  4902 "] {
-        assert!(rows.iter().any(|row| row == expected), "{rows:?}");
+    for (label, value) in [("Core", "4848/5000"), ("GraphQL", "4902/5000")] {
+        assert!(
+            rows.windows(2)
+                .any(|pair| pair[0].trim() == label && pair[1].trim() == value),
+            "{rows:?}"
+        );
     }
     assert!(
-        rows.iter()
-            .all(|row| !matches!(row.trim(), "4848" | "4902" | "4848/5000" | "4902/5000")),
-        "quota values need their labels on the same row: {rows:?}"
+        rows.iter().all(|row| !row.contains('…')),
+        "quota values must stay whole: {rows:?}"
     );
     Ok(())
 }

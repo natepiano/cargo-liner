@@ -30,10 +30,10 @@ pub fn install_theme<I: AppIdentity>(
     builtins: Vec<ThemeVariant>,
 ) -> Option<String> {
     let themes_dir = I::themes_dir();
-    let registry = ThemeRegistry::from_dir_with_builtins(themes_dir.as_deref(), builtins);
-    let (theme, note) = resolve_appearance(&registry, appearance);
+    let theme_registry = ThemeRegistry::from_dir_with_builtins(themes_dir.as_deref(), builtins);
+    let (theme, note) = resolve_appearance(&theme_registry, appearance);
     let initial_theme = (*theme).clone();
-    install_theme_state(ThemeState::with_registry(registry, initial_theme));
+    install_theme_state(ThemeState::with_registry(theme_registry, initial_theme));
     set_transparent_background(appearance.transparent);
     note
 }
@@ -42,23 +42,27 @@ pub fn install_theme<I: AppIdentity>(
 /// when a configured theme id matched nothing and another variant was
 /// substituted.
 pub(crate) fn resolve_appearance<I: AppIdentity>(
-    registry: &ThemeRegistry,
+    theme_registry: &ThemeRegistry,
     appearance: &AppearanceConfig<I>,
 ) -> (Arc<Theme>, Option<String>) {
-    resolve_appearance_for(registry, appearance, theme::remembered_system_appearance())
+    resolve_appearance_for(
+        theme_registry,
+        appearance,
+        theme::remembered_system_appearance(),
+    )
 }
 
 fn resolve_appearance_for<I: AppIdentity>(
-    registry: &ThemeRegistry,
+    theme_registry: &ThemeRegistry,
     appearance: &AppearanceConfig<I>,
-    remembered: RememberedAppearance,
+    remembered_appearance: RememberedAppearance,
 ) -> (Arc<Theme>, Option<String>) {
-    let resolved = registry.resolve_active(
+    let resolved_theme = theme_registry.resolve_active(
         &appearance.mode,
         &appearance.light_theme,
         &appearance.dark_theme,
-        remembered.observed(),
+        remembered_appearance.observed(),
     );
-    let note = theme::resolution_notice(&resolved);
-    (resolved.theme, note)
+    let note = theme::resolution_notice(&resolved_theme);
+    (resolved_theme.theme, note)
 }

@@ -428,7 +428,7 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
     app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
     app.panes.git.viewport.home();
-    let first = draw_short_ui(&mut app)?;
+    let first = draw_paged_ui(&mut app)?;
     let git_area = app.panes.tiled_layout.area(PaneId::Git);
     let package_area = app.panes.tiled_layout.area(PaneId::Package);
     let divider_y = (git_area.y + 1..git_area.bottom() - 1)
@@ -462,7 +462,7 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
         "{first_rows:?}"
     );
     app.panes.git.viewport.end();
-    let last = draw_short_ui(&mut app)?;
+    let last = draw_paged_ui(&mut app)?;
     let last_rows = test_support::rows(&last);
     assert!(
         last_rows[usize::from(git_area.bottom() - 1)].contains('▲'),
@@ -473,13 +473,16 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
         "{last_rows:?}"
     );
     app.panes.git.viewport.home();
-    let again = draw_short_ui(&mut app)?;
+    let again = draw_paged_ui(&mut app)?;
     assert_eq!(test_support::rows(&again), first_rows);
     let tall = test_support::draw_pane_at_size(&mut app, PaneId::Git, git_area.width, 30)?;
     let tall_divider = (1..tall.area.bottom() - 1)
         .find(|y| matches!(tall[(0, *y)].symbol(), "├" | "┝"))
         .context("tall Git divider")?;
-    assert!(tall_divider > 3, "the tall pane keeps the full description");
+    assert_eq!(
+        tall_divider, 3,
+        "the 30-row pane keeps the terminal description cap"
+    );
     Ok(())
 }
 
@@ -619,7 +622,7 @@ fn narrow_workspace_shows_path_and_disk_values() -> anyhow::Result<()> {
     let disk_text: String = (disk.0..area.right())
         .map(|x| buffer[(x, disk.1)].symbol())
         .collect();
-    assert!(path_text.contains("/tmp"));
+    assert!(path_text.contains("/tm…"));
     assert!(disk_text.contains("73 B"));
     Ok(())
 }
@@ -879,19 +882,37 @@ fn git_pages_keep_table_headers_with_the_first_worktree() -> anyhow::Result<()> 
         app.panes.git.viewport.set_pos(index);
         let buffer = test_support::draw_ui(&mut app, 80)?;
         let area = app.panes.tiled_layout.area(PaneId::Git);
-        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "N…") {
+        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Sync") {
+            let header = ratatui::layout::Rect::new(area.x, y, area.width, 1);
+            test_support::find_text_cell(&buffer, header, "Branch")
+                .context("whole Branch header")?;
+            let text: String = (area.x..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert!(!text.contains('…'), "{text}");
             saw_header = true;
             assert!(y + 1 < area.bottom() - 1);
             test_support::find_text_cell(
                 &buffer,
                 ratatui::layout::Rect::new(area.x, y + 1, area.width, 1),
-                "m…",
+                "master",
             )
             .context("first worktree below the header")?;
         }
     }
     assert!(saw_header);
     Ok(())
+}
+
+/// Draws the full UI at 80 columns and 18 rows. With only Targets in the middle
+/// row, the detail row takes the free rows, so a short screen keeps the panes
+/// paged.
+fn draw_paged_ui(app: &mut App) -> anyhow::Result<Buffer> {
+    app.ensure_fit_widths_cached();
+    app.ensure_disk_cache();
+    let mut terminal = Terminal::new(TestBackend::new(80, 18))?;
+    terminal.draw(|frame| super::ui(frame, app))?;
+    Ok(terminal.backend().buffer().clone())
 }
 
 fn draw_short_ui(app: &mut App) -> anyhow::Result<Buffer> {
@@ -1029,6 +1050,32 @@ fn app_with_paged_worktrees(root: &Path) -> anyhow::Result<App> {
     Ok(app)
 }
 
+/// A worktree page names its section. A section in the page draws the whole
+/// divider. A section on the first row, under the top border or the description
+/// divider, draws its name as text and no second rule.
+fn assert_worktree_title(buffer: &Buffer, area: Rect, mode: ColorMode) -> anyhow::Result<()> {
+    if test_support::find_text_cell(buffer, area, "Worktrees (13)").is_some() {
+        return Ok(());
+    }
+    let (_, y) = test_support::find_text_cell(buffer, area, "Worktrees").with_context(|| {
+        format!(
+            "worktree title on the worktree page: {:?}",
+            test_support::rows(buffer)
+        )
+    })?;
+    let rules = match mode {
+        ColorMode::Colored => ["┌", "├"],
+        ColorMode::NoColor => ["┏", "┣"],
+    };
+    let above = buffer[(area.x, y - 1)].symbol();
+    assert!(
+        rules.contains(&above),
+        "a title without its divider sits under a rule: {:?}",
+        test_support::rows(buffer)
+    );
+    Ok(())
+}
+
 fn assert_pane_page(buffer: &Buffer, area: Rect, expected: &str) {
     let row: String = (area.x..area.right())
         .map(|x| buffer[(x, area.bottom() - 1)].symbol())
@@ -1055,23 +1102,70 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
     app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
     app.panes.git.viewport.home();
-    let first = draw_short_ui(&mut app)?;
+    let first = draw_paged_ui(&mut app)?;
     let area = app.panes.tiled_layout.area(PaneId::Git);
-    assert_eq!(area.width, 15, "the full UI keeps the after-data Git width");
-    assert_pane_page(&first, area, "1 of 2 ▼");
+    let expected_width = if app.config.lint_enabled() == LintIndicator::Enabled {
+        16
+    } else {
+        17
+    };
+    assert_eq!(
+        area.width, expected_width,
+        "the full UI keeps whole Git divider titles"
+    );
+    assert_pane_page(&first, area, "1 of 3 ▼");
     let first_worktree =
         panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
     app.panes.git.viewport.set_pos(first_worktree - 1);
-    let second = draw_short_ui(&mut app)?;
+    let second = draw_paged_ui(&mut app)?;
     let title = test_support::find_text_cell(&second, area, "Worktrees")
         .with_context(|| format!("worktree divider: {:?}", test_support::rows(&second)))?;
     assert_eq!(second[(area.x, title.1)].symbol(), "├");
     assert_eq!(second[(area.right() - 1, title.1)].symbol(), "┤");
-    assert_pane_page(&second, area, "▲ 2 of 2");
+    assert_pane_page(&second, area, "▲ 2 of 3 ▼");
     test_support::find_text_cell(&second, area, "master").context("worktree table on page 2")?;
     app.panes.git.viewport.home();
-    let first_again = draw_short_ui(&mut app)?;
-    assert_pane_page(&first_again, area, "1 of 2 ▼");
+    let first_again = draw_paged_ui(&mut app)?;
+    assert_pane_page(&first_again, area, "1 of 3 ▼");
+    let mut data = app.panes.git.content().context("Git content")?.clone();
+    let sample = data.worktrees[0].clone();
+    data.worktrees = (0..13)
+        .map(|index| WorktreeInfo {
+            name: format!("checkout-{index}"),
+            branch: Some(format!("b{index:02}")),
+            ..sample.clone()
+        })
+        .collect();
+    data.description =
+        DescriptionState::Known("Tools for projects, builds, tests and worktrees".to_string());
+    app.panes.git.set_content(data);
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        app.framework.color_mode = mode;
+        let mut seen = std::collections::HashSet::new();
+        let count =
+            panes::git_fields_from_data(app.panes.git.content().context("Git content")?).len();
+        for cursor in count..count + 14 {
+            app.panes.git.viewport.set_pos(cursor);
+            let buffer = draw_paged_ui(&mut app)?;
+            let area = app.panes.tiled_layout.area(PaneId::Git);
+            assert!(app.panes.git.viewport.visible_rows() > 1);
+            if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Worktrees (13)") {
+                let (left, right) = match mode {
+                    ColorMode::Colored => ("├", "┤"),
+                    ColorMode::NoColor => ("┣", "┫"),
+                };
+                assert_eq!(buffer[(area.x, y)].symbol(), left);
+                assert_eq!(buffer[(area.right() - 1, y)].symbol(), right);
+            }
+            for index in 0..13 {
+                if test_support::find_text_cell(&buffer, area, &format!("b{index:02}")).is_some() {
+                    seen.insert(index);
+                    assert_worktree_title(&buffer, area, mode)?;
+                }
+            }
+        }
+        assert_eq!(seen.len(), 13);
+    }
     Ok(())
 }
 
@@ -1081,15 +1175,15 @@ fn package_pages_name_the_drawn_page_in_both_directions() -> anyhow::Result<()> 
     let mut app = app_with_paged_worktrees(scratch.path())?;
     app.set_focus_to_pane(PaneId::Package);
     app.panes.package.viewport.home();
-    let first = draw_short_ui(&mut app)?;
+    let first = draw_paged_ui(&mut app)?;
     let area = app.panes.tiled_layout.area(PaneId::Package);
     assert_pane_page(&first, area, "1 of 2 ▼");
     app.panes.package.viewport.end();
-    let second = draw_short_ui(&mut app)?;
+    let second = draw_paged_ui(&mut app)?;
     assert_pane_page(&second, area, "▲ 2 of 2");
     test_support::find_text_cell(&second, area, "CI").context("Package fields on page 2")?;
     app.panes.package.viewport.home();
-    let first_again = draw_short_ui(&mut app)?;
+    let first_again = draw_paged_ui(&mut app)?;
     assert_pane_page(&first_again, area, "1 of 2 ▼");
     Ok(())
 }

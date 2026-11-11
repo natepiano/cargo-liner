@@ -7,6 +7,7 @@ use super::CopySelectionResult;
 use super::DetailField;
 use super::GitCheckout;
 use super::GitData;
+use super::GitReadHealth;
 use super::GitRow;
 use super::GitStatus;
 use super::LintsData;
@@ -108,7 +109,7 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
 }
 
 fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
-    if data.failed_reads.field_failed(field) {
+    if data.failed_reads.field_health(field) == GitReadHealth::Unreadable {
         return field.git_value(data);
     }
     match field {
@@ -118,7 +119,8 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
             GitCheckout::Unborn
             | GitCheckout::UnreadableHead
             | GitCheckout::Broken
-            | GitCheckout::AwaitingProbe => String::new(),
+            | GitCheckout::AwaitingProbe
+            | GitCheckout::NotRepository => String::new(),
         },
         DetailField::GitStatus => data
             .status

@@ -123,10 +123,10 @@ mod tests {
     fn test_only_callers_gate_the_reexport_after_its_cfg_lines() {
         let source = "mod inner {\n}\n";
         let offset = source.find("}\n").unwrap_or_default();
-        let mut unix = insertion(offset, ReexportVisibility::Crate);
-        unix.cfg_attributes = vec!["#[cfg(unix)]".to_string()];
+        let mut ancestor_reexport_insertion = insertion(offset, ReexportVisibility::Crate);
+        ancestor_reexport_insertion.cfg_attributes = vec!["#[cfg(unix)]".to_string()];
         assert_eq!(
-            insertion_text(source, &unix, CallerBuilds::TestOnly),
+            insertion_text(source, &ancestor_reexport_insertion, CallerBuilds::TestOnly),
             "    #[cfg(unix)]\n    #[cfg(test)]\n    pub(crate) use staging::Widget;\n"
         );
         assert_eq!(

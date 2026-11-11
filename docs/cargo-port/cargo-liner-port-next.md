@@ -1,32 +1,29 @@
-# cargo-liner-port — next items
+# cargo-port next items
 
-Backlog the showrunner approved. Not started; each becomes a phase when the showrunner says so.
+The [current contracts](as-built/overview.md) describe shipped behavior.
+These items remain proposed follow-ups.
 
-## cargo-mend style items (showrunner, 2026-11-02)
+## Import-condition style
 
-1. **A comment in mend's module import fixer uses a forbidden word.**
-   Target: `crates/cargo-mend/src/fixes/imports/module_imports.rs:166`.
-   Done when: the line uses no word from `~/rust/nate_style/rust/forbidden-words.md`, and the meaning stays.
-2. **Replace `ImportCondition::from_attributes` with the `From` impl the style guide requires.**
-   Target: `crates/cargo-mend/src/fixes/imports/import_condition.rs:24` and its callers.
-   Done when: `From<&[syn::Attribute]>` replaces the named conversion, behavior stays the same, and `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` pass.
+1. Remove the forbidden word from the comment in `crates/cargo-mend/src/fixes/imports/module_imports.rs`.
+2. Replace `ImportCondition::from_attributes` with `From<&[syn::Attribute]>` and update its callers.
+3. Preserve behavior and validate cargo-mend after either change.
 
-## cargo-mend wrapper follow-ups (phase 2p review, 2026-11-02)
+## Retained executable follow-ups
 
-Phase 2p reached its three repair rounds and landed. These two review findings are the top of the next cargo-mend phase.
+The [compiler contract](../cargo-mend/as-built/compiler-validation.md) describes wrapper ownership.
 
-1. **The copy-failure test repeats the staging path rule (F004).**
-   Target: `failed_wrapper_copy_keeps_the_published_executable` in `crates/cargo-mend/src/compiler/build/execute.rs`. It rebuilds the staging path with `WRAPPER_ALIAS_STAGING_EXTENSION` and the process id, a copy of the rule in `StagedWrapperCopy::create`.
-   Done when: the test reads the entries of `alias.parent()` into `io::Result<Vec<_>>`, propagates a listing error, and asserts one entry. It keeps the copy-failure and alias-content assertions, and it does not rebuild the staging path (Astra review 2026-11-02).
-2. **Help, version and build-info work without read access to the executable (F005).**
-   Target: `crates/cargo-mend/src/main.rs` (`RunningExecutable::open` at the first line of `run()`) and its startup regression tests.
-   Done when: the executable opens after argument parsing and the build-info return, and before cargo metadata resolution. Regression tests show that `--help`, `--version` and `--build-info` succeed when the executable cannot be opened. The phase 2p replacement and removal tests stay, and `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` pass.
+1. Remove the copied staging-path rule from `failed_wrapper_copy_keeps_the_published_executable` in `compiler/build/execute.rs`.
+2. List the alias parent's entries and propagate listing errors instead.
+3. Preserve the copy-failure and alias-content assertions.
 
-## Live capture follow-up (phase 4o design check, 2026-11-09)
+Help, version, and build-info still open the running executable before their early returns.
+A future change can move that open after argument parsing and the build-info return, but before metadata resolution.
+Regression tests must retain the wrapper replacement and removal guarantees.
 
-The showrunner placed this item in the next file on 2026-11-09.
+## Live captures during Git loading
 
-1. **A live capture can show the frame before git data arrives.**
-   Target: the cargo-port live capture script used for design checks, and the git probe start in `crates/cargo-port/src/tui/`.
-   Need: the first frame already draws Sync and Main values from cached git data, so no capture shows the loading layout.
-   Done when: a capture run can delay the git probe and save a first-paint frame with no Sync or Main values.
+A capture can contain the frame before Git data arrives.
+The capture fixture should permit delaying the probe and saving that first-paint frame.
+Keep the existing loading states and cached-data behavior explicit in the fixture.
+See [Git pane data](as-built/git-pane.md) and [rendering](as-built/rendering.md).

@@ -88,20 +88,20 @@ pub(super) fn config_relative_path(file_path: &Path, config_root: &Path) -> Opti
 
 pub(super) fn config_relative_path_for_settings(
     file_path: &Path,
-    settings: &DriverSettings,
+    driver_settings: &DriverSettings,
 ) -> Option<String> {
     if file_path.is_relative() {
         let workspace_relative = normalize_relative_path(file_path);
-        if settings.config_root.join(file_path).exists() {
+        if driver_settings.config_root.join(file_path).exists() {
             return Some(workspace_relative);
         }
 
-        let package_relative = settings.package_root.join(file_path);
-        return config_relative_path(&package_relative, &settings.config_root)
+        let package_relative = driver_settings.package_root.join(file_path);
+        return config_relative_path(&package_relative, &driver_settings.config_root)
             .or(Some(workspace_relative));
     }
 
-    config_relative_path(file_path, &settings.config_root)
+    config_relative_path(file_path, &driver_settings.config_root)
 }
 
 fn normalize_relative_path(path: &Path) -> String { path.to_string_lossy().replace('\\', "/") }
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn config_relative_path_for_settings_handles_package_relative_workspace_paths() {
-        let settings = super::DriverSettings {
+        let driver_settings = super::DriverSettings {
             config_root:          PathBuf::from("/workspace/root"),
             visibility_config:    VisibilityConfig::default(),
             config_fingerprint:   "test".to_string(),
@@ -151,7 +151,7 @@ mod tests {
         let file_path = PathBuf::from("src/brp_tools/tools/mod.rs");
 
         assert_eq!(
-            super::config_relative_path_for_settings(&file_path, &settings).as_deref(),
+            super::config_relative_path_for_settings(&file_path, &driver_settings).as_deref(),
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
     }
@@ -166,7 +166,7 @@ mod tests {
             package_root.join("src/brp_tools/tools/mod.rs"),
             "pub mod child;\n",
         )?;
-        let settings = super::DriverSettings {
+        let driver_settings = super::DriverSettings {
             config_root,
             visibility_config: VisibilityConfig::default(),
             config_fingerprint: "test".to_string(),
@@ -181,7 +181,7 @@ mod tests {
         let file_path = PathBuf::from("mcp/src/brp_tools/tools/mod.rs");
 
         assert_eq!(
-            super::config_relative_path_for_settings(&file_path, &settings).as_deref(),
+            super::config_relative_path_for_settings(&file_path, &driver_settings).as_deref(),
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
 

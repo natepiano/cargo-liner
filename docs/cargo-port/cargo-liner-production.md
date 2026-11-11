@@ -25,7 +25,14 @@
 | --- | --- | --- | --- | --- | --- |
 | tile-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile | remove-running-section-tile | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
 | handler-unit | — (plan done; as-built in docs/cargo-handler/as-built/) | /home/natepiano/rust/cargo-liner-handler | cargo-liner-handler | — | crates/cargo-handler/, crates/tui_pane/ |
-| port-unit | docs/cargo-port/cargo-liner-port.md | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, crates/cargo-mend/, docs/cargo-port/cargo-liner-port.md, docs/cargo-port/as-built/ |
+| port-unit | docs/cargo-port/as-built/ | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, crates/cargo-mend/, docs/cargo-port/as-built/ |
+| cargo-liner-style | docs/cargo-liner-style-production.md | /home/natepiano/rust/cargo-liner-style | style/main |  |  |
+
+## Style units
+
+| Unit | Families | Open tickets |
+| --- | --- | --- |
+| cargo-liner-style | names, values, types, modules | 1 |
 
 ## Hub files
 
@@ -59,5 +66,7 @@ Changes the user sent back from change review. Each row stays until its fix merg
 | --- | --- | --- | --- | --- |
 | C201 — a waiting Codex worker shows in its unit's tree | screenshot 20:44 EST 2026-11-05: herdr workers with live detached runs showed `idle`; "yes send it back" | handler | [Detached-run activity](../cargo-handler/as-built/activity.md#detached-records-and-worker-rows) (d7771e0c3) | merged 63277286f (2026-11-06), installed on both machines; C218 returned 2026-11-08, fix in handler Phase 71 |
 | C218 — a detached run shows on its pane worker's row | "i don't see it" (screenshot 2026-11-08: tile `impl` shows idle during its detached run; the runs show as separate Dispatch rows; worker `test` has no row while its run is live) | handler | [Pane-worker run joins](../cargo-handler/as-built/activity.md#detached-records-and-worker-rows) (881ce8801) | merged ebc3df967 (2026-11-08), installed on both machines; new change C269 waits for the user's check |
-| C205 + C207 — project-list columns drop before names truncate | "i don't see columns for Type, Git, SYnc, Main - you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first"; C207: "i provided feedback about this - the choices in the project list aren't acceptable"; screenshot 2026-11-06: only Projects and Disk at about 95 columns | port | Phase 4c Spec 24 in `cargo-liner-port.md` (48db7e7be) | merged 295393049 (2026-11-07); live check at 95 columns shows every column with names cut; installed on both machines; waits for the user's check of C222 |
+| C205 + C207 — project-list columns drop before names truncate | "i don't see columns for Type, Git, SYnc, Main - you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first"; C207: "i provided feedback about this - the choices in the project list aren't acceptable"; screenshot 2026-11-06: only Projects and Disk at about 95 columns | port | [Project columns](as-built/project-list.md) | merged 295393049 (2026-11-07) as C222; C222 returned 2026-11-09 by the showrunner check the user asked for: at 60 columns Type, Git, Sync and Main drop while names grow; fix in Phase 4v (29ce1bc2f), after 4s; fix merged 5df05544 (2026-11-10, port 4v), installed on natedev, Mac owed; new change C296 waits for the user's check |
+| C224 — Package and Git at 80 columns | user asked the showrunner to validate; check found a cut Package label ('integ… 1294'), a cut pane title ('Worktree Gr…'), and a one-row Git list with no 'Worktrees (N)' title at 13 worktrees | port | Phase 4v (29ce1bc2f) | returned 2026-11-09; fix merged 5df05544 (2026-11-10), installed on natedev, Mac owed; new change C297 waits for the user's check |
+| C227 — popups show focus | user asked the showrunner to validate; color mode draws a thin Sccache border where the check says thick in both modes | port | Phase 4v (29ce1bc2f) | returned 2026-11-09; fix merged 5df05544 (2026-11-10), installed on natedev, Mac owed; new change C298 waits for the user's check |
 | C217 — tiles keep their places when the accounts table wraps | the user asked the showrunner to validate it (2026-11-07); the showrunner's live 80x45 check: the tiles switch between two columns and one column when a summary status gets wider | handler | [Stable layout](../cargo-handler/as-built/tile-layout.md#grid-admission-and-stable-layout) (d8b51889a) | fix merged 2026-11-07 (ee2c5c839); new change C257 waits for the user's check; showrunner live 80x45 capture, 150 s: two columns in all 75 frames |

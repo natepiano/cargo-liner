@@ -29,6 +29,16 @@ pub struct PopupFrame {
     pub height:       u16,
 }
 
+/// Keep default popup borders or select a thick border in both colour modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PopupBorder {
+    /// Use a plain border in colour and a thick border without colour.
+    #[default]
+    ColorMode,
+    /// Use a thick border in both colour modes.
+    Thick,
+}
+
 /// Outer (popup) and inner (content) rects returned by
 /// [`PopupFrame::render_with_areas`].
 #[derive(Clone, Copy)]
@@ -45,6 +55,11 @@ impl PopupFrame {
 
     /// Render the popup chrome and return both outer and inner `Rect`s.
     pub fn render_with_areas(self, frame: &mut Frame) -> PopupAreas {
+        self.render_with_border(frame, PopupBorder::ColorMode)
+    }
+
+    /// Render the selected border and return both outer and inner `Rect`s.
+    pub fn render_with_border(self, frame: &mut Frame, border: PopupBorder) -> PopupAreas {
         let area = centered_rect(self.width, self.height, frame.area());
 
         frame.render_widget(Clear, area);
@@ -58,10 +73,11 @@ impl PopupFrame {
         };
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .border_type(if self.color_mode == ColorMode::NoColor {
-                BorderType::Thick
-            } else {
-                BorderType::Plain
+            .border_type(match (border, self.color_mode) {
+                (PopupBorder::Thick, _) | (PopupBorder::ColorMode, ColorMode::NoColor) => {
+                    BorderType::Thick
+                },
+                (PopupBorder::ColorMode, ColorMode::Colored) => BorderType::Plain,
             })
             .border_style(border_style);
 
@@ -69,9 +85,12 @@ impl PopupFrame {
             block = block.title(Span::styled(title, title_style()));
         }
 
-        let inner = block.inner(area);
+        let inner_rect = block.inner(area);
         frame.render_widget(block, area);
-        PopupAreas { outer: area, inner }
+        PopupAreas {
+            outer: area,
+            inner: inner_rect,
+        }
     }
 }
 

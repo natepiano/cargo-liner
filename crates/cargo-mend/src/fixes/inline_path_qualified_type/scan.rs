@@ -29,7 +29,7 @@ pub(crate) struct InlinePathScan {
 
 pub(crate) fn scan_selection(
     selection: &Selection,
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
@@ -38,7 +38,7 @@ pub(crate) fn scan_selection(
         if !source_root.is_dir() {
             continue;
         }
-        let module_map = sources.module_map(&source_root);
+        let module_map = parsed_sources.module_map(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -54,7 +54,7 @@ pub(crate) fn scan_selection(
                 &source_root,
                 path,
                 &module_map,
-                sources,
+                parsed_sources,
             )?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
@@ -73,18 +73,18 @@ fn scan_file(
     source_root: &Path,
     path: &Path,
     module_map: &ModuleMap,
-    sources: &ParsedSources,
+    parsed_sources: &ParsedSources,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
         return Ok((Vec::new(), Vec::new()));
     };
-    let source = sources
+    let parsed_source = parsed_sources
         .source(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax = source
+    let file = parsed_source
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
-    let text = source.text();
+    let text = parsed_source.text();
     let indexed = ImportSource::new(text);
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {
@@ -92,7 +92,7 @@ fn scan_file(
         scopes: &mut scopes,
     };
     scope::collect_scopes(
-        &syntax.items,
+        &file.items,
         ScopeSpan::new(0, text.len()),
         &base_module_path,
         &mut scope_collection_context,
@@ -106,7 +106,7 @@ fn scan_file(
         generic_scopes:         Vec::new(),
         conditional_attributes: ConditionalAttributes::default(),
     };
-    visitor.visit_file(syntax, &indexed);
+    visitor.visit_file(file, &indexed);
 
     if visitor.occurrences.is_empty() {
         return Ok((Vec::new(), Vec::new()));

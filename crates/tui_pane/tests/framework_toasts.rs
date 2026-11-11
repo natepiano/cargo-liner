@@ -68,9 +68,9 @@ impl AppContext for TestApp {
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-    fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
+    fn set_focus(&mut self, focused_pane: FocusedPane<Self::AppPaneId>) {
         self.set_focus_calls.set(self.set_focus_calls.get() + 1);
-        self.framework.set_focused(focus);
+        self.framework.set_focused(focused_pane);
     }
 }
 
@@ -85,7 +85,7 @@ impl Shortcuts<TestApp> for FooPane {
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! { KeyCode::Enter => FooAction::Activate }
     }
-    fn dispatcher() -> fn(Self::Actions, &mut TestApp) { |_a, _c| {} }
+    fn dispatcher() -> fn(Self::Actions, &mut TestApp) { |_foo_action, _c| {} }
 }
 
 /// Test-only pane fixture bound to [`TestPaneId::Bar`].
@@ -103,7 +103,9 @@ impl Shortcuts<TestApp> for BarPane {
 /// Test-only navigation fixture.
 pub struct AppNav;
 impl Navigation<TestApp> for AppNav {
-    fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) { |_a, _f, _c| {} }
+    fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) {
+        |_nav_action, _f, _c| {}
+    }
 }
 
 /// Test-only globals fixture.
@@ -114,7 +116,7 @@ impl Globals<TestApp> for AppGlobals {
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! { 'f' => AppGlobalAction::Find }
     }
-    fn dispatcher() -> fn(Self::Actions, &mut TestApp) { |_a, _c| {} }
+    fn dispatcher() -> fn(Self::Actions, &mut TestApp) { |_app_global_action, _c| {} }
 }
 
 fn build_with_panes() -> (TestApp, Keymap<TestApp>) {
@@ -128,48 +130,48 @@ fn build_with_panes() -> (TestApp, Keymap<TestApp>) {
         .register::<BarPane>(BarPane)
         .build_into(&mut framework)
         .expect("build_into");
-    let app = TestApp {
+    let test_app = TestApp {
         framework,
         set_focus_calls: Cell::new(0),
     };
-    (app, keymap)
+    (test_app, keymap)
 }
 
 fn build_no_panes() -> (TestApp, Keymap<TestApp>) {
     let framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
     let keymap = Keymap::<TestApp>::builder().build().expect("empty build");
-    let app = TestApp {
+    let test_app = TestApp {
         framework,
         set_focus_calls: Cell::new(0),
     };
-    (app, keymap)
+    (test_app, keymap)
 }
 
 #[test]
 fn pane_order_empty_and_toasts_active_cycles_to_toasts() {
-    let (mut app, keymap) = build_no_panes();
-    app.framework.toasts.push("hi", "body");
+    let (mut test_app, keymap) = build_no_panes();
+    test_app.framework.toasts.push("hi", "body");
 
-    keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+    keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
     assert_eq!(
-        app.framework().focused(),
+        test_app.framework().focused(),
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
     );
 }
 
 #[test]
 fn toasts_inactive_while_focused_next_moves_to_app_pane() {
-    let (mut app, keymap) = build_with_panes();
-    app.framework.toasts.push("hi", "");
-    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+    let (mut test_app, keymap) = build_with_panes();
+    test_app.framework.toasts.push("hi", "");
+    test_app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
     // `app.framework.toasts.dismiss_focused` closes the only toast, emptying
     // the manager and leaving focus stale on `FrameworkFocusId::Toasts`.
-    let pane = app.framework.toast_pane_focus_state();
-    let _ = app.framework.toasts.dismiss_focused(pane);
+    let pane = test_app.framework.toast_pane_focus_state();
+    let _ = test_app.framework.toasts.dismiss_focused(pane);
 
-    keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+    keymap.dispatch_framework_global(GlobalAction::NextPane, &mut test_app);
     assert_eq!(
-        app.framework().focused(),
+        test_app.framework().focused(),
         &FocusedPane::App(TestPaneId::Foo),
         "next from stale-Toasts focus must land on the first app pane",
     );

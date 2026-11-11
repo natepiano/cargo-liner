@@ -9,6 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Cell;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
@@ -20,6 +21,7 @@ use tui_pane::label_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
+use super::data::CiEmptyState;
 use crate::ci;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
@@ -31,11 +33,11 @@ use crate::tui::panes::constants::CI_BRANCH_LONG_MIN_WIDTH;
 use crate::tui::panes::constants::CI_BRANCH_MIN_WIDTH;
 use crate::tui::panes::constants::CI_COMMIT_LONG_MIN_WIDTH;
 use crate::tui::panes::constants::CI_COMMIT_MIN_WIDTH;
-use crate::tui::panes::constants::CI_JOB_LABEL_MAX_WIDTH;
 use crate::tui::panes::constants::CI_JOB_LABEL_MIN_WIDTH;
 use crate::tui::panes::constants::CI_STATUS_GAP_WIDTH;
 use crate::tui::panes::constants::OTHER_JOBS_HEADER;
 use crate::tui::panes::pane_data;
+use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::Ci;
@@ -64,7 +66,7 @@ impl CiDisplayColumn {
 
     fn header_target_width(&self) -> usize {
         match self {
-            Self::Job(name) => name.width().min(CI_JOB_LABEL_MAX_WIDTH),
+            Self::Job(name) => name.width(),
             Self::Other { .. } => OTHER_JOBS_HEADER.width(),
         }
     }
@@ -357,11 +359,11 @@ fn build_ci_widths(
     }
     if show_durations {
         for (i, ci_display_column) in cols.iter().enumerate() {
-            let col_idx = 3 + i;
+            let column_index = 3 + i;
             for run in ci_runs {
                 if let Some(data) = ci_column_data(run, ci_display_column) {
                     column_widths.observe_cell_usize(
-                        col_idx,
+                        column_index,
                         ci_metric_content_width(data.duration.trim().width()),
                     );
                 }
@@ -379,7 +381,10 @@ fn build_ci_widths(
     }
 
     let mut resolved: Vec<u16> = (0..spec_len).map(|i| column_widths.get(i)).collect();
-    widen_ci_header_columns(&mut resolved, cols, inner_width);
+    let commit_floor = u16::try_from(ci_commit_min_width(ci_runs))
+        .unwrap_or(u16::MAX)
+        .max(label_width(" Commit"));
+    widen_ci_header_columns(&mut resolved, cols, inner_width, commit_floor);
     if let Some(slack) = ci_width_slack(&resolved, inner_width) {
         let title_width = ci_runs
             .iter()
@@ -410,22 +415,34 @@ fn ci_header_label_for_width(label: &str, width: usize) -> String {
     render::truncate_with_ellipsis(label, width, "\u{2026}")
 }
 
-fn widen_ci_header_columns(widths: &mut [u16], cols: &[CiDisplayColumn], inner_width: u16) {
-    let Some(mut slack) = ci_width_slack(widths, inner_width) else {
+/// Grows each job header toward its whole label. Free cells go first, then the
+/// Commit column gives cells down to `commit_floor`.
+fn widen_ci_header_columns(
+    widths: &mut [u16],
+    cols: &[CiDisplayColumn],
+    inner_width: u16,
+    commit_floor: u16,
+) {
+    let Some(slack) = ci_width_slack(widths, inner_width) else {
         return;
     };
+    let mut spare = slack + usize::from(widths[0].saturating_sub(commit_floor));
+    let mut grown = 0;
 
     for (i, ci_display_column) in cols.iter().enumerate() {
-        if slack == 0 {
+        if spare == 0 {
             break;
         }
         let idx = 3 + i;
         let target = ci_display_column.header_target_width();
         let current = usize::from(widths[idx]);
-        let grow_by = target.saturating_sub(current).min(slack);
+        let grow_by = target.saturating_sub(current).min(spare);
         widths[idx] = widths[idx].saturating_add(u16::try_from(grow_by).unwrap_or(u16::MAX));
-        slack -= grow_by;
+        spare -= grow_by;
+        grown += grow_by;
     }
+    let from_commit = u16::try_from(grown.saturating_sub(slack)).unwrap_or(u16::MAX);
+    widths[0] = widths[0].saturating_sub(from_commit);
 }
 
 fn ci_width_slack(widths: &[u16], inner_width: u16) -> Option<usize> {
@@ -622,7 +639,10 @@ fn ci_non_description_width(
     let base = usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
-        .map(|ci_display_column| ci_duration_width(ci_runs, ci_display_column, show_durations))
+        .map(|ci_display_column| {
+            ci_duration_width(ci_runs, ci_display_column, show_durations)
+                .max(ci_display_column.header_target_width())
+        })
         .sum();
     let total = ci_total_width(ci_runs, show_durations);
     base + job_columns + total + column_count.saturating_sub(1)
@@ -636,12 +656,22 @@ fn ci_display_table_shows_durations(
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
-fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
+/// Select the cursor count shown in the CI title.
+#[derive(Clone, Copy)]
+enum CiTitleCursor {
+    Hidden,
+    Visible(usize),
+}
+
+fn ci_panel_title(data: &CiData, cursor: CiTitleCursor) -> String {
     let title = tui_pane::pane_title(
         "CI runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
-            cursor: focused_pos,
+            cursor: match cursor {
+                CiTitleCursor::Hidden => None,
+                CiTitleCursor::Visible(position) => Some(position),
+            },
         },
     );
 
@@ -652,6 +682,35 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
         },
         _ => title,
     }
+}
+
+/// Remove title suffixes before the count loses cells.
+fn fitted_ci_panel_title(data: &CiData, cursor: CiTitleCursor, width: u16) -> String {
+    let available = usize::from(width.saturating_sub(2));
+    let title = ci_panel_title(data, cursor);
+    if title.trim().width() <= available {
+        return title;
+    }
+    let title = tui_pane::pane_title(
+        "CI runs",
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: match cursor {
+                CiTitleCursor::Hidden => None,
+                CiTitleCursor::Visible(position) => Some(position),
+            },
+        },
+    );
+    if title.trim().width() <= available {
+        return title;
+    }
+    tui_pane::pane_title(
+        "CI runs",
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: None,
+        },
+    )
 }
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
@@ -694,6 +753,37 @@ fn paint_ci_row_selections(
     }
 }
 
+fn render_empty_ci(frame: &mut Frame, area: Rect, data: &CiData) -> PaneFrameChrome {
+    let title = empty_ci_title(data);
+    let text = title.trim();
+    let (message, required_width) = text.strip_prefix("CI runs — ").map_or_else(
+        || {
+            let fixed_words = match data.empty_state {
+                CiEmptyState::NoRunsForBranch(_) => "No CI runs for branch",
+                _ => text,
+            };
+            (text, fixed_words.width())
+        },
+        |message| (message, "CI runs — ".width() + 2),
+    );
+    if required_width > usize::from(area.width.saturating_sub(4)) {
+        let inner = tui_pane::frame_inner(area);
+        let lines = support::word_wrap(message, usize::from(inner.width.saturating_sub(2)));
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .map(|line| Line::from(format!(" {line}")))
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().fg(label_color())),
+            inner,
+        );
+        return empty_ci_chrome(" CI runs ");
+    }
+    empty_ci_chrome(&title)
+}
+
 pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -701,21 +791,28 @@ pub fn render_ci_pane_body(
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let mode = pane_render_ctx.color_mode;
-    let Some(ci_data) = pane.content().cloned() else {
-        return empty_ci_chrome(" No CI runs ");
-    };
+    let ci_data = pane.content().cloned().unwrap_or_else(|| CiData {
+        runs:           Vec::new(),
+        mode_label:     None,
+        current_branch: None,
+        empty_state:    CiEmptyState::NoRuns,
+    });
 
     if !ci_data.has_runs() {
         let viewport = &mut pane.viewport;
         viewport.set_len(0);
         viewport.set_content_area(Rect::ZERO);
-        return empty_ci_chrome(&empty_ci_title(&ci_data));
+        return render_empty_ci(frame, area, &ci_data);
     }
 
     let ci_focused = pane.focus.is_focused();
     let ci_pane_focus_state = pane.focus.pane_focus_state;
-    let focused_pos = ci_focused.then(|| pane.viewport.pos());
-    let title = ci_panel_title(&ci_data, focused_pos);
+    let cursor = if ci_focused {
+        CiTitleCursor::Visible(pane.viewport.pos())
+    } else {
+        CiTitleCursor::Hidden
+    };
+    let title = fitted_ci_panel_title(&ci_data, cursor, area.width);
 
     let mut pane_frame_chrome = PaneFrameChrome {
         title,
@@ -778,7 +875,7 @@ pub fn render_ci_pane_body(
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     *table_state.offset_mut() = pane.viewport.scroll_offset();
-    frame.render_stateful_widget(table, inner, &mut table_state);
+    frame.render_stateful_widget(table, layout.table_area(inner), &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
     paint_ci_row_selections(frame, inner, pane, ci_data.runs.len(), mode);
     pane_frame_chrome
@@ -881,6 +978,25 @@ impl CiTableLayout {
         }
     }
 
+    /// A status-only table has no leading-space Commit cell, so it keeps the
+    /// one-cell left margin itself when the pane has the room.
+    fn table_area(&self, inner: Rect) -> Rect {
+        let table_width: usize = self
+            .widths()
+            .iter()
+            .filter_map(|width| constraint_width(Some(width)))
+            .sum();
+        if matches!(self, Self::StatusSummary(_)) && usize::from(inner.width) > table_width {
+            Rect {
+                x: inner.x.saturating_add(1),
+                width: inner.width.saturating_sub(1),
+                ..inner
+            }
+        } else {
+            inner
+        }
+    }
+
     fn widths(&self) -> &[Constraint] {
         match self {
             Self::Standard(widths)
@@ -928,7 +1044,7 @@ fn ci_widths_for_mode(
             Constraint::Length(status),
         ]);
     }
-    if all || data.mode_label.as_deref() == Some("branch") {
+    if all || data.mode_label.as_deref() == Some("branch") || widths.len() < cols.len() + 4 {
         if width < label_width("Commit").saturating_add(status) {
             return CiTableLayout::StatusSummary(vec![Constraint::Length(status)]);
         }
@@ -953,6 +1069,7 @@ mod tests {
     use super::CI_JOB_LABEL_MIN_WIDTH;
     use super::CI_STATUS_GAP_WIDTH;
     use super::CiDisplayColumn;
+    use super::CiTitleCursor;
     use super::OTHER_JOBS_HEADER;
     use super::build_ci_widths;
     use super::ci_branch_min_width;
@@ -1022,7 +1139,10 @@ mod tests {
             empty_state:    CiEmptyState::NoRuns,
         };
 
-        assert_eq!(ci_panel_title(&data, Some(0)), " CI runs (1 of 1) ");
+        assert_eq!(
+            ci_panel_title(&data, CiTitleCursor::Visible(0)),
+            " CI runs (1 of 1) "
+        );
     }
 
     #[test]
@@ -1035,10 +1155,13 @@ mod tests {
         };
 
         assert_eq!(
-            ci_panel_title(&data, Some(0)),
+            ci_panel_title(&data, CiTitleCursor::Visible(0)),
             " CI runs (1 of 2) branch: main "
         );
-        assert_eq!(ci_panel_title(&data, None), " CI runs (2) branch: main ");
+        assert_eq!(
+            ci_panel_title(&data, CiTitleCursor::Hidden),
+            " CI runs (2) branch: main "
+        );
     }
 
     #[test]
@@ -1422,6 +1545,58 @@ mod margin_title_tests {
                 if branch {
                     assert!(title.contains('…'), "{title}");
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_empty_ci_titles_move_the_message_into_the_body() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            app.framework.color_mode = mode;
+            for (width, state) in [
+                (15, CiEmptyState::Fetching),
+                (15, CiEmptyState::Loading),
+                (15, CiEmptyState::NotGitRepo),
+                (15, CiEmptyState::RequiresGithubRemote),
+                (15, CiEmptyState::Unreadable),
+                (13, CiEmptyState::Fetching),
+                (13, CiEmptyState::Loading),
+                (13, CiEmptyState::NotGitRepo),
+                (13, CiEmptyState::RequiresGithubRemote),
+                (13, CiEmptyState::Unreadable),
+                (13, CiEmptyState::NoRuns),
+                (13, CiEmptyState::NoWorkflowConfigured),
+                (13, CiEmptyState::NoRunsForBranch("fleet".to_string())),
+            ] {
+                let title = state.title();
+                let message = title
+                    .trim()
+                    .strip_prefix("CI runs — ")
+                    .unwrap_or_else(|| title.trim())
+                    .to_string();
+                app.ci.set_content(CiData {
+                    runs:           Vec::new(),
+                    mode_label:     None,
+                    current_branch: None,
+                    empty_state:    state,
+                });
+                let buffer =
+                    test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, 60, width)?;
+                let rows = test_support::rows(&buffer);
+                assert!(rows[0].contains(" CI runs "), "{rows:?}");
+                assert!(!rows[0].contains('…'), "{rows:?}");
+                let body = rows[1..rows.len() - 1]
+                    .iter()
+                    .map(|row| row.trim_matches(['│', '┃', ' ']))
+                    .filter(|row| !row.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert_eq!(
+                    body.split_whitespace().collect::<String>(),
+                    message.split_whitespace().collect::<String>()
+                );
             }
         }
         Ok(())

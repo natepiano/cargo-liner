@@ -107,15 +107,15 @@ pub fn render_panes<R: PaneRegistry>(
     chrome: PaneChrome,
     borders: PaneBorders,
 ) {
-    let bounds = layout.bounds();
-    let mut grid_lines = GridLines::new(bounds);
+    let bounds_rect = layout.bounds();
+    let mut grid_lines = GridLines::new(bounds_rect);
     for resolved in &layout.panes {
         // Under `PaneBorders::Shared`, `PaneBorders::pane_area` reaches one
         // line onto the neighbours below and to the right, so the boundary
         // is a single shared line rather than two lines side by side. Under
         // `PaneBorders::Separate`, it keeps `resolved.area` as the layout
         // resolved it, and the neighbour's line sits beside the pane's own.
-        let area = borders.pane_area(resolved.area, bounds);
+        let area = borders.pane_area(resolved.area, bounds_rect);
         let Some(pane) = registry.pane_mut(resolved.pane) else {
             continue;
         };
@@ -124,8 +124,8 @@ pub fn render_panes<R: PaneRegistry>(
         };
         let pane_frame = PaneFrame::new(area).with_focus(pane_chrome.focused);
         grid_lines.add_titled(pane_frame, pane_chrome.title);
-        for rule in pane_chrome.rules {
-            grid_lines.add_rule(pane_frame, rule);
+        for rule_rect in pane_chrome.rules {
+            grid_lines.add_rule(pane_frame, rule_rect);
         }
         for label in pane_chrome.labels {
             grid_lines.add_label(pane_frame, label);

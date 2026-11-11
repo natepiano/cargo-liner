@@ -175,13 +175,13 @@ pub(in crate::backdrop::desktop) fn select_capture_window<'a, W>(
 
 /// Build the failure produced before the capture path selects a terminal window.
 pub(in crate::backdrop::desktop) const fn capture_failure_before_window_selection(
-    sequence: CaptureAttemptSequence,
-    failure: CaptureFailure,
+    capture_attempt_sequence: CaptureAttemptSequence,
+    capture_failure: CaptureFailure,
 ) -> CaptureAttemptResult {
     CaptureAttemptResult::failed(
-        sequence,
+        capture_attempt_sequence,
         CaptureAttemptWindowSelection::SelectionNotReached,
-        failure,
+        capture_failure,
     )
 }
 

@@ -16,14 +16,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::AmbientHarnessSession;
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
-use reader_compat_hooks::AmbientHarnessSession;
+use cargo_berth_test_support::spawn_hook_verb;
 use reader_compat_hooks::HookResponseEvent;
 use reader_compat_hooks::expected_hook_feedback;
 use reader_compat_hooks::hook_feedback;
-use reader_compat_hooks::spawn_hook_verb;
 use serde_json::Value;
 use tempfile::TempDir;
 

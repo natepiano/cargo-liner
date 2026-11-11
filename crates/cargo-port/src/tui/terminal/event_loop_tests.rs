@@ -22,6 +22,7 @@ use ratatui::backend::WindowSize;
 use ratatui::buffer::Cell;
 use ratatui::layout::Position;
 use ratatui::layout::Size;
+use tui_pane::Repaint;
 use tui_pane::ToastCountdownState;
 use tui_pane::ToastDuration;
 use tui_pane::ToastLingerState;
@@ -38,6 +39,7 @@ use super::FrameState;
 use super::draw_frame;
 use super::draw_frame_with_renderer;
 use super::process_input_frame;
+use super::status_wait;
 use crate::channel;
 use crate::project::AbsolutePath;
 use crate::project::DiskMeasurement;
@@ -72,6 +74,17 @@ fn idle_iteration_draws_only_the_first_frame() {
     let mut frames = FrameState::default();
     assert!(frames.needs_draw(&app, now));
     assert!(!frames.needs_draw(&app, now));
+}
+
+#[test]
+fn the_loop_wakes_and_ticks_at_the_status_line_second() {
+    let mut app = test_support::make_app(&[]);
+    let now = Instant::now();
+    let wait = status_wait(&app, now, Duration::from_secs(10));
+    assert!(wait <= Duration::from_secs(1));
+    let due = now + wait;
+    assert_eq!(app.framework.tick_status(due), Repaint::Needed);
+    assert_eq!(app.framework.tick_status(due), Repaint::NotNeeded);
 }
 
 #[test]

@@ -23,15 +23,15 @@ use crate::pane_background;
 /// cell is painted on nothing at all, which is what a transparent
 /// profile leaves behind.
 pub fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
-    let absent = attract_ground();
+    let absent_color = attract_ground();
     for row in area.top()..area.bottom() {
         for column in area.left()..area.right() {
             if let Some(cell) = buffer.cell_mut((column, row)) {
-                let toward = match cell.bg {
-                    Color::Reset => absent,
-                    background => background,
+                let target_color = match cell.bg {
+                    Color::Reset => absent_color,
+                    background_color => background_color,
                 };
-                cell.set_fg(blend_color(cell.fg, toward, faded));
+                cell.set_fg(blend_color(cell.fg, target_color, faded));
             }
         }
     }
@@ -48,7 +48,7 @@ pub fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
 pub fn attract_ground() -> Color {
     match pane_background(false) {
         Color::Reset => Color::Black,
-        background => background,
+        background_color => background_color,
     }
 }
 

@@ -86,7 +86,7 @@ impl CpuPoller {
 
         #[cfg(target_os = "macos")]
         let core_clusters = self.core_clusters.as_deref();
-        let cores = self
+        let cpu_core_usages = self
             .system
             .cpus()
             .iter()
@@ -123,7 +123,7 @@ impl CpuPoller {
 
         CpuUsage {
             total_percent,
-            cores,
+            cores: cpu_core_usages,
             breakdown,
             gpu,
         }
@@ -200,8 +200,8 @@ fn smooth_gpu_usage(
     renderer_smoothing: &mut RollingMean,
     tiler_smoothing: &mut RollingMean,
 ) -> GpuUsage {
-    let smooth = |percent: Option<u8>, smoothing: &mut RollingMean| {
-        percent.map(|percent| cpu_percent(smoothing.push(f32::from(percent))))
+    let smooth = |percent: Option<u8>, rolling_mean: &mut RollingMean| {
+        percent.map(|percent| cpu_percent(rolling_mean.push(f32::from(percent))))
     };
     GpuUsage {
         core_count:       usage.core_count,

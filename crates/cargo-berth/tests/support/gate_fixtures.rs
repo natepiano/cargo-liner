@@ -1,4 +1,7 @@
 pub(super) use std::os::unix::fs::PermissionsExt;
+
+pub(super) use cargo_berth_test_support::FIRST_RUN;
+pub(super) use cargo_berth_test_support::SECOND_RUN;
 const FIXTURE_USER_NAME: &str = "Test User";
 
 const FIXTURE_USER_EMAIL: &str = "test@example.com";
@@ -65,8 +68,6 @@ pub(super) const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
-pub(super) const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-
 pub(super) const HOOK_PATH: &str = ".git/hooks/reference-transaction";
 
 pub(super) const MARKER_PATH: &str = ".git/cargo-berth-run-id";
@@ -76,8 +77,6 @@ pub(super) const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 pub(super) const RETENTION_TRACE_BRANCH: &str = "retention-trace";
 
 pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-
-pub(super) const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 
 pub(super) const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
@@ -2725,3 +2724,76 @@ pub(super) const HISTORY_PREPARED_SUBJECT_PASS_4: cargo_berth_test_support::Ledg
     recorded_history::template("gate-prepared-subject-pass-4", |destination| {
         build_prepared_subject_pass(destination, 4);
     });
+
+/// The source and upstream commits before either live three-commit rebase.
+pub(super) const THREE_COMMIT_REBASE: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("gate-three-commit-rebase", build_three_commit_rebase);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct ThreeCommitRebaseHistory {
+    pub(super) source_tip: String,
+}
+
+fn build_three_commit_rebase(destination: &Path) {
+    let repository = initialized_repository();
+
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "-b",
+            "rebase-source",
+        ],
+    );
+    for commit_index in 0..3 {
+        let path = format!("rebase-{commit_index}.txt");
+        fs::write(repository.path().join(&path), format!("{commit_index}\n"))
+            .expect("rebase source should write");
+        git(repository.path(), &["add", &path]);
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("rebase source {commit_index}"),
+            ],
+        );
+    }
+    let source_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    fs::write(repository.path().join("upstream-rebase.txt"), "upstream\n")
+        .expect("upstream source should write");
+    git(repository.path(), &["add", "upstream-rebase.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "upstream rebase base",
+        ],
+    );
+
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &ThreeCommitRebaseHistory { source_tip },
+    );
+}

@@ -1,10 +1,17 @@
+mod attribute_test_gate;
+mod identifier_character;
 mod lexical_regions;
 mod module_map;
 mod parsed_sources;
+mod path_anchor;
 
 use std::ffi::OsStr;
 use std::path::Path;
 
+pub(crate) use attribute_test_gate::AttributeTestGate;
+pub(crate) use attribute_test_gate::attribute_test_gate;
+pub(crate) use identifier_character::IdentifierCharacter;
+pub(crate) use identifier_character::identifier_character;
 pub(crate) use lexical_regions::LexicalRegions;
 pub(crate) use lexical_regions::SourceEndpoint;
 pub(crate) use module_map::FileModulePath;
@@ -12,48 +19,13 @@ pub(crate) use module_map::ModuleDirectories;
 pub(crate) use module_map::ModuleMap;
 pub(crate) use parsed_sources::ParsedSource;
 pub(crate) use parsed_sources::ParsedSources;
-use syn::Attribute;
-use syn::Ident;
+pub(crate) use path_anchor::PathAnchor;
+pub(crate) use path_anchor::leading_super_count;
+pub(crate) use path_anchor::trim_leading_self;
 use syn::Meta;
 use syn::MetaList;
 use syn::Token;
 use syn::punctuated::Punctuated;
-
-/// Whether `character` can appear inside a Rust identifier.
-pub(crate) fn identifier_character(character: char) -> bool {
-    character.is_alphanumeric() || character == '_'
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PathAnchor {
-    Crate,
-    Super,
-    SelfMod,
-    SelfType,
-    Name,
-}
-
-impl PathAnchor {
-    pub(crate) fn first(segments: &[String]) -> Option<Self> {
-        segments.first().map(|segment| Self::from(segment.as_str()))
-    }
-
-    pub(crate) const fn is_crate_relative(self) -> bool {
-        matches!(self, Self::Crate | Self::Super)
-    }
-}
-
-impl From<&str> for PathAnchor {
-    fn from(segment: &str) -> Self {
-        match segment {
-            "crate" => Self::Crate,
-            "super" => Self::Super,
-            "self" => Self::SelfMod,
-            "Self" => Self::SelfType,
-            _ => Self::Name,
-        }
-    }
-}
 
 enum ModuleFileKind<'a> {
     Root,
@@ -90,37 +62,13 @@ impl<'a> ModuleFileKind<'a> {
 
 /// The comma-separated `Meta` items inside an attribute list such as
 /// `cfg(...)` or `cfg_attr(...)`.
-pub(crate) fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
-    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-}
-
-/// Whether `attributes` hold exactly `#[cfg(test)]`.
-pub(crate) fn is_cfg_test(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| {
-        attribute.path().is_ident("cfg")
-            && attribute
-                .parse_args::<Ident>()
-                .is_ok_and(|predicate| predicate == "test")
-    })
-}
-
-pub(crate) fn leading_super_count(segments: &[String]) -> usize {
-    segments
-        .iter()
-        .take_while(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
-        .count()
-}
-
-pub(crate) fn trim_leading_self(segments: &[String]) -> &[String] {
-    match PathAnchor::first(segments) {
-        Some(PathAnchor::SelfMod) => &segments[1..],
-        _ => segments,
-    }
+pub(crate) fn parse_meta_list(meta_list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
+    meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 
 fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
-    let relative = path.strip_prefix(source_root).ok()?;
-    let mut result: Vec<String> = relative
+    let relative_path = path.strip_prefix(source_root).ok()?;
+    let mut result: Vec<String> = relative_path
         .parent()
         .into_iter()
         .flat_map(Path::iter)

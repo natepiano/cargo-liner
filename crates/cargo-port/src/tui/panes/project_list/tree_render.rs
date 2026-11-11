@@ -14,6 +14,7 @@ use tui_pane::label_color;
 
 use super::ProjectListPane;
 use super::disk;
+use crate::config;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan;
@@ -44,7 +45,11 @@ pub(super) fn render_project_list_pane_body(
             usize::from(area.width)
                 .saturating_sub(PROJECT_LIST_RIGHT_PADDING + tui_pane::BLOCK_BORDER_WIDTH),
             // An isolated pane has no neighboring detail panes to reserve.
-            frame.area().width.max(area.width.saturating_add(30)),
+            if area.width == frame.area().width {
+                u16::MAX
+            } else {
+                frame.area().width
+            },
         );
         let widths = &fitted;
         let items: Vec<ListItem> = super::render_tree_items(ctx, pane, &pane.viewport, widths);
@@ -148,7 +153,7 @@ fn project_summary_lines(projects: &ProjectList, widths: &ProjectListWidths) -> 
     let total_str = projects
         .visible_disk_total()
         .total()
-        .map_or_else(|| "…".to_string(), render::format_bytes);
+        .map_or_else(|| "…".to_string(), |bytes| widths.format_disk_bytes(bytes));
     let mut summaries = vec![columns::row_to_line(
         &columns::build_summary_cells(widths, &total_str),
         widths,
@@ -156,8 +161,11 @@ fn project_summary_lines(projects: &ProjectList, widths: &ProjectListWidths) -> 
     match projects.project_storage() {
         ProjectStorage::Unknown => {},
         ProjectStorage::Available(bytes) => {
-            let available = render::format_bytes(bytes);
-            let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
+            let available = widths.format_disk_bytes(bytes);
+            let headroom_style = disk::headroom_style(StorageHeadroom::classify(
+                bytes,
+                &config::active_config().scan,
+            ));
             summaries.push(columns::build_available_line(
                 widths,
                 &available,

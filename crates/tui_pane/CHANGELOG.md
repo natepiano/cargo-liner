@@ -9,6 +9,13 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Show the process CPU beside uptime in each framework status line. Update both once each second.
+- Add `Framework::tick_status` and `Framework::status_visual_deadline` so an app with its own event loop keeps the status line current.
+
+- `PopupBorder` and `PopupFrame::render_with_border` let a popup select a thick border in both colour modes.
+- `StatusLine::with_hint_notes` draws mode notes in the enabled shortcut label ink. Other notes keep their styles.
+- Global shortcut hints can show toggle values independently of shortcut availability.
+
 - Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.
 - `ExpansionModel::press_row` and `RowPressResult` share branch toggling and leaf handling across applications.
 - `TileGrid::cell_index` resolves current content identity without painted coordinates.
@@ -44,6 +51,16 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Keep the first body character when indentation fills a toast row. Preserve oversized graphemes in `wrapped`.
+- Mark hard word breaks in toast bodies with `…`. Keep body measurement and fading text on the same lines.
+- Omit a toast title when its first readable word cannot fit beside the close button.
+
+- A pane title that fits only without its side spaces draws without them, so the whole title shows.
+- A toast message cuts with `…`, never with ASCII dots, and never after a rule piece or a space.
+- Toast cards use available side-gap space to keep warning titles and close buttons whole.
+- Opaque toast cards paint the theme background and use theme colours. Transparent cards keep their existing colours.
+- Draw normal toast page marks in the theme's default text colour so the footer remains readable.
 
 - Cut pane titles keep a blank cell before the corner or joint.
 - Status lines keep whole hint groups by default. `StatusLine::with_individual_note_hints` enables individual hint fitting and a three-cell gap before notes. With this policy, narrow rows drop whole hints from the right. Rows without notes keep whole hint groups.

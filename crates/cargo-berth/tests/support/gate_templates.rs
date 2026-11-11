@@ -9,12 +9,14 @@ use std::process::Output;
 use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::CrossTargetOrdering;
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::claim_id;
@@ -303,8 +305,6 @@ fn run_berth_with_session(root: &Path, args: &[&str], session: &str) -> Output {
         .expect("enrollment session command should run")
 }
 
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 pub(crate) const MAIN_PREDECESSOR_STATE: &str = ".git/main-predecessor-gate.json";
 pub(crate) const DEFAULT_ANSWER_STATE: &str = ".git/default-answer-gate.json";
 

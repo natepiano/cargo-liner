@@ -84,9 +84,21 @@ fn check(appearance: Appearance) {
             );
         })
         .expect("bar frame");
+    let row: String = (0..240)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect();
+    assert!(row.contains(" Uptime: 1m 5s CPU: — "), "{row}");
     let failures = contrast::failures(
         terminal.backend().buffer(),
-        &["scanning", "Uptime:", "1m", "e enabled", "d disabled"],
+        &[
+            "scanning",
+            "Uptime:",
+            "1m",
+            "CPU:",
+            "—",
+            "e enabled",
+            "d disabled",
+        ],
         &format!("fallback {appearance:?}"),
     );
     let drawn_ground = contrast::rgb(terminal.backend().buffer()[(0, 0)].bg);

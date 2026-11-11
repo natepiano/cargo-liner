@@ -23,6 +23,7 @@ use super::TESTS_UNIT_LABEL;
 use super::TestCounts;
 use super::Workspace;
 use crate::project::DiskMeasurement;
+use crate::project::LibraryTargetKind;
 use crate::project::PinnedCommit;
 use crate::project::ProjectFields;
 use crate::tui::panes::DescriptionState;
@@ -64,14 +65,12 @@ impl StructureCounts {
     }
 
     pub(super) fn add_cargo(&mut self, cargo: &Cargo) {
-        for t in cargo.types() {
-            match t {
-                ProjectType::Workspace => {},
-                ProjectType::Library => self.libs += 1,
-                ProjectType::Binary => self.bins += 1,
-                ProjectType::ProcMacro => self.proc_macros += 1,
-            }
+        match cargo.library_target_kind {
+            LibraryTargetKind::Absent => {},
+            LibraryTargetKind::Library => self.libs += 1,
+            LibraryTargetKind::ProcMacro => self.proc_macros += 1,
         }
+        self.bins += cargo.binaries().len();
         self.examples += cargo.example_count();
         self.benches += cargo.benches().len();
     }
@@ -292,8 +291,11 @@ pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, us
 /// outage, and the rate-limit rows already carry the auth hint.
 pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
     matches!(data.stars, super::GithubStars::Unreachable)
-        && !data.github_status.is_available()
-        && !data.github_status.is_unauthenticated()
+        && matches!(
+            data.github_status,
+            crate::tui::state::AvailabilityStatus::Unreachable
+                | crate::tui::state::AvailabilityStatus::RateLimited
+        )
 }
 
 /// Primary project fields for the `Package` column.
@@ -619,5 +621,68 @@ mod package_row_tests {
                 .collect::<Vec<_>>(),
             vec!["Path", "Disk", "Lint", "CI"]
         );
+    }
+}
+
+#[cfg(test)]
+mod structure_count_tests {
+    use super::*;
+    use crate::project::MemberGroup;
+    use crate::project::RustInfo;
+
+    fn binary_cargo(binaries: &[&str]) -> Cargo {
+        Cargo {
+            binaries: binaries.iter().map(ToString::to_string).collect(),
+            ..Cargo::default()
+        }
+    }
+
+    fn binary_package(binaries: &[&str]) -> Package {
+        Package {
+            rust: RustInfo {
+                cargo: binary_cargo(binaries),
+                ..RustInfo::default()
+            },
+            ..Package::default()
+        }
+    }
+
+    fn binary_row(structure_counts: &StructureCounts) -> Option<usize> {
+        structure_counts
+            .to_rows()
+            .into_iter()
+            .find_map(|(label, count)| (label == TARGET_KIND_BIN_LABEL).then_some(count))
+    }
+
+    #[test]
+    fn package_counts_each_bin_target() {
+        let mut structure_counts = StructureCounts::default();
+        structure_counts.add_package(&binary_package(&["migrate", "serve"]));
+        assert_eq!(binary_row(&structure_counts), Some(2));
+    }
+
+    #[test]
+    fn workspace_root_counts_its_own_and_every_members_bin_targets() {
+        let workspace = Workspace {
+            rust: RustInfo {
+                cargo: binary_cargo(&["binws"]),
+                ..RustInfo::default()
+            },
+            groups: vec![MemberGroup::Inline {
+                members: vec![
+                    binary_package(&["core"]),
+                    binary_package(&["migrate", "serve"]),
+                ],
+            }],
+            ..Workspace::default()
+        };
+        let mut structure_counts = StructureCounts::default();
+        structure_counts.add_workspace(&workspace);
+        for group in workspace.groups() {
+            for member in group.members() {
+                structure_counts.add_package(member);
+            }
+        }
+        assert_eq!(binary_row(&structure_counts), Some(4));
     }
 }

@@ -181,3 +181,136 @@ fn default_role(role: &str, role_palette: RolePalette) -> StyleSpec {
 }
 
 const fn bold(color: Color) -> StyleSpec { StyleSpec::bold(color) }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use ratatui::widgets::Block;
+    use tui_pane::ColorMode;
+    use tui_pane::PaneFocusState;
+    use tui_pane::Renderable;
+    use tui_pane::ToastStyle;
+    use tui_pane::ToastsRenderCtx;
+
+    use crate::tui::app::App;
+    use crate::tui::test_support;
+
+    #[test]
+    fn startup_page_footer_meets_contrast_in_every_registered_theme() -> anyhow::Result<()> {
+        for toast_style in [
+            ToastStyle::Normal,
+            ToastStyle::Warning,
+            ToastStyle::Error,
+            ToastStyle::Success,
+        ] {
+            let mut app = test_support::project_app();
+            let lines: Vec<_> = (0..20)
+                .map(|index| format!("Startup task {index}"))
+                .collect();
+            if toast_style == ToastStyle::Normal {
+                app.framework.toasts.push_colored_persistent(
+                    "Startup",
+                    lines,
+                    vec![Color::Green; 20],
+                );
+            } else {
+                app.framework.toasts.push_timed_styled(
+                    "Startup",
+                    lines.join("\n"),
+                    Duration::from_secs(30),
+                    1,
+                    toast_style,
+                );
+            }
+            let now = Instant::now() + Duration::from_secs(1);
+            for variant in crate::themes::builtins() {
+                let mut theme = variant.theme;
+                super::apply_role_defaults_to_theme(
+                    &mut theme,
+                    Some(&variant.id),
+                    variant.appearance,
+                );
+                let _theme = test_support::ThemeOverride::install(theme);
+                for transparent in [false, true] {
+                    tui_pane::set_transparent_background(transparent);
+                    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+                        for width in [80, 95] {
+                            let buffer = draw_startup_toast(&mut app, width, mode, now)?;
+                            let mark = test_support::position(&buffer, "1 of")?;
+                            let body = test_support::position(&buffer, "Startup task")?;
+                            if mode == ColorMode::Colored && !transparent {
+                                let failures = test_support::contrast_failures(
+                                    &buffer,
+                                    &["1 of", "▼"],
+                                    variant.id.as_str(),
+                                );
+                                assert!(failures.is_empty(), "{}", failures.join("\n"));
+                                assert_eq!(buffer[mark].fg, tui_pane::text_default());
+                                assert_eq!(buffer[mark].bg, tui_pane::pane_background(false));
+                                assert_eq!(buffer[body].bg, tui_pane::pane_background(false));
+                                let body_color = match toast_style {
+                                    ToastStyle::Normal => Color::Green,
+                                    ToastStyle::Warning => tui_pane::warning_color(),
+                                    ToastStyle::Error => tui_pane::error_color(),
+                                    ToastStyle::Success => tui_pane::success_color(),
+                                };
+                                assert_eq!(buffer[body].fg, body_color);
+                                if toast_style != ToastStyle::Normal {
+                                    let countdown = test_support::position(&buffer, "Closing in")?;
+                                    assert_eq!(buffer[countdown].fg, tui_pane::text_default());
+                                }
+                            } else if mode == ColorMode::Colored {
+                                let footer_color = match toast_style {
+                                    ToastStyle::Normal => tui_pane::text_default(),
+                                    ToastStyle::Warning => Color::Yellow,
+                                    ToastStyle::Error => Color::Red,
+                                    ToastStyle::Success => Color::Green,
+                                };
+                                assert_eq!(buffer[mark].fg, footer_color);
+                                assert_eq!(buffer[mark].bg, Color::Reset);
+                                assert_eq!(buffer[body].bg, Color::Reset);
+                            } else {
+                                assert_eq!(buffer[mark].fg, Color::Reset);
+                                assert_eq!(buffer[mark].bg, Color::Reset);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_startup_toast(
+        app: &mut App,
+        width: u16,
+        mode: ColorMode,
+        now: Instant,
+    ) -> anyhow::Result<Buffer> {
+        app.framework.color_mode = mode;
+        let mut terminal = Terminal::new(TestBackend::new(width, 13))?;
+        terminal.draw(|frame| {
+            frame.render_widget(
+                Block::default().style(ratatui::style::Style::default().bg(Color::Black)),
+                frame.area(),
+            );
+            Renderable::render(
+                &mut app.framework.toasts,
+                frame,
+                frame.area(),
+                &ToastsRenderCtx {
+                    now,
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+            mode.clear_colors(frame.buffer_mut());
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+}

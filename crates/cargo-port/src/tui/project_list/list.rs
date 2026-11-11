@@ -22,13 +22,13 @@ use tui_pane::ExpansionModel;
 use tui_pane::ExpansionTree;
 use tui_pane::RowExpansion;
 use tui_pane::RowParent;
+use tui_pane::RowPressResult;
 
 use super::expand_state;
 use super::expand_state::ExpandTarget;
 use super::expand_state::ExpansionKeyLayout;
 use super::grouping;
 use super::grouping::ProjectPlacement;
-use super::selection::SelectionMutation;
 use super::visible_rows;
 use super::visible_rows::ExpandKey;
 use super::visible_rows::LegacyRootExpansion;
@@ -1713,9 +1713,7 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 //
 // `ProjectList::cursor`, `expanded`, `finder`, `cached_root_sorted` and
 // `cached_fit_widths` belong directly to `ProjectList` because all are project-list scoped and
-// shared with no other pane. `SelectionMutation::drop` recomputes `cached_visible_rows` so
-// visibility-changing mutations stay synchronized with derived rows. This is the self-only
-// mutation guard (RAII) pattern; see `src/tui/app/mod.rs` § "Recurring patterns".
+// shared with no other pane. Expansion methods refresh `cached_visible_rows` after a change.
 
 impl ProjectList {
     // `cursor` and `set_cursor` access the `ProjectList` row position.
@@ -1803,10 +1801,7 @@ impl ProjectList {
         }
     }
 
-    /// Recompute `cached_visible_rows` from the current `expanded`
-    /// set. Called by [`SelectionMutation::drop`] and (via App) from
-    /// `TreeMutation::drop` so externally-driven tree mutations also
-    /// keep the visible-rows cache fresh.
+    /// Recompute visible rows after expansion changes or `TreeMutation::drop`.
     pub(in crate::tui) fn recompute_visibility(&mut self, include_non_rust: bool) {
         let visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
         if self.cached_visible_rows != visible_rows {
@@ -1875,20 +1870,6 @@ impl ProjectList {
     pub(in crate::tui) fn reset_fit_widths(&mut self, lint_column: LintColumnStatus) {
         self.cached_fit_widths = ProjectListWidths::new(lint_column);
         self.fit_widths_state = ListCacheState::NotComputed;
-    }
-
-    // `mutate` lends `ProjectList` to a `SelectionMutation` guard.
-
-    /// Borrow the list for a mutation that refreshes its visible rows on release.
-    const fn mutate(&mut self, include_non_rust: bool) -> SelectionMutation<'_> {
-        SelectionMutation {
-            project_list: self,
-            non_rust:     if include_non_rust {
-                NonRustInclusion::Include
-            } else {
-                NonRustInclusion::Exclude
-            },
-        }
     }
 }
 
@@ -2300,16 +2281,19 @@ impl ProjectList {
         }
     }
 
-    pub(in crate::tui) fn toggle_expand_for_row(
+    /// Call `ExpansionModel::press_row`, then `ProjectList::recompute_visibility` after a toggle.
+    pub(in crate::tui) fn press_row(
         &mut self,
         row: VisibleRow,
-        include_non_rust: bool,
-    ) -> bool {
-        let Some(key) = self.expand_key_for_row(row) else {
-            return false;
-        };
-        self.mutate(include_non_rust).toggle_expand(key);
-        true
+        include_non_rust: NonRustInclusion,
+    ) -> RowPressResult {
+        let mut expanded = std::mem::take(&mut self.expanded);
+        let result = expanded.press_row(self, &row);
+        self.expanded = expanded;
+        if matches!(result, RowPressResult::Toggled(_)) {
+            self.recompute_visibility(include_non_rust.includes_non_rust());
+        }
+        result
     }
 
     pub(in crate::tui) fn dismiss_target_for_row_inner(
@@ -2817,15 +2801,20 @@ impl ProjectList {
         changed
     }
 
+    /// The most language table rows of any project that has stats.
+    pub(in crate::tui) const fn most_language_rows(&self) -> usize { self.most_language_rows }
+
     /// Apply a batch of `LanguageStats` to matching projects.
     pub(in crate::tui) fn handle_language_stats_batch(
         &mut self,
         entries: Vec<(AbsolutePath, LanguageStats)>,
     ) {
         for (path, stats) in entries {
+            let rows = stats.row_count();
             match self.at_path_mut(path.as_path()) {
                 ProjectPathLookup::Found(project) => {
                     project.language_stats = Some(stats);
+                    self.most_language_rows = self.most_language_rows.max(rows);
                 },
                 ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
             }

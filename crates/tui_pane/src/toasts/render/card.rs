@@ -36,7 +36,6 @@ use crate::toasts::TrackedItemElapsed;
 use crate::toasts::TrackedItemLifecycle;
 use crate::toasts::TrackedItemView;
 use crate::toasts::manager;
-use crate::wrap;
 
 pub(super) fn render_toast(
     frame: &mut Frame,
@@ -46,20 +45,16 @@ pub(super) fn render_toast(
     focus: ToastFocus,
     page_height: u16,
 ) -> Rect {
-    let palette = fallback_toast_palette();
     let card = card.intersection(area);
     clear_toast_surroundings(frame, area, card);
 
     let focused = focus == ToastFocus::PaneFocusedOn(toast.id());
     let toast_style = toast.style();
-    // `ToastStyle::Error` and `ToastStyle::Warning` keep the safety-pinned
-    // `fallback_toast_palette` so they stay legible under any user theme.
-    // Plain (info) `ToastStyle::Normal` toasts mirror `crate::default_pane_chrome`
-    // so their border and title match the framework pane chrome.
+    let body_style = toast_body_style(toast_style);
+    // Transparent cards keep the fallback colours. Opaque cards use the theme colours over the
+    // theme background. Normal cards use the pane border and title colours.
     let border_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Error | ToastStyle::Success | ToastStyle::Warning => body_style,
         ToastStyle::Normal => {
             if focused {
                 Style::default().fg(title_color())
@@ -69,9 +64,7 @@ pub(super) fn render_toast(
         },
     };
     let text_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Error | ToastStyle::Success | ToastStyle::Warning => body_style,
         ToastStyle::Normal => {
             if focused {
                 Style::default()
@@ -82,13 +75,6 @@ pub(super) fn render_toast(
             }
         },
     };
-    let body_style = match toast_style {
-        ToastStyle::Error => Style::default().fg(palette.error),
-        ToastStyle::Success => Style::default().fg(palette.success),
-        ToastStyle::Warning => Style::default().fg(palette.warning),
-        ToastStyle::Normal => Style::default(),
-    };
-
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
     let raw_title = toast_title(toast);
@@ -97,16 +83,13 @@ pub(super) fn render_toast(
     let title_uses_border_cell = raw_title.width() == title_max.saturating_add(1);
     let close_padding = u16::from(!title_uses_border_cell);
     let title_max = title_max.saturating_add(usize::from(title_uses_border_cell));
-    let title = if raw_title.width() > title_max && title_max > 0 {
-        format!("{}…", format::truncate(&raw_title, title_max - 1))
-    } else {
-        format::truncate(&raw_title, title_max)
-    };
-
-    let block = Block::default()
-        .title(Span::styled(format!(" {title} "), text_style))
+    let title = fitted_toast_title(toast, &raw_title, title_max);
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style);
+    if !title.is_empty() {
+        block = block.title(Span::styled(format!(" {title} "), text_style));
+    }
     let inner = block.inner(card);
     frame.render_widget(block, card);
 
@@ -133,10 +116,7 @@ pub(super) fn render_toast(
         };
         page_area.width = countdown_rect.x.saturating_sub(card.x).saturating_add(1);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                countdown,
-                Style::default().fg(palette.label),
-            ))),
+            Paragraph::new(Line::from(Span::styled(countdown, toast_label_style()))),
             countdown_rect,
         );
     }
@@ -151,10 +131,76 @@ pub(super) fn render_toast(
             alloc_interior,
             page_height.saturating_sub(2),
         );
-        render_overflow_affordance(frame, page_area, overflow, border_style);
+        render_page_footer(frame, page_area, overflow, toast_style, border_style);
     }
 
     close_rect
+}
+
+/// Select text colours for the card background.
+fn toast_body_style(toast_style: ToastStyle) -> Style {
+    if crate::transparent_background() {
+        let palette = fallback_toast_palette();
+        match toast_style {
+            ToastStyle::Error => Style::default().fg(palette.error),
+            ToastStyle::Success => Style::default().fg(palette.success),
+            ToastStyle::Warning => Style::default().fg(palette.warning),
+            ToastStyle::Normal => Style::default(),
+        }
+    } else {
+        let color = match toast_style {
+            ToastStyle::Error => crate::error_color(),
+            ToastStyle::Success => crate::success_color(),
+            ToastStyle::Warning => crate::warning_color(),
+            ToastStyle::Normal => crate::text_default(),
+        };
+        Style::default().fg(color)
+    }
+}
+
+/// Keep secondary card text readable over opaque backgrounds.
+fn toast_label_style() -> Style {
+    let color = if crate::transparent_background() {
+        fallback_toast_palette().label
+    } else {
+        crate::text_default()
+    };
+    Style::default().fg(color)
+}
+
+/// Use the theme text colour over the card background.
+fn render_page_footer(
+    frame: &mut Frame,
+    area: Rect,
+    overflow: ViewportOverflow,
+    toast_style: ToastStyle,
+    border_style: Style,
+) {
+    let style = if toast_style == ToastStyle::Normal || !crate::transparent_background() {
+        Style::default().fg(crate::text_default())
+    } else {
+        border_style
+    };
+    render_overflow_affordance(frame, area, overflow, style);
+}
+
+/// Omit a title when its first word cannot fit.
+fn fitted_toast_title(toast: &ToastView, raw_title: &str, width: usize) -> String {
+    let word = toast.title().split_whitespace().next().unwrap_or("");
+    let prefix = raw_title.width().saturating_sub(toast.title().width());
+    let cut_mark = usize::from(raw_title.width() > width);
+    if word.is_empty() || word.width() + prefix + cut_mark > width {
+        return String::new();
+    }
+    let title = format::truncate_with_ellipsis(raw_title, width);
+    if title
+        .split_whitespace()
+        .any(|drawn| drawn == word || drawn.strip_suffix('…') == Some(word))
+    {
+        title
+    } else {
+        String::new()
+    }
 }
 
 fn toast_title(toast: &ToastView) -> String {
@@ -168,6 +214,11 @@ fn toast_title(toast: &ToastView) -> String {
 
 pub(super) fn title_card_width(toast: &ToastView) -> u16 {
     u16::try_from(toast_title(toast).width().saturating_add(8)).unwrap_or(u16::MAX)
+}
+
+pub(super) fn minimum_title_card_width(toast: &ToastView) -> u16 {
+    // Keep the title whole when the close button needs the last padding cell.
+    u16::try_from(toast_title(toast).width().saturating_add(7)).unwrap_or(u16::MAX)
 }
 
 /// Draw the close button with one blank cell before it.
@@ -263,6 +314,11 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         }
     }
     frame.render_widget(Clear, card);
+    if !crate::transparent_background() {
+        frame
+            .buffer_mut()
+            .set_style(card, Style::default().bg(crate::pane_background(false)));
+    }
     clear_covered_border_fragments(frame, gaps, card);
     join_adjacent_frame_columns(frame, area, card);
 }
@@ -371,25 +427,24 @@ pub(super) struct ToastBodyRows {
 
 fn render_toast_body(
     frame: &mut Frame,
-    toast: &ToastView,
+    toast_view: &ToastView,
     body_style: Style,
     body_area: Rect,
     alloc_interior: u16,
     page_interior: u16,
 ) -> ViewportOverflow {
-    let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
-    let has_action = toast.has_action() && alloc_body >= 2;
+    let has_action = toast_view.has_action() && alloc_body >= 2;
     let lines_for_body = if has_action {
         alloc_body.saturating_sub(1)
     } else {
         alloc_body
     };
     let page_rows = usize::from(page_interior)
-        .saturating_sub(usize::from(toast.has_action() && page_interior >= 2));
-    let body = if toast.tracked_items().is_empty() {
+        .saturating_sub(usize::from(toast_view.has_action() && page_interior >= 2));
+    let body = if toast_view.tracked_items().is_empty() {
         body_lines_plain(
-            toast,
+            toast_view,
             body_style,
             lines_for_body,
             body_area.width,
@@ -397,7 +452,7 @@ fn render_toast_body(
         )
     } else {
         body_lines_tracked(
-            toast.tracked_items(),
+            toast_view.tracked_items(),
             body_style,
             lines_for_body,
             usize::from(body_area.width),
@@ -419,9 +474,7 @@ fn render_toast_body(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "Enter open",
-                Style::default()
-                    .fg(palette.label)
-                    .add_modifier(Modifier::ITALIC),
+                toast_label_style().add_modifier(Modifier::ITALIC),
             ))),
             hint_area,
         );
@@ -438,33 +491,27 @@ fn body_lines_plain(
     width: u16,
     page_rows: usize,
 ) -> ToastBodyRows {
-    let mut lines = match toast.linger() {
-        ToastLingerState::Live => toast.render_body.wrapped_lines(width, body_style),
-        ToastLingerState::Lingering { progress } => toast
-            .body()
-            .split('\n')
-            .flat_map(|line| {
-                wrap::wrapped_preserving_whitespace(
-                    format::fade_to_color(line, f64::from(progress)).spans,
-                    width,
-                )
-                .lines
-            })
-            .collect(),
-    };
+    let mut lines = toast.render_body.wrapped_lines(width, body_style);
+    if let ToastLingerState::Lingering { progress } = toast.linger() {
+        for line in &mut lines {
+            for span in &mut line.spans {
+                span.style = span.style.patch(format::fade_to_style(f64::from(progress)));
+            }
+        }
+    }
     let overflow = ViewportOverflow::new(lines.len(), 0, page_rows, 0);
     lines.truncate(lines_for_body);
     ToastBodyRows { lines, overflow }
 }
 
 pub(super) fn body_lines_tracked(
-    tracked: &[TrackedItemView],
+    tracked_item_views: &[TrackedItemView],
     body_style: Style,
     lines_for_body: usize,
     line_width: usize,
     page_rows: usize,
 ) -> ToastBodyRows {
-    let total_items = tracked.len();
+    let total_items = tracked_item_views.len();
     let visible_count = |rows: usize| {
         if total_items > rows {
             rows.saturating_sub(1)
@@ -473,16 +520,14 @@ pub(super) fn body_lines_tracked(
         }
     };
     let visible = visible_count(lines_for_body);
-    let visible_items = &tracked[..visible];
+    let visible_items = &tracked_item_views[..visible];
 
     let mut result = visible_items
         .iter()
-        .map(|item| tracked_item_line(item, body_style, line_width))
+        .map(|tracked_item_view| tracked_item_line(tracked_item_view, body_style, line_width))
         .collect::<Vec<_>>();
     if visible < total_items && lines_for_body > 0 {
-        let overflow_style = Style::default()
-            .fg(fallback_toast_palette().label)
-            .add_modifier(Modifier::ITALIC);
+        let overflow_style = toast_label_style().add_modifier(Modifier::ITALIC);
         result.push(Line::from(Span::styled(
             format!("(+{} more)", total_items - visible),
             overflow_style,
@@ -498,37 +543,40 @@ pub(super) fn body_lines_tracked(
 /// stalled, so a caller that reports a stall gets a red spinner without knowing
 /// anything about the palette. An item that is lingering after completion shows
 /// no spinner, so there is nothing to color.
-fn spinner_style(lifecycle: TrackedItemLifecycle, activity: TrackedItemActivity) -> Style {
+fn spinner_style(
+    lifecycle: TrackedItemLifecycle,
+    tracked_item_activity: TrackedItemActivity,
+) -> Style {
     if matches!(lifecycle, TrackedItemLifecycle::CompletedFading { .. }) {
         return Style::default();
     }
     let palette = fallback_toast_palette();
-    match activity {
+    match tracked_item_activity {
         TrackedItemActivity::Progressing => Style::default().fg(palette.accent),
         TrackedItemActivity::Stalled => Style::default().fg(palette.error),
     }
 }
 
 pub(super) fn tracked_item_line(
-    item: &TrackedItemView,
+    tracked_item_view: &TrackedItemView,
     body_style: Style,
     line_width: usize,
 ) -> Line<'static> {
     const SPINNER_SLOT: usize = 4;
     let palette = fallback_toast_palette();
 
-    let label_style = match item.lifecycle {
+    let label_style = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => body_style,
         TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
     };
-    let TrackedItemElapsed::Measured(elapsed) = item.elapsed else {
+    let TrackedItemElapsed::Measured(elapsed) = tracked_item_view.elapsed else {
         return Line::from(Span::styled(
-            format::truncate_with_ellipsis(&item.label, line_width),
+            format::truncate_with_ellipsis(&tracked_item_view.label, line_width),
             label_style,
         ));
     };
 
-    let spinner_text = match item.lifecycle {
+    let spinner_text = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
             format!(" {} ", ACTIVITY_SPINNER.frame_at(elapsed))
         },
@@ -537,8 +585,8 @@ pub(super) fn tracked_item_line(
     let duration_text = format::format_elapsed(elapsed);
     let duration_suffix = format!("{duration_text} ");
     let suffix_width = duration_suffix.len();
-    if item.label.width() + suffix_width + SPINNER_SLOT + 1 > line_width {
-        let label = format::truncate_with_ellipsis(&item.label, line_width);
+    if tracked_item_view.label.width() + suffix_width + SPINNER_SLOT + 1 > line_width {
+        let label = format::truncate_with_ellipsis(&tracked_item_view.label, line_width);
         let label_width = label.width();
         let mut spans = vec![Span::styled(label, label_style)];
         if label_width + SPINNER_SLOT < line_width {
@@ -547,16 +595,16 @@ pub(super) fn tracked_item_line(
             ));
             spans.push(Span::styled(
                 spinner_text,
-                spinner_style(item.lifecycle, item.activity),
+                spinner_style(tracked_item_view.lifecycle, tracked_item_view.activity),
             ));
         }
         return Line::from(spans);
     }
     let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
-    let label = format::truncate_with_ellipsis(&item.label, label_budget);
+    let label = format::truncate_with_ellipsis(&tracked_item_view.label, label_budget);
     let used = label.width() + spinner_text.width() + suffix_width;
     let padding = line_width.saturating_sub(used);
-    let duration_style = match item.lifecycle {
+    let duration_style = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
             Style::default().fg(palette.title)
         },
@@ -565,7 +613,10 @@ pub(super) fn tracked_item_line(
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
-        Span::styled(spinner_text, spinner_style(item.lifecycle, item.activity)),
+        Span::styled(
+            spinner_text,
+            spinner_style(tracked_item_view.lifecycle, tracked_item_view.activity),
+        ),
         Span::styled(duration_suffix, duration_style),
     ])
 }

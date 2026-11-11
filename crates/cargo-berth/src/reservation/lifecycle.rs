@@ -81,9 +81,9 @@ impl ReservationLifecycle {
     ) -> Result<(), LifecycleTransitionError> {
         match self {
             Self::Outstanding {
-                protected_tip: current_tip,
+                protected_tip: current_protected_reservation_tip,
             } => {
-                *current_tip = protected_tip;
+                *current_protected_reservation_tip = protected_tip;
                 Ok(())
             },
             Self::Active | Self::Released { .. } => {
@@ -138,12 +138,12 @@ impl ReservationLifecycle {
     /// Replace invalidated git-backed release evidence without erasing its history.
     pub(crate) fn replace_release_disposition(
         &mut self,
-        superseded: &ReleaseDisposition,
-        replacement: ReleaseDisposition,
+        superseded_release_disposition: &ReleaseDisposition,
+        replacement_release_disposition: ReleaseDisposition,
     ) -> Result<(), LifecycleTransitionError> {
         match self {
-            Self::Released { disposition } if disposition == superseded => {
-                *disposition = replacement;
+            Self::Released { disposition } if disposition == superseded_release_disposition => {
+                *disposition = replacement_release_disposition;
                 Ok(())
             },
             Self::Released { .. } => Err(LifecycleTransitionError::SupersededDispositionMismatch),
@@ -382,6 +382,13 @@ nonempty_release_reason!(
     "an orphan-retirement reason cannot be empty"
 );
 
+nonempty_release_reason!(
+    WorktreeRecoveryReason,
+    EmptyWorktreeRecoveryReason,
+    "The required explanation for recovering a reservation at its recreated holder path.",
+    "a worktree-recovery reason cannot be empty"
+);
+
 impl OrphanRetirementReason {
     /// The explanation reconciliation records when it retires an orphan from its own evidence.
     ///
@@ -517,12 +524,12 @@ mod tests {
             ),
         ] {
             let mut ancestry_queries = 0;
-            let status = subject.revalidate_ancestry(&trunk, |commit| {
+            let integration_evidence_status = subject.revalidate_ancestry(&trunk, |commit| {
                 assert_eq!(commit, &witness);
                 ancestry_queries += 1;
                 reachability
             });
-            assert_eq!(status, expected);
+            assert_eq!(integration_evidence_status, expected);
             assert_eq!(ancestry_queries, 1);
         }
         Ok(())

@@ -46,55 +46,55 @@ impl CallerKey {
 }
 
 pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> CallerMap {
-    let callers = collect_callers(reports);
-    for report in reports {
-        suppress_invalid_narrowings(report, &callers);
+    let caller_map = collect_callers(reports);
+    for stored_report in reports {
+        suppress_invalid_narrowings(stored_report, &caller_map);
     }
-    callers
+    caller_map
 }
 
 fn collect_callers(reports: &[StoredReport]) -> CallerMap {
-    let mut callers = CallerMap::new();
-    for report in reports {
-        for site in &report.use_sites {
-            let item_callers = callers
+    let mut caller_map = CallerMap::new();
+    for stored_report in reports {
+        for use_site in &stored_report.use_sites {
+            let item_callers = caller_map
                 .entry(CallerKey::for_package(
-                    &report.package_root,
-                    &site.target_def_path,
+                    &stored_report.package_root,
+                    &use_site.target_def_path,
                 ))
                 .or_default();
             item_callers
                 .reaching
-                .insert(site.caller_module_def_path.clone());
-            match site.reference {
+                .insert(use_site.caller_module_def_path.clone());
+            match use_site.reference {
                 UseSiteReference::Named => {
                     item_callers
                         .naming
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                     item_callers
                         .semantic_reaching
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                 },
                 UseSiteReference::ThroughSignature => {
                     item_callers
                         .semantic_reaching
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                 },
                 UseSiteReference::PrivateImport => {
                     item_callers
                         .naming
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                     item_callers
                         .private_imports
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                 },
                 UseSiteReference::RestrictedImport => {
                     item_callers
                         .naming
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                     item_callers
                         .restricted_imports
-                        .insert(site.caller_module_def_path.clone());
+                        .insert(use_site.caller_module_def_path.clone());
                 },
                 // `reaching` only: a declaration's own signature caps how far
                 // the annotation may narrow without proving anyone uses the
@@ -103,10 +103,10 @@ fn collect_callers(reports: &[StoredReport]) -> CallerMap {
             }
         }
     }
-    callers
+    caller_map
 }
 
-fn suppress_invalid_narrowings(report: &mut StoredReport, callers: &CallerMap) {
+fn suppress_invalid_narrowings(report: &mut StoredReport, caller_map: &CallerMap) {
     let package_root = report.package_root.clone();
     let constrained_sites = report
         .visibility_constraints
@@ -132,14 +132,14 @@ fn suppress_invalid_narrowings(report: &mut StoredReport, callers: &CallerMap) {
         )) {
             true
         } else {
-            retain_narrowing_finding(finding, callers, &package_root)
+            retain_narrowing_finding(finding, caller_map, &package_root)
         }
     });
 }
 
 fn retain_narrowing_finding(
     finding: &mut super::StoredFinding,
-    callers: &CallerMap,
+    caller_map: &CallerMap,
     package_root: &str,
 ) -> bool {
     let Some(item_path) = finding.item_def_path.as_deref() else {
@@ -148,7 +148,7 @@ fn retain_narrowing_finding(
     let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
         return true;
     };
-    let Some(item_callers) = callers_for_package(callers, package_root, item_path) else {
+    let Some(item_callers) = callers_for_package(caller_map, package_root, item_path) else {
         return true;
     };
     if finding.diagnostic_code == DiagnosticCode::InternalParentPubUseFacade {
@@ -206,11 +206,11 @@ fn facade_serves_only_its_subtree(item_callers: &ItemCallers, subtree: &str) -> 
 }
 
 pub(super) fn callers_for_package<'a>(
-    callers: &'a CallerMap,
+    caller_map: &'a CallerMap,
     package_root: &str,
     item_def_path: &str,
 ) -> Option<&'a ItemCallers> {
-    callers.get(&CallerKey::for_package(package_root, item_def_path))
+    caller_map.get(&CallerKey::for_package(package_root, item_def_path))
 }
 
 #[cfg(test)]

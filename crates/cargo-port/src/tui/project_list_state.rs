@@ -38,7 +38,7 @@ pub(super) struct LintRuntimeRootEntry {
 /// `ProjectList` is the single source of truth for project data and the
 /// per-pane state that navigates that data. Mutations go through its
 /// methods; derived state (e.g. `cached_visible_rows`) is computed from
-/// it on demand or refreshed by the `SelectionMutation` guard.
+/// it on demand or refreshed by the expansion methods after a change.
 ///
 /// Roots preserve insertion order in an `IndexMap`. `path_index` routes each
 /// project path to its root, checkout and nested node in constant time. Structural
@@ -58,6 +58,9 @@ pub(super) struct ProjectList {
     pub(super) cached_fit_widths:   ProjectListWidths,
     pub(super) fit_widths_state:    ListCacheState<FitWidthsCacheKey>,
     pub(super) storage:             ProjectStorage,
+    /// The most language table rows of any project. A language batch can
+    /// raise it and nothing lowers it, so the pane row line stays fixed.
+    pub(super) most_language_rows:  usize,
     #[cfg(test)]
     pub(super) disk_cache_builds:   u64,
     #[cfg(test)]

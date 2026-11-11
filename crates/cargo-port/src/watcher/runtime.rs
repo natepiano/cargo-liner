@@ -31,14 +31,10 @@ use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::channel::TryRecvError;
+use crate::config;
 use crate::config::NonRustInclusion;
+use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
-use crate::constants::DEBOUNCE_DURATION;
-use crate::constants::MAX_WAIT;
-use crate::constants::POLL_INTERVAL;
-use crate::constants::SCAN_METADATA_CONCURRENCY;
-use crate::constants::WATCHER_DISK_CONCURRENCY;
-use crate::constants::WATCHER_GIT_CONCURRENCY;
 use crate::http::HttpClient;
 use crate::lint::RuntimeHandle;
 use crate::project;
@@ -131,7 +127,9 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
         handle: client.handle.clone(),
         sender: background_tx.clone(),
         metadata_store,
-        metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+        metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+            config::active_config().scan.metadata_concurrency.get(),
+        )),
     };
     let startup = WatcherLoopStartup {
         registration,
@@ -202,6 +200,7 @@ impl WatcherLoopStartup {
         );
         roots::register_cargo_home_watch(watcher, &mut registered_roots, &self.cargo_home);
         WatcherLoopContext {
+            watcher_config:      config::active_config().watcher,
             watch_roots:         registered_roots,
             cargo_home:          self.cargo_home,
             background_tx:       self.background_tx,
@@ -216,6 +215,7 @@ impl WatcherLoopStartup {
 }
 
 struct WatcherLoopContext {
+    watcher_config:      WatcherConfig,
     watch_roots:         RegisteredRoots,
     cargo_home:          CargoHome,
     background_tx:       Sender<BackgroundMsg>,
@@ -273,14 +273,14 @@ pub enum WatchState {
 }
 
 impl WatchState {
-    pub fn pending(now: Instant, immediate: bool) -> Self {
+    pub(super) fn pending(now: Instant, immediate: bool, watcher_config: &WatcherConfig) -> Self {
         Self::Pending {
             debounce_deadline: if immediate {
                 now
             } else {
-                now + DEBOUNCE_DURATION
+                now + watcher_config.debounce()
             },
-            max_deadline:      now + MAX_WAIT,
+            max_deadline:      now + watcher_config.max_wait(),
         }
     }
 }
@@ -376,8 +376,13 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
     let (git_done_tx, git_done_rx) = mpsc::channel::<AbsolutePath>();
-    let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
-    let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
+    let watcher_config = &ctx.watcher_config;
+    let disk_limit = Arc::new(tokio::sync::Semaphore::new(
+        watcher_config.disk_concurrency.get(),
+    ));
+    let git_limit = Arc::new(tokio::sync::Semaphore::new(
+        watcher_config.git_concurrency.get(),
+    ));
 
     let mut last_disk_poll = Instant::now();
     let mut tick: u64 = 0;
@@ -416,6 +421,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &git_done_rx,
             &mut state.pending_disk,
             &mut state.pending_git,
+            watcher_config,
         );
 
         // `refresh::fire_git_updates` launches `state.pending_git` entries whose debounce has
@@ -429,11 +435,12 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.pending_git,
         );
 
-        refresh::schedule_disk_poll(
+        refresh::schedule_disk_poll_with_config(
             Instant::now(),
             &mut last_disk_poll,
             &state.projects,
             &mut state.pending_disk,
+            watcher_config,
         );
 
         // `refresh::fire_disk_updates` recalculates `state.pending_disk` entries whose debounce has
@@ -450,7 +457,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
 
         apply_probe_outcomes(ctx, &mut state, &mut watcher, &mut registered_roots);
 
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(watcher_config.poll_interval());
     }
 }
 
@@ -489,9 +496,14 @@ fn dispatch_registered_events(
         roots::filter_event_paths(registered, &mut event);
         let project_events = match registered.registration() {
             WatchRegistration::RecursiveRoot => vec![event],
-            WatchRegistration::PerFolder => {
-                events::route_folder_event(watcher, registered, &event, state, &ctx.background_tx)
-            },
+            WatchRegistration::PerFolder => events::route_folder_event_with_config(
+                watcher,
+                registered,
+                &event,
+                state,
+                &ctx.background_tx,
+                &ctx.watcher_config,
+            ),
         };
         events::process_notify_events(
             0,
@@ -503,6 +515,7 @@ fn dispatch_registered_events(
             registered.dirs(),
             &sinks,
             state,
+            &ctx.watcher_config,
         );
     }
 }
@@ -517,10 +530,13 @@ fn apply_probe_outcomes(
         &ctx.background_tx,
         &mut state.pending_new,
         &mut state.discovered,
-        &ctx.source_measurements,
-        ctx.non_rust,
-        &ctx.exclude_dirs,
-        &ctx.client,
+        probe::NewProjectProbeInputs {
+            watcher_config:      &ctx.watcher_config,
+            source_measurements: &ctx.source_measurements,
+            non_rust:            ctx.non_rust,
+            exclude_dirs:        &ctx.exclude_dirs,
+            client:              &ctx.client,
+        },
     );
     for outcome in outcomes {
         apply_folder_probe(watcher, registered, state, &ctx.background_tx, outcome);
@@ -740,6 +756,37 @@ mod tests {
     use crate::watcher::roots::WatchRootRegistrationFailureReason;
 
     const SOURCE_EVENT_LINT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn watcher_refresh_deadlines_use_startup_config() {
+        let defaults = WatcherConfig::default();
+        let debounce_ms = defaults.debounce_ms.get() + 1;
+        let max_wait_ms = defaults.max_wait_ms.get() + 1;
+        let table = toml::from_str(&format!(
+            "[watcher]\ndebounce_ms = {debounce_ms}\nmax_wait_ms = {max_wait_ms}"
+        ))
+        .expect("watcher timing fixture");
+        let config = crate::config::CargoPortConfig::from_table(&table).expect("watcher timings");
+        let now = Instant::now();
+        let mut pending = HashMap::new();
+        refresh::schedule_disk_refresh(&mut pending, "project", now, &config.watcher);
+        assert_eq!(
+            pending["project"],
+            WatchState::Pending {
+                debounce_deadline: now + Duration::from_millis(debounce_ms),
+                max_deadline:      now + Duration::from_millis(max_wait_ms),
+            }
+        );
+        let next_event = now + Duration::from_millis(1);
+        refresh::schedule_disk_refresh(&mut pending, "project", next_event, &config.watcher);
+        assert_eq!(
+            pending["project"],
+            WatchState::Pending {
+                debounce_deadline: next_event + Duration::from_millis(debounce_ms),
+                max_deadline:      now + Duration::from_millis(max_wait_ms),
+            }
+        );
+    }
 
     fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
         let (sender, _receiver) = channel::unbounded();
@@ -1322,6 +1369,7 @@ mod tests {
             .expect("http client");
             let (background_tx, _) = channel::unbounded();
             let ctx = WatcherLoopContext {
+                watcher_config: WatcherConfig::default(),
                 watch_roots: registered_roots.clone(),
                 cargo_home: CargoHome::Unavailable,
                 background_tx,
@@ -2048,7 +2096,7 @@ mod tests {
                 let repo_root = git_done_rx
                     .recv_timeout(Duration::from_secs(30))
                     .expect("git refresh completion");
-                refresh::handle_git_completion(pending_git, &repo_root);
+                refresh::handle_git_completion(pending_git, &repo_root, &WatcherConfig::default());
             };
 
         let mut pending_disk = HashMap::new();
@@ -2731,6 +2779,7 @@ mod tests {
             &mut pending_disk,
             &mut pending_git,
             &mut pending_new,
+            &WatcherConfig::default(),
         );
 
         let deadline = Instant::now() + timeout;
@@ -2853,6 +2902,7 @@ mod tests {
             &mut pending_disk,
             &mut pending_git,
             &mut pending_new,
+            &WatcherConfig::default(),
         );
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -3245,7 +3295,7 @@ mod tests {
     fn disk_completion_requeues_once_when_project_changed_while_running() {
         let mut pending = HashMap::from([("~/rust/bevy".to_string(), WatchState::RunningDirty)]);
 
-        refresh::handle_disk_completion(&mut pending, "~/rust/bevy");
+        refresh::handle_disk_completion(&mut pending, "~/rust/bevy", &WatcherConfig::default());
 
         assert_pending_disk(&pending, "~/rust/bevy");
     }
@@ -3269,13 +3319,16 @@ mod tests {
             &background_tx,
             &mut pending_new,
             &mut discovered,
-            &Arc::default(),
-            NonRustInclusion::default(),
-            &ExcludeDirs::default(),
-            &crate::http::HttpClient::new_without_github_auth_for_test(
-                test_support::test_runtime().handle().clone(),
-            )
-            .expect("http client"),
+            probe::NewProjectProbeInputs {
+                watcher_config:      &WatcherConfig::default(),
+                source_measurements: &Arc::default(),
+                non_rust:            NonRustInclusion::default(),
+                exclude_dirs:        &ExcludeDirs::default(),
+                client:              &crate::http::HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("http client"),
+            },
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx
@@ -3316,13 +3369,16 @@ mod tests {
             &background_tx,
             &mut pending_new,
             &mut discovered,
-            &Arc::default(),
-            NonRustInclusion::default(),
-            &ExcludeDirs::default(),
-            &crate::http::HttpClient::new_without_github_auth_for_test(
-                test_support::test_runtime().handle().clone(),
-            )
-            .expect("http client"),
+            probe::NewProjectProbeInputs {
+                watcher_config:      &WatcherConfig::default(),
+                source_measurements: &Arc::default(),
+                non_rust:            NonRustInclusion::default(),
+                exclude_dirs:        &ExcludeDirs::default(),
+                client:              &crate::http::HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("http client"),
+            },
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx

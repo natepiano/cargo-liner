@@ -57,9 +57,6 @@ pub(super) fn prepare_grid<Id: Clone + Eq + Debug>(
     });
     let cells_widths = selected.widths;
     let cells_demands = selected.demands;
-    let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
-    let mut alone_demands = cells.demands(&alone_widths);
-    add_readout_rows(&mut alone_demands, &alone_widths);
     let progress = grid.progress();
     grid.measure_row_steps(
         area,
@@ -71,7 +68,12 @@ pub(super) fn prepare_grid<Id: Clone + Eq + Debug>(
     let drawing = grid.visible_drawing(contents, progress);
     let (widths, demands) = match grid.display() {
         GridDisplay::Cells => (cells_widths, cells_demands),
-        GridDisplay::SummaryAlone => (alone_widths, alone_demands),
+        GridDisplay::SummaryAlone => {
+            let widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
+            let mut demands = cells.demands(&widths);
+            add_readout_rows(&mut demands, &widths);
+            (widths, demands)
+        },
     };
     PreparedGrid {
         drawing,

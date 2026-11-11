@@ -228,7 +228,7 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
 fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout {
     let kind = if usize::from(content_width)
         < target_col_width_from(target_entries.iter())
-            + source_col_width_from(target_entries)
+            + source_col_width_from(target_entries.iter())
             + panes::RunTargetKind::padded_label_width()
             + 2
     {
@@ -242,20 +242,16 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     } else {
         panes::RunTargetKind::padded_label_width()
     };
-    let source = source_col_width_from(target_entries);
+    let source = source_col_width_from(target_entries.iter());
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
     let target_wanted = target_col_width_from(target_entries.iter());
-    let target_min = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
-    let source_min = SOURCE_MIN_WIDTH;
-    let target_budget = if text_budget >= source_min + target_min {
-        text_budget.saturating_sub(source_min)
+    let source_min = columns::display_width(SOURCE_HEADER);
+    let source = if text_budget >= target_wanted + source_min {
+        source.min(text_budget - target_wanted)
     } else {
-        text_budget + usize::from(TARGET_TABLE_COLUMN_SPACING)
+        0
     };
-    let target = target_wanted.min(target_budget);
-    let source = source.min(text_budget.saturating_sub(target));
-    let source = if source >= source_min { source } else { 0 };
     let target = text_budget.saturating_sub(source)
         + usize::from(source == 0) * usize::from(TARGET_TABLE_COLUMN_SPACING);
     Layout {
@@ -310,6 +306,14 @@ fn build_rows(
     worktree_sources.dedup();
     let labels = project_list::differing_path_labels(&worktree_sources);
     let fitted = project_list::fit_distinct_path_labels(&labels, layout.source);
+    let mut package_sources: Vec<String> = target_entries
+        .iter()
+        .filter(|entry| !matches!(entry.source.kind, TargetSourceKind::Worktree))
+        .map(|entry| entry.source.label().to_string())
+        .collect();
+    package_sources.sort();
+    package_sources.dedup();
+    let package_labels = project_list::fit_distinct_path_labels(&package_sources, layout.source);
     target_entries
         .iter()
         .enumerate()
@@ -323,9 +327,10 @@ fn build_rows(
                         .binary_search_by(|source| source.as_str().cmp(entry.source.label()))
                         .map(|index| fitted[index].clone())
                         .unwrap_or_default(),
-                    TargetSourceKind::WorkspaceRoot | TargetSourceKind::Member => {
-                        render::truncate_with_ellipsis(entry.source.label(), layout.source, "…")
-                    },
+                    TargetSourceKind::WorkspaceRoot | TargetSourceKind::Member => package_sources
+                        .binary_search_by(|source| source.as_str().cmp(entry.source.label()))
+                        .map(|index| package_labels[index].clone())
+                        .unwrap_or_default(),
                 },
                 layout,
             )
@@ -356,10 +361,7 @@ fn build_header_row(layout: &Layout) -> Row<'static> {
         header_style,
     ))];
     if layout.source > 0 {
-        cells.push(Cell::from(Span::styled(
-            render::truncate_with_ellipsis(SOURCE_HEADER, layout.source, "…"),
-            header_style,
-        )));
+        cells.push(Cell::from(Span::styled(SOURCE_HEADER, header_style)));
     }
     cells.push(Cell::from(
         Line::from(Span::styled("Kind ", header_style)).alignment(Alignment::Right),
@@ -379,7 +381,7 @@ pub(in crate::tui::panes) fn minimum_width() -> u16 {
     .unwrap_or(u16::MAX)
 }
 
-/// Pane width for whole target names and the Source and Kind headers.
+/// Pane width for whole target names, whole Source labels and the Kind header.
 pub(super) fn preferred_width(data: &TargetsData) -> u16 {
     if data.binaries.is_empty() && data.examples.is_empty() && data.benches.is_empty() {
         return minimum_width();
@@ -390,8 +392,8 @@ pub(super) fn preferred_width(data: &TargetsData) -> u16 {
         .chain(&data.examples)
         .chain(&data.benches);
     u16::try_from(
-        target_col_width_from(entries)
-            + columns::display_width(SOURCE_HEADER)
+        target_col_width_from(entries.clone())
+            + source_col_width_from(entries)
             + panes::RunTargetKind::padded_label_width()
             + usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT
             + tui_pane::BLOCK_BORDER_WIDTH,
@@ -411,9 +413,8 @@ fn target_col_width_from<'a>(target_entries: impl Iterator<Item = &'a TargetEntr
 
 /// Width of the Source column: the longest label among the entries, or
 /// the header text if it is wider.
-fn source_col_width_from(target_entries: &[TargetEntry]) -> usize {
+fn source_col_width_from<'a>(target_entries: impl Iterator<Item = &'a TargetEntry>) -> usize {
     let max_entry_width = target_entries
-        .iter()
         .map(|entry| columns::display_width(entry.source.label()))
         .max()
         .unwrap_or(0);
@@ -480,7 +481,7 @@ mod tests {
         let content_width = 80;
         let kind = RunTargetKind::padded_label_width();
         let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
-        let source = source_col_width_from(&target_entries);
+        let source = source_col_width_from(target_entries.iter());
 
         let layout = compute_layout(&target_entries, content_width);
 
@@ -508,7 +509,7 @@ mod tests {
         ];
         let kind = RunTargetKind::padded_label_width();
         let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
-        let source = source_col_width_from(&target_entries);
+        let source = source_col_width_from(target_entries.iter());
         let target_budget = target_col_width_from(target_entries.iter()).saturating_sub(6);
         let content_width = u16::try_from(kind + gaps + source + target_budget).unwrap_or(u16::MAX);
 

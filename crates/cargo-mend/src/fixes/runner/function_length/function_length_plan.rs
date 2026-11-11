@@ -10,6 +10,7 @@ use proc_macro2::LineColumn;
 use super::formatter;
 use super::formatter::Formatter;
 use super::function_collector;
+use super::function_collector::FunctionBody;
 use super::function_collector::LengthExemption;
 use crate::fixes::imports;
 use crate::fixes::imports::ImportSource;
@@ -19,6 +20,7 @@ use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::runner::FixScans;
 use crate::reporting::ExecutionNotice;
 use crate::reporting::NoticeKind;
+use crate::reporting::PassEdits;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
 
@@ -71,6 +73,34 @@ impl FunctionLengthPlan {
         package_roots: &[PathBuf],
         workspace: &Path,
     ) -> Result<Self> {
+        if proposals.is_empty() {
+            return Ok(Self::default());
+        }
+        let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
+        let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+        let limit = formatter::threshold(workspace)?;
+        let paths = fixes.iter().map(|fix| &fix.path).collect::<BTreeSet<_>>();
+        let changes_function =
+            paths
+                .into_iter()
+                .try_fold(false, |changed, path| -> Result<bool> {
+                    if changed || !path.is_file() {
+                        return Ok(changed);
+                    }
+                    let original = std::fs::read_to_string(path)?;
+                    let Ok(functions) = function_collector::collect(&original) else {
+                        return Ok(true);
+                    };
+                    Ok(functions
+                        .iter()
+                        .any(|function| needs_measurement(function, path, &fixes, limit)))
+                })?;
+        if !changes_function {
+            return Ok(Self {
+                fixes,
+                ..Self::default()
+            });
+        }
         Self::with_formatter(
             proposals,
             dependent_passes,
@@ -167,14 +197,10 @@ impl FunctionLengthPlan {
                 .iter()
                 .enumerate()
                 .filter(|(_, function)| {
-                    function.lines <= limit
-                        && matches!(function.length_exemption, LengthExemption::Limited)
+                    needs_measurement(function, path, fixes, limit)
                         && !self.retained.iter().any(|kept| {
                             kept.source.path == *path && kept.source.range == function.range
                         })
-                        && fixes
-                            .iter()
-                            .any(|fix| fix.path == *path && touches(&function.range, fix))
                 })
                 .collect::<Vec<_>>();
             if candidates.is_empty() {
@@ -308,6 +334,31 @@ impl FunctionLengthPlan {
     }
 }
 
+fn needs_measurement(
+    function: &FunctionBody,
+    path: &Path,
+    fixes: &ValidatedFixSet,
+    limit: usize,
+) -> bool {
+    if function.lines > limit || !matches!(function.length_exemption, LengthExemption::Limited) {
+        return false;
+    }
+    // Each byte permits two lines, including punctuation inserted by rustfmt.
+    let (edits, bytes) = fixes
+        .iter()
+        .filter(|fix| fix.path == path && touches(&function.range, fix))
+        .fold(
+            (PassEdits::Unchanged, function.range.len()),
+            |(_, bytes), fix| {
+                (
+                    PassEdits::Written,
+                    bytes.saturating_add(fix.replacement.len()),
+                )
+            },
+        );
+    edits == PassEdits::Written && bytes.saturating_mul(2) > limit
+}
+
 const fn touches(range: &Range<usize>, fix: &UseFix) -> bool {
     if fix.start == fix.end {
         (range.start == fix.start && range.end == fix.end)
@@ -401,6 +452,7 @@ fn has_surviving_reference(
 mod tests {
     use anyhow::Context;
 
+    use crate::fixes::imports::FixSetPresence;
     use crate::fixes::runner::function_length::FunctionLengthFixture;
     use crate::fixes::runner::function_length::constants::CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD;
     use crate::reporting::Report;
@@ -434,7 +486,7 @@ mod tests {
         crate::fixes::imports::apply_fixes(&first.fixes)?;
         let (second, report) = fixture.plan()?;
         assert!(
-            second.fixes.is_empty(),
+            second.fixes.presence() == FixSetPresence::Empty,
             "the second fix does not change the file"
         );
         assert!(report.findings.is_empty());
@@ -480,7 +532,7 @@ mod tests {
         std::fs::remove_file(fixture.0.path().join("clippy.toml"))?;
         let (plan, report) = fixture.plan()?;
         assert!(
-            plan.fixes.is_empty(),
+            plan.fixes.presence() == FixSetPresence::Empty,
             "fixes: {:?}; notice: {:?}",
             plan.fixes,
             plan.notice()
@@ -524,7 +576,7 @@ mod tests {
         )?;
         plan.filter_report(&mut report, &selection.analysis_root)?;
         assert_eq!(report.findings.len(), count);
-        assert!(!plan.fixes.is_empty());
+        assert_eq!(plan.fixes.presence(), FixSetPresence::HasEdits);
         crate::fixes::imports::apply_fixes(&plan.fixes)?;
         assert!(
             std::fs::read_to_string(selection.manifest_dir.join("src/scenarios.rs"))?

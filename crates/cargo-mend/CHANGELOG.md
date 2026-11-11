@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Reuse one independent driver copy for each executable build across projects. Compiler fixes that leave sources unchanged reuse the preceding check. Changed compiler fixes reuse their validation analysis in the next pass. Small crates index source files sequentially. Function-length checks skip rustfmt when a conservative byte bound proves the function stays below the limit. Mend honors the selected `CARGO` executable. The progress thread wakes when Cargo finishes, so shutdown does not wait for the next progress interval.
+- `--fix` validates private re-export chains as one batch. Compiler error files identify rejected links only when a planning step contains one binding. Steps with multiple bindings use individual checks. Invalid links keep their previous sources. Independent chains and other validated fixes stay on disk.
 - `--fix` reuses workspace metadata during re-export convergence instead of starting another Cargo metadata command for each changed tree.
 - `--fix` keeps imports that name their own module instead of writing an empty `use` path. Nested modules and root re-exports remain valid.
 - `--fix` keeps a parent import when a child module uses its binding through a qualified path, including `super::` paths in macro arguments.

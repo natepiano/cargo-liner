@@ -1,4 +1,5 @@
 use super::GitCheckout;
+use super::GitReadHealth;
 use super::constants::HEAD_UNREADABLE_LABEL;
 use super::copy_data;
 use super::formatting;
@@ -181,12 +182,13 @@ impl DetailField {
 
     /// Get the display value for a git field from `GitData`.
     pub fn git_value(self, data: &GitData) -> String {
-        if self == Self::Head && data.failed_reads.field_failed(self) {
+        if self == Self::Head && data.failed_reads.field_health(self) == GitReadHealth::Unreadable {
             return match &data.checkout {
                 GitCheckout::Branch { name, .. } => format!("{name} · {GIT_UNREADABLE_LABEL}"),
                 GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
                 GitCheckout::Broken
                 | GitCheckout::AwaitingProbe
+                | GitCheckout::NotRepository
                 | GitCheckout::Unborn
                 | GitCheckout::Detached { .. } => GIT_UNREADABLE_LABEL.to_string(),
             };
@@ -194,7 +196,9 @@ impl DetailField {
         match self {
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             Self::Head => match &data.checkout {
-                GitCheckout::Broken | GitCheckout::AwaitingProbe => String::new(),
+                GitCheckout::Broken | GitCheckout::AwaitingProbe | GitCheckout::NotRepository => {
+                    String::new()
+                },
                 GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
                 GitCheckout::Unborn => "unborn".to_string(),
                 GitCheckout::Detached { short_sha } => format!("detached @ {short_sha}"),

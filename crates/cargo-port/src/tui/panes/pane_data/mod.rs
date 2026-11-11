@@ -16,6 +16,7 @@ pub use copy_data::copy_payload_for_lints;
 pub use copy_data::copy_payload_for_output;
 pub use copy_data::copy_payload_for_package;
 pub use copy_data::copy_payload_for_targets;
+pub use detail_data::CrossProjectRows;
 pub use detail_data::DetailPaneData;
 pub use detail_data::build_pane_data;
 pub use detail_data::build_pane_data_for_member;
@@ -37,6 +38,7 @@ pub use detail_field::package_selectable_row_at_or_before;
 pub use detail_field::sanitize_ansi_for_output;
 pub(in crate::tui) use formatting::GitReadHealth;
 pub(in crate::tui) use formatting::GitSyncLabels;
+pub(in crate::tui) use formatting::fit_sync_text;
 pub use formatting::format_ahead_behind;
 pub use formatting::format_date;
 pub use formatting::format_duration;
@@ -49,14 +51,12 @@ pub use git_data::GitRow;
 pub use git_data::GithubStars;
 #[cfg(test)]
 pub use git_data::HeadRelation;
-#[cfg(test)]
 pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
 pub use git_data::PullRequestSectionState;
 pub use git_data::QuotaObservation;
 pub use git_data::RemoteRow;
-#[cfg(test)]
 pub(in crate::tui) use git_data::RemoteRows;
 pub use git_data::WorktreeInfo;
 pub use git_data::git_fields_from_data;

@@ -12,6 +12,7 @@ mod wheel;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use ratatui::layout::Position;
 
@@ -50,13 +51,19 @@ use crate::KeymapPane;
 use crate::LoadedSettings;
 use crate::Mode;
 use crate::PaneFocusState;
+use crate::Repaint;
 use crate::SettingsPane;
 use crate::SettingsRowHit;
 use crate::SettingsStore;
 use crate::ToastSettings;
 use crate::Toasts;
+use crate::VisualDeadline;
+use crate::bar::cpu::CpuReading;
+use crate::bar::cpu::CpuSampler;
+use crate::bar::cpu::ProcessCpuTime;
 use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
+use crate::runner::StatusDeadline;
 
 type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
 
@@ -88,6 +95,8 @@ pub struct Framework<Ctx: AppContext> {
     /// The terminal colour policy held by this app.
     pub color_mode:            ColorMode,
     focused:                   FocusedPane<Ctx::AppPaneId>,
+    status_cpu:                CpuSampler,
+    status_deadline:           StatusDeadline,
     lifecycle_request:         LifecycleRequest,
     mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
     cycle_steps:               HashMap<Ctx::AppPaneId, CycleStep<Ctx>>,
@@ -119,22 +128,51 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// both lifecycle flags cleared.
     #[must_use]
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
+        let now = Instant::now();
+        let mut status_cpu = CpuSampler::new();
+        status_cpu.sample(now, ProcessCpuTime::read());
         Self {
-            color_mode:            ColorMode::Colored,
-            focused:               initial_focus,
-            lifecycle_request:     LifecycleRequest::None,
-            mode_queries:          HashMap::new(),
-            cycle_steps:           HashMap::new(),
-            copy_resolvers:        HashMap::new(),
-            pane_order:            Vec::new(),
-            tab_stops:             Vec::new(),
-            overlay:               None,
-            keymap_pane:           KeymapPane::new(),
-            settings_pane:         SettingsPane::new(),
+            color_mode: ColorMode::Colored,
+            focused: initial_focus,
+            status_cpu,
+            status_deadline: StatusDeadline::new(now),
+            lifecycle_request: LifecycleRequest::None,
+            mode_queries: HashMap::new(),
+            cycle_steps: HashMap::new(),
+            copy_resolvers: HashMap::new(),
+            pane_order: Vec::new(),
+            tab_stops: Vec::new(),
+            overlay: None,
+            keymap_pane: KeymapPane::new(),
+            settings_pane: SettingsPane::new(),
             global_shortcuts_pane: GlobalShortcutsPane::new(),
-            settings_store:        SettingsStore::empty(),
-            toasts:                Toasts::new(),
+            settings_store: SettingsStore::empty(),
+            toasts: Toasts::new(),
         }
+    }
+
+    /// Read the CPU reading held between status ticks.
+    pub(crate) const fn status_cpu_reading(&self) -> CpuReading { self.status_cpu.reading() }
+
+    /// Read the next whole second of the framework uptime.
+    ///
+    /// An app with its own event loop wakes no later than this deadline.
+    #[must_use]
+    pub const fn status_visual_deadline(&self) -> VisualDeadline {
+        self.status_deadline.visual_deadline()
+    }
+
+    /// Sample CPU once when the status deadline passes.
+    ///
+    /// An app with its own event loop calls this before each frame and
+    /// draws when it returns [`Repaint::Needed`].
+    #[must_use]
+    pub fn tick_status(&mut self, now: Instant) -> Repaint {
+        let repaint = self.status_deadline.take_tick(now);
+        if repaint == Repaint::Needed {
+            self.status_cpu.sample(now, ProcessCpuTime::read());
+        }
+        repaint
     }
 
     /// Construct a framework and install settings loaded through the
@@ -311,8 +349,14 @@ impl<Ctx: AppContext> Framework<Ctx> {
                     Ok(()) => CopyOutcome::Copied {
                         label: payload.label,
                     },
-                    Err(reason) if reason.is_unavailable() => CopyOutcome::Unavailable { reason },
-                    Err(reason) => CopyOutcome::Failed { reason },
+                    Err(clipboard_error) if clipboard_error.is_unavailable() => {
+                        CopyOutcome::Unavailable {
+                            reason: clipboard_error,
+                        }
+                    },
+                    Err(clipboard_error) => CopyOutcome::Failed {
+                        reason: clipboard_error,
+                    },
                 }
             },
         }

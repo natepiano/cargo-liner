@@ -5,6 +5,32 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
+use cargo_berth_test_support::FIRST_RUN;
+use cargo_berth_test_support::SECOND_RUN;
+use integration_templates::CHECKPOINT_WITH_LATER_WORK;
+use integration_templates::ENDED_FIRST_COVER;
+use integration_templates::MERGE_EXTENT_LANES_READY;
+use integration_templates::RELEASE_LANE_READY;
+use integration_templates::STATE as INTEGRATION_STATE;
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER_CHECKOUT;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::ReleasedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
+use target_rebase_templates::ADVANCED_TARGET_CHECKPOINT;
+use target_rebase_templates::MISSING_TARGET_CHECKPOINT;
+use target_rebase_templates::STATE as TARGET_REBASE_STATE;
+
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
@@ -22,6 +48,12 @@ mod linked_checkout;
 
 #[path = "support/reanchoring_templates.rs"]
 mod reanchoring_templates;
+
+#[path = "support/target_rebase_templates.rs"]
+mod target_rebase_templates;
+
+#[path = "support/integration_templates.rs"]
+mod integration_templates;
 
 #[path = "support/reanchoring.rs"]
 mod reanchoring;
@@ -130,7 +162,6 @@ const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FAILED_REFERENCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FAILED_REFERENCE";
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_UNSPAWNABLE_DIAGNOSTIC: &str = "The reservation ledger could not be read: could not run git: No such file or directory (os error 2)";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_COMMIT_TAG: &str = "initial-state";
@@ -183,7 +214,6 @@ const REFERENCE_QUERY_COUNT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_QUER
 const REFERENCE_TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_TRACE";
 const RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 
@@ -203,7 +233,9 @@ mod integration_cover {
     use cargo_berth_test_support::reservation_row;
     use cargo_berth_test_support::worktree_identity_and_marker_run;
 
+    use super::ENDED_FIRST_COVER;
     use super::FIRST_RUN;
+    use super::INTEGRATION_STATE;
     use super::SECOND_RUN;
 
     #[test]
@@ -322,9 +354,12 @@ mod integration_cover {
         for merge_commit in [true, false] {
             repo.restore(&lane_work);
             if merge_commit {
-                repo.merge_by_commit("landing-lane");
+                repo.git(
+                    &repo.integration,
+                    &["merge", "--no-ff", "--no-edit", "landing-lane"],
+                );
             } else {
-                repo.merge_fast_forward("landing-lane");
+                repo.git(&repo.integration, &["merge", "--ff-only", "landing-lane"]);
             }
             let lane_landed = repo.board();
             assert_eq!(
@@ -378,19 +413,9 @@ mod integration_cover {
 
     #[test]
     fn a_later_lane_gets_a_new_cover_after_the_previous_cover_ends() {
-        let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
-        let first = repo.lane("first-cover-lane", "integration");
-        let claimed = repo.claim(&first, "file:first.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let _ = repo.board();
-        let first_cover = repo.cover_claims()[0]["reservation_id"]
-            .as_str()
-            .expect("first cover ID")
-            .to_owned();
-        repo.commit_file(&first, "first.txt", "first\n", "first lane work");
-        repo.merge_fast_forward("first-cover-lane");
-        let _ = repo.board();
-        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+        let repo = IntegrationRepository::from_recorded_template(ENDED_FIRST_COVER);
+        let first_cover = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+            .expect("first cover id should read");
         let landed = repo.board();
         assert_eq!(
             reservation_row(&landed, &first_cover)["lifecycle"]["stage"],
@@ -833,24 +858,17 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 
 #[test]
 fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
-    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("target-rebase-lane", "integration");
-    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "lane.txt", "lane work\n", "lane work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    repo.commit_file(
-        &repo.integration,
-        "new-target.txt",
-        "new target work\n",
-        "advance integration",
-    );
-    let target_tip = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let repo = IntegrationRepository::from_recorded_template(ADVANCED_TARGET_CHECKPOINT);
+    let lane = repo
+        .root()
+        .join(".git/fixture-worktrees/target-rebase-lane");
+    let target_rebase_templates::TargetCheckpoint {
+        id,
+        anchor: target_tip,
+    } = serde_json::from_slice(
+        &fs::read(repo.root().join(TARGET_REBASE_STATE)).expect("target checkpoint should read"),
+    )
+    .expect("target checkpoint should decode");
     repo.git(&lane, &["rebase", "integration"]);
     let observed = repo.run(&lane, &["board", "--json"]);
     assert_success(&observed);
@@ -870,19 +888,17 @@ fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
 
 #[test]
 fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
-    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("missing-target-rebase-lane", "integration");
-    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let id = json(&claimed)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    repo.commit_file(&lane, "lane.txt", "lane work\n", "lane work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
-    assert_success(&checkpoint);
-    repo.commit_file(repo.root(), "new-trunk.txt", "new trunk\n", "advance trunk");
-    let trunk_tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    let repo = IntegrationRepository::from_recorded_template(MISSING_TARGET_CHECKPOINT);
+    let lane = repo
+        .root()
+        .join(".git/fixture-worktrees/missing-target-rebase-lane");
+    let target_rebase_templates::TargetCheckpoint {
+        id,
+        anchor: trunk_tip,
+    } = serde_json::from_slice(
+        &fs::read(repo.root().join(TARGET_REBASE_STATE)).expect("target checkpoint should read"),
+    )
+    .expect("target checkpoint should decode");
     repo.remove_integration_branch();
     repo.git(&lane, &["rebase", "main"]);
 
@@ -1109,6 +1125,26 @@ fn unreadable_rebase_onto_errors_capture_without_writing_a_marker() {
 #[test]
 fn split_checkpoint_survives_switching_the_issuing_checkout_before_board() {
     reanchoring::split_checkpoint_survives_switching_the_issuing_checkout_before_board();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_switched_checkout_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_switched_checkout_checkpoint_outstanding();
+}
+
+#[test]
+fn dropping_a_hunk_after_interactive_checkpoint_split_keeps_it_outstanding() {
+    reanchoring::dropping_a_hunk_after_interactive_checkpoint_split_keeps_it_outstanding();
+}
+
+#[test]
+fn dropping_a_hunk_after_soft_active_split_keeps_it_outstanding() {
+    reanchoring::dropping_a_hunk_after_soft_active_split_keeps_it_outstanding();
+}
+
+#[test]
+fn dropping_a_hunk_after_soft_checkpoint_split_keeps_it_outstanding() {
+    reanchoring::dropping_a_hunk_after_soft_checkpoint_split_keeps_it_outstanding();
 }
 
 #[test]
@@ -1417,12 +1453,14 @@ fn release_removes_only_the_marker_for_a_run_without_other_active_reservations()
 
 #[test]
 fn a_session_checks_its_held_path_without_waiting_for_the_mutation_lock() {
-    let repository = initialized_repository();
+    // The template holds the foreign checkout, its live claim on `foreign.rs` and its work.
+    let repository = LIVE_FOREIGN_HOLDER.instantiate();
     let root = repository.path();
-    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "live-holder");
-    assert_success(&claim(&foreign_root, "file:foreign.rs", SECOND_RUN));
-    fs::write(foreign_root.join("foreign.rs"), "live foreign work\n")
-        .expect("foreign holder should have work to observe");
+    assert!(
+        root.join(LIVE_FOREIGN_HOLDER_CHECKOUT)
+            .join("foreign.rs")
+            .is_file()
+    );
 
     let session = "held-lock-session";
     let claimed = run_berth_with_session(root, &["check", "file:held.rs", "--json"], session);
@@ -2493,10 +2531,12 @@ mod merge_extent {
     use std::path::PathBuf;
     use std::process::Output;
 
+    use cargo_berth_test_support::FIRST_RUN;
     use cargo_berth_test_support::GitDriver;
     use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
     use cargo_berth_test_support::IntegrationRepository;
     use cargo_berth_test_support::OptionalLocks;
+    use cargo_berth_test_support::SECOND_RUN;
     use cargo_berth_test_support::assert_success;
     use cargo_berth_test_support::berth_command;
     use cargo_berth_test_support::is_merge_extent_observation;
@@ -2505,8 +2545,13 @@ mod merge_extent {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::CHECKPOINT_WITH_LATER_WORK;
+    use super::INTEGRATION_STATE;
+    use super::MERGE_EXTENT_LANES_READY;
+    use super::RELEASE_LANE_READY;
     use super::RETENTION_REF_PREFIX;
     use super::SESSION_MAPPING_PATH;
+    use super::integration_templates::CheckpointWithLaterWork;
 
     /// The built binary is also the only berth executable git hooks may invoke.
     const BERTH: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -2521,9 +2566,6 @@ mod merge_extent {
         ],
     };
     /// Distinct runs allow a shared checkout race to be tested without a second account.
-    const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-    /// A later run in the holder's checkout.
-    const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
     /// The independent branch making edit requests.
     const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
     /// Journal truth lives in the main checkout's common git directory.
@@ -2533,18 +2575,10 @@ mod merge_extent {
 
     #[test]
     fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
-        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
-        let a = repo.lane("lane-a", "integration");
-        let b = repo.lane("lane-b", "integration");
-        let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
-        assert_success(&a_claim);
-        let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane A reservation id")
-            .to_owned();
-        let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
-        assert_success(&b_claim);
-        repo.commit_file(&a, "shared.txt", "lane A\n", "lane A work");
+        let repo = IntegrationRepository::from_recorded_template(MERGE_EXTENT_LANES_READY);
+        let b = repo.root().join(".git/fixture-worktrees/lane-b");
+        let a_id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+            .expect("lane A reservation id should read");
         let before = repo.board();
         assert_eq!(
             snapshot(&before, &a_id)["merge_extent"]["status"],
@@ -2555,9 +2589,12 @@ mod merge_extent {
         for merge_commit in [true, false] {
             repo.restore(&lane_work);
             if merge_commit {
-                repo.merge_by_commit("lane-a");
+                repo.git(
+                    &repo.integration,
+                    &["merge", "--no-ff", "--no-edit", "lane-a"],
+                );
             } else {
-                repo.merge_fast_forward("lane-a");
+                repo.git(&repo.integration, &["merge", "--ff-only", "lane-a"]);
             }
             let after = repo.board();
             assert_eq!(
@@ -2733,21 +2770,14 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::from_recorded_template(
-            super::edges_templates::INITIAL_INTEGRATION_PAIR,
-        );
-        let lane = repo.lane("partly-landed-lane", "integration");
-        let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("reservation id")
-            .to_owned();
-        repo.commit_file(&lane, "checkpoint.txt", "checkpoint\n", "checkpoint work");
-        let checkpoint_tip = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
-        let checkpointed = repo.run(&lane, &["release", &id, "--json"]);
-        assert_success(&checkpointed);
-        repo.commit_file(&lane, "later.txt", "later\n", "later work");
+        let repo = IntegrationRepository::from_recorded_template(CHECKPOINT_WITH_LATER_WORK);
+        let CheckpointWithLaterWork {
+            reservation_id: id,
+            checkpoint_tip,
+        } = serde_json::from_slice(
+            &fs::read(repo.root().join(INTEGRATION_STATE)).expect("checkpoint state should read"),
+        )
+        .expect("checkpoint state should decode");
         repo.git(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
         repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
         repo.git(&repo.integration, &["switch", "--quiet", "--detach"]);
@@ -2780,15 +2810,9 @@ mod merge_extent {
 
     #[test]
     fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
-        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
-        let lane = repo.lane("landed-lane", "integration");
-        let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("reservation id")
-            .to_owned();
-        repo.commit_file(&lane, "landed.txt", "landed\n", "landed lane");
+        let repo = IntegrationRepository::from_recorded_template(RELEASE_LANE_READY);
+        let id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+            .expect("lane reservation id should read");
         repo.merge_by_commit("landed-lane");
         let released = repo.board();
         assert_eq!(
@@ -4074,7 +4098,8 @@ mod merge_extent {
                     .filter(|line| line.contains("merge-tree") && line.contains("--name-only"))
                     .count(),
                 expected_merge_queries,
-                "only changed keys repeat the merge query: {queries}"
+                "only changed keys repeat the merge query: {queries}; {}",
+                json(&output)
             );
         }
     }

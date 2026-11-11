@@ -37,62 +37,43 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
     const CHILD_MODE: &str = "CARGO_BERTH_SCRATCH_PROOF";
     const NAME: &str = "scratch_wrapper_names_leaks_and_preserves_clean_panics";
     if let Ok(mode) = env::var(CHILD_MODE) {
-        if mode == "panic" {
-            let temporary = tempfile::tempdir()?;
-            let fixture = cargo_berth_test_support::fixture_tempdir("panic-fixture-");
-            assert_eq!(temporary.path().parent(), fixture.path().parent());
-            eprintln!("deliberate panic after TempDir ownership is established");
-            panic::resume_unwind(Box::new("exercise scratch cleanup while unwinding"));
-        }
-        if mode == "exit" {
-            std::process::exit(7);
-        }
-        if mode == "signal" {
-            rustix::process::kill_process(
-                rustix::process::getpid(),
-                rustix::process::Signal::TERM,
-            )?;
-            return Err("signal proof process should terminate".into());
-        }
-        // Only this subprocess writes a deliberate leak; the outer TempDir owns it.
-        let root = match mode.as_str() {
-            "tmp" => env::temp_dir(),
-            "fixture" => {
-                let fixture = cargo_berth_test_support::fixture_tempdir("proof-");
-                fixture
-                    .path()
-                    .parent()
-                    .ok_or("fixture needs a parent")?
-                    .to_owned()
-            },
-            _ => return Err("unknown scratch proof mode".into()),
-        };
-        let discovery = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(&root)
-            .bounded_output()?;
-        assert!(!discovery.status.success());
-        assert!(String::from_utf8(discovery.stderr)?.contains("not a git repository"));
-        fs::create_dir(root.join("deliberately-left-folder"))?;
-        return Ok(());
+        return run_scratch_proof_child(&mode);
     }
 
     let wrapper =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/check-test-scratch.sh");
-    for mode in ["tmp", "fixture", "panic", "exit", "signal"] {
+    for mode in ["tmp", "fixture", "panic", "exit", "signal", "memory-full"] {
         let proof = cargo_berth_test_support::fixture_tempdir("scratch-proof-");
         let binaries = proof.path().join("debug/deps");
         fs::create_dir_all(&binaries)?;
         let executable = binaries.join("proof-test");
         symlink(env::current_exe()?, &executable)?;
-        let output = Command::new(&wrapper)
+        let private = proof.path().join("tmp/cargo-berth-templates/private");
+        let mut command = Command::new(&wrapper);
+        command
             .arg(executable)
             .args(["--exact", NAME, "--nocapture"])
             .env(CHILD_MODE, mode)
-            .env("NEXTEST_TEST_NAME", format!("{NAME}::{mode}"))
-            .bounded_output()?;
+            .env("NEXTEST_TEST_NAME", format!("{NAME}::{mode}"));
+        if mode == "memory-full" {
+            let commands = proof.path().join("full-memory");
+            fs::create_dir(&commands)?;
+            DirectorySnapshot::write_shared_shell_script(
+                &commands.join("df"),
+                "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\ntmpfs 1048576 1048576 0 100%% /dev/shm\\n'\n",
+            );
+            let path = env::join_paths(std::iter::once(commands).chain(env::split_paths(
+                &env::var_os("PATH").ok_or("the proof needs PATH")?,
+            )))?;
+            command
+                .env("PATH", path)
+                .env_remove("CARGO_BERTH_TEST_SCRATCH_PARENT")
+                .env("CARGO_BERTH_SCRATCH_EXPECTED_PARENT", &private);
+        } else {
+            command.env("CARGO_BERTH_TEST_SCRATCH_PARENT", &private);
+        }
+        let output = command.bounded_output()?;
         let stderr = String::from_utf8(output.stderr)?;
-        let private = proof.path().join("tmp/cargo-berth-templates/private");
         let remaining = fs::read_dir(&private)?.collect::<Result<Vec<_>, _>>()?;
         if matches!(mode, "tmp" | "fixture") {
             assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -100,9 +81,13 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
                 stderr.contains(&format!("test {NAME}::{mode} left scratch paths:")),
                 "{stderr}"
             );
-            assert_eq!(remaining.len(), 1);
-            let leaked = remaining[0].path().join("deliberately-left-folder");
-            assert!(leaked.is_dir());
+            assert_eq!(remaining.len(), 0);
+            let leaked = stderr
+                .lines()
+                .find(|line| line.starts_with("  "))
+                .map(|line| Path::new(line.trim()))
+                .ok_or("the wrapper should report the leaked path")?;
+            assert!(!leaked.exists());
             assert!(stderr.contains(&leaked.display().to_string()), "{stderr}");
             println!("{mode}: {stderr}");
         } else {
@@ -111,7 +96,11 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
             } else {
                 assert_eq!(
                     output.status.code(),
-                    Some(if mode == "panic" { 101 } else { 7 }),
+                    Some(match mode {
+                        "panic" => 101,
+                        "memory-full" => 0,
+                        _ => 7,
+                    }),
                     "{stderr}"
                 );
             }
@@ -128,9 +117,60 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Execute one scratch ownership scenario in the wrapper's child process.
+fn run_scratch_proof_child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if mode == "memory-full" {
+        let expected = env::var_os("CARGO_BERTH_SCRATCH_EXPECTED_PARENT")
+            .ok_or("the full-memory proof needs its disk parent")?;
+        assert_eq!(env::temp_dir().parent(), Some(Path::new(&expected)));
+        return Ok(());
+    }
+    if mode == "panic" {
+        let temporary = tempfile::tempdir()?;
+        let fixture = cargo_berth_test_support::fixture_tempdir("panic-fixture-");
+        assert_eq!(temporary.path().parent(), fixture.path().parent());
+        eprintln!("deliberate panic after TempDir ownership is established");
+        panic::resume_unwind(Box::new("exercise scratch cleanup while unwinding"));
+    }
+    if mode == "exit" {
+        std::process::exit(7);
+    }
+    if mode == "signal" {
+        rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)?;
+        return Err("signal proof process should terminate".into());
+    }
+    // Only this subprocess creates a deliberate leak. The wrapper reports and removes it.
+    let root = match mode {
+        "tmp" => env::temp_dir(),
+        "fixture" => {
+            let fixture = cargo_berth_test_support::fixture_tempdir("proof-");
+            fixture
+                .path()
+                .parent()
+                .ok_or("fixture needs a parent")?
+                .to_owned()
+        },
+        _ => return Err("unknown scratch proof mode".into()),
+    };
+    let discovery = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&root)
+        .bounded_output()?;
+    assert!(!discovery.status.success());
+    assert!(String::from_utf8(discovery.stderr)?.contains("not a git repository"));
+    fs::create_dir(root.join("deliberately-left-folder"))?;
+    Ok(())
+}
+
 #[test]
 fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
-    let temporary = cargo_berth_test_support::fixture_tempdir("shared-script-");
+    // This assertion checks hard links on the cache filesystem.
+    let parent = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cargo-berth-templates/private");
+    fs::create_dir_all(&parent).expect("cache fixture parent should exist");
+    let temporary = tempfile::Builder::new()
+        .prefix("shared-script-")
+        .tempdir_in(parent)
+        .expect("script fixture should share the cache filesystem");
     let script = temporary.path().join("script");
     DirectorySnapshot::write_shared_shell_script(&script, "#!/bin/sh\nprintf cache-root\n");
     let installed = fs::metadata(&script).expect("installed script should exist");

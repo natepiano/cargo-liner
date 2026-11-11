@@ -407,6 +407,10 @@ fn fix_does_not_introduce_self_for_same_module_child_imports() {
 name = "fix_plain_child_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -455,6 +459,10 @@ fn fix_preserves_pub_use_visibility() {
 name = "fix_pub_use_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -503,6 +511,10 @@ fn fix_preserves_pub_crate_use_visibility() {
 name = "fix_pub_crate_use_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -834,6 +846,10 @@ fn already_local_imports_are_not_reported() {
 name = "already_local_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -885,6 +901,10 @@ fn top_level_peer_imports_are_not_reported() {
 name = "top_level_peer_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -926,6 +946,10 @@ fn grouped_imports_are_ignored_safely() {
 name = "grouped_import_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");
@@ -1075,6 +1099,10 @@ fn fix_leaves_a_path_attached_module_import_alone() {
 name = "path_attribute_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write fixture manifest");

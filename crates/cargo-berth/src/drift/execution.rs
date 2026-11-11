@@ -385,7 +385,7 @@ fn execute_inner(
         repository_snapshot,
         path_case,
     )?;
-    let mutation_context = DriftMutationContext {
+    let drift_mutation_context = DriftMutationContext {
         request,
         ledger,
         worktree_context,
@@ -397,7 +397,7 @@ fn execute_inner(
         pre_lock_foreign_path_classification: &pre_lock_foreign_path_classification,
         acting_head_containment: &acting_head_containment,
     };
-    let mut report = transact_classification(&mutation_context)?;
+    let mut report = transact_classification(&drift_mutation_context)?;
     provenance::name_incursion_commits(
         &initial_reservations,
         &observation.changes,
@@ -491,7 +491,7 @@ fn classify_foreign_paths_before_lock(
         &observation.changes,
         path_case,
     )?;
-    let committed_history = provenance::read_committed_foreign_paths(
+    let committed_foreign_path_history = provenance::read_committed_foreign_paths(
         repository,
         reservations,
         &observation.changes,
@@ -499,7 +499,7 @@ fn classify_foreign_paths_before_lock(
         repository_snapshot,
         &classification.committed_foreign_paths(),
     )?;
-    Ok(classification.with_committed_history(committed_history))
+    Ok(classification.with_committed_history(committed_foreign_path_history))
 }
 
 fn validated_drift_identity(
@@ -1011,28 +1011,36 @@ mod tests {
 
     #[test]
     fn drift_reports_no_change_when_worktree_identity_is_not_recorded() {
-        let fixture = WorktreeComparisonFixture::new();
-        let request = post_commit_request();
+        let worktree_comparison_fixture = WorktreeComparisonFixture::new();
+        let drift_request = post_commit_request();
 
-        fixture.assert_worktree_identity_absent();
+        worktree_comparison_fixture.assert_worktree_identity_absent();
         let prepared = prepare_drift_execution(
-            request,
-            &crate::git::RepositorySnapshot::new(fixture.worktree_context.clone()),
+            drift_request,
+            &crate::git::RepositorySnapshot::new(
+                worktree_comparison_fixture.worktree_context.clone(),
+            ),
             RetainedReservationSet::default(),
             &RecoveryCommandLine::current_process(),
         )
         .expect("missing post-commit identity should be accepted");
 
-        fixture.assert_worktree_identity_absent();
-        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+        worktree_comparison_fixture.assert_worktree_identity_absent();
+        assert_eq!(
+            worktree_comparison_fixture.fingerprint_cache_paths(),
+            [] as [PathBuf; 0]
+        );
         assert_unchanged_empty_report(prepared);
-        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+        assert_eq!(
+            worktree_comparison_fixture.fingerprint_cache_paths(),
+            [] as [PathBuf; 0]
+        );
     }
 
     #[test]
     fn drift_reports_no_change_while_a_git_operation_is_pending() {
-        let fixture = WorktreeComparisonFixture::new();
-        ledger::resolve_identity(&fixture.worktree_context)
+        let worktree_comparison_fixture = WorktreeComparisonFixture::new();
+        ledger::resolve_identity(&worktree_comparison_fixture.worktree_context)
             .expect("worktree identity should be available");
         for marker in [
             "rebase-merge",
@@ -1041,7 +1049,7 @@ mod tests {
             "CHERRY_PICK_HEAD",
             "REVERT_HEAD",
         ] {
-            let marker_path = fixture
+            let marker_path = worktree_comparison_fixture
                 .worktree_context
                 .administrative_directory()
                 .join(marker);
@@ -1049,15 +1057,23 @@ mod tests {
 
             let prepared = prepare_drift_execution(
                 post_commit_request(),
-                &crate::git::RepositorySnapshot::new(fixture.worktree_context.clone()),
+                &crate::git::RepositorySnapshot::new(
+                    worktree_comparison_fixture.worktree_context.clone(),
+                ),
                 RetainedReservationSet::default(),
                 &RecoveryCommandLine::current_process(),
             )
             .expect("pending operation should defer comparison");
 
-            assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+            assert_eq!(
+                worktree_comparison_fixture.fingerprint_cache_paths(),
+                [] as [PathBuf; 0]
+            );
             assert_unchanged_empty_report(prepared);
-            assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+            assert_eq!(
+                worktree_comparison_fixture.fingerprint_cache_paths(),
+                [] as [PathBuf; 0]
+            );
             fs::remove_file(marker_path).expect("operation should end");
         }
     }

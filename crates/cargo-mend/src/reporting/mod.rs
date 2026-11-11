@@ -34,6 +34,7 @@ pub(crate) use diagnostics::ReportFacts;
 pub(crate) use diagnostics::ReportSummary;
 pub(crate) use diagnostics::Severity;
 pub(crate) use diagnostics::SubtreeReexportFixFact;
+pub(crate) use diagnostics::WarningPresence;
 pub(crate) use diagnostics::WrittenVisibility;
 pub(crate) use outcome::AnalysisFailure;
 pub(crate) use outcome::AppliedFixCounts;

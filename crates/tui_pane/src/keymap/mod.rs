@@ -192,8 +192,8 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores it, alongside [`Self::set_navigation`].
-    pub(super) const fn set_navigation_render_fn(&mut self, render: ScopeRenderFn<Ctx>) {
-        self.navigation_render_fn = Some(render);
+    pub(super) const fn set_navigation_render_fn(&mut self, scope_render_fn: ScopeRenderFn<Ctx>) {
+        self.navigation_render_fn = Some(scope_render_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -204,44 +204,53 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores it, alongside [`Self::set_globals`].
-    pub(super) const fn set_app_globals_render_fn(&mut self, render: ScopeRenderFn<Ctx>) {
-        self.app_globals_render_fn = Some(render);
+    pub(super) const fn set_app_globals_render_fn(&mut self, scope_render_fn: ScopeRenderFn<Ctx>) {
+        self.app_globals_render_fn = Some(scope_render_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores it, alongside [`Self::set_globals`].
     pub(super) const fn set_app_globals_shortcut_rows_fn(
         &mut self,
-        render: ScopeShortcutRowsFn<Ctx>,
+        scope_shortcut_rows_fn: ScopeShortcutRowsFn<Ctx>,
     ) {
-        self.app_globals_shortcut_rows_fn = Some(render);
+        self.app_globals_shortcut_rows_fn = Some(scope_shortcut_rows_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores the registered navigation impl's help-row renderer.
-    pub(super) const fn set_navigation_help_rows_fn(&mut self, render: ScopeHelpRowsFn<Ctx>) {
-        self.navigation_help_rows_fn = Some(render);
+    pub(super) const fn set_navigation_help_rows_fn(
+        &mut self,
+        scope_help_rows_fn: ScopeHelpRowsFn<Ctx>,
+    ) {
+        self.navigation_help_rows_fn = Some(scope_help_rows_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores the registered app-globals impl's help-row renderer.
-    pub(super) const fn set_app_globals_help_rows_fn(&mut self, render: ScopeHelpRowsFn<Ctx>) {
-        self.app_globals_help_rows_fn = Some(render);
+    pub(super) const fn set_app_globals_help_rows_fn(
+        &mut self,
+        scope_help_rows_fn: ScopeHelpRowsFn<Ctx>,
+    ) {
+        self.app_globals_help_rows_fn = Some(scope_help_rows_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores the registered navigation impl's TOML-key collector.
-    pub(super) const fn set_navigation_toml_keys_fn(&mut self, render: ScopeTomlActionKeysFn<Ctx>) {
-        self.navigation_toml_keys_fn = Some(render);
+    pub(super) const fn set_navigation_toml_keys_fn(
+        &mut self,
+        scope_toml_action_keys_fn: ScopeTomlActionKeysFn<Ctx>,
+    ) {
+        self.navigation_toml_keys_fn = Some(scope_toml_action_keys_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// stores the registered app-globals impl's TOML-key collector.
     pub(super) const fn set_app_globals_toml_keys_fn(
         &mut self,
-        render: ScopeTomlActionKeysFn<Ctx>,
+        scope_toml_action_keys_fn: ScopeTomlActionKeysFn<Ctx>,
     ) {
-        self.app_globals_toml_keys_fn = Some(render);
+        self.app_globals_toml_keys_fn = Some(scope_toml_action_keys_fn);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -419,7 +428,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn render_navigation_slots(&self) -> Vec<RenderedSlot> {
         self.navigation_render_fn
-            .map_or_else(Vec::new, |render| render(self))
+            .map_or_else(Vec::new, |scope_render_fn| scope_render_fn(self))
     }
 
     /// Bar slots for the app-globals scope, fully resolved (label,
@@ -430,7 +439,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn render_app_globals_slots(&self) -> Vec<RenderedSlot> {
         self.app_globals_render_fn
-            .map_or_else(Vec::new, |render| render(self))
+            .map_or_else(Vec::new, |scope_render_fn| scope_render_fn(self))
     }
 
     /// Bar slots for the framework-globals scope ([`GlobalAction`]
@@ -484,10 +493,10 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             })
             .map(|action| self.framework_global_shortcut_row("Global Shortcuts", action))
             .collect::<Vec<_>>();
-        if let Some(render) = self.app_globals_shortcut_rows_fn {
-            shortcuts.extend(render(self));
+        if let Some(scope_shortcut_rows_fn) = self.app_globals_shortcut_rows_fn {
+            shortcuts.extend(scope_shortcut_rows_fn(self));
         }
-        shortcuts.sort_by_key(|row| row.description);
+        shortcuts.sort_by_key(|global_shortcut_row| global_shortcut_row.description);
         rows.extend(shortcuts);
         rows
     }
@@ -565,12 +574,12 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         {
             rows.push(framework_global_help_row("Global Shortcuts", action, self));
         }
-        if let Some(render) = self.app_globals_help_rows_fn {
-            rows.extend(render(self));
+        if let Some(scope_help_rows_fn) = self.app_globals_help_rows_fn {
+            rows.extend(scope_help_rows_fn(self));
         }
 
-        if let Some(render) = self.navigation_help_rows_fn {
-            rows.extend(render(self));
+        if let Some(scope_help_rows_fn) = self.navigation_help_rows_fn {
+            rows.extend(scope_help_rows_fn(self));
         }
 
         for id in app_pane_order {
@@ -657,8 +666,9 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 }
 
 impl<Ctx: AppContext + 'static> core::fmt::Debug for Keymap<Ctx> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Keymap")
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Keymap")
             .field("scopes", &self.scopes.len())
             .field("config_path", &self.config_path)
             .finish_non_exhaustive()
@@ -792,9 +802,9 @@ mod tests {
     #[test]
     fn empty_keymap_dispatches_unhandled_for_any_pane() {
         let keymap: Keymap<TestApp> = Keymap::new(None);
-        let mut app = fresh_app();
+        let mut test_app = fresh_app();
         assert_eq!(
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app),
             KeyOutcome::Unhandled,
         );
         assert_eq!(
@@ -816,8 +826,9 @@ mod tests {
             .build()
             .expect("build keymap with one scope");
 
-        let mut app = fresh_app();
-        let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
+        let mut test_app = fresh_app();
+        let outcome =
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut test_app);
         assert_eq!(outcome, KeyOutcome::Consumed);
     }
 
@@ -828,8 +839,9 @@ mod tests {
             .build()
             .expect("build keymap with one scope");
 
-        let mut app = fresh_app();
-        let outcome = keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
+        let mut test_app = fresh_app();
+        let outcome =
+            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut test_app);
         assert_eq!(outcome, KeyOutcome::Unhandled);
     }
 
@@ -895,9 +907,13 @@ mod tests {
         let default_keymap = Keymap::<TestApp>::builder()
             .build()
             .expect("default keymap must build");
-        let default_rows = default_keymap.global_shortcut_rows();
-        assert_eq!(default_rows.len(), GlobalAction::ALL.len());
-        assert!(default_rows.iter().any(|row| row.action == "dismiss"));
+        let default_global_shortcut_rows = default_keymap.global_shortcut_rows();
+        assert_eq!(default_global_shortcut_rows.len(), GlobalAction::ALL.len());
+        assert!(
+            default_global_shortcut_rows
+                .iter()
+                .any(|row| row.action == "dismiss")
+        );
 
         let keymap = Keymap::<TestApp>::builder()
             .framework_global_shortcut_presentation(FrameworkGlobalShortcutPresentation::new(
@@ -905,12 +921,12 @@ mod tests {
             ))
             .build()
             .expect("keymap with presentation policy must build");
-        let compact_rows = keymap.global_shortcut_rows();
-        let expected_rows = default_rows
+        let compact_global_shortcut_rows = keymap.global_shortcut_rows();
+        let expected_global_shortcut_rows = default_global_shortcut_rows
             .into_iter()
-            .filter(|row| row.action != "dismiss")
+            .filter(|global_shortcut_row| global_shortcut_row.action != "dismiss")
             .collect::<Vec<_>>();
-        assert_eq!(compact_rows, expected_rows);
+        assert_eq!(compact_global_shortcut_rows, expected_global_shortcut_rows);
         assert!(
             keymap
                 .keymap_help_rows(&[])
@@ -919,17 +935,17 @@ mod tests {
             "the full keymap editor must keep hidden compact actions"
         );
 
-        let mut app = fresh_app();
-        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut app);
-        assert!(app.framework().overlay().is_some());
-        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
-        assert!(app.framework().overlay().is_none());
+        let mut test_app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut test_app);
+        assert!(test_app.framework().overlay().is_some());
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut test_app);
+        assert!(test_app.framework().overlay().is_none());
     }
 
     #[test]
     fn is_key_bound_to_toml_key_checks_all_bindings() {
-        let dir = TempDir::new().expect("create temp keymap dir");
-        let path = dir.path().join("keymap.toml");
+        let temp_dir = TempDir::new().expect("create temp keymap dir");
+        let path = temp_dir.path().join("keymap.toml");
         fs::write(&path, "[foo]\nactivate = [\"Enter\", \"q\"]\n").expect("write keymap toml");
 
         let keymap = Keymap::<TestApp>::builder()

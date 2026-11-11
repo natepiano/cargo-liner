@@ -25,6 +25,10 @@ fn fixes_crate_ancestor_private_and_dependent_signature_boundaries_together() {
 name = "suspicious_pub_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
             ),
             (

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -204,7 +205,9 @@ pub(crate) enum MendFailure {
 
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
-    CargoCheck,
+    CargoCheck {
+        error_files: BTreeSet<PathBuf>,
+    },
     /// Automatic recovery could not supply compatible analysis for the selected
     /// units. An empty or partial report must never print as a clean crate.
     NoAnalysisProduced,
@@ -253,7 +256,7 @@ impl Display for MendFailure {
 impl Display for AnalysisFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 write!(
                     f,
                     "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
@@ -279,7 +282,7 @@ impl Display for FixValidationFailure {
             AppliedFixes::Compiler => "compiler",
         };
         let source = match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 format!("compiler failed after applying {applied_fixes} fixes")
             },
             CompilerFailureCause::NoAnalysisProduced => {
@@ -646,6 +649,8 @@ impl PubUseNotice {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use anyhow::anyhow;
 
     use super::AnalysisFailure;
@@ -696,26 +701,61 @@ mod tests {
                 OperationIntent::ReadOnly,
                 OperationIntent::ReadOnly,
                 0,
-                false,
+                OperationIntent::Apply,
             ),
-            (OperationIntent::ReadOnly, OperationIntent::DryRun, 3, true),
-            (OperationIntent::ReadOnly, OperationIntent::Apply, 3, false),
-            (OperationIntent::DryRun, OperationIntent::ReadOnly, 2, true),
-            (OperationIntent::DryRun, OperationIntent::DryRun, 5, true),
-            (OperationIntent::DryRun, OperationIntent::Apply, 3, false),
-            (OperationIntent::Apply, OperationIntent::ReadOnly, 2, false),
-            (OperationIntent::Apply, OperationIntent::DryRun, 3, true),
-            (OperationIntent::Apply, OperationIntent::Apply, 5, false),
+            (
+                OperationIntent::ReadOnly,
+                OperationIntent::DryRun,
+                3,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::ReadOnly,
+                OperationIntent::Apply,
+                3,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::ReadOnly,
+                2,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::DryRun,
+                5,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::DryRun,
+                OperationIntent::Apply,
+                3,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::ReadOnly,
+                2,
+                OperationIntent::Apply,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::DryRun,
+                3,
+                OperationIntent::DryRun,
+            ),
+            (
+                OperationIntent::Apply,
+                OperationIntent::Apply,
+                5,
+                OperationIntent::Apply,
+            ),
         ];
-        for (left, right, count, preview) in cases {
+        for (left, right, count, intent) in cases {
             let mut fix = FixNotice::from_intent(left, FixKind::Import, 2);
             fix.outcome
                 .merge(FixNotice::from_intent(right, FixKind::Import, 3).outcome);
-            let intent = if preview {
-                OperationIntent::DryRun
-            } else {
-                OperationIntent::Apply
-            };
             assert_eq!(fix, FixNotice::from_intent(intent, FixKind::Import, count));
             let mut pub_use = PubUseNotice::from_intent(left, 2, 1);
             pub_use.merge(PubUseNotice::from_intent(right, 3, 2));
@@ -771,7 +811,9 @@ mod tests {
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
         let analysis_failure = AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: BTreeSet::new(),
+            },
         };
         assert_eq!(
             analysis_failure.to_string(),

@@ -3,15 +3,54 @@ use tempfile::TempDir;
 
 use crate::support::*;
 
-fn write_manifest(temp: &TempDir, package_name: &str, features: bool) {
+/// `ManifestFeatures::Promote` adds the promote feature in `write_manifest` and
+/// `write_manifest_at`; `WithoutPromote` keeps the manifest without that feature.
+#[derive(Clone, Copy)]
+enum ManifestFeatures {
+    WithoutPromote,
+    Promote,
+}
+
+/// `has_unused_pub` returns `UnusedPublicFinding::Present` for an unused-public finding
+/// at the requested path, or `Absent` when no such finding exists.
+#[derive(Debug, PartialEq, Eq)]
+enum UnusedPublicFinding {
+    Present,
+    Absent,
+}
+
+/// `has_pub_use_fix` returns `PubUseFixAvailability::Available` for `FixSupport::PubUse`,
+/// or `Absent` when no finding offers that fix.
+#[derive(Debug, PartialEq, Eq)]
+enum PubUseFixAvailability {
+    Available,
+    Absent,
+}
+
+/// `has_suspicious_pub` returns `SuspiciousPublicFinding::Present` for a suspicious-public
+/// finding at the requested path, or `Absent` when no such finding exists.
+#[derive(Debug, PartialEq, Eq)]
+enum SuspiciousPublicFinding {
+    Present,
+    Absent,
+}
+
+/// The `facade_finding` closure returns `InternalFacadeFinding::Present` for the requested
+/// internal parent facade, or `Absent` when that facade has no finding.
+#[derive(Debug, PartialEq, Eq)]
+enum InternalFacadeFinding {
+    Present,
+    Absent,
+}
+
+fn write_manifest(temp: &TempDir, package_name: &str, features: ManifestFeatures) {
     write_manifest_at(temp.path(), package_name, features);
 }
 
-fn write_manifest_at(root: &std::path::Path, package_name: &str, features: bool) {
-    let feature_section = if features {
-        "\n[features]\npromote = []\n"
-    } else {
-        ""
+fn write_manifest_at(root: &std::path::Path, package_name: &str, features: ManifestFeatures) {
+    let feature_section = match features {
+        ManifestFeatures::Promote => "\n[features]\npromote = []\n",
+        ManifestFeatures::WithoutPromote => "",
     };
     fs::write(
         root.join("Cargo.toml"),
@@ -22,25 +61,40 @@ fn write_manifest_at(root: &std::path::Path, package_name: &str, features: bool)
     .expect("write fixture manifest");
 }
 
-fn has_unused_pub(report: &Report, path: &str) -> bool {
-    report
+fn has_unused_pub(report: &Report, path: &str) -> UnusedPublicFinding {
+    if report
         .findings
         .iter()
         .any(|finding| finding.code == DiagnosticCode::UnusedPub && finding.path == path)
+    {
+        UnusedPublicFinding::Present
+    } else {
+        UnusedPublicFinding::Absent
+    }
 }
 
-fn has_pub_use_fix(report: &Report) -> bool {
-    report
+fn has_pub_use_fix(report: &Report) -> PubUseFixAvailability {
+    if report
         .findings
         .iter()
         .any(|finding| finding.fix_support == FixSupport::PubUse)
+    {
+        PubUseFixAvailability::Available
+    } else {
+        PubUseFixAvailability::Absent
+    }
 }
 
-fn has_suspicious_pub(report: &Report, path: &str) -> bool {
-    report
+fn has_suspicious_pub(report: &Report, path: &str) -> SuspiciousPublicFinding {
+    if report
         .findings
         .iter()
         .any(|finding| finding.code == DiagnosticCode::SuspiciousPub && finding.path == path)
+    {
+        SuspiciousPublicFinding::Present
+    } else {
+        SuspiciousPublicFinding::Absent
+    }
 }
 
 #[test]
@@ -48,7 +102,11 @@ fn inactive_cfg_facade_does_not_count_as_a_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
-    write_manifest(&temp, "inactive_cfg_facade_fixture", true);
+    write_manifest(
+        &temp,
+        "inactive_cfg_facade_fixture",
+        ManifestFeatures::Promote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -59,8 +117,9 @@ fn inactive_cfg_facade_does_not_count_as_a_reexport() {
     fs::write(temp.path().join("src/a/b.rs"), "pub struct Thing;\n").expect("write facade subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !has_pub_use_fix(&report),
+    assert_eq!(
+        has_pub_use_fix(&report),
+        PubUseFixAvailability::Absent,
         "inactive facade must not create a pub-use fix: {report:#?}"
     );
 }
@@ -70,7 +129,11 @@ fn macro_generated_facade_counts_as_a_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
-    write_manifest(&temp, "macro_facade_fixture", false);
+    write_manifest(
+        &temp,
+        "macro_facade_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -81,8 +144,9 @@ fn macro_generated_facade_counts_as_a_reexport() {
     fs::write(temp.path().join("src/a/b.rs"), "pub struct Thing;\n").expect("write facade subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !has_unused_pub(&report, "src/a/b.rs"),
+    assert_eq!(
+        has_unused_pub(&report, "src/a/b.rs"),
+        UnusedPublicFinding::Absent,
         "macro facade must suppress unused_pub: {report:#?}"
     );
 }
@@ -92,7 +156,11 @@ fn path_module_and_raw_identifier_facades_use_hir_module_identity() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture module");
-    write_manifest(&temp, "path_and_raw_facade_fixture", false);
+    write_manifest(
+        &temp,
+        "path_and_raw_facade_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write facade module");
@@ -137,8 +205,9 @@ fn path_module_and_raw_identifier_facades_use_hir_module_identity() {
         }),
         "a #[path] module's self-reference must not count as an outside use: {report:#?}"
     );
-    assert!(
-        !has_unused_pub(&report, "src/a/b/type.rs"),
+    assert_eq!(
+        has_unused_pub(&report, "src/a/b/type.rs"),
+        UnusedPublicFinding::Absent,
         "raw identifier facade must suppress unused_pub: {report:#?}"
     );
     assert!(
@@ -158,7 +227,11 @@ fn spaced_facade_visibility_uses_resolved_reach(batch: &mut DiagnosticBatch) -> 
     let root = batch.add_member("spaced_facade_visibility_uses_resolved_reach", &[]);
     pin_pub_in_path(&root, PubInPath::Permitted);
     fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
-    write_manifest_at(&root, "spaced_facade_visibility_fixture", false);
+    write_manifest_at(
+        &root,
+        "spaced_facade_visibility_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
     fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
@@ -185,7 +258,11 @@ fn variant_reexport_normalizes_to_its_containing_enum(batch: &mut DiagnosticBatc
     let root = batch.add_member("variant_reexport_normalizes_to_its_containing_enum", &[]);
     pin_pub_in_path(&root, PubInPath::Permitted);
     fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
-    write_manifest_at(&root, "variant_subject_fixture", false);
+    write_manifest_at(
+        &root,
+        "variant_subject_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
     fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
@@ -234,7 +311,11 @@ fn inherent_items_follow_their_self_type_facade_subject(
     let root = batch.add_member("inherent_items_follow_their_self_type_facade_subject", &[]);
     pin_pub_in_path(&root, PubInPath::Permitted);
     fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
-    write_manifest_at(&root, "inherent_visibility_cap_fixture", false);
+    write_manifest_at(
+        &root,
+        "inherent_visibility_cap_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
     fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
@@ -282,7 +363,11 @@ fn non_applicable_named_facade_keeps_manual_cleanup_when_a_glob_blocks_it() {
     let temp = tempdir().expect("create named and glob fallback fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "named_glob_fallback_fixture", false);
+    write_manifest(
+        &temp,
+        "named_glob_fallback_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -325,7 +410,11 @@ fn ancestor_glob_targeting_descendant_module_retains_exact_pub_crate() {
     let temp = tempdir().expect("create descendant glob target fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "descendant_glob_target_fixture", false);
+    write_manifest(
+        &temp,
+        "descendant_glob_target_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -351,8 +440,9 @@ fn ancestor_glob_targeting_descendant_module_retains_exact_pub_crate() {
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/c.rs");
-    assert!(
-        !has_unused_pub(&report, "src/a/b/c.rs"),
+    assert_eq!(
+        has_unused_pub(&report, "src/a/b/c.rs"),
+        UnusedPublicFinding::Absent,
         "the ancestor glob must suppress unused_pub for Globbed: {report:#?}"
     );
     let unused_control = report
@@ -376,7 +466,11 @@ fn unused_named_facade_with_outer_glob_has_no_pub_use_fix() {
     let temp = tempdir().expect("create named facade and outer glob fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "named_facade_outer_glob_fixture", false);
+    write_manifest(
+        &temp,
+        "named_facade_outer_glob_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\npub use b::*;\n")
@@ -410,7 +504,11 @@ fn inherent_glob_retains_exact_pub_crate_through_the_self_type_module() {
     let temp = tempdir().expect("create split inherent fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture module");
-    write_manifest(&temp, "split_inherent_glob_fixture", false);
+    write_manifest(
+        &temp,
+        "split_inherent_glob_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -432,7 +530,11 @@ fn inherent_glob_retains_exact_pub_crate_through_the_self_type_module() {
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/impls.rs");
-    assert!(!has_unused_pub(&report, "src/a/b/impls.rs"), "{report:#?}");
+    assert_eq!(
+        has_unused_pub(&report, "src/a/b/impls.rs"),
+        UnusedPublicFinding::Absent,
+        "{report:#?}"
+    );
 }
 
 #[test]
@@ -440,7 +542,11 @@ fn glob_usage_is_attributed_to_the_matching_export_name() {
     let temp = tempdir().expect("create per-name glob fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
-    write_manifest(&temp, "per_name_glob_usage_fixture", false);
+    write_manifest(
+        &temp,
+        "per_name_glob_usage_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -486,7 +592,11 @@ fn raw_identifier_glob_usage_is_attributed_to_the_unraw_export_name() {
     let temp = tempdir().expect("create raw glob usage fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "raw_glob_usage_fixture", false);
+    write_manifest(
+        &temp,
+        "raw_glob_usage_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -531,7 +641,11 @@ fn raw_identifier_module_segments_match_literal_and_parsed_paths() {
     let temp = tempdir().expect("create raw module usage fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/type/inner")).expect("create raw module fixtures");
-    write_manifest(&temp, "raw_module_usage_fixture", false);
+    write_manifest(
+        &temp,
+        "raw_module_usage_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         temp.path().join("src/main.rs"),
         "mod a;\n#[path = \"../shared.rs\"]\nmod macro_only;\nfn main() {}\n",
@@ -597,7 +711,11 @@ fn extern_crate_declaration_retains_exact_pub_crate_at_a_foreign_boundary() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
-    write_manifest(&temp, "extern_crate_subject_fixture", false);
+    write_manifest(
+        &temp,
+        "extern_crate_subject_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -767,7 +885,11 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
     let fixture = tempdir().expect("create combined glob fixture dir");
     pin_pub_in_path(fixture.path(), PubInPath::Permitted);
     fs::create_dir_all(fixture.path().join("src/inactive/a/b")).expect("create fixture modules");
-    write_manifest(&fixture, "inactive_glob_facade_fixture", true);
+    write_manifest(
+        &fixture,
+        "inactive_glob_facade_fixture",
+        ManifestFeatures::Promote,
+    );
     fs::write(fixture.path().join("src/inactive.rs"), "mod a;\n").expect("write fixture main");
     fs::write(fixture.path().join("src/inactive/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
@@ -830,8 +952,9 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
     );
 
     let generated_report = &inactive_report;
-    assert!(
-        !has_unused_pub(generated_report, "src/generated/a/b.rs"),
+    assert_eq!(
+        has_unused_pub(generated_report, "src/generated/a/b.rs"),
+        UnusedPublicFinding::Absent,
         "macro glob facade must suppress unused_pub: {generated_report:#?}"
     );
 
@@ -854,7 +977,11 @@ fn private_import_defers_narrowing_until_the_import_is_removed() {
     let temp = tempdir().expect("create private import fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
-    write_manifest(&temp, "private_import_facade_fixture", false);
+    write_manifest(
+        &temp,
+        "private_import_facade_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -866,8 +993,9 @@ fn private_import_defers_narrowing_until_the_import_is_removed() {
         .expect("write unused public item");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
+    assert_eq!(
         has_unused_pub(&report, "src/a/child.rs"),
+        UnusedPublicFinding::Present,
         "the private import must not count as semantic use: {report:#?}"
     );
     assert_eq!(report.summary.fixable_with_fix, 0, "{report:#?}");
@@ -878,7 +1006,11 @@ fn crate_root_pub_crate_facade_keeps_deep_subject_allowed() {
     let temp = tempdir().expect("create crate-root facade fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "crate_root_pub_crate_facade_fixture", false);
+    write_manifest(
+        &temp,
+        "crate_root_pub_crate_facade_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         temp.path().join("src/main.rs"),
         "mod a;\npub(crate) use a::b::c::Facaded;\nfn main() { let _ = Facaded; }\n",
@@ -954,7 +1086,11 @@ fn logical_top_level_path_module_uses_top_level_diagnostics() {
     let temp = tempdir().expect("create logical top-level path fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/deep")).expect("create path module directory");
-    write_manifest(&temp, "logical_top_level_path_fixture", false);
+    write_manifest(
+        &temp,
+        "logical_top_level_path_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         temp.path().join("src/lib.rs"),
         "#[path = \"deep/odd.rs\"]\nmod facade;\npub fn entry() { facade::used(); }\n",
@@ -1046,7 +1182,11 @@ fn cfg_test_module_literal_counts_as_facade_usage_in_default_run() {
     let temp = tempdir().expect("create cfg-test module fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
-    write_manifest(&temp, "cfg_test_facade_usage_fixture", false);
+    write_manifest(
+        &temp,
+        "cfg_test_facade_usage_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         temp.path().join("src/lib.rs"),
         "mod a;\n#[cfg(test)]\nmod tests;\npub fn entry() {}\n",
@@ -1092,7 +1232,11 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
     let temp = tempdir().expect("create inline signature fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
-    write_manifest(&temp, "inline_sibling_signature_fixture", false);
+    write_manifest(
+        &temp,
+        "inline_sibling_signature_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\nmod caller;\n").expect("write outer module");
@@ -1146,7 +1290,11 @@ fn module_glob_reexport_retains_exact_pub_crate_on_enum_subjects() {
     let temp = tempdir().expect("create enum glob fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "module_glob_enum_subject_fixture", false);
+    write_manifest(
+        &temp,
+        "module_glob_enum_subject_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -1179,7 +1327,11 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     let temp = tempdir().expect("create duplicate facade fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
-    write_manifest(&temp, "duplicate_facade_fix_support_fixture", false);
+    write_manifest(
+        &temp,
+        "duplicate_facade_fix_support_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -1204,7 +1356,11 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
 
     pin_pub_in_path(alias_use.path(), PubInPath::Permitted);
     fs::create_dir_all(alias_use.path().join("src/a")).expect("create fixture module");
-    write_manifest(&alias_use, "duplicate_facade_alias_usage_fixture", false);
+    write_manifest(
+        &alias_use,
+        "duplicate_facade_alias_usage_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         alias_use.path().join("src/main.rs"),
         "mod a;\nmod caller;\nfn main() {}\n",
@@ -1227,8 +1383,9 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     .expect("write later alias use");
 
     let alias_use_report = run_mend_json(&alias_use.path().join("Cargo.toml"));
-    assert!(
-        !has_suspicious_pub(&alias_use_report, "src/a/child.rs"),
+    assert_eq!(
+        has_suspicious_pub(&alias_use_report, "src/a/child.rs"),
+        SuspiciousPublicFinding::Absent,
         "a later re-export alias used outside the facade subtree must suppress suspicious_pub: {alias_use_report:#?}"
     );
 
@@ -1239,7 +1396,7 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     write_manifest(
         &mixed_visibility,
         "duplicate_facade_mixed_visibility_fixture",
-        false,
+        ManifestFeatures::WithoutPromote,
     );
     fs::write(
         mixed_visibility.path().join("src/main.rs"),
@@ -1263,8 +1420,9 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     .expect("write narrow alias use");
 
     let mixed_visibility_report = run_mend_json(&mixed_visibility.path().join("Cargo.toml"));
-    assert!(
+    assert_eq!(
         has_suspicious_pub(&mixed_visibility_report, "src/a/child.rs"),
+        SuspiciousPublicFinding::Present,
         "usage through a narrower alias must not hide an unused wider facade: {mixed_visibility_report:#?}"
     );
 }
@@ -1274,7 +1432,11 @@ fn used_inner_super_alias_keeps_its_allowance_below_a_wider_facade() {
     let temp = tempdir().expect("create mixed-reach facade fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "used_inner_super_fixture", false);
+    write_manifest(
+        &temp,
+        "used_inner_super_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -1296,8 +1458,9 @@ fn used_inner_super_alias_keeps_its_allowance_below_a_wider_facade() {
     .expect("write super alias use");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !has_suspicious_pub(&report, "src/a/b/child.rs"),
+    assert_eq!(
+        has_suspicious_pub(&report, "src/a/b/child.rs"),
+        SuspiciousPublicFinding::Absent,
         "the used inner pub(super) alias must retain its allowance below the unused wider facade: {report:#?}"
     );
 }
@@ -1307,7 +1470,11 @@ fn used_super_alias_keeps_its_allowance_at_equal_reach() {
     let temp = tempdir().expect("create equal-reach facade fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
-    write_manifest(&temp, "used_super_equal_reach_fixture", false);
+    write_manifest(
+        &temp,
+        "used_super_equal_reach_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(
@@ -1324,8 +1491,9 @@ fn used_super_alias_keeps_its_allowance_at_equal_reach() {
     .expect("write super alias use");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !has_suspicious_pub(&report, "src/a/child.rs"),
+    assert_eq!(
+        has_suspicious_pub(&report, "src/a/child.rs"),
+        SuspiciousPublicFinding::Absent,
         "equal resolved reaches must not erase the used pub(super) spelling: {report:#?}"
     );
 }
@@ -1335,7 +1503,11 @@ fn inline_module_references_use_their_lexical_module_identity() {
     let temp = tempdir().expect("create inline lexical reference fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "inline_lexical_reference_fixture", false);
+    write_manifest(
+        &temp,
+        "inline_lexical_reference_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
     fs::write(
         temp.path().join("src/main.rs"),
         "mod child;\nmod a;\nfn main() {}\n",
@@ -1356,8 +1528,9 @@ fn inline_module_references_use_their_lexical_module_identity() {
         .expect("write unrelated nested subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
+    assert_eq!(
         has_unused_pub(&report, "src/a/b/child.rs"),
+        UnusedPublicFinding::Present,
         "a top-level super path must resolve in the file module, not its inline child: {report:#?}"
     );
 }
@@ -1504,18 +1677,24 @@ fn a_facade_a_proc_macro_reaches_is_not_reported_as_internal() {
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let facade_finding = |item: &str| {
-        report.findings.iter().any(|finding| {
+        if report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::InternalParentPubUseFacade
                 && finding.path == "app/src/tool/mod.rs"
                 && finding.item.as_deref() == Some(item)
-        })
+        }) {
+            InternalFacadeFinding::Present
+        } else {
+            InternalFacadeFinding::Absent
+        }
     };
-    assert!(
-        !facade_finding("pub use Widget"),
+    assert_eq!(
+        facade_finding("pub use Widget"),
+        InternalFacadeFinding::Absent,
         "a facade reached by macro-generated code must not be reported as internal: {report:#?}"
     );
-    assert!(
+    assert_eq!(
         facade_finding("pub use LocalOnly"),
+        InternalFacadeFinding::Present,
         "a facade used only inside its own subtree must still be reported: {report:#?}"
     );
 }

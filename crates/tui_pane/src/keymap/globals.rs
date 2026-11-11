@@ -35,6 +35,10 @@ pub trait Globals<Ctx: AppContext>: 'static {
     /// slice in order, emitting one slot per variant.
     fn render_order() -> &'static [Self::Actions];
 
+    /// Current toggle values for the shortcut viewer.
+    #[must_use]
+    fn toggle_hints(_: &Ctx) -> Vec<crate::StatusLineGlobal<Self::Actions>> { Vec::new() }
+
     /// Default keybindings.
     fn defaults() -> Bindings<Self::Actions>;
 
@@ -94,7 +98,7 @@ mod tests {
         }
 
         fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
-            |_action, _ctx| { /* no-op for the test impl */ }
+            |_action, _test_app| { /* no-op for the test impl */ }
         }
     }
 
@@ -113,20 +117,23 @@ mod tests {
 
     #[test]
     fn defaults_round_trip_through_scope_map() {
-        let map = AppGlobals::defaults().into_scope_map();
-        assert_eq!(map.action_for(&'f'.into()), Some(AppGlobalAction::Find));
+        let scope_map = AppGlobals::defaults().into_scope_map();
         assert_eq!(
-            map.action_for(&KeyCode::F(5).into()),
+            scope_map.action_for(&'f'.into()),
+            Some(AppGlobalAction::Find)
+        );
+        assert_eq!(
+            scope_map.action_for(&KeyCode::F(5).into()),
             Some(AppGlobalAction::Rescan),
         );
     }
 
     #[test]
     fn dispatcher_is_callable() {
-        let mut app = TestApp {
+        let mut test_app = TestApp {
             framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
         };
         let dispatch: fn(AppGlobalAction, &mut TestApp) = AppGlobals::dispatcher();
-        dispatch(AppGlobalAction::Find, &mut app);
+        dispatch(AppGlobalAction::Find, &mut test_app);
     }
 }

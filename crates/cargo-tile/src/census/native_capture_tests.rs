@@ -1,6 +1,7 @@
 //! The native capture transport and its worker are one displayed invocation.
 
 use super::*;
+use crate::census::command_text::CargoTransport;
 use crate::constants::CAPTURE_RUNNER_NAME;
 use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;

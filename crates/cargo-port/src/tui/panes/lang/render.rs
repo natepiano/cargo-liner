@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -22,6 +24,8 @@ use unicode_width::UnicodeWidthStr;
 use super::constants::LANG_COLUMN_GAP;
 use super::constants::LANG_HEADERS;
 use super::constants::LANG_ICON_WIDTH;
+use super::constants::LANG_RIGHT_MARGIN;
+use super::constants::LANG_SUBTOTAL_MARK;
 use super::pane::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
@@ -29,6 +33,7 @@ use crate::tui::panes::ProjectPresentation;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
 use crate::tui::project_list::ProjectPathLookup::UnknownPath;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
@@ -65,6 +70,64 @@ pub fn language_icon(language: &str) -> &'static str {
         "rusty object notation" => "RON",
         _ => "  ",
     }
+}
+
+/// The pane width that draws every language name whole.
+pub(in crate::tui::panes) fn preferred_width(stats: &LanguageStats) -> u16 {
+    let name_width = stats
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            std::iter::once(entry.language.width()).chain(
+                entry
+                    .children
+                    .iter()
+                    .map(|child| LANG_SUBTOTAL_MARK.width() + child.language.width()),
+            )
+        })
+        .max()
+        .unwrap_or(0);
+    let width = fixed_columns_width(&lang_table_widths(stats))
+        + name_width
+        + usize::from(LANG_RIGHT_MARGIN)
+        + tui_pane::BLOCK_BORDER_WIDTH;
+    u16::try_from(width)
+        .unwrap_or(u16::MAX)
+        .max(minimum_width())
+}
+
+/// The inner rows of the Languages pane for `language_rows` table rows: the
+/// header, the rows and the footer, or one row for a message.
+pub(in crate::tui::panes) fn inner_rows(language_rows: usize) -> u16 {
+    if language_rows == 0 {
+        return 1;
+    }
+    u16::try_from(language_rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+}
+
+/// The language stats of the selected project, when the scan has them.
+pub(in crate::tui) fn selected_language_stats<'a>(
+    projects: &'a ProjectList,
+    selected: Option<&Path>,
+) -> Option<&'a LanguageStats> {
+    match projects.at_path(selected.unwrap_or_else(|| Path::new(""))) {
+        Found(project) => project.language_stats.as_ref(),
+        UnknownPath | StaleRoute => None,
+    }
+}
+
+/// Cells of the fixed-width columns and of every gap between columns.
+fn fixed_columns_width(widths: &[Constraint; 7]) -> usize {
+    widths
+        .iter()
+        .map(|constraint| match constraint {
+            Constraint::Length(width) => usize::from(*width),
+            _ => 0,
+        })
+        .sum::<usize>()
+        + (widths.len() - 1) * usize::from(LANG_COLUMN_GAP)
 }
 
 pub(in crate::tui::panes) fn minimum_width() -> u16 {
@@ -137,10 +200,10 @@ fn lang_header_row() -> Row<'static> {
 }
 
 fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
-    let num_bold = Style::default()
+    let number_bold_style = Style::default()
         .fg(title_color())
         .add_modifier(Modifier::BOLD);
-    let data_bold = Style::default()
+    let data_bold_style = Style::default()
         .fg(text_default())
         .add_modifier(Modifier::BOLD);
     let [
@@ -152,39 +215,42 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
     ] = lang_totals(stats);
     Row::new(vec![
         Cell::from(""),
-        Cell::from("Total").style(data_bold),
+        Cell::from("Total").style(data_bold_style),
         Cell::from(ratatui::text::Line::from(total_files.to_string()).alignment(Alignment::Right))
-            .style(num_bold),
+            .style(number_bold_style),
         Cell::from(ratatui::text::Line::from(total_code.to_string()).alignment(Alignment::Right))
-            .style(data_bold),
+            .style(data_bold_style),
         Cell::from(
             ratatui::text::Line::from(total_comments.to_string()).alignment(Alignment::Right),
         )
-        .style(data_bold),
+        .style(data_bold_style),
         Cell::from(ratatui::text::Line::from(total_blanks.to_string()).alignment(Alignment::Right))
-            .style(data_bold),
+            .style(data_bold_style),
         Cell::from(ratatui::text::Line::from(grand_total.to_string()).alignment(Alignment::Right))
-            .style(num_bold),
+            .style(number_bold_style),
     ])
 }
 
 fn lang_entry_row(render_entry: &LangRenderEntry<'_>, name_width: usize) -> Row<'static> {
-    let (entry, parent) = match render_entry {
-        LangRenderEntry::Language(entry) => (*entry, None),
-        LangRenderEntry::Subtotal { entry, language } => (*entry, Some(*language)),
+    let (lang_entry, parent) = match render_entry {
+        LangRenderEntry::Language(lang_entry) => (*lang_entry, None),
+        LangRenderEntry::Subtotal {
+            entry: lang_entry,
+            language,
+        } => (*lang_entry, Some(*language)),
     };
     let icon = if parent.is_none() {
-        format!(" {}", language_icon(&entry.language))
+        format!(" {}", language_icon(&lang_entry.language))
     } else {
         String::new()
     };
     let label = if parent.is_some() {
-        format!("└ {}", entry.language)
+        format!("{LANG_SUBTOTAL_MARK}{}", lang_entry.language)
     } else {
-        entry.language.clone()
+        lang_entry.language.clone()
     };
     let name = render::truncate_with_ellipsis(&label, name_width, "\u{2026}");
-    let total = entry.code + entry.comments + entry.blanks;
+    let total = lang_entry.code + lang_entry.comments + lang_entry.blanks;
     let is_subtotal = parent.is_some();
     let num_style = if is_subtotal {
         Style::default().fg(theme_roles::language_subtotal_color())
@@ -204,16 +270,22 @@ fn lang_entry_row(render_entry: &LangRenderEntry<'_>, name_width: usize) -> Row<
     Row::new(vec![
         Cell::from(icon),
         Cell::from(name).style(dim_style),
-        Cell::from(ratatui::text::Line::from(entry.files.to_string()).alignment(Alignment::Right))
-            .style(num_style),
-        Cell::from(ratatui::text::Line::from(entry.code.to_string()).alignment(Alignment::Right))
-            .style(data_style),
         Cell::from(
-            ratatui::text::Line::from(entry.comments.to_string()).alignment(Alignment::Right),
+            ratatui::text::Line::from(lang_entry.files.to_string()).alignment(Alignment::Right),
+        )
+        .style(num_style),
+        Cell::from(
+            ratatui::text::Line::from(lang_entry.code.to_string()).alignment(Alignment::Right),
         )
         .style(data_style),
-        Cell::from(ratatui::text::Line::from(entry.blanks.to_string()).alignment(Alignment::Right))
-            .style(data_style),
+        Cell::from(
+            ratatui::text::Line::from(lang_entry.comments.to_string()).alignment(Alignment::Right),
+        )
+        .style(data_style),
+        Cell::from(
+            ratatui::text::Line::from(lang_entry.blanks.to_string()).alignment(Alignment::Right),
+        )
+        .style(data_style),
         Cell::from(ratatui::text::Line::from(total.to_string()).alignment(Alignment::Right))
             .style(num_style),
     ])
@@ -312,18 +384,18 @@ pub fn render_lang_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut LangPane,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
-    let mode = ctx.color_mode;
+    let mode = pane_render_ctx.color_mode;
     let pane_focus_state = pane.focus.pane_focus_state;
     let is_focused = pane.focus.is_focused();
     let PaneRenderCtx {
         project_list: projects,
         selected_project_path,
         ..
-    } = ctx;
+    } = pane_render_ctx;
 
-    if ctx.project_presentation() == ProjectPresentation::Deleted {
+    if pane_render_ctx.project_presentation() == ProjectPresentation::Deleted {
         pane.viewport.clear_surface();
         return PaneFrameChrome {
             title: " Languages — deleted ".into(),
@@ -331,16 +403,12 @@ pub fn render_lang_pane_body(
             ..PaneFrameChrome::default()
         };
     }
-    let lang_stats =
-        match projects.at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new(""))) {
-            Found(p) => p.language_stats.as_ref(),
-            UnknownPath | StaleRoute => None,
-        };
+    let lang_stats = selected_language_stats(projects, *selected_project_path);
 
     let title = lang_pane_title(lang_stats, pane);
     let mut inner = tui_pane::frame_inner(area);
-    inner.width = inner.width.saturating_sub(1);
-    let mut chrome = PaneFrameChrome {
+    inner.width = inner.width.saturating_sub(LANG_RIGHT_MARGIN);
+    let mut pane_frame_chrome = PaneFrameChrome {
         title,
         focused: is_focused,
         ..PaneFrameChrome::default()
@@ -349,33 +417,25 @@ pub fn render_lang_pane_body(
     let Some(stats) = lang_stats else {
         pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
-        return chrome;
+        return pane_frame_chrome;
     };
 
     if stats.entries.is_empty() {
         pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
-        return chrome;
+        return pane_frame_chrome;
     }
 
     if inner.height < 2 {
         pane.viewport.clear_surface();
-        return chrome;
+        return pane_frame_chrome;
     }
 
     let widths = lang_table_widths(stats);
     let entries = flatten_lang_entries(stats);
     let entry_count = entries.len();
 
-    let fixed_cols = widths
-        .iter()
-        .map(|constraint| match constraint {
-            Constraint::Length(width) => usize::from(*width),
-            _ => 0,
-        })
-        .sum::<usize>()
-        + (widths.len() - 1) * usize::from(LANG_COLUMN_GAP);
-    let name_width = usize::from(inner.width).saturating_sub(fixed_cols);
+    let name_width = usize::from(inner.width).saturating_sub(fixed_columns_width(&widths));
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
@@ -416,11 +476,13 @@ pub fn render_lang_pane_body(
         render_lang_table(frame, pane, rows, widths, body_area, mode);
     }
 
-    chrome.labels.extend(tui_pane::overflow_affordance_label(
-        area,
-        pane.viewport.overflow(),
-        Style::default().fg(label_color()),
-    ));
+    pane_frame_chrome
+        .labels
+        .extend(tui_pane::overflow_affordance_label(
+            area,
+            pane.viewport.overflow(),
+            Style::default().fg(label_color()),
+        ));
 
-    chrome
+    pane_frame_chrome
 }

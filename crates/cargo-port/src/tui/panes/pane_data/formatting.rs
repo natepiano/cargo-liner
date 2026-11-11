@@ -2,6 +2,8 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
+use unicode_width::UnicodeWidthStr;
+
 use super::DetailField;
 use crate::constants::GIT_STATUS_UNREADABLE;
 use crate::constants::GIT_UNREADABLE_LABEL;
@@ -27,6 +29,8 @@ use crate::project::RemoteList;
 use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
+use crate::tui::panes::constants::FIT_TEXT_ELLIPSIS;
+use crate::tui::render;
 use crate::tui::state::AvailabilityStatus;
 
 /// Whether any completed git read failed, independently of path status.
@@ -151,16 +155,29 @@ impl GitReadFailures {
         })
     }
 
-    pub(in crate::tui::panes) fn field_failed(&self, field: DetailField) -> bool {
-        self.rows.contains(&UnreadableGitRow::Field(field))
+    /// Readable means no failure is recorded for this row; it does not promise a completed probe.
+    pub(in crate::tui::panes) fn field_health(&self, field: DetailField) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::Field(field)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 
-    pub(super) fn remote_tracked_failed(&self, index: usize) -> bool {
-        self.rows.contains(&UnreadableGitRow::RemoteTracked(index))
+    pub(super) fn remote_tracked_health(&self, index: usize) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::RemoteTracked(index)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 
-    pub(super) fn remote_sync_failed(&self, index: usize) -> bool {
-        self.rows.contains(&UnreadableGitRow::RemoteSync(index))
+    pub(super) fn remote_sync_health(&self, index: usize) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::RemoteSync(index)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 }
 
@@ -239,18 +256,44 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+/// `TimestampZone` retains the time slice and whether an embedded offset already
+/// makes it local; only Utc needs the local offset when formatting its time.
+enum TimestampZone<'a> {
+    Embedded { date: &'a str, time: &'a str },
+    Utc(&'a str),
+    Unzoned(&'a str),
+    MissingTime,
+}
+
+impl<'a> From<&'a str> for TimestampZone<'a> {
+    fn from(iso: &'a str) -> Self {
+        let stripped = iso.trim_end_matches('Z');
+        let Some((date, time)) = stripped.split_once('T') else {
+            return Self::MissingTime;
+        };
+        if let Some(pos) = time.rfind(['+', '-']).filter(|pos| *pos > 0) {
+            return Self::Embedded {
+                date,
+                time: &time[..pos],
+            };
+        }
+        if iso.ends_with('Z') {
+            Self::Utc(time)
+        } else {
+            Self::Unzoned(time)
+        }
+    }
+}
+
 /// Extract the local date from an ISO 8601 timestamp as `yyyy-mm-dd`.
 ///
 /// If the timestamp has an embedded timezone offset, the date portion is
 /// already local and is returned directly. For UTC timestamps, the local
 /// offset is applied via `format_timestamp`.
 pub fn format_date(iso: &str) -> String {
-    let stripped = iso.trim_end_matches('Z');
-    if let Some((date, after_t)) = stripped.split_once('T') {
-        let has_offset = after_t.rfind(['+', '-']).is_some_and(|p| p > 0);
-        if has_offset {
-            return date.to_string();
-        }
+    match TimestampZone::from(iso) {
+        TimestampZone::Embedded { date, .. } => return date.to_string(),
+        TimestampZone::Utc(_) | TimestampZone::Unzoned(_) | TimestampZone::MissingTime => {},
     }
     let full = format_timestamp(iso);
     full.split(' ').next().unwrap_or(&full).to_string()
@@ -259,25 +302,16 @@ pub fn format_date(iso: &str) -> String {
 /// Extract the local time portion from an ISO 8601 timestamp as `hh:mm:ss`.
 ///
 /// If the timestamp has an embedded timezone offset (e.g., `-04:00`), the
-/// time is already local and no offset is applied. If it ends in `Z` or has
-/// no offset, the local UTC offset is applied.
+/// time is already local and no offset is applied. A trailing `Z` requests
+/// the local UTC offset; an unzoned time keeps its existing clock value.
 pub fn format_time(iso: &str) -> String {
-    let is_utc = iso.ends_with('Z');
-    let stripped = iso.trim_end_matches('Z');
-    let Some((_, time_and_offset)) = stripped.split_once('T') else {
-        return "—".to_string();
+    let timestamp_zone = TimestampZone::from(iso);
+    let time_str = match timestamp_zone {
+        TimestampZone::Embedded { time, .. }
+        | TimestampZone::Unzoned(time)
+        | TimestampZone::Utc(time) => time,
+        TimestampZone::MissingTime => return "—".to_string(),
     };
-
-    let (time_str, has_embedded_offset) =
-        time_and_offset
-            .rfind(['+', '-'])
-            .map_or((time_and_offset, false), |pos| {
-                if pos > 0 {
-                    (&time_and_offset[..pos], true)
-                } else {
-                    (time_and_offset, false)
-                }
-            });
 
     let time_parts: Vec<&str> = time_str.split(':').collect();
     if time_parts.len() < 3 {
@@ -295,10 +329,10 @@ pub fn format_time(iso: &str) -> String {
         return time_str.to_string();
     };
 
-    let offset = if has_embedded_offset || !is_utc {
-        0
-    } else {
-        local_utc_offset_secs()
+    let offset = match timestamp_zone {
+        TimestampZone::Embedded { .. } | TimestampZone::Unzoned(_) => 0,
+        TimestampZone::Utc(_) => local_utc_offset_secs(),
+        TimestampZone::MissingTime => return "—".to_string(),
     };
 
     let seconds_per_day = SECONDS_PER_DAY.cast_signed();
@@ -473,6 +507,33 @@ pub fn format_ahead_behind(comparison: Comparison) -> String {
     }
 }
 
+/// Fit sync text with whole counts and whole words.
+pub(in crate::tui) fn fit_sync_text(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut prefix =
+        render::truncate_with_ellipsis(text, width.saturating_sub(FIT_TEXT_ELLIPSIS.width()), "");
+    let remaining = &text[prefix.len()..];
+    if !remaining.starts_with(char::is_whitespace)
+        && !remaining.starts_with(SYNC_UP)
+        && !remaining.starts_with(SYNC_DOWN)
+    {
+        let start = prefix
+            .rfind(char::is_whitespace)
+            .into_iter()
+            .chain(prefix.rfind(SYNC_UP))
+            .chain(prefix.rfind(SYNC_DOWN))
+            .max()
+            .unwrap_or(0);
+        prefix.truncate(start);
+    }
+    format!("{}{FIT_TEXT_ELLIPSIS}", prefix.trim_end())
+}
+
 /// Compact sync text shared by the project rows and their fitted widths.
 fn format_sync(comparison: Comparison) -> String {
     match comparison {
@@ -552,6 +613,15 @@ mod tests {
                 ),
                 expected
             );
+        }
+        for (value, width, expected) in [
+            ("↑1234 ↓5678 diverged from main", 11, "↑1234…"),
+            ("↑1234 ↓5678 diverged from main", 12, "↑1234 ↓5678…"),
+            ("↑1 ↓91 diverged from main", 12, "↑1 ↓91…"),
+            ("↑1 ↓91 diverged from main", 25, "↑1 ↓91 diverged from main"),
+            ("↑1234↓5678", 6, "↑1234…"),
+        ] {
+            assert_eq!(fit_sync_text(value, width), expected);
         }
     }
 }

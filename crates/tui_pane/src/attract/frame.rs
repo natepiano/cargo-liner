@@ -31,7 +31,7 @@ pub fn draw_attract_layers<A: AttractHost>(
     frame: &mut Frame,
     app: &mut A,
     body: Rect,
-    work: AttractWork,
+    attract_work: AttractWork,
     updates: Updates,
     draw_panes: impl FnOnce(&mut Frame, &mut A, TileGridContents),
 ) {
@@ -43,11 +43,11 @@ pub fn draw_attract_layers<A: AttractHost>(
     // there, which with nothing running is a summary cell and little
     // else. Between those two it draws over bare panes, which is what
     // it arrives over and leaves over. See [`Attract::advance`].
-    let grid = A::Probe::timed(FramePhase::Advance, || {
+    let attract_grid = A::Probe::timed(FramePhase::Advance, || {
         app.attract_mut()
-            .advance(area, work, updates, Instant::now())
+            .advance(area, attract_work, updates, Instant::now())
     });
-    A::Probe::timed(FramePhase::Panes, || match grid {
+    A::Probe::timed(FramePhase::Panes, || match attract_grid {
         AttractGrid::Full => draw_panes(frame, app, TileGridContents::Shown),
         AttractGrid::Empty(faded) => {
             draw_panes(frame, app, TileGridContents::Hidden);

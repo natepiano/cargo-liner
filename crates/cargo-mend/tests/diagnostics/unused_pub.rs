@@ -11,6 +11,10 @@ fn pub_item_used_only_inside_module_subtree_is_flagged() {
 name = "unused_pub_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -66,6 +70,10 @@ fn parent_caller_suppresses_unused_pub_and_keeps_pub_crate_narrowing() {
 name = "outside_caller_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -108,6 +116,10 @@ fn library_root_pub_item_is_not_flagged() {
 name = "root_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -142,6 +154,10 @@ fn type_reachable_only_through_pub_crate_alias_is_not_flagged_unused() {
 name = "alias_exposure_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -235,6 +251,10 @@ fn fix_narrows_alias_exposed_types_instead_of_breaking_the_build() {
 name = "alias_exposure_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -323,6 +343,10 @@ fn type_reachable_only_through_pub_crate_fn_return_is_not_flagged_unused() {
 name = "fn_return_exposure_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -408,6 +432,10 @@ fn fix_narrows_fn_return_exposed_type_instead_of_breaking_the_build() {
 name = "fn_return_exposure_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -475,6 +503,10 @@ fn fix_removes_pub_from_items_and_methods() {
 name = "unused_pub_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -531,6 +563,10 @@ fn fix_strips_an_unneeded_restricted_annotation() {
 name = "unused_pub_restricted_annotation_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -578,6 +614,10 @@ fn type_named_in_trait_impl_interface_is_not_flagged_unused() {
 name = "trait_impl_interface_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -651,6 +691,10 @@ fn fix_keeps_trait_impl_interface_type_compiling() {
 name = "trait_impl_interface_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");

@@ -12,6 +12,7 @@ use syn::spanned::Spanned;
 
 use super::offsets;
 use crate::fixes::imports;
+use crate::fixes::imports::BindingSpelling;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
@@ -102,17 +103,17 @@ struct ScopeImports {
 impl ScopeImports {
     fn record(&mut self, source: &ImportSource<'_>, item_use: &ItemUse) {
         let attributes = ConditionalAttributes::from_attributes(source, &item_use.attrs);
-        for binding in imports::collect_use_bindings(&item_use.tree) {
-            let Some(name) = binding.name() else {
+        for use_binding in imports::collect_use_bindings(&item_use.tree) {
+            let Some(name) = use_binding.name() else {
                 continue;
             };
             self.import_attributes
                 .entry(name.to_string())
                 .or_default()
                 .insert(attributes.clone());
-            if binding.binds_path_leaf() {
+            if use_binding.spelling() == BindingSpelling::PathLeaf {
                 self.existing_imports
-                    .entry(binding.path().to_string())
+                    .entry(use_binding.path().to_string())
                     .or_default()
                     .insert(attributes.clone());
             }
@@ -121,7 +122,7 @@ impl ScopeImports {
                     self.private_imports
                         .entry(name.to_string())
                         .or_default()
-                        .insert(binding.path().to_string());
+                        .insert(use_binding.path().to_string());
                 },
                 _ => {
                     self.existing_reexport_names
@@ -219,12 +220,14 @@ pub(super) fn qualify_through_parent_scope(
         return None;
     }
 
-    let current = &scopes[scope_id];
-    let (parent, conditional_attributes) = scopes
+    let current_scope_info = &scopes[scope_id];
+    let (parent_scope_info, conditional_attributes) = scopes
         .iter()
         .filter_map(|scope| {
-            if scope.module_path.len() >= current.module_path.len()
-                || !current.module_path.starts_with(&scope.module_path)
+            if scope.module_path.len() >= current_scope_info.module_path.len()
+                || !current_scope_info
+                    .module_path
+                    .starts_with(&scope.module_path)
             {
                 return None;
             }
@@ -233,7 +236,7 @@ pub(super) fn qualify_through_parent_scope(
                 .map(|attributes| (scope, attributes))
         })
         .max_by_key(|(scope, _)| scope.module_path.len())?;
-    let levels = current.module_path.len() - parent.module_path.len();
+    let levels = current_scope_info.module_path.len() - parent_scope_info.module_path.len();
     Some(ParentImport {
         path: format!("{}{import_path}", "super::".repeat(levels)),
         conditional_attributes,

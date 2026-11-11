@@ -45,15 +45,19 @@ mod tests {
     }
 
     fn render(pane: &mut SettingsPane, rows: &[SettingsRow], area: Rect) -> Vec<String> {
-        let rendered = pane.render_rows(rows, options(usize::from(area.width)));
+        let settings_render = pane.render_rows(rows, options(usize::from(area.width)));
         pane.set_content_area(area);
         pane.update_scroll();
         let mut terminal = Terminal::new(TestBackend::new(area.right(), area.bottom()))
             .expect("create settings terminal");
         terminal
-            .draw(|frame| pane.render_lines(frame, rendered.lines.clone()))
+            .draw(|frame| pane.render_lines(frame, settings_render.lines.clone()))
             .expect("draw settings content");
-        rendered.lines.iter().map(ToString::to_string).collect()
+        settings_render
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     fn visible(pane: &SettingsPane, lines: &[String]) -> String {
@@ -86,14 +90,14 @@ mod tests {
     }
 
     fn account_rows(count: usize) -> Vec<SettingsRow> {
-        let mut rows = vec![SettingsRow::section("Capture")];
-        rows.extend(
+        let mut settings_rows = vec![SettingsRow::section("Capture")];
+        settings_rows.extend(
             (0..count)
                 .map(|index| SettingsRow::value(index, "account", format!("account-{index:02}"))),
         );
-        rows.push(SettingsRow::section("Commands"));
-        rows.push(SettingsRow::value(count, "excluded", "nextest"));
-        rows
+        settings_rows.push(SettingsRow::section("Commands"));
+        settings_rows.push(SettingsRow::value(count, "excluded", "nextest"));
+        settings_rows
     }
 
     fn diagnostics() -> Vec<String> {
@@ -116,12 +120,12 @@ mod tests {
     fn prepared_settings_content_does_not_accept_clicks_before_first_draw() {
         let mut pane = SettingsPane::new();
         let area = Rect::new(7, 5, 28, 3);
-        let rows = [
+        let settings_rows = [
             SettingsRow::value(0, "account", "account-00"),
             SettingsRow::value(1, "excluded", "nextest"),
         ];
-        let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
-        assert_eq!(rendered.selectable_count, 2);
+        let settings_render = pane.render_rows(&settings_rows, options(usize::from(area.width)));
+        assert_eq!(settings_render.selectable_count, 2);
         assert_eq!(
             pane.line_target(0),
             SettingsLineTarget::Row(SettingsRowPayload::new(0))
@@ -141,17 +145,17 @@ mod tests {
     fn click_after_down_uses_the_drawn_offset_until_the_next_repaint() {
         let mut pane = SettingsPane::new();
         let area = Rect::new(7, 5, 13, 3);
-        let rows = [
+        let settings_rows = [
             SettingsRow::value(0, "row", "part-0 part-1 part-2 part-3"),
             SettingsRow::value(1, "row", "next"),
             SettingsRow::value(2, "row", "last"),
         ];
-        let _ = pane.render_rows(&rows, options(usize::from(area.width)));
+        let _ = pane.render_rows(&settings_rows, options(usize::from(area.width)));
         pane.set_content_area(area);
         pane.select_row(1);
-        let click = Position::new(area.x + 1, area.y + 1);
-        assert_eq!(pane.row_at(click), SettingsRowHit::Missed);
-        let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
+        let click_position = Position::new(area.x + 1, area.y + 1);
+        assert_eq!(pane.row_at(click_position), SettingsRowHit::Missed);
+        let rendered = pane.render_rows(&settings_rows, options(usize::from(area.width)));
         let mut terminal = Terminal::new(TestBackend::new(area.right(), area.bottom()))
             .expect("create settings terminal");
         terminal
@@ -168,7 +172,7 @@ mod tests {
         assert_eq!(pane.viewport().pos(), 1);
         let painted = terminal.backend().buffer().clone();
         let clicked_line = (area.x..area.right())
-            .map(|x| painted[(x, click.y)].symbol())
+            .map(|x| painted[(x, click_position.y)].symbol())
             .collect::<String>();
         assert!(clicked_line.contains("part-3"), "{clicked_line}");
 
@@ -176,15 +180,15 @@ mod tests {
         pane.navigate(NavAction::Down);
         assert_eq!(pane.viewport().scroll_offset(), 3);
         assert_eq!(pane.viewport().pos(), 2);
-        let hit = pane.row_at(click);
-        assert_eq!(hit, SettingsRowHit::Row(0));
-        if let SettingsRowHit::Row(row) = hit {
+        let settings_row_hit = pane.row_at(click_position);
+        assert_eq!(settings_row_hit, SettingsRowHit::Row(0));
+        if let SettingsRowHit::Row(row) = settings_row_hit {
             pane.select_row(row);
         }
         assert_eq!(pane.viewport().pos(), 0);
         assert_eq!(terminal.backend().buffer(), &painted);
 
-        let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
+        let rendered = pane.render_rows(&settings_rows, options(usize::from(area.width)));
         pane.update_scroll();
         terminal
             .draw(|frame| pane.render_lines(frame, rendered.lines.clone()))
@@ -192,35 +196,35 @@ mod tests {
         assert_eq!(pane.viewport().scroll_offset(), 3);
         let repainted = terminal.backend().buffer();
         let clicked_line = (area.x..area.right())
-            .map(|x| repainted[(x, click.y)].symbol())
+            .map(|x| repainted[(x, click_position.y)].symbol())
             .collect::<String>();
         assert!(clicked_line.contains("next"), "{clicked_line}");
         assert_ne!(repainted, &painted);
-        assert_eq!(pane.row_at(click), SettingsRowHit::Row(1));
+        assert_eq!(pane.row_at(click_position), SettingsRowHit::Row(1));
     }
 
     #[test]
     fn drawing_records_an_offset_set_directly_by_the_consumer() {
         let mut pane = SettingsPane::new();
         let area = Rect::new(7, 5, 28, 3);
-        let rows = account_rows(8);
-        let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
+        let settings_rows = account_rows(8);
+        let settings_render = pane.render_rows(&settings_rows, options(usize::from(area.width)));
         pane.set_content_area(area);
         pane.set_scroll_offset(2);
         let mut terminal = Terminal::new(TestBackend::new(area.right(), area.bottom()))
             .expect("create settings terminal");
         terminal
-            .draw(|frame| pane.render_lines(frame, rendered.lines.clone()))
+            .draw(|frame| pane.render_lines(frame, settings_render.lines.clone()))
             .expect("draw the consumer-selected offset");
-        let click = Position::new(area.x + 1, area.y + 1);
-        assert_eq!(pane.row_at(click), SettingsRowHit::Row(2));
+        let click_position = Position::new(area.x + 1, area.y + 1);
+        assert_eq!(pane.row_at(click_position), SettingsRowHit::Row(2));
 
         pane.set_scroll_offset(3);
-        assert_eq!(pane.row_at(click), SettingsRowHit::Row(2));
+        assert_eq!(pane.row_at(click_position), SettingsRowHit::Row(2));
         terminal
-            .draw(|frame| pane.render_lines(frame, rendered.lines.clone()))
+            .draw(|frame| pane.render_lines(frame, settings_render.lines.clone()))
             .expect("repaint the updated offset");
-        assert_eq!(pane.row_at(click), SettingsRowHit::Row(3));
+        assert_eq!(pane.row_at(click_position), SettingsRowHit::Row(3));
     }
 
     #[test]
@@ -232,12 +236,12 @@ mod tests {
         );
         assert_eq!(pane.line_target(0), SettingsLineTarget::OutsideContent);
         assert_eq!(pane.row_at(Position::new(0, 0)), SettingsRowHit::Missed);
-        let rows = vec![
+        let settings_rows = vec![
             SettingsRow::section("Capture"),
             SettingsRow::value(0, "account", "account-00"),
         ];
         let area = Rect::new(2, 3, 40, 6);
-        let lines = render(&mut pane, &rows, area);
+        let lines = render(&mut pane, &settings_rows, area);
         let heading = lines
             .iter()
             .position(|line| line.contains("Capture"))
@@ -305,18 +309,18 @@ mod tests {
     #[test]
     fn navigation_exposes_every_line_of_an_account_taller_than_the_popup() {
         let markers = diagnostics();
-        let rows = vec![
+        let settings_rows = vec![
             SettingsRow::value(0, "account", markers.join(" ")),
             SettingsRow::value(1, "excluded", "nextest"),
         ];
         for height in [1, 3, 5] {
             let area = Rect::new(2, 4, 28, height);
             let mut pane = SettingsPane::new();
-            let lines = render(&mut pane, &rows, area);
+            let lines = render(&mut pane, &settings_rows, area);
             assert!(lines.len() > usize::from(height));
             let mut seen = BTreeSet::new();
             for _ in 0..=lines.len() {
-                let lines = render(&mut pane, &rows, area);
+                let lines = render(&mut pane, &settings_rows, area);
                 let text = visible(&pane, &lines);
                 seen.extend(
                     markers
@@ -338,7 +342,7 @@ mod tests {
             seen.clear();
             for _ in 0..=lines.len() {
                 pane.navigate(NavAction::Up);
-                let lines = render(&mut pane, &rows, area);
+                let lines = render(&mut pane, &settings_rows, area);
                 let text = visible(&pane, &lines);
                 seen.extend(
                     markers
@@ -352,31 +356,31 @@ mod tests {
                 markers.iter().collect(),
                 "upward navigation skips a continuation"
             );
-            let lines = render(&mut pane, &rows, area);
+            let lines = render(&mut pane, &settings_rows, area);
             assert!(visible(&pane, &lines).contains(&markers[0]));
         }
     }
 
     #[test]
     fn selected_account_remains_visible_after_resize_and_status_growth() {
-        let mut rows = account_rows(20);
+        let mut settings_rows = account_rows(20);
         let mut pane = SettingsPane::new();
-        render(&mut pane, &rows, Rect::new(3, 2, 64, 8));
+        render(&mut pane, &settings_rows, Rect::new(3, 2, 64, 8));
         pane.select_row(12);
-        let lines = render(&mut pane, &rows, Rect::new(3, 2, 64, 8));
+        let lines = render(&mut pane, &settings_rows, Rect::new(3, 2, 64, 8));
         assert!(visible(&pane, &lines).contains("account-12"));
         for area in [Rect::new(5, 3, 28, 2), Rect::new(1, 1, 80, 12)] {
-            let lines = render(&mut pane, &rows, area);
+            let lines = render(&mut pane, &settings_rows, area);
             assert_eq!(pane.viewport().pos(), 12);
             assert!(visible(&pane, &lines).contains("account-12"));
         }
-        rows[1].value = diagnostics().join(" ");
+        settings_rows[1].value = diagnostics().join(" ");
         let area = Rect::new(5, 3, 28, 2);
-        let lines = render(&mut pane, &rows, area);
+        let lines = render(&mut pane, &settings_rows, area);
         assert_eq!(pane.viewport().pos(), 12);
         assert!(visible(&pane, &lines).contains("account-12"));
         let offset = pane.viewport().scroll_offset();
-        let lines = render(&mut pane, &rows, area);
+        let lines = render(&mut pane, &settings_rows, area);
         assert_eq!(
             pane.viewport().scroll_offset(),
             offset,
@@ -387,29 +391,41 @@ mod tests {
 
     #[test]
     fn framework_click_on_visible_continuation_selects_its_account() {
-        let mut app = SettingsApp {
+        let mut settings_app = SettingsApp {
             framework: Framework::new(FocusedPane::App(())),
         };
         let keymap = Keymap::<SettingsApp>::builder()
             .build()
             .expect("build settings keymap");
-        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut settings_app);
         let markers = diagnostics();
-        let rows = vec![
+        let settings_rows = vec![
             SettingsRow::section("Capture"),
             SettingsRow::value(0, "account", markers.join(" ")),
             SettingsRow::value(1, "excluded", "nextest"),
         ];
         let area = Rect::new(7, 5, 28, 3);
-        render(&mut app.framework.settings_pane, &rows, area);
-        app.framework.settings_pane.select_row(1);
-        let lines = render(&mut app.framework.settings_pane, &rows, area);
-        assert_eq!(app.framework.settings_pane.viewport().pos(), 1);
+        render(
+            &mut settings_app.framework.settings_pane,
+            &settings_rows,
+            area,
+        );
+        settings_app.framework.settings_pane.select_row(1);
+        let lines = render(
+            &mut settings_app.framework.settings_pane,
+            &settings_rows,
+            area,
+        );
+        assert_eq!(settings_app.framework.settings_pane.viewport().pos(), 1);
         let continuation = lines
             .iter()
             .position(|line| line.contains(&markers[markers.len() - 1]))
             .expect("last diagnostic continuation is rendered");
-        let offset = app.framework.settings_pane.viewport().scroll_offset();
+        let offset = settings_app
+            .framework
+            .settings_pane
+            .viewport()
+            .scroll_offset();
         assert!(continuation >= offset && continuation < offset + usize::from(area.height));
         assert!(
             !lines[continuation].contains("account"),
@@ -421,24 +437,31 @@ mod tests {
                 + u16::try_from(continuation - offset)
                     .expect("visible continuation fits terminal coordinates"),
         );
-        let hit = app.framework.hit_test_at(pos);
+        let framework_hit = settings_app.framework.hit_test_at(pos);
         assert_eq!(
-            hit,
+            framework_hit,
             Some(FrameworkHit::Overlay {
                 id:  FrameworkOverlayId::Settings,
                 row: 0,
             })
         );
-        if let Some(FrameworkHit::Overlay { row, .. }) = hit {
-            app.framework.settings_pane.select_row(row);
+        if let Some(FrameworkHit::Overlay { row, .. }) = framework_hit {
+            settings_app.framework.settings_pane.select_row(row);
         }
-        let lines = render(&mut app.framework.settings_pane, &rows, area);
-        assert_eq!(app.framework.settings_pane.viewport().pos(), 0);
+        let lines = render(
+            &mut settings_app.framework.settings_pane,
+            &settings_rows,
+            area,
+        );
+        assert_eq!(settings_app.framework.settings_pane.viewport().pos(), 0);
         assert!(
-            visible(&app.framework.settings_pane, &lines).contains(&markers[markers.len() - 1])
+            visible(&settings_app.framework.settings_pane, &lines)
+                .contains(&markers[markers.len() - 1])
         );
         assert_eq!(
-            app.framework.hit_test_at(Position::new(area.x - 1, area.y)),
+            settings_app
+                .framework
+                .hit_test_at(Position::new(area.x - 1, area.y)),
             Some(FrameworkHit::ModalMissed)
         );
     }

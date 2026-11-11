@@ -18,18 +18,15 @@ use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
+use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::body;
 use crate::toasts::manager;
 use crate::toasts::view::ToastExitState;
 
-/// Compiled-in palette consumed by toast rendering.
+/// Fallback colours for transparent cards and activity details.
 ///
-/// Toasts deliberately do NOT read from the active theme: an error
-/// toast must remain legible even if a user-loaded theme is corrupt
-/// or its contrast is so low the toast would vanish. This palette is
-/// fixed at compile time. The roundtrip test in `mod tests` locks
-/// every field against accidental drift.
+/// Opaque cards use theme colours over the theme background.
 pub(super) struct FallbackToastPalette {
     /// Spinner color in tracked-item rows.
     pub accent:  Color,
@@ -120,6 +117,12 @@ fn render_toasts(
         .map(card::title_card_width)
         .fold(manager::toast_card_width(settings, area.width), u16::max)
         .min(area.width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2)));
+    let width = visible_toasts
+        .iter()
+        .filter(|toast| toast.style() != ToastStyle::Normal)
+        .map(card::minimum_title_card_width)
+        .filter(|required| *required <= area.width.saturating_sub(TOAST_SIDE_GAP))
+        .fold(width, u16::max);
     for toast in &mut complete_toasts {
         if toast.exit_state == ToastExitState::Visible {
             toast.min_height = toast.min_height.max(first_sentence_height(toast, width));
@@ -180,26 +183,20 @@ fn first_sentence_height(toast: &ToastView, card_width: u16) -> u16 {
     let Some(end) = sentence_end else {
         return toast.min_height();
     };
-    let sentence_chars = text[..end]
+    let mut sentence = text[..end]
         .chars()
         .filter(|character| !character.is_whitespace())
-        .count();
+        .peekable();
     let width = u16::try_from(body::card_body_width(card_width)).unwrap_or(u16::MAX);
-    let mut visible_chars = 0;
     let mut rows = 0_u16;
     for line in toast.render_body.wrapped_lines(width, Style::default()) {
         rows = rows.saturating_add(1);
-        visible_chars += line
-            .spans
-            .iter()
-            .map(|span| {
-                span.content
-                    .chars()
-                    .filter(|character| !character.is_whitespace())
-                    .count()
-            })
-            .sum::<usize>();
-        if visible_chars >= sentence_chars {
+        for character in line.spans.iter().flat_map(|span| span.content.chars()) {
+            if sentence.peek() == Some(&character) {
+                sentence.next();
+            }
+        }
+        if sentence.peek().is_none() {
             break;
         }
     }
@@ -815,7 +812,7 @@ mod tests {
         let rendered = draw_at(&mut toasts, 30, 20, settled_at);
 
         assert_eq!(rendered.card.height, 5);
-        let drawn_body = (rendered.card.y + 1..rendered.card.bottom() - 1)
+        let drawn_rows = (rendered.card.y + 1..rendered.card.bottom() - 1)
             .map(|row| {
                 (rendered.card.x + 2..rendered.card.right() - 2)
                     .map(|column| rendered.buffer[(column, row)].symbol())
@@ -823,12 +820,13 @@ mod tests {
                     .trim_end()
                     .to_owned()
             })
-            .collect::<String>();
+            .collect::<Vec<_>>();
+        for row in &drawn_rows[..drawn_rows.len() - 1] {
+            assert!(row.ends_with(ELISION), "{row}");
+        }
+        assert!(!drawn_rows.last().expect("last body row").contains(ELISION));
+        let drawn_body = drawn_rows.join("").replace(ELISION, "");
         assert_eq!(drawn_body, body);
-        assert!(!(rendered.card.y..rendered.card.bottom()).any(|row| {
-            (rendered.card.x..rendered.card.right())
-                .any(|column| rendered.buffer[(column, row)].symbol() == ELISION)
-        }));
     }
 
     #[test]
@@ -1283,10 +1281,7 @@ mod tests {
 
     #[test]
     fn fallback_toast_palette_is_pinned_to_safe_defaults() {
-        // Locks `fallback_toast_palette`'s safety-pinned colors against drift.
-        // Plain (info) `crate::toasts::ToastStyle::Normal` borders and titles
-        // read the active theme (see `crate::default_pane_chrome`); only the
-        // always-legible error and warning colors live here.
+        // Keep the fallback colours stable for transparent cards and activity details.
         let p = fallback_toast_palette();
         assert_eq!(p.accent, Color::Cyan);
         assert_eq!(p.error, Color::Red);

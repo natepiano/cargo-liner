@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::path::MAIN_SEPARATOR;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -25,6 +26,9 @@ use crate::constants::COMMAND_VALUED_OPTIONS;
 use crate::constants::COMMAND_WORD_SEPARATOR;
 use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
+use crate::constants::NEXTEST_SUBCOMMAND_NAME;
+use crate::constants::RUSTC_CRATE_NAME_FLAG;
+use crate::constants::RUSTC_CRATE_NAME_PREFIX;
 use crate::constants::RUSTC_LINT_OWNERS;
 use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::ValuedOptionScope;
@@ -73,11 +77,49 @@ pub(crate) struct CommandText {
     /// Program name, path stripped.
     pub(crate) program: String,
     /// Remaining arguments, one entry per argv word. Held split rather
-    /// than joined because a cell may leave one of them out;
-    /// [`CommandText::line`] is what puts them back into a line.
+    /// than joined because a cell may omit an argument.
+    /// [`CommandText::display_line`] assembles the full command.
     arguments:          Vec<String>,
     /// Parsed once, preserving each argv entry and every complete option value.
     words:              Vec<CommandWord>,
+    /// Compiler wrappers retain their crate name independently of option text.
+    command_layout:     CommandLayout,
+}
+
+/// The command either invokes Cargo or runs a compiler through its wrapper.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CommandLayout {
+    Ordinary,
+    CompilerWrapper(CompilerCrate),
+}
+
+/// Compiler arguments either start directly or follow a forwarded executable.
+#[derive(Clone, Copy)]
+pub(crate) enum CompilerArgumentLayout {
+    Direct,
+    ForwardedExecutable,
+}
+
+/// A compiler heading retains its crate beside the frontend.
+pub(crate) enum CommandHeadingState<'command> {
+    Program,
+    Compiler { crate_name: Cow<'command, str> },
+}
+
+/// A compiler invocation can omit its crate name, such as a version query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompilerCrate {
+    Named(CommandWord),
+    Unnamed,
+}
+
+impl CompilerCrate {
+    const fn words(&self) -> &[CommandWord] {
+        match self {
+            Self::Named(word) => std::slice::from_ref(word),
+            Self::Unnamed => &[],
+        }
+    }
 }
 
 /// A parsed argv word; only this module can construct or classify it.
@@ -146,6 +188,7 @@ pub(crate) enum CommandWordDisplay<'a> {
 enum ArgumentOwner {
     Cargo,
     RustcLint,
+    Nextest,
     Other,
 }
 
@@ -166,8 +209,23 @@ impl ArgumentOwner {
                     (self, scope),
                     (
                         Self::Cargo,
-                        ValuedOptionScope::Global | ValuedOptionScope::Cargo
-                    ) | (Self::RustcLint, ValuedOptionScope::RustcLint)
+                        ValuedOptionScope::Global
+                            | ValuedOptionScope::GlobalAndRustc
+                            | ValuedOptionScope::Cargo
+                            | ValuedOptionScope::CargoAndRustc
+                    ) | (
+                        Self::RustcLint,
+                        ValuedOptionScope::RustcLint
+                            | ValuedOptionScope::GlobalAndRustc
+                            | ValuedOptionScope::CargoAndRustc
+                    ) | (
+                        Self::Nextest,
+                        ValuedOptionScope::Global
+                            | ValuedOptionScope::GlobalAndRustc
+                            | ValuedOptionScope::Cargo
+                            | ValuedOptionScope::CargoAndRustc
+                            | ValuedOptionScope::Nextest
+                    )
                 )
         })
     }
@@ -218,6 +276,9 @@ fn command_words(program: &str, arguments: &[String]) -> Vec<CommandWord> {
             } else {
                 if matches!(position, CommandNamePosition::BeforeCommand) {
                     child_owner = ArgumentOwner::compiler(word);
+                    if word == NEXTEST_SUBCOMMAND_NAME {
+                        owner = ArgumentOwner::Nextest;
+                    }
                 }
                 position = CommandNamePosition::Naming;
                 CommandWordKind::Name(word.clone())
@@ -272,12 +333,38 @@ impl CommandText {
         )
     }
 
-    pub(super) fn new(program: String, arguments: Vec<String>) -> Self {
+    pub(super) fn new(mut program: String, mut arguments: Vec<String>) -> Self {
+        let command_layout = if CARGO_PROCESS_NAMES.contains(&program_name(&program))
+            && arguments.first().is_some_and(|argument| {
+                argument.contains(MAIN_SEPARATOR)
+                    && RUSTC_LINT_OWNERS.contains(&program_name(argument))
+            }) {
+            program = program_name(&arguments.remove(0)).to_string();
+            let mut crate_name = CompilerCrate::Unnamed;
+            let mut words = arguments.iter();
+            while let Some(word) = words.next() {
+                let name = if word == RUSTC_CRATE_NAME_FLAG {
+                    words.next().map(String::as_str)
+                } else {
+                    word.strip_prefix(RUSTC_CRATE_NAME_PREFIX)
+                };
+                if let Some(name) = name {
+                    crate_name = CompilerCrate::Named(CommandWord {
+                        kind: CommandWordKind::Name(name.to_string()),
+                    });
+                    break;
+                }
+            }
+            CommandLayout::CompilerWrapper(crate_name)
+        } else {
+            CommandLayout::Ordinary
+        };
         let words = command_words(&program, &arguments);
         Self {
             program,
             arguments,
             words,
+            command_layout,
         }
     }
 
@@ -286,7 +373,11 @@ impl CommandText {
 
     /// `named_words` exposes the parsed command names and toolchain selectors in argv order.
     pub(crate) fn named_words(&self) -> impl Iterator<Item = &CommandWord> {
-        self.words.iter().filter(|word| {
+        let words = match &self.command_layout {
+            CommandLayout::Ordinary => self.words.as_slice(),
+            CommandLayout::CompilerWrapper(crate_name) => crate_name.words(),
+        };
+        words.iter().filter(|word| {
             matches!(
                 word.kind,
                 CommandWordKind::Name(_) | CommandWordKind::Selector(_)
@@ -299,10 +390,69 @@ impl CommandText {
         &'a self,
         selected: &DefaultArguments,
     ) -> Vec<&'a CommandWord> {
-        self.words
+        let mut words: Vec<_> = self
+            .words
             .iter()
             .filter(|word| word.is_selected(selected))
-            .collect()
+            .collect();
+        if matches!(self.command_layout, CommandLayout::CompilerWrapper(_)) {
+            words.splice(0..0, self.named_words());
+        }
+        words
+    }
+
+    /// Keep command names first and retain the argument order after them.
+    pub(crate) fn display_words(&self) -> impl Iterator<Item = &CommandWord> {
+        self.named_words()
+            .chain(self.words.iter().filter(|word| match &self.command_layout {
+                CommandLayout::Ordinary => !matches!(
+                    word.kind,
+                    CommandWordKind::Name(_) | CommandWordKind::Selector(_)
+                ),
+                CommandLayout::CompilerWrapper(_) => {
+                    !matches!(
+                        &word.kind,
+                        CommandWordKind::FlagWithValue { flag, .. } if flag == RUSTC_CRATE_NAME_FLAG
+                    ) && !matches!(
+                        &word.kind,
+                        CommandWordKind::Flag(flag) if flag.starts_with(RUSTC_CRATE_NAME_PREFIX)
+                    )
+                },
+            }))
+    }
+
+    /// Read the heading state and its retained crate together.
+    pub(crate) fn heading(&self) -> CommandHeadingState<'_> {
+        match &self.command_layout {
+            CommandLayout::CompilerWrapper(CompilerCrate::Named(word)) => {
+                CommandHeadingState::Compiler {
+                    crate_name: word.text(),
+                }
+            },
+            CommandLayout::Ordinary | CommandLayout::CompilerWrapper(CompilerCrate::Unnamed) => {
+                CommandHeadingState::Program
+            },
+        }
+    }
+
+    /// Identify a compiler executable retained before its forwarded arguments.
+    pub(crate) fn compiler_argument_layout(&self) -> CompilerArgumentLayout {
+        match self.words.first().map(|word| &word.kind) {
+            Some(CommandWordKind::Value(program))
+                if matches!(ArgumentOwner::compiler(program), ArgumentOwner::RustcLint) =>
+            {
+                CompilerArgumentLayout::ForwardedExecutable
+            },
+            _ => CompilerArgumentLayout::Direct,
+        }
+    }
+
+    /// Format the same argument units that the all-arguments view paints.
+    pub(crate) fn displayed_arguments(&self) -> String {
+        self.display_words()
+            .map(CommandWord::text)
+            .collect::<Vec<_>>()
+            .join(COMMAND_WORD_SEPARATOR)
     }
 
     /// Legacy display-line fixtures have no argv boundaries to preserve.
@@ -329,6 +479,7 @@ impl CommandText {
             program: self.program_name().to_string(),
             arguments,
             words,
+            command_layout: self.command_layout.clone(),
         }
     }
 
@@ -421,6 +572,7 @@ impl CommandText {
     }
 
     /// All arguments, preserving the whitespace inside each argv entry.
+    #[cfg(test)]
     pub(crate) fn line(&self) -> String { self.arguments.join(COMMAND_WORD_SEPARATOR) }
 }
 
@@ -478,7 +630,7 @@ fn program_name(program: &str) -> &str {
 /// binary reached by its path. What survives is the subcommands and the
 /// toolchain selector, which is the name of what runs.
 fn names_the_command(word: &str) -> bool {
-    !word.starts_with(FLAG_MARK) && !word.contains(std::path::MAIN_SEPARATOR)
+    !word.starts_with(FLAG_MARK) && !word.contains(MAIN_SEPARATOR)
 }
 
 /// Render `path` with the home directory collapsed to `~`.
@@ -746,6 +898,87 @@ fn base_name(argument: &OsString) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn a_rustc_wrapper_call_reads_its_frontend_and_crate() {
+        for (frontend, crate_arguments, displayed) in [
+            (
+                "rustc",
+                vec!["--crate-name", "hana_diegetic"],
+                vec!["hana_diegetic"],
+            ),
+            (
+                "clippy-driver",
+                vec!["--crate-name=hana_diegetic"],
+                vec!["hana_diegetic"],
+            ),
+            (
+                "clippy-driver",
+                vec![
+                    "/toolchain/bin/rustc",
+                    "--edition",
+                    "2024",
+                    "--crate-name",
+                    "hana_diegetic",
+                    "lib.rs",
+                ],
+                vec![
+                    "hana_diegetic",
+                    "/toolchain/bin/rustc",
+                    "--edition 2024",
+                    "lib.rs",
+                ],
+            ),
+        ] {
+            let compiler = format!("/toolchain/bin/{frontend}");
+            let argv: Vec<_> = ["cargo-tile-real", &compiler]
+                .into_iter()
+                .chain(crate_arguments)
+                .map(OsString::from)
+                .collect();
+            let command = command_text(&argv, ScannerHome::Unavailable).expect("cargo wrapper");
+            assert_eq!(command.program_name(), frontend);
+            assert_eq!(command.named().words, "hana_diegetic");
+            assert_eq!(
+                command
+                    .display_words()
+                    .map(super::CommandWord::text)
+                    .collect::<Vec<_>>(),
+                displayed,
+            );
+        }
+    }
+
+    #[test]
+    fn a_rustc_wrapper_call_without_a_crate_name_reads_its_frontend() {
+        for (frontend, arguments, line, displayed) in [
+            ("rustc", vec!["--version"], "--version", vec!["--version"]),
+            (
+                "clippy-driver",
+                vec!["/toolchain/bin/rustc", "-C", "opt-level=1", "lib.rs"],
+                "/toolchain/bin/rustc -C opt-level=1 lib.rs",
+                vec!["/toolchain/bin/rustc", "-C opt-level=1", "lib.rs"],
+            ),
+        ] {
+            let compiler = format!("/toolchain/bin/{frontend}");
+            let argv: Vec<_> = ["cargo-tile-real", &compiler]
+                .into_iter()
+                .chain(arguments)
+                .map(OsString::from)
+                .collect();
+            let command = command_text(&argv, ScannerHome::Unavailable).expect("cargo wrapper");
+            assert_eq!(command.program_name(), frontend);
+            assert_eq!(command.named().words, "");
+            assert_eq!(command.line(), line);
+            assert_eq!(
+                command
+                    .display_words()
+                    .map(super::CommandWord::text)
+                    .collect::<Vec<_>>(),
+                displayed,
+            );
+        }
+    }
+
     #[test]
     fn kept_words_and_argument_omissions_have_distinct_states() {
         let kept = CommandText::of("cargo", &["…"]).named();

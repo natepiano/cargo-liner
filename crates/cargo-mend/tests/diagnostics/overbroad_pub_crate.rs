@@ -67,6 +67,10 @@ fn unused_pub_crate_at_depth_1_is_a_fixable_warning() {
 name = "depth_1_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -126,6 +130,10 @@ fn pub_crate_at_depth_2_is_accepted_when_a_facade_requires_crate_reach() {
 name = "depth_2_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -165,6 +173,10 @@ fn pub_crate_at_depth_3_is_allowed_when_parent_caps_at_pub_crate() {
 name = "depth_3_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -412,6 +424,10 @@ fn named_reexport_beside_glob_keeps_chain_resolvable() {
 name = "named_beside_glob_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -592,6 +608,10 @@ fn super_to_crate_chain_permits_the_pub_crate_boundary() {
 name = "super_to_crate_chain_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -633,6 +653,10 @@ fn pub_crate_at_depth_3_is_accepted_for_a_crate_visible_method_surface() {
 name = "depth_3_structural_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -699,6 +723,10 @@ fn pub_crate_in_library_pub_mod_fires() {
 name = "pub_mod_shallow_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -739,6 +767,10 @@ fn mutually_referencing_public_signatures_do_not_overflow_exposure_walk() {
 name = "mutual_signature_cycle_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -811,6 +843,10 @@ fn facade_less_method_is_rewritten_to_its_caller_boundary() {
 name = "facade_less_method_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -874,7 +910,7 @@ impl Saved {
     assert_human_report_advertises_warning_fix(&manifest_path);
 
     let output = mend_command_for(&manifest_path)
-        .arg("--fix")
+        .args(["--fix", "--json"])
         .output()
         .expect("run cargo-mend --fix");
     assert!(
@@ -892,7 +928,7 @@ impl Saved {
         "only the method annotation may change",
     );
 
-    let fixed_report = run_mend_json(&manifest_path);
+    let fixed_report = report_from_mend_output(&output);
     assert!(
         fixed_report.findings.iter().all(|finding| {
             !finding.path.ends_with("src/panel/conversion/saved.rs")
@@ -1136,6 +1172,10 @@ fn tuple_fields_are_rewritten_to_their_caller_boundary() {
 name = "tuple_field_boundary_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");
@@ -1227,6 +1267,10 @@ fn crate_wide_tuple_field_keeps_pub_crate() {
 name = "crate_wide_tuple_field_fixture"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+bench = false
 "#,
     )
     .expect("write manifest");

@@ -57,8 +57,8 @@ pub(super) fn read_fingerprint(path: &Path) -> StoredWorkingTreeFingerprint {
         )
 }
 
-pub(super) fn publish_fingerprint(path: &Path, fingerprint: &WorkingTreeFingerprint) {
-    if let Ok(serialized) = serde_json::to_vec(fingerprint) {
+pub(super) fn publish_fingerprint(path: &Path, working_tree_fingerprint: &WorkingTreeFingerprint) {
+    if let Ok(serialized) = serde_json::to_vec(working_tree_fingerprint) {
         std::mem::drop(fs::write(path, serialized));
     }
 }

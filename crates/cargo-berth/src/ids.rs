@@ -198,9 +198,9 @@ impl WireOrderedReservationIds {
 
     /// Order the identifiers and keep one entry per distinct identity.
     pub(crate) fn sorted_and_deduplicated(reservation_ids: Vec<ReservationId>) -> Self {
-        let mut ordered = Self::sorted(reservation_ids);
-        ordered.0.dedup();
-        ordered
+        let mut wire_ordered_reservation_ids = Self::sorted(reservation_ids);
+        wire_ordered_reservation_ids.0.dedup();
+        wire_ordered_reservation_ids
     }
 
     /// Borrow the ordered identifiers.
@@ -418,11 +418,11 @@ impl RecordedAt {
         const SECONDS_PER_HOUR: u64 = 3_600;
         const SECONDS_PER_MINUTE: u64 = 60;
 
-        let elapsed = SystemTime::now()
+        let elapsed_duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO);
-        let days_since_epoch = elapsed.as_secs() / SECONDS_PER_DAY;
-        let seconds_since_midnight = elapsed.as_secs() % SECONDS_PER_DAY;
+        let days_since_epoch = elapsed_duration.as_secs() / SECONDS_PER_DAY;
+        let seconds_since_midnight = elapsed_duration.as_secs() % SECONDS_PER_DAY;
         let (year, month, day) =
             civil_date_from_unix_days(i64::try_from(days_since_epoch).unwrap_or(i64::MAX));
         let hour = seconds_since_midnight / SECONDS_PER_HOUR;
@@ -430,7 +430,7 @@ impl RecordedAt {
         let second = seconds_since_midnight % SECONDS_PER_MINUTE;
         Self(format!(
             "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
-            elapsed.subsec_millis()
+            elapsed_duration.subsec_millis()
         ))
     }
 
@@ -446,10 +446,10 @@ impl RecordedAt {
     ///
     /// Git keeps committer time to the second, so a record and a commit from the same
     /// second cannot be ordered, and the record is not said to follow the commit.
-    pub(crate) fn follows(&self, committed_at: CommitterTime) -> bool {
+    pub(crate) fn follows(&self, committer_time: CommitterTime) -> bool {
         const MILLISECONDS_PER_SECOND: i64 = 1_000;
 
-        self.unix_milliseconds().div_euclid(MILLISECONDS_PER_SECOND) > committed_at.0
+        self.unix_milliseconds().div_euclid(MILLISECONDS_PER_SECOND) > committer_time.0
     }
 
     fn unix_milliseconds(&self) -> i64 {
@@ -766,7 +766,7 @@ mod tests {
         let recorded_at = "2026-08-23T17:34:54.123Z"
             .parse::<RecordedAt>()
             .expect("recorded timestamp should parse");
-        let generation = ProjectionGeneration::from(1);
+        let projection_generation = ProjectionGeneration::from(1);
         let reservation_revision = ReservationRevision::from(1);
         let reservation_scope_path = "crates/cargo-berth"
             .parse::<ReservationScopePath>()
@@ -785,7 +785,7 @@ mod tests {
         assert_identifier_round_trip(&journal_byte_offset, &SerializedForm::Bare);
         assert_identifier_round_trip(&repo_instance_id, &SerializedForm::Quoted);
         assert_identifier_round_trip(&recorded_at, &SerializedForm::Quoted);
-        assert_identifier_round_trip(&generation, &SerializedForm::Bare);
+        assert_identifier_round_trip(&projection_generation, &SerializedForm::Bare);
         assert_identifier_round_trip(&reservation_revision, &SerializedForm::Bare);
         assert_identifier_round_trip(&reservation_scope_path, &SerializedForm::Quoted);
         assert_identifier_round_trip(&schema_version, &SerializedForm::Bare);
@@ -864,9 +864,9 @@ mod tests {
         assert_eq!(keeping_repeats.as_slice(), [first, first, second, third]);
         assert_eq!(one_per_identity.as_slice(), [first, second, third]);
         assert_eq!(deserialized, keeping_repeats);
-        for ordered in [&keeping_repeats, &one_per_identity, &deserialized] {
+        for wire_ordered_reservation_ids in [&keeping_repeats, &one_per_identity, &deserialized] {
             assert!(
-                ordered
+                wire_ordered_reservation_ids
                     .as_slice()
                     .is_sorted_by_key(ReservationId::wire_ordering_key)
             );
@@ -901,7 +901,7 @@ mod tests {
 
     fn assert_identifier_round_trip<Identifier>(
         identifier: &Identifier,
-        expected_form: &SerializedForm,
+        expected_serialized_form: &SerializedForm,
     ) where
         Identifier: std::fmt::Debug
             + std::fmt::Display
@@ -915,7 +915,7 @@ mod tests {
             serialized_identifier
                 .as_ref()
                 .is_ok_and(|serialized_identifier| {
-                    match expected_form {
+                    match expected_serialized_form {
                         SerializedForm::Quoted => {
                             serialized_identifier == &format!("\"{identifier}\"")
                         },

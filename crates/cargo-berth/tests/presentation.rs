@@ -1,7 +1,9 @@
 //! Built-binary acceptance tests for render-ready reservation responses.
 
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::git_command;
@@ -28,10 +30,8 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_CLAIM_TIME: &str = "2020-01-01T00:00:00.000Z";

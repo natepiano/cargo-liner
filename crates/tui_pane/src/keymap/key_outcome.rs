@@ -28,8 +28,8 @@ mod tests {
 
     #[test]
     fn copy_does_not_consume() {
-        let outcome = KeyOutcome::Consumed;
-        let copy = outcome;
-        assert_eq!(outcome, copy);
+        let key_outcome = KeyOutcome::Consumed;
+        let copied_key_outcome = key_outcome;
+        assert_eq!(key_outcome, copied_key_outcome);
     }
 }

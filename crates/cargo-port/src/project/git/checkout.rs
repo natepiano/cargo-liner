@@ -276,6 +276,50 @@ fn last_commit_date(repo_root: &Path, head: &HeadState) -> CommitDate {
     }
 }
 
+/// `BadBisectBound` records whether `bisect_progress` has seen the bad bound.
+enum BadBisectBound {
+    Missing,
+    Marked,
+}
+
+/// `BisectRefRole` distinguishes the bounds from refs unrelated to bisect progress.
+enum BisectRefRole<'a> {
+    Bad,
+    Good(&'a str),
+    Unrelated,
+}
+
+impl<'a> From<&'a str> for BisectRefRole<'a> {
+    fn from(refname: &'a str) -> Self {
+        if refname == GIT_BISECT_BAD_REF {
+            Self::Bad
+        } else if refname.starts_with(GIT_BISECT_GOOD_REF_PREFIX) {
+            Self::Good(refname)
+        } else {
+            Self::Unrelated
+        }
+    }
+}
+
+/// `BisectVariable` identifies the required revision and step counts in Git output.
+enum BisectVariable<'a> {
+    Revisions(&'a str),
+    Steps(&'a str),
+    Unrelated,
+}
+
+impl<'a> From<&'a str> for BisectVariable<'a> {
+    fn from(line: &'a str) -> Self {
+        line.strip_prefix("bisect_nr=").map_or_else(
+            || {
+                line.strip_prefix("bisect_steps=")
+                    .map_or(Self::Unrelated, Self::Steps)
+            },
+            Self::Revisions,
+        )
+    }
+}
+
 /// Detect an in-flight `git bisect` for `repo_root` and report its
 /// progress. Returns `None` in the common case where no bisect is running.
 ///
@@ -301,19 +345,23 @@ fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
         return Some(BisectProgress::Unreadable);
     };
 
-    let mut bad = false;
+    let mut bad_bisect_bound = BadBisectBound::Missing;
     let mut good = Vec::new();
     for refname in refs.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if refname == GIT_BISECT_BAD_REF {
-            bad = true;
-        } else if refname.starts_with(GIT_BISECT_GOOD_REF_PREFIX) {
-            good.push(refname.to_string());
+        match BisectRefRole::from(refname) {
+            BisectRefRole::Bad => bad_bisect_bound = BadBisectBound::Marked,
+            BisectRefRole::Good(refname) => good.push(refname.to_string()),
+            BisectRefRole::Unrelated => {},
         }
     }
 
-    // `BisectProgress::Awaiting` is returned until `bad` is true and `good` is
-    // nonempty, because Git needs both bisect bounds to estimate remaining work.
-    if !bad || good.is_empty() {
+    // `BisectProgress::Awaiting` is returned until `bad_bisect_bound` is `BadBisectBound::Marked`
+    // and `good` is nonempty: Git needs both bounds to estimate remaining work.
+    match bad_bisect_bound {
+        BadBisectBound::Missing => return Some(BisectProgress::Awaiting),
+        BadBisectBound::Marked => {},
+    }
+    if good.is_empty() {
         return Some(BisectProgress::Awaiting);
     }
     Some(bisect_vars(repo_root, &good).unwrap_or(BisectProgress::Unreadable))
@@ -341,10 +389,10 @@ fn parse_bisect_vars(stdout: &str) -> Option<BisectProgress> {
     let mut revisions = None;
     let mut steps = None;
     for line in stdout.lines() {
-        if let Some(value) = line.strip_prefix("bisect_nr=") {
-            revisions = value.trim().parse::<usize>().ok();
-        } else if let Some(value) = line.strip_prefix("bisect_steps=") {
-            steps = value.trim().parse::<usize>().ok();
+        match BisectVariable::from(line) {
+            BisectVariable::Revisions(value) => revisions = value.trim().parse::<usize>().ok(),
+            BisectVariable::Steps(value) => steps = value.trim().parse::<usize>().ok(),
+            BisectVariable::Unrelated => {},
         }
     }
     Some(BisectProgress::Narrowing {
@@ -536,25 +584,20 @@ fn read_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     ) else {
         return GitStatus::Unreadable;
     };
-    let mut has_modified = false;
-    let mut has_untracked = false;
-
+    let mut status = GitStatus::Clean;
     for line in stdout.lines().filter(|line| line.len() >= 3) {
         let status_code = &line[..2];
         match status_code {
             GIT_IGNORED_STATUS_CODE => {},
-            GIT_UNTRACKED_STATUS_CODE => has_untracked = true,
-            _ => has_modified = true,
+            GIT_UNTRACKED_STATUS_CODE => {
+                if status != GitStatus::Modified {
+                    status = GitStatus::Untracked;
+                }
+            },
+            _ => status = GitStatus::Modified,
         }
     }
-
-    if has_modified {
-        GitStatus::Modified
-    } else if has_untracked {
-        GitStatus::Untracked
-    } else {
-        GitStatus::Clean
-    }
+    status
 }
 
 fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {

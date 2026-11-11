@@ -5,8 +5,32 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
+mod prepared_lock_tests;
+
+use cargo_berth_test_support::FIRST_RUN;
+use cargo_berth_test_support::SECOND_RUN;
+use hook_evidence_templates::INCURSION_ANSWERED_LOST_EVIDENCE;
+use hook_evidence_templates::REWRITTEN_TRUNK_LOST_EVIDENCE;
+use hook_evidence_templates::STATE as HOOK_EVIDENCE_STATE;
+pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
+pub use prepared_lock_tests::AncestorProofCommits;
+pub use prepared_lock_tests::CONTENT_CHECKPOINT;
+pub use prepared_lock_tests::ContentProofCommits;
+pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER_CHECKOUT;
+pub use prepared_lock_tests::PACKED_SUCCESSOR;
+pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
+pub use prepared_lock_tests::ReleasedProofHistory;
+pub use prepared_lock_tests::RetainedPredecessorHistory;
+pub use prepared_lock_tests::read_history;
+
 #[path = "support/covered_branch_template.rs"]
 mod covered_branch_template;
+
+#[path = "support/hook_evidence_templates.rs"]
+mod hook_evidence_templates;
 
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
@@ -19,19 +43,43 @@ mod reader_compat_hooks;
 #[path = "support/timing.rs"]
 mod timing;
 
+#[path = "support/hook_repository.rs"]
+mod hook_repository;
+
+use cargo_berth_test_support::AmbientHarnessSession;
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::ObservedIncursion;
 use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::ReleasedWorkEvidence;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
-use reader_compat_hooks::AmbientHarnessSession;
+use cargo_berth_test_support::spawn_hook_verb;
+use cargo_berth_test_support::spawn_hook_verb_with_ceiling;
+use hook_evidence_templates::EVIDENCE_SESSION;
+use hook_evidence_templates::INCURSION_SESSION;
+use hook_evidence_templates::observed_incursions;
+use hook_repository::CONFIGURATION_PATH;
+use hook_repository::CONFIGURED_REPOSITORY;
+use hook_repository::GIT_REPOSITORY;
+use hook_repository::INITIALIZED_REPOSITORY;
+use hook_repository::bash_payload;
+use hook_repository::claimed_reservation_id;
+use hook_repository::dirty_source;
+use hook_repository::failure;
+use hook_repository::json_output;
+use hook_repository::require_success;
+use hook_repository::required_array;
+use hook_repository::required_string;
+use hook_repository::run_berth;
+use hook_repository::run_berth_with_session;
+use hook_repository::run_git;
+use hook_repository::run_post_tool_use;
+use hook_repository::run_post_tool_use_with_ambient_session;
 use reader_compat_hooks::HookFeedback;
 use reader_compat_hooks::HookResponseEvent;
 use reader_compat_hooks::expected_hook_feedback;
 use reader_compat_hooks::hook_feedback;
-use reader_compat_hooks::spawn_hook_verb;
-use reader_compat_hooks::spawn_hook_verb_with_ceiling;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -41,63 +89,6 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
-};
-
-/// A main checkout with one commit, before berth installs its hooks.
-const GIT_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "git-only",
-    build:            |root| {
-        let built = build_git_repository(root);
-        assert!(built.is_ok(), "git repository template failed: {built:?}");
-    },
-};
-
-/// An initialized checkout with untracked policy and no session or reservation.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    name: "initialized",
-    build: |root| {
-        let built = build_initialized_repository(root);
-        assert!(
-            built.is_ok(),
-            "initialized hook repository template failed: {built:?}"
-        );
-    },
-    ..GIT_REPOSITORY
-};
-
-/// A repository whose berth configuration is committed, so it never itself drifts.
-///
-/// Every corpus comparison below depends on this: an uncommitted `berth.toml` is a
-/// changed path like any other, and the auto-widen line it produces is text the corpus
-/// never froze.
-const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    name: "configured",
-    build: |root| {
-        INITIALIZED_REPOSITORY.restore_into(root);
-        let built = (|| {
-            run_git(root, &["add", "--force", CONFIGURATION_PATH])?;
-            run_git(
-                root,
-                &[
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "configure cargo-berth",
-                ],
-            )
-        })();
-        assert!(
-            built.is_ok(),
-            "configured hook repository template failed: {built:?}"
-        );
-    },
-    ..GIT_REPOSITORY
 };
 
 use std::error::Error;
@@ -125,15 +116,12 @@ use timing::SCHEDULING_ALLOWANCE;
 
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
-const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const EVIDENCE_SESSION: &str = "evidence-session";
 const AMBIENT_SESSION: &str = "ambient-session";
 const AMBIENT_STALE_SESSION: &str = "ambient-stale-session";
 const BOARD_SESSION: &str = "board-session";
 const CLAUDE_CODE_SESSION: &str = "claude-code-session";
 const DEFERRING_SESSION: &str = "deferring-session";
 const HOLDER_SESSION: &str = "holder-session";
-const INCURSION_SESSION: &str = "incursion-session";
 const ORPHAN_SESSION_START_ENTRY: &str = "test_session_start_renders_real_orphan_recovery_actions";
 const POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
     "test_hooks_render_both_lost_evidence_recoveries#3";
@@ -190,7 +178,6 @@ const STALE_SESSION_REJECTION_KIND: &str = "stale_session_mapping";
 const WORKTREE_OCCUPANCY_REJECTION_KIND: &str = "worktree_held_by_another_run";
 const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
 const FAIL_OPEN_SENTENCE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FRONT_END_CORPUS_JSON: &str = include_str!("fixtures/front_end_corpus.json");
 const GIT_BINARY: &str = "git";
 const HOLDING_WORKTREE_FIXTURE_ROOT: &str = "{FIXTURE_ROOT}/holding worktree";
@@ -215,8 +202,6 @@ const RESERVATION_LIMIT_SUMMARY: &str =
     "cargo-berth rejected this edit because it could not accept the request.";
 const RETIRED_MISSING_PRESENTATION_DIAGNOSTIC: &str =
     "the engine returned a blocking check answer without a presentation";
-/// A coordination run other than the one holding the fixture repository.
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_SESSION_RECOVERY_ENTRY: &str =
     "test_hooks_render_coordination_identity_recovery_actions_without_message";
@@ -741,9 +726,9 @@ fn a_contended_ledger_states_the_engine_message() -> TestResult {
 
 #[test]
 fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -> TestResult {
-    let repository = INITIALIZED_REPOSITORY.instantiate();
+    let repository = prepared_lock_tests::HOOK_WORKTREE.instantiate();
     let root = repository.path();
-    let (_directory, foreign_root) = add_worktree(&repository, "busy-ledger-holder")?;
+    let foreign_root = root.join(".git/fixture-worktrees/busy-ledger-holder");
     let foreign = run_berth_with_session(
         &foreign_root,
         &["claim", "file:foreign.rs", "--json"],
@@ -770,7 +755,7 @@ fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -
         .current_dir(root)
         .env_remove("CARGO_BERTH_RUN")
         .env("CARGO_BERTH_SESSION_ID", session)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
         .output()?;
     let envelope = json_output(&checked)?;
     assert_eq!(checked.status.code(), Some(6), "{envelope}");
@@ -784,7 +769,7 @@ fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
         .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2245,23 +2230,17 @@ fn run_pre_tool_use(repository_root: &Path, payload: &Value) -> TestResult<Outpu
 fn pre_tool_use_honors_the_environment_bypass_and_records_it() -> TestResult<()> {
     let repository = INITIALIZED_REPOSITORY.instantiate();
     let payload = edit_payload(repository.path(), "src/lib.rs", Some("bypass-session"));
-    let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+    // The bypass can exit before it reads stdin, so supply an owned input file.
+    let input = repository.path().join(".git/bypass-payload.json");
+    fs::write(&input, serde_json::to_vec(&payload)?)?;
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["hook", "pre-tool-use"])
         .current_dir(repository.path())
         .env("CARGO_BERTH_BYPASS", "1")
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut piped_stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| failure("hook stdin should be piped"))?;
-    piped_stdin.write_all(&serde_json::to_vec(&payload)?)?;
-    drop(piped_stdin);
-    let output = child.wait_with_output()?;
+        .stdin(Stdio::from(fs::File::open(input)?))
+        .output()?;
 
     assert!(output.status.success(), "{output:?}");
     let notice: Value = serde_json::from_slice(&output.stdout)?;
@@ -2324,56 +2303,9 @@ fn spawn_pre_tool_use_with_run(
     Ok(child.wait_with_output()?)
 }
 
-/// Foreign edit refusals require actual uncommitted work in the holder checkout.
-fn dirty_source(root: &Path, path: &str) -> TestResult {
-    let file = root.join(path);
-    let parent = file
-        .parent()
-        .ok_or_else(|| failure("dirty source needs a parent"))?;
-    fs::create_dir_all(parent)?;
-    fs::write(file, "// uncommitted holder work\n")?;
-    Ok(())
-}
-
-fn build_initialized_repository(root: &Path) -> TestResult {
-    build_git_repository(root)?;
-    let initialized = run_berth(root, &["init", "--json"])?;
-    require_success(&initialized, "cargo-berth init")
-}
-
-fn build_git_repository(root: &Path) -> TestResult {
-    run_git(root, &["init", "--quiet", "--initial-branch", "main"])?;
-    git_configuration::append_git_configuration(
-        root,
-        "\n[user]\n name = Hook Acceptance Test\n email = hooks@example.invalid\n",
-    )?;
-    fs::write(root.join("README.md"), "hook fixture\n")?;
-    run_git(root, &["add", "README.md"])?;
-    run_git(
-        root,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "initial",
-        ],
-    )?;
-    Ok(())
-}
-
 fn add_worktree(repository: &TempDir, name: &str) -> TestResult<(TempDir, PathBuf)> {
     let (directory, root) = add_worktree_without_configuration(repository, name)?;
-    let configuration_path = root.join(CONFIGURATION_PATH);
-    let configuration_directory = configuration_path
-        .parent()
-        .ok_or_else(|| failure("worktree configuration should have a parent"))?;
-    fs::create_dir_all(configuration_directory)?;
-    fs::copy(
-        repository.path().join(CONFIGURATION_PATH),
-        configuration_path,
-    )?;
+    hook_repository::copy_configuration(repository.path(), &root)?;
     Ok((directory, root))
 }
 
@@ -2387,28 +2319,6 @@ fn add_worktree_without_configuration(
     let root = directory.path().join(name);
     GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     Ok((directory, root))
-}
-
-fn run_berth(repository_root: &Path, arguments: &[&str]) -> TestResult<Output> {
-    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove("CARGO_BERTH_SESSION_ID")
-        .output()?)
-}
-
-fn run_berth_with_session(
-    repository_root: &Path,
-    arguments: &[&str],
-    session_id: &str,
-) -> TestResult<Output> {
-    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env("CARGO_BERTH_SESSION_ID", session_id)
-        .output()?)
 }
 
 /// Run `cargo-berth` the way a Claude Code session's Bash tool does: its session named by
@@ -2458,22 +2368,6 @@ fn git_revision(repository_root: &Path, reference: &str) -> TestResult<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
-fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
-    let output = git_command(BERTH_EXECUTABLE)
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(failure(format!(
-            "git {arguments:?} failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )))
-    }
-}
-
 fn assert_hook_output(output: &Output, exit_code: i32, stdout: &[u8], stderr: &[u8]) -> TestResult {
     if output.status.code() == Some(exit_code) && output.stdout == stdout && output.stderr == stderr
     {
@@ -2488,23 +2382,6 @@ fn assert_hook_output(output: &Output, exit_code: i32, stdout: &[u8], stderr: &[
     }
 }
 
-fn require_success(output: &Output, operation: &str) -> TestResult {
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(failure(format!(
-            "{operation} failed with {:?}: stdout={} stderr={}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )))
-    }
-}
-
-fn json_output(output: &Output) -> TestResult<Value> {
-    serde_json::from_slice(&output.stdout).map_err(Into::into)
-}
-
 fn journal_events(repository_root: &Path) -> TestResult<Vec<Value>> {
     fs::read_to_string(repository_root.join(JOURNAL_PATH))?
         .lines()
@@ -2512,43 +2389,10 @@ fn journal_events(repository_root: &Path) -> TestResult<Vec<Value>> {
         .collect()
 }
 
-fn required_string<'value>(
-    value: &'value Value,
-    pointer: &str,
-    context: &str,
-) -> TestResult<&'value str> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .ok_or_else(|| failure(format!("{context} should carry string {pointer}")))
-}
-
-fn required_array<'value>(
-    value: &'value Value,
-    pointer: &str,
-    context: &str,
-) -> TestResult<&'value [Value]> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .ok_or_else(|| failure(format!("{context} should carry array {pointer}")))
-}
-
-fn failure(message: impl Into<String>) -> Box<dyn Error> {
-    std::io::Error::other(message.into()).into()
-}
-
 /// One identifier a real run produced, beside the identifier the corpus froze for it.
 struct CorpusIdentifier {
     observed: String,
     frozen:   String,
-}
-
-/// One incursion a `PostToolUse` drift reported, named as the corpus names it.
-struct ObservedIncursion {
-    incident_id:            String,
-    foreign_reservation_id: String,
 }
 
 /// One `PostToolUse` hook run that entered foreign reservations, kept readable after it.
@@ -2558,7 +2402,6 @@ struct IncursionAfterBash {
     incidents:               Vec<ObservedIncursion>,
     straying_root:           PathBuf,
     repository:              TempDir,
-    worktrees:               TempDir,
 }
 
 impl IncursionAfterBash {
@@ -2569,21 +2412,11 @@ impl IncursionAfterBash {
     /// stays on the board under its recorded answers, and the hook stops repeating the stop
     /// instruction for it.
     fn record_every_incursion(&self) -> TestResult {
-        for incident in &self.incidents {
-            let recorded = run_berth_with_session(
-                &self.straying_root,
-                &[
-                    "resolve",
-                    &self.straying_reservation_id,
-                    "--incursion",
-                    &incident.incident_id,
-                    "--json",
-                ],
-                INCURSION_SESSION,
-            )?;
-            require_success(&recorded, "incursion answer")?;
-        }
-        Ok(())
+        hook_evidence_templates::record_incursions(
+            &self.straying_root,
+            &self.straying_reservation_id,
+            &self.incidents,
+        )
     }
 
     /// Report the next Bash call from the same worktree and session.
@@ -2677,96 +2510,22 @@ impl OrphanedReservations {
     }
 }
 
-fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
-    let envelope = json_output(claimed)?;
-    Ok(required_string(&envelope, "/payload/data/reservation_id", "claim")?.to_owned())
-}
-
 /// Drive one Bash call that enters `path_count` foreign reservations.
 fn incursion_after_bash(path_count: usize) -> TestResult<IncursionAfterBash> {
     let repository = CONFIGURED_REPOSITORY.instantiate();
-    let worktrees = TempDir::new()?;
-    for index in 0..path_count {
-        let holder_root = worktrees.path().join(format!("holder-{index}"));
-        add_named_worktree(&repository, &format!("holder-{index}"), &holder_root)?;
-        dirty_source(&holder_root, &format!("path-{index}.rs"))?;
-        let scope = format!("file:path-{index}.rs");
-        let holder = run_berth_with_session(
-            &holder_root,
-            &["claim", &scope, "--json"],
-            &format!("incursion-holder-{index}"),
-        )?;
-        require_success(&holder, "incursion holder claim")?;
-    }
-    let straying_root = worktrees.path().join("straying");
-    add_named_worktree(&repository, "straying", &straying_root)?;
-    let straying = run_berth_with_session(
-        &straying_root,
-        &["claim", "file:straying.rs", "--json"],
-        INCURSION_SESSION,
-    )?;
-    require_success(&straying, "straying claim")?;
-    let straying_reservation_id = claimed_reservation_id(&straying)?;
-    for index in 0..path_count {
-        fs::write(
-            straying_root.join(format!("path-{index}.rs")),
-            "// entered\n",
-        )?;
-    }
-
-    let output = run_post_tool_use(
-        &straying_root,
-        &bash_payload(&straying_root, INCURSION_SESSION),
-    )?;
-    let incidents = observed_incursions(repository.path(), path_count)?;
+    let hook_evidence_templates::IncursionObservation {
+        output,
+        straying_reservation_id,
+        incidents,
+        straying_root,
+    } = hook_evidence_templates::prepare_incursion(repository.path(), path_count)?;
     Ok(IncursionAfterBash {
         output,
         straying_reservation_id,
         incidents,
         straying_root,
         repository,
-        worktrees,
     })
-}
-
-/// Read each recorded incident back from the board, ordered by the path it entered.
-fn observed_incursions(
-    repository_root: &Path,
-    path_count: usize,
-) -> TestResult<Vec<ObservedIncursion>> {
-    let board = run_berth(repository_root, &["board", "--json"])?;
-    require_success(&board, "incursion board")?;
-    let envelope = json_output(&board)?;
-    let entries = required_array(
-        &envelope,
-        "/payload/data/outstanding_incursions/entries",
-        "incursion board",
-    )?;
-    (0..path_count)
-        .map(|index| {
-            let path = format!("path-{index}.rs");
-            let entry = entries
-                .iter()
-                .find(|entry| {
-                    entry["entered_paths"]
-                        .as_array()
-                        .is_some_and(|paths| paths.iter().any(|entered| *entered == path))
-                })
-                .ok_or_else(|| {
-                    failure(format!("the board should report an incursion into {path}"))
-                })?;
-            Ok(ObservedIncursion {
-                incident_id:            required_string(entry, "/incident_id", "incursion entry")?
-                    .to_owned(),
-                foreign_reservation_id: required_string(
-                    entry,
-                    "/foreign_reservation_ids/0",
-                    "incursion entry",
-                )?
-                .to_owned(),
-            })
-        })
-        .collect()
 }
 
 /// Release `count` reservations whose worktrees then disappear, orphaning each.
@@ -2854,61 +2613,35 @@ fn orphaned_reservations_with(
     })
 }
 
-/// One released reservation whose recorded integration proof no longer holds.
-struct LostIntegrationEvidence {
-    reservation_id: String,
-    protected_tip:  String,
-    /// The worktree a hook run reports from, whose own branch still resolves.
-    ///
-    /// Trunk is left unprovable in the repository's main worktree, and one of the two ways of
-    /// doing that leaves its checked-out branch naming an object the repository does not hold.
-    /// A hook run reports from the released work's own worktree instead, so what the response
-    /// states is the alert under test rather than a broken checkout.
-    reporting_root: PathBuf,
+/// Map the released reservation and its protected tip to the corpus identifiers.
+fn lost_evidence_corpus_identifiers(evidence: &ReleasedWorkEvidence) -> Vec<CorpusIdentifier> {
+    vec![
+        CorpusIdentifier {
+            observed: evidence.reservation_id.clone(),
+            frozen:   FROZEN_LOST_EVIDENCE_RESERVATION.to_owned(),
+        },
+        CorpusIdentifier {
+            observed: evidence.protected_tip.clone(),
+            frozen:   FROZEN_LOST_EVIDENCE_PROTECTED_TIP.to_owned(),
+        },
+    ]
 }
 
-impl LostIntegrationEvidence {
-    /// The corpus names the released reservation and the tip it can no longer prove.
-    ///
-    /// Only the unresolvable-trunk entries are still compared with the corpus, and a trunk that
-    /// does not resolve names nothing, so no trunk commit is restated.
-    fn corpus_identifiers(&self) -> Vec<CorpusIdentifier> {
-        vec![
-            CorpusIdentifier {
-                observed: self.reservation_id.clone(),
-                frozen:   FROZEN_LOST_EVIDENCE_RESERVATION.to_owned(),
-            },
-            CorpusIdentifier {
-                observed: self.protected_tip.clone(),
-                frozen:   FROZEN_LOST_EVIDENCE_PROTECTED_TIP.to_owned(),
-            },
-        ]
-    }
-
-    /// The notice for released work whose resolved trunk no longer proves the protected tip.
-    ///
-    /// That trunk proves nothing, so the notice names it only as the trunk that lost the proof
-    /// and leaves the `--integrated-as` argument for the reader to name.
-    fn rewritten_trunk_notice(&self, trunk: &ObservedTrunk) -> TestResult<String> {
-        let ObservedTrunk::Resolved(trunk_oid) = trunk else {
-            return Err(failure(
-                "a trunk rewritten past the tip should still resolve",
-            ));
-        };
-        let reservation_id = &self.reservation_id;
-        let protected_tip = &self.protected_tip;
-        Ok(format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {reservation_id} --json`."
-        ))
-    }
-}
-
-/// How one recorded integration proof is taken away again.
-enum IntegrationProofLoss {
-    /// Trunk moves past the protected tip, so it resolves but proves nothing.
-    TrunkRewrittenPastTheTip,
-    /// Trunk names an object this repository does not hold, so no proof is possible.
-    TrunkNamesAnAbsentObject,
+/// Format the notice for a trunk that no longer proves the protected tip.
+fn rewritten_trunk_notice(
+    evidence: &ReleasedWorkEvidence,
+    trunk: &ObservedTrunk,
+) -> TestResult<String> {
+    let ObservedTrunk::Resolved(trunk_oid) = trunk else {
+        return Err(failure(
+            "a trunk rewritten past the tip should still resolve",
+        ));
+    };
+    let reservation_id = &evidence.reservation_id;
+    let protected_tip = &evidence.protected_tip;
+    Ok(format!(
+        "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {reservation_id} --json`."
+    ))
 }
 
 /// Whether the trunk this repository configures still names a readable commit.
@@ -2919,153 +2652,25 @@ enum ObservedTrunk {
     Unresolvable,
 }
 
-/// Record one reservation's work as integrated, then take that proof away again.
-///
-/// Both lost-evidence corpus entries start from the same released-and-proven reservation and
-/// differ only in how the proof is lost: `Resolved` rewrites trunk past the protected tip, and
-/// `Unresolvable` leaves trunk naming a commit the repository does not hold.
+/// Record integrated work, then make trunk name an absent object.
 fn lose_integration_evidence(
     repository: &TempDir,
     worktrees: &Path,
-    loss: &IntegrationProofLoss,
-) -> TestResult<(LostIntegrationEvidence, ObservedTrunk)> {
-    let integrated_root = worktrees.join("integrated");
-    add_named_worktree(repository, "integrated", &integrated_root)?;
-    let source = "src/integrated.rs";
-    fs::create_dir_all(integrated_root.join("src"))?;
-    fs::write(integrated_root.join(source), "// released work\n")?;
-    run_git(&integrated_root, &["add", source])?;
-    run_git(
-        &integrated_root,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "released work",
-        ],
+) -> TestResult<(ReleasedWorkEvidence, ObservedTrunk)> {
+    let evidence =
+        hook_evidence_templates::settle_integration_evidence(repository.path(), worktrees)?;
+    fs::write(
+        repository.path().join(TRUNK_REFERENCE_PATH),
+        format!("{ABSENT_TRUNK_OBJECT_ID}\n"),
     )?;
-    let claimed = run_berth_with_session(
-        &integrated_root,
-        &["claim", &format!("file:{source}"), "--json"],
-        EVIDENCE_SESSION,
-    )?;
-    require_success(&claimed, "released work claim")?;
-    let reservation_id = claimed_reservation_id(&claimed)?;
-    let released = run_berth(&integrated_root, &["release", &reservation_id, "--json"])?;
-    require_success(&released, "released work release")?;
-    let protected_tip = required_string(
-        &json_output(&released)?,
-        "/payload/data/protected_tip",
-        "released work release",
-    )?
-    .to_owned();
-
-    let trunk_before_integration = git_revision(repository.path(), TRUNK_BRANCH)?;
-    run_git(
-        repository.path(),
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "merge",
-            "--quiet",
-            "--no-ff",
-            "-m",
-            "integrate released work",
-            "integrated",
-        ],
-    )?;
-    let reconciled = run_berth(repository.path(), &["board", "--json"])?;
-    require_success(&reconciled, "settle integrated reservation")?;
-    let settled = run_berth(repository.path(), &["release", &reservation_id, "--json"])?;
-    require_success(&settled, "automatic integration settlement")?;
-    assert_eq!(
-        json_output(&settled)?["payload"]["data"]["status"],
-        "already_settled"
-    );
-    assert_eq!(
-        json_output(&settled)?["payload"]["data"]["evidence"]["status"],
-        "integrated"
-    );
-    take_the_integration_proof_away(repository, &trunk_before_integration, loss)?;
-    // The pass that first meets the loss records it and stays silent, so the hooks under test --
-    // which read one board each -- need the ledger already carrying the derived status. See
-    // `ReconciliationAction::confirmed_lost_evidence`.
+    // Record the proof loss before the hook reads the board.
     let deriving = run_berth(repository.path(), &["board", "--json"])?;
     require_success(&deriving, "reconcile the lost integration proof")?;
-    let trunk = match loss {
-        IntegrationProofLoss::TrunkRewrittenPastTheTip => {
-            ObservedTrunk::Resolved(git_revision(repository.path(), TRUNK_BRANCH)?)
-        },
-        IntegrationProofLoss::TrunkNamesAnAbsentObject => ObservedTrunk::Unresolvable,
-    };
-    Ok((
-        LostIntegrationEvidence {
-            reservation_id,
-            protected_tip,
-            reporting_root: integrated_root,
-        },
-        trunk,
-    ))
-}
-
-/// Leave trunk unable to prove the protected tip, in the way the caller asked for.
-fn take_the_integration_proof_away(
-    repository: &TempDir,
-    trunk_before_integration: &str,
-    loss: &IntegrationProofLoss,
-) -> TestResult {
-    match loss {
-        IntegrationProofLoss::TrunkRewrittenPastTheTip => {
-            run_git(
-                repository.path(),
-                &["reset", "--hard", "--quiet", trunk_before_integration],
-            )?;
-            fs::write(repository.path().join("rewritten.rs"), "// rewritten\n")?;
-            run_git(repository.path(), &["add", "rewritten.rs"])?;
-            run_git(
-                repository.path(),
-                &[
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "rewrite trunk past the released work",
-                ],
-            )
-        },
-        IntegrationProofLoss::TrunkNamesAnAbsentObject => Ok(fs::write(
-            repository.path().join(TRUNK_REFERENCE_PATH),
-            format!("{ABSENT_TRUNK_OBJECT_ID}\n"),
-        )?),
-    }
+    Ok((evidence, ObservedTrunk::Unresolvable))
 }
 
 fn add_named_worktree(repository: &TempDir, branch: &str, root: &Path) -> TestResult {
-    GIT.add_worktree_without_hooks(repository.path(), root, branch, "HEAD");
-    let configuration_path = root.join(CONFIGURATION_PATH);
-    let configuration_directory = configuration_path
-        .parent()
-        .ok_or_else(|| failure("worktree configuration should have a parent"))?;
-    fs::create_dir_all(configuration_directory)?;
-    fs::copy(
-        repository.path().join(CONFIGURATION_PATH),
-        configuration_path,
-    )?;
-    Ok(())
-}
-
-fn bash_payload(working_directory: &Path, session_id: &str) -> Value {
-    serde_json::json!({
-        "tool_name": "Bash",
-        "cwd": working_directory,
-        "tool_input": {"command": "true"},
-        "session_id": session_id,
-    })
+    hook_repository::add_named_worktree(repository.path(), branch, root)
 }
 
 fn session_start_payload(working_directory: &Path, session_id: Option<&str>) -> Value {
@@ -3078,29 +2683,6 @@ fn session_start_payload(working_directory: &Path, session_id: Option<&str>) -> 
         payload["session_id"] = Value::String(session_id.to_owned());
     }
     payload
-}
-
-fn run_post_tool_use(working_directory: &Path, payload: &Value) -> TestResult<Output> {
-    run_post_tool_use_with_ambient_session(
-        working_directory,
-        payload,
-        &AmbientHarnessSession::Absent,
-    )
-}
-
-/// Run `hook post-tool-use` under an environment that names a harness session of its own.
-fn run_post_tool_use_with_ambient_session(
-    working_directory: &Path,
-    payload: &Value,
-    ambient_session: &AmbientHarnessSession<'_>,
-) -> TestResult<Output> {
-    spawn_hook_verb(
-        Path::new(BERTH_EXECUTABLE),
-        working_directory,
-        "post-tool-use",
-        &serde_json::to_vec(payload)?,
-        ambient_session,
-    )
 }
 
 fn run_post_tool_use_stdin(working_directory: &Path, stdin: &[u8]) -> TestResult<Output> {
@@ -5023,24 +4605,30 @@ fn post_tool_use_states_a_widening_after_the_incursion_was_answered(
 /// by hand from any worktree; the straying worktree's Bash call leaves it out.
 #[test]
 fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> TestResult {
-    let incursion = incursion_after_bash(1)?;
-    incursion.record_every_incursion()?;
-    let (evidence, trunk) = lose_integration_evidence(
-        &incursion.repository,
-        incursion.worktrees.path(),
-        &IntegrationProofLoss::TrunkRewrittenPastTheTip,
-    )?;
-
-    let notice = evidence.rewritten_trunk_notice(&trunk)?;
+    let repository = INCURSION_ANSWERED_LOST_EVIDENCE.instantiate();
+    let state: hook_evidence_templates::LostEvidenceState =
+        serde_json::from_slice(&fs::read(repository.path().join(HOOK_EVIDENCE_STATE))?)?;
+    let worktrees = repository.path().join(".git/fixture-worktrees");
+    let straying_root = worktrees.join("straying");
+    let evidence = ReleasedWorkEvidence {
+        reservation_id: state.reservation_id,
+        protected_tip:  state.protected_tip,
+        reporting_root: worktrees.join("integrated"),
+    };
+    let trunk = ObservedTrunk::Resolved(state.trunk);
+    let notice = rewritten_trunk_notice(&evidence, &trunk)?;
 
     // The released reservation belongs to the live evidence worktree, so the straying
     // worktree's Bash-call notice leaves its alert out.
-    let output = incursion.report_another_bash_call()?;
+    let output = run_post_tool_use(
+        &straying_root,
+        &bash_payload(&straying_root, INCURSION_SESSION),
+    )?;
     assert!(
         !String::from_utf8_lossy(&output.stdout).contains(notice.as_str()),
         "PostToolUse in a worktree that does not hold the reservation should omit its alert: {output:?}"
     );
-    assert_hand_run_board_states_the_lost_evidence(&incursion.straying_root, &evidence, &notice)?;
+    assert_hand_run_board_states_the_lost_evidence(&straying_root, &evidence, &notice)?;
     let output = run_post_tool_use(
         &evidence.reporting_root,
         &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
@@ -5054,7 +4642,7 @@ fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> Test
 /// alert, including one whose reservation a live worktree elsewhere holds.
 fn assert_hand_run_board_states_the_lost_evidence(
     root: &Path,
-    evidence: &LostIntegrationEvidence,
+    evidence: &ReleasedWorkEvidence,
     notice: &str,
 ) -> TestResult {
     let board = run_berth(root, &["board", "--json"])?;
@@ -5086,9 +4674,16 @@ fn assert_hand_run_board_states_the_lost_evidence(
 /// proof: it does not carry the work, so it is never offered as the `--integrated-as` argument.
 #[test]
 fn hooks_state_the_rewritten_trunk_evidence_recovery() -> TestResult {
-    let (evidence, trunk, _repository, _worktrees) =
-        released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkRewrittenPastTheTip)?;
-    let notice = evidence.rewritten_trunk_notice(&trunk)?;
+    let repository = REWRITTEN_TRUNK_LOST_EVIDENCE.instantiate();
+    let state: hook_evidence_templates::LostEvidenceState =
+        serde_json::from_slice(&fs::read(repository.path().join(HOOK_EVIDENCE_STATE))?)?;
+    let evidence = ReleasedWorkEvidence {
+        reservation_id: state.reservation_id,
+        protected_tip:  state.protected_tip,
+        reporting_root: repository.path().join(".git/fixture-worktrees/integrated"),
+    };
+    let trunk = ObservedTrunk::Resolved(state.trunk);
+    let notice = rewritten_trunk_notice(&evidence, &trunk)?;
     for event in [
         HookResponseEvent::PostToolUse,
         HookResponseEvent::SessionStart,
@@ -5136,8 +4731,7 @@ fn assert_hook_states_the_lost_evidence_notice(
 /// A trunk that resolves to nothing cannot be named, so the recovery asks for trunk first.
 #[test]
 fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
-    let (evidence, _, _repository, _worktrees) =
-        released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkNamesAnAbsentObject)?;
+    let (evidence, _, _repository, _worktrees) = released_work_trunk_cannot_prove()?;
     for event in [
         HookResponseEvent::PostToolUse,
         HookResponseEvent::SessionStart,
@@ -5155,7 +4749,7 @@ fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
 }
 
 fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery(
-    evidence: &LostIntegrationEvidence,
+    evidence: &ReleasedWorkEvidence,
 ) -> TestResult {
     let output = run_post_tool_use(
         &evidence.reporting_root,
@@ -5164,12 +4758,12 @@ fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery(
     assert_post_tool_use_feedback_matches_corpus(
         &output,
         POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(),
+        &lost_evidence_corpus_identifiers(evidence),
     )
 }
 
 fn session_start_states_the_unresolvable_trunk_evidence_recovery(
-    evidence: &LostIntegrationEvidence,
+    evidence: &ReleasedWorkEvidence,
 ) -> TestResult {
     let output = run_session_start(
         &evidence.reporting_root,
@@ -5179,7 +4773,7 @@ fn session_start_states_the_unresolvable_trunk_evidence_recovery(
     assert_session_start_feedback_matches_corpus(
         &output,
         SESSION_START_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(),
+        &lost_evidence_corpus_identifiers(evidence),
     )
 }
 
@@ -5201,16 +4795,12 @@ fn session_start_states_the_unavailable_orphan_recovery_actions() -> TestResult 
     )
 }
 
-/// Build the released-and-proven reservation whose proof was then taken away.
-///
-/// The repository and its worktrees are returned alongside so the caller keeps them alive for
-/// the duration of the hook run; dropping either deletes the scratch tree out from under it.
-fn released_work_trunk_cannot_prove(
-    loss: &IntegrationProofLoss,
-) -> TestResult<(LostIntegrationEvidence, ObservedTrunk, TempDir, TempDir)> {
+/// Keep the repository and its worktrees alive while the hook checks lost evidence.
+fn released_work_trunk_cannot_prove()
+-> TestResult<(ReleasedWorkEvidence, ObservedTrunk, TempDir, TempDir)> {
     let repository = CONFIGURED_REPOSITORY.instantiate();
     let worktrees = TempDir::new()?;
-    let (evidence, trunk) = lose_integration_evidence(&repository, worktrees.path(), loss)?;
+    let (evidence, trunk) = lose_integration_evidence(&repository, worktrees.path())?;
     Ok((evidence, trunk, repository, worktrees))
 }
 

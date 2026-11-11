@@ -100,7 +100,9 @@ pub use std::time::Instant;
 
 pub use cargo_berth_test_support::FixtureCommand as Command;
 pub use cargo_berth_test_support::reservation_row;
+use cargo_berth_test_support::worktree_identity_and_marker_run;
 use lock_contention::LOCK_CONTENTION_TOLERANCE;
+use serde_json::Value;
 pub use tempfile::tempdir;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
@@ -970,6 +972,155 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
             .as_array()
             .is_some_and(Vec::is_empty)
     );
+}
+
+/// The old identity can remain live at a different path after a move.
+#[derive(Clone, Copy, Debug)]
+enum PreviousHolder {
+    Removed,
+    Moved,
+}
+
+#[test]
+fn recreated_holder_recovers_only_after_the_old_identity_is_gone() {
+    for previous_holder in [PreviousHolder::Removed, PreviousHolder::Moved] {
+        assert_recreated_holder_recovery(previous_holder);
+    }
+}
+
+fn assert_recreated_holder_recovery(previous_holder: PreviousHolder) {
+    let repository = initialized_repository();
+    let parent = tempdir().expect("worktree parent should exist");
+    let holder = parent.path().join("holder");
+    let moved = parent.path().join("moved");
+    GIT.add_worktree_without_hooks(repository.path(), &holder, "old-holder", "HEAD");
+    let session = "recreated-holder-session";
+    let claim = run_berth_with_session(
+        &holder,
+        &["claim", "file:surviving", "--run", FIRST_RUN, "--json"],
+        session,
+    );
+    assert_success(&claim);
+    let reservation = reservation_id(&claim);
+    let old_id = Value::String(worktree_identity_and_marker_run(&holder).0);
+    let holder_path = holder.to_str().expect("holder path should be UTF-8");
+    match previous_holder {
+        PreviousHolder::Removed => git(
+            repository.path(),
+            &["worktree", "remove", "--force", holder_path],
+        ),
+        PreviousHolder::Moved => git(
+            repository.path(),
+            &[
+                "worktree",
+                "move",
+                holder_path,
+                moved.to_str().expect("moved path should be UTF-8"),
+            ],
+        ),
+    }
+    GIT.add_worktree_without_hooks(repository.path(), &holder, "replacement-holder", "HEAD");
+    let mismatch = run_berth_with_session(&holder, &["check", "file:surviving", "--json"], session);
+    assert_eq!(mismatch.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&mismatch),
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+    let arguments = [
+        "resolve",
+        &reservation,
+        "--rehome",
+        "--why",
+        "the holder was recreated",
+        "--json",
+    ];
+    let before = fs::read(repository.path().join(JOURNAL_PATH)).expect("journal should read");
+    let wrong_path = run_berth(repository.path(), &arguments);
+    assert!(
+        !wrong_path.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wrong_path.stdout)
+    );
+    assert_eq!(
+        fs::read(repository.path().join(JOURNAL_PATH)).expect("journal should read"),
+        before
+    );
+    let recovered = run_berth_with_session(&holder, &arguments, session);
+    match previous_holder {
+        PreviousHolder::Moved => {
+            assert!(!recovered.status.success());
+            assert!(
+                json_output(&recovered)["message"]
+                    .as_str()
+                    .expect("refusal should have a message")
+                    .contains("old holder identity is still live")
+            );
+            assert_eq!(
+                fs::read(repository.path().join(JOURNAL_PATH)).expect("journal should read"),
+                before
+            );
+        },
+        PreviousHolder::Removed => {
+            assert_recovered_holder(
+                repository.path(),
+                &holder,
+                &reservation,
+                &old_id,
+                &recovered,
+                session,
+            );
+        },
+    }
+}
+
+fn assert_recovered_holder(
+    repository: &Path,
+    holder: &Path,
+    reservation: &str,
+    old_id: &Value,
+    recovered: &Output,
+    session: &str,
+) {
+    assert_success(recovered);
+    let response = json_output(recovered);
+    assert_eq!(response["status"], "recovered");
+    assert_ne!(&response["payload"]["data"]["worktree_id"], old_id);
+    assert_holder_recovery_audit(repository, reservation, old_id, &response);
+    let checked = run_berth_with_session(holder, &["check", "file:surviving", "--json"], session);
+    assert_success(&checked);
+    let released = run_berth_with_session(holder, &["release", reservation, "--json"], session);
+    assert_success(&released);
+    let board = run_berth(repository, &["board", "--json"]);
+    assert_eq!(
+        reservation_row(&json_output(&board), reservation)["lifecycle"]["stage"],
+        "released"
+    );
+}
+
+fn assert_holder_recovery_audit(
+    repository: &Path,
+    reservation: &str,
+    old_id: &Value,
+    response: &Value,
+) {
+    let journal = fs::read_to_string(repository.join(JOURNAL_PATH)).expect("journal should read");
+    let event = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event should parse"))
+        .find(|event| event["op"] == "rebind_worktree" && event["reservation_id"] == reservation)
+        .expect("recovery should append the holder change");
+    assert_eq!(event["previous_worktree_id"], *old_id);
+    assert_eq!(
+        event["current_worktree_id"],
+        response["payload"]["data"]["worktree_id"]
+    );
+    assert_eq!(event["recovery"]["why"], "the holder was recreated");
+    assert_eq!(
+        event["actor"]["worktree"],
+        response["payload"]["data"]["worktree_id"]
+    );
+    assert_eq!(event["actor"]["run"], FIRST_RUN);
 }
 
 #[test]

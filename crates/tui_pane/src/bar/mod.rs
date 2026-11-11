@@ -19,6 +19,7 @@
 //! 3. Concatenate the per-region span vectors into one [`StatusBar`].
 
 mod constants;
+pub(crate) mod cpu;
 mod global_region;
 mod nav_region;
 mod palette;
@@ -37,6 +38,8 @@ pub use render::render;
 pub use slot::BarSlot;
 pub use slot::ShortcutState;
 pub use status_bar::StatusBar;
+pub use status_line::HintToggleState;
+pub(crate) use status_line::HintValue;
 pub use status_line::ScanIndicator;
 pub use status_line::StatusLine;
 pub use status_line::StatusLineGlobal;

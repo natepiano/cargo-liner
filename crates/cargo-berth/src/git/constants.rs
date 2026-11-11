@@ -1,6 +1,8 @@
 //! Named git command, flag, reference, and status spellings.
 
 // Environment names, values, and inherited read policy.
+#[cfg(not(target_os = "linux"))]
+use std::time::Duration;
 /// Keep internally spawned hooks on this berth executable unless the caller selected another.
 pub(super) const BERTH_EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
@@ -275,6 +277,15 @@ pub(super) const PROCESS_DESCRIPTORS_DIRECTORY: &str = "fd";
 /// Process holder inspection on other supported systems.
 #[cfg(not(target_os = "linux"))]
 pub(super) const LSOF_BINARY: &str = "/usr/sbin/lsof";
+/// Combine the lsof file and process selectors.
+#[cfg(not(target_os = "linux"))]
+pub(super) const LSOF_INTERSECT_ARG: &str = "-a";
+/// Select the lsof process ids.
+#[cfg(not(target_os = "linux"))]
+pub(super) const LSOF_PROCESS_SELECTOR_ARG: &str = "-p";
+/// Bound the parent probe to twice its measured 25 ms duration.
+#[cfg(not(target_os = "linux"))]
+pub(super) const LSOF_PARENT_PROBE_DEADLINE: Duration = std::time::Duration::from_millis(50);
 /// Request process ids alone from lsof.
 #[cfg(not(target_os = "linux"))]
 pub(super) const LSOF_PROCESS_IDS_ARG: &str = "-t";

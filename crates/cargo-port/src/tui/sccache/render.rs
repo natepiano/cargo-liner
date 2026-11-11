@@ -10,6 +10,7 @@ use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::ColorMode;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
+use tui_pane::PopupBorder;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ViewportOverflow;
@@ -22,6 +23,7 @@ use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::constants::CONTENT_RIGHT_PADDING;
+use super::constants::HINT_ROW_MARGIN;
 use super::constants::POPUP_BORDER_HEIGHT;
 use super::constants::POPUP_HORIZONTAL_MARGIN;
 use super::constants::POPUP_MIN_WIDTH;
@@ -53,7 +55,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
     } = build_lines(&app.overlays.sccache_pane, mode);
     let hints = shortcut_hints(app);
     let width = content_width(&lines)
-        .max(content_width(std::slice::from_ref(&hints)).saturating_add(1))
+        .max(content_width(std::slice::from_ref(&hints)).saturating_add(2 * HINT_ROW_MARGIN))
         .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
     let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
@@ -63,19 +65,20 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         width,
         height,
     }
-    .render_with_areas(frame);
+    .render_with_border(frame, PopupBorder::Thick);
     let inner = Rect {
         height: popup.inner.height.saturating_sub(1),
         ..popup.inner
     };
-    let hints = whole_hints(&hints, popup.inner.width.saturating_sub(1));
+    let hint_width = popup.inner.width.saturating_sub(2 * HINT_ROW_MARGIN);
+    let hints = whole_hints(&hints, hint_width);
     if popup.inner.height > 0 {
         frame.render_widget(
             Paragraph::new(hints),
             Rect::new(
-                popup.inner.x.saturating_add(1),
+                popup.inner.x.saturating_add(HINT_ROW_MARGIN),
                 inner.bottom(),
-                popup.inner.width.saturating_sub(1),
+                hint_width,
                 1,
             ),
         );
@@ -442,7 +445,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains(&format!("│ {hints}")));
+        assert!(rendered.contains(&format!("┃ {hints}")));
         assert!(rendered.contains("Loading sccache stats"));
         assert_eq!(app.overlays.sccache_pane.viewport.len(), 0);
         println!("Before Sccache body (unchanged build_lines):\n{before}");

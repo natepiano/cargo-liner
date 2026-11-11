@@ -172,9 +172,9 @@ pub(super) enum DriftActingIdentity {
 impl DriftActingIdentity {
     pub(super) fn resolve(
         resolved_edit_authorization: ResolvedEditAuthorization,
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
     ) -> Self {
-        match reservations.resolve_editing_identity(resolved_edit_authorization) {
+        match retained_reservation_set.resolve_editing_identity(resolved_edit_authorization) {
             AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id: run,
                 reservation_id: reservation,

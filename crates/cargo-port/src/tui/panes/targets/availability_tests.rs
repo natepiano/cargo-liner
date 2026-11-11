@@ -38,6 +38,7 @@ use crate::tui::keymap::FinderAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
+use crate::tui::state::inflight::OwnedRunActivity;
 use crate::tui::terminal;
 use crate::tui::test_support;
 
@@ -48,9 +49,42 @@ struct TargetFixture {
     scratch: TempDir,
 }
 
+/// The bin targets a fixture package declares.
+#[derive(Clone, Copy)]
+enum FixtureBinaries {
+    /// One `src/main.rs` binary named for the package.
+    PackageNamed,
+    /// `src/bin/<name>.rs` binaries, none named for the package.
+    Named(&'static [&'static str]),
+}
+
 fn package_record(path: &Path, name: &str) -> anyhow::Result<PackageRecord> {
-    fs::create_dir_all(path.join("src"))?;
-    fs::write(path.join("src/main.rs"), "fn main() {}")?;
+    package_record_with_binaries(path, name, FixtureBinaries::PackageNamed)
+}
+
+fn package_record_with_binaries(
+    path: &Path,
+    name: &str,
+    binaries: FixtureBinaries,
+) -> anyhow::Result<PackageRecord> {
+    let targets = match binaries {
+        FixtureBinaries::PackageNamed => {
+            fs::create_dir_all(path.join("src"))?;
+            fs::write(path.join("src/main.rs"), "fn main() {}")?;
+            vec![(name.to_string(), path.join("src/main.rs"))]
+        },
+        FixtureBinaries::Named(binary_names) => {
+            fs::create_dir_all(path.join("src/bin"))?;
+            binary_names
+                .iter()
+                .map(|binary_name| {
+                    let src_path = path.join(format!("src/bin/{binary_name}.rs"));
+                    fs::write(&src_path, "fn main() {}")?;
+                    Ok(((*binary_name).to_string(), src_path))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        },
+    };
     fs::write(
         path.join("Cargo.toml"),
         format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
@@ -64,12 +98,15 @@ fn package_record(path: &Path, name: &str) -> anyhow::Result<PackageRecord> {
         homepage:      None,
         repository:    None,
         manifest_path: AbsolutePath::from(path.join("Cargo.toml")),
-        targets:       vec![TargetRecord {
-            name:              name.to_string(),
-            kinds:             vec![TargetKind::Bin],
-            src_path:          AbsolutePath::from(path.join("src/main.rs")),
-            required_features: Vec::new(),
-        }],
+        targets:       targets
+            .into_iter()
+            .map(|(target_name, src_path)| TargetRecord {
+                name:              target_name,
+                kinds:             vec![TargetKind::Bin],
+                src_path:          AbsolutePath::from(src_path),
+                required_features: Vec::new(),
+            })
+            .collect(),
         publish:       PublishPolicy::Never,
     })
 }
@@ -86,6 +123,10 @@ fn package(path: &Path, record: &PackageRecord) -> Package {
 
 impl TargetFixture {
     fn new(workspace: bool) -> anyhow::Result<Self> {
+        Self::with_binaries(workspace, FixtureBinaries::PackageNamed)
+    }
+
+    fn with_binaries(workspace: bool, binaries: FixtureBinaries) -> anyhow::Result<Self> {
         let scratch = tempfile::tempdir()?;
         let root = scratch.path().join("project");
         let names = if workspace {
@@ -106,7 +147,7 @@ impl TargetFixture {
         let records = owners
             .iter()
             .zip(&names)
-            .map(|(path, name)| package_record(path, name))
+            .map(|(path, name)| package_record_with_binaries(path, name, binaries))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let packages: Vec<_> = owners
             .iter()
@@ -218,7 +259,10 @@ fn a_queued_target_cannot_start_after_its_owner_becomes_deleted() -> anyhow::Res
         .expect_found("the owning package")
         .visibility = Visibility::Deleted;
     terminal::start_queued_target_for_test(&mut fixture.app);
-    assert!(!fixture.app.inflight.owned_run().is_running());
+    assert_eq!(
+        fixture.app.inflight.owned_run().activity(),
+        OwnedRunActivity::Inactive
+    );
     assert!(matches!(
         fixture.app.inflight.owned_run_termination(),
         crate::tui::state::OwnedRunTermination::NotRunning
@@ -231,6 +275,90 @@ fn a_queued_target_cannot_start_after_its_owner_becomes_deleted() -> anyhow::Res
         fixture.app.inflight.begin_owned_run_launch(),
         crate::tui::state::OwnedRunLaunchStart::NotQueued
     ));
+    Ok(())
+}
+
+#[test]
+fn binaries_named_apart_from_the_package_draw_rows_and_run_by_name() -> anyhow::Result<()> {
+    let mut fixture =
+        TargetFixture::with_binaries(false, FixtureBinaries::Named(&["serve", "migrate"]))?;
+    fixture.app.set_focus_to_pane(PaneId::Targets);
+    let text = target_text(&mut fixture.app)?;
+    assert!(!text.contains("No Targets"), "{text}");
+    assert!(text.contains("migrate") && text.contains("serve"), "{text}");
+    enter(&mut fixture.app);
+    let pending_example_run = fixture
+        .app
+        .inflight
+        .take_pending_example_run()
+        .context("first binary run")?;
+    assert_eq!(pending_example_run.target_name, "migrate");
+    assert!(matches!(
+        pending_example_run.run_target_kind,
+        panes::RunTargetKind::Binary
+    ));
+    Ok(())
+}
+
+#[test]
+fn finder_offers_each_binary_by_name_and_selects_its_row() -> anyhow::Result<()> {
+    let mut fixture =
+        TargetFixture::with_binaries(false, FixtureBinaries::Named(&["serve", "migrate"]))?;
+    input::open_finder(&mut fixture.app);
+    // The fixture package has no examples or benches, so every target result is a binary.
+    let binary_names: Vec<_> = fixture
+        .app
+        .project_list
+        .finder
+        .index
+        .iter()
+        .filter(|item| item.target_name.is_some())
+        .map(|item| (item.display_name.as_str(), item.target_name.as_deref()))
+        .collect();
+    assert_eq!(
+        binary_names,
+        [("migrate", Some("migrate")), ("serve", Some("serve"))]
+    );
+    let item = fixture
+        .app
+        .project_list
+        .finder
+        .index
+        .iter()
+        .position(|item| item.target_name.as_deref() == Some("serve"))
+        .context("indexed serve binary")?;
+    fixture.app.project_list.finder.results = vec![item];
+    finder::dispatch_finder_action(FinderAction::Activate, &mut fixture.app);
+    assert!(fixture.app.focus_is(PaneId::Targets));
+    let text = target_text(&mut fixture.app)?;
+    assert!(text.contains("migrate") && text.contains("serve"), "{text}");
+    enter(&mut fixture.app);
+    let pending_example_run = fixture
+        .app
+        .inflight
+        .take_pending_example_run()
+        .context("selected binary run")?;
+    assert_eq!(pending_example_run.target_name, "serve");
+    Ok(())
+}
+
+#[test]
+fn workspace_root_draws_every_members_binaries() -> anyhow::Result<()> {
+    let mut fixture =
+        TargetFixture::with_binaries(true, FixtureBinaries::Named(&["serve", "migrate"]))?;
+    fixture.app.set_focus_to_pane(PaneId::Targets);
+    let text = target_text(&mut fixture.app)?;
+    assert!(!text.contains("No Targets"), "{text}");
+    for owner in ["alpha", "zeta"] {
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.contains(owner)
+                    && (line.contains("migrate") || line.contains("serve")))
+                .count(),
+            2,
+            "{owner} lists both binaries:\n{text}"
+        );
+    }
     Ok(())
 }
 
