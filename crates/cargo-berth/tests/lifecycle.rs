@@ -2552,6 +2552,10 @@ mod merge_extent {
     use super::RETENTION_REF_PREFIX;
     use super::SESSION_MAPPING_PATH;
     use super::integration_templates::CheckpointWithLaterWork;
+    use super::integration_templates::MERGED_TRUNK_ONLY;
+    use super::integration_templates::MERGED_TRUNK_WITH_OWN_WORK;
+    use super::integration_templates::NEWER_TRUNK;
+    use super::integration_templates::PENDING_TRUNK_MERGE;
 
     /// The built binary is also the only berth executable git hooks may invoke.
     const BERTH: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -2672,24 +2676,9 @@ mod merge_extent {
 
     #[test]
     fn a_newer_trunk_does_not_enter_an_untouched_lanes_merge_extent() {
-        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
-        let lane = repo.lane("older-lane", "integration");
-        let holder = repo.lane("foreign-holder", "main");
-        let own = repo.claim(&lane, "file:own.txt", FIRST_RUN, None);
-        let foreign = repo.claim(&holder, "file:foreign.txt", SECOND_RUN, None);
-        assert_success(&own);
-        assert_success(&foreign);
-        let id = json(&own)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane reservation")
-            .to_owned();
-        repo.commit_file(&lane, "own.txt", "own work\n", "unit work");
-        repo.commit_file(
-            &repo.integration,
-            "foreign.txt",
-            "other unit's landed work\n",
-            "newer trunk",
-        );
+        let repo = IntegrationRepository::from_recorded_template(NEWER_TRUNK);
+        let id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+            .expect("lane reservation id should read");
 
         let observed = repo.board();
         let extent = &snapshot(&observed, &id)["merge_extent"];
@@ -2709,6 +2698,62 @@ mod merge_extent {
                 .all(|event| event["op"] != "incursion"),
             "{observed}"
         );
+
+        {
+            let repo = IntegrationRepository::from_recorded_template(MERGED_TRUNK_ONLY);
+            let id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+                .expect("lane reservation id should read");
+            let requester = repo.recorded_lane("merge-requester");
+            let checked = repo.run(&requester, &["check", "file:foreign.txt", "--json"]);
+            assert_success(&checked);
+            assert_eq!(json(&checked)["status"], "clear");
+            let observed = repo.board();
+            assert_eq!(
+                snapshot(&observed, &id)["merge_extent"]["status"],
+                "empty",
+                "{observed}"
+            );
+        }
+        assert_pending_trunk_merge_protection();
+    }
+
+    enum MergePathProtection {
+        Allowed,
+        Protected,
+    }
+
+    fn assert_pending_trunk_merge_protection() {
+        let repo = IntegrationRepository::from_recorded_template(PENDING_TRUNK_MERGE);
+        let id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+            .expect("lane reservation id should read");
+        let requester = repo.recorded_lane("pending-merge-requester");
+        for (path, protection) in [
+            ("conflict.txt", MergePathProtection::Protected),
+            ("manual.txt", MergePathProtection::Protected),
+            ("own.txt", MergePathProtection::Protected),
+            ("imported.txt", MergePathProtection::Allowed),
+        ] {
+            let start = std::time::Instant::now();
+            let checked = repo.run(&requester, &["check", &format!("file:{path}"), "--json"]);
+            eprintln!(
+                "pending merge row {path}: {:.3}s",
+                start.elapsed().as_secs_f64()
+            );
+            match protection {
+                MergePathProtection::Allowed => {
+                    assert_success(&checked);
+                    assert_eq!(json(&checked)["status"], "clear", "{path}");
+                },
+                MergePathProtection::Protected => {
+                    assert!(!checked.status.success(), "{path}: {}", json(&checked));
+                    assert!(
+                        json(&checked).to_string().contains(&id),
+                        "{path}: {}",
+                        json(&checked)
+                    );
+                },
+            }
+        }
     }
 
     #[test]
@@ -2879,6 +2924,22 @@ mod merge_extent {
 
         assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
         assert_allowed(&fixture.outsider, "file:declared.rs", THIRD_RUN);
+
+        {
+            let repo = IntegrationRepository::from_recorded_template(MERGED_TRUNK_WITH_OWN_WORK);
+            let id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
+                .expect("lane reservation id should read");
+            let requester = repo.recorded_lane("merge-requester");
+            let checked = repo.run(&requester, &["check", "file:shared.txt", "--json"]);
+            assert!(!checked.status.success(), "{}", json(&checked));
+            assert!(json(&checked).to_string().contains(&id));
+            let observed = repo.board();
+            assert_eq!(
+                scope_paths(&snapshot(&observed, &id)["merge_extent"]["scopes"]),
+                BTreeSet::from(["shared.txt".to_owned()]),
+                "{observed}"
+            );
+        }
     }
 
     #[test]
