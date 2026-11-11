@@ -2488,7 +2488,7 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 #### Work Order
 
-**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s.
+**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s. Each item 6 test also runs under 1 s.
 
 **Spec:**
 
@@ -2497,14 +2497,29 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 3. Find each cause before a change. Record it with the line that takes the lock. Do not add a retry, a sleep or a longer wait to hide the race. Do not raise a limit.
 4. Keep every assertion. A test that checks contention keeps checking it, with the contention under the test's control.
 5. Make each test run under 1 s. The first took 1.498 s, the second 4.142 s.
+6. **Slow tests from the Phase 58c reruns** (showrunner, 2026-11-11). On natedev at load 44 to 161, these untouched tests took 1 s or more. Find each cause and make each test run under 1 s. Items 3 and 4 apply.
+   - `gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 2.088 s.
+   - `gate::trunk_gate_remembers_first_target_landing_after_target_revalidation` — 1.233 s.
+   - `lifecycle::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding` — 1.12 to 1.14 s.
+   - `lifecycle::integration_cover::cover_ends_after_integration_lands_by_merge_or_fast_forward` — 1.12 to 1.14 s.
+   - `lifecycle::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.002 s.
+   - `hooks::a_contended_ledger_states_the_engine_message` — 1.613 s.
+   - `hooks::a_claim_under_only_the_claude_code_session_binds_that_session` — 1.394 s.
+   - `hooks::a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file` — 1.323 s.
+   - `hooks::a_commit_outside_the_covered_branch_still_reports_the_cover_incursion` — 1.296 s.
+   - `hooks::a_covered_merge_keeps_another_holders_incursion_visible` — 1.241 s.
+   - `hooks::a_defer_claim_under_the_claude_code_session_authorizes_its_edit` — 1.165 s.
+   - `hooks::a_payload_without_session_identity_ignores_the_ambient_variable` — 1.005 s.
+   - `liveness::active_checkpoint_release_reconciles_outstanding_retention_refs` — 1.074 s.
+   - `liveness::active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint` — 1.009 s.
 
-**Files:** `crates/cargo-berth/tests/hooks.rs` and `crates/cargo-berth/tests/ledger.rs` — the two tests; `crates/cargo-berth/src/` — the lock paths, chosen by items 1 and 2.
+**Files:** `crates/cargo-berth/tests/hooks.rs`, `ledger.rs`, `gate.rs`, `lifecycle.rs` and `liveness.rs` — the tests; `crates/cargo-berth/src/` — the lock paths and slow paths, chosen by items 1, 2 and 6.
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
 **Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s.
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
