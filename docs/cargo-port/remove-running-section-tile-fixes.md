@@ -2457,30 +2457,28 @@ Phase 32i did not land (showrunner, 2026-11-11). Its findings F003, F004 and F00
 - Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32i/pairs.sh`).
 - Change-Review: none — draw time only, with no visible change.
 
-### Phase 58c — A reservation whose holder worktree id changed can be released  · status: todo
+### Phase 58c — A reservation whose holder worktree id changed can be released  · status: done
 
-**Depends on:** none. It runs beside Phase 32j (showrunner, 2026-11-11: it touches only cargo-berth).
+Checkpoint 868e5e1e4 on `tile-phase-58c`.
 
-Reservation 01a1c689-7673-7e91-a27a-9fc9087ad9da (Phase 58b) was claimed at 12:37 EST on 2026-11-10 by worktree id 01a1c689-74a0-7813-a188-c39147e6ce1a. At 12:43 EST the `cargo-liner-tile-58b` worktree was made again, and its `cargo-berth-worktree-id` file now holds 01a1c68e-ee5b-72c2-9cde-a09063ecc95e. Drift, check and release from that worktree refuse with `session_worktree_mismatch`. The board reports "holder worktree is unavailable". Reservation 01a1c6cd-dc70-7630-b8af-a9c42f1af919 shows the same notice.
+#### As-built
 
-#### Work Order
+- **Cause.** When Git makes a worktree's administrative directory again, the identity file is gone. `crates/cargo-berth/src/ledger/identity.rs:123` then writes a new id: `identity_file.write_all(format!("{new_id}\n").as_bytes())?;`. The old reservation has no live holder.
+- **Recovery command.** `cargo-berth resolve <id> --rehome --why "<reason>" --json` moves a stranded reservation to the worktree now at its recorded path. A plain `cargo-berth release <id> --json` then works and still evaluates the recovered work.
+- **Refusals.** Recovery refuses a different canonical path, an old id that is still live or that it cannot check, and an empty reason.
+- **Audit.** The existing holder-change journal event stores the actor and the reason. Older journal records read through a default audit variant.
+- **One conversion.** `resolution_output` in `recovery.rs` converts the resolve result for both `resolve --rehome` and `resolve_reservation`.
+- **Gate.** At load 26.5: lint clean, cargo-berth 1372 tests pass, none at 1 s or more. The new recovery test in `tests/liveness.rs` takes 0.15 s. Two reruns at load 44 to 161 had untouched lifecycle, hooks and gate tests at 1.0 to 2.1 s.
+- **Not yet done.** Mac tests not run. The release of 01a1c689 and the check of 01a1c6cd come after the merge, with the new command.
 
-**Goal:** a reservation whose holder worktree id no longer exists can be re-homed to the worktree now at the same path, or released, through a cargo-berth command. Reservation 01a1c689 is released when this phase lands.
+**Files:**
+- `crates/cargo-berth/src/cli.rs`, `recovery.rs` — the command and the result conversion.
+- `crates/cargo-berth/src/ledger/journal.rs`, `ledger/mod.rs` — the audit in the holder-change event.
+- `crates/cargo-berth/src/reservation/lifecycle.rs`, `reservation/mod.rs`, `reservation/retention.rs` — the rehome path.
+- `crates/cargo-berth/src/worktree/liveness.rs`, `worktree/mod.rs` — the old-holder liveness check.
+- `crates/cargo-berth/tests/liveness.rs` — the recovery test.
 
-**Spec:**
-
-1. **Find the cause first.** Find why the worktree id changed when the worktree was made again at the same path. Quote the line that writes the new id.
-2. **One recovery path.** A command at the holder's path adopts or releases the stranded reservation. It records who acted and why. It refuses when the old worktree id is still live.
-3. **Test case.** A test makes a worktree, claims, makes the worktree again at the same path, then recovers the reservation.
-4. **Release 01a1c689** with the new path after the phase lands. Check 01a1c6cd and recover it the same way if its holder is also gone.
-
-**Files:** `crates/cargo-berth/src/` — the identity and release paths, chosen by item 1; `crates/cargo-berth/tests/` — item 3.
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev; reservation 01a1c689 reads released on the board.
+**Binds later work:** recover a stranded reservation with `resolve --rehome`, never by a new claim.
 
 ### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
 
