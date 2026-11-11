@@ -125,3 +125,32 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Acceptance gate:** `verify.sh test cargo-mend` on natedev passes with every test under 1 s, and each timing has its load average. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
+### Phase 4 — mend --fix redirects `extern crate self` alias callers on macOS  · status: todo
+
+**Depends on:** Phase 2. Runs beside Phase 3 in its own worktree, and checkpoints first (showrunner, 2026-11-11: hana waits on the Phase 1 fix, and a Phase 3 checkpoint carries the same red).
+
+#### Work Order
+
+**Goal:** `glob_callers_keep_removed_reexport_bindings_and_compile` passes on macOS, as it does on natedev. The Phase 2 alias fix works on both machines.
+
+**Source:** showrunner, 2026-11-11: the merge of the Phase 2 checkpoint (9580279d9) is refused, the third refusal of this test (two on Phase 1). The refused run ran on the Mac and passed 1,019 of 1,020 tests. The 4 failing rows are alias rows. Each keeps `use this::rig_plugin::constants::...` where the test expects `use crate::rig::BOOT_BASE_RADIUS_SCALE;`. On natedev, the same tree passes all 1,022 tests.
+
+**Decision:** the expectation is correct. When the re-export goes, a kept `this::rig_plugin::constants::BOOT_BASE_RADIUS_SCALE` import does not compile. Repair the code, not the test. The showrunner merges this checkpoint as the Phase 2 repair, with 9580279d9 and 4d4d5d8a3.
+
+**Spec:**
+1. **Reproduce.** Run the test on the Mac (`verify.sh test cargo-mend --mac "<reason>" --filter glob_callers_keep_removed_reexport_bindings_and_compile`). Confirm that the Mac binary holds the Phase 2 source.
+2. **Find the cause.** Suspect a path that macOS resolves differently: the tempdir under `/var` is `/private/var` after `crate_files::canonical`. Find where the alias resolution compares or looks up a path in two forms. Quote the failing line and the source line that causes it.
+3. **Repair the cause where it lives**, in cargo-mend code. Do not change the test's expectations.
+4. **Prove it on both machines.** Run the whole cargo-mend package on the Mac and on natedev.
+5. **Changelog.** Add an entry: alias callers on macOS.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` — the cause
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-mend` passes on the Mac and on natedev, every test under 1 s. `verify.sh lint cargo-mend` is clean. `Change-Review: none — the repair makes an existing test pass on macOS; no behavior on natedev changes`.
+
