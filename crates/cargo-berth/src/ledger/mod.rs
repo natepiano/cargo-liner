@@ -103,6 +103,7 @@ pub(crate) use journal::TrunkObservationAtClaim;
 pub(crate) use journal::WidenCause;
 pub(crate) use journal::WorkPlanReference;
 pub(crate) use journal::WorktreeAdministrativeLocator;
+pub(crate) use journal::WorktreeRecoveryAudit;
 pub(crate) use ordering_repair::OrderingClaimOrigin;
 pub(crate) use ordering_repair::OrderingCycleRepair;
 pub(crate) use path::AncestorCanonicalizationError;

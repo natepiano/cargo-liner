@@ -74,6 +74,21 @@ use crate::reservation::RetainedReservationSet;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluatorVersion;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
+use crate::reservation::WorktreeRecoveryReason;
+
+/// The authority recorded for a worktree ownership change.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WorktreeRecoveryAudit {
+    /// The existing replacement-worktree recovery command supplied no explanation.
+    #[default]
+    ReplacementWorktree,
+    /// The actor confirmed that the old holder disappeared from this path.
+    RecreatedHolder {
+        /// The actor's explanation for the holder replacement.
+        why: WorktreeRecoveryReason,
+    },
+}
 
 /// One append-only fact in the shared coordination journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -689,6 +704,9 @@ pub(crate) enum JournalOperation {
         current_worktree_root:                   CanonicalWorktreeRoot,
         /// The replacement worktree's administrative locator.
         current_worktree_administrative_locator: WorktreeAdministrativeLocator,
+        /// The explanation for an explicitly recovered holder, when supplied.
+        #[serde(default)]
+        recovery: WorktreeRecoveryAudit,
     },
     /// Update a moved worktree's root while preserving its opaque identity.
     RelocateWorktree {

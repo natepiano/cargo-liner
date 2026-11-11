@@ -382,6 +382,13 @@ nonempty_release_reason!(
     "an orphan-retirement reason cannot be empty"
 );
 
+nonempty_release_reason!(
+    WorktreeRecoveryReason,
+    EmptyWorktreeRecoveryReason,
+    "The required explanation for recovering a reservation at its recreated holder path.",
+    "a worktree-recovery reason cannot be empty"
+);
+
 impl OrphanRetirementReason {
     /// The explanation reconciliation records when it retires an orphan from its own evidence.
     ///

@@ -11,9 +11,11 @@ Add reusable tooltip support to `tui_pane` so client apps can attach explanatory
 
 ## Current Architecture
 
-Mouse input already exists. `src/tui/input/mod.rs` records mouse events into `app.mouse_pos`, and `src/tui/render.rs` derives row hover state with `interaction::hovered_pane_row_at`.
+Mouse input already exists.
+`src/tui/input/dispatch.rs` records mouse events in `app.mouse_pos`.
+`src/tui/render/mod.rs` derives row hover state with `interaction::hovered_pane_row_at`.
 
-Hit testing is row-oriented today. `src/tui/pane/mod.rs::HoverTarget` has `PaneRow`, `Dismiss`, and `ToastCard`; `tui_pane::Viewport` stores one hovered row. That is correct for click routing and row highlighting, but too coarse for title and label tooltips.
+Hit testing is row-oriented today. `src/tui/hit_test.rs::HoverTarget` has `PaneRow`, `Dismiss`, and `ToastCard`; `tui_pane::Viewport` stores one hovered row. That is correct for click routing and row highlighting, but too coarse for title and label tooltips.
 
 Rendering is immediate-mode. Ratatui does not report where a `Span`, `Line`, table header, or `Block` title ended up after rendering. Tooltip-capable elements must register a screen-space `Rect` while render code still knows the area and display width.
 
@@ -433,7 +435,7 @@ Add a compile-level acceptance test or fixture render path that creates tiled-pa
 
 ## cargo-port Render Lifecycle
 
-1. At the start of `src/tui/render.rs::ui`, call `app.framework.clear_tooltips()`.
+1. At the start of `src/tui/render/mod.rs::ui`, call `app.framework.clear_tooltips()`.
 2. Create owned sinks from `app.framework.tooltip_sink(layer)` before mutably rendering framework-owned surfaces.
 3. Pass a tiled-pane sink through `PaneRenderCtx`.
 4. Pass explicit overlay/modal/confirm sinks to render paths that do not use `PaneRenderCtx`.
@@ -692,7 +694,7 @@ Tests:
 Files:
 
 - `crates/tui_pane/src/framework/mod.rs`
-- `src/tui/render.rs`
+- `src/tui/render/mod.rs`
 - `src/tui/input/mod.rs`
 - `src/tui/app/mod.rs`
 - `src/tui/app/tests/interaction.rs`
@@ -750,13 +752,13 @@ Tests:
 
 Files:
 
-- `src/tui/pane/mod.rs`
+- `src/tui/hit_test.rs`
 - `src/tui/panes/pane_impls.rs`
 - `src/tui/panes/project_list.rs`
 - `src/tui/panes/package.rs`
 - `src/tui/panes/git.rs`
 - `src/tui/panes/targets/mod.rs`
-- `src/tui/render.rs`
+- `src/tui/render/mod.rs`
 - new `src/tui/tooltips.rs`
 - focused tests under `src/tui/app/tests/interaction.rs`
 
@@ -786,7 +788,7 @@ Files:
 - `crates/tui_pane/src/bar/status_bar.rs`
 - `crates/tui_pane/src/bar/slot.rs`
 - `crates/tui_pane/src/bar/tests.rs`
-- `src/tui/render.rs`
+- `src/tui/render/mod.rs`
 
 Work:
 
