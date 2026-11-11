@@ -50,6 +50,9 @@ Director decisions:
 5. Status is one of `busy`, `idle`, `paused`, `exited`, read from a per-session list in the accounts report: `"sessions": [{"session": "<id>", "state": "..."}]`. The list comes from `~/.claude/scripts/accounts/session_state.py` `classify`, so the tile and the accounts table cannot disagree. cargo-handler never copies `classify` (showrunner, 2026-11-11). sdlc adds the export; until it lands, a row with no entry has an empty status cell. The detailed words (writing, reading, thinking, waiting) move to the details view as a `state:` line. Showrunner ruling, 2026-11-11: a Claude subagent row draws `busy` while it runs, and its activity can still show `compacting`. A Codex row with no recorded thread id draws `idle` when its process is live, and `exited` when it is not. The accounts export does not change.
 6. Age stays computed for each row. It remains the default sort order, oldest first, with no header marker, because no age column is drawn. The unassigned and showrunner tiles keep main's default, session name ascending. A clicked column header still sorts by that column.
 7. `d` opens the details view for the selected row in a tile tree and in the top-level agents table. It lists each property as `name: value`, in the order the row draws them, then the values no column shows (pid, directory, branch, model, effort where present). Model and effort stay tile columns where the tile has room; the details view lists them in drawn order when they draw, and with the undrawn values when the tile drops them (Phase 4 records Claude effort, C263), and last `age:` in the long form `32 days, 14 hours, 44 minutes`. Drop leading zero units: `14 hours, 44 minutes`; under one minute shows `0 minutes`. `Esc` closes it. Use the existing tui_pane overlay pattern that the favorites and shortcuts overlays use. If `d` is already bound, report it and stop.
+8. A worker with a live detached run never reads `idle` (C269, returned 2026-11-11: at 14:50 the `impl` worker read `fix · idle` while its `verify.sh lint` run was 1 h 25 min old). Two causes:
+   - cargo-handler: the census finds runs only under `<session>/mesh_runs/` with a `mesh_runs.py supervise <record>` process. sdlc renamed both on 2026-11-08 (`ce529466f`): `<session>/detached_runs/` and `detached_runs.py supervise <record>`. So no current run reaches a worker row. Read the new names, each from one constant. Drop the old names: `mesh_runs.py` is deleted, so no old run can be live. The run's step (`lint`, `test`, `waiting`) shows on the details view `state:` line.
+   - The accounts source: `session_state.py` `classify` reports `idle` for a session whose turn ended while its detached run lives. The fix goes there, through the showrunner to sdlc: a live detached run makes its session `busy`. The tile and the accounts count then agree, and cargo-handler adds no rule of its own (decision 5).
 
 Tasks:
 1. Tile tree: move `TreeColumn::Account` first, split `TreeColumn::Role` into `Role` (four-word type) and a new `Activity` column, and remove `TreeColumn::Age` from the drawn columns. Update `ColumnDrop::ORDER` and `GroupFitStep::ORDER` so narrow tiles drop the new column sets in a sensible order: Directory, Branch, Activity, Account.
@@ -57,7 +60,8 @@ Tasks:
 3. Top-level agents table (`SummaryColumn`, `crates/cargo-handler/src/sort.rs`): remove the Age column from drawing. Keep age computed and the default order.
 4. Details view: bind `d` in the default keymap, add it to the shortcuts overlay, and draw the overlay.
 5. Add a producer role value where the hierarchy source can name one. A row is `producer` only when its source says so.
-6. Update the as-built docs `hierarchy.md` and `interaction.md` in the same change.
+6. Update the as-built docs `hierarchy.md`, `interaction.md` and `activity.md` in the same change.
+7. Detached runs: read `detached_runs/` records and `detached_runs.py supervise` processes (decision 8).
 
 Tests (red first, each under one second):
 1. The tile tree header order is account, session, role, activity, status (with optional columns after), and no age header is drawn.
@@ -67,6 +71,7 @@ Tests (red first, each under one second):
 5. The top-level agents table draws no age column and keeps the oldest-first order.
 6. `d` opens the details view for the selected row. It shows `age: 32 days, 14 hours, 44 minutes` for a fixture of that age. `Esc` closes it.
 7. The long age form drops leading zero units.
+8. A running record in `<session>/detached_runs/`, with a live `detached_runs.py supervise <record>` process, attaches to its worker row, and the details view `state:` line shows the run's step. A record with no live supervisor attaches nothing.
 
 **Live check (director):** before the checkpoint, capture the natedev showrunner tile and the top-level agents table from a build of this branch and from main, under the safety rule (only terminals and processes the director starts).
 
@@ -83,6 +88,9 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/keymap.rs` — the `d` binding
 - `crates/cargo-handler/src/globals.rs` — the `d` action
 - `crates/cargo-handler/src/app.rs` — the details overlay state
+- `crates/cargo-handler/src/census/activity.rs` — the detached run directory and supervisor names
+- `crates/cargo-handler/src/census/worker_dispatch/sessions.rs` — live supervisor directories
+- `docs/cargo-handler/as-built/activity.md` — the detached run names
 - `docs/cargo-handler/as-built/hierarchy.md` — the tile tree columns
 - `docs/cargo-handler/as-built/interaction.md` — the `d` key
 
@@ -91,7 +99,7 @@ Tests (red first, each under one second):
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` passes with the seven tests above, and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` passes. The live check shows the new column order, the four role words, the four status words, no age column in a tile or in the top-level agents table, and the `d` details view with the long age.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` passes with the eight tests above, and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` passes. The live check shows the new column order, the four role words, the four status words, no age column in a tile or in the top-level agents table, the `d` details view with the long age, and a worker with a live detached run that shows the run's step in its details. That worker reads `busy` once sdlc's `classify` change lands.
 
 ### Phase 2 — Word highlight strength is a setting, and the default is easier to see  · status: todo
 
