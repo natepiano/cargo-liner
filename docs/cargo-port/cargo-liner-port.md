@@ -60,43 +60,68 @@ When the `pub_use_outside_subtree` fix removes a re-export, `glob_callers::plan_
 
 **Depends on:** Phase 1.
 
-#### Work Order
+#### As-built
 
-**Goal:** when `mend --fix` removes a re-export, a caller that reaches it through `extern crate self as <alias>;` keeps the name. The rewrite compiles, with no rollback.
-
-**Source:** Phase 1 review finding F008. This valid crate loses its binding after the fix, and rustc reports E0425:
-
-```rust
-extern crate self as this;
-use this::rig_plugin::constants::*;
-
-pub(super) fn radius() -> f32 {
-    LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE
-}
-```
-
-**Decision:** showrunner, 2026-11-11: current; add as Phase 2 before the shrink and the final gate.
-
-**Constraints from prior phases:**
-- `GlobCallerRewriter::glob_source` in `crates/cargo-mend/src/fixes/subtree_reexport/glob_callers.rs` returns `GlobSource::External` when the first path segment does not resolve to a crate module. `ModuleAliases` (`crates/cargo-mend/src/fixes/facade_redirect/module_aliases.rs`) skips `extern crate self` aliases, so the alias reads as an outside crate.
-- A declined redirect goes to `round.unmatched` and keeps the re-export for the whole crate. Decline only when the glob can supply the name.
-- The table test `glob_callers_keep_removed_reexport_bindings_and_compile` in `glob_callers.rs` runs `scan_file`, `apply_fixes` and rustc, then checks that a second pass changes nothing. Add rows to it; do not add a new test harness.
-- No test takes a second.
-
-**Spec:**
-1. **Alias resolution.** Resolve a path whose first segment is an `extern crate self as <alias>` binding to the crate root. Then classify the glob as for `crate::`.
-2. **Explicit callers.** Check that an explicit `use <alias>::…::<name>;` caller of the removed re-export is redirected or keeps the re-export. Fix it in the same way if it loses the binding.
-3. **Fallback.** When mend cannot resolve the alias, keep the re-export.
-4. **Test.** Add rows to the table test for a glob caller and an explicit caller through the alias. rustc accepts each result, and a second pass changes nothing.
-5. **Changelog.** Extend the Phase 1 cargo-mend entry.
+When the `pub_use_outside_subtree` fix removes a re-export, a caller that reaches it through `extern crate self as <alias>;` keeps the name. Root, block and absolute (`::<alias>`) forms resolve to the crate root, for glob and explicit callers.
+- `SelfCrateAlias::classify` is the one recognizer of the alias. `ModuleAliases`, `CallerRewriter` and `GlobCallerRewriter` use it.
+- `ModuleAliases::module_target` returns `ModuleAliasResolution::{Bound, Unbound, Declared, Blocked}`. Two different Bound targets, or a Blocked source, give Blocked. A glob cycle gives Unbound.
+- `target()` maps Unbound to the root alias, and Declared or Blocked to None. With None, the caller keeps the re-export.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/` — the alias resolution and its tests
+- `crates/cargo-mend/src/fixes/facade_redirect/self_crate_alias.rs` — `SelfCrateAlias`
+- `crates/cargo-mend/src/fixes/facade_redirect/module_aliases.rs` — root aliases, `CrateUse`, `ModuleAliasResolution`
+- `crates/cargo-mend/src/fixes/facade_redirect/caller_rewrite.rs` — explicit callers through local, block and absolute aliases
+- `crates/cargo-mend/src/fixes/subtree_reexport/glob_callers.rs` — block self aliases; `ReexportExpectation`; the 20-row alias table in `glob_callers_keep_removed_reexport_bindings_and_compile`
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/scan.rs` — ten inline-path cases that compile the fixed sources with rustc, in place of a CLI `--fix` run
+- `crates/cargo-mend/CHANGELOG.md` — entry
+
+**Gotchas:** the glob-source loop in `module_target` never returns early on one source's result, because another glob can supply the binding. mend does not track module visibility, so a private module of the alias name in a glob source reads as Declared.
+
+**Ruled out:** a visibility model for glob sources — when that module is visible, rustc already reports an ambiguity.
+
+### Phase 3 — cargo-mend tests run under 1 s  · status: todo
+
+**Depends on:** Phase 2.
+
+#### Work Order
+
+**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev. No assertion becomes weaker.
+
+**Source:** the Phase 2 full suite on 2026-11-11 (one test thread) passed 1,022 tests, but 37 tests that Phase 2 did not change took 1 s or more. The five slowest:
+- `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` — 3.418 s
+- `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run` — 2.299 s
+- `prefer_module_import::compiler_fix_validation_restores_cfg_incomplete_edit` — 2.236 s
+- `pub_use_fixes::renamed_facade_shares_dry_run_and_apply_with_import_cleanup` — 2.108 s
+- `pub_use_outside_subtree_fixes::file_test_module_reaching_the_name_through_a_glob_keeps_a_cfg_test_use` — 1.969 s
+
+**Decision:** showrunner, 2026-11-11: next, as Phase 3. A multi-second test is a defect, not a load flake.
+
+**Constraints from prior phases:**
+- The 2026-11-09 test-time repairs are in place. Do not repeat them; find the cost they did not remove:
+  1. Tests share retained driver copies, and repeated compiler-fix checks are gone.
+  2. rustfmt is resolved once per run.
+  3. JSON reports are reused, and compiler work for re-export fixtures is reduced.
+  4. The progress thread has no shutdown delay.
+  5. The shared driver cache holds a shared retention lock for each run and a short, separate publication lock.
+- After those repairs, a full suite passed 1,020 tests with none at 1 s or more (slowest 0.923 s). The regression since then is not yet explained.
+- A concurrent relink replaces `target/debug/cargo-mend`. Measure a single sample with a copied executable.
+- `inline_path_qualified_type/scan.rs` already holds the ten inline-path cases that compile with rustc in place of a CLI run.
+
+**Spec:**
+1. **Measure.** Run the full suite. Record the load average (`uptime`) with each timing. List every test at 1 s or more.
+2. **Separate load from cost.** Run the slow tests alone, with the load average recorded. A test that is slow only under load still needs a repair: find the shared resource it waits on.
+3. **Find the common cause.** Group the slow tests by the work they share (compiler fix validation, cargo or rustc runs, driver cache, cfg(test) checks). Repair each cause where it lives, in cargo-mend code or its test support.
+4. **Keep coverage.** Do not delete, skip or weaken a test. Report each changed assertion with an `Assertion-Change:` line.
+5. **Changelog.** Add an entry when cargo-mend's own run time changes.
+
+**Files:**
+- `crates/cargo-mend/src/` — the cause of the cost, and test support
+- `crates/cargo-mend/tests/` — test support
 - `crates/cargo-mend/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second. The new rows fail without the repair. No `Change-Review:` line: the case is a rare crate shape that the user cannot check in normal use.
+**Acceptance gate:** `verify.sh test cargo-mend` on natedev passes with every test under 1 s, and each timing has its load average. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
