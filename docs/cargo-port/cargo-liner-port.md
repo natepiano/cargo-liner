@@ -980,3 +980,35 @@ The finder offers each binary by its own name, and Package Structure counts the 
 **Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU not above main's beyond the spread over 3 pairs.
+
+### Phase 6 — A Remote URL takes the free cells of its row before it cuts  · status: dropped (showrunner, 2026-11-11: option A — the row has no free cells; Branch 6, Tracked 11 and Sync 4 are at their widest header or value, and the only spare cells are the 2-cell gaps, which stay even)
+
+**Depends on:** Phase 4z (it changes the Remote URL cut in `crates/cargo-port/src/tui/panes/git/render.rs`).
+
+#### Work Order
+
+**Goal:** a Remote URL does not cut while its row has free cells.
+
+**Source:** Phase 4z live capture `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4z/live/shots_4z_1/w160h45-nocolor-2-main-git-2_of_2.txt` row 7: `👯 origin  …argo-liner  main    origin/main    ☑️ `. The URL column has 11 cells and cuts the first letter of the repository name. The Git pane is 53 cells wide, so the row has 50 cells. Branch (6), Tracked (11) and Sync (4) are at their widest header or value, and three 2-cell gaps fill the rest. This checkout has no Worktrees section.
+
+**Decision:** showrunner, 2026-11-11: give the URL column the cells it needs when the row has free cells. `…argo-liner` cuts the repository name while cells are free, which breaks the Phase 4z rule. The Git label margin at 60 columns stays as it is (finder-margin ruling).
+
+**Constraints from prior phases:**
+- Phase 4z: a Remote URL that does not fit cuts from the left with a leading `…` (`render::cut_path_from_left`, `tui/render/mod.rs`); the cut stays for a URL that does not fit in the free cells.
+- Phase 4x: Remotes and Worktrees share the Branch, Tracked and Sync widths (`SyncColLayout`, `remote_col_layout`, `sync_value_widths` in `tui/panes/git/render.rs`). `fit_table_sync_text` draws whole counts, then counts without ahead/behind (`↑3 ↓6`). Headers stay whole.
+
+**Spec:**
+1. **URL width.** Before the URL cuts, it takes the cells that the Branch, Tracked and Sync columns hold beyond their widest header or value on the page (`remote_col_layout`, `sync_value_widths`, `remote_row_line`). With no Worktrees section, these widths come from the Remotes rows only. When Worktrees show, their columns stay aligned with Remotes.
+2. **Test.** Add rows to the existing Remotes tests (`remote_urls_keep_the_checkout_end_beside_aligned_worktree_columns` in `sync_column_tests.rs`, or `remotes_keep_the_icon_and_url_only_after_the_trailing_columns_fit` in `render.rs`): a 160-column Git pane with one `origin` remote and no worktrees draws the URL end with no letter of the repository name cut when the row has the cells; the Remotes-and-Worktrees case keeps aligned columns, whole headers and whole Sync counts.
+3. **Changelog.** Add the cargo-port entry.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/git/render.rs` — Spec 1
+- `crates/cargo-port/src/tui/panes/git/sync_column_tests.rs` — Spec 2
+- `crates/cargo-port/CHANGELOG.md` — Spec 3
+
+**Workers:** 1 writer (port-impl).
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Live captures of the Git pane at 60, 80 and 160 columns in colour and under NO_COLOR, on the main checkout and on a checkout with worktrees, judged by the design check. The checkpoint carries a `Change-Review:` line.
