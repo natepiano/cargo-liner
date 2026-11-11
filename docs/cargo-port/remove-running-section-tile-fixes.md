@@ -2454,7 +2454,8 @@ Phase 32i did not land (showrunner, 2026-11-11). Its findings F003, F004 and F00
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
 - A counted capture with no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows. A capture counts only when the 1-minute load is below 32 at its start and end.
-- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32i/pairs.sh`).
+- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32j/pairs.sh`). Each row count uses two measures from `cpu_ns`: the number of frames over 4 ms, and the median frame CPU. Both must be equal to or better than main in all three pairs.
+- Draw time over 4 ms does not gate (showrunner, 2026-11-11). Run-queue wait, not code, caused most of those frames: 93/84/157 of 96/87/169 at 24/40/80 rows in capture phase32j-gate-5. The checkpoint reports the draw-over-4-ms counts.
 - Change-Review: none — draw time only, with no visible change.
 
 ### Phase 58c — A reservation whose holder worktree id changed can be released  · status: done
@@ -2482,29 +2483,133 @@ Checkpoint 868e5e1e4 on `tile-phase-58c`.
 
 ### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
 
-**Depends on:** Phase 58c (order only; showrunner, 2026-11-11).
+**Depends on:** Phase 58e (order only; showrunner, 2026-11-11).
 
 The showrunner reported two intermittent failures on the Mac at style tip ad23f4563 (1,358 passed, 2 failed). Earlier runs at the same tip passed. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T033213-2377391-406a.log`, lines 719-800. An intermittent test is a defect.
 
 #### Work Order
 
-**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s.
+**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s. Each item 6 test also runs under 1 s.
 
 **Spec:**
 
-1. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:798`) exited 2 after 1.498 s: "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock." Find which operation held the ledger lock and why the test did not expect it. The answer is either a test that starts its contention too early or late, or a product path that holds the lock longer than its contract allows.
-2. `ledger::explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2547`) failed after 4.142 s: "git ref write refused by lock .../.git/packed-refs.lock (age: 0.370 seconds; process holders unavailable)". The lock is in the test's own template repository. Find which git process made `packed-refs.lock` during the ledger read, and whether the product or the test started it.
+1. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:728`) exited 2 after 1.498 s: "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock." Find which operation held the ledger lock and why the test did not expect it. The answer is either a test that starts its contention too early or late, or a product path that holds the lock longer than its contract allows.
+2. `ledger::explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` failed after 4.142 s: "git ref write refused by lock .../.git/packed-refs.lock (age: 0.370 seconds; process holders unavailable)". The test is now two variants, `_for_writing` and `_for_reading` (`tests/ledger.rs:2470` and `2475`). Both call `assert_held_retention_lock_names_this_process` (`tests/ledger.rs:2487`), which makes `packed-refs.lock` itself. Investigate both variants through that helper. Find why holder discovery reports "process holders unavailable" for the lock the test holds.
 3. Find each cause before a change. Record it with the line that takes the lock. Do not add a retry, a sleep or a longer wait to hide the race. Do not raise a limit.
 4. Keep every assertion. A test that checks contention keeps checking it, with the contention under the test's control.
 5. Make each test run under 1 s. The first took 1.498 s, the second 4.142 s.
+6. **Slow tests from the Phase 58c reruns** (showrunner, 2026-11-11). On natedev at load 44 to 161, these untouched tests took 1 s or more. Find each cause and make each test run under 1 s. Items 3 and 4 apply.
+   - `gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 2.088 s.
+   - `gate::trunk_gate_remembers_first_target_landing_after_target_revalidation` — 1.233 s.
+   - `lifecycle::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding` — 1.12 to 1.14 s.
+   - `lifecycle::integration_cover::cover_ends_after_integration_lands_by_merge_or_fast_forward` — 1.12 to 1.14 s.
+   - `lifecycle::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.002 s.
+   - `hooks::a_contended_ledger_states_the_engine_message` — 1.613 s.
+   - `hooks::a_claim_under_only_the_claude_code_session_binds_that_session` — 1.394 s.
+   - `hooks::a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file` — 1.323 s.
+   - `hooks::a_commit_outside_the_covered_branch_still_reports_the_cover_incursion` — 1.296 s.
+   - `hooks::a_covered_merge_keeps_another_holders_incursion_visible` — 1.241 s.
+   - `hooks::a_defer_claim_under_the_claude_code_session_authorizes_its_edit` — 1.165 s.
+   - `hooks::a_payload_without_session_identity_ignores_the_ambient_variable` — 1.005 s.
+   - `liveness::active_checkpoint_release_reconciles_outstanding_retention_refs` — 1.074 s.
+   - `liveness::active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint` — 1.009 s.
+   - **From the Phase 58e gate** (natedev, load 30 to 40, 2026-11-11): 178 package tests took 1 s or more. Phase 58e changed none of them. List them from a fresh natedev package run before the first change, and apply items 3 and 4 to each.
 
-**Files:** `crates/cargo-berth/tests/hooks.rs` and `crates/cargo-berth/tests/ledger.rs` — the two tests; `crates/cargo-berth/src/` — the lock paths, chosen by items 1 and 2.
+**Files:**
+
+- `crates/cargo-berth/tests/hooks.rs` — item 1
+- `crates/cargo-berth/tests/ledger.rs` — item 2
+- `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/liveness.rs` — item 6
+- `crates/cargo-berth/tests/` — the other measured tests of item 6, their template helpers and their `recorded_templates.rs` registration
+- `crates/cargo-berth/src/` — the lock paths and slow paths, chosen by items 1, 2 and 6
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
 **Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s.
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the hooks test and both ledger variants passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
+
+### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
+
+**Depends on:** Phase 58d (order only; showrunner, 2026-11-11).
+
+On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main (4a6d4d3b7, 5c0778b96) and their worktrees were removed. `cargo-berth resolve <id> --integrated-as <full oid>` refused with exit 5: "the reservation must have a protected checkpoint first; cargo-berth release records one". Release runs only from the holder worktree, and `--rehome` needs a worktree at the recorded path. Both were retired with `--retire-orphan`, which records no integration.
+
+#### Work Order
+
+**Goal:** when the holder worktree is gone and the reservation head is an ancestor of the trunk, `resolve --integrated-as` records the integration with no checkpoint.
+
+**Spec:**
+
+1. Quote the line that refuses `--integrated-as` without a checkpoint.
+2. Accept it only when both are true. Otherwise keep the current refusal.
+   - The registry proves the holder identity absent: `HolderIdentityPresence::Absent` (`src/worktree/liveness.rs:63`). `Live` and `Unverifiable` keep the refusal. `WorktreeLiveness::Unavailable` alone is not proof: it includes locked registrations.
+   - The reservation's work-bearing head is an ancestor of the given target, which is on the trunk. `Reservation::head_snapshot` is a `ClaimHeadSnapshot` from the claim, and replay does not move it after later commits. So it is not that head. Name the head that holds the reservation's last work and the journal evidence it comes from, before a change.
+3. Record the actor and the reason in the journal, as the Phase 58c rehome does.
+4. Give the result a named evidence state: integration verified with no checkpoint. Today `recovery.rs:763` rejects active reservations, and `reservation/retention.rs:1652` and `Reservation::evidence_state` require checkpoint evidence for an integration release. Make each one accept the new state: the lifecycle transition, journal replay, evidence output and later revalidation.
+5. Tests, each under 1 s, with a recorded template:
+   - the accepted case, also after the journal is opened again;
+   - a head not reachable from the target is refused;
+   - a claim head already on the trunk with a later commit not merged is refused;
+   - a live holder worktree, a live holder at a moved path, and an unverifiable registration each keep the current refusal.
+
+**Files:**
+
+- `crates/cargo-berth/src/` — the resolve path
+- `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/reservation/retention.rs` — the evidence state of item 4
+- `crates/cargo-berth/tests/` — item 5
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev.
+
+### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: done
+
+#### As-built
+
+- During a trunk merge that is not yet committed, the merge extent holds only the staged paths with the branch's own content. A staged path whose index content equals the single MERGE_HEAD commit leaves the dirty set when the trunk contains that commit.
+- `TrunkMergeIndex` (`git/trunk_merge_index.rs`) has two states: `Absent` and `Pending { own_paths: HashSet<ReservationScopePath> }`. `Pending` needs one MERGE_HEAD parent that is an ancestor of the trunk. `own_paths` comes from `git diff --cached --name-only -z --no-renames <parent> --`.
+- `drift::observe_merge_working_tree` keeps a staged path only when it is in `own_paths`. Conflicted paths, unstaged edits and paths the branch changed stay in the extent. Octopus merges stay `Absent` and keep every dirty path.
+- `reconcile.rs` and `worktree/enrollment.rs` pass the trunk to the observation.
+
+**Files:**
+- `crates/cargo-berth/src/git/trunk_merge_index.rs` — reads MERGE_HEAD and lists the paths the branch changed against that commit
+- `crates/cargo-berth/src/drift/observation.rs` — the merge working-tree observation
+- `crates/cargo-berth/tests/lifecycle.rs` — `merge_extent` rows: imported, conflicted, manual and own paths, and committed trunk merges with and without own work
+- `crates/cargo-berth/tests/support/integration_templates.rs`, `crates/cargo-berth/tests/recorded_templates.rs` — the four recorded templates for those rows
+
+**Gotchas:** the committed-path comparison (`reachability.rs:632`) compares the trunk with a trial merge result and was already correct. The 509-path extent came from `reconcile.rs`, which added every staged path of a pending merge.
+
+**Ruled out:** protecting a trunk-only path restored to HEAD during a pending merge — it was unprotected before this change too, and the merge commit closes the window; protecting fewer paths for octopus merges — keeping every dirty path protects more.
+
+### Phase 60 — The toast first-sentence test fails when a word breaks across rows  · status: todo
+
+**Depends on:** Phase 58f (order only; showrunner, 2026-11-11).
+
+Port Phase 4z (f84dc83d2) changed `an_opening_error_toast_keeps_its_first_sentence_on_one_page` in `crates/tui_pane/src/toasts/render/sentence_tests.rs` to compare `body.join(" ").replace("… ", "") == sentence`. The long-word row needs the replace. But the replace also lets the first sentence pass when one of its words breaks across rows.
+
+#### Work Order
+
+**Goal:** the first-sentence case fails when any word of the sentence breaks across rows; the long-word case keeps its current checks.
+
+**Spec:**
+
+1. Give each case its own expected rows. For the first sentence ("Crate metadata is unavailable until crates.io recovers."), assert each drawn body row equals its expected text, with no `…` replace. A word broken across rows then fails the test.
+2. Keep the long-word case ("abcdefghijklmnopqr.") asserts as they are: the last row is "qr.", and the body has 5 rows.
+3. Keep every other assertion in the test. Change no product code.
+4. Before the change, show that the strict check fails on a body that breaks a word across rows (for example, by a narrower pane in a scratch run). Do not commit that scratch change.
+
+**Files:**
+
+- `crates/tui_pane/src/toasts/render/sentence_tests.rs`
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect.
+
+**Acceptance gate:** `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; the test runs under 1 s.
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 

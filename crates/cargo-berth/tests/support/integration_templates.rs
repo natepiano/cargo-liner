@@ -44,6 +44,197 @@ pub(super) const RELEASE_LANE_READY: LedgerTemplate = LedgerTemplate {
     ..ENDED_FIRST_COVER
 };
 
+pub(super) const MERGED_TRUNK_ONLY: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "merged-trunk-only",
+        build: |root| build_merged_trunk(root, BranchWork::TrunkOnly),
+        ..ENDED_FIRST_COVER.repository
+    },
+    ..ENDED_FIRST_COVER
+};
+
+pub(super) const MERGED_TRUNK_WITH_OWN_WORK: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "merged-trunk-with-own-work",
+        build: |root| build_merged_trunk(root, BranchWork::OwnChange),
+        ..ENDED_FIRST_COVER.repository
+    },
+    ..ENDED_FIRST_COVER
+};
+
+#[derive(Clone, Copy)]
+enum BranchWork {
+    TrunkOnly,
+    OwnChange,
+}
+
+pub(super) const PENDING_TRUNK_MERGE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "pending-trunk-merge",
+        build: build_pending_trunk_merge,
+        ..ENDED_FIRST_COVER.repository
+    },
+    ..ENDED_FIRST_COVER
+};
+
+pub(super) const NEWER_TRUNK: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "newer-trunk-extent",
+        build: build_newer_trunk,
+        ..ENDED_FIRST_COVER.repository
+    },
+    ..ENDED_FIRST_COVER
+};
+
+fn build_newer_trunk(root: &Path) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    let lane = repo.lane("older-lane", "integration");
+    let holder = repo.lane("foreign-holder", "main");
+    let own = repo.claim(&lane, "file:own.txt", FIRST_RUN, None);
+    let foreign = repo.claim(&holder, "file:foreign.txt", SECOND_RUN, None);
+    assert_success(&own);
+    assert_success(&foreign);
+    let id = json(&own)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane reservation")
+        .to_owned();
+    repo.commit_file(&lane, "own.txt", "own work\n", "unit work");
+    repo.commit_file(
+        &repo.integration,
+        "foreign.txt",
+        "other unit's landed work\n",
+        "newer trunk",
+    );
+    repo.write_recorded_template(root);
+    fs::write(root.join(STATE), id).expect("lane reservation id should write");
+}
+
+fn build_pending_trunk_merge(root: &Path) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    repo.commit_file(&repo.integration, "conflict.txt", "base\n", "conflict base");
+    repo.commit_file(
+        &repo.integration,
+        "own.txt",
+        "trunk base\n\n\n\nbranch base\n",
+        "own base",
+    );
+    let lane = repo.lane("pending-merge-lane", "integration");
+    drop(repo.lane("pending-merge-requester", "integration"));
+    let claimed = repo.claim(&lane, "file:declared.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane reservation id")
+        .to_owned();
+    repo.commit_file(
+        &lane,
+        "conflict.txt",
+        "branch conflict\n",
+        "branch conflict",
+    );
+    repo.commit_file(
+        &lane,
+        "own.txt",
+        "trunk base\n\n\n\nbranch work\n",
+        "own branch work",
+    );
+    repo.commit_file(
+        &repo.integration,
+        "conflict.txt",
+        "trunk conflict\n",
+        "trunk conflict",
+    );
+    repo.commit_file(
+        &repo.integration,
+        "own.txt",
+        "trunk work\n\n\n\nbranch base\n",
+        "trunk work on the same path",
+    );
+    repo.commit_file(
+        &repo.integration,
+        "imported.txt",
+        "trunk work\n",
+        "imported path",
+    );
+    repo.commit_file(
+        &repo.integration,
+        "manual.txt",
+        "trunk work\n",
+        "manual base",
+    );
+    let merge = cargo_berth_test_support::git_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["merge", "--no-ff", "--no-commit", "integration"])
+        .current_dir(&lane)
+        .output()
+        .expect("pending merge should run");
+    assert_eq!(
+        merge.status.code(),
+        Some(1),
+        "the merge should have a conflict"
+    );
+    fs::write(lane.join("manual.txt"), "manual branch work\n").expect("manual edit should write");
+    repo.write_recorded_template(root);
+    fs::write(root.join(STATE), id).expect("lane reservation id should write");
+}
+
+fn build_merged_trunk(root: &Path, branch_work: BranchWork) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    repo.commit_file(
+        &repo.integration,
+        "shared.txt",
+        "trunk base\n\n\n\nbranch base\n",
+        "shared base",
+    );
+    let lane = repo.lane("merged-trunk-lane", "integration");
+    drop(repo.lane("merge-requester", "integration"));
+    let claimed = repo.claim(&lane, "file:shared.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane reservation id")
+        .to_owned();
+    match branch_work {
+        BranchWork::TrunkOnly => {
+            repo.git(
+                &lane,
+                &["commit", "--quiet", "--allow-empty", "-m", "lane marker"],
+            );
+        },
+        BranchWork::OwnChange => repo.commit_file(
+            &lane,
+            "shared.txt",
+            "trunk base\n\n\n\nbranch work\n",
+            "branch work",
+        ),
+    }
+    repo.commit_file(
+        &repo.integration,
+        "shared.txt",
+        "trunk work\n\n\n\nbranch base\n",
+        "trunk work on the shared path",
+    );
+    repo.commit_file(
+        &repo.integration,
+        "foreign.txt",
+        "trunk work\n",
+        "trunk file",
+    );
+    repo.git(
+        &lane,
+        &["merge", "--quiet", "--no-ff", "--no-edit", "integration"],
+    );
+    repo.commit_file(
+        &repo.integration,
+        "foreign.txt",
+        "later trunk work\n",
+        "advance trunk after the lane merge",
+    );
+    repo.write_recorded_template(root);
+    fs::write(root.join(STATE), id).expect("lane reservation id should write");
+}
+
 fn build_ended_first_cover(root: &Path) {
     let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
     let first = repo.lane("first-cover-lane", "integration");

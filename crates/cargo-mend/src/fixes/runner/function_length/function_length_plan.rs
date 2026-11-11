@@ -77,7 +77,7 @@ impl FunctionLengthPlan {
             return Ok(Self::default());
         }
         let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
-        let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+        let fixes = ValidatedFixSet::try_from((plan.fixes, sources))?;
         let limit = formatter::threshold(workspace)?;
         let paths = fixes.iter().map(|fix| &fix.path).collect::<BTreeSet<_>>();
         let changes_function =
@@ -122,7 +122,7 @@ impl FunctionLengthPlan {
         if let Formatter::Unavailable { cause } = formatter {
             let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
             return Ok(Self {
-                fixes: ValidatedFixSet::try_from(plan.fixes)?,
+                fixes: ValidatedFixSet::try_from((plan.fixes, sources))?,
                 protection: LengthProtection::Unavailable { cause },
                 ..Self::default()
             });
@@ -154,7 +154,7 @@ impl FunctionLengthPlan {
             let preserved = decision.preserved_sources().collect::<Vec<_>>();
             let selected = preserve_dependencies(proposals, &originals, &preserved);
             let plan = imports::plan_module_imports(selected, sources, package_roots)?;
-            let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+            let fixes = ValidatedFixSet::try_from((plan.fixes, sources))?;
             let added =
                 decision.measure_functions(&originals, &fixes, &formatter, workspace, limit)?;
             if added.is_empty() {

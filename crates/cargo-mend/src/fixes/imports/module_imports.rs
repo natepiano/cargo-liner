@@ -191,7 +191,7 @@ impl ModuleImports {
         let module_map = sources.module_map(&source_root);
         let mut paths = module_map
             .declared_files()
-            .map(|(path, _)| path.to_path_buf())
+            .map(|(path, _)| sources.path_key(path).into_path_buf())
             .collect::<BTreeSet<_>>();
         paths.extend(
             WalkDir::new(&source_root)
@@ -201,7 +201,7 @@ impl ModuleImports {
                     entry.file_type().is_file()
                         && entry.path().extension().and_then(OsStr::to_str) == Some("rs")
                 })
-                .map(walkdir::DirEntry::into_path),
+                .map(|entry| sources.path_key(entry.path()).into_path_buf()),
         );
         paths
     }
@@ -669,7 +669,7 @@ pub(in crate::fixes) fn plan_module_imports(
     sources: &ParsedSources,
     package_roots: &[PathBuf],
 ) -> Result<ImportPlan> {
-    let mut fixes = import_scan::canonical_fixes(fixes);
+    let mut fixes = import_scan::canonical_fixes(fixes, sources);
     let mut by_file = BTreeMap::new();
     for (index, tagged) in fixes.iter().enumerate() {
         by_file
