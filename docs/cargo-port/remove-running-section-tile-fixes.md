@@ -2448,6 +2448,32 @@ Reservation 01a1c689-7673-7e91-a27a-9fc9087ad9da (Phase 58b) was claimed at 12:3
 
 **Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev; reservation 01a1c689 reads released on the board.
 
+### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
+
+**Depends on:** Phase 58c (order only; showrunner, 2026-11-11).
+
+The showrunner reported two intermittent failures on the Mac at style tip ad23f4563 (1,358 passed, 2 failed). Earlier runs at the same tip passed. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T033213-2377391-406a.log`, lines 719-800. An intermittent test is a defect.
+
+#### Work Order
+
+**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s.
+
+**Spec:**
+
+1. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:798`) exited 2 after 1.498 s: "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock." Find which operation held the ledger lock and why the test did not expect it. The answer is either a test that starts its contention too early or late, or a product path that holds the lock longer than its contract allows.
+2. `ledger::explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2547`) failed after 4.142 s: "git ref write refused by lock .../.git/packed-refs.lock (age: 0.370 seconds; process holders unavailable)". The lock is in the test's own template repository. Find which git process made `packed-refs.lock` during the ledger read, and whether the product or the test started it.
+3. Find each cause before a change. Record it with the line that takes the lock. Do not add a retry, a sleep or a longer wait to hide the race. Do not raise a limit.
+4. Keep every assertion. A test that checks contention keeps checking it, with the contention under the test's control.
+5. Make each test run under 1 s. The first took 1.498 s, the second 4.142 s.
+
+**Files:** `crates/cargo-berth/tests/hooks.rs` and `crates/cargo-berth/tests/ledger.rs` — the two tests; `crates/cargo-berth/src/` — the lock paths, chosen by items 1 and 2.
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s.
+
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
 #### As-built
