@@ -131,6 +131,8 @@ pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 /// Ask `cat-file` for the resolved object id and object type of each input expression.
 pub(super) const GIT_BATCH_CHECK_OBJECT_FORMAT_ARG: &str =
     "--batch-check=%(objectname) %(objecttype)";
+/// Compare the index with the selected commit.
+pub(super) const GIT_CACHED_ARG: &str = "--cached";
 /// Mark commits that have a patch-equivalent on the other side of a symmetric difference.
 pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 /// Ask `rev-parse` for the shared administrative directory.

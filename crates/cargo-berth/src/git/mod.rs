@@ -25,6 +25,7 @@ mod refs;
 mod snapshot;
 #[cfg(not(test))]
 mod spawn_lock;
+mod trunk_merge_index;
 mod work;
 mod worktree_operation;
 
@@ -89,5 +90,6 @@ pub(crate) use refs::reservation_retention_ref_name;
 pub(crate) use refs::update_local_branch;
 pub(crate) use refs::write_reservation_retention_ref;
 pub(crate) use snapshot::RepositorySnapshot;
+pub(crate) use trunk_merge_index::TrunkMergeIndex;
 pub(crate) use worktree_operation::WorktreeOperation;
 pub(crate) use worktree_operation::WorktreeSettlement;

@@ -480,19 +480,12 @@ minimum of the two boundary distances).
   attract screen is up.** Any notice arm placed ahead of the grace-period arms must test
   `AttractScreenVisibility` itself, or it paints across the user's working panes — which is
   why visibility is the first input to `classify_backdrop_notice`.
-- **Linux dead-code gate.** `backdrop/**` compiles only under the `backdrop` feature, and
-  anything reachable solely from the `#[cfg(target_os = "macos")]` module is dead code on
-  Linux, where CI denies it. Moving a type out of the macOS module for testing is exactly
-  what trips it; the check is `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane
-  --all-features -- -D warnings`. Variant *construction* (not just definition) must be
-  target-independent — `TerminalWindowSearchOutcome::Found` and `WindowTitle` variants
-  carry `#[cfg_attr(not(macos), expect(dead_code))]` for this reason. macOS reports nothing
-  and no `verify.sh` line catches it.
-- **`verify.sh` cannot see backdrop code.** `tui_pane`'s `default = ["clipboard"]` and
-  `verify.sh` composes no `--features`, so `check|test|lint tui_pane` build with backdrop
-  off and never run its unit tests. Only `cargo-tile` and `cargo-handler` enable the feature; behavior that
-  must actually execute needs a cargo-tile-side test driving the framework API, or `cargo
-  test -p tui_pane --features backdrop`.
+- **Platform coverage.** Backdrop code requires the `backdrop` feature.
+  Linux also checks conditional code for dead items.
+  macOS cannot validate Linux-only construction paths.
+- **Managed verification.** Workspace Clippy uses all targets and features, so its judgment includes backdrop code.
+  Package test coverage still depends on the selected features.
+  Use a consumer test or an explicit managed feature selection when runtime backdrop coverage is required.
 - **`CARGO_TILE_FRAME_LOG` is off by default** and each process truncates the file on its
   first write — two instances sharing one path erase each other. cargo-tile's neutral
   `CaptureUnavailable` line names this variable rather than promising a recording.
