@@ -59,6 +59,16 @@ pub(crate) enum WorktreeLiveness {
     Unknown,
 }
 
+/// Whether the registry proves that a previous holder identity is absent.
+pub(crate) enum HolderIdentityPresence {
+    /// A registered checkout still has the previous holder identity.
+    Live,
+    /// Every readable registration has a different identity.
+    Absent,
+    /// A retained registration cannot establish its identity.
+    Unverifiable,
+}
+
 /// The holder commit included in the one repository worktree-list observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WorktreeHead {
@@ -170,6 +180,31 @@ impl WorktreeRegistry {
             )?;
         }
         Ok(registry)
+    }
+
+    /// Search every registration, including a moved or locked holder.
+    pub(crate) fn holder_identity_presence(&self, holder: WorktreeId) -> HolderIdentityPresence {
+        let mut presence = HolderIdentityPresence::Absent;
+        for registration in &self.registrations {
+            match &registration.location {
+                RegisteredWorktreeLocation::Discovered {
+                    identity: RegisteredWorktreeIdentity::Resolved(identity),
+                    ..
+                } if *identity == holder => return HolderIdentityPresence::Live,
+                RegisteredWorktreeLocation::Discovered {
+                    identity: RegisteredWorktreeIdentity::Resolved(_),
+                    ..
+                } => {},
+                RegisteredWorktreeLocation::Discovered {
+                    identity: RegisteredWorktreeIdentity::Unavailable,
+                    ..
+                }
+                | RegisteredWorktreeLocation::Unavailable => {
+                    presence = HolderIdentityPresence::Unverifiable;
+                },
+            }
+        }
+        presence
     }
 
     /// Enumerate enrollment candidates from the same registry observation.

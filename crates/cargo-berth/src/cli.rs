@@ -108,6 +108,7 @@ use crate::reservation::KeptWorkReason;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
+use crate::reservation::WorktreeRecoveryReason;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::session;
 use crate::session::HookHarnessSessionSelection;
@@ -167,6 +168,7 @@ const PHASE_VALUE_NAME: &str = "PHASE";
 const PLAN_ARGUMENT: &str = "plan";
 const PLAN_VALUE_NAME: &str = "PLAN";
 const RECOVERED_ARGUMENT: &str = "recovered";
+const REHOME_ARGUMENT: &str = "rehome";
 const RESERVATION_ARGUMENT: &str = "reservation";
 const RESERVATION_VALUE_NAME: &str = "RESERVATION_ID";
 const REPAIR_PROJECTION_ARGUMENT: &str = "repair-projection";
@@ -195,12 +197,13 @@ const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservation
 const CLAIM_LONG_ABOUT: &str = "Reserve repository paths for a reservation. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants. This is the spelling check reports against, so a path that reads clear from check reserves the same extent here.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached its integration target through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied integration target commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
+const REHOME_LONG_ABOUT: &str = "Recover a reservation at its recreated holder path; --why is required. The command refuses while the old holder identity is live or cannot be checked. It records the actor and reason. Then use release to evaluate the recovered work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Retire a reservation whose holder is gone; --why is required. Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded, or when a released reservation's integration evidence is lost because its work landed where git cannot match it, such as a reworked squash or a branch other than the integration target. It records a distinct orphan-retirement disposition, replacing the released one in the second case, and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
 const EVERY_INCURSION_LONG_ABOUT: &str = "Answer every incursion incident outstanding for this reservation in one disposition. A backlog reports one notice per incident, and answering a single member leaves the rest standing, so the notice keeps firing until the set is empty.";
-const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TARGET_OID> when work reached its integration target in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
+const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --rehome --why <WHY> at a recreated holder path when its old identity is gone; --integrated-as <TARGET_OID> when work reached its integration target in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 /// The refusal earned by a resolve command line that names no single disposition.
-const RESOLVE_DISPOSITION_REFUSAL: &str = "choose exactly one resolution disposition and provide --why only for --abandon or --retire-orphan";
+const RESOLVE_DISPOSITION_REFUSAL: &str = "choose exactly one resolution disposition and provide --why only for --abandon, --retire-orphan or --rehome";
 
 /// `cargo-berth`, as the command line sees it.
 #[derive(Debug, Parser)]
@@ -731,40 +734,51 @@ struct IncursionAnswerSelection {
     every_incursion: bool,
 }
 
+/// The command-line choices that replace a reservation's holder.
+#[derive(Debug, Args)]
+struct HolderRecoverySelection {
+    /// Record this worktree as the recovered holder of surviving work.
+    #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
+    recovered: bool,
+    /// Recover the stranded reservation at its recreated holder path.
+    #[arg(long = REHOME_ARGUMENT, requires = WHY_ARGUMENT, long_help = REHOME_LONG_ABOUT)]
+    rehome:    bool,
+}
+
 /// How this command line disposes of the stuck reservation itself.
 #[derive(Debug, Args)]
 struct ReservationRecoverySelection {
-    /// Record this worktree as the recovered holder of surviving work.
-    #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
-    recovered:     bool,
+    /// Select a holder replacement without a terminal disposition.
+    #[command(flatten)]
+    holder_recovery: HolderRecoverySelection,
     /// Assert an integration target commit proves rewritten integration.
     #[arg(
         long = INTEGRATED_AS_ARGUMENT,
         value_name = TARGET_OID_VALUE_NAME,
         long_help = INTEGRATED_AS_LONG_ABOUT
     )]
-    integrated_as: Option<RewrittenIntegrationTrunkCommit>,
+    integrated_as:   Option<RewrittenIntegrationTrunkCommit>,
     /// Permanently discard this reservation's work and coordination hold.
     #[arg(
         long = ABANDON_ARGUMENT,
         requires = WHY_ARGUMENT,
         long_help = ABANDON_LONG_ABOUT
     )]
-    abandon:       bool,
+    abandon:         bool,
     /// Retire this confirmed orphan without classifying it as deliberate abandonment.
     #[arg(
         long = RETIRE_ORPHAN_ARGUMENT,
         requires = WHY_ARGUMENT,
         long_help = RETIRE_ORPHAN_LONG_ABOUT
     )]
-    retire_orphan: bool,
-    /// Explain the deliberate abandonment or orphan-retirement decision.
+    retire_orphan:   bool,
+    /// Explain the abandonment, retirement, or recreated-holder recovery.
     #[arg(
         long = WHY_ARGUMENT,
         value_name = WHY_VALUE_NAME,
         requires = RESOLVE_REASONED_DISPOSITION_GROUP
     )]
-    why:           Option<String>,
+    why:             Option<String>,
 }
 
 /// Whether the incursion-answer flags name a disposition for this resolve.
@@ -789,6 +803,7 @@ enum ReservationRecoveryNomination {
     ArgGroup::new(RESOLVE_DISPOSITION_GROUP)
         .args([
             RECOVERED_ARGUMENT,
+            REHOME_ARGUMENT,
             INTEGRATED_AS_ARGUMENT_ID,
             ABANDON_ARGUMENT,
             RETIRE_ORPHAN_ARGUMENT_ID,
@@ -800,7 +815,7 @@ enum ReservationRecoveryNomination {
 ))]
 #[command(group(
     ArgGroup::new(RESOLVE_REASONED_DISPOSITION_GROUP)
-        .args([ABANDON_ARGUMENT, RETIRE_ORPHAN_ARGUMENT_ID])
+        .args([ABANDON_ARGUMENT, RETIRE_ORPHAN_ARGUMENT_ID, REHOME_ARGUMENT])
         .multiple(false)
 ))]
 struct ResolveArguments {
@@ -1573,12 +1588,22 @@ impl ReservationRecoverySelection {
     /// Convert clap's recovery flags into the decision they name, if any.
     fn nomination(self) -> Result<ReservationRecoveryNomination, String> {
         let Self {
-            recovered,
+            holder_recovery: HolderRecoverySelection { recovered, rehome },
             integrated_as,
             abandon,
             retire_orphan,
             why,
         } = self;
+        if rehome {
+            return match (recovered, integrated_as, abandon, retire_orphan, why) {
+                (false, None, false, false, Some(reason)) => reason
+                    .parse::<WorktreeRecoveryReason>()
+                    .map(ReservationRecoveryDecision::Rehome)
+                    .map(ReservationRecoveryNomination::Recovery)
+                    .map_err(|error| error.to_string()),
+                _ => Err(RESOLVE_DISPOSITION_REFUSAL.to_owned()),
+            };
+        }
         match (recovered, integrated_as, abandon, retire_orphan, why) {
             (false, None, false, false, None) => {
                 Ok(ReservationRecoveryNomination::NoRecoveryRequested)
@@ -2941,6 +2966,31 @@ mod tests {
             .is_err()
         );
         assert!(parsed_verb(&[BINARY_NAME, "resolve", RESERVATION_ID, "--abandon"]).is_err());
+        for arguments in [
+            vec![BINARY_NAME, "resolve", RESERVATION_ID, "--rehome"],
+            vec![
+                BINARY_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--rehome",
+                "--recovered",
+                "--why",
+                "recreated",
+            ],
+        ] {
+            assert!(parsed_verb(&arguments).is_err());
+        }
+        assert!(
+            parsed_verb(&[
+                BINARY_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--rehome",
+                "--why",
+                "recreated"
+            ])
+            .is_ok()
+        );
         assert!(
             parsed_verb(&[
                 BINARY_NAME,
