@@ -420,8 +420,11 @@ tests collected the moment the first reaches its total:
 
 The word is what the heading gives up first: a cell too narrow to carry both
 still rules the reading. A run whose tests are drawn without a terminal — piped
-output, or a script — reports the build alone, a test runner drawing no bar
-where nothing is watching.
+output, or a script — draws no bar. Its heading reads `testing` at nought from
+the `Starting N tests` line, then follows each test's tally.
+
+A command stays on screen while it runs, whatever its CPU. A row at 0% is a
+command that waits, not one that ended.
 
 Reading it takes a capture, and that is what the shim is for. The grid puts it
 in place itself the first time it opens, says so in a toast that names the

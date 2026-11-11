@@ -71,6 +71,7 @@ use crate::constants::CPU_AUXV_CLOCK_TICKS;
 use crate::constants::CPU_AUXV_ENTRY_WORDS;
 #[cfg(target_os = "linux")]
 use crate::constants::CPU_AUXV_PATH;
+use crate::constants::CPU_REAPED_TIME_MOVES_TO_PARENT;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
 #[cfg(all(target_os = "linux", test))]
@@ -517,31 +518,92 @@ pub(super) struct InvocationCpuAccounting {
     cadence:                           CensusCadence,
 }
 
-/// A cumulative subtree counter, retaining completed work on platforms without wait totals.
+/// The process that receives a departed process's time when it reaps it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum CpuReaper {
+    /// The parent seen with the process; Linux moves the process's time into its counter.
+    Parent(ProcessIdentity),
+    /// No parent identity is proven, so a departure moves time into no counter.
+    Unproven,
+}
+
+/// One process's cumulative processor time in one scan, with the process that reaps it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ProcessCpuCounter {
+    /// Own time; on Linux it also holds the time of children this process reaped.
+    pub(super) elapsed: Duration,
+    /// The process whose counter receives `elapsed` when this one is reaped.
+    pub(super) reaper:  CpuReaper,
+}
+
+/// Whether a process was in the subtree's most recent scan.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CpuPresence {
+    Present,
+    Departed,
+}
+
+/// The last counter of one process, kept through observation gaps.
+struct SeenProcessCpu {
+    elapsed:  Duration,
+    reaper:   CpuReaper,
+    presence: CpuPresence,
+}
+
+/// A cumulative subtree counter that advances by each process's positive change.
+///
+/// A process that departs adds nothing and takes nothing away. Its last counter waits
+/// for its reaper: the reaper's next rise up to that amount is the moved time, not
+/// new work. A process that leaves without a reaper in the subtree holds no debt.
 #[derive(Default)]
 pub(super) struct RetainedSubtreeCpuTime {
-    /// Linux transfers exited children into their reaper's counter; scans can overlap that
-    /// transfer.
-    pub(super) total:   Duration,
-    /// Darwin cannot read another task's reaped-child time, so retain observed contributions.
-    #[cfg(not(target_os = "linux"))]
-    pub(super) present: HashMap<ProcessIdentity, Duration>,
+    /// Time added by every process seen in this subtree.
+    pub(super) total: Duration,
+    /// Each process's last counter, so a process seen again adds only its change.
+    seen:             HashMap<ProcessIdentity, SeenProcessCpu>,
+    /// Departed processes' time that each reaper's counter has not yet received.
+    unreceived:       HashMap<ProcessIdentity, Duration>,
 }
 
 impl RetainedSubtreeCpuTime {
-    /// Account for the current tree once, including work retained after a process exits.
-    pub(super) fn update(&mut self, current: &HashMap<ProcessIdentity, Duration>) -> Duration {
-        #[cfg(target_os = "linux")]
-        {
-            self.total = self.total.max(current.values().sum());
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            for (identity, elapsed) in current {
-                let retained = self.present.entry(identity.clone()).or_default();
-                *retained = (*retained).max(*elapsed);
+    /// Account for one scan of the subtree and return the time it has added in total.
+    pub(super) fn update(
+        &mut self,
+        current: &HashMap<ProcessIdentity, ProcessCpuCounter>,
+    ) -> Duration {
+        for (identity, seen) in &mut self.seen {
+            if seen.presence == CpuPresence::Present && !current.contains_key(identity) {
+                seen.presence = CpuPresence::Departed;
+                // Darwin's task counter never receives a reaped child's time, so no parent owes it.
+                if CPU_REAPED_TIME_MOVES_TO_PARENT && let CpuReaper::Parent(reaper) = &seen.reaper {
+                    *self.unreceived.entry(reaper.clone()).or_default() += seen.elapsed;
+                }
             }
-            self.total = self.present.values().sum::<Duration>();
+        }
+        for (identity, counter) in current {
+            let previous = self
+                .seen
+                .get(identity)
+                .map_or(Duration::ZERO, |seen| seen.elapsed);
+            let gain = counter.elapsed.saturating_sub(previous);
+            let received = self
+                .unreceived
+                .get_mut(identity)
+                .map_or(Duration::ZERO, |unreceived| {
+                    let received = (*unreceived).min(gain);
+                    *unreceived -= received;
+                    received
+                });
+            // `received` is at most `gain`, so the change stays whole.
+            self.total += gain.saturating_sub(received);
+            self.seen.insert(
+                identity.clone(),
+                SeenProcessCpu {
+                    elapsed:  counter.elapsed.max(previous),
+                    reaper:   counter.reaper.clone(),
+                    presence: CpuPresence::Present,
+                },
+            );
         }
         self.total
     }
@@ -640,9 +702,9 @@ impl InvocationCpuHistory {
 #[derive(Default)]
 pub(super) struct InvocationCpuContributions {
     /// Processes owned through cargo ancestry.
-    pub(super) tree:     HashMap<ProcessIdentity, Duration>,
+    pub(super) tree:     HashMap<ProcessIdentity, ProcessCpuCounter>,
     /// Compiler roots and their descendants owned through output-directory evidence.
-    pub(super) detached: HashMap<ProcessIdentity, HashMap<ProcessIdentity, Duration>>,
+    pub(super) detached: HashMap<ProcessIdentity, HashMap<ProcessIdentity, ProcessCpuCounter>>,
     /// Full nested-cargo counters are excluded even after their process disappears.
     #[cfg(target_os = "linux")]
     pub(super) nested:   HashMap<InvocationId, Duration>,
@@ -1104,11 +1166,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_orphaned_helper_leaving_holds_no_cpu_debt() {
+        let mut cpu = InvocationCpuHistory::default();
+        let now = Instant::now();
+        for (second, counters, expected) in [
+            (0, vec![(1, 10), (2, 100)], None),
+            (1, vec![(1, 10)], Some(0.0)),
+            (2, vec![(1, 30)], Some(2.0)),
+            (3, vec![(1, 50)], Some(2.0)),
+        ] {
+            let reading = cpu.measure(
+                cpu_work(&counters),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(second),
+            );
+            if let Some(expected) = expected {
+                assert_eq!(reading, Measurement::Reading(expected), "sample {second}");
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_advances_by_the_positive_change_of_each_process() {
+        let mut cpu = InvocationCpuHistory::default();
+        let now = Instant::now();
+        cpu.measure(
+            cpu_work(&[(1, 100), (2, 100)]),
+            Measurement::Reading(0.0),
+            now,
+        );
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 120), (3, 90)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(1),
+            ),
+            Measurement::Reading(11.0),
+        );
+        assert_eq!(cpu.accumulated, Duration::from_millis(310));
+    }
+
     pub fn cpu_work(counters: &[(u32, u64)]) -> InvocationCpuContributions {
+        reaped_cpu_work(
+            &counters
+                .iter()
+                .map(|&(pid, elapsed)| (pid, elapsed, None))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Counters as `(pid, milliseconds, reaper pid)`.
+    pub fn reaped_cpu_work(counters: &[(u32, u64, Option<u32>)]) -> InvocationCpuContributions {
         InvocationCpuContributions {
             tree: counters
                 .iter()
-                .map(|&(pid, elapsed)| (cpu_process_identity(pid), Duration::from_millis(elapsed)))
+                .map(|&(pid, elapsed, reaper)| {
+                    (
+                        cpu_process_identity(pid),
+                        ProcessCpuCounter {
+                            elapsed: Duration::from_millis(elapsed),
+                            reaper:  reaper.map_or(CpuReaper::Unproven, |reaper| {
+                                CpuReaper::Parent(cpu_process_identity(reaper))
+                            }),
+                        },
+                    )
+                })
                 .collect(),
             ..InvocationCpuContributions::default()
         }
@@ -1123,30 +1246,34 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn reaped_descendants_transfer_time_without_repeating_it() {
-        let mut cpu = InvocationCpuHistory::default();
-        let now = Instant::now();
-        cpu.measure(
-            cpu_work(&[(1, 10), (2, 100)]),
-            Measurement::Reading(0.0),
-            now,
-        );
-        assert_eq!(
+    fn a_reaped_childs_time_is_counted_once() {
+        // The parent's rise first receives its reaped child's last counter; the rest is new work.
+        for (reaped, expected) in [(110, 0.0), (130, 2.0)] {
+            let mut cpu = InvocationCpuHistory::default();
+            let now = Instant::now();
             cpu.measure(
-                cpu_work(&[(1, 110)]),
+                reaped_cpu_work(&[(1, 10, None), (2, 100, Some(1))]),
                 Measurement::Reading(0.0),
-                now + Duration::from_secs(1)
-            ),
-            Measurement::Reading(0.0)
-        );
-        assert_eq!(
-            cpu.measure(
-                cpu_work(&[(1, 210)]),
-                Measurement::Reading(0.0),
-                now + Duration::from_secs(2)
-            ),
-            Measurement::Reading(10.0)
-        );
+                now,
+            );
+            assert_eq!(
+                cpu.measure(
+                    cpu_work(&[(1, reaped)]),
+                    Measurement::Reading(0.0),
+                    now + Duration::from_secs(1)
+                ),
+                Measurement::Reading(expected),
+                "parent counter {reaped}"
+            );
+            assert_eq!(
+                cpu.measure(
+                    cpu_work(&[(1, reaped + 100)]),
+                    Measurement::Reading(0.0),
+                    now + Duration::from_secs(2)
+                ),
+                Measurement::Reading(10.0)
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1154,7 +1281,7 @@ mod tests {
     fn reaped_nested_cargo_keeps_its_prior_cpu_credit() {
         let mut cpu = InvocationCpuHistory::default();
         let now = Instant::now();
-        let mut first = cpu_work(&[(1, 10), (2, 100)]);
+        let mut first = reaped_cpu_work(&[(1, 10, None), (2, 100, Some(1))]);
         first
             .nested
             .insert(InvocationId::for_test(2), Duration::from_millis(100));
