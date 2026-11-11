@@ -656,12 +656,22 @@ fn ci_display_table_shows_durations(
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
-fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
+/// Select the cursor count shown in the CI title.
+#[derive(Clone, Copy)]
+enum CiTitleCursor {
+    Hidden,
+    Visible(usize),
+}
+
+fn ci_panel_title(data: &CiData, cursor: CiTitleCursor) -> String {
     let title = tui_pane::pane_title(
         "CI runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
-            cursor: focused_pos,
+            cursor: match cursor {
+                CiTitleCursor::Hidden => None,
+                CiTitleCursor::Visible(position) => Some(position),
+            },
         },
     );
 
@@ -672,6 +682,35 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
         },
         _ => title,
     }
+}
+
+/// Remove title suffixes before the count loses cells.
+fn fitted_ci_panel_title(data: &CiData, cursor: CiTitleCursor, width: u16) -> String {
+    let available = usize::from(width.saturating_sub(2));
+    let title = ci_panel_title(data, cursor);
+    if title.trim().width() <= available {
+        return title;
+    }
+    let title = tui_pane::pane_title(
+        "CI runs",
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: match cursor {
+                CiTitleCursor::Hidden => None,
+                CiTitleCursor::Visible(position) => Some(position),
+            },
+        },
+    );
+    if title.trim().width() <= available {
+        return title;
+    }
+    tui_pane::pane_title(
+        "CI runs",
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: None,
+        },
+    )
 }
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
@@ -768,8 +807,12 @@ pub fn render_ci_pane_body(
 
     let ci_focused = pane.focus.is_focused();
     let ci_pane_focus_state = pane.focus.pane_focus_state;
-    let focused_pos = ci_focused.then(|| pane.viewport.pos());
-    let title = ci_panel_title(&ci_data, focused_pos);
+    let cursor = if ci_focused {
+        CiTitleCursor::Visible(pane.viewport.pos())
+    } else {
+        CiTitleCursor::Hidden
+    };
+    let title = fitted_ci_panel_title(&ci_data, cursor, area.width);
 
     let mut pane_frame_chrome = PaneFrameChrome {
         title,
@@ -1026,6 +1069,7 @@ mod tests {
     use super::CI_JOB_LABEL_MIN_WIDTH;
     use super::CI_STATUS_GAP_WIDTH;
     use super::CiDisplayColumn;
+    use super::CiTitleCursor;
     use super::OTHER_JOBS_HEADER;
     use super::build_ci_widths;
     use super::ci_branch_min_width;
@@ -1095,7 +1139,10 @@ mod tests {
             empty_state:    CiEmptyState::NoRuns,
         };
 
-        assert_eq!(ci_panel_title(&data, Some(0)), " CI runs (1 of 1) ");
+        assert_eq!(
+            ci_panel_title(&data, CiTitleCursor::Visible(0)),
+            " CI runs (1 of 1) "
+        );
     }
 
     #[test]
@@ -1108,10 +1155,13 @@ mod tests {
         };
 
         assert_eq!(
-            ci_panel_title(&data, Some(0)),
+            ci_panel_title(&data, CiTitleCursor::Visible(0)),
             " CI runs (1 of 2) branch: main "
         );
-        assert_eq!(ci_panel_title(&data, None), " CI runs (2) branch: main ");
+        assert_eq!(
+            ci_panel_title(&data, CiTitleCursor::Hidden),
+            " CI runs (2) branch: main "
+        );
     }
 
     #[test]

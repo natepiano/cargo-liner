@@ -320,6 +320,103 @@ fn worktrees_keep_whole_headers_and_share_visible_sync_columns_with_remotes() ->
 }
 
 #[test]
+fn remote_urls_keep_the_checkout_end_beside_aligned_worktree_columns() -> anyhow::Result<()> {
+    for (pane_width, ahead, behind) in [(53, 0, 0), (80, 3, 6)] {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = mode;
+            let comparison = Comparison::Counted(AheadBehind { ahead, behind });
+            app.panes.git.set_content(GitData {
+                description: DescriptionState::KnownEmpty,
+                worktrees: vec![WorktreeInfo {
+                    name:         "cargo-liner-primary-checkout".to_string(),
+                    path:         "/tmp/cargo-liner".to_string(),
+                    branch:       Some("main".to_string()),
+                    tracked:      Some("base/main".to_string()),
+                    ahead_behind: comparison,
+                }],
+                remotes: RemoteRows::Listed(vec![RemoteRow {
+                    name:            "origin".to_string(),
+                    icon:            "👯",
+                    display_url:     "natepiano/cargo-liner".to_string(),
+                    branch:          "main".to_string(),
+                    tracked_ref:     TrackedRef::Named("base/main".to_string()),
+                    status:          comparison,
+                    full_url:        None,
+                    push_annotation: None,
+                }]),
+                ..GitData::default()
+            });
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, 160, pane_width)?;
+            let area = Rect::new(0, 0, pane_width, buffer.area.height);
+            let remotes = test_support::find_text_cell(&buffer, area, "Remotes")
+                .context("Remotes section")?;
+            let worktrees = test_support::find_text_cell(&buffer, area, "Worktrees")
+                .context("Worktrees section")?;
+            let remote_headers = row_tokens(&buffer, area, remotes.1 + 1)?;
+            let worktree_headers = row_tokens(&buffer, area, worktrees.1 + 1)?;
+            assert_eq!(
+                remote_headers
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<Vec<_>>(),
+                ["Remote", "URL", "Branch", "Tracked", "Sync"]
+            );
+            assert_eq!(
+                worktree_headers
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<Vec<_>>(),
+                ["Name", "Branch", "Tracked", "Sync"]
+            );
+            let remote_values = row_tokens(&buffer, area, remotes.1 + 2)?;
+            let worktree_values = row_tokens(&buffer, area, worktrees.1 + 2)?;
+            if pane_width == 53 {
+                assert_eq!(remote_values[2].0, "…/cargo-liner");
+                let url_width = remote_headers[2].1 - remote_headers[1].1 - 2;
+                assert_eq!(url_width, 13);
+            } else {
+                assert_eq!(remote_values[2].0, "natepiano/cargo-liner");
+            }
+            for (index, label) in ["Branch", "Tracked", "Sync"].into_iter().enumerate() {
+                assert_eq!(remote_headers[index + 2].0, label);
+                assert_eq!(remote_headers[index + 2].1, worktree_headers[index + 1].1);
+            }
+            let sync_tokens: &[&str] = if ahead == 0 {
+                &["☑️"]
+            } else {
+                &["↑3", "↓6"]
+            };
+            for token in sync_tokens {
+                assert!(
+                    remote_values.iter().any(|(value, _)| value == *token),
+                    "{remote_values:?}"
+                );
+                assert!(
+                    worktree_values.iter().any(|(value, _)| value == *token),
+                    "{worktree_values:?}"
+                );
+            }
+            for label in ["main", "base/main"]
+                .into_iter()
+                .chain(sync_tokens.iter().copied())
+            {
+                let remote = remote_values
+                    .iter()
+                    .find(|(value, _)| value == label)
+                    .context("Remote value")?;
+                let worktree = worktree_values
+                    .iter()
+                    .find(|(value, _)| value == label)
+                    .context("Worktree value")?;
+                assert_eq!(remote.1, worktree.1, "{label}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn compact_worktree_tables_keep_both_blank_margins() -> anyhow::Result<()> {
     for (width, pane_width) in [(80, 17), (95, 24)] {
         let mut app = test_support::project_app();

@@ -457,3 +457,48 @@ fn narrow_ci_status_rows_keep_one_cell_after_the_left_border() -> anyhow::Result
     }
     Ok(())
 }
+
+#[test]
+fn ci_titles_drop_suffixes_before_the_count() -> anyhow::Result<()> {
+    for (window, pane_width) in [(60, 15), (80, 34), (160, 80)] {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = mode;
+            app.ci.set_content(CiData {
+                runs:           vec![display_run("main")?; 48],
+                mode_label:     Some("branch".to_string()),
+                current_branch: Some("main".to_string()),
+                empty_state:    CiEmptyState::NoRuns,
+            });
+            for focused in [false, true] {
+                app.set_focus_to_pane(if focused {
+                    PaneId::CiRuns
+                } else {
+                    PaneId::ProjectList
+                });
+                app.ci.focus.pane_focus_state = app.pane_focus_state(PaneId::CiRuns);
+                let buffer = test_support::draw_pane_in_window(
+                    &mut app,
+                    PaneId::CiRuns,
+                    window,
+                    pane_width,
+                )?;
+                let title = &test_support::rows(&buffer)[0];
+                let expected = if window != 60 && focused {
+                    "CI runs (1 of 48)"
+                } else {
+                    "CI runs (48)"
+                };
+                assert!(title.contains(expected), "{window}: {title}");
+                assert!(!title.contains('…'), "{title}");
+                if window == 60 {
+                    assert!(!title.contains("branch"), "{title}");
+                    assert_eq!(test_support::position(&buffer, "CI runs (48)")?, (1, 0));
+                } else {
+                    assert!(title.contains("branch: main"), "{title}");
+                }
+            }
+        }
+    }
+    Ok(())
+}

@@ -52,6 +52,10 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Keep the first body character when indentation fills a toast row. Preserve oversized graphemes in `wrapped`.
+- Mark hard word breaks in toast bodies with `…`. Keep body measurement and fading text on the same lines.
+- Omit a toast title when its first readable word cannot fit beside the close button.
+
 - A pane title that fits only without its side spaces draws without them, so the whole title shows.
 - A toast message cuts with `…`, never with ASCII dots, and never after a rule piece or a space.
 - Toast cards use available side-gap space to keep warning titles and close buttons whole.

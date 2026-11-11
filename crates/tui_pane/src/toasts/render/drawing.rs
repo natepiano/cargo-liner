@@ -183,26 +183,20 @@ fn first_sentence_height(toast: &ToastView, card_width: u16) -> u16 {
     let Some(end) = sentence_end else {
         return toast.min_height();
     };
-    let sentence_chars = text[..end]
+    let mut sentence = text[..end]
         .chars()
         .filter(|character| !character.is_whitespace())
-        .count();
+        .peekable();
     let width = u16::try_from(body::card_body_width(card_width)).unwrap_or(u16::MAX);
-    let mut visible_chars = 0;
     let mut rows = 0_u16;
     for line in toast.render_body.wrapped_lines(width, Style::default()) {
         rows = rows.saturating_add(1);
-        visible_chars += line
-            .spans
-            .iter()
-            .map(|span| {
-                span.content
-                    .chars()
-                    .filter(|character| !character.is_whitespace())
-                    .count()
-            })
-            .sum::<usize>();
-        if visible_chars >= sentence_chars {
+        for character in line.spans.iter().flat_map(|span| span.content.chars()) {
+            if sentence.peek() == Some(&character) {
+                sentence.next();
+            }
+        }
+        if sentence.peek().is_none() {
             break;
         }
     }
@@ -818,7 +812,7 @@ mod tests {
         let rendered = draw_at(&mut toasts, 30, 20, settled_at);
 
         assert_eq!(rendered.card.height, 5);
-        let drawn_body = (rendered.card.y + 1..rendered.card.bottom() - 1)
+        let drawn_rows = (rendered.card.y + 1..rendered.card.bottom() - 1)
             .map(|row| {
                 (rendered.card.x + 2..rendered.card.right() - 2)
                     .map(|column| rendered.buffer[(column, row)].symbol())
@@ -826,12 +820,13 @@ mod tests {
                     .trim_end()
                     .to_owned()
             })
-            .collect::<String>();
+            .collect::<Vec<_>>();
+        for row in &drawn_rows[..drawn_rows.len() - 1] {
+            assert!(row.ends_with(ELISION), "{row}");
+        }
+        assert!(!drawn_rows.last().expect("last body row").contains(ELISION));
+        let drawn_body = drawn_rows.join("").replace(ELISION, "");
         assert_eq!(drawn_body, body);
-        assert!(!(rendered.card.y..rendered.card.bottom()).any(|row| {
-            (rendered.card.x..rendered.card.right())
-                .any(|column| rendered.buffer[(column, row)].symbol() == ELISION)
-        }));
     }
 
     #[test]

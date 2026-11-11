@@ -36,7 +36,6 @@ use crate::toasts::TrackedItemElapsed;
 use crate::toasts::TrackedItemLifecycle;
 use crate::toasts::TrackedItemView;
 use crate::toasts::manager;
-use crate::wrap;
 
 pub(super) fn render_toast(
     frame: &mut Frame,
@@ -84,16 +83,13 @@ pub(super) fn render_toast(
     let title_uses_border_cell = raw_title.width() == title_max.saturating_add(1);
     let close_padding = u16::from(!title_uses_border_cell);
     let title_max = title_max.saturating_add(usize::from(title_uses_border_cell));
-    let title = if raw_title.width() > title_max && title_max > 0 {
-        format!("{}…", format::truncate(&raw_title, title_max - 1))
-    } else {
-        format::truncate(&raw_title, title_max)
-    };
-
-    let block = Block::default()
-        .title(Span::styled(format!(" {title} "), text_style))
+    let title = fitted_toast_title(toast, &raw_title, title_max);
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style);
+    if !title.is_empty() {
+        block = block.title(Span::styled(format!(" {title} "), text_style));
+    }
     let inner = block.inner(card);
     frame.render_widget(block, card);
 
@@ -186,6 +182,25 @@ fn render_page_footer(
         border_style
     };
     render_overflow_affordance(frame, area, overflow, style);
+}
+
+/// Omit a title when its first word cannot fit.
+fn fitted_toast_title(toast: &ToastView, raw_title: &str, width: usize) -> String {
+    let word = toast.title().split_whitespace().next().unwrap_or("");
+    let prefix = raw_title.width().saturating_sub(toast.title().width());
+    let cut_mark = usize::from(raw_title.width() > width);
+    if word.is_empty() || word.width() + prefix + cut_mark > width {
+        return String::new();
+    }
+    let title = format::truncate_with_ellipsis(raw_title, width);
+    if title
+        .split_whitespace()
+        .any(|drawn| drawn == word || drawn.strip_suffix('…') == Some(word))
+    {
+        title
+    } else {
+        String::new()
+    }
 }
 
 fn toast_title(toast: &ToastView) -> String {
@@ -476,20 +491,14 @@ fn body_lines_plain(
     width: u16,
     page_rows: usize,
 ) -> ToastBodyRows {
-    let mut lines = match toast.linger() {
-        ToastLingerState::Live => toast.render_body.wrapped_lines(width, body_style),
-        ToastLingerState::Lingering { progress } => toast
-            .body()
-            .split('\n')
-            .flat_map(|line| {
-                wrap::wrapped_preserving_whitespace(
-                    format::fade_to_color(line, f64::from(progress)).spans,
-                    width,
-                )
-                .lines
-            })
-            .collect(),
-    };
+    let mut lines = toast.render_body.wrapped_lines(width, body_style);
+    if let ToastLingerState::Lingering { progress } = toast.linger() {
+        for line in &mut lines {
+            for span in &mut line.spans {
+                span.style = span.style.patch(format::fade_to_style(f64::from(progress)));
+            }
+        }
+    }
     let overflow = ViewportOverflow::new(lines.len(), 0, page_rows, 0);
     lines.truncate(lines_for_body);
     ToastBodyRows { lines, overflow }

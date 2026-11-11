@@ -1914,7 +1914,10 @@ fn remote_row_line(
         SyncTableMode::Compact => name,
         SyncTableMode::Full => format!(
             "{name}  {}",
-            left_column(&row.display_url, layout.remote_url)
+            left_column(
+                &render::cut_path_from_left(&row.display_url, layout.remote_url),
+                layout.remote_url
+            )
         ),
     };
     let consumed = 1 + icon_cell.width() + leading.width();
@@ -2711,8 +2714,8 @@ mod tests {
                 let tokens = text.split_whitespace().collect::<Vec<_>>();
                 let url = tokens[2];
                 assert!(url.width() >= 2, "{width}: {text}");
-                let prefix = url.strip_suffix('…').unwrap_or(url);
-                assert!(remote.display_url.starts_with(prefix), "{width}: {text}");
+                let suffix = url.strip_prefix('…').unwrap_or(url);
+                assert!(remote.display_url.ends_with(suffix), "{width}: {text}");
                 assert!(
                     text.contains("main                origin/main"),
                     "{width}: {text}"

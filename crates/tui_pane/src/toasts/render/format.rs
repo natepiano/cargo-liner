@@ -2,8 +2,6 @@ use std::time::Duration;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use crate::constants::ELISION;
@@ -26,10 +24,6 @@ pub(in crate::toasts) fn fade_level(progress: f64) -> u8 {
     )]
     let value = 127.0f64.mul_add(-curve, 255.0) as u8;
     value
-}
-
-pub(super) fn fade_to_color(text: &str, progress: f64) -> Line<'static> {
-    Line::from(Span::styled(text.to_owned(), fade_to_style(progress)))
 }
 
 pub(super) fn truncate(text: &str, width: usize) -> String {

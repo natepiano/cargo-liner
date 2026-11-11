@@ -619,10 +619,16 @@ pub(in crate::tui) fn shared_name_prefix(member: &str, root: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Select the original name or the name without its shared prefix.
+enum MemberName {
+    Original,
+    WithoutSharedPrefix(CellContent),
+}
+
 /// Drop the shared member prefix when the whole name does not fit.
-fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> Option<CellContent> {
+fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> MemberName {
     if display_width(prefix) + display_width(&cell.text) <= width {
-        return None;
+        return MemberName::Original;
     }
     let available = width.saturating_sub(display_width(prefix));
     let root_drop = cell.shared_prefix;
@@ -638,7 +644,7 @@ fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> Opti
         root_drop
     };
     if drop == 0 {
-        return None;
+        return MemberName::Original;
     }
     let segments = cell.segments.as_ref().map(|segments| {
         let mut skipped = 0;
@@ -658,8 +664,8 @@ fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> Opti
             })
             .collect()
     });
-    Some(CellContent {
-        text: cell.text.get(drop..)?.to_string(),
+    MemberName::WithoutSharedPrefix(CellContent {
+        text: cell.text[drop..].to_string(),
         style: cell.style,
         segments,
         align_override: cell.align_override,
@@ -672,7 +678,7 @@ fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> Opti
 
 /// Keep the prefix and the worktree mark outside the shortened name.
 fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'static>> {
-    if let Some(short) = without_shared_prefix(cell, prefix, width) {
+    if let MemberName::WithoutSharedPrefix(short) = without_shared_prefix(cell, prefix, width) {
         return name_cell_spans(&short, prefix, width);
     }
     let fallback = [StyledSegment {
@@ -695,7 +701,7 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
     let original_mark = &text[mark_start..];
     // Drop the group count when it would cut the name to one letter.
     let name_room = width.saturating_sub(display_width(prefix) + display_width(original_mark));
-    let mark = if original_mark.starts_with(" 🌲:")
+    let mut mark = if original_mark.starts_with(" 🌲:")
         && display_width(name) > name_room
         && name_room < two_letter_cut_width(name)
     {
@@ -712,6 +718,11 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
         prefix
     };
     let prefix = render::truncate_with_ellipsis(prefix, prefix_room, "");
+    let name_room = width.saturating_sub(display_width(&prefix) + display_width(mark));
+    if mark == " 🌲" && name_room < two_letter_cut_width(name) && display_width(name) > name_room
+    {
+        mark = "";
+    }
     let available = width.saturating_sub(display_width(&prefix) + display_width(mark));
     if display_width(name) > available
         && let Some(bracket) = name.find(" [")
@@ -1385,8 +1396,8 @@ mod tests {
             ("▶ ", "mega 🌲:13", 10, "▶ mega 🌲"),
             ("▶ ", "東京group 🌲:13", 12, "▶ 東京gr… 🌲"),
             ("▶ ", "mega 🌲:13", 11, "▶ me… 🌲:13"),
-            (" ▶ ", "東group-0 🌲:13", 8, "▶ 東… 🌲"),
-            (" ▶ ", "東group-0 🌲:13", 9, " ▶ 東… 🌲"),
+            (" ▶ ", "東group-0 🌲:13", 8, "▶ 東gro…"),
+            (" ▶ ", "東group-0 🌲:13", 9, " ▶ 東gro…"),
             (" ▼ ", "proof_crate [alpha-team] 🌲:3", 11, " ▼ [alp… 🌲"),
             (" ▼ ", "proof_crate [alpha-team] 🌲:3", 12, " ▼ [al… 🌲:3"),
         ] {

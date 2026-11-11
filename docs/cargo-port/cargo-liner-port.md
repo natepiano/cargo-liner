@@ -919,7 +919,7 @@ The finder offers each binary by its own name, and Package Structure counts the 
 - Source name cut at 160 columns — a `cargo…` Source cell is unreadable.
 - Two-cell gap between multi-word CI job headers — the one-cell gap stays.
 
-### Phase 4z — Names and titles never cut while cells are free  · status: todo
+### Phase 4z — Names and titles never cut while cells are free  · status: done
 
 **Depends on:** Phase 4x (both edit `crates/cargo-port/src/tui/columns/`, `panes/project_list/`, `panes/ci/`, `panes/git/` and `crates/tui_pane/src/toasts/`).
 
@@ -934,7 +934,7 @@ The finder offers each binary by its own name, and Package Structure counts the 
    2. `w60h30-nocolor-5-lint-on.txt` rows 24-28: a toast draws `┌ … [x]─┐` with `metad` / `ata` below. The title is `…` alone, and the word breaks with no mark.
    3. `w160h45-nocolor-2-main-git-2_of_2.txt` row 7: the remote URL draws `natepiano…` while its column and the Tracked and Sync columns have free cells.
 
-**Decision:** showrunner, 2026-11-10: a look the user sees today changes only when it is wrong, clipped, unreadable or against a user rule (user, 2026-11-06). A name cut to one letter is unreadable, so this phase drops the 🌲 mark in that case. The same ruling dropped six other items from the Phase 4x design check, because none is wrong, clipped or unreadable: the finder side margin (no border cell hides finder text), one blank row between Lint Runs records, one title case, the `Worktrees (13)` heading space, and, by the director under the same rule, the Workspace value columns and the two loading message forms. Director, 2026-11-10: Source items 2.1 to 2.3 are clipped or unreadable, so they stay. Under the same rule the director dropped one more item: unloaded Package fields draw `-` beside `—` (older; nothing is clipped). Showrunner, 2026-11-10: the one-cell gap between multi-word CI job headers at 160 columns (`Windows Build Check Test Suite`) stays, because each header is whole and the columns align.
+**Decision:** showrunner, 2026-11-10: a look the user sees today changes only when it is wrong, clipped, unreadable or against a user rule (user, 2026-11-06). A name cut to one letter is unreadable, so this phase drops the 🌲 mark in that case. The same ruling dropped six other items from the Phase 4x design check, because none is wrong, clipped or unreadable: the finder side margin (no border cell hides finder text), one blank row between Lint Runs records, one title case, the `Worktrees (13)` heading space, and, by the director under the same rule, the Workspace value columns and the two loading message forms. Director, 2026-11-10: Source items 2.1 to 2.3 are clipped or unreadable, so they stay. Under the same rule the director dropped one more item: unloaded Package fields draw `-` beside `—` (older; nothing is clipped). Showrunner, 2026-11-10: the one-cell gap between multi-word CI job headers at 160 columns (`Windows Build Check Test Suite`) stays, because each header is whole and the columns align. Director, 2026-11-10: the Spec 1 and Spec 3 assertion changes are approved, because the old rows pin the defects these Specs remove. Showrunner, 2026-11-10: at 160 columns Git has 53 cells, and the Remote row has spare cells only outside the shared columns. So the Remotes columns keep their shared widths, and a Remote URL that does not fit cuts from the left with a leading `…`, as `…/cargo-liner`. This uses the finder Dir cut from Phase 4x and shows the repository name.
 
 **Constraints:**
 - Change no other look.
