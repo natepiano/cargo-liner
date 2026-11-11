@@ -86,40 +86,80 @@ fn target() -> Option<&'static str> {
 /// Whether anything here does any work at all.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-fn on() -> bool { ENABLED.load(Ordering::Relaxed) }
+fn on() -> bool {
+    #[cfg(test)]
+    if TEST_PAINT_PROBE.get() == TestPaintProbe::Enabled {
+        return true;
+    }
+    ENABLED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TestPaintProbe {
+    Disabled,
+    Enabled,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PAINT_PROBE: Cell<TestPaintProbe> = const { Cell::new(TestPaintProbe::Disabled) };
+}
+
+/// Measure one test's painting on its current thread.
+#[cfg(test)]
+pub(crate) fn measure_paint(draw: impl FnOnce()) -> PaintWork {
+    struct TestPaintScope(TestPaintProbe, PaintWork);
+    impl Drop for TestPaintScope {
+        fn drop(&mut self) {
+            TEST_PAINT_PROBE.set(self.0);
+            PAINT_WORK.with_borrow_mut(|work| *work = std::mem::take(&mut self.1));
+        }
+    }
+    let _scope = TestPaintScope(
+        TEST_PAINT_PROBE.replace(TestPaintProbe::Enabled),
+        PAINT_WORK.take(),
+    );
+    draw();
+    PAINT_WORK.take()
+}
 
 /// Cache work for the pending draw.
 #[derive(Default)]
 pub(crate) struct PaintWork {
-    grid_preparation_cpu_ns: u64,
-    command_widths_cpu_ns:   u64,
-    allocation_cpu_ns:       u64,
-    demand_cpu_ns:           u64,
-    frame_setup_cpu_ns:      u64,
-    surface_cpu_ns:          u64,
-    capture_cpu_ns:          u64,
-    patch_cpu_ns:            u64,
-    ink_binding_cpu_ns:      u64,
-    preparation_cpu_ns:      u64,
-    validation_cpu_ns:       u64,
-    repaint_cpu_ns:          u64,
-    first_rejection:         String,
-    write_calls:             u64,
-    diff_cells:              usize,
-    recovery_rows:           u16,
-    pub(crate) hits:         u64,
-    pub(crate) missing:      u64,
-    pub(crate) inputs:       u64,
-    pub(crate) destination:  u64,
-    pub(crate) source:       u64,
-    pub(crate) scanned:      usize,
-    pub(crate) copied:       usize,
-    pub(crate) revision:     u64,
-    pub(crate) hidden:       u64,
-    pub(crate) view:         u64,
-    pub(crate) height:       u64,
-    pub(crate) theme:        u64,
-    pub(crate) unprepared:   u64,
+    grid_preparation_cpu_ns:             u64,
+    command_widths_cpu_ns:               u64,
+    allocation_cpu_ns:                   u64,
+    demand_cpu_ns:                       u64,
+    frame_setup_cpu_ns:                  u64,
+    surface_cpu_ns:                      u64,
+    source_cpu_ns:                       u64,
+    pub(crate) recording_cpu_ns:         u64,
+    pub(crate) recording_visits:         usize,
+    pub(crate) capture_cpu_ns:           u64,
+    pub(crate) table_preparation_cpu_ns: u64,
+    patch_cpu_ns:                        u64,
+    ink_binding_cpu_ns:                  u64,
+    preparation_cpu_ns:                  u64,
+    validation_cpu_ns:                   u64,
+    pub(crate) repaint_cpu_ns:           u64,
+    pub(crate) first_rejection:          String,
+    write_calls:                         u64,
+    diff_cells:                          usize,
+    recovery_rows:                       u16,
+    pub(crate) hits:                     u64,
+    pub(crate) missing:                  u64,
+    pub(crate) inputs:                   u64,
+    pub(crate) destination:              u64,
+    pub(crate) source:                   u64,
+    pub(crate) scanned:                  usize,
+    pub(crate) copied:                   usize,
+    pub(crate) revision:                 u64,
+    pub(crate) hidden:                   u64,
+    pub(crate) view:                     u64,
+    pub(crate) height:                   u64,
+    pub(crate) theme:                    u64,
+    pub(crate) unprepared:               u64,
 }
 
 thread_local! {
@@ -153,7 +193,10 @@ pub(crate) enum PaintStage {
     Demand,
     FrameSetup,
     Surface,
+    Source,
+    Recording,
     Capture,
+    TablePreparation,
     Patch,
     InkBinding,
 
@@ -187,7 +230,10 @@ impl Drop for PaintTimer {
             PaintStage::Demand => work.demand_cpu_ns += elapsed,
             PaintStage::FrameSetup => work.frame_setup_cpu_ns += elapsed,
             PaintStage::Surface => work.surface_cpu_ns += elapsed,
+            PaintStage::Source => work.source_cpu_ns += elapsed,
+            PaintStage::Recording => work.recording_cpu_ns += elapsed,
             PaintStage::Capture => work.capture_cpu_ns += elapsed,
+            PaintStage::TablePreparation => work.table_preparation_cpu_ns += elapsed,
             PaintStage::Patch => work.patch_cpu_ns += elapsed,
             PaintStage::InkBinding => work.ink_binding_cpu_ns += elapsed,
             PaintStage::Preparation => work.preparation_cpu_ns += elapsed,
@@ -552,48 +598,7 @@ fn frame(gap: Duration, threshold: Duration) {
             cpu.callback, cpu.write, cpu.flush
         );
         let work = PAINT_WORK.take();
-        let frame_number = FRAME_NUMBER.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = write!(
-            line,
-            " frame_id={frame_number} cache_hits={} cache_missing={} cache_inputs={} cache_destination={} cache_source={} cells_scanned={} cells_copied={} invalid_revision={} invalid_hidden={} invalid_view={} invalid_height={} invalid_theme={} unprepared={}",
-            work.hits,
-            work.missing,
-            work.inputs,
-            work.destination,
-            work.source,
-            work.scanned,
-            work.copied,
-            work.revision,
-            work.hidden,
-            work.view,
-            work.height,
-            work.theme,
-            work.unprepared
-        );
-        let _ = write!(
-            line,
-            " preparation_cpu_ns={} validation_cpu_ns={} repaint_cpu_ns={} write_calls={} diff_cells={} recovery_rows={} first_rejection={:?}",
-            work.preparation_cpu_ns,
-            work.validation_cpu_ns,
-            work.repaint_cpu_ns,
-            work.write_calls,
-            work.diff_cells,
-            work.recovery_rows,
-            work.first_rejection
-        );
-        let _ = write!(
-            line,
-            " grid_preparation_cpu_ns={} command_widths_cpu_ns={} allocation_cpu_ns={} demand_cpu_ns={} frame_setup_cpu_ns={} surface_cpu_ns={} capture_cpu_ns={} patch_cpu_ns={} ink_binding_cpu_ns={}",
-            work.grid_preparation_cpu_ns,
-            work.command_widths_cpu_ns,
-            work.allocation_cpu_ns,
-            work.demand_cpu_ns,
-            work.frame_setup_cpu_ns,
-            work.surface_cpu_ns,
-            work.capture_cpu_ns,
-            work.patch_cpu_ns,
-            work.ink_binding_cpu_ns,
-        );
+        describe_paint_work(&mut line, &work);
         append(&line);
     } else if TRACING.load(Ordering::Relaxed) {
         if TRACED.fetch_add(1, Ordering::Relaxed) < TRACE_FRAMES {
@@ -616,6 +621,62 @@ fn frame(gap: Duration, threshold: Duration) {
             throughput(wrote, over) / 1024.0,
         ));
     }
+}
+
+/// Append the painting counters and CPU measurements to one frame record.
+fn describe_paint_work(line: &mut String, work: &PaintWork) {
+    let frame_number = FRAME_NUMBER.fetch_add(1, Ordering::Relaxed) + 1;
+    let _ = write!(
+        line,
+        " frame_id={frame_number} cache_hits={} cache_missing={} cache_inputs={} cache_destination={} cache_source={} cells_scanned={} cells_copied={} invalid_revision={} invalid_hidden={} invalid_view={} invalid_height={} invalid_theme={} unprepared={}",
+        work.hits,
+        work.missing,
+        work.inputs,
+        work.destination,
+        work.source,
+        work.scanned,
+        work.copied,
+        work.revision,
+        work.hidden,
+        work.view,
+        work.height,
+        work.theme,
+        work.unprepared
+    );
+    let _ = write!(
+        line,
+        " preparation_cpu_ns={} validation_cpu_ns={} repaint_cpu_ns={} write_calls={} diff_cells={} recovery_rows={} first_rejection={:?}",
+        work.preparation_cpu_ns,
+        work.validation_cpu_ns,
+        work.repaint_cpu_ns,
+        work.write_calls,
+        work.diff_cells,
+        work.recovery_rows,
+        work.first_rejection
+    );
+    let _ = write!(
+        line,
+        " grid_preparation_cpu_ns={} command_widths_cpu_ns={} allocation_cpu_ns={} demand_cpu_ns={} frame_setup_cpu_ns={} surface_cpu_ns={} capture_cpu_ns={} patch_cpu_ns={} ink_binding_cpu_ns={} source_cpu_ns={} recording_cpu_ns={} recording_visits={}",
+        work.grid_preparation_cpu_ns,
+        work.command_widths_cpu_ns,
+        work.allocation_cpu_ns,
+        work.demand_cpu_ns,
+        work.frame_setup_cpu_ns,
+        work.surface_cpu_ns,
+        work.capture_cpu_ns,
+        work.patch_cpu_ns,
+        work.ink_binding_cpu_ns,
+        work.source_cpu_ns,
+        work.recording_cpu_ns,
+        work.recording_visits,
+    );
+    let _ = write!(
+        line,
+        " table_preparation_cpu_ns={} text_drawing_cpu_ns={}",
+        work.table_preparation_cpu_ns,
+        work.capture_cpu_ns
+            .saturating_sub(work.table_preparation_cpu_ns),
+    );
 }
 
 /// Write `message` to the log as a line of its own, where the probe is
