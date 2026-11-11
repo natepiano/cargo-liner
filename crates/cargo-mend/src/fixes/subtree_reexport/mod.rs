@@ -13,6 +13,7 @@
 mod ancestor;
 mod chain;
 mod crate_files;
+mod glob_callers;
 mod local_use;
 mod owner_edit;
 mod scan;

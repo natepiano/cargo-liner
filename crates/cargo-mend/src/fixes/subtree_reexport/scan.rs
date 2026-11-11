@@ -12,6 +12,7 @@ use super::crate_files::CrateFiles;
 use super::crate_files::FileBuilds;
 use super::crate_files::ModuleLookup;
 use super::crate_files::OwnerCrate;
+use super::glob_callers;
 use super::owner_edit;
 use super::owner_edit::EmptiedOwner;
 use super::owner_edit::OwnerFact;
@@ -501,13 +502,17 @@ fn build_resolved_round(
             .collect::<Vec<_>>();
         let module_aliases = ModuleAliases::collect(files.scannable(), sources)?;
         for (file, module_path) in files.scannable() {
-            let result = facade_redirect::redirect_callers_in_file(
+            let plan = glob_callers::plan_file_callers(
                 file,
                 sources,
-                module_path.to_vec(),
+                module_path,
                 &redirects,
                 &module_aliases,
             )?;
+            round
+                .unmatched
+                .extend(plan.declined.iter().map(|&slot| active[slot].index));
+            let result = plan.callers;
             let file_builds = files.builds(file);
             for (&slot, &builds) in &result.outside_used {
                 let builds = match file_builds {

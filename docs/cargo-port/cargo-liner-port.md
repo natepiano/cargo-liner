@@ -31,33 +31,33 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ## Phases
 
-### Phase 1 — mend --fix keeps a re-exported item when it expands a glob import  · status: todo
+### Phase 1 — mend --fix keeps a glob caller's name when it removes a re-export  · status: done
 
 **Depends on:** none.
 
 #### Work Order
 
-**Goal:** when `mend --fix` replaces a glob import with explicit imports, the new list includes every item the target module makes visible, including items it re-exports with a `use` declaration. The rewrite compiles.
+**Goal:** when `mend --fix` removes a re-export, a glob import that used it keeps the name. The rewrite compiles, with no rollback.
 
-**Source:** showrunner, 2026-11-11, from hana (cables) through builds:
-1. Mend expands `use super::constants::*` into explicit imports.
-2. It omits an item that `constants.rs` re-exports: `pub(super) use crate::rig::BOOT_BASE_RADIUS_SCALE;` (hana_conduit, `rig` module).
-3. The rewrite fails with E0425, and mend rolls back. cables is not blocked.
+**Source:** showrunner, 2026-11-11, from hana (cables) through builds. The report read as a glob expansion, but mend has no glob expansion. The case (hana_conduit):
+1. `rig_plugin/constants.rs` has `pub(super) use crate::rig::BOOT_BASE_RADIUS_SCALE;`.
+2. `rig_plugin/look.rs` has `use super::constants::*;` and uses `BOOT_BASE_RADIUS_SCALE`.
+3. The `pub_use_outside_subtree` fix removes the re-export and redirects explicit callers. The glob caller stays unchanged, so rustc reports E0425 and mend rolls back. cables is not blocked.
 
-**Decision:** showrunner, 2026-11-11: a mend bug is always fixed. The glob expansion must include items that the target module re-exports with a `use` declaration.
+**Decision:** showrunner, 2026-11-11: a mend bug is always fixed. Director, 2026-11-11: add an explicit import to a glob caller that uses the removed name; keep the re-export when mend cannot prove the caller's use.
 
 **Constraints from prior phases:**
 - `docs/cargo-mend/as-built/import-fixes.md`: import rewrites keep cfg attributes, leading `::`, glob-provided names and child-module access through `super`; the scan tests compile the result with rustc and check that a second pass changes nothing.
 - No test takes a second: the tests run `scan_file`, `apply_fixes` and rustc, not the full `--fix` path.
 
 **Spec:**
-1. **Find the expansion.** Find the fix that turns a glob `use` into explicit imports, and the code that lists the target module's items.
-2. **Re-exports count.** That list includes each name a `use` declaration in the target module binds and that the importing module can see (`pub`, `pub(crate)`, `pub(super)` or `pub(in …)` that reaches it), with its `as` rename, and the names of a nested `use` group. A private `use` in the target module is not visible and stays out. A re-exported glob (`pub use x::*`) that mend cannot list keeps the original glob import, not a partial list.
-3. **Test.** Add a row to the existing glob-expansion test (or the nearest `scan.rs` test of the same fix): a `constants` module with one `const` and one `pub(super) use crate::rig::X;`, and a sibling with `use super::constants::*` that uses both. The expanded imports include `X`, rustc accepts the result, and a second pass changes nothing.
+1. **Glob callers.** When the fix removes a re-export, find each glob import that targets the re-exporting module. If the scope uses the name, add an explicit import of the new path. Skip a glob that cannot supply the name: an outside crate, or another crate module.
+2. **Uncertain callers.** Keep the re-export when mend cannot prove the use: a macro or nested module in the scope, competing globs, an unresolved module alias, or a shadowed name. A scope that never names the item needs no edit.
+3. **Test.** A table test runs `scan_file`, `apply_fixes` and rustc on the hana shape and on the uncertain cases. rustc accepts each result, and a second pass changes nothing.
 4. **Changelog.** Add the cargo-mend entry.
 
 **Files:**
-- `crates/cargo-mend/src/` — the expansion fix and its tests
+- `crates/cargo-mend/src/` — the re-export removal fix and its tests
 - `crates/cargo-mend/CHANGELOG.md`
 
 **Workers:** 1 writer.

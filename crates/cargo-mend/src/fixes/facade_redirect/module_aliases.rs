@@ -33,6 +33,10 @@ pub(in crate::fixes) struct ModuleAliases {
 }
 
 impl ModuleAliases {
+    pub(in crate::fixes) fn contains_module(&self, path: &[String]) -> bool {
+        self.modules.contains(path)
+    }
+
     /// The module bindings of `files`, each paired with the module path it
     /// occupies and read through `sources`. A binding counts only when its
     /// target is a module of these files: an inline `mod` or a file's own

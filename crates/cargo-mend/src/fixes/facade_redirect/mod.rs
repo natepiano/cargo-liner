@@ -20,11 +20,14 @@ mod source_text;
 mod use_tree;
 
 pub(super) use caller_rewrite::CallerBuilds;
+pub(super) use caller_rewrite::FileRedirects;
 pub(super) use caller_rewrite::redirect_callers_in_file;
 pub(super) use module_aliases::ModuleAliases;
 pub(super) use module_path::absolute_use_path;
+pub(super) use redirect::CallerRedirect;
 pub(super) use redirect::FacadeRedirect;
 pub(super) use redirect::RedirectTarget;
+pub(super) use redirect::TargetSide;
 pub(super) use source_text::IdentifierUse;
 pub(super) use source_text::SourceLines;
 pub(super) use source_text::dedup_fixes;

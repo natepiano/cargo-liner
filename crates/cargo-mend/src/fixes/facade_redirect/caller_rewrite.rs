@@ -28,6 +28,7 @@ use syn::visit::Visit;
 
 use super::module_aliases::ModuleAliases;
 use super::module_path;
+use super::redirect::CallerRedirect;
 use super::redirect::FacadeRedirect;
 use super::redirect::TargetSide;
 use super::source_text;
@@ -701,7 +702,11 @@ impl<'a> CallerRewriter<'a> {
             .iter()
             .enumerate()
             .find(|(_, redirect)| redirect.facade_path == resolved)?;
-        let (target, side) = redirect.target_for(&self.module_path)?;
+        let CallerRedirect::Redirect { path: target, side } =
+            redirect.target_for(&self.module_path)
+        else {
+            return None;
+        };
         Some((index, target, side))
     }
 
