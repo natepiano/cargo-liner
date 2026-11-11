@@ -2392,11 +2392,13 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - Most frames over 4 ms at 40 rows repaint all cells after an input rejection (`cache_inputs=6`).
 - A doc link to a `#[cfg(test)]` function fails rustdoc in the product build.
 
-### Phase 32i — The last tile frames over 4 ms after 32h  · status: todo
+### Phase 32i — The last tile frames over 4 ms after 32h  · status: parked (showrunner, 2026-11-11: not landed at the 3-round repair cap; slower than main at 40 and 80 rows; the work continues in Phase 32j)
 
 **Depends on:** Phase 32h.
 
 Phase 32h landed at the repair cap with its gate open. Its findings F005, F006 and F007 come here.
+
+**Parked:** three repair rounds ran in the uncommitted worktree `/home/natepiano/rust/cargo-liner-tile-32i` (base fc459b373). The closure review accepted all correctness findings. Three interleaved pairs against main (`phases/32i/pairs-32i.json`, load 21 to 32) had these frames over 4 ms at 24, 40 and 80 rows: main 13/3/13, 8/7/10, 8/4/5; 32i 3/35/79, 7/54/40, 0/0/8. Phase 32j continues from that tree.
 
 #### Work Order
 
@@ -2423,9 +2425,41 @@ Phase 32h landed at the repair cap with its gate open. Its findings F005, F006 a
 - Three interleaved pairs against main for any CPU claim, with the median change and the spread.
 - Change-Review: none — draw time only, with no visible change.
 
+### Phase 32j — Tile frames at 40 and 80 rows are no slower than main  · status: todo
+
+**Depends on:** Phase 32i (its uncommitted tree).
+
+Phase 32i did not land (showrunner, 2026-11-11). Its findings F003, F004 and F007 come here. CPU work ranks first.
+
+#### Work Order
+
+**Goal:** In the fixed busy capture, `cargo-tile` frames at 24, 40 and 80 rows are equal to or better than main, and no frame spends more than 4 ms of on-CPU draw time.
+
+**Spec:**
+
+1. **Measure the regression first.** Find why 40-row and 80-row frames are slower than main. In the 32i counted capture `phase32i-gate-10`, the slowest frames spent 4.5 to 4.7 ms in allocation, after `source row count` changes (51 to 55, 48 to 55). Compare the same frames on main's build (`phase32h-gate-7-cargo-tile`) and the 32i build (`phase32i-gate-10-cargo-tile`). Name the cost that 32i added, with its stage and its cause. Then remove it at its cause.
+2. **One owner for the column decisions (F007).** `visible_row_grid` (`crates/cargo-tile/src/render.rs:4953`) repeats the empty-tail and state-column decisions of `FrameTableColumnGrid::for_visible_rows` (`render.rs:4492`). Put each decision in one function that both use.
+3. **Full repaints (F003).** View changes and new rows repaint every cell. Allocation, capture and table preparation are the largest parts. Remove repeated work in each.
+4. **Disposal (F004).** Insertion plus disposal stays below 0.3 ms in every frame. The 32i counted capture had 0.41 ms at 80 rows, mostly removed snapshots.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/cell_paint.rs`, `crates/cargo-tile/src/render/frame_preparation.rs` — painting inputs, reuse and preparation.
+- `crates/cargo-tile/src/render/placed_values.rs` — value drawing.
+- `crates/cargo-tile/src/probe.rs` — stage timers.
+
+**Workers:** 1 writer — `impl`, every file above, in `/home/natepiano/rust/cargo-liner-tile-32i`.
+
+**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32i: every reused prepared row matches a fresh preparation, with its progress membership. Keep every 32i test. No duplicated state, logic or data. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
+- A counted capture with no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows. A capture counts only when the 1-minute load is below 32 at its start and end.
+- Landing rule (showrunner, 2026-11-11): equal to or better than main at 24, 40 and 80 rows, by three interleaved pairs (`phases/32i/pairs.sh`).
+- Change-Review: none — draw time only, with no visible change.
+
 ### Phase 58c — A reservation whose holder worktree id changed can be released  · status: todo
 
-**Depends on:** Phase 32i (order only; showrunner, 2026-11-10).
+**Depends on:** none. It runs beside Phase 32j (showrunner, 2026-11-11: it touches only cargo-berth).
 
 Reservation 01a1c689-7673-7e91-a27a-9fc9087ad9da (Phase 58b) was claimed at 12:37 EST on 2026-11-10 by worktree id 01a1c689-74a0-7813-a188-c39147e6ce1a. At 12:43 EST the `cargo-liner-tile-58b` worktree was made again, and its `cargo-berth-worktree-id` file now holds 01a1c68e-ee5b-72c2-9cde-a09063ecc95e. Drift, check and release from that worktree refuse with `session_worktree_mismatch`. The board reports "holder worktree is unavailable". Reservation 01a1c6cd-dc70-7630-b8af-a9c42f1af919 shows the same notice.
 
