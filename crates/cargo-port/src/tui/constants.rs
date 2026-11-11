@@ -27,6 +27,8 @@ pub(super) const PERF_LOG_FILE: &str = "cargo-port-tui-perf.log";
 pub(super) const PREVIOUS_PERF_LOG_FILE: &str = "cargo-port-tui-perf.prev.log";
 
 // render
+/// Mark the cut start or end of a fitted value.
+pub(super) const FIT_ELLIPSIS: &str = "…";
 /// Show at most this many affected paths in the confirm dialog before a
 /// `+N more` row (design plan → "Confirm dialog → uniform rule").
 pub(super) const AFFECTED_EXTRAS_VISIBLE_CAP: usize = 5;

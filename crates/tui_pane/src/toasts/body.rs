@@ -118,14 +118,11 @@ impl ToastRenderBody {
                         },
                         ToastBody::Text(_) | ToastBody::Lines(_) => style,
                     };
-                    wrap::wrapped_preserving_whitespace(
-                        vec![Span::styled(line.to_owned(), line_style)],
-                        width,
-                    )
-                    .lines
+                    wrap::wrapped_toast(vec![Span::styled(line.to_owned(), line_style)], width)
+                        .lines
                 })
                 .collect(),
-            Self::StyledRuns { runs, .. } => wrap::wrapped_runs(runs, width, style).lines,
+            Self::StyledRuns { runs, .. } => wrap::wrapped_toast_runs(runs, width, style).lines,
         }
     }
 }

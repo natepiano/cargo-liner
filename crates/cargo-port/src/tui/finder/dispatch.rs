@@ -27,19 +27,18 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
-use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::constants::FINDER_COLUMN_COUNT;
 use super::constants::FINDER_DIR_COLUMN;
 use super::constants::FINDER_HEADERS;
-use super::constants::FIT_ELLIPSIS;
 use super::constants::MIN_POPUP_WIDTH;
 use super::index::FinderItem;
 use super::index::FinderKind;
 use crate::ci;
 use crate::tui::app::App;
 use crate::tui::constants::FINDER_POPUP_HEIGHT;
+use crate::tui::constants::FIT_ELLIPSIS;
 use crate::tui::constants::MAX_FINDER_RESULTS;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::FinderAction;
@@ -542,7 +541,7 @@ fn render_finder_results(
             let parent = render::truncate_with_ellipsis(&parent, col_widths[1], FIT_ELLIPSIS);
             let branch =
                 render::truncate_with_ellipsis(&finder_item.branch, col_widths[2], FIT_ELLIPSIS);
-            let dir = cut_path_from_left(&finder_item.dir, dir_width);
+            let dir = render::cut_path_from_left(&finder_item.dir, dir_width);
             Row::new(vec![
                 Cell::from(highlighted_spans(&name, &query, text_default())),
                 Cell::from(highlighted_spans(&parent, &query, text_default())),
@@ -610,32 +609,6 @@ fn fit_dir_column(
     fitted
 }
 
-/// Cut `path` from the left so its end stays visible, starting at a `/` when one fits.
-fn cut_path_from_left(path: &str, width: usize) -> String {
-    if path.width() <= width {
-        return path.to_owned();
-    }
-    let Some(tail_width) = width.checked_sub(FIT_ELLIPSIS.width()) else {
-        return String::new();
-    };
-    let mut tail_start = path.len();
-    let mut used = 0;
-    for (index, character) in path.char_indices().rev() {
-        used += character.width().unwrap_or(0);
-        if used > tail_width {
-            break;
-        }
-        tail_start = index;
-    }
-    let tail = &path[tail_start..];
-    let tail = tail
-        .char_indices()
-        .skip(1)
-        .find(|&(_, character)| character == '/')
-        .map_or(tail, |(index, _)| &tail[index..]);
-    format!("{FIT_ELLIPSIS}{tail}")
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -645,7 +618,6 @@ mod tests {
     use tui_pane::ColorMode;
     use tui_pane::PaneSelectionState;
 
-    use super::cut_path_from_left;
     use super::fit_dir_column;
     use super::search_finder;
     use crate::project::AbsolutePath;
@@ -775,16 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_dir_keeps_its_end_from_a_slash() {
-        let path = "/tmp/claude/unit/phases/4y/live/projects/binws/crates/engine";
-
-        assert_eq!(cut_path_from_left(path, 22), "…/binws/crates/engine");
-        assert_eq!(cut_path_from_left(path, path.len()), path);
-        assert_eq!(cut_path_from_left("/a/longsegment", 5), "…ment");
-        assert_eq!(cut_path_from_left(path, 0), "");
-    }
-
-    #[test]
     fn the_widest_column_gives_up_cells_first() {
         let natural = [7, 8, 6, 60, 6];
 
@@ -794,7 +756,7 @@ mod tests {
             let (widths, expected) = ([80, 5, 6, 40, 7], [28, 5, 6, 28, 7]);
             assert_eq!(fit_dir_column(widths, 78), expected);
             assert_eq!(
-                cut_path_from_left("/tmp/project", expected[3]),
+                render::cut_path_from_left("/tmp/project", expected[3]),
                 "/tmp/project"
             );
         }

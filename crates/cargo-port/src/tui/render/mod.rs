@@ -52,6 +52,7 @@ use tui_pane::status_bar_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
+use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -62,6 +63,7 @@ use super::columns::ProjectColumnLayout;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::CUT_TRAILING_SEPARATORS;
+use super::constants::FIT_ELLIPSIS;
 use super::constants::STRIP_SLOT_COUNT;
 use super::integration::AppGlobalAction;
 use super::interaction;
@@ -777,6 +779,32 @@ pub(super) fn truncate_to_width(text: &str, max_width: usize) -> &str {
     &text[..end]
 }
 
+/// Cut `path` from the left so its end stays visible, starting at a `/` when one fits.
+pub(super) fn cut_path_from_left(path: &str, width: usize) -> String {
+    if path.width() <= width {
+        return path.to_owned();
+    }
+    let Some(tail_width) = width.checked_sub(FIT_ELLIPSIS.width()) else {
+        return String::new();
+    };
+    let mut tail_start = path.len();
+    let mut used = 0;
+    for (index, character) in path.char_indices().rev() {
+        used += character.width().unwrap_or(0);
+        if used > tail_width {
+            break;
+        }
+        tail_start = index;
+    }
+    let tail = &path[tail_start..];
+    let tail = tail
+        .char_indices()
+        .skip(1)
+        .find(|&(_, character)| character == '/')
+        .map_or(tail, |(index, _)| &tail[index..]);
+    format!("{FIT_ELLIPSIS}{tail}")
+}
+
 pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
     if text.width() <= max_width {
         return text.to_string();
@@ -916,6 +944,7 @@ mod tests {
     use ratatui::style::Style;
     use tui_pane::ColorMode;
 
+    use super::cut_path_from_left;
     use crate::config::LintIndicator;
     use crate::tui::columns::LintColumnStatus;
     use crate::tui::columns::ProjectColumnLayout;
@@ -924,6 +953,16 @@ mod tests {
     use crate::tui::panes::CPU_PANE_WIDTH;
     use crate::tui::panes::PaneId;
     use crate::tui::test_support;
+
+    #[test]
+    fn a_cut_dir_keeps_its_end_from_a_slash() {
+        let path = "/tmp/claude/unit/phases/4y/live/projects/binws/crates/engine";
+
+        assert_eq!(cut_path_from_left(path, 22), "…/binws/crates/engine");
+        assert_eq!(cut_path_from_left(path, path.len()), path);
+        assert_eq!(cut_path_from_left("/a/longsegment", 5), "…ment");
+        assert_eq!(cut_path_from_left(path, 0), "");
+    }
 
     #[test]
     fn terminal_buffer_uses_the_selected_color_mode() {

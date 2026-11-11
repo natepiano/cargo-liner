@@ -699,8 +699,13 @@ fn long_worktrees_keep_columns_and_git_at_sixty_columns() -> anyhow::Result<()> 
         }
         let group = text_row(&buffer, area, area.y);
         assert!(group.contains('p'), "{group}");
-        test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "… 🌲")
-            .context("the group keeps its mark")?;
+        if lint == LintIndicator::Enabled {
+            assert!(group.contains("proo…"), "{group}");
+            assert!(!group.contains('🌲'), "{group}");
+        } else {
+            test_support::find_text_cell(&buffer, Rect::new(area.x, area.y, area.width, 1), "… 🌲")
+                .context("the group keeps its mark")?;
+        }
         let primary = text_row(&buffer, area, area.y + 1);
         assert!(
             primary.contains('p') && primary.contains("… (p)"),
@@ -714,30 +719,29 @@ fn long_worktrees_keep_columns_and_git_at_sixty_columns() -> anyhow::Result<()> 
 fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let mut app = long_worktree_app(scratch.path())?;
-    let buffer = test_support::draw_ui(&mut app, 80)?;
-    let area = app.panes.project_list.body_rect;
-    let group = text_row(&buffer, area, area.y);
-    // With Lint on, the name keeps one letter and the group drops its count.
-    test_support::find_text_cell(
-        &buffer,
-        Rect::new(area.x, area.y, area.width, 1),
-        "▼ p… 🌲 ",
-    )
-    .with_context(|| format!("the shortened group keeps its mark: {group}"))?;
-    let primary = text_row(&buffer, area, area.y + 1);
-    assert!(primary.contains("… (p)"), "{primary}");
-    let mut disk_edge = None;
-    for y in area.y..area.y + 4 {
-        let row = text_row(&buffer, area, y);
-        assert!(row.contains('…'), "{row}");
-        if y > area.y + 1 {
-            assert!(!row.contains("(p)"), "{row}");
+    for width in [60, 80] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.project_list.body_rect;
+        let group = text_row(&buffer, area, area.y);
+        assert!(group.contains("▼ proo…"), "{group}");
+        assert!(!group.contains('🌲'), "{group}");
+        let header = text_row(&buffer, area, area.y - 1);
+        assert!(header.starts_with("   Proj… Lint CI"), "{header}");
+        let primary = text_row(&buffer, area, area.y + 1);
+        assert!(primary.contains("… (p)"), "{primary}");
+        let mut disk_edge = None;
+        for y in area.y..area.y + 4 {
+            let row = text_row(&buffer, area, y);
+            assert!(row.contains('…'), "{row}");
+            if y > area.y + 1 {
+                assert!(!row.contains("(p)"), "{row}");
+            }
+            let size = if y == area.y { "3 GiB" } else { "1 GiB" };
+            let (x, _) =
+                test_support::find_text_cell(&buffer, Rect::new(area.x, y, area.width, 1), size)
+                    .context("worktree disk value")?;
+            assert_eq!(*disk_edge.get_or_insert(x + 5), x + 5);
         }
-        let size = if y == area.y { "3 GiB" } else { "1 GiB" };
-        let (x, _) =
-            test_support::find_text_cell(&buffer, Rect::new(area.x, y, area.width, 1), size)
-                .context("worktree disk value")?;
-        assert_eq!(*disk_edge.get_or_insert(x + 5), x + 5);
     }
     let mut entries = (0..13)
         .map(|index| {
@@ -762,10 +766,15 @@ fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()>
         let prefix = group
             .find("▶ ")
             .with_context(|| format!("whole group prefix at {width}: {group}"))?;
-        let mark = group
-            .find(" 🌲")
-            .with_context(|| format!("spaced tree mark: {group}"))?;
-        let name = &group[prefix + "▶ ".len()..mark];
+        let name_end = if width <= 80 {
+            assert!(!group.contains('🌲'), "{width}: {group}");
+            group.find('…').context("cut group name")? + '…'.len_utf8()
+        } else {
+            group
+                .find(" 🌲")
+                .with_context(|| format!("spaced tree mark: {group}"))?
+        };
+        let name = &group[prefix + "▶ ".len()..name_end];
         assert!(name.chars().any(char::is_alphabetic), "{width}: {group}");
         assert!(name.ends_with('…'), "{width}: {group}");
         if count_draws {
