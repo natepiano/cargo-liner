@@ -228,22 +228,37 @@ Hook notices route these alerts through `AlertRouting` (`src/alert.rs`), built b
 
 ## Why
 
-**Settlement is automatic but narrow.** Nothing else in the engine removes state on inference, but this is not inference. Git proves the full scoped phase reached the judged branch's actual tip, and the reservation's own merge extent is empty, so no work in its share remains outside that proof. Tying settlement to `trunk_oid ==` that actual tip keeps a proposed target, or a branch that has since moved, from releasing anything. At an integration branch the cover wait keeps a lane from releasing before the branch's own work is held against its target.
+1. Automatic settlement requires both integration evidence and an empty owned extent.
+   A proposed target is not proof that the actual target contains the work.
+2. Ordinary reconciliation owns settlement.
+   The committed hook retains the lifecycle needed to audit forced integration.
+3. An integration witness names the work independently of the tip where evidence was evaluated.
+   Later unrelated target commits do not change that identity.
+4. Certified rewritten integration revalidates by ancestry.
+   It does not require a checkpoint that retention may already have collected.
+5. Commit-time rewrite capture preserves the map before Git removes its rebase state.
+   Scoped replay still verifies the nominated map.
+6. Historical candidate discovery chooses the earliest containing first-parent commit.
+   Its endpoint is more useful than repeating a failed current-tip replay.
+7. Contiguity applies to protected paths.
+   Unrelated commits between protected commits do not disprove integration.
+8. Evaluator versions permit reevaluation of older negative evidence while preserving valid positive evidence.
+   Newer evidence must not be replaced by an older evaluator.
+9. Unavailable historical proofs remain retryable attempts rather than permanent negative verdicts.
+   Orphan recovery commands use the observed target when one exists.
 
-**Settlement lives only in ordinary reconciliation.** The committed hook runs inside git's transaction for every local branch move and must stay cheap and non-destructive. Its audit must also see pre-settlement lifecycles, or forced permits are never consumed. The prepared gate projects settlements without owning them, so an already-landed predecessor does not block a proposed integration.
+## Reanchoring regression contract
 
-**The witness is separate from the evaluated trunk.** Before the split, the only commit a proof could name was the trunk it was evaluated against, so a phase that landed several commits back could only settle at the current tip. That broke two ways: later trunk commits touching the same paths made current-tip replay fail, and the retained ref named a commit unrelated to the work. Carrying `witness` next to `trunk_oid` lets evidence say both where it was checked and where the work is, and `resolve()` keeps the legacy case as a single code path.
+`crates/cargo-berth/tests/support/reanchoring.rs` verifies a side branch created during a stopped apply rebase.
+Only the rebased branch contributes the pending rewrite marker.
+The marker retains the complete old-to-new checkpoint mapping.
 
-**Rewritten integration revalidates by ancestry.** Once a witness is certified, the question is whether the judged branch still contains that commit, which a single ancestry query answers. Replaying the original phase again would need the checkpoint, which may already be collected, and would fail as trunk keeps editing the same files.
+`assert_reanchored_checkpoint_is_outstanding(fixture, id, trunk, rewritten_tip)` checks the accepted reconciliation.
+The latest resnapshot remains Outstanding.
+Its start is the trunk and its protected tip is the rewritten tip.
+The retention ref keeps that same tip.
+The board also reports the reservation as Outstanding.
 
-**The rewrite map is captured at commit time and certified by replay.** Git removes the rebase state as soon as the rebase ends, so the map has to be copied while the committed transaction still sees it. Created commits are fixed then too, because later ref moves make them impossible to recompute. The map is still only a nomination: many-to-one pairs, dropped commits, and conflict-resolution splits all make endpoints wrong in ways only scoped replay detects.
-
-**Candidate discovery nominates the earliest containing commit.** The latest containing commit is the target's tip, and its replay has already failed. The earliest first-parent commit containing every trunk-side match is the first point where the work could be whole. Cherry-mark matches are reused instead of adding a patch-id pipeline.
-
-**Contiguity counts only protected-path commits.** An unrelated commit landing between the replayed phase commits is ordinary on a shared trunk and says nothing about whether the work arrived whole. A gap made of protected-path commits does, so it still rejects.
-
-**Evaluator versions ignore legacy negatives only.** Earlier rules could reject work the current rules certify, so an old negative must not suppress reevaluation. An old positive was never wrong under stricter rules, so it stays usable. Refusing to overwrite a newer version makes the cache independent of replay order.
-
-**An unavailable historical proof is recorded as an attempt.** A negative verdict is durable. Journalling one because discovery could not run would permanently hide a proof that a later pass could establish, and the round-robin attempt schedule already retries them in turn.
-
-**Orphan actions come from the observed judged tip.** Reconciliation already resolves every target's tip, so building the action from it adds no git work. A payload-free `RetireOrAbandon` covers the one case where no commit can support recovery. Offering `--integrated-as <trunk_oid>` only when the judged branch resolved means every published command can actually run.
+Keep all these assertions when changing the fixture or helper.
+They prevent a side-branch command from replacing checkpoint capture or releasing retained work.
+The helper separates this verification from the fixture's setup without changing its result.
