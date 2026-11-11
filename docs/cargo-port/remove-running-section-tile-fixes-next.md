@@ -1,8 +1,9 @@
 # tile-fixes — Next
 
+The [shared toast and wrapping contract](../tui_pane/as-built/toast-visual-deadline.md) covers the shipped display-cell wrapper.
+
 ## Items to consider
 
-- **Wide characters wrap by the cells they take** — Target: `crates/tui_pane/src/wrap.rs` `cell_count` and `split_at_cells`, which count characters, not terminal cells. Need: a word or a nonbreaking run holding double-width characters is measured at half its drawn width, so a line can be clipped with no mark; the counting is older than phase 15, whose nonbreaking runs now promise a mark. Completion: the wrapper measures and splits by terminal cells without splitting a grapheme; tests with double-width text through `wrapped`, `wrapped_runs` and the toast renderer. Source: Phase 15 (architect review). Placed here by the user's answer, relayed by the showrunner 2026-10-13: no capture has shown wide text yet.
 - **An ended command is never admitted (F021)** — Owner: Phase 31. Target: roster admission and `tiles/grid/tile_grid.rs`. An unshown Closing group takes no slot. A group keeps its cell while another invocation remains live. Completion: roster-to-grid tests cover both cases. Preserve the evidence in `scratchpad/shots22_reply.txt`, CHECK 2. Phase 22 did not land.
 - **Column-crossing motion preserves row identity (F020 fallback)** — Target: "Every cell moves toward one target layout", Spec item 22. Port the distinct-row regression from `phases/22/review_findings_5.txt` item 2. Crossing content keeps its sliding row identity or is omitted. Content never starts again at its clip. The motion rewrite owns the implementation and acceptance test.
 - **Free rows while a command waits** — Target: the grid admission path. Need: round 6 capture: empty bordered rows stand while a live command waits for a cell, up to 2.14 s (t80 12.56 to 14.71 s, 17 rows, p22k14), d40 1.52 s, t40 1.45 s, d80 1.03 s; main 0.16 s. Rule: a waiting command takes free rows within one motion. Source: showrunner 08:00 2026-10-18 (current follow-up item); evidence `scratchpad/shots25_reply.txt`. Related to Phase 24 item 1's summary cut.

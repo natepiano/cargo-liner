@@ -49,7 +49,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
   - `crates/tui_pane/src/pane/` — `frame.rs` (shared borders, `draw_clipped`, titles), `chrome.rs` (tint and screen ground).
   - `crates/tui_pane/src/tiles/` — `draw/` (`paint.rs`, `measurements.rs`, `contents.rs`, `rows.rs`, `foot.rs`, `fade.rs`: the grid's drawing and the foot readout), `grid/` (`arrangement.rs`, `tile_grid.rs`, `bands.rs`, `motion.rs`, `allocation.rs`, `layout.rs`, `heights.rs`, `rows.rs`, `selection.rs`, `visual.rs`, `pieces.rs`, `demands.rs`: arrangement, motion, `fits`), `constants.rs`. Phase 29 split the old `draw.rs` and `grid.rs` into these modules. Each test file sits beside its owner as `<module>_tests.rs`; shared fixtures sit in `draw/tests/` and `grid/tests/`.
   - `crates/tui_pane/src/bar/status_line.rs` — the status line every app draws.
-  - `crates/cargo-tile/src/` — `render.rs` (cells, headings, ancestry, status line notes), `wrap.rs`, `constants.rs`.
+  - `crates/cargo-tile/src/` — `render.rs` (cells, headings, ancestry, status line notes), `constants.rs`. Shared wrapping lives in `crates/tui_pane/src/wrap.rs`.
   - `.config/nextest.toml` — test ordering, groups and timeouts for the workspace.
 - **Key files:**
   - `crates/tui_pane/src/pane/frame.rs` — `PaneFrame` (66), `draw_clipped` (196), `fill_pane` (229), `blit` (237), `GridLines::add` (436), `GridLines::add_titled` (480), `overlay_row` (599), `written_row` (642), `write_overlay` (661), `mark` (670), tests from 761 (`a_title_stops_inside_the_corner` 1071, `a_shifted_pane_keeps_only_what_lands_in_its_clip` 1132).
@@ -94,8 +94,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Files:**
 - `crates/tui_pane/src/pane/frame.rs` — `draw_clipped`, `blit`, `GridLines::add`, render tests
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements`, `has_visible_body_row`, render tests
-- `crates/tui_pane/src/tiles/grid.rs` — `TileDrawing`, `TileGrid::drawing`
+- `crates/tui_pane/src/tiles/draw/` — `draw_placements`, `has_visible_body_row`, render tests
+- `crates/tui_pane/src/tiles/grid/` — `TileDrawing`, `TileGrid::drawing`
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry
 
 **Binds later work:**
@@ -122,8 +122,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - `queue_with_depth` drops a queued step that would put a surviving cell in a column that is neither the one it has at the start of the queue nor the one it has at its end (test `a_queued_depth_step_keeps_every_cell_in_a_column_it_starts_or_ends_in`). A `sync` during an opening leaves the transition in flight untouched, and the claimed cell stays in its transition's column (test `a_cell_claimed_during_an_opening_stays_in_its_transition_column`).
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `drawing`, `drawing_at`, `CellTransition`, `BandPieceMotion`, `shift_to_clip`, `wrapping_cell`, `queue_with_depth`, column and row dividers, motion tests
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` and `line_frame` draw the lattice and titles from the shared clip; render tests
+- `crates/tui_pane/src/tiles/grid/` — `drawing`, `drawing_at`, `CellTransition`, `BandPieceMotion`, `shift_to_clip`, `wrapping_cell`, `queue_with_depth`, column and row dividers, motion tests
+- `crates/tui_pane/src/tiles/draw/` — `draw_placements` and `line_frame` draw the lattice and titles from the shared clip; render tests
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry
 
 **Binds later work:**
@@ -154,8 +154,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - Tests, `grid.rs`: `no_piece_in_a_closing_column_changes_height`. Tests, `draw.rs`: `a_title_is_on_screen_once_while_its_cell_moves_{right_and_columns_stay, right_and_a_column_closes, left_and_its_column_closes, left_and_columns_stay}`, `an_empty_cell_number_is_on_screen_once_while_it_moves_*` with the same four endings, and `a_departing_cell_keeps_its_title_while_its_border_is_visible`. One test per crossing arrangement keeps each well under a second.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — motion states, `TileDrawing`, `TilePiece`, `PieceName`, `piece_name`, closing-column test
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` reads the name role, `name_row_is_visible`, name-once render tests
+- `crates/tui_pane/src/tiles/grid/` — motion states, `TileDrawing`, `TilePiece`, `PieceName`, `piece_name`, closing-column test
+- `crates/tui_pane/src/tiles/draw/` — `draw_placements` reads the name role, `name_row_is_visible`, name-once render tests
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` Fixed entry
 
 **Binds later work:**
@@ -212,12 +212,12 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - **Status line.** Whole items only, grouped in the private `StatusLineItems` and fitted by `fitted_right_spans` and `fitted_left_spans`: the globals (` ? shortcuts`) while they fit with their one trailing cell; notes in front of them from the last note backwards; the left block only when it fits whole with one cell between, keeping the uptime and dropping navigation first; the centre only when it fits whole between them.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `set_min_tile_width`, `holds_in`, `GridDisplay`, `summary_alone_drawing`, `cell_at`, `cycle_focus`.
-- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/host.rs` — readout row and candidates; keys and clicks while the summary is alone.
+- `crates/tui_pane/src/tiles/grid/` — `set_min_tile_width`, `holds_in`, `GridDisplay`, `summary_alone_drawing`, `cell_at`, `cycle_focus`.
+- `crates/tui_pane/src/tiles/draw/`, `crates/tui_pane/src/tiles/host.rs` — readout row and candidates; keys and clicks while the summary is alone.
 - `crates/tui_pane/src/bar/status_line.rs` — whole-item fit and its test module.
 - `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs` — marked border title, `TITLE_ELISION`.
 - `crates/cargo-tile/src/render.rs`, `constants.rs`, `app.rs`, `shim_registration/app_scenarios.rs` — the summary at every width, `MIN_CELL_WIDTH` and `ELISION`, the floor call, two readout tests.
-- `crates/cargo-handler/src/render.rs` — test-only golden for the status line (`OVERLAY_STATUS`).
+- `crates/cargo-handler/src/render/mod.rs` — test-only golden for the status line (`OVERLAY_STATUS`).
 - `crates/cargo-tile/README.md` (`[tiles]`), `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — the floor and the summary alone.
 
 **Binds later work:** `TileGrid::set_min_tile_width` is public and is the only public item here; `holds_in` is crate-private; `drawing_at` is the one place that answers the summary alone, and `fits` is the one test that opens a cell. cargo-tile's `MIN_CELL_WIDTH = 40` is the width every command cell can count on. cargo-tile has one glyph constant, `ELISION` (`SUMMARY_TEXT_ELISION`, `TABLE_NO_COLUMNS_MARKER` and `ANCESTRY_ELISION` are gone), and directory headings and ancestry in command cells mark with it; `tui_pane` has `TITLE_ELISION`. `elide_summary_end` / `elide_summary_start` are the summary's shorteners. The toast and status line contrast work builds on `StatusLineItems` / `fitted_right_spans` / `fitted_left_spans`. `ReadoutRow::{Reserved, CellTooSmall}` decides whether a cell has a readout row, and no readout function returns a bare `Option<Rect>`. A command refused a cell stays counted in the summary until `sync` opens it; the cell height floor keeps that rule.
@@ -234,41 +234,45 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 #### As-built
 
 - **Headings.** `PathGroup::fitted_heading` draws a directory heading whole or shortened with `…` at its head. It tries, in order: the whole heading; `[account] …/rest` (`component_heading`); `[account] …tail` (`tail_heading`, a tail of at least `HEADING_MIN_TAIL` = 8 cells); the same two without the account; the empty string. `heading_prefix` builds the account part.
-- **Wrapping.** `Wrap::push` in cargo-tile's `wrap.rs` breaks an overlong word after any character of `WRAP_BREAK_AFTER = "/-=_.:,"`, else where it runs out.
+- **Wrapping.** `BoundaryWrap::push` in `crates/tui_pane/src/wrap.rs` wraps by display cells.
+  It preserves graphemes and uses supported punctuation boundaries for long words.
 - **Ancestry.** `mark_ancestry_cut` ends a block cut by its row budget in `…`: appended when a cell is free, else in place of the last cell. A level with fewer than `ANCESTRY_MIN_COMMAND_WIDTH` = 8 cells for its command draws its pid alone.
 - **Table gaps.** `table_column_spacing(width, constraints, columns, command_width)` tightens the gaps between columns before a command wraps; `longest_command_width` and `command_line_width` measure the command.
-- **Toasts.** cargo-tile and cargo-handler draw toasts inside their body rectangle, above the status line, by calling `Renderable::render(&mut app.framework.toasts, frame, body, &ToastsRenderCtx { now, pane_focus_state: PaneFocusState::Inactive })`. A card is as tall as its wrapped body (`drawn_line_count` and `drawn_input_line_count` in `toasts/body.rs`, plus an action row), and `render_body_elision` draws `…` at the end of its last visible row when it is cut.
+- **Toasts.** cargo-tile and cargo-handler draw toasts inside their body rectangle, above the status line, by calling `Renderable::render(&mut app.framework.toasts, frame, body, &ToastsRenderCtx { now, pane_focus_state: PaneFocusState::Inactive })`. A card is as tall as its wrapped body (`wrapped_line_count` and `wrapped_lines` in `toasts/body.rs`, plus an action row), and the shared body wrapper marks hard word cuts with `…`.
+  The bottom border reports hidden body rows.
 - **The mark.** `TITLE_ELISION` is now `ELISION` in `pane/constants.rs`, with `pub(crate) const PaneFrame::ELISION` beside it.
 - **Default Light.** The title ink is `Rgb(137, 86, 0)`, 4.51 to 1 on the status line's `Rgb(220, 220, 220)`. `status_line_text_meets_contrast_in_every_built_in_theme` holds every RGB ink to `MIN_STATUS_LINE_TEXT_CONTRAST` = 4.5.
 
 **Files:**
 - `crates/cargo-tile/src/render.rs` — headings, the ancestry mark, table gaps, the toast call
-- `crates/cargo-tile/src/wrap.rs` — boundary breaks
+- `crates/tui_pane/src/wrap.rs` — shared boundary breaks and display-cell measurement
 - `crates/cargo-tile/src/constants.rs` — `HEADING_MIN_TAIL`, `WRAP_BREAK_AFTER`, `ANCESTRY_MIN_COMMAND_WIDTH`, the test-only contrast floor
 - `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/default_light.toml` — the title ink
 - `crates/tui_pane/src/toasts/body.rs`, `crates/tui_pane/src/toasts/toast.rs` — the drawn line count and card height
 - `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` — the cut mark and its tests
-- `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/overlays/mod.rs`, `crates/tui_pane/src/lib.rs` — no `render_toasts`
+- `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/overlays/mod.rs`, `crates/tui_pane/src/lib.rs` — shared `render_toasts` export
 - `crates/tui_pane/src/pane/constants.rs`, `crates/tui_pane/src/pane/frame.rs` — `ELISION`
-- `crates/cargo-handler/src/render.rs` — the toast call
+- `crates/cargo-handler/src/render/mod.rs` — the toast call
 
-**Binds later work:** The review-repairs phase starts from these names: `fitted_heading`, `tail_heading` and the test `a_directory_heading_keeps_the_most_informative_marked_tail`; `Wrap` and `WRAP_BREAK_AFTER`; `command_line_width`; `Toast::target_height(&ToastSettings)`, `drawn_line_count` and `drawn_input_line_count`; `PaneFrame::ELISION`; the two `Renderable::render` call sites; `status_line_text_meets_contrast_in_every_built_in_theme`. Public `tui_pane::render_toasts` does not exist. The cell phase's cut-row mark is the one `mark_ancestry_cut` draws, and its empty-column rule extends `table_column_spacing`.
+**Binds later work:** The review-repairs phase starts from these names: `fitted_heading`, `tail_heading` and the test `a_directory_heading_keeps_the_most_informative_marked_tail`; `BoundaryWrap` and `WRAP_BREAK_AFTER`; `command_line_width`; `Toast::target_height(card_width)`, `wrapped_line_count` and `wrapped_lines`; `PaneFrame::ELISION`; the two `Renderable::render` call sites; `status_line_text_meets_contrast_in_every_built_in_theme`. Public `tui_pane::render_toasts` is re-exported from `overlays/frame_tail.rs`. The cell phase's cut-row mark is the one `mark_ancestry_cut` draws, and its empty-column rule extends `table_column_spacing`.
 
 **Gotchas:**
-- A card's height is counted at the configured width before `render` has an area, so a card drawn narrower is cut and marked though rows are free.
-- `Wrap::push` takes any boundary, so a flag's dashes can stand alone on a row at narrow widths (`--` / `workspac` / `e`).
+- Card height and body wrapping use the actual allocated width.
+- Shared wrapping uses meaningful punctuation boundaries and marked toast word cuts.
+  See the [current wrapping contract](../tui_pane/as-built/toast-visual-deadline.md).
 - `tail_heading` caps the tail one cell short of the last component, so a heading that fits exactly loses a letter.
 - The contrast test skips named colours; Default Dark's status line is unmeasured.
-- The toast line count is a copy of ratatui 0.30.2's word wrapper and drifts if that wrapper changes.
+- Toast measurement and drawing use the same shared wrapper.
 - `elide_summary_start` exists only under `#[cfg(test)]`.
 
-**Ruled out:** counting wide characters as two cells (the crate counts one cell per character throughout); renaming grid.rs's private `Grid`.
+**Constraint:** retain the private grid type name.
+Shared wrapping measures display cells, including wide graphemes.
 
 ### Phase 7 — Review repairs: wrapping, headings and the toast  · status: done
 
 #### As-built
 
-- One boundary-aware wrapper lives in `tui_pane`: public `tui_pane::wrapped(spans, width) -> Text<'static>` collapses whitespace; crate-private `wrapped_preserving_whitespace` keeps whitespace runs for toast bodies, whose columns depend on padded labels. A boundary is taken after a character of `WRAP_BREAK_AFTER = "/-=_.:,"` only when the head it leaves fills at least half a line; a word on a line already holding text moves to a fresh line first, and a broken word's tail shares its continuation line with the words after it. Words carry a `WordSeparator { None, Indentation, BreakPoint }`. cargo-tile's own `wrap.rs` is gone.
+- One boundary-aware wrapper lives in `tui_pane`: public `tui_pane::wrapped(spans, width) -> Text<'static>` collapses whitespace; crate-private `wrapped_toast` keeps whitespace runs for toast bodies, whose columns depend on padded labels. A boundary is taken after a character of `WRAP_BREAK_AFTER = "/-=_.:,"` only when the head it leaves fills at least half a line; a word on a line already holding text moves to a fresh line first, and a broken word's tail shares its continuation line with the words after it. Words carry a `WordSeparator { None, Indentation, BreakPoint }`. cargo-tile's own `wrap.rs` is gone.
 - `command_line_width` measures program and arguments joined by one space, as drawn.
 - `fitted_heading` tries the whole heading, `[account] …/rest`, `…/rest`, `[account] …tail`, `…tail`, then the empty string; `tail_heading` may keep the whole last component. `elide_summary_start` is gone.
 - Ancestry: `ancestry_levels(ancestry, budget)` returns `AncestryLevel::AncestorAfterElision` for the nearest ancestor after a cut, so one row draws `… <nearest>` and two rows draw the elision row and the nearest; `ancestry_fit` keeps first, elision and last. `mark_ancestry_cut` marks a cut line.
@@ -285,14 +289,15 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - `crates/tui_pane/src/toasts/render/card.rs`, `drawing.rs` — padding, full width, clamped clear, buffer tests.
 - `crates/tui_pane/src/overlays/frame_tail.rs`, `lib.rs` — `render_toasts`, `wrapped`.
 - `crates/cargo-tile/src/render.rs` — callers, headings, ancestry levels.
-- `crates/cargo-handler/src/render.rs` — the `render_toasts` call.
+- `crates/cargo-handler/src/render/mod.rs` — the `render_toasts` call.
 - `crates/cargo-tile/src/theme/builtins.rs`, `themes/default_dark.toml`, `themes/default_light.toml` — status colours and the contrast test.
 
 **Binds later work:** toasts draw inside `frame_inner(body)` through `render_toasts`, and `toast_card_width` is the one place a card's width is decided (the toast gap changes it). `AncestryLevel::AncestorAfterElision` and `mark_ancestry_cut` are the ancestry cut mark that table marks reuse.
 
 **Gotchas:** contrast is measured from the capture's cell colours, never from PNG pixels, where anti-aliasing blends the ink. The moved `#[expect(clippy::expect_used, reason = "tests should panic on unexpected values")]` lives in `crates/tui_pane/src/wrap.rs`.
 
-**Ruled out:** counting wide characters as two cells (one cell per character); renaming `ToastDrawAreaWidth` (it stores the area width it names).
+**Constraint:** retain `ToastDrawAreaWidth` as the drawn-area width state.
+Shared wrapping measures display cells, including wide graphemes.
 
 ### Phase 8 — A cell shows a process or is not drawn  · status: done
 
@@ -305,7 +310,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - Toasts keep one cleared cell on each side (`TOAST_SIDE_GAP`) inside `frame_inner(body)`. `toast_card_width` subtracts both gaps, so wrapping, height and entrance timing count the drawn width. `join_adjacent_frame_columns` turns a covered frame tee into `│` only on a side whose gap touches the area edge.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — the height floor and shared-run apportioning, with their tests.
+- `crates/tui_pane/src/tiles/grid/` — the height floor and shared-run apportioning, with their tests.
 - `crates/tui_pane/src/toasts/manager.rs`, `toasts/render/layout.rs`, `toasts/render/card.rs`, `toasts/render/drawing.rs`, `crates/tui_pane/src/constants.rs` — the toast gap and frame joins.
 - `crates/cargo-tile/src/render.rs` — table continuation marks, empty columns, heading admission, render tests.
 - `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/constants.rs` — `MIN_CELL_HEIGHT` and its call.
@@ -346,10 +351,10 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - `draw::content_area` is `pub(super)`.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `shares`, `summary_share`, `summary_depth`, `shares_with_row_usage`, `measure_row_steps`, the measurement cache, tests.
+- `crates/tui_pane/src/tiles/grid/` — `shares`, `summary_share`, `summary_depth`, `shares_with_row_usage`, `measure_row_steps`, the measurement cache, tests.
 - `crates/tui_pane/src/tiles/settings.rs` — exact and stepped demand.
 - `crates/tui_pane/src/tiles/constants.rs` — `SUMMARY_SLOT_SHORTFALL_DIVISOR`.
-- `crates/tui_pane/src/tiles/draw.rs` — `TileCells::rows_drawn`, the probe call, render tests.
+- `crates/tui_pane/src/tiles/draw/` — `TileCells::rows_drawn`, the probe call, render tests.
 - `crates/cargo-tile/src/render.rs` — rows-drawn answers and buffer tests.
 
 **Binds later work:** allocation compares rows a cell draws (`rows_drawn`), never rows given; any view choice or frame pipeline serves that answer and the per-frame measurement cache.
@@ -369,8 +374,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Files:**
 - `crates/tui_pane/src/app_config/tile_view.rs` — `TileView`, its spelling and stepping.
-- `crates/tui_pane/src/tiles/grid.rs` — `held_display`, `set_view`, `SummaryProbeDemands`, summary probes in `measure_row_steps`, `commit_display`, view tests.
-- `crates/tui_pane/src/tiles/draw.rs` — demands at both widths, the committed view's widths, render tests.
+- `crates/tui_pane/src/tiles/grid/` — `held_display`, `set_view`, `SummaryProbeDemands`, summary probes in `measure_row_steps`, `commit_display`, view tests.
+- `crates/tui_pane/src/tiles/draw/` — demands at both widths, the committed view's widths, render tests.
 - `crates/tui_pane/src/tiles/settings.rs`, `crates/tui_pane/src/tiles/constants.rs` — `TileSettings::view`, `AUTO_VIEW_RETURN_MARGIN`.
 - `crates/tui_pane/src/app_settings/{step,rows,constants}.rs` — the `view` row.
 - `crates/{cargo-tile,cargo-handler}/src/{config,settings,render}.rs` — `[tiles] view`, the row, the `set_view` call.
@@ -392,8 +397,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - `TileGrid::set_draw_layout` (`pub(super)`, called by `draw_tile_grid`): an area change mid-motion ends the step in flight at its destination, which draws inside the new area; returning to the source area does not resume it.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — the two-pass probe, the band divider solver, `MotionHeightPath`, `LastSettledCellGeometry`, the frame cache, `set_draw_layout`, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — `TileCells::rows_kept`, both answers passed to `measure_row_steps`, the `set_draw_layout` call, render tests.
+- `crates/tui_pane/src/tiles/grid/` — the two-pass probe, the band divider solver, `MotionHeightPath`, `LastSettledCellGeometry`, the frame cache, `set_draw_layout`, tests.
+- `crates/tui_pane/src/tiles/draw/` — `TileCells::rows_kept`, both answers passed to `measure_row_steps`, the `set_draw_layout` call, render tests.
 - `crates/tui_pane/src/tiles/constants.rs` — `MOVING_HEIGHT_PROBE_STEP` and the test probe counts.
 - `crates/cargo-tile/src/render.rs` — `rows_kept`, the shared measurement, the lone ancestry row, buffer tests.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed lines.
@@ -419,8 +424,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - **Endpoint measurement.** The shared endpoint row measurement, which serves settled frames too, gives an unused content row beside a cutting column mate to a mate that can paint it (`has_content_gap_beside_cut`, `grows_content`, `frame_painted_rows`), through a second `Grid::with_rows_kept` pass in that case only, so a motion ends on the layout it rests on. `with_rows_kept`, `serve_exact_shortfalls` and `spare_rows` are unchanged. Test: `no_piece_rests_on_a_row_it_cannot_fill_while_a_mate_cuts_content`.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — the step queue, the motion source, the moving-height search, the endpoint measurement and their tests; `DestinationDepthStatus`, `DemandSync`, `CandidateSpareState` and `SpareRowPreference` are private to its queue and candidate scoring.
-- `crates/tui_pane/src/tiles/draw.rs` — the line rule for a bodiless piece and the render tests.
+- `crates/tui_pane/src/tiles/grid/` — the step queue, the motion source, the moving-height search, the endpoint measurement and their tests; `DestinationDepthStatus`, `DemandSync`, `CandidateSpareState` and `SpareRowPreference` are private to its queue and candidate scoring.
+- `crates/tui_pane/src/tiles/draw/` — the line rule for a bodiless piece and the render tests.
 - `crates/tui_pane/src/tiles/constants.rs` — test values; `SEVEN_CELL_MOVING_ROW_PROBE_COUNT` is 29.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — the Fixed and Changed lines under `## [Unreleased]`.
 - `docs/cargo-tile/as-built/summary-depth.md` — a key's depth change is part of that key's one motion.
@@ -446,8 +451,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 **Files:**
 - `crates/cargo-tile/src/render.rs` — the staged column grids, the process table plan, the right inset, the drop rule, the hidden-rows mark and their tests.
 - `crates/cargo-tile/src/constants.rs` — `CONTENT_RIGHT_INSET` and `TABLE_CONTINUATION_CLEARANCE`.
-- `crates/tui_pane/src/tiles/grid.rs` — cell layout, motion and the frame's row budget: the content retarget and the filled-path search.
-- `crates/tui_pane/src/tiles/draw.rs` — drawing of moving and settled pieces, and the render tests.
+- `crates/tui_pane/src/tiles/grid/` — cell layout, motion and the frame's row budget: the content retarget and the filled-path search.
+- `crates/tui_pane/src/tiles/draw/` — drawing of moving and settled pieces, and the render tests.
 - `crates/tui_pane/src/tiles/constants.rs` — motion and floor constants, and test values.
 - `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — the Changed line and the Fixed line under `## [Unreleased]`.
 
@@ -461,25 +466,30 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 #### As-built
 
-- A toast body is a list of styled runs, each with its own line-break policy: `ToastRun` and `RunBreaks::{AtSpaces, Never}`, wrapped by `wrap::wrapped_runs`. A `RunBreaks::Never` run moves whole to the next line; one wider than the line is cut and marked with `…`. The policy is set by the caller building the `ToastRun` and lasts as long as the toast. The public `ToastBody` keeps its variants and methods, text bodies draw as before, and `ToastView` carries the body as the named `ToastRenderBody` in place of the `Option` `body_line_colors`.
+- `ToastRun` supplies styled text and `RunBreaks::{AtSpaces, Never}`.
+  `wrap::wrapped_toast_runs` measures and draws these runs with marked word cuts.
+  A Never run moves whole when it fits a fresh row.
+  An oversized indivisible run cuts with `…`.
+  `ToastView` carries the named `ToastRenderBody` used for measurement and drawing.
 - The first-run capture toast's body is plain words: no backticks, no shim mechanics, the toolchain name kept. Its undo command `cargo tile uninstall` is drawn in a highlight ink and stays whole on one line at 200, 64 and 40 columns.
 - One wrapper serves toast bodies and cargo-tile's table cells (`process_row`). A word that does not fit the rest of a line moves whole to a fresh line when it fits there; only a word longer than a whole line breaks, after a hyphen if it has one, else at the width.
 - A toast card keeps one cleared row above, below and between cards, and one cleared cell each side (`TOAST_SIDE_GAP`); the frame's border is untouched.
 
 **Files:**
-- `crates/tui_pane/src/wrap.rs` — the wrapper: public `wrapped`, crate-private `wrapped_runs` and `wrapped_preserving_whitespace`; tests `adjacent_spans_are_separate_words_joined_by_one_space` and `a_hyphenated_word_moves_whole_when_it_fits_a_fresh_line`.
+- `crates/tui_pane/src/wrap.rs` — the wrapper: public `wrapped`, crate-private `wrapped_toast_runs` and `wrapped_toast`; tests `adjacent_spans_are_separate_words_joined_by_one_space` and `a_hyphenated_word_moves_whole_when_it_fits_a_fresh_line`.
 - `crates/tui_pane/src/toasts/body.rs` — `ToastRun`, `RunBreaks`; test `a_nonbreaking_run_moves_whole_to_the_next_line`.
 - `crates/tui_pane/src/toasts/render/` — the card's cleared margins, `TOAST_ROW_GAP` in `crates/tui_pane/src/constants.rs` beside `TOAST_SIDE_GAP`; test `a_toast_keeps_one_cleared_row_above_and_below` in `drawing.rs`.
 - `crates/cargo-tile/src/capture.rs` — the capture toast's words; test `the_capture_toast_names_its_undo_command_on_one_line` at card widths 36 and 58. The title at line 56 still names the shim, and its test is at line 189.
 
 **Binds later work:**
-- `wrapped` treats every span boundary as a word boundary and joins words with one unstyled space; `wrapped_runs` keeps a word whole across a style change. cargo-tile's command cells depend on the first: `crates/cargo-tile/src/render.rs` ~3084 gives a program and its arguments as two spans with no whitespace between them, and joining them draws `cargocheck`.
+- `wrapped` treats every span boundary as a word boundary and joins words with one unstyled space; `wrapped_toast_runs` keeps a word whole across a style change. cargo-tile's command cells depend on the first: `crates/cargo-tile/src/render.rs` ~3084 gives a program and its arguments as two spans with no whitespace between them, and joining them draws `cargocheck`.
 - Any edit to `wrap.rs` runs cargo-tile's suite as well as `tui_pane`'s: only cargo-tile's tests fail when the span rule breaks (35 of 832).
 - The hyphen break changes how many rows a long path takes in an ancestry level, so a test that counts wrapped ancestry rows measures with the wrapper, never by length.
 - The frame check of the toast in motion at 64 and 200 columns, and of the workload that starts and stops projects on a key, has not run against this wrapper; the acceptance gate of "Readable inks, and a foot that fades" owns it, with its inputs and the seat that repairs a worse result.
 
 **Gotchas:**
-- The wrapper counts characters, not terminal cells (`cell_count`), so double-width text is measured short.
+- `cell_count` measures terminal display cells.
+  `split_at_cells` preserves graphemes and their source byte offsets.
 - `ancestry_fit` (`crates/cargo-tile/src/render.rs` ~1500) counts levels, not rows, and the mark takes a counted place: a chain with a multi-row level can leave a blank row above the foot while hiding a level it had room for.
 - A hidden summary row sizes the frame's column grid, so a row nobody sees can drop `cpu` and `mem`.
 
@@ -501,8 +511,8 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/*.toml` — per-theme inks and family colours.
 - `crates/cargo-tile/src/constants.rs` — `FAMILY_COLOR_CLEARANCE`.
 - `crates/cargo-tile/src/render.rs` — ink use and the cell and summary fade answers; `roster.rs` — test fixture.
-- `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/*.toml` — shared theme roles.
-- `crates/tui_pane/src/tiles/draw.rs` — `CellReadoutFade`, `CellFadeProgress`, the faded foot and readout inks; exported from `tiles/mod.rs` and `lib.rs`.
+- `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/themes/*.toml` — shared theme roles.
+- `crates/tui_pane/src/tiles/draw/` — `CellReadoutFade`, `CellFadeProgress`, the faded foot and readout inks; exported from `tiles/mod.rs` and `lib.rs`.
 
 **Gotchas:** A per-channel colour distance cannot separate dark saturated inks from a dark grey label on a light ground; hue and saturation can. Any theme change must keep five family colours clear of the reserved inks. A pid takes its family colour only while its family's child rows are drawn.
 
@@ -521,7 +531,7 @@ Test-only changes; nothing a user sees changed, and every shortened test asserts
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/{parallel_cases.rs, reader_scenario.py, reader_scenarios.rs, shared_capture.rs, wire.rs}`, `crates/cargo-tile/tests/shim_modes.rs` — shim registration test harness and its tests.
-- `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/tiles/grid.rs` — the two `tui_pane` tests.
+- `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/tiles/grid/` — the two `tui_pane` tests.
 
 **Binds later work:** the port of the unchanged-mates grid test keeps its step sampling and its per-frame measurement through the frame preparation. The two reader scenarios still over a second have a measured floor in the real reader's startup (release to first full frame ~0.51 s, to CPU rows ~0.44 s more, before the fixed 0.25 s observation); the slow-tests-first phase measures them and proposes a reader-startup speedup if they stay over a second on a quiet machine.
 
@@ -571,7 +581,7 @@ Each command shows its own reading once, a cut ancestry has one inline form, and
 **Files:**
 - `crates/cargo-tile/src/render.rs` — summary and cell tables, ancestry, readings, marks, session column widths, family links, tests.
 - `crates/cargo-tile/src/census/command_text.rs` — Short and Long command text, `CargoProfile`.
-- `crates/cargo-tile/src/census/scan.rs` — `AncestryWalk`, the `nu` classification.
+- `crates/cargo-tile/src/census/scan/` — `AncestryWalk`, the `nu` classification.
 - `crates/cargo-tile/src/{roster,capture,terminal,constants}.rs`, `shim_registration/rows_readout.rs` — walk outcome, title, shell and wrapper lists, fixtures.
 - `crates/tui_pane/src/tiles/{draw,mod}.rs`, `src/lib.rs` — `CellContentExtent`, `content_extent`, `readout_rows`, exports.
 
@@ -645,7 +655,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - `crates/cargo-tile/src/roster.rs` — `VisibleRoster`, `Roster::visible`, `TrackedGroup::without_hidden_descendants`, visible-only family assignment, tests.
 - `crates/cargo-tile/src/render.rs` — readers take `&VisibleRoster`; the list is no longer threaded through `Cells`.
 - `crates/cargo-tile/src/census/command_text.rs`, `constants.rs` — subcommand reading, `is_hidden`, the valued-option table.
-- `crates/cargo-tile/src/census/scan.rs` — `subtree_resource_totals` shared with the roster.
+- `crates/cargo-tile/src/census/scan/` — `subtree_resource_totals` shared with the roster.
 - `crates/cargo-tile/src/{config,settings}.rs`, `shim_registration/reader_scenarios.rs` — key, fallback, retired key, settings row, fixtures.
 - `crates/tui_pane/src/app_config/{identity,loaded}.rs` — retired-key removal on write.
 - `crates/cargo-tile/{README,CHANGELOG}.md`, `crates/tui_pane/CHANGELOG.md`.
@@ -675,7 +685,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 
 **Spec:**
 
-1. **Cause.** The `tui_pane` grid steps through a queue of arrangements, 720 ms each (`TILE_ANIMATION_MILLIS`, `crates/tui_pane/src/tiles/constants.rs` ~199), up to `MAX_PENDING_STEPS` (64, ~214). `sync_demands` (`crates/tui_pane/src/tiles/grid.rs` ~2023) starts from `self.target()` (~2305), the last queued step, and closes the groups that ended only there, at the back of the queue. An ended command's cell waits, empty, behind the whole backlog.
+1. **Cause.** The `tui_pane` grid steps through a queue of arrangements, 720 ms each (`TILE_ANIMATION_MILLIS`, `crates/tui_pane/src/tiles/constants.rs` ~199), up to `MAX_PENDING_STEPS` (64, ~214). `sync_demands` (`crates/tui_pane/src/tiles/grid/` ~2023) starts from `self.target()` (~2305), the last queued step, and closes the groups that ended only there, at the back of the queue. An ended command's cell waits, empty, behind the whole backlog.
 2. **An ended command cannot sit in a queued step, by construction** (showrunner's type rule). On each sync the queued steps hold only live ids: for example, a trimmed step type whose slots can hold only ids present in the current demands, built when the demands arrive. No after-the-fact filter at drawing or advance.
 3. **cargo-tile withdraws at once** (`crates/cargo-tile/src/roster.rs`). An ended command's group starts leaving the grid on the scan that sees it end; its text fade and its cell's shrink then run together on item 9's one timing, so there is no separate withdrawal at a shortened fade.
 4. **Test, red first:** `a_command_that_ends_mid_backlog_leaves_the_grid_on_the_next_motion`: a grid with a backlog of queued steps, one of whose commands ends; the next motion closes its cell, and no frame after that motion draws it. Phase 36's motion rewrite keeps this test as a binding regression (its Constraints and gate say so).
@@ -683,7 +693,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 **The cell closes with its fade** (user, 2026-10-18: "tiles still close AFTER their text fades away instead of with their text fading away"). An ended cell's close runs on the same clock as its text fade: its height goes down from the first fade frame, and the cell and its text reach zero on the same terminal frame. A cell never stands at full height with faded text, and never closes after its fade has finished. Tolerance (showrunner, 2026-10-20): a close one or two alpha steps early after a single frame gap of up to 33 ms is not a break.
 
 6. **A new command enters the grid only when it has rows to draw.** From the user (2026-10-18): "if a command finishes before it gets a cell - abandon trying to draw the cell". A waiting command that ends before it is placed never gets a cell, an opening or a fade; it leaves the waiting set on the frame its end is seen. From the user (2026-10-16, relayed by the showrunner): "i think that new cells appear to show no content rows and then to show content rows and that's just the life cycle but probably we shouldn't start adding them to the grid until we're ready to add them to the grid". Today a new command's cell opens and grows while its foot still reads `content rows: 0`, and its rows arrive later. Rule (showrunner's ruling, 2026-10-16): a cell enters the grid only once it has a content row to draw. Before that it gets no slot, no opening motion and no share of the column height, so its first frame already holds its content. A placed cell that drops back to zero content rows leaves the way an ended command does (items 1 to 3). By construction, per the user's type rule: a waiting command and a placed cell are separate types, and a placed cell is built only from at least one content row together with an allocation that draws it (its border, its foot and one content row: its first drawable allocation), so a placed cell with no drawable content cannot be represented; never a filter at drawing. Its opening starts at that first drawable allocation, never border-only, so its first visible frame holds a content row. A vacant cell opened by `+` is a separate, intentional state (it shows its cell number) and keeps its own opening. On departure a leaving cell owns its last drawable rows until its terminal frame: it is erased on the frame its allocation can no longer draw a content row, and its neighbours take those rows on that frame. Test, red first, named for the behavior (for example `a_new_command_joins_the_grid_with_its_first_row`): a command with no rows yet opens no cell and takes no column height; once its first row arrives, the cell opens and no frame draws it with zero content rows; a second test, `a_cell_that_loses_its_last_row_leaves_the_grid`, pins the drop back to zero; a third, `a_new_cells_first_visible_frame_draws_a_content_row`, reads the buffer on the cell's first visible frame and finds a content row there. Hidden is not a departure (Phase 21's rule, hidden always): a running group whose subcommand the user adds to `commands.hidden` in settings is withdrawn at once. `Roster::visible` drops it before every reader, so on the next frame it has no cell, no row and no share of any total, with no fade, no close motion and no frame that draws its cell empty; its neighbours take its rows by the ordinary resident motion. The departure rule above (owning its last drawable rows) applies to an ended command and to a cell that drops to zero content rows, never to a hidden one. A hidden group taken off the list mid-run enters by this item's admission rule. Test, red first: `a_command_hidden_mid_run_leaves_on_the_next_frame`, a running cell whose subcommand is added to the hidden list: the next frame draws no cell, row or total for it, and no frame after the edit draws its cell.
-7. **A complete cell keeps no surplus height** (phase 20's F069, moved here). In c40x120 the last cell (heading `… 1879107 python3`, one source-cut ancestry level) draws three blank rows above its foot in a reduced fixture (one in the live capture): its demand, drawn rows and content all equal 5, yet the grid allocates 9. Measured cause (phase 20 round 24): `crates/tui_pane/src/tiles/grid.rs` ~3834 apportions the whole column height and ~3886–3911 keep the resulting shares except transfers to cells with content gains, so surplus stays in cells whose content is complete; `CellContentExtent` is not an allocation input (`draw.rs` ~393 passes it to the readout after allocation). Rule: the cap is allocation saturation, not source completeness. A cell is no taller than the smallest allocation, its borders and foot included, past which more height draws no further row, whether its content is whole or cut at its source: the archived fixture answers `CellContentExtent::CutAtSource`, yet more height reveals nothing, so a cap on source completeness would miss it. The readable floor takes precedence over the cap: a saturated cell below the floor stays at the floor. Surplus goes to a cell that can draw more, or stays as the column's free space. Likely the same cause as case B (item 5): test that first. The removed red test (`a_short_cell_with_hidden_ancestry_counts_only_drawn_rows`) is archived verbatim in `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/f069_fixture_for_phase22.md`; it uses cargo-tile's private render helpers, so restore it as a cargo-tile integration test in `crates/cargo-tile/src/render.rs`, and add a separate `tui_pane` grid regression, `a_saturated_cell_keeps_no_surplus_height`, whose cell answers `CutAtSource` and draws no further row with more height. Phase 20's allocation solver (F054: `DonorSupply`, `RecipientContentGain`, `ColumnTransfer`, `GridRowReadings` in `grid.rs`) moves rows only as donor supply that keeps protected content, with a termination measure; the repair keeps that guarantee and its two regression tests (`a_donor_whose_row_use_jumps_as_it_shrinks_keeps_its_used_content`, `a_startup_column_with_nonmonotone_row_use_finishes_sharing`).
+7. **A complete cell keeps no surplus height** (phase 20's F069, moved here). In c40x120 the last cell (heading `… 1879107 python3`, one source-cut ancestry level) draws three blank rows above its foot in a reduced fixture (one in the live capture): its demand, drawn rows and content all equal 5, yet the grid allocates 9. Measured cause (phase 20 round 24): `crates/tui_pane/src/tiles/grid/` ~3834 apportions the whole column height and ~3886–3911 keep the resulting shares except transfers to cells with content gains, so surplus stays in cells whose content is complete; `CellContentExtent` is not an allocation input (`draw.rs` ~393 passes it to the readout after allocation). Rule: the cap is allocation saturation, not source completeness. A cell is no taller than the smallest allocation, its borders and foot included, past which more height draws no further row, whether its content is whole or cut at its source: the archived fixture answers `CellContentExtent::CutAtSource`, yet more height reveals nothing, so a cap on source completeness would miss it. The readable floor takes precedence over the cap: a saturated cell below the floor stays at the floor. Surplus goes to a cell that can draw more, or stays as the column's free space. Likely the same cause as case B (item 5): test that first. The removed red test (`a_short_cell_with_hidden_ancestry_counts_only_drawn_rows`) is archived verbatim in `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/f069_fixture_for_phase22.md`; it uses cargo-tile's private render helpers, so restore it as a cargo-tile integration test in `crates/cargo-tile/src/render.rs`, and add a separate `tui_pane` grid regression, `a_saturated_cell_keeps_no_surplus_height`, whose cell answers `CutAtSource` and draws no further row with more height. Phase 20's allocation solver (F054: `DonorSupply`, `RecipientContentGain`, `ColumnTransfer`, `GridRowReadings` in `grid.rs`) moves rows only as donor supply that keeps protected content, with a termination measure; the repair keeps that guarantee and its two regression tests (`a_donor_whose_row_use_jumps_as_it_shrinks_keeps_its_used_content`, `a_startup_column_with_nonmonotone_row_use_finishes_sharing`).
 8. **Case A is checked live, not assumed.** Items 1 to 3 answer the backlog cause and item 6 the new-cell cause. If the live capture shows a cell with `content rows: 0` still drawn and growing for any other cause (a fade, a group kept for its settings, a demand never withdrawn), name that cause in the summary and repair it in this phase.
 9. **A cell leaves as its text fades, in one motion.** From the user (2026-10-16, relayed by the showrunner): "i think that tiles should start disappearing over the time frame that the text fades away - which can clip some of the text obviously if the cell is tall.  but that's fine with me.  i think it would look smoother that way rather than text disappearing and then the empty cell disappearing - tile fix can do that". Showrunner's calls: a leaving cell starts shrinking when its text starts fading, with the same duration and easing for both, and its neighbours take its space over that same time; clipping the text inside the shrinking cell is fine; there is never a frame with an empty cell. Entering mirrors it: a cell grows while its text fades in, over the same duration, and still enters only once it has a content row (item 6). This replaces item 3's separate withdrawal at a shortened fade. One timing authority, a cell's lifecycle timing (for example `CellLifecycleTiming { duration, easing }`), drives both its text alpha and its geometry, so the two cannot drift. Leaving takes the configured fade (`TilesConfig::fade()`, `crates/cargo-tile/src/config.rs` ~126: `DEFAULT_FADE_SECONDS` 3 s, up to `MAX_FADE_SECONDS` 30 s), the span the user named; entering takes the 720 ms opening (`TILE_ANIMATION_MILLIS`), with the text fading in over the same 720 ms. Resident motion keeps its 720 ms step. Tests drive the test-only motion policy with injected time; no test runs the animation at real speed. `a_leaving_cell_shrinks_on_its_text_fade` runs at a 3 s and a 30 s configured fade, and `an_entering_cell_grows_on_its_text_fade_in` at the 720 ms entry; each reads text alpha and cell height from the same frames.
 10. **Order.** Hold `grid.rs` early under this phase's reservation, so the trim lands before handler-enh's overflow phases 2–3 edit `grid.rs` and `draw.rs`.
@@ -709,9 +719,9 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
    - **Not closed by this model; moved to Phase 24 now** (showrunner ruling item 5): F036's remaining publish-path work (full refresh, `Capture::take`, attribution, without a time bound); F042's full-height grant that gives rows without a painted gain (`grid.rs` ~461) and the retained packing on minimum bodies (~5554); the short tile while cells close (d80 1.87 s, t80 11.45 s); the summary cut that hides jobs when the tile is full (t40, t80); scanner CPU and a name for each scanner thread; F040's start ink held under heavy load; the shim pid shown before the cargo pid; frame cost.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — items 1, 2 and 4: the trimmed step type and the test.
+- `crates/tui_pane/src/tiles/grid/` — items 1, 2 and 4: the trimmed step type and the test.
 - `crates/cargo-tile/src/roster.rs` — item 3 and its test.
-- `crates/tui_pane/src/tiles/draw.rs` — item 6's first drawable allocation, item 7's allocation input, item 9's text alpha on the shared timing, and wherever item 5's or item 8's measured cause lands in `tui_pane` or `cargo-tile`: the repair and its test (name the file in the summary).
+- `crates/tui_pane/src/tiles/draw/` — item 6's first drawable allocation, item 7's allocation input, item 9's text alpha on the shared timing, and wherever item 5's or item 8's measured cause lands in `tui_pane` or `cargo-tile`: the repair and its test (name the file in the summary).
 - `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — item 9's lifecycle timing and any additive export it needs.
 - `crates/cargo-tile/src/render.rs` — the F069 integration fixture (item 7), the row fade read on item 9's timing, and item 6's hidden-mid-run withdrawal test.
 - `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — item 11's one option-skipping function over `CARGO_GLOBAL_VALUED_OPTIONS`, and its test.
@@ -807,18 +817,18 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 **Landing rule:** In the paired live capture, the branch is equal to or better than main on every count of the BRANCH AGAINST MAIN table in `shots39_reply.txt` (rule a, rule b, rule c, rule e, content rows 0, blank body, F041, F044, F040, F045, F030, F035, F038, admission, longest free wait, never-drawn, census max), and on CPU per drawn cell. Also: in d80 each job is drawn within 1 s (census), and never-drawn is 0. At most 3 repair rounds. The state model is reviewed before code.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — Phase 22 items 1, 2 and 4, and item 3's F042 grant and packing.
+- `crates/tui_pane/src/tiles/grid/` — Phase 22 items 1, 2 and 4, and item 3's F042 grant and packing.
 - `crates/cargo-tile/src/roster.rs` — Phase 22 item 3, and item 1's roster projection (F030).
-- `crates/tui_pane/src/tiles/draw.rs` — Phase 22 items 5 to 9, and item 1's start ink and eviction rules.
+- `crates/tui_pane/src/tiles/draw/` — Phase 22 items 5 to 9, and item 1's start ink and eviction rules.
 - `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — Phase 22 item 9's lifecycle timing and any additive export.
 - `crates/cargo-tile/src/render.rs` — Phase 22 items 6, 7 and 9, item 1's summary cut, and item 3's per-frame draw cost.
 - `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — Phase 22 item 11 over the `Global` scope of `COMMAND_VALUED_OPTIONS`, and its test.
 - `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/hook.rs` — Phase 22 item 12's rendered skip list and pass-through.
 - `crates/cargo-tile/src/census/process_identity.rs` — F050's lifetime match proof.
-- `crates/cargo-tile/src/census/mod.rs`, `crates/cargo-tile/src/census/scan.rs` — item 3's scanner threads, their names and the publish-path time bounds.
+- `crates/cargo-tile/src/census/mod.rs`, `crates/cargo-tile/src/census/scan/` — item 3's scanner threads, their names and the publish-path time bounds.
 - `crates/cargo-tile/src/probe.rs` — item 3's per-frame draw time in `CARGO_TILE_FRAME_LOG`.
 - `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — Phase 22 item 12's pass-through test and the item 2 foreign-load fixture.
-- `crates/cargo-tile/src/tiles.rs`, `crates/cargo-handler/src/tiles.rs`, `crates/cargo-handler/src/render.rs` — ruling 2's `SummaryDemand` callers.
+- `crates/cargo-tile/src/tiles.rs`, `crates/cargo-handler/src/tiles.rs`, `crates/cargo-handler/src/render/mod.rs` — ruling 2's `SummaryDemand` callers.
 - `crates/cargo-handler/CHANGELOG.md` — one Changed line for the summary demand.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Fixed line each, and one cargo-tile Fixed line for Phase 22 items 11 and 12.
 - Added during the phase: `.config/nextest.toml`; `crates/cargo-tile/Cargo.toml` and `crates/tui_pane/Cargo.toml` (the `test-clock` feature); `crates/cargo-tile/tests/support/foreign_load.rs`, `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`; `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`; `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/birth_stamp/process_lifetime.rs`, `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`; `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`.
@@ -892,10 +902,10 @@ Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tr
 
 **Files:**
 - `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `CpuSmoothingSample` and the smoothing weight from elapsed time.
-- `crates/cargo-tile/src/census/scan.rs` — the late-scan smoothing test.
+- `crates/cargo-tile/src/census/scan/` — the late-scan smoothing test.
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the staged reader copy on macOS.
 - `crates/cargo-tile/src/shim_registration/reader_scenario.py` — the header and pid waits, the sample-span completion check, and the CPU charge check with a 1% floor.
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs` — boundary-sampled motion and draw tests; `drawing_from_destination` and `distinct_motion_steps_for_test` serve the test sampling.
+- `crates/tui_pane/src/tiles/grid/`, `crates/tui_pane/src/tiles/draw/` — boundary-sampled motion and draw tests; `drawing_from_destination` and `distinct_motion_steps_for_test` serve the test sampling.
 - `crates/tui_pane/src/runner/lifecycle.rs` — `append_panic_report` with a `Display` backtrace.
 
 **Binds later work:** In 2 of 5 full Mac runs, the reader charged about 3x the CPU of the native counters; the cause is open and belongs to "The CPU a row shows is the CPU its processes used", which starts from the strict native-counter check saved as `phases/26/strict_cpu_check.patch` in the session. "Phase 25's one-place work returns on main" rebuilds from `d22c672b` and `phases/26/on_24a_round3.patch` and keeps the reader safeguards above. The `tui_pane` sampling helpers and their assertions stay.
@@ -924,7 +934,7 @@ Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tr
 **Files:**
 - `crates/cargo-tile/src/census/cpu_observation.rs` — the test-only recorder and `CpuScanPublication`.
 - `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `observe_cpu` and the `cpu_scan_publication` field (`cfg(test)`).
-- `crates/cargo-tile/src/census/scan.rs` — the `work` and `observe_cpu` hooks.
+- `crates/cargo-tile/src/census/scan/` — the `work` and `observe_cpu` hooks.
 - `crates/cargo-tile/src/census/mod.rs` — the `cpu_observation` module (`cfg(test)`).
 - `crates/cargo-tile/src/terminal.rs` — `Scan::cpu_scan_publication` and the `accept` call in `drain_scans`.
 - `crates/cargo-tile/src/app.rs` — the `publish_frame` call in `App::draw`.
@@ -1303,7 +1313,7 @@ Preserve every Phase 26 and Phase 27 assertion. Preserve the Phase 24 exhaustive
 **Landing rule:** Phase 25's, unchanged. At most 3 repair rounds.
 
 **Constraints from prior phases:** Phase 25's Constraints hold, with these exclusions from the rebuild sources:
-- **No grid destination reuse.** Phase 26 restored the resolve calls: `measure_moving_height_rows` and `select_moving_heights` (`crates/tui_pane/src/tiles/grid.rs`) each call `drawing_at_with_height_snap`, which resolves the destination after this pass's row measurements. `on_24a_round3.patch` passes one destination resolved before the measurements into both (`drawing_from_destination(…, destination)`). That change is not restored. It can return only with an equivalence proof: a test that compares the reused destination with a fresh resolve after the measurements, on each frame of the motion fixtures, and fails when they differ. No test fails with the reuse today (`phases/26/review_findings_2.txt` F001). `drawing_from_destination` and `distinct_motion_steps_for_test` stay as Phase 26 left them, for the test sampling.
+- **No grid destination reuse.** Phase 26 restored the resolve calls: `measure_moving_height_rows` and `select_moving_heights` (`crates/tui_pane/src/tiles/grid/`) each call `drawing_at_with_height_snap`, which resolves the destination after this pass's row measurements. `on_24a_round3.patch` passes one destination resolved before the measurements into both (`drawing_from_destination(…, destination)`). That change is not restored. It can return only with an equivalence proof: a test that compares the reused destination with a fresh resolve after the measurements, on each frame of the motion fixtures, and fails when they differ. No test fails with the reuse today (`phases/26/review_findings_2.txt` F001). `drawing_from_destination` and `distinct_motion_steps_for_test` stay as Phase 26 left them, for the test sampling.
 - **No strict CPU comparison from the patch.** The patch's native counter check in `reader_scenario.py` (`native_cpu_seconds` and its tolerance against the compiler pid) is not restored. The CPU check is the one Phase 27 landed (`NativeCpuHistory`, `NativeCpuOracle`, `UniqueProcessContributions`, `FixtureCpuOwnership`, `stopped_compiler_cpu` in `reader_scenario.py`); the patch's other reader script changes merge onto it.
 - **Phase 27's test-only CPU recorder stays, with each hook.** Phase 27 changed no product accounting. It added `crates/cargo-tile/src/census/cpu_observation.rs` (`#[cfg(test)]`) and this chain: `cpu_observation::work(pid, identity, &work, evidence)` in `census/scan.rs`'s attribution loop, before accounting consumes the counters → `InvocationCpuAccounting::observe_cpu` (`census/invocation_cpu_accounting.rs`) → `InvocationMeasurements::cpu_scan_publication` (`CpuScanPublication::{Unobserved, Observed(u64)}`) → `Scan::cpu_scan_publication` (`terminal.rs`) → `cpu_observation::accept` in `drain_scans` → `cpu_observation::publish_frame()` in `App::draw` (`app.rs`), which writes the OSC 777 `cargo-tile-cpu` stamp. `d22c672b` builds `InvocationMeasurements` in `AttributedInvocations::for_census` (`census/scan.rs`) and can reuse an older attribution result for a newer census. The rebuild carries the stamp of the scan that measured the CPU values through that reuse, so a newly published census never stamps retained CPU values with another scan's id. Test, red first: `a_reused_attribution_keeps_its_measurement_stamp` (supplied scans: a census published on a reused attribution carries the reused result's `CpuScanPublication`).
 - **Phase 26's reader safeguards stay:** the staged reader copy on macOS (`reader_scenarios.rs`), the reporting-window span in `cpu_observation_is_complete`, the readiness waits on table headers and native pids, and the elapsed-weighted CPU smoothing with its test `a_late_cpu_scan_keeps_the_configured_smoothing_window`.
@@ -1313,7 +1323,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 **Acceptance gate:** as Phase 25, plus item 3's times before and after in the Outcome. Every Phase 26 and Phase 27 test passes unchanged on the landed tree, the five `reader_cpu_oracle_*` tests and `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` included. `a_reused_attribution_keeps_its_measurement_stamp` fails before the stamp is carried through `for_census` and passes after.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/Cargo.toml` — the lifecycle motion and draw changes, their exports and the `test-clock` feature.
+- `crates/tui_pane/src/tiles/grid/`, `crates/tui_pane/src/tiles/draw/`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/Cargo.toml` — the lifecycle motion and draw changes, their exports and the `test-clock` feature.
 - `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/invocation_frame.rs`, `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/probe.rs` — one place for each invocation, the render capacity cache and the frame cost.
 - `crates/cargo-tile/src/app.rs` — keep the test-only `cpu_observation::publish_frame()` call in `App::draw`.
 - `crates/cargo-tile/src/census/` — the census, process identity and refresh changes.
@@ -1330,7 +1340,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 #### As-built
 
-- `crates/tui_pane/src/tiles/grid.rs` and `tiles/draw.rs` are split by type cluster into the directories `tiles/grid/` and `tiles/draw/`. The move changed only module paths, `use` lines and visibility; no `tui_pane` public signature changed.
+- `crates/tui_pane/src/tiles/grid/` and `tiles/draw.rs` are split by type cluster into the directories `tiles/grid/` and `tiles/draw/`. The move changed only module paths, `use` lines and visibility; no `tui_pane` public signature changed.
 - `grid/` holds `mod`, `demands`, `pieces`, `rows`, `heights`, `motion`, `arrangement`, `visual`, `selection`, `tile_grid`, `layout`, `allocation` and `bands`. `draw/` holds `mod`, `contents`, `fade`, `rows`, `foot`, `measurements` and `paint`.
 - Each test file sits beside its owner as `<module>_tests.rs`. Shared fixtures and the motion tests sit in `grid/tests/` and `draw/tests/`. The split kept all 264 tests (178 grid, 86 draw) with unchanged bodies and assertions.
 - `TileSettings::min_tile_height` is a `NonZeroU16` (private field and default). `TileGrid::set_min_tile_height(u16)` keeps its signature and floor behavior.
@@ -1385,7 +1395,7 @@ Port of the session's CPU fix 1 (one retained System refreshed in place, Active/
 - `crates/cargo-tile/src/hook.rs`, `main.rs`, `cargo-capture-shim.sh`, `constants.rs` — the native entry, the mirror and the protocol words.
 - `crates/cargo-tile/src/birth_stamp/` — boot and birth reads for the entry.
 - `crates/cargo-tile/src/shim_registration/` — install, fixture and reader test support.
-- `crates/cargo-tile/src/census/scan.rs` — the two predicates.
+- `crates/cargo-tile/src/census/scan/` — the two predicates.
 - `crates/cargo-tile/tests/cli_lifecycle.rs`, `tests/shim_modes.rs`; `Cargo.toml`, `Cargo.lock`, `crates/cargo-tile/Cargo.toml`, `CHANGELOG.md`.
 
 **Binds later work:** `InvocationOwners` (`roster/invocation_owners.rs`) stays the one invocation identity owner across transport changes. `InstalledShim::repeat_in_same_shell` keeps both live log observations, and the interrupt test keeps its second interrupt after `cargo-stopping` with the `cargo-finished` assertion.
@@ -1444,7 +1454,7 @@ Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh
 - **Goal:** the summary shows each top-level command once, with its full command text (`cargo nextest run --workspace`), and its cpu and mem are the work under it. Its own cell shows the detailed tree. This is the user's design ("the summary shows each top-level command; its own cell shows the detailed version"), and a tile shows one command once.
 - **Spec:** find the cause first: where the shim pid becomes a row and a tile of its own (census classification of the `cargo-tile-capture --capture-shim` argv; roster and summary rows). Fix it by type: the shim process is the captured invocation's identity (one invocation, one row), its command text comes from the real cargo argv it runs, and its cpu and mem come from the invocation's subtree. No placeholder value; no procedural filter.
 - **Acceptance:** a red-first test built from the real argv shape above (`cargo-tile-capture --capture-shim <path>/cargo nextest run …` with a busy child) shows one summary row with the full command and the child's cpu and mem; main fails it; each test under 1 s. Live check vs main on natedev under a real `cargo nextest run`: one row per command, the cpu column not 0% while the child works.
-- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs` and the summary row code in `crates/cargo-tile/src/render.rs` / `roster.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs` (handler unit).
+- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan/` and the summary row code in `crates/cargo-tile/src/render.rs` / `roster.rs`. Not `crates/tui_pane/src/tiles/draw/` or `tiles/grid.rs` (handler unit).
 
 ### Phase 44b — A captured command keeps one row from its start  · status: done
 
@@ -1477,7 +1487,7 @@ Model for 44b and 43a; no product change. Source: `6cadd2bd901e5d24ca6198ccc6e84
 
 **Phase 43 verdict.** Job a ended at 8.708 s. At 9–11 s base retained **833543**, `00:04`, **61%**, `0.2G`; cut showed **833530**, same duration/memory, **blank CPU**. Its executable role is unproved; it is not recorded launcher **832776**. Base’s extra launcher 832776 beside child 833543 at 5 s is wrong if both forward one invocation. Keep a second row only for a proved independent invocation, not to reproduce base’s defect.
 
-- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs`, `census/command_text.rs`, `roster.rs`. Not `crates/tui_pane/src/tiles/` (handler unit).
+- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan/`, `census/command_text.rs`, `roster.rs`. Not `crates/tui_pane/src/tiles/` (handler unit).
 
 ### Phase 43a — The reader uses less CPU, on one process identity  · status: done
 
@@ -1492,7 +1502,7 @@ Model for 44b and 43a; no product change. Source: `6cadd2bd901e5d24ca6198ccc6e84
 
 **Files:**
 - `crates/cargo-tile/src/linux_process_stat.rs` — the shared Linux stat parser.
-- `crates/cargo-tile/src/census/scan.rs`, `crates/cargo-tile/src/census/scan_linux_details.rs` — discovery, fresh details and CPU topology.
+- `crates/cargo-tile/src/census/scan/`, `crates/cargo-tile/src/census/scan_linux_details.rs` — discovery, fresh details and CPU topology.
 - `crates/cargo-tile/src/birth_stamp/linux.rs`, `crates/cargo-tile/src/birth_stamp/process_lifetime.rs` — shared parsing and precise lifetime evidence.
 - `crates/cargo-tile/src/render/frame_preparation.rs` — preparation inputs, retained tables and row measurements.
 - `crates/cargo-tile/src/render/command_cache.rs`, `crates/cargo-tile/src/render/cell_paint.rs` — command preparation and validated paint replay.
@@ -1517,7 +1527,7 @@ User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full in
 - Mac census CPU: 7.248 → 4.517 CPU-s/min (median paired cut 42.2 %, spread 7.8 points, 3 pairs). Linux: 5.608 → 5.155 CPU-s/min, a cut under the spread, so no Linux gain is claimed. Both machines stay above the 0.60 CPU-s/min goal.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs` — census preparation, `InvocationLifetimeReads`, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS` read by `one_scan_prepares_one_census_and_one_topology`.
+- `crates/cargo-tile/src/census/scan/` — census preparation, `InvocationLifetimeReads`, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS` read by `one_scan_prepares_one_census_and_one_topology`.
 
 **Binds later work:** each scan prepares one `Census` and one CPU topology; Mac lifetime evidence reaches that census only through `InvocationLifetimeReads::apply`.
 
@@ -1541,7 +1551,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - `crates/cargo-tile/src/shim_registration/`
 - `crates/cargo-tile/src/progress/capture.rs`
 - `crates/cargo-tile/src/render.rs`
-- `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/root_scan/`, `crates/cargo-tile/src/census/scan.rs` — their test modules, only when a measured test there still takes 1 s or more after the shared Mac start delay is removed (showrunner, 2026-11-06, from handler's Phase 65 measurement on main).
+- `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/root_scan/`, `crates/cargo-tile/src/census/scan/` — their test modules, only when a measured test there still takes 1 s or more after the shared Mac start delay is removed (showrunner, 2026-11-06, from handler's Phase 65 measurement on main).
 
 **Workers:** 1 writer — `test`, the listed test modules and their helpers.
 
@@ -1603,7 +1613,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - `crates/cargo-tile/src/root_scan/inspected_directory.rs` — the test-only `scan_with_incomplete_logs` helper.
 - `crates/cargo-tile/src/root_scan/sweep_authority.rs` — the sweep test on the in-memory inventory.
 - `crates/cargo-tile/src/shim_registration/installed.rs` — `python3 -S` in the conversion fixtures.
-- `crates/cargo-tile/src/census/scan.rs` — the corrected Mac-only doc comments.
+- `crates/cargo-tile/src/census/scan/` — the corrected Mac-only doc comments.
 
 **Binds later work:** "The Mac census reads executable names through libproc" owns the two remaining slow reader tests (the refresh sample in `census/scan.rs`). "The install lifecycle test leaves no process behind on the Mac" owns the locked-uninstall time (CLI startup and product lock retries) and the leaky `caller_descriptors_reach_captured_cargo`.
 
@@ -1663,7 +1673,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - natedev full suites have no cargo-tile test at 1 s or more. On the Mac, `reader_keeps_parent_family_across_its_only_childs_source_switch` stays at 1.2-1.7 s under load; that test is not met here.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs` — the refresh deadline and the scan worker's wait.
+- `crates/cargo-tile/src/census/scan/` — the refresh deadline and the scan worker's wait.
 - `crates/cargo-tile/src/shim_registration/shared_capture.rs` — the membership fixture observer.
 - `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the Darwin native shell for the settings scroll scenario.
 
@@ -1756,7 +1766,7 @@ User report (2026-10-29, via the showrunner): a new cell's text fades in from bl
 - The cargo mems plus both shares equal the RSS sum of the assigned processes. `SummaryFootPreparation` carries both shares, so a change to a share alone repaints the `mem` foot.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs` — owner rules, `CompileMemoryOwner`, the shares.
+- `crates/cargo-tile/src/census/scan/` — owner rules, `CompileMemoryOwner`, the shares.
 - `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `CompilerRequest`, `matching_clients`.
 - `crates/cargo-tile/src/census/compile_memory_tests.rs` — one test per owner case and the totals test.
 - `crates/cargo-tile/src/constants.rs` — the rustc and sccache argument words and the share labels.
@@ -1792,7 +1802,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Acceptance:** a staged-reveal test (headers at alpha 62, command text first shown at alpha 68) gives exact RGB at 75% on the first text frame, mid-brighten, at 100% at its end and just before the unchanged deadline, and no repaint request after the brighten ends; a clipped-in-scratch case, a hidden child and text first shown below the threshold keep their own rules; red first, each under 1 s; live capture vs main: each late-entry cell starts at 0.75 (±0.02) and reaches 1.00, the readout ink equals the text ink, frame count and reader CPU over the same workload, branch vs main (no frames after the brighten beyond main's).
 
-**Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/tui_pane/src/pane/frame.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs`: the handler unit's equal-frame phase owns them (showrunner, 2026-10-30).
+**Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/tui_pane/src/pane/frame.rs`. Not `crates/tui_pane/src/tiles/draw/` or `tiles/grid.rs`: the handler unit's equal-frame phase owns them (showrunner, 2026-10-30).
 
 ### Phase 47 — A command cell's account and directory are its border title  · status: done
 
@@ -1889,7 +1899,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/render/frame_preparation.rs` — the expanded preparation path.
 - `crates/cargo-tile/src/render/cell_paint.rs` — `CellColumnHeader`.
 - `crates/cargo-tile/src/app.rs`, `terminal.rs`, `keymap.rs`, `app_global_action.rs` — key routing and the expand action.
-- `crates/tui_pane/src/tiles/grid.rs`, `tiles/draw.rs` — the additive travel method for one cell.
+- `crates/tui_pane/src/tiles/grid/`, `tiles/draw.rs` — the additive travel method for one cell.
 - `crates/tui_pane/src/bar/status_line.rs`, `bar/support.rs` — `GlobalSlotFit` and the one hint styler.
 
 **Binds later work:** pause holds the `GridView` clock as well as the grid clock; the one target layout includes expand and collapse, whose collapse target is the grid rectangle on that frame; an expanded ended cell returns to `Grid`; table changes keep `ExpandedCell`'s full content and pinned header; a disk or summary change reaches both preparation paths; a new status-bar hint uses `GlobalSlotFit` and the one hint styler.
@@ -1955,13 +1965,13 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 - The git child process starts with its foreground bytes in a fixed order (`crates/cargo-berth/src/git/child.rs`).
 - `ExitNotification::wait_for_child` checks the process when its exit notification passes the deadline, so a late notification returns the exit status of an ended process, not a deadline error. A test covers a delayed notification.
-- The retention lock diagnostic runs under the shared spawn lock and names the process that holds the ledger lock (`crates/cargo-berth/src/error.rs`).
+- The retention lock diagnostic runs under the shared spawn lock and names the process that holds the ledger lock (`crates/cargo-berth/src/ledger/error.rs`).
 - Prepared lock-test fixtures and their recorded histories live in `cargo-berth-test-support`.
 - natedev runs all six named tests green, each in 0.13 to 0.67 s. The Mac half of the Goal stays open and moves to the "cargo-berth tests stay under a second when they run together" phase.
 
 **Files:**
 - `crates/cargo-berth/src/git/child.rs` — child start order and the exit wait.
-- `crates/cargo-berth/src/error.rs` — the retention lock diagnostic.
+- `crates/cargo-berth/src/ledger/error.rs` — the retention lock diagnostic.
 - `crates/cargo-berth-test-support/` — prepared lock-test fixtures and recorded histories.
 
 **Gotchas:**
@@ -3258,12 +3268,12 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `.config/nextest.toml` puts `reader_scenario_sigkill_ends_its_waiting_writer_group` in the priority-100 exclusive-slot override beside the source-switch reader.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs` — `FreeDiskSpace` and its `statvfs` read.
+- `crates/cargo-tile/src/census/scan/` — `FreeDiskSpace` and its `statvfs` read.
 - `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — disk transport, app state and the repaint decision.
 - `crates/cargo-tile/src/render.rs` — `gibibytes_label`, `GibibytePrecision` and the foot buffer tests.
 - `crates/cargo-tile/src/render/frame_preparation.rs` — `SummaryFootPreparation`.
 - `crates/cargo-tile/src/constants.rs` — the foot labels.
-- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md` — the optional-suffix foot.
+- `crates/tui_pane/src/tiles/draw/`, `crates/tui_pane/CHANGELOG.md` — the optional-suffix foot.
 - `.config/nextest.toml` — the SIGKILL reader in the exclusive slot.
 
 **Binds later work:** a disk or summary change reaches both preparation paths. `disk_text_changes_reuse_table_preparation_and_update_only_the_foot`, `an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize` and `disk_labels_use_whole_gibibytes_from_ten_and_tenths_below` pass unchanged. The priority-100 override holds two readers.
