@@ -117,7 +117,7 @@ Tests (red first, each under one second):
 3. `strong` draws matched cells bold; `subtle` and `clear` do not.
 4. Text on each match ground keeps the required contrast at each emphasis.
 
-**Live check (director):** before the checkpoint, capture a clicked word in a cargo-handler terminal from this branch at each emphasis value and from main, under the safety rule.
+**Live check (director):** before the checkpoint, capture a clicked word in a cargo-handler terminal from this branch at each emphasis value and from main, under the safety rule. Capture `clear` and `strong` on the default theme and on one light theme (showrunner, 2026-11-11).
 
 **Change-Review line:** A clicked word's matches are easy to see, and `word_highlight.emphasis` sets the strength | On natedev, run cargo-handler, click a word, then set `word_highlight.emphasis` to subtle, clear and strong | The default highlight is easy to see; strong also makes the matched words bold; subtle is the old look
 
@@ -135,3 +135,46 @@ Tests (red first, each under one second):
 **State:** none
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows a clearly visible default highlight and three distinct strengths.
+
+### Phase 3 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+
+**Depends on:** Phase 1 (it adds the `producer` role from the staff source)
+
+#### Work Order
+
+**Goal:** every producer session draws in one tile titled `producers`. No producer draws in the unassigned tile.
+
+**Source:** the user, via sdlc and the showrunner, 2026-11-11: "cargo-handler should have a producers cell - that these should not show up in unassigned anymore and the title for that cell should just be \"producers\"".
+
+**Spec:**
+
+Director decisions:
+1. A session is a producer only when the staff source names it so (`StaffKind::Producer`, the Phase 1 `producer` role). No name match.
+2. The producers tile uses the unassigned tile's tree, columns, sort and details view. Each producer is a root row, and its subagents and threads draw under it.
+3. The title is `producers`, a constant beside `UNASSIGNED_CELL_TITLE`.
+4. The producers tile draws only when at least one producer is live. It sits before the unassigned tile.
+5. The top-level agents table keeps every producer row.
+
+Tests (red first, each under one second):
+1. A producer session draws in the producers tile and not in the unassigned tile.
+2. A session that staff does not name a producer stays in the unassigned tile.
+3. With no live producer, no producers tile draws.
+4. The producers tile title reads `producers`.
+
+**Live check (director):** before the checkpoint, capture the producers tile and the unassigned tile from a build of this branch and from main, under the safety rule.
+
+**Change-Review line:** Producers have their own tile titled producers | On natedev, run cargo-handler in a terminal and look for the producers tile | A tile titled producers lists the producer sessions; none of them shows in the unassigned tile
+
+**Files:**
+- `crates/cargo-handler/src/census/placement.rs` — tile placement
+- `crates/cargo-handler/src/census/hierarchy.rs` — producer staff rows
+- `crates/cargo-handler/src/constants.rs` — the tile title
+- `crates/cargo-handler/src/render/mod.rs` — tile order
+- `docs/cargo-handler/as-built/hierarchy.md` — the producers tile
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows the producers tile and no producer in the unassigned tile.
