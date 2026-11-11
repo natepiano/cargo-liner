@@ -1681,10 +1681,10 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 
 #### Work Order
 
-**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` and `reader_scenario_sigkill_ends_its_waiting_writer_group` run under 1 s in a loaded Mac full suite.
+**Goal:** `reader_keeps_parent_family_across_its_only_childs_source_switch` and `reader_scenario_sigkill_ends_its_waiting_writer_group` run under 1 s in a loaded Mac full suite and a loaded natedev full suite.
 
 **Spec:**
-1. The test took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
+1. The test took 1.374 s on natedev in a cargo-port run (`20261110T233054-4094787-d0c2`, reported by the showrunner 2026-11-10). It took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
    - Native capture exec call to constructor: 238 ms.
    - Native fixture preparation: 168 ms, on the path `hook::fixture_runner` → `native_fixture::executable` → `setup_reader.py native-fixture`. `native_fixture.rs:31` reads the receipt; its cold branch starts `setup_reader.py` at line 38, which strips and signs the fixture on a cache miss (`setup_reader.py:87`).
 2. Measure first. The 43i probe does not isolate either cost: it logs before its constructor timestamp and injects a library (Astra review, `/tmp/claude/astra/20261109T072032Z-2693821/review.md`).
