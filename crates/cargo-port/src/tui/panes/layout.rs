@@ -14,6 +14,7 @@ use super::cpu;
 use super::lang;
 use super::spec::PaneId;
 use super::targets;
+use crate::project::LanguageStats;
 use crate::tui::columns::ProjectColumnLayout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,48 @@ impl PaneVisibility {
             Self::Hidden
         } else {
             Self::Visible
+        }
+    }
+}
+
+/// What the Languages and Targets panes need from the tiled layout.
+#[derive(Clone, Copy)]
+pub(in crate::tui) struct MiddlePaneNeeds {
+    /// The Languages width that draws every name of the selected project whole.
+    lang_width:    u16,
+    /// The Targets width that draws every name of the selected project whole.
+    targets_width: u16,
+    /// The inner rows of the Languages pane for the project that needs the most.
+    lang_rows:     u16,
+    /// The inner rows of the Targets pane for the project that needs the most.
+    targets_rows:  u16,
+}
+
+impl MiddlePaneNeeds {
+    /// The widths for the selected project. The rows start at zero.
+    pub(in crate::tui) const fn new(lang_width: u16, targets_width: u16) -> Self {
+        Self {
+            lang_width,
+            targets_width,
+            lang_rows: 0,
+            targets_rows: 0,
+        }
+    }
+
+    pub(in crate::tui) fn minimum(targets_width: u16) -> Self {
+        Self::new(lang::minimum_width(), targets_width)
+    }
+
+    pub(in crate::tui) fn for_selected(stats: &LanguageStats, targets_width: u16) -> Self {
+        Self::new(lang::preferred_width(stats), targets_width)
+    }
+
+    /// Sets the rows of the project that needs the most in each pane.
+    pub(in crate::tui) fn with_rows(self, most_language_rows: usize, targets_rows: u16) -> Self {
+        Self {
+            lang_rows: lang::inner_rows(most_language_rows),
+            targets_rows,
+            ..self
         }
     }
 }
@@ -128,9 +171,9 @@ pub(in crate::tui) fn resolve_layout(
     core_count: usize,
     bottom_row: BottomRow,
     top_required_inner: u16,
-    targets_preferred_width: u16,
+    middle: MiddlePaneNeeds,
 ) -> ResolvedPaneLayout<PaneId> {
-    let rows = Layout::default()
+    let split_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(tiled_row_constraints(
             core_count,
@@ -141,14 +184,25 @@ pub(in crate::tui) fn resolve_layout(
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(project_column_width(
-                area.width,
-                project_column,
-                targets_preferred_width,
-            )),
+            Constraint::Length(project_column_width(area.width, project_column, middle)),
             Constraint::Min(0),
         ])
         .split(area);
+    let mut rows = [split_rows[0], split_rows[1], split_rows[2]];
+    let middle_need = middle_pane_constraints(cols[1].width, middle)
+        .iter()
+        .map(|(pane, _)| match pane {
+            PaneId::Lang => middle.lang_rows.saturating_add(PANE_BORDER_HEIGHT),
+            PaneId::Targets => middle.targets_rows.saturating_add(PANE_BORDER_HEIGHT),
+            _ => cpu::cpu_required_pane_height(core_count),
+        })
+        .max()
+        .unwrap_or(0);
+    give_free_middle_rows_to_top(
+        &mut rows,
+        top_required_inner.saturating_add(PANE_BORDER_HEIGHT),
+        middle_need,
+    );
 
     let panes = derived_layout(bottom_row)
         .placements
@@ -160,7 +214,7 @@ pub(in crate::tui) fn resolve_layout(
                 cols.as_ref(),
                 placement.pane,
                 bottom_row,
-                targets_preferred_width,
+                middle,
             ),
         })
         .collect();
@@ -168,19 +222,30 @@ pub(in crate::tui) fn resolve_layout(
     ResolvedPaneLayout::new(panes)
 }
 
+/// Moves the middle rows that no shown middle pane needs to the top row, up
+/// to the rows the top row needs. The bottom row keeps its height.
+fn give_free_middle_rows_to_top(rows: &mut [Rect; 3], top_need: u16, middle_need: u16) {
+    let moved = top_need
+        .saturating_sub(rows[0].height)
+        .min(rows[1].height.saturating_sub(middle_need));
+    rows[0].height = rows[0].height.saturating_add(moved);
+    rows[1].y = rows[1].y.saturating_add(moved);
+    rows[1].height = rows[1].height.saturating_sub(moved);
+}
+
 fn resolve_pane_area(
     rows: &[Rect],
     cols: &[Rect],
     pane: PaneId,
     bottom_row: BottomRow,
-    targets_preferred_width: u16,
+    middle: MiddlePaneNeeds,
 ) -> Rect {
     let project_col = cols[0];
     let right_col = cols[1];
     let top_right_area = Rect::new(right_col.x, rows[0].y, right_col.width, rows[0].height);
     let middle_right_area = Rect::new(right_col.x, rows[1].y, right_col.width, rows[1].height);
     let top_right = top_pane_areas(top_right_area);
-    let middle_panes = middle_pane_constraints(middle_right_area.width, targets_preferred_width);
+    let middle_panes = middle_pane_constraints(middle_right_area.width, middle);
     let middle_areas =
         Layout::horizontal(middle_panes.iter().map(|(_, size)| *size)).split(middle_right_area);
     let middle_area = |id| {
@@ -217,18 +282,30 @@ fn resolve_pane_area(
     }
 }
 
-fn middle_pane_constraints(width: u16, targets_preferred_width: u16) -> Vec<(PaneId, Constraint)> {
+fn middle_pane_constraints(width: u16, middle: MiddlePaneNeeds) -> Vec<(PaneId, Constraint)> {
     let targets_min = targets::minimum_width();
     let cpu_width = cpu_column_width();
     let show_targets = width >= targets_min;
-    let targets_width = if show_targets { targets_min } else { 0 };
-    let show_cpu = show_targets && width >= targets_width.saturating_add(cpu_width);
-    let occupied = targets_width.saturating_add(if show_cpu { cpu_width } else { 0 });
+    let targets_floor = if show_targets { targets_min } else { 0 };
+    let show_cpu = show_targets && width >= targets_floor.saturating_add(cpu_width);
+    let cpu_taken = if show_cpu { cpu_width } else { 0 };
     let language_min = lang::minimum_width();
-    let show_languages = width >= occupied.saturating_add(language_min);
+    let show_languages = width
+        >= targets_floor
+            .saturating_add(cpu_taken)
+            .saturating_add(language_min);
     let mut middle_panes = Vec::new();
     if show_languages {
-        middle_panes.push((PaneId::Lang, Constraint::Min(language_min)));
+        let lang_width = language_width_before_targets_cut(width, cpu_taken, middle);
+        middle_panes.push((PaneId::Lang, Constraint::Length(lang_width)));
+        if show_cpu {
+            middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_width)));
+        }
+        middle_panes.push((
+            PaneId::Targets,
+            Constraint::Length(width.saturating_sub(cpu_taken).saturating_sub(lang_width)),
+        ));
+        return middle_panes;
     }
     if show_cpu {
         middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_width)));
@@ -237,15 +314,27 @@ fn middle_pane_constraints(width: u16, targets_preferred_width: u16) -> Vec<(Pan
         middle_panes.push((
             PaneId::Targets,
             Constraint::Min(
-                targets_preferred_width.max(targets_min).min(
-                    width
-                        .saturating_sub(if show_cpu { cpu_width } else { 0 })
-                        .saturating_sub(if show_languages { language_min } else { 0 }),
-                ),
+                middle
+                    .targets_width
+                    .max(targets_min)
+                    .min(width.saturating_sub(cpu_taken)),
             ),
         ));
     }
     middle_panes
+}
+
+/// Give Languages name cells to Targets when the wide row cannot fit both.
+fn language_width_before_targets_cut(width: u16, cpu_width: u16, middle: MiddlePaneNeeds) -> u16 {
+    let language_min = lang::minimum_width();
+    let targets_first = middle
+        .targets_width
+        .max(targets::minimum_width())
+        .min(width.saturating_sub(cpu_width).saturating_sub(language_min));
+    width
+        .saturating_sub(cpu_width)
+        .saturating_sub(targets_first)
+        .min(middle.lang_width.max(language_min))
 }
 
 /// Heights for the three tiled rows. The top row (Details/Git) is sized to the
@@ -296,7 +385,7 @@ fn tiled_row_constraints(
 fn project_column_width(
     window_width: u16,
     project_column: ProjectColumnLayout,
-    targets_preferred_width: u16,
+    middle: MiddlePaneNeeds,
 ) -> u16 {
     let natural = project_column
         .preferred_width
@@ -305,17 +394,25 @@ fn project_column_width(
             window_width,
             project_column.lint_column,
         ));
-    let preferred_middle = targets_preferred_width
-        .max(targets::minimum_width())
+    // The list never cuts a name on screen to widen a middle pane.
+    let floor = project_column
+        .shown_width
+        .max(project_column.minimum_width)
+        .min(natural);
+    let lang_min = lang::minimum_width();
+    let targets_min = targets::minimum_width();
+    let minimum_middle = targets_min
         .saturating_add(cpu_column_width())
-        .saturating_add(lang::minimum_width());
-    if targets_preferred_width > targets::minimum_width()
-        && window_width
-            >= project_column
-                .minimum_width
-                .saturating_add(preferred_middle)
-    {
-        natural.min(window_width.saturating_sub(preferred_middle))
+        .saturating_add(lang_min);
+    let preferred_middle = middle
+        .targets_width
+        .max(targets_min)
+        .saturating_add(cpu_column_width())
+        .saturating_add(middle.lang_width.max(lang_min));
+    if preferred_middle > minimum_middle && window_width >= floor.saturating_add(minimum_middle) {
+        natural
+            .min(window_width.saturating_sub(preferred_middle))
+            .max(floor)
     } else {
         natural
     }
@@ -331,16 +428,12 @@ const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 pub(in crate::tui) fn top_pane_widths(
     area: Rect,
     project_column: ProjectColumnLayout,
-    targets_preferred_width: u16,
+    middle: MiddlePaneNeeds,
 ) -> (u16, u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(project_column_width(
-                area.width,
-                project_column,
-                targets_preferred_width,
-            )),
+            Constraint::Length(project_column_width(area.width, project_column, middle)),
             Constraint::Min(0),
         ])
         .split(area);
@@ -380,6 +473,7 @@ mod tests {
     use tui_pane::PanePlacement;
 
     use super::BottomRow;
+    use super::MiddlePaneNeeds;
     use super::PANE_BORDER_HEIGHT;
     use super::ProjectColumnLayout;
     use super::derived_layout;
@@ -467,12 +561,13 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             20,
-            super::targets::minimum_width(),
+            MiddlePaneNeeds::minimum(super::targets::minimum_width()),
         );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
@@ -500,12 +595,13 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             100,
-            super::targets::minimum_width(),
+            MiddlePaneNeeds::minimum(super::targets::minimum_width()),
         );
 
         assert_eq!(
@@ -524,12 +620,13 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             top_inner,
-            super::targets::minimum_width(),
+            MiddlePaneNeeds::minimum(super::targets::minimum_width()),
         );
 
         assert_eq!(
@@ -548,30 +645,149 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             100,
-            super::targets::minimum_width(),
+            MiddlePaneNeeds::minimum(super::targets::minimum_width()),
         );
         let short_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             4,
-            super::targets::minimum_width(),
+            MiddlePaneNeeds::minimum(super::targets::minimum_width()),
         );
 
         assert!(short_resolved_pane_layout.area(PaneId::Cpu).height > cpu_floor);
         assert!(
             short_resolved_pane_layout.area(PaneId::Targets).height
                 > tall_resolved_pane_layout.area(PaneId::Targets).height
+        );
+    }
+
+    fn column(width: u16) -> ProjectColumnLayout {
+        ProjectColumnLayout {
+            preferred_width: width,
+            minimum_width:   width,
+            shown_width:     width,
+            lint_column:     LintColumnStatus::Hidden,
+        }
+    }
+
+    #[test]
+    fn middle_panes_take_only_cells_no_shown_name_needs() {
+        let shown = ProjectColumnLayout {
+            preferred_width: 60,
+            minimum_width:   40,
+            shown_width:     56,
+            lint_column:     LintColumnStatus::Hidden,
+        };
+        let layout = resolve_layout(
+            Rect::new(0, 0, 160, 44),
+            shown,
+            12,
+            BottomRow::Diagnostics,
+            14,
+            MiddlePaneNeeds::minimum(70),
+        );
+
+        assert_eq!(layout.area(PaneId::ProjectList).width, 56);
+    }
+
+    #[test]
+    fn languages_take_their_whole_width_before_targets_grow() {
+        let area = Rect::new(0, 0, 160, 44);
+        for (projects_width, targets_need, expected_lang, expected_targets) in [
+            (
+                40,
+                super::targets::minimum_width(),
+                super::lang::minimum_width(),
+                52,
+            ),
+            (60, 35, super::lang::minimum_width(), 32),
+        ] {
+            let layout = resolve_layout(
+                area,
+                column(projects_width),
+                12,
+                BottomRow::Diagnostics,
+                14,
+                MiddlePaneNeeds::minimum(targets_need),
+            );
+            let lang = layout.area(PaneId::Lang);
+            let targets = layout.area(PaneId::Targets);
+
+            assert_eq!(lang.width, expected_lang);
+            assert_eq!(targets.width, expected_targets);
+            assert!(targets.width >= super::targets::minimum_width());
+            assert_eq!(layout.area(PaneId::ProjectList).width, projects_width);
+            assert_eq!(
+                targets.x.saturating_add(targets.width),
+                area.width,
+                "Targets takes the cells Languages does not need"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_row_takes_rows_no_project_needs_in_targets() {
+        let width = 46_u16.saturating_add(super::targets::minimum_width());
+        let area = Rect::new(0, 0, width, 45);
+        let resolve = |targets_rows| {
+            resolve_layout(
+                area,
+                column(46),
+                32,
+                BottomRow::Diagnostics,
+                20,
+                MiddlePaneNeeds::minimum(super::targets::minimum_width())
+                    .with_rows(0, targets_rows),
+            )
+        };
+        let short = resolve(5);
+        let tall = resolve(u16::MAX);
+
+        assert!(short.area(PaneId::Cpu).is_empty());
+        assert_eq!(
+            short.area(PaneId::Git).height,
+            20 + PANE_BORDER_HEIGHT,
+            "the detail row takes the free rows"
+        );
+        assert!(short.area(PaneId::Targets).height >= 5 + PANE_BORDER_HEIGHT);
+        assert!(tall.area(PaneId::Git).height < short.area(PaneId::Git).height);
+        assert_eq!(
+            short.area(PaneId::CiRuns),
+            tall.area(PaneId::CiRuns),
+            "the bottom row keeps its rows"
+        );
+    }
+
+    #[test]
+    fn shown_cpu_keeps_the_row_line() {
+        let resolve = |targets_rows| {
+            resolve_layout(
+                Rect::new(0, 0, 160, 45),
+                column(46),
+                32,
+                BottomRow::Diagnostics,
+                20,
+                MiddlePaneNeeds::minimum(super::targets::minimum_width())
+                    .with_rows(0, targets_rows),
+            )
+        };
+
+        assert_eq!(
+            resolve(1).area(PaneId::Git),
+            resolve(u16::MAX).area(PaneId::Git)
         );
     }
 

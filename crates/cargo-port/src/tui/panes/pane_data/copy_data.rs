@@ -119,7 +119,8 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
             GitCheckout::Unborn
             | GitCheckout::UnreadableHead
             | GitCheckout::Broken
-            | GitCheckout::AwaitingProbe => String::new(),
+            | GitCheckout::AwaitingProbe
+            | GitCheckout::NotRepository => String::new(),
         },
         DetailField::GitStatus => data
             .status

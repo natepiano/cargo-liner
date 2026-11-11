@@ -150,9 +150,11 @@ fn narrow_sccache_footer_keeps_only_whole_hints() -> anyhow::Result<()> {
     let (_, y) = test_support::position(buffer, "Esc close")?;
     let row = &test_support::rows(buffer)[usize::from(y)];
     assert!(row.contains("home/end first/last"), "{row}");
-    assert_eq!(
-        row.trim_matches(|cell: char| cell.is_whitespace() || cell == '┃'),
-        "Esc close · y copy · ↑/↓ nav · home/end first/last · pageup/pagedown page"
+    let text = row.trim_matches(|cell: char| cell.is_whitespace() || cell == '┃');
+    assert_eq!(text, "Esc close · y copy · ↑/↓ nav · home/end first/last");
+    assert!(
+        row.trim_end().ends_with(" ┃"),
+        "the hint row keeps one cell before the right border:\n{row}"
     );
     Ok(())
 }

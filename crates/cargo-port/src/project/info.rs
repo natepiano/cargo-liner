@@ -271,6 +271,16 @@ pub(crate) struct LanguageStats {
     pub entries: Vec<LangEntry>,
 }
 
+impl LanguageStats {
+    /// The table rows: one for each language and one for each child row.
+    pub(crate) fn row_count(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| 1 + entry.children.len())
+            .sum()
+    }
+}
+
 /// Per-project test counts collected by a source scan, bucketed by the
 /// directory and kind of test each one represents.
 ///

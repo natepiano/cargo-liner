@@ -1,4 +1,4 @@
-/// Source header text. Cut target names before this header.
+/// Hide Source when its whole header cannot fit beside whole Target names.
 pub(super) const SOURCE_HEADER: &str = "Source";
 /// Layout reserve for Source before the complete header fits.
 pub(super) const SOURCE_MIN_WIDTH: usize = 2;

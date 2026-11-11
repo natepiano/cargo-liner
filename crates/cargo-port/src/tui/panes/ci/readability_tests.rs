@@ -7,12 +7,14 @@ use tui_pane::ColorMode;
 use tui_pane::PaneBorders;
 use unicode_width::UnicodeWidthStr;
 
+use crate::ci;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::PaneId;
+use crate::tui::render;
 use crate::tui::test_support;
 
 #[test]
@@ -325,6 +327,133 @@ fn phase4e_ci_total_does_not_understate_a_job_duration() -> anyhow::Result<()> {
     } else {
         test_support::position(&buffer, "Total")?;
         test_support::position(&buffer, "14m  0s")?;
+    }
+    Ok(())
+}
+
+fn job(name: &str, seconds: u64) -> CiJob {
+    CiJob {
+        name:          name.to_string(),
+        ci_status:     CiStatus::Passed,
+        duration:      ci::format_secs(seconds),
+        duration_secs: Some(seconds),
+    }
+}
+
+fn ci_area_rows(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.y..area.bottom())
+        .map(|y| {
+            (area.x..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn wide_ci_job_headers_take_cells_from_the_commit_column() -> anyhow::Result<()> {
+    for (windows_job, mixed_jobs) in [
+        ("Windows Build", false),
+        ("Windows Build Tests", false),
+        ("Windows Build", true),
+        ("Windows Build Tests", true),
+    ] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let mut run = display_run("main")?;
+        run.commit_title = Some("phase 32d — move the tile cache into its own crate".to_string());
+        run.jobs = vec![job(windows_job, 1489), job("Linux Build", 905)];
+        if mixed_jobs {
+            run.jobs.extend([
+                job("Taplo Check", 7),
+                job("Test Suite", 12),
+                job("Other", 3),
+            ]);
+        }
+        app.ci.set_content(CiData {
+            runs:           vec![run],
+            mode_label:     Some("all".to_string()),
+            current_branch: None,
+            empty_state:    CiEmptyState::NoRuns,
+        });
+        let (buffer, area) = if mixed_jobs {
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, 160, 107)?;
+            let area = buffer.area;
+            (buffer, area)
+        } else {
+            let buffer = test_support::draw_ui(&mut app, 160)?;
+            let area = app.panes.tiled_layout.area(PaneId::CiRuns);
+            (buffer, area)
+        };
+        let rows = ci_area_rows(&buffer, area);
+        let header = rows
+            .iter()
+            .find(|row| row.contains(" Commit"))
+            .context("CI header row")?;
+        assert!(header.contains(windows_job), "{rows:?}");
+        assert!(header.contains("Linux Build"), "{rows:?}");
+        assert!(!header.contains('…'), "{rows:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cut_commit_drops_the_separator_before_the_ellipsis() -> anyhow::Result<()> {
+    let cut = render::truncate_with_ellipsis("phase 32d — move the tile cache", 13, "…");
+    assert_eq!(cut, "phase 32d…");
+    for (title, forbidden) in [
+        ("plan(remove-running-section): split the phase", "-…"),
+        ("plan(remove_running_section): split the phase", "_…"),
+        ("plan(remove/running/section): split the phase", "/…"),
+        ("plan(remove|running|section): split the phase", "|…"),
+    ] {
+        let mut app = test_support::project_app();
+        let mut run = display_run("main")?;
+        run.commit_title = Some(title.to_string());
+        run.wall_clock_secs = Some(1505);
+        run.jobs.clear();
+        app.ci.set_content(CiData {
+            runs:           vec![run],
+            mode_label:     Some("all".to_string()),
+            current_branch: None,
+            empty_state:    CiEmptyState::NoRuns,
+        });
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, 80, 35)?;
+        let rows = test_support::rows(&buffer);
+        let row = rows
+            .iter()
+            .find(|row| row.contains("plan("))
+            .context("Commit row")?;
+        assert!(!row.contains(forbidden), "{row}");
+        assert!(row.contains("plan(remove…"), "{row}");
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_ci_status_rows_keep_one_cell_after_the_left_border() -> anyhow::Result<()> {
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        let mut run = display_run("main")?;
+        run.wall_clock_secs = Some(1489);
+        run.ci_status = CiStatus::Failed;
+        app.ci.set_content(CiData {
+            runs:           vec![run],
+            mode_label:     Some("all".to_string()),
+            current_branch: None,
+            empty_state:    CiEmptyState::NoRuns,
+        });
+        let buffer = test_support::draw_ui(&mut app, 60)?;
+        let area = app.panes.tiled_layout.area(PaneId::CiRuns);
+        let rows = ci_area_rows(&buffer, area);
+        for row in &rows[1..rows.len() - 1] {
+            let inside: Vec<char> = row.chars().skip(1).collect();
+            if inside.iter().any(|cell| !cell.is_whitespace()) {
+                assert_eq!(inside.first(), Some(&' '), "{mode:?}: {rows:?}");
+            }
+        }
+        test_support::find_text_cell(&buffer, area, "24m 49s").context("whole duration")?;
     }
     Ok(())
 }

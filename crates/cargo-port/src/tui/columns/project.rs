@@ -51,6 +51,9 @@ pub(in crate::tui) const PROJECTS_HEADER: &str = "   Projects";
 pub(in crate::tui) struct ProjectColumnLayout {
     pub preferred_width: u16,
     pub minimum_width:   u16,
+    /// The width that draws every name on screen whole. Other panes take
+    /// cells from the list only down to this width.
+    pub shown_width:     u16,
     pub lint_column:     LintColumnStatus,
 }
 
@@ -70,7 +73,6 @@ pub(in crate::tui) enum Align {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum HeaderMode {
     Standard,
-    BorrowLeft,
     Hidden,
 }
 
@@ -90,12 +92,6 @@ impl ColumnDef {
     /// Shortest label — defines the column's minimum header footprint.
     pub(super) fn header_min(&self) -> &'static str {
         self.header_levels.first().copied().unwrap_or("")
-    }
-
-    /// Longest label — used by `BorrowLeft` columns when computing how much
-    /// space to borrow from neighbors.
-    pub(super) fn header_max(&self) -> &'static str {
-        self.header_levels.last().copied().unwrap_or("")
     }
 
     /// Pick the longest label whose display width fits `width`. Falls back to
@@ -126,7 +122,7 @@ impl ColumnDef {
 pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NUM_COLS] {
     let (lint_headers, lint_width, lint_header_mode): (&[&str], usize, HeaderMode) =
         match lint_column {
-            LintColumnStatus::Enabled => (&["Lint"], 2, HeaderMode::BorrowLeft),
+            LintColumnStatus::Enabled => (&["Lint"], 4, HeaderMode::Standard),
             LintColumnStatus::Hidden => (&[""], 0, HeaderMode::Hidden),
         };
     [
@@ -134,18 +130,18 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
         ColumnDef {
             header_levels: &[PROJECTS_HEADER],
             width:         ColumnWidth::Fit {
-                min: PROJECTS_HEADER.len() + lint_headers[0].len().saturating_sub(lint_width),
+                min: PROJECTS_HEADER.len(),
             },
             align:         Align::Left,
             gap:           0,
             header_mode:   HeaderMode::Standard,
         },
-        // `COL_LINT` uses `HeaderMode::BorrowLeft` to borrow "Li" from `COL_NAME` padding.
+        // `COL_LINT` is as wide as its heading, so the heading sits over the icon.
         ColumnDef {
             header_levels: lint_headers,
             width:         ColumnWidth::Fixed(lint_width),
             align:         Align::Left,
-            gap:           0,
+            gap:           1,
             header_mode:   lint_header_mode,
         },
         // `COL_CI` reserves two columns for the CI glyph.
@@ -212,6 +208,11 @@ pub(in crate::tui) struct CellContent {
     pub align_override: Option<Align>,
     pub suffix:         Option<String>,
     pub suffix_style:   Option<Style>,
+    /// Bytes at the start of a member name that it shares with its workspace
+    /// root. A name that does not fit drops them before it cuts.
+    pub shared_prefix:  usize,
+    /// Bytes shared with sibling names that can produce the same cut label.
+    pub sibling_prefix: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -345,6 +346,7 @@ pub(in crate::tui) struct ProjectListWidths {
     inner:          ColumnWidths,
     lint_column:    LintColumnStatus,
     disk_format:    DiskFormat,
+    shown_name:     usize,
     pub generation: u64,
 }
 
@@ -366,6 +368,7 @@ impl ProjectListWidths {
             inner: ColumnWidths::new(project_list_specs(lint_column)),
             lint_column,
             disk_format: DiskFormat::Decimal,
+            shown_name: 0,
             generation: u64::MAX,
         }
     }
@@ -392,6 +395,22 @@ impl ProjectListWidths {
             .filter(|(width, _)| **width > 0)
             .map(|(width, def)| width + def.gap)
             .sum()
+    }
+
+    /// Record the name width of the widest row on screen.
+    pub(in crate::tui) const fn set_shown_name_width(&mut self, width: usize) {
+        self.shown_name = width;
+    }
+
+    /// Keep every column with the name as wide as the widest name on screen.
+    pub(in crate::tui) fn shown_table_width(&self) -> usize {
+        let defs = column_defs(self.lint_column);
+        let mut widths = std::array::from_fn(|index| self.get(index));
+        widths[COL_NAME] = self
+            .shown_name
+            .max(name_heading_floor(&defs))
+            .min(widths[COL_NAME]);
+        Self::columns_total(&widths, &defs)
     }
 
     /// Keep every column with the name at its heading floor.
@@ -470,6 +489,7 @@ impl ProjectListWidths {
                     .map(|width| ColumnSpec::fixed(u16::try_from(width).unwrap_or(u16::MAX)))
                     .collect(),
             ),
+            shown_name:  self.shown_name,
             lint_column: self.lint_column,
             disk_format: if narrow {
                 DiskFormat::Whole
@@ -554,6 +574,18 @@ fn minimum_cut_name_width(name: &str) -> usize {
     first + letter + 1
 }
 
+/// Measure two visible letters and the ellipsis in display cells.
+fn two_letter_cut_width(name: &str) -> usize {
+    let name = name.find(" [").map_or(name, |start| &name[start + 1..]);
+    let count = if name.starts_with('[') { 3 } else { 2 };
+    Span::raw(name)
+        .styled_graphemes(Style::default())
+        .take(count)
+        .map(|grapheme| display_width(grapheme.symbol))
+        .sum::<usize>()
+        + 1
+}
+
 /// Keep the mark styles when the complete mark fits.
 fn append_name_mark(spans: &mut Vec<Span<'static>>, segments: &[StyledSegment], mark_start: usize) {
     let mut byte_offset = 0;
@@ -571,8 +603,78 @@ fn append_name_mark(spans: &mut Vec<Span<'static>>, segments: &[StyledSegment], 
     }
 }
 
+/// Find the bytes a member name shares with its workspace root name, up to the
+/// last word separator, as `cargo-` in `cargo-berth` under `cargo-liner`.
+pub(in crate::tui) fn shared_name_prefix(member: &str, root: &str) -> usize {
+    let common = member
+        .char_indices()
+        .zip(root.chars())
+        .take_while(|((_, left), right)| left == right)
+        .last()
+        .map_or(0, |((index, character), _)| index + character.len_utf8());
+    member[..common]
+        .rfind(['-', '_'])
+        .map(|index| index + 1)
+        .filter(|end| *end < member.len())
+        .unwrap_or(0)
+}
+
+/// Drop the shared member prefix when the whole name does not fit.
+fn without_shared_prefix(cell: &CellContent, prefix: &str, width: usize) -> Option<CellContent> {
+    if display_width(prefix) + display_width(&cell.text) <= width {
+        return None;
+    }
+    let available = width.saturating_sub(display_width(prefix));
+    let root_drop = cell.shared_prefix;
+    let sibling_drop = cell.sibling_prefix;
+    let short = &cell.text[root_drop..];
+    let collision_width = display_width(&cell.text[root_drop..sibling_drop.max(root_drop)]);
+    let drop = if sibling_drop > root_drop
+        && display_width(short) > available
+        && available.saturating_sub(1) <= collision_width
+    {
+        sibling_drop
+    } else {
+        root_drop
+    };
+    if drop == 0 {
+        return None;
+    }
+    let segments = cell.segments.as_ref().map(|segments| {
+        let mut skipped = 0;
+        segments
+            .iter()
+            .filter_map(|segment| {
+                let start = drop.saturating_sub(skipped).min(segment.text.len());
+                skipped += segment.text.len();
+                segment
+                    .text
+                    .get(start..)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| StyledSegment {
+                        text:  text.to_string(),
+                        style: segment.style,
+                    })
+            })
+            .collect()
+    });
+    Some(CellContent {
+        text: cell.text.get(drop..)?.to_string(),
+        style: cell.style,
+        segments,
+        align_override: cell.align_override,
+        suffix: cell.suffix.clone(),
+        suffix_style: cell.suffix_style,
+        shared_prefix: 0,
+        sibling_prefix: 0,
+    })
+}
+
 /// Keep the prefix and the worktree mark outside the shortened name.
 fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'static>> {
+    if let Some(short) = without_shared_prefix(cell, prefix, width) {
+        return name_cell_spans(&short, prefix, width);
+    }
     let fallback = [StyledSegment {
         text:  cell.text.clone(),
         style: cell.style,
@@ -591,18 +693,25 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
     let name = &text[..mark_start];
     let letter_reserve = minimum_cut_name_width(name);
     let original_mark = &text[mark_start..];
+    // Drop the group count when it would cut the name to one letter.
+    let name_room = width.saturating_sub(display_width(prefix) + display_width(original_mark));
     let mark = if original_mark.starts_with(" 🌲:")
-        && display_width(prefix) + letter_reserve + display_width(original_mark) > width
+        && display_width(name) > name_room
+        && name_room < two_letter_cut_width(name)
     {
         " 🌲"
     } else {
         original_mark
     };
-    let prefix = render::truncate_with_ellipsis(
-        prefix,
-        width.saturating_sub(display_width(mark) + display_width(name).min(letter_reserve)),
-        "",
-    );
+    let prefix_room =
+        width.saturating_sub(display_width(mark) + display_width(name).min(letter_reserve));
+    // Remove leading indentation before cutting the tree prefix.
+    let prefix = if display_width(prefix) > prefix_room {
+        prefix.trim_start()
+    } else {
+        prefix
+    };
+    let prefix = render::truncate_with_ellipsis(prefix, prefix_room, "");
     let available = width.saturating_sub(display_width(&prefix) + display_width(mark));
     if display_width(name) > available
         && let Some(bracket) = name.find(" [")
@@ -789,7 +898,8 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
-    let mut slot_widths = std::array::from_fn::<usize, NUM_COLS, _>(|i| {
+    // Each heading takes only the cells of its own column, so it sits over its values.
+    let slot_widths = std::array::from_fn::<usize, NUM_COLS, _>(|i| {
         if widths.get(i) == 0 {
             0
         } else {
@@ -797,45 +907,21 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
         }
     });
 
-    let heading_width = name_heading_floor(&defs) + usize::from(widths.get(COL_LINT) > 0);
-    let mut needed = heading_width.saturating_sub(widths.get(COL_NAME));
-    for index in (COL_CI..NUM_COLS).rev() {
-        let floor = defs[index].gap + display_width(defs[index].header_max());
-        let borrowed = slot_widths[index].saturating_sub(floor).min(needed);
-        slot_widths[index] -= borrowed;
-        slot_widths[COL_NAME] += borrowed;
-        needed -= borrowed;
-    }
-
-    for (i, def) in defs.iter().enumerate() {
-        if widths.get(i) == 0 || def.header_mode != HeaderMode::BorrowLeft {
-            continue;
-        }
-
-        // For `HeaderMode::BorrowLeft`, transfer `borrow_needed` columns from the nearest left
-        // `slot_widths` so the header stretches without shifting unrelated columns farther
-        // left.
-        let mut borrow_needed = display_width(def.header_max()).saturating_sub(widths.get(i));
-        let mut donor = i;
-        while borrow_needed > 0 && donor > 0 {
-            donor -= 1;
-            let borrowed = slot_widths[donor].min(borrow_needed);
-            slot_widths[donor] -= borrowed;
-            slot_widths[i] += borrowed;
-            borrow_needed -= borrowed;
-        }
-    }
-
     for (i, def) in defs.iter().enumerate() {
         let slot_width = slot_widths[i];
 
         let content = if slot_width == 0 {
             String::new()
         } else if i == COL_NAME {
-            pad_right(
-                &render::truncate_with_ellipsis(name_text, slot_width, "…"),
-                slot_width,
-            )
+            let heading = if widths.lint_column_status() == LintColumnStatus::Enabled
+                && widths.shown_name > slot_width
+                && display_width(name_text) > slot_width
+            {
+                render::truncate_with_ellipsis(name_text, slot_width, "…")
+            } else {
+                name_heading_text(name_text, slot_width)
+            };
+            pad_right(&heading, slot_width)
         } else {
             match def.header_mode {
                 HeaderMode::Standard => {
@@ -849,14 +935,6 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
                     };
                     format!("{}{padded}", " ".repeat(gap))
                 },
-                HeaderMode::BorrowLeft => {
-                    let header = def.header_for_width(slot_width);
-                    match def.align {
-                        Align::Left => pad_right(header, slot_width),
-                        Align::Right => pad_left(header, slot_width),
-                        Align::Center => pad_center(header, slot_width),
-                    }
-                },
                 HeaderMode::Hidden => " ".repeat(slot_width),
             }
         };
@@ -865,6 +943,14 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
     }
 
     Line::from(spans)
+}
+
+/// Fit the name heading to its column: drop the name indent first, then cut the word.
+fn name_heading_text(name_text: &str, width: usize) -> String {
+    let word = name_text.trim_start();
+    let indent = display_width(name_text) - display_width(word);
+    let kept_indent = indent.min(width.saturating_sub(display_width(word)));
+    render::truncate_with_ellipsis(&format!("{}{word}", " ".repeat(kept_indent)), width, "…")
 }
 
 // `build_row_cells`, `build_summary_cells` and `build_group_header_cells` construct table cells.
@@ -1239,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn header_line_borrows_only_overflow_from_name() {
+    fn header_line_keeps_each_heading_in_its_own_column() {
         let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
@@ -1248,14 +1334,92 @@ mod tests {
 
         let line = header_line(&widths, "Projects");
 
-        assert_eq!(display_width(line.spans[COL_NAME].content.as_ref()), 28);
-        assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
+        assert_eq!(display_width(line.spans[COL_NAME].content.as_ref()), 30);
+        assert_eq!(line.spans[COL_LINT].content.as_ref(), " Lint");
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Sync");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Main");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "     Disk");
         assert_eq!(line.width(), widths.total_width());
+    }
+
+    #[test]
+    fn cut_member_names_drop_the_root_prefix_first() {
+        assert_eq!(shared_name_prefix("cargo-berth", "cargo-liner"), 6);
+        assert_eq!(shared_name_prefix("tui_pane", "cargo-liner"), 0);
+        assert_eq!(shared_name_prefix("cargo", "cargo-liner"), 0);
+        let text = |name: &str, width: usize| -> String {
+            let mut row = build_group_header_cells("├── ", name);
+            row.cells[COL_NAME].shared_prefix = shared_name_prefix(name, "cargo-liner");
+            name_cell_spans(&row.cells[COL_NAME], &row.prefix, width)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(text("cargo-berth", 15), "├── cargo-berth");
+        assert_eq!(text("cargo-berth", 10), "├── berth");
+        assert_eq!(text("cargo-port", 10), "├── port");
+        assert_eq!(text("cargo-mend", 7), "├── me…");
+        assert_ne!(text("cargo-berth", 9), text("cargo-port", 9));
+        for (name, sibling, expected) in [
+            ("cargo-berth-core", "cargo-berth-data", "├── core"),
+            ("cargo-berth-data", "cargo-berth-core", "├── data"),
+        ] {
+            let mut row = build_group_header_cells("├── ", name);
+            row.cells[COL_NAME].shared_prefix = shared_name_prefix(name, "cargo-liner");
+            row.cells[COL_NAME].sibling_prefix = shared_name_prefix(name, sibling);
+            let text: String = name_cell_spans(&row.cells[COL_NAME], &row.prefix, 10)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(text.trim_end(), expected);
+        }
+    }
+
+    #[test]
+    fn group_count_drops_before_the_name_cuts_to_one_letter() {
+        for (prefix, label, width, expected) in [
+            ("▶ ", "mega 🌲:13", 10, "▶ mega 🌲"),
+            ("▶ ", "東京group 🌲:13", 12, "▶ 東京gr… 🌲"),
+            ("▶ ", "mega 🌲:13", 11, "▶ me… 🌲:13"),
+            (" ▶ ", "東group-0 🌲:13", 8, "▶ 東… 🌲"),
+            (" ▶ ", "東group-0 🌲:13", 9, " ▶ 東… 🌲"),
+            (" ▼ ", "proof_crate [alpha-team] 🌲:3", 11, " ▼ [alp… 🌲"),
+            (" ▼ ", "proof_crate [alpha-team] 🌲:3", 12, " ▼ [al… 🌲:3"),
+        ] {
+            let row = build_group_header_cells(prefix, label);
+            let text = name_cell_spans(&row.cells[COL_NAME], &row.prefix, width)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(text.trim_end(), expected, "{width}: {label}");
+            assert_eq!(display_width(&text), width);
+        }
+    }
+
+    #[test]
+    fn narrow_lint_headings_take_only_their_column_cells() {
+        let defs = column_defs(LintColumnStatus::Enabled);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
+        widths.observe(COL_NAME, 60);
+        widths.observe(COL_DISK, 6);
+        for window in [60, 80] {
+            let fitted = widths.fitted(44, window);
+            let header = header_line(&fitted, PROJECTS_HEADER);
+            for (column, def) in defs.iter().enumerate() {
+                let slot = if fitted.get(column) == 0 {
+                    0
+                } else {
+                    def.gap + fitted.get(column)
+                };
+                assert_eq!(header.spans[column].width(), slot, "{window}: {column}");
+            }
+            assert_eq!(header.width(), fitted.total_width());
+            assert!(header.spans[COL_NAME].content.contains("Projects"));
+        }
     }
 
     #[test]
@@ -1499,10 +1663,10 @@ mod tests {
         let row = build_summary_cells(&widths, "36.3 GiB");
         let line = row_to_line(&row, &widths);
 
-        assert_eq!(defs[COL_LINT].header_max(), "");
+        assert_eq!(defs[COL_LINT].header_min(), "");
         assert_eq!(widths.get(COL_LINT), 0);
         assert_eq!(display_width(header.spans[COL_LINT].content.as_ref()), 0);
-        assert_eq!(defs[COL_CI].header_max(), "CI");
+        assert_eq!(defs[COL_CI].header_min(), "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "     Σ");
@@ -1564,6 +1728,7 @@ mod tests {
                     })
                     .collect(),
             ),
+            shown_name:  0,
             lint_column: LintColumnStatus::Hidden,
             disk_format: DiskFormat::Decimal,
             generation:  0,

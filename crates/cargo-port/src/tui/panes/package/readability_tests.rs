@@ -469,6 +469,86 @@ fn compact_target_disk_value_stays_on_its_label_row() -> anyhow::Result<()> {
 }
 
 #[test]
+fn a_cut_path_keeps_the_label_column_of_other_cut_values() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    for (window, width, path, first) in [
+        (80, 18, "/workspace/a-long-project-path", '/'),
+        (160, 31, "~/rust/cargo-liner", '~'),
+        (160, 32, "~/rust/cargo-liner", '~'),
+    ] {
+        let data = if window == 160 {
+            PackageData {
+                path: path.to_string(),
+                ..workspace_data()
+            }
+        } else {
+            PackageData {
+                description: DescriptionState::KnownEmpty,
+                path: path.to_string(),
+                version: PackageVersion::Manifest("0.1.0-extra-long".to_string()),
+                package_presence: PackagePresence::Present,
+                ..PackageData::default()
+            }
+        };
+        app.panes.package.set_content(data);
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, window, width)?;
+        let rows = test_support::rows(&buffer);
+        let value_column = |label: &str, start: char| -> anyhow::Result<usize> {
+            let (x, y) = test_support::position(&buffer, label)?;
+            let x = usize::from(x);
+            rows[usize::from(y)]
+                .chars()
+                .skip(x + label.len())
+                .position(|cell| cell == start)
+                .map(|offset| x + label.len() + offset)
+                .context(label.to_string())
+        };
+        assert_eq!(
+            value_column("Path", first)?,
+            if window == 160 {
+                value_column("Disk", '7')?
+            } else {
+                value_column("Version", '0')?
+            },
+            "{rows:?}"
+        );
+        if width == 32 {
+            test_support::position(&buffer, path)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn target_disk_row_keeps_one_indent_and_its_value_on_one_row() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    let mut target_columns = Vec::new();
+    for total in [73, 6_396_314] {
+        app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
+            disk: DiskMeasurement::Measured {
+                total,
+                target: 0,
+                other: total,
+            },
+            ..PackageData::default()
+        });
+        for width in [18, 20] {
+            let buffer = test_support::draw_pane(&mut app, PaneId::Package, width)?;
+            let rows = test_support::rows(&buffer);
+            let (x, y) = test_support::position(&buffer, "target/")?;
+            assert!(rows[usize::from(y)].contains("0 B"), "{width}: {rows:?}");
+            target_columns.push(x);
+        }
+    }
+    assert!(
+        target_columns.windows(2).all(|pair| pair[0] == pair[1]),
+        "{target_columns:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn package_draws_sentence_case_release_and_disk_labels() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.project_list.handle_crates_io_version_msg(
@@ -1027,7 +1107,7 @@ fn empty_description_keeps_its_inset_without_a_cut_word() -> anyhow::Result<()> 
         description: DescriptionState::KnownEmpty,
         ..PackageData::default()
     });
-    for width in [17, 15, 20, 8, 5] {
+    for width in [17, 15, 20, 8, 6, 5] {
         let buffer = test_support::draw_pane(&mut app, PaneId::Package, width)?;
         let mut text = String::new();
         for y in 1..buffer.area.bottom() - 1 {
@@ -1266,7 +1346,7 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
             ("integration", 1273),
             ("doc", 10),
             ("(ignored)", 5),
-            ("", 7191),
+            ("Total", 7191),
         ],
         ..PackageData::default()
     });
@@ -1344,7 +1424,7 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
 #[test]
 fn narrow_package_titles_keep_the_label_and_worktree_count_on_one_row() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
-    for (window, pane_width) in [(80, 16), (80, 17), (95, 24)] {
+    for (window, pane_width) in [(60, 17), (80, 16), (80, 17), (95, 24)] {
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
             description: DescriptionState::KnownEmpty,
@@ -1360,6 +1440,9 @@ fn narrow_package_titles_keep_the_label_and_worktree_count_on_one_row() -> anyho
             test_support::draw_pane_in_window(&mut app, PaneId::Package, window, pane_width)?;
         let title = test_support::rows(&buffer)[0].clone();
         assert!(title.contains("Worktree Group"), "{title}");
+        if pane_width <= 17 {
+            assert_eq!(buffer[(1, 0)].symbol(), "W", "{title}");
+        }
         let count = test_support::position(&buffer, "Worktrees")?;
         let row = &test_support::rows(&buffer)[usize::from(count.1)];
         assert!(row.contains("Worktrees 2"), "{row}");
@@ -1469,7 +1552,7 @@ fn worktree_counts_share_the_label_row_and_lint_keeps_its_column() -> anyhow::Re
         app.framework.color_mode = mode;
         for (window, pane_width, count, status, expected) in [
             (80, 18, 60, LintStatus::NoLog, " Lint       60"),
-            (160, 47, 60, LintStatus::NoLog, " Lint         60"),
+            (160, 47, 60, LintStatus::NoLog, " Lint       60"),
             (80, 18, 60, LintStatus::Stale, " Lint     ⚫ 60"),
             (80, 18, 123_456, LintStatus::NoLog, " Lint    123456"),
         ] {
@@ -1516,19 +1599,33 @@ fn target_disk_zero_shares_its_label_row_and_the_disk_start_column() -> anyhow::
         },
         ..PackageData::default()
     });
-    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
-    let disk = test_support::position(&buffer, "73 B")?;
-    let target = test_support::position(&buffer, "target/")?;
-    let value = test_support::position(&buffer, "0 B")?;
-    assert_eq!(target.1, value.1, "{:?}", test_support::rows(&buffer));
-    assert_eq!(disk.0, value.0);
-    assert_eq!(buffer[(15, value.1)].symbol(), " ");
+    for (window_width, pane_width) in [(80, 16), (80, 17), (80, 18), (95, 24)] {
+        let buffer =
+            test_support::draw_pane_in_window(&mut app, PaneId::Package, window_width, pane_width)?;
+        let disk = test_support::position(&buffer, "73 B")?;
+        let target = test_support::position(&buffer, "target/")?;
+        let value = test_support::position(&buffer, "0 B")?;
+        assert_eq!(target.1, value.1, "{:?}", test_support::rows(&buffer));
+        if pane_width <= 17 {
+            assert_eq!(disk.0, pane_width - 6);
+            assert_eq!(value.0, pane_width - 5);
+        } else {
+            assert_eq!(disk.0, value.0);
+        }
+        let other = test_support::position(&buffer, "Other")?;
+        let other_area = ratatui::layout::Rect::new(1, other.1, pane_width - 2, 1);
+        test_support::find_text_cell(&buffer, other_area, "73 B").context("inline Other value")?;
+        assert_eq!(buffer[(pane_width - 2, other.1)].symbol(), " ");
+        assert_eq!(buffer[(pane_width - 2, value.1)].symbol(), " ");
+    }
     Ok(())
 }
 
 #[test]
 fn disk_children_keep_one_indent_and_the_shared_value_column() -> anyhow::Result<()> {
-    for (window_width, pane_width, child_column) in [(80, 17, 3), (95, 24, 4)] {
+    for (window_width, pane_width, child_column) in
+        [(80, 16, 3), (80, 17, 4), (80, 18, 4), (95, 24, 4)]
+    {
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
@@ -1546,22 +1643,31 @@ fn disk_children_keep_one_indent_and_the_shared_value_column() -> anyhow::Result
         let disk = test_support::position(&buffer, "Disk")?;
         let target = test_support::position(&buffer, "target/")?;
         let other = test_support::position(&buffer, "Other")?;
-        assert_eq!(target.0, other.0, "{window_width}: {rows:?}");
+        if pane_width == 16 {
+            assert_eq!(other.0, 4, "{window_width}: {rows:?}");
+        } else {
+            assert_eq!(target.0, other.0, "{window_width}: {rows:?}");
+        }
         assert_eq!(target.0, child_column, "{window_width}: {rows:?}");
         let mut value_columns = Vec::new();
         for (label, value) in [(disk, "73 B"), (target, "0 B"), (other, "73 B")] {
-            let area = ratatui::layout::Rect::new(1, label.1, pane_width - 2, 1);
+            let value_row = label.1;
+            let area = ratatui::layout::Rect::new(1, value_row, pane_width - 2, 1);
             let position = test_support::find_text_cell(&buffer, area, value)
-                .with_context(|| format!("{value} beside its label at {window_width}: {rows:?}"))?;
+                .with_context(|| format!("{value} at {window_width}: {rows:?}"))?;
             value_columns.push(position.0);
-            assert_eq!(buffer[(pane_width - 2, label.1)].symbol(), " ");
+            for y in label.1..=value_row {
+                assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+            }
         }
-        assert!(
-            value_columns
-                .iter()
-                .all(|column| *column == value_columns[0]),
-            "{rows:?}"
-        );
+        if pane_width == 24 {
+            assert!(
+                value_columns
+                    .iter()
+                    .all(|column| *column == value_columns[0]),
+                "{rows:?}"
+            );
+        }
     }
     Ok(())
 }

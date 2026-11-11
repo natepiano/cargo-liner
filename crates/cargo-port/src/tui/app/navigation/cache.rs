@@ -45,6 +45,7 @@ impl App {
             0,
         );
         let mut widths = widths;
+        widths.set_shown_name_width(self.shown_name_width());
         let total = self
             .project_list
             .visible_disk_total()

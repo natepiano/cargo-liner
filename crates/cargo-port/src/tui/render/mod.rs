@@ -61,6 +61,7 @@ use super::app_render_state::OverlayRenderInputs;
 use super::columns::ProjectColumnLayout;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
+use super::constants::CUT_TRAILING_SEPARATORS;
 use super::constants::STRIP_SLOT_COUNT;
 use super::integration::AppGlobalAction;
 use super::interaction;
@@ -223,29 +224,47 @@ fn resolve_tiled_layout(
             + panes::PROJECT_LIST_RIGHT_PADDING,
     )
     .unwrap_or(u16::MAX);
+    let shown_left_width = u16::try_from(
+        app.project_list.cached_fit_widths.shown_table_width()
+            + BLOCK_BORDER_WIDTH
+            + panes::PROJECT_LIST_RIGHT_PADDING,
+    )
+    .unwrap_or(u16::MAX);
     let project_column = ProjectColumnLayout {
         preferred_width: left_width,
         minimum_width:   minimum_left_width,
+        shown_width:     shown_left_width,
         lint_column:     app.config.current().lint.enabled.into(),
     };
-    let targets_preferred_width = app.panes.targets.preferred_width();
-    let (package_width, git_width) =
-        panes::top_pane_widths(top_area, project_column, targets_preferred_width);
+    let targets_width = app.panes.targets.preferred_width();
+    let middle =
+        panes::selected_language_stats(&app.project_list, app.selected_project_path_for_render())
+            .map_or_else(
+                || panes::MiddlePaneNeeds::minimum(targets_width),
+                |stats| panes::MiddlePaneNeeds::for_selected(stats, targets_width),
+            );
+    let (package_width, git_width) = panes::top_pane_widths(top_area, project_column, middle);
     let key = (app.scan.generation(), package_width, git_width);
-    let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
-        height
+    let rows = if let Some(rows) = app.panes.cached_top_row_height(key) {
+        rows
     } else {
-        let height = panes::max_top_pane_inner_height(app, package_width, git_width);
-        app.panes.store_top_row_height(key, height);
-        height
+        let rows = panes::max_top_pane_inner_height(app, package_width, git_width);
+        app.panes.store_top_row_height(key, rows);
+        rows
     };
     panes::resolve_layout(
         top_area,
         project_column,
         core_count,
         bottom_row,
-        top_required_inner,
-        targets_preferred_width,
+        rows.top_inner,
+        middle.with_rows(
+            app.project_list.most_language_rows(),
+            app.panes
+                .targets
+                .content()
+                .map_or(0, panes::TargetsData::inner_rows),
+        ),
     )
 }
 
@@ -768,10 +787,13 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     if max_width <= ellipsis.width() {
         return truncate_to_width(ellipsis, max_width).to_string();
     }
-    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()))
-        .trim_end()
-        .trim_end_matches(" ·")
-        .trim_end();
+    let mut prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width())).trim_end();
+    while let Some(rest) = CUT_TRAILING_SEPARATORS
+        .iter()
+        .find_map(|separator| prefix.strip_suffix(separator))
+    {
+        prefix = rest.trim_end();
+    }
     let mut shortened = String::with_capacity(prefix.len() + ellipsis.len());
     shortened.push_str(prefix);
     shortened.push_str(ellipsis);
@@ -885,6 +907,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
@@ -892,12 +916,14 @@ mod tests {
     use ratatui::style::Style;
     use tui_pane::ColorMode;
 
+    use crate::config::LintIndicator;
     use crate::tui::columns::LintColumnStatus;
     use crate::tui::columns::ProjectColumnLayout;
     use crate::tui::panes;
     use crate::tui::panes::BottomRow;
     use crate::tui::panes::CPU_PANE_WIDTH;
     use crate::tui::panes::PaneId;
+    use crate::tui::test_support;
 
     #[test]
     fn terminal_buffer_uses_the_selected_color_mode() {
@@ -972,24 +998,26 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             20,
-            18,
+            panes::MiddlePaneNeeds::minimum(18),
         );
         let wide = panes::resolve_layout(
             Rect::new(0, 0, 150, 30),
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             20,
-            18,
+            panes::MiddlePaneNeeds::minimum(18),
         );
 
         assert_eq!(narrow.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
@@ -1003,12 +1031,13 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             20,
-            18,
+            panes::MiddlePaneNeeds::minimum(18),
         );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
@@ -1028,6 +1057,57 @@ mod tests {
     }
 
     #[test]
+    fn detail_panes_take_rows_unused_by_selected_targets() -> anyhow::Result<()> {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for (height, target_count) in [(30, 1), (45, 1), (45, 5)] {
+                let mut app = test_support::project_app();
+                app.framework.color_mode = mode;
+                app.config.current_mut().lint.enabled = LintIndicator::Disabled;
+                app.ensure_fit_widths_cached();
+                app.project_list
+                    .cached_fit_widths
+                    .observe(crate::tui::columns::COL_NAME, 100);
+                let mut data = test_support::target_data();
+                data.binaries = (0..target_count)
+                    .map(|index| {
+                        let mut entry = data.binaries[0].clone();
+                        entry.name = format!("target-{index}");
+                        entry.display_name.clone_from(&entry.name);
+                        entry
+                    })
+                    .collect();
+                app.panes.targets.set_content(data);
+                let mut terminal = Terminal::new(TestBackend::new(80, height))?;
+                terminal.draw(|frame| super::ui(frame, &mut app))?;
+                let package = app.panes.tiled_layout.area(PaneId::Package);
+                let git = app.panes.tiled_layout.area(PaneId::Git);
+                let mut most = panes::max_top_pane_inner_height(&app, package.width, git.width);
+                most.top_inner = 60;
+                most.targets_inner = 20;
+                app.panes
+                    .store_top_row_height((app.scan.generation(), package.width, git.width), most);
+                terminal.draw(|frame| super::ui(frame, &mut app))?;
+                let buffer = terminal.backend().buffer();
+                let targets = app.panes.tiled_layout.area(PaneId::Targets);
+                let package = app.panes.tiled_layout.area(PaneId::Package);
+                let git = app.panes.tiled_layout.area(PaneId::Git);
+                assert_eq!((package.width, git.width), (18, 17));
+                assert_eq!(targets.height, u16::try_from(target_count)? + 3);
+                assert_eq!(package.bottom(), targets.y);
+                assert_eq!(git.bottom(), targets.y);
+                assert!(app.panes.tiled_layout.area(PaneId::Cpu).is_empty());
+                for index in 0..target_count {
+                    assert!(
+                        test_support::find_text_cell(buffer, targets, &format!("target-{index}"))
+                            .is_some()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn middle_row_expands_to_fit_all_cpu_rows_when_height_allows() {
         // `panes::resolve_layout` with top-row inner height 4 gives `PaneId::Cpu`
         // more than `panes::cpu_required_pane_height(12)`, fitting every CPU row and
@@ -1037,12 +1117,13 @@ mod tests {
             ProjectColumnLayout {
                 preferred_width: 30,
                 minimum_width:   30,
+                shown_width:     30,
                 lint_column:     LintColumnStatus::Hidden,
             },
             12,
             BottomRow::Diagnostics,
             4,
-            18,
+            panes::MiddlePaneNeeds::minimum(18),
         );
 
         assert!(layout.area(PaneId::Cpu).height > super::panes::cpu_required_pane_height(12));

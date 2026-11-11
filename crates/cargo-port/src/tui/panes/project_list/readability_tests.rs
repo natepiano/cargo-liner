@@ -173,12 +173,13 @@ fn projects_reserve_main_width_before_comparisons_arrive() -> anyhow::Result<()>
         test_support::draw_ui(&mut app, width)?;
         assert!(app.project_list.cached_fit_widths.get(COL_SYNC) > sync_reserved);
         let grown = app.panes.tiled_layout.area(PaneId::ProjectList);
-        test_support::draw_ui(&mut app, width)?;
+        let buffer = test_support::draw_ui(&mut app, width)?;
         assert_eq!(app.panes.tiled_layout.area(PaneId::ProjectList), grown);
         if width == 160 {
+            test_support::position(&buffer, PROJECT)?;
             assert!(
                 app.panes.tiled_layout.area(PaneId::Targets).width
-                    >= app.panes.targets.preferred_width()
+                    >= crate::tui::panes::targets::minimum_width()
             );
         }
     }

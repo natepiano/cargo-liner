@@ -882,7 +882,7 @@ The finder offers each binary by its own name, and Package Structure counts the 
 - A separate binary flag beside the names list, because the two can disagree.
 - A plural `binaries` Structure label. The label names a target kind, as `lib 3` does (showrunner, 2026-11-10).
 
-### Phase 4x — CI job header and table margins read clean  · status: todo
+### Phase 4x — CI job header and table margins read clean  · status: done
 
 **Depends on:** Phase 4v (both edit `crates/cargo-port/src/tui/panes/ci/`, `panes/lints/` and `sccache/`) and Phase 4y (the showrunner orders it first, 2026-11-10).
 
@@ -914,8 +914,10 @@ The finder offers each binary by its own name, and Package Structure counts the 
 21. `w80h45-*-1-lint-runs`, `w80h45-*-2-*` and `w160h45-*-1-lint-runs`, `-6-lint-runs`: a detail pane pages (`1 of 2`) while a pane in the same column has 10 or more empty rows.
 22. `quota80-*-loading-a/b/c`: the Git pane draws 7 blank rows with no state text while it loads.
 23. `w160h45-*-2-ci-all`, `-2-main-checkout` and `-2-main-git-*`: the last Workspace Tests row is a number with no label (`7737`).
+24. Phase 4y design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4y/live/shots_4y_1/`, `w160h45-color-3-finder-migrate`: the selected finder row keeps the green Type ink on the grey bar, at 2.70:1 contrast.
+25. `w80h30-*-3-finder-migrate`: the finder Dir cell cuts mid-path with no `…`, so the two rows look the same.
 
-**Decision:** showrunner, 2026-11-09: all three go in one follow-up phase. Text on the border breaks the one-cell margin, so it is a defect and not a new look. Director, 2026-11-09: items 4 and 5 move here under the landing rule, because both are older than Phase 4v and outside its Spec. Showrunner, 2026-11-09: item 6 moves here from Phase 4v. Director, 2026-11-09: items 7 to 16 move here under the hard landing, after a compare with frames from the build before Phase 4v. Items 7 to 13, 15 and 16 are older than Phase 4v. Item 14 is older at 80 columns. At 60 columns with Lint on, the phase's kept list columns take 2 cells from Git, and a 10-cell date cannot fit in 9, so a short-date choice goes to the showrunner. Director, 2026-11-10: items 17 to 23 move here under the three-round cap. Phase 4v ran 3 repair rounds, and the branch is equal to or better than main on every live count. Items 18 to 23 are older than Phase 4v. Item 17 shows at 80 columns because the phase gave Package 16 cells, and the older Path rule then narrows the label. The check also listed the Package Lint value at 160 columns, which Spec 10 holds.
+**Decision:** showrunner, 2026-11-09: all three go in one follow-up phase. Text on the border breaks the one-cell margin, so it is a defect and not a new look. Director, 2026-11-09: items 4 and 5 move here under the landing rule, because both are older than Phase 4v and outside its Spec. Showrunner, 2026-11-09: item 6 moves here from Phase 4v. Director, 2026-11-09: items 7 to 16 move here under the hard landing, after a compare with frames from the build before Phase 4v. Items 7 to 13, 15 and 16 are older than Phase 4v. Item 14 is older at 80 columns. At 60 columns with Lint on, the phase's kept list columns take 2 cells from Git, and a 10-cell date cannot fit in 9, so a short-date choice goes to the showrunner. Director, 2026-11-10: items 17 to 23 move here under the three-round cap. Phase 4v ran 3 repair rounds, and the branch is equal to or better than main on every live count. Items 18 to 23 are older than Phase 4v. Item 17 shows at 80 columns because the phase gave Package 16 cells, and the older Path rule then narrows the label. The check also listed the Package Lint value at 160 columns, which Spec 10 holds. Director, 2026-11-10: items 24 and 25 move here from the Phase 4y design check, because both are older than Phase 4y. Showrunner, 2026-11-10: the Structure `binary` label stays singular for every count. Showrunner, 2026-11-10: at 160 columns, when the bottom row cannot fit all names, Targets cuts its Source name. Labels never cut, so Languages stays at or above its minimum width, which holds the `Languages` header. Project names stay whole. `projects_reserve_main_width_before_comparisons_arrive` now requires Targets at its minimum width or wider, and whole project names. Director, 2026-11-10: when cut sibling member names collide, each also drops the prefix it shares with the colliding siblings at a `-` or `_` boundary (Spec 16). Showrunner, 2026-11-10: at 80 columns Package takes no cell from Git. Git needs all 17 cells for `not a git repo`, and a pre-phase test pins the 18/17 split. Path draws `/tm…` beside the aligned labels under Spec 15. `narrow_workspace_shows_path_and_disk_values` now expects the cut Path and keeps its `73 B` check. Showrunner, 2026-11-10: with Lint on, the `Projects` header label cuts with the names, as `┃   Proj… Lint CI …`. This is the one exception to the rule that labels never cut. It applies only when the name column already cuts names. A narrower Disk or Main reserve would cut data values, and a header with no indent would break the alignment. Showrunner, 2026-11-10: at 160 columns the bottom row needs 163 cells for whole project names, Languages at its minimum and whole Targets labels. The Source column hides only when its whole header cannot fit, and it comes back in a wider window. This replaces the earlier Source cut, because a Source cell that reads `cargo…` is unreadable.
 
 **Constraints:**
 - Never cut a label. Cut a value, a name or a message first.
@@ -935,17 +937,17 @@ The finder offers each binary by its own name, and Package Structure counts the 
 3. **Sccache hint row.** At 80 columns the hint row keeps one cell before the right border (`tui/sccache/render.rs`).
 4. **Git dividers.** The Git pane draws one divider above the `Remotes` title, and a page that starts with a section draws no rule directly under the top border (`tui/panes/git/render.rs`).
 5. **Commit cut.** A commit value does not leave a separator before `…` (`tui/panes/ci/render.rs`).
-6. **Lint-on labels.** At 60 and 80 columns with Lint on, each column label sits over its column. The unit director sends the layout choice to the showrunner before any code (`tui/columns/`).
+6. **Lint-on labels.** At 60 and 80 columns with Lint on, each column label sits over its column. Each value column is as wide as its label, and the name column gives the cells (showrunner, 2026-11-10, after the user's C205 rule: columns stay, names shorten first) (`tui/columns/`).
 7. **Description height.** At 80 columns and 45 rows, the Git description is capped as at 30 rows, and Package does not pad to it (`tui/panes/git/render.rs`, `tui/panes/package/render.rs`).
 8. **Group count.** A group row drops its count when the name would otherwise cut to one letter (`tui/panes/project_list/`).
 9. **Disk rows.** `target/` and its value draw on one row when they fit, with one indent (`tui/panes/package/render.rs`).
 10. **Lint Runs table.** The date column has a `Date` header at 160 columns, and the Package Lint value skips the empty icon slot (`tui/panes/lints/render.rs`, `tui/panes/package/render.rs`).
-11. **Title spare cell.** A pane title with one spare cell draws balanced or in the no-side-space form. The unit director sends the choice to the showrunner before any code.
-12. **Git dates.** A date value that does not fit drops the time and draws the whole date. The unit director sends the 9-cell form to the showrunner before any code (`tui/panes/git/render.rs`).
+11. **Title spare cell.** A pane title with one spare cell draws with no side space, as `┌Package - alpha┐`, and shows the whole name. This is the C301 rule for a title that uses all inner cells (showrunner, 2026-11-10).
+12. **Git dates.** A date value that does not fit drops the time and draws the whole date. In fewer than 10 cells the date draws as `26-11-07` (showrunner, 2026-11-10) (`tui/panes/git/render.rs`).
 13. **Messages.** A Git message wraps onto a free row instead of cutting (`tui/panes/git/render.rs`).
-14. **Wide names.** At 160 columns Languages and Targets names draw whole, and the cells come from free space in the project list (`tui/panes/layout.rs`).
-15. **Path label.** A Path value that cuts keeps the label column of the other one-row fields (`tui/panes/package/render.rs`).
-16. **Distinct names.** Cut member names stay different from each other. The unit director sends the cut form to the showrunner before any code (`tui/panes/project_list/`).
+14. **Wide names.** At 160 columns Languages and Targets names draw whole, and the cells come from free space in the project list. When the row cannot fit all names, Targets hides its Source column until its whole header fits, and Languages keeps its minimum width (showrunner, 2026-11-10) (`tui/panes/layout.rs`).
+15. **Path label.** A Path value that cuts keeps the label column of the other one-row fields, as `/tm…` at 80 columns (showrunner, 2026-11-10) (`tui/panes/package/render.rs`).
+16. **Distinct names.** Cut member names stay different from each other. A full name that fits stays full. A member whose full name does not fit drops the name prefix it shares with its workspace root, as `berth` for `cargo-berth` under `cargo-liner`, and then cuts on the right (showrunner, 2026-11-10) (`tui/panes/project_list/`).
 17. **Toast cut.** A toast message cuts with `…` and never after a rule piece (`crates/tui_pane/src/toasts/`).
 18. **Ahead/Behind.** The value uses the free cells of its row before it cuts (`tui/panes/git/render.rs`).
 19. **Free rows.** A detail pane takes the free rows of its column before it pages (`tui/panes/layout.rs`).
@@ -976,6 +978,47 @@ The finder offers each binary by its own name, and Package Structure counts the 
 **State:** none.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each defect at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The 80-column captures page the Package pane to show the Structure box. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4z — Names and titles never cut while cells are free  · status: todo
+
+**Depends on:** Phase 4x (both edit `crates/cargo-port/src/tui/columns/`, `panes/project_list/`, `panes/ci/`, `panes/git/` and `crates/tui_pane/src/toasts/`).
+
+#### Work Order
+
+**Goal:** a name, title or value that the user sees draws readable text. It does not cut to one letter or to `…` alone, and it does not cut while its row has free cells.
+
+**Source:**
+1. Phase 4x design check, `shots_4x_1`, `w60h30-*-5-lint-on` and `w80h30-*-5-lint-on`: the group row draws `▶ m… 🌲`. Spec 8 of Phase 4x dropped the count, and the name still cuts to one letter.
+2. Phase 4x final design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4x/live/shots_4x_3/`. These are older than Phase 4x or not caused by it, so they moved here under the hard landing after repair round 3:
+   1. `w60h30-nocolor-2-main-checkout.txt` row 23: `┌ CI runs (4… ┐`. `CI runs (48)` is 12 cells and the title has 13.
+   2. `w60h30-nocolor-5-lint-on.txt` rows 24-28: a toast draws `┌ … [x]─┐` with `metad` / `ata` below. The title is `…` alone, and the word breaks with no mark.
+   3. `w160h45-nocolor-2-main-git-2_of_2.txt` row 7: the remote URL draws `natepiano…` while its column and the Tracked and Sync columns have free cells.
+
+**Decision:** showrunner, 2026-11-10: a look the user sees today changes only when it is wrong, clipped, unreadable or against a user rule (user, 2026-11-06). A name cut to one letter is unreadable, so this phase drops the 🌲 mark in that case. The same ruling dropped six other items from the Phase 4x design check, because none is wrong, clipped or unreadable: the finder side margin (no border cell hides finder text), one blank row between Lint Runs records, one title case, the `Worktrees (13)` heading space, and, by the director under the same rule, the Workspace value columns and the two loading message forms. Director, 2026-11-10: Source items 2.1 to 2.3 are clipped or unreadable, so they stay. Under the same rule the director dropped one more item: unloaded Package fields draw `-` beside `—` (older; nothing is clipped). The one-cell gap between multi-word CI job headers at 160 columns (`Windows Build Check Test Suite`) is a look question for the showrunner, sent with the Phase 4x notice; it joins this phase only if the showrunner keeps it.
+
+**Constraints:**
+- Change no other look.
+- `crates/tui_pane` belongs to tile-unit. Trial-merge the tile tip before the checkpoint notice.
+
+**Spec:**
+1. **Group mark.** When a group row has dropped its count and its name would still cut to one letter, the row also drops its 🌲 mark, and the name takes those cells (`tui/columns/`, `tui/panes/project_list/`).
+2. **CI title.** A CI runs title that cannot draw whole drops its branch suffix and its page part before it cuts the count, as `┌CI runs (48)─┐` (`tui/panes/ci/render.rs`).
+3. **Toast text.** A toast body breaks at word boundaries, and a cut word ends with `…`. A toast title is never `…` alone: when the title cannot draw one readable word, draw the toast without its title (`crates/tui_pane/src/toasts/`).
+4. **Remote URL.** The Remotes URL uses the free cells of its row, including spare Tracked and Sync cells, before it cuts (`tui/panes/git/render.rs`).
+5. **Changelog.** Add the cargo-port and tui_pane entries.
+
+**Files:**
+- `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
+- `crates/cargo-port/src/tui/panes/ci/` — Spec 2
+- `crates/tui_pane/src/toasts/` — Spec 3
+- `crates/cargo-port/src/tui/panes/git/` — Spec 4
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — Spec 5
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each Spec at the capture's pane width. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

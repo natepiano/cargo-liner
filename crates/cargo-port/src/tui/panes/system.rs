@@ -19,6 +19,7 @@ use super::ProjectListPane;
 use super::TargetsPane;
 use super::data::DetailCacheState;
 use super::data::PaneDataStore;
+use super::pane_data::CrossProjectRows;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::startup_services::StartupServices;
@@ -53,7 +54,7 @@ pub(in crate::tui) struct Panes {
 #[derive(Default)]
 struct TopRowHeightCache {
     key:   Option<(u64, u16, u16)>,
-    value: u16,
+    value: CrossProjectRows,
 }
 
 impl Panes {
@@ -79,12 +80,19 @@ impl Panes {
     /// holds a different key. The caller recomputes on a miss via
     /// [`super::max_top_pane_inner_height`] and stores it with
     /// [`Self::store_top_row_height`].
-    pub(in crate::tui) fn cached_top_row_height(&self, key: (u64, u16, u16)) -> Option<u16> {
+    pub(in crate::tui) fn cached_top_row_height(
+        &self,
+        key: (u64, u16, u16),
+    ) -> Option<CrossProjectRows> {
         (self.top_row_height_cache.key == Some(key)).then_some(self.top_row_height_cache.value)
     }
 
-    /// Store the cross-project top-row inner height computed for `key`.
-    pub(in crate::tui) const fn store_top_row_height(&mut self, key: (u64, u16, u16), value: u16) {
+    /// Store the cross-project rows computed for `key`.
+    pub(in crate::tui) const fn store_top_row_height(
+        &mut self,
+        key: (u64, u16, u16),
+        value: CrossProjectRows,
+    ) {
         self.top_row_height_cache.key = Some(key);
         self.top_row_height_cache.value = value;
     }

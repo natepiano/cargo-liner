@@ -28,16 +28,14 @@ use tui_pane::ColorMode;
 use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
+use super::constants::DESCRIPTION_INSET;
+use super::constants::DESCRIPTION_MARGIN_COUNT;
+use super::constants::DESCRIPTION_MAX_ROWS;
 use super::constants::NO_DESCRIPTION_AVAILABLE;
+use super::constants::SHORT_NO_DESCRIPTION;
 use super::support;
 use crate::tui::render;
 use crate::tui::theme_roles;
-
-const SHORT_PANE_BODY_HEIGHT: u16 = 12;
-const SHORT_DESCRIPTION_ROWS: u16 = 2;
-const DESCRIPTION_INSET: u16 = 1;
-const DESCRIPTION_MARGIN_COUNT: u16 = 2;
-const SHORT_NO_DESCRIPTION: &str = "No description";
 
 /// The known state of a package or repository description.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -148,7 +146,6 @@ impl DescriptionBlock {
         empty_behavior: EmptyDescriptionBehavior,
     ) -> Self {
         let inner_width = outer_area.width.saturating_sub(2);
-        let inner_height = outer_area.height.saturating_sub(2);
         let trimmed = description
             .as_deref()
             .map(str::trim)
@@ -174,6 +171,11 @@ impl DescriptionBlock {
             Some(text) if column_width > 0 => support::word_wrap(text, usize::from(column_width)),
             _ => Vec::new(),
         };
+        let inner_height_cap = if content_state.has_real_content() {
+            DESCRIPTION_MAX_ROWS
+        } else {
+            u16::try_from(rows.len()).unwrap_or(u16::MAX)
+        };
 
         Self {
             rows,
@@ -181,11 +183,7 @@ impl DescriptionBlock {
             column_width,
             padding,
             content_state,
-            inner_height_cap: if inner_height < SHORT_PANE_BODY_HEIGHT {
-                SHORT_DESCRIPTION_ROWS
-            } else {
-                inner_height
-            },
+            inner_height_cap,
         }
     }
 
@@ -226,11 +224,7 @@ impl DescriptionBlock {
         if self.rows.is_empty() || self.column_width == 0 {
             return 0;
         }
-        let synced_cap = if project_inner.height < SHORT_PANE_BODY_HEIGHT {
-            SHORT_DESCRIPTION_ROWS
-        } else {
-            project_inner.height.saturating_sub(1)
-        };
+        let synced_cap = self.inner_height_cap;
         let synced_floor = synced_floor.rows().min(synced_cap);
         let row_budget = max_height.max(synced_floor).min(synced_cap);
         if row_budget == 0 {

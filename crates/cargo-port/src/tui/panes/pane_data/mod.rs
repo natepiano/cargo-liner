@@ -16,6 +16,7 @@ pub use copy_data::copy_payload_for_lints;
 pub use copy_data::copy_payload_for_output;
 pub use copy_data::copy_payload_for_package;
 pub use copy_data::copy_payload_for_targets;
+pub use detail_data::CrossProjectRows;
 pub use detail_data::DetailPaneData;
 pub use detail_data::build_pane_data;
 pub use detail_data::build_pane_data_for_member;
