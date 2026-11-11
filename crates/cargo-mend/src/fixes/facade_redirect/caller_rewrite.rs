@@ -26,11 +26,13 @@ use syn::spanned::Spanned;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::module_aliases::CrateUse;
 use super::module_aliases::ModuleAliases;
 use super::module_path;
 use super::redirect::CallerRedirect;
 use super::redirect::FacadeRedirect;
 use super::redirect::TargetSide;
+use super::self_crate_alias::SelfCrateAlias;
 use super::source_text;
 use super::source_text::SourceLines;
 use super::use_tree;
@@ -393,12 +395,10 @@ impl Visit<'_> for CallerRewriter<'_> {
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
-        // `CallerRewriter::visit_item_use` skips `node.leading_colon` because a leading `::`
-        // anchors the path at an extern crate, never at a module of the crate under
-        // analysis.
-        if node.leading_colon.is_some() {
+        let CrateUse::Local(local) = self.module_aliases.classify_use(node) else {
             return;
-        }
+        };
+        let node = local.as_ref();
         self.record_use_tree_paths(&node.tree);
         let Ok((start, _)) = source_text::item_use_byte_range(&self.lines, node) else {
             return;
@@ -456,12 +456,17 @@ impl<'a> CallerRewriter<'a> {
         let mut bindings = FxHashMap::default();
         let mut owner_imports = FxHashMap::default();
         for item in items {
+            if let SelfCrateAlias::Named(name) = SelfCrateAlias::classify(item) {
+                bindings.insert(name.unraw().to_string(), Vec::new());
+                continue;
+            }
             let Item::Use(item_use) = item else {
                 continue;
             };
-            if item_use.leading_colon.is_some() {
+            let CrateUse::Local(local) = module_aliases.classify_use(item_use) else {
                 continue;
-            }
+            };
+            let item_use = local.as_ref();
             let Ok((item_start, _)) = source_text::item_use_byte_range(lines, item_use) else {
                 continue;
             };
@@ -576,7 +581,12 @@ impl<'a> CallerRewriter<'a> {
                     return;
                 };
                 let tree_start = SourceLines::offset(position);
-                let header = &self.source[start..tree_start];
+                let header_end = node.leading_colon.as_ref().map_or(tree_start, |colon| {
+                    self.lines
+                        .position(colon.span().start())
+                        .map_or(tree_start, SourceLines::offset)
+                });
+                let header = &self.source[start..header_end];
                 let separator = format!("\n{}", self.lines.indent_before(start));
                 let replacement = lines
                     .into_iter()

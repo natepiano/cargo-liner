@@ -16,6 +16,7 @@ mod caller_rewrite;
 mod module_aliases;
 mod module_path;
 mod redirect;
+mod self_crate_alias;
 mod source_text;
 mod use_tree;
 
@@ -28,6 +29,7 @@ pub(super) use redirect::CallerRedirect;
 pub(super) use redirect::FacadeRedirect;
 pub(super) use redirect::RedirectTarget;
 pub(super) use redirect::TargetSide;
+pub(super) use self_crate_alias::SelfCrateAlias;
 pub(super) use source_text::IdentifierUse;
 pub(super) use source_text::SourceLines;
 pub(super) use source_text::dedup_fixes;

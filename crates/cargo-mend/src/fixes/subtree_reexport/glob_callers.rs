@@ -28,6 +28,7 @@ use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::FileRedirects;
 use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::ModuleAliases;
+use crate::fixes::facade_redirect::SelfCrateAlias;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::facade_redirect::TargetSide;
 use crate::fixes::imports;
@@ -61,7 +62,7 @@ struct GlobCallerRewriter<'a> {
     redirects:      &'a [FacadeRedirect],
     aliases:        &'a ModuleAliases,
     cfg_test_depth: usize,
-    block_aliases:  Vec<BTreeSet<String>>,
+    block_aliases:  Vec<BTreeMap<String, BlockModuleAlias>>,
     edits:          GlobCallerEdits,
 }
 
@@ -114,6 +115,17 @@ impl Visit<'_> for GlobCallerRewriter<'_> {
                 UseBinding::Named { name, .. } => Some(name),
                 UseBinding::Glob { .. } => None,
             })
+            .map(|name| (name, BlockModuleAlias::Unresolved))
+            .chain(
+                items
+                    .iter()
+                    .filter_map(|item| match SelfCrateAlias::classify(item) {
+                        SelfCrateAlias::Named(name) => {
+                            Some((name.unraw().to_string(), BlockModuleAlias::CrateRoot))
+                        },
+                        SelfCrateAlias::Other => None,
+                    }),
+            )
             .collect();
         self.block_aliases.push(aliases);
         if let Ok((start, end)) = self.lines.span_range(
@@ -159,12 +171,9 @@ impl GlobCallerRewriter<'_> {
             hidden = HiddenNames::Possible;
         }
         for (item, path) in &globs {
-            if item.leading_colon.is_some() {
-                continue;
-            }
             let segments = path.split("::").map(str::to_string).collect::<Vec<_>>();
             let written_target = facade_redirect::absolute_use_path(&self.module, &segments);
-            let target = self.glob_source(&segments);
+            let target = self.glob_source(item, &segments);
             if matches!(target, GlobSource::External) {
                 continue;
             }
@@ -229,37 +238,54 @@ impl GlobCallerRewriter<'_> {
         }
     }
 
-    fn glob_source(&self, segments: &[String]) -> GlobSource {
+    fn glob_source(&self, item: &ItemUse, segments: &[String]) -> GlobSource {
+        if item.leading_colon.is_some() {
+            return if segments
+                .first()
+                .is_some_and(|name| self.aliases.is_root_self_alias(name))
+            {
+                self.module_glob_source(segments[1..].to_vec())
+            } else {
+                GlobSource::External
+            };
+        }
         if let Some(name) = segments.first()
             && PathAnchor::from(name.as_str()) == PathAnchor::Name
         {
-            if self
+            if let Some(alias) = self
                 .block_aliases
                 .iter()
                 .rev()
-                .any(|aliases| aliases.contains(name))
+                .find_map(|aliases| aliases.get(name))
             {
-                return GlobSource::Unresolved;
+                return match alias {
+                    BlockModuleAlias::CrateRoot => self.module_glob_source(segments[1..].to_vec()),
+                    BlockModuleAlias::Unresolved => GlobSource::Unresolved,
+                };
             }
             let first = facade_redirect::absolute_use_path(&self.module, &segments[..1]);
             if !first.is_some_and(|path| {
                 self.aliases
                     .contains_module(&self.aliases.resolve_module(path))
             }) {
-                return GlobSource::External;
+                return if self.aliases.is_root_self_alias(name) {
+                    GlobSource::Unresolved
+                } else {
+                    GlobSource::External
+                };
             }
         }
-        facade_redirect::absolute_use_path(&self.module, segments).map_or(
-            GlobSource::Unresolved,
-            |path| {
-                let resolved = self.aliases.resolve_module(path);
-                if self.aliases.contains_module(&resolved) {
-                    GlobSource::Module(resolved)
-                } else {
-                    GlobSource::Unresolved
-                }
-            },
-        )
+        facade_redirect::absolute_use_path(&self.module, segments)
+            .map_or(GlobSource::Unresolved, |path| self.module_glob_source(path))
+    }
+
+    fn module_glob_source(&self, path: Vec<String>) -> GlobSource {
+        let resolved = self.aliases.resolve_module(path);
+        if self.aliases.contains_module(&resolved) {
+            GlobSource::Module(resolved)
+        } else {
+            GlobSource::Unresolved
+        }
     }
 
     fn insert_imports(&mut self, item: &ItemUse, paths: &[String], facts: Vec<usize>) {
@@ -270,7 +296,11 @@ impl GlobCallerRewriter<'_> {
             self.edits.declined.extend(facts);
             return;
         };
-        let Ok(position) = self.lines.position(item.tree.span().start()) else {
+        let header_end = item
+            .leading_colon
+            .as_ref()
+            .map_or_else(|| item.tree.span().start(), |colon| colon.span().start());
+        let Ok(position) = self.lines.position(header_end) else {
             self.edits.declined.extend(facts);
             return;
         };
@@ -295,6 +325,11 @@ impl GlobCallerRewriter<'_> {
             facts,
         });
     }
+}
+
+enum BlockModuleAlias {
+    CrateRoot,
+    Unresolved,
 }
 
 enum GlobSource {
@@ -481,6 +516,8 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use ReexportExpectation::Removed;
+    use ReexportExpectation::Retained;
     use anyhow::Result;
 
     use crate::fixes::imports;
@@ -610,6 +647,127 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ReexportExpectation {
+        Retained,
+        Removed,
+    }
+
+    fn assert_caller_fix(
+        caller: &str,
+        expected: &str,
+        retention: ReexportExpectation,
+        extra: &[(&str, &str)],
+    ) -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let selection = fixture(dir.path(), caller)?;
+        for (file, source) in extra {
+            fs::write(dir.path().join(file), source)?;
+        }
+        let report = report()?;
+        imports::apply_fixes(&fixes(&selection, &report)?)?;
+        let caller_path = dir.path().join("src/rig_plugin/look.rs");
+        assert_eq!(fs::read_to_string(&caller_path)?, expected, "{caller}");
+        let constants = fs::read_to_string(dir.path().join("src/rig_plugin/constants.rs"))?;
+        let actual = if constants.contains(REEXPORT) {
+            ReexportExpectation::Retained
+        } else {
+            ReexportExpectation::Removed
+        };
+        assert_eq!(actual, retention, "{caller}");
+        assert_compiles(dir.path())?;
+        assert!(
+            fixes(&selection, &report)?.iter().next().is_none(),
+            "The second pass must propose no edit."
+        );
+        assert_eq!(fs::read_to_string(caller_path)?, expected);
+        Ok(())
+    }
+
+    fn assert_review_alias_callers() -> Result<()> {
+        let body = "pub(super) fn radius() -> f32 { LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
+        let direct = format!("use super::constants::*;\n{body}");
+        let direct_fixed =
+            format!("use super::constants::*;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}");
+        let root_alias = "extern crate self as this; mod rig; mod rig_plugin; pub fn radius() -> f32 { rig_plugin::radius() }";
+        let absolute_glob = format!("use ::this::rig_plugin::constants::*;\n{body}");
+        let absolute_glob_fixed = format!(
+            "use ::this::rig_plugin::constants::*;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let absolute_explicit = format!(
+            "use super::constants::LOCAL_SCALE;\nuse ::this::rig_plugin::constants::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let absolute_explicit_fixed = format!(
+            "use super::constants::LOCAL_SCALE;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let unrelated_block = "fn idle() -> f32 { extern crate self as this; use this::rig_plugin::other::*; assert!(OTHER > 0.0); OTHER }";
+        let glob_shadow = format!("use super::*;\nuse self::this::*;\n{body}");
+        let shadow_parent = "use self::constants as this; mod constants; mod look; mod idle; mod other { pub(super) const OTHER: f32 = 1.0; } pub(crate) fn radius() -> f32 { look::radius() }";
+        let private_glob = "use super::hidden::*;\nuse super::aliases::*;\nuse this::LOCAL_SCALE;\nuse this::BOOT_BASE_RADIUS_SCALE;\npub(super) fn radius() -> f32 { LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE * OTHER }\n";
+        let private_glob_fixed = "use super::hidden::*;\nuse super::aliases::*;\nuse this::LOCAL_SCALE;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\npub(super) fn radius() -> f32 { LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE * OTHER }\n";
+        let private_glob_parent = "mod constants; mod look; mod idle; mod hidden { mod this {} pub(super) const OTHER: f32 = 1.0; } mod aliases { pub(super) use super::constants as this; } pub(crate) fn radius() -> f32 { look::radius() }";
+        let cycle_glob_parent = "mod constants; mod look; mod idle; mod hidden { pub(super) use child::*; const SCALE: f32 = 1.0; mod child { use super::*; pub(in crate::rig_plugin) const OTHER: f32 = SCALE; } } mod aliases { pub(super) use super::constants as this; } pub(crate) fn radius() -> f32 { look::radius() }";
+        let cases = [
+            (
+                absolute_glob.as_str(),
+                absolute_glob_fixed.as_str(),
+                Removed,
+                &[("src/lib.rs", root_alias)][..],
+            ),
+            (
+                absolute_explicit.as_str(),
+                absolute_explicit_fixed.as_str(),
+                Removed,
+                &[("src/lib.rs", root_alias)],
+            ),
+            (
+                direct.as_str(),
+                direct_fixed.as_str(),
+                Removed,
+                &[
+                    ("src/lib.rs", root_alias),
+                    ("src/rig_plugin/idle.rs", unrelated_block),
+                ],
+            ),
+            (
+                glob_shadow.as_str(),
+                glob_shadow.as_str(),
+                Retained,
+                &[
+                    ("src/lib.rs", root_alias),
+                    ("src/rig_plugin/mod.rs", shadow_parent),
+                ],
+            ),
+            (
+                private_glob,
+                private_glob_fixed,
+                Removed,
+                &[("src/rig_plugin/mod.rs", private_glob_parent)],
+            ),
+            (
+                private_glob,
+                private_glob_fixed,
+                Removed,
+                &[("src/rig_plugin/mod.rs", cycle_glob_parent)],
+            ),
+        ];
+        std::thread::scope(|scope| {
+            let handles = cases
+                .into_iter()
+                .map(|(caller, expected, retention, extra)| {
+                    scope.spawn(move || assert_caller_fix(caller, expected, retention, extra))
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                match handle.join() {
+                    Ok(result) => result?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            Ok(())
+        })
+    }
+
     #[test]
     fn glob_callers_keep_removed_reexport_bindings_and_compile() -> Result<()> {
         let body = "pub(super) fn radius() -> f32 { LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
@@ -628,51 +786,88 @@ mod tests {
             "pub(super) const LOCAL_SCALE: f32 = 1.0;\n{REEXPORT}pub(crate) mod child {{ pub(crate) fn radius() -> f32 {{ use super::*; LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }} }}"
         );
         let block_alias = "use super::other as source; pub(super) fn radius() -> f32 { let scale = source::OTHER; { use super::constants as source; use source::*; scale * LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE } }";
+        let alias_glob =
+            format!("extern crate self as this;\nuse this::rig_plugin::constants::*;\n{body}");
+        let alias_glob_fixed = format!(
+            "extern crate self as this;\nuse this::rig_plugin::constants::*;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let alias_explicit = format!(
+            "extern crate self as this;\nuse super::constants::LOCAL_SCALE;\nuse this::rig_plugin::constants::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let alias_explicit_fixed = format!(
+            "extern crate self as this;\nuse super::constants::LOCAL_SCALE;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let root_glob = format!("use this::rig_plugin::constants::*;\n{body}");
+        let root_glob_fixed = format!(
+            "use this::rig_plugin::constants::*;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE;\n{body}"
+        );
+        let root_alias = "extern crate self as this; mod rig; mod rig_plugin; pub fn radius() -> f32 { rig_plugin::radius() }";
+        let block_glob = "pub(super) fn radius() -> f32 { extern crate self as this; use this::rig_plugin::constants::*; LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
+        let block_glob_fixed = "pub(super) fn radius() -> f32 { extern crate self as this; use this::rig_plugin::constants::*;\nuse crate::rig::BOOT_BASE_RADIUS_SCALE; LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
+        let block_explicit = "pub(super) fn radius() -> f32 { extern crate self as this; use super::constants::LOCAL_SCALE; use this::rig_plugin::constants::BOOT_BASE_RADIUS_SCALE; LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
+        let block_explicit_fixed = "pub(super) fn radius() -> f32 { extern crate self as this; use super::constants::LOCAL_SCALE; use crate::rig::BOOT_BASE_RADIUS_SCALE; LOCAL_SCALE * BOOT_BASE_RADIUS_SCALE }\n";
         let none: &[(&str, &str)] = &[];
-        for (caller, expected, retained, extra) in [
-            (direct.as_str(), direct_fixed.as_str(), false, none),
-            (gated, gated_fixed, false, none),
-            (competing, competing, true, none),
-            (opaque, opaque, true, none),
-            (shadowed, shadowed, true, none),
+        let cases = [
+            (direct.as_str(), direct_fixed.as_str(), Removed, none),
+            (gated, gated_fixed, Removed, none),
+            (competing, competing, Retained, none),
+            (opaque, opaque, Retained, none),
+            (shadowed, shadowed, Retained, none),
             (
                 direct.as_str(),
                 direct_fixed.as_str(),
-                false,
+                Removed,
                 &[("src/rig_plugin/idle.rs", external)],
             ),
             (
                 direct.as_str(),
                 direct_fixed.as_str(),
-                false,
+                Removed,
                 &[("src/rig_plugin/idle.rs", absent)],
             ),
             (
                 child_caller,
                 child_caller,
-                true,
+                Retained,
                 &[("src/rig_plugin/constants.rs", descendant.as_str())],
             ),
-            (block_alias, block_alias, true, none),
-        ] {
-            let dir = tempfile::tempdir()?;
-            let selection = fixture(dir.path(), caller)?;
-            for (file, source) in extra {
-                fs::write(dir.path().join(file), source)?;
+            (block_alias, block_alias, Retained, none),
+            (
+                alias_glob.as_str(),
+                alias_glob_fixed.as_str(),
+                Removed,
+                none,
+            ),
+            (
+                alias_explicit.as_str(),
+                alias_explicit_fixed.as_str(),
+                Removed,
+                none,
+            ),
+            (
+                root_glob.as_str(),
+                root_glob_fixed.as_str(),
+                Removed,
+                &[("src/lib.rs", root_alias)],
+            ),
+            (block_glob, block_glob_fixed, Removed, none),
+            (block_explicit, block_explicit_fixed, Removed, none),
+        ];
+        std::thread::scope(|scope| -> Result<()> {
+            let handles = cases
+                .into_iter()
+                .map(|(caller, expected, retention, extra)| {
+                    scope.spawn(move || assert_caller_fix(caller, expected, retention, extra))
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                match handle.join() {
+                    Ok(result) => result?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
             }
-            let report = report()?;
-            imports::apply_fixes(&fixes(&selection, &report)?)?;
-            let caller_path = dir.path().join("src/rig_plugin/look.rs");
-            assert_eq!(fs::read_to_string(&caller_path)?, expected, "{caller}");
-            let constants = fs::read_to_string(dir.path().join("src/rig_plugin/constants.rs"))?;
-            assert_eq!(constants.contains(REEXPORT), retained, "{caller}");
-            assert_compiles(dir.path())?;
-            assert!(
-                fixes(&selection, &report)?.iter().next().is_none(),
-                "The second pass must propose no edit."
-            );
-            assert_eq!(fs::read_to_string(caller_path)?, expected);
-        }
-        Ok(())
+            Ok(())
+        })?;
+        assert_review_alias_callers()
     }
 }

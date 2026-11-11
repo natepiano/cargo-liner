@@ -56,7 +56,7 @@ When the `pub_use_outside_subtree` fix removes a re-export, `glob_callers::plan_
 
 **Ruled out:** glob expansion — mend has none; the hana report described the defect wrongly.
 
-### Phase 2 — mend --fix keeps a name imported through an `extern crate self` alias  · status: todo
+### Phase 2 — mend --fix keeps a name imported through an `extern crate self` alias  · status: done
 
 **Depends on:** Phase 1.
 
