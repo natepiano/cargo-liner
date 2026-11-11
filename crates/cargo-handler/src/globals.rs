@@ -31,11 +31,13 @@ use crate::app::expansion::DepthDigit;
 use crate::app::expansion::HandlerExpansionAction;
 use crate::app::expansion::{self};
 use crate::constants::APP_GLOBALS_SECTION;
+use crate::details;
 use crate::render;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub(crate) enum AppGlobalAction {
+        OpenDetails => ("open_details", "Show the selected row details");
         ClearWord => ("clear_word", "Clear the word highlight");
         ExpandAll => ("expand_all", "Expand all rows");
         CollapseAll => ("collapse_all", "Collapse all to first level");
@@ -83,6 +85,7 @@ impl Globals<App> for AppGlobalAction {
     fn defaults() -> Bindings<Self::Actions> {
         let mut bindings = tui_pane::bindings! {
             KeyCode::Esc => Self::ClearWord,
+            'd' => Self::OpenDetails,
             '+' => Self::AddTile,
             KeyBind::shift(KeyCode::Delete) => Self::RemoveTile,
             KeyBind::shift(KeyCode::Left) => Self::FocusLeft,
@@ -132,6 +135,7 @@ impl Globals<App> for AppGlobalAction {
 fn dispatch(action: AppGlobalAction, app: &mut App) {
     let growth = app.loaded_config.config.tiles.growth();
     match action {
+        AppGlobalAction::OpenDetails => details::open_selected(app),
         AppGlobalAction::ClearWord => {
             app.word_highlight.clear();
             app.painted_words = crate::word_highlight::PaintedWords::default();
@@ -366,6 +370,7 @@ mod tests {
     fn each_default_key_maps_to_its_action() {
         let scope = AppGlobalAction::defaults().into_scope_map();
         let expected = [
+            (KeyBind::from('d'), AppGlobalAction::OpenDetails),
             (KeyBind::from('+'), AppGlobalAction::AddTile),
             (KeyBind::from(KeyCode::Esc), AppGlobalAction::ClearWord),
             (KeyBind::from('='), AppGlobalAction::ExpandAll),

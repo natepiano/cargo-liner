@@ -82,6 +82,7 @@ pub(crate) use placement::Placement;
 pub(crate) use placement::RoleLabel;
 pub(crate) use placement::RootPresentation;
 pub(crate) use placement::RowIdentity;
+pub(crate) use placement::RowRole;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
 use scan::ScanStage;
@@ -118,7 +119,7 @@ pub(crate) enum Agent {
 
 impl Agent {
     /// The row's `agent` cell.
-    const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_AGENT,
             Self::Codex | Self::CodexThreadHost => CODEX_AGENT,
@@ -182,6 +183,8 @@ impl From<&str> for ServiceTier {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum HierarchyRole {
+    /// The staff source names this producer.
+    Producer,
     /// Runs a production.
     Showrunner,
     /// Directs a unit.
@@ -210,6 +213,7 @@ impl HierarchyRole {
     /// The role shown in titles and member rows.
     const fn text(self) -> &'static str {
         match self {
+            Self::Producer => "producer",
             Self::Showrunner => "showrunner",
             Self::Unit => "unit",
             Self::Worker => "worker",
@@ -220,6 +224,14 @@ impl HierarchyRole {
             Self::Fix => "fix",
             Self::AstraDesigner => "astra designer",
             Self::AstraReviewer => "astra reviewer",
+        }
+    }
+
+    const fn activity_text(self) -> &'static str {
+        match self {
+            Self::Producer | Self::Showrunner | Self::Unit | Self::Worker | Self::Agent => "",
+            Self::Review => "reviewer",
+            other => other.text(),
         }
     }
 }
@@ -299,11 +311,11 @@ impl StaffFileSetting {
 }
 
 /// A process role used only when no production relationship names a role.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RoleFallback {
     #[default]
     None,
+    Producer,
     Review,
     Worker(HierarchyRole),
 }
@@ -345,6 +357,7 @@ pub(crate) struct AgentRow {
     /// The proven identity; Codex uses a defaulted probe extension.
     #[serde(flatten)]
     pub(crate) session_id:      SessionIdentity,
+    #[serde(flatten)]
     pub(crate) role_fallback:   RoleFallback,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.

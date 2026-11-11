@@ -15,6 +15,7 @@ use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::sort;
 use crate::sort::AccountsSort;
 use crate::sort::HeaderHit;
@@ -44,7 +45,7 @@ fn sort_row(
     directory: &str,
 ) -> AgentRow {
     serde_json::from_value(serde_json::json!({
-        "agent":"claude","name":name,"status":status,"started":started,"process_started":started,
+        "agent":"claude","session_id":name,"name":name,"status":status,"started":started,"process_started":started,
         "pid":pid,"desktop":desktop,"directory":directory,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}],
         "account":{"home":format!("~/.{account}"),"label":account}
     })).expect("summary row fixture")
@@ -103,8 +104,22 @@ fn sort_machines(states: &[MachineState; 2]) -> [Machine<'_>; 2] {
     ]
 }
 
+fn sort_report() -> AccountsTable {
+    let mut report = crate::census::accounts::AccountsReading::parse(
+        br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+        {"session":"zeta","state":"idle"},{"session":"alpha","state":"busy"},
+        {"session":"bee","state":"idle"},{"session":"ant","state":"paused"},
+        {"session":"dog","state":"busy"},{"session":"cat","state":"exited"}
+    ]}],"problems":[]}"#,
+    )
+    .expect("source statuses");
+    report.accounts.clear();
+    AccountsTable::Ready(report)
+}
+
 fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
-    let placement = AgentPlacement::from_machines(machines);
+    let report = sort_report();
+    let placement = AgentPlacement::from_machines(machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 180, 20);
     let mut buffer = Buffer::empty(area);
@@ -114,7 +129,7 @@ fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
         area,
         &SummaryFrame {
             accounts_sort: AccountsSort::SourceOrder,
-            accounts: &AccountsTable::NotConfigured,
+            accounts: &report,
             machines,
             placement: &placement,
             cells: &cells,
@@ -155,14 +170,8 @@ fn default_summary_sort_keeps_phase_one_machine_order_rows_and_colors() {
     let buffer = sorted_buffer(&machines, SummarySort::default());
     assert_eq!(order(&buffer), ["zeta", "alpha", "other-machine"]);
     for (name, expected) in [
-        (
-            "zeta",
-            "100 z-account zeta idle 2:00 z-desktop /z-directory",
-        ),
-        (
-            "alpha",
-            "20 a-account alpha git 1:00 a-desktop /a-directory",
-        ),
+        ("zeta", "100 z-account zeta idle z-desktop /z-directory"),
+        ("alpha", "20 a-account alpha busy a-desktop /a-directory"),
     ] {
         let y = find_label(&buffer, name).1;
         let text: String = (0..buffer.area.width)
@@ -229,6 +238,7 @@ fn equal_summary_keys_use_default_age_and_pid_order_even_when_reversed() {
     if let MachineState::Answered(rows, _) = &mut states[0] {
         for row in rows {
             row.activity = AgentActivity::from(Some("git"));
+            row.session_id = "equal".to_owned().into();
             row.account = Account::Unrecorded;
         }
     }
@@ -249,14 +259,15 @@ fn equal_summary_keys_use_default_age_and_pid_order_even_when_reversed() {
 fn summary_header_clicks_work_for_every_machine_and_ignore_gaps_and_rows() {
     let states = sort_states();
     let machines = sort_machines(&states);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let sort = SummarySort::default();
     let buffer = sorted_buffer(&machines, sort);
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
+    let report = sort_report();
     let frame = SummaryFrame {
         accounts_sort: AccountsSort::SourceOrder,
-        accounts: &AccountsTable::NotConfigured,
+        accounts: &report,
         machines: &machines,
         placement: &placement,
         cells: &cells,
@@ -327,7 +338,14 @@ fn the_summary_arrow_marks_only_the_selected_column() {
             let header: String = (0..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
-            assert_eq!(header.matches('▲').count() + header.matches('▼').count(), 1);
+            assert_eq!(
+                header.matches('▲').count() + header.matches('▼').count(),
+                usize::from(column != SummaryColumn::Age)
+            );
+            if column == SummaryColumn::Age {
+                assert!(!header.contains("age"));
+                continue;
+            }
             assert!(
                 header.contains(&format!("{} {arrow}", column.header())),
                 "{header}"
@@ -423,7 +441,7 @@ fn each_summary_column_has_an_independent_order_including_numeric_pids() {
         (SummaryColumn::Pid, ["ant", "cat", "bee", "dog"]),
         (SummaryColumn::Agent, ["dog", "cat", "bee", "ant"]),
         (SummaryColumn::Name, ["ant", "bee", "cat", "dog"]),
-        (SummaryColumn::Status, ["dog", "bee", "cat", "ant"]),
+        (SummaryColumn::Status, ["dog", "cat", "bee", "ant"]),
         (SummaryColumn::Age, ["cat", "dog", "ant", "bee"]),
         (SummaryColumn::Desktop, ["cat", "bee", "dog", "ant"]),
         (SummaryColumn::Directory, ["dog", "ant", "cat", "bee"]),
@@ -480,7 +498,7 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     for accounts in [AccountColumn::Shown, AccountColumn::Hidden] {
@@ -552,7 +570,7 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
             state: &states[1],
         },
     ];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
@@ -576,7 +594,7 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
                 let line: String = (area.x..area.right())
                     .map(|x| buffer[(x, y)].symbol())
                     .collect();
-                line.contains("pid") && line.contains("age ▼")
+                line.contains("pid") && line.contains("status")
             })
             .collect();
         let mut click_rows: Vec<_> = spans.iter().map(|span| span.row).collect();

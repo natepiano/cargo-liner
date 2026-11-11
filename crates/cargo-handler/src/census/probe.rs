@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::ser::SerializeMap;
 use serde::ser::SerializeStruct;
 #[cfg(test)]
 use serde_json::Error;
@@ -25,11 +26,13 @@ use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
+use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
 use super::HierarchyRole;
 use super::HierarchySource;
 use super::ProvenCodexThread;
+use super::RoleFallback;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::ShellTimerObservation;
@@ -37,6 +40,8 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
+#[cfg(test)]
+use super::accounts::EMPTY_SESSION_STATES;
 use super::activity::Activity;
 use super::hierarchy::AstraMembership;
 use super::hierarchy::AstraRole;
@@ -389,6 +394,43 @@ impl From<ProbeChildRow> for ChildRow {
     }
 }
 
+/// The schema-3 fallback variants remain closed for older receivers.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyRoleFallback {
+    #[default]
+    None,
+    Review,
+    Worker(HierarchyRole),
+}
+
+impl From<LegacyRoleFallback> for RoleFallback {
+    fn from(role: LegacyRoleFallback) -> Self {
+        match role {
+            LegacyRoleFallback::None => Self::None,
+            LegacyRoleFallback::Review => Self::Review,
+            LegacyRoleFallback::Worker(role) => Self::Worker(role),
+        }
+    }
+}
+
+/// Producers use an optional extension beside the legacy fallback vocabulary.
+impl Serialize for RoleFallback {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let legacy = match self {
+            Self::Producer | Self::None => LegacyRoleFallback::None,
+            Self::Review => LegacyRoleFallback::Review,
+            Self::Worker(role) => LegacyRoleFallback::Worker(*role),
+        };
+        let mut fields = serializer.serialize_map(None)?;
+        fields.serialize_entry("role_fallback", &legacy)?;
+        if *self == Self::Producer {
+            fields.serialize_entry("producer", &true)?;
+        }
+        fields.end()
+    }
+}
+
 /// A probe row before compatibility defaults are resolved into domain values.
 #[derive(Deserialize)]
 pub(super) struct ProbeAgentRow {
@@ -398,7 +440,9 @@ pub(super) struct ProbeAgentRow {
     effort:          super::model::ReasoningEffort,
     agent:           super::Agent,
     #[serde(default)]
-    role_fallback:   super::RoleFallback,
+    role_fallback:   LegacyRoleFallback,
+    #[serde(default)]
+    producer:        bool,
     #[serde(default)]
     session_id:      Option<String>,
     #[serde(default)]
@@ -444,7 +488,11 @@ impl From<ProbeAgentRow> for AgentRow {
             model:           row.model,
             effort:          row.effort,
             agent:           row.agent,
-            role_fallback:   row.role_fallback,
+            role_fallback:   if row.producer {
+                RoleFallback::Producer
+            } else {
+                row.role_fallback.into()
+            },
             session_id:      identity,
             service_tier:    row.service_tier,
             account:         row.account,
@@ -479,6 +527,8 @@ struct ProbeReport {
     edges:            HierarchyEdges,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     astra_edges:      Vec<AstraHierarchyEdge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    producer_edges:   Vec<HierarchyEdge>,
     /// A failed command must not erase the receiver's last successful links.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hierarchy_failed: bool,
@@ -503,7 +553,13 @@ impl ProbeReport {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
         let mut edges = edges;
         let mut astra_edges = Vec::new();
+        let mut producer_edges = Vec::new();
         for edge in &mut edges.0 {
+            if edge.role == HierarchyRole::Producer {
+                producer_edges.push(edge.clone());
+                edge.role = HierarchyRole::Worker;
+                continue;
+            }
             let role = match edge.role {
                 HierarchyRole::AstraDesigner => AstraRole::Designer,
                 HierarchyRole::AstraReviewer => AstraRole::Reviewer,
@@ -523,6 +579,7 @@ impl ProbeReport {
             rows,
             edges,
             astra_edges,
+            producer_edges,
             thread_hosts,
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
@@ -531,6 +588,16 @@ impl ProbeReport {
 
     /// Restore transport-only identity before handing an answer to the census.
     fn into_answer(mut self) -> (Vec<AgentRow>, HierarchyAnswer) {
+        for producer in self.producer_edges {
+            if let Some(edge) = self
+                .edges
+                .0
+                .iter_mut()
+                .find(|edge| edge.manager == producer.manager && edge.member == producer.member)
+            {
+                edge.role = HierarchyRole::Producer;
+            }
+        }
         for astra in self.astra_edges {
             if let Some(edge) = self
                 .edges
@@ -756,6 +823,7 @@ mod tests {
             thread_hosts:     Vec::new(),
             edges:            HierarchyEdges::default(),
             astra_edges:      Vec::new(),
+            producer_edges:   Vec::new(),
             rows:             vec![codex_report_row(), claude_report_row(), worker()],
         }
     }
@@ -1094,16 +1162,19 @@ mod tests {
         assert_eq!(rows, worker.rows());
         assert_eq!(edges.0, worker.edges());
         let received = MachineState::Answered(rows, edges.into());
-        let placement = crate::census::AgentPlacement::from_machines(&[
-            Machine {
-                name:  "natedev",
-                state: &manager,
-            },
-            Machine {
-                name:  "mac",
-                state: &received,
-            },
-        ]);
+        let placement = crate::census::AgentPlacement::from_machines(
+            &[
+                Machine {
+                    name:  "natedev",
+                    state: &manager,
+                },
+                Machine {
+                    name:  "mac",
+                    state: &received,
+                },
+            ],
+            &EMPTY_SESSION_STATES,
+        );
         assert_eq!(placement.rows.len(), 1);
         assert_eq!(placement.threads.len(), 1);
         assert_eq!(

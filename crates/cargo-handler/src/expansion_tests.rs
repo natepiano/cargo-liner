@@ -13,6 +13,9 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
+use crate::census::accounts::AccountsReading;
+use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::scan::ScanStage;
 use crate::census::transcript::SubagentRole;
 use crate::interaction::LegacyWorkKind;
@@ -276,7 +279,7 @@ fn row_actions_keep_selection_on_the_collapsed_parent() {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = agent_cell::tile_order_for_expansion(&placement);
     let tree = tiles[0].expansion_tree();
     let child = tree
@@ -444,7 +447,7 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let Some(tile) = agent_cell::tile_keys(&placement).into_iter().next() else {
         panic!("the fixture must have a tile");
     };
@@ -482,7 +485,7 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = agent_cell::tile_order_sorted(&placement, &app.tree_sorts, 200);
     let named_rows = tiles[0].named_row_identities();
     let Some((_, branch_a_after_sort)) = named_rows.iter().find(|(name, _)| name == "branch A")
@@ -502,27 +505,87 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
 
 #[test]
 fn body_clicks_open_close_and_select_the_painted_branch() {
-    let mut app = application();
-    let before = paint_buffer(&mut app, 180, 48);
-    let point = marker(&before, "child");
-    assert_eq!(before[(point.x, point.y)].symbol(), "▶");
-    app.click(locate(&before, "child"));
-    let open = paint_buffer(&mut app, 180, 48);
-    assert!(buffer_text(&open).contains("grandchild"));
-    let SelectableSurface::Surface(surface) = focused_surface(&app) else {
-        panic!("the click must focus the tile");
-    };
-    assert!(matches!(
-        app.selections
-            .surface(&surface)
-            .expect("clicked surface")
-            .selection(),
-        TileSelection::Row(SelectedRow::Session { pid: 20, .. })
-    ));
-    let point = marker(&open, "child");
-    assert_eq!(open[(point.x, point.y)].symbol(), "▼");
-    app.click(locate(&open, "child"));
-    assert!(!paint(&mut app).contains("grandchild"));
+    for status_sort in [false, true] {
+        let mut app = application();
+        if status_sort {
+            let machine = app.census.machines(&[])[0];
+            let mut rows = machine.state.rows().to_vec();
+            let Some(other) = rows.iter_mut().find(|row| row.pid == 40) else {
+                panic!("the fixture must contain the other session");
+            };
+            other.launched_by = Some(10);
+            app.census.apply(CensusUpdate::Local {
+                rows,
+                hierarchy: HierarchyEdges::default().into(),
+                stage: ScanStage::Completed,
+            });
+            let Ok(reading) = AccountsReading::parse(
+                br#"{
+            "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+                {"session":"session-10","state":"exited"},
+                {"session":"session-20","state":"paused"},
+                {"session":"session-30","state":"idle"},
+                {"session":"session-40","state":"busy"}
+            ]}],"problems":[]
+        }"#,
+            ) else {
+                panic!("the account status fixture must parse");
+            };
+            app.accounts.table = AccountsTable::Ready(reading);
+            for (key, _) in expansion_trees(&app) {
+                app.tree_sorts.insert(
+                    key,
+                    TreeSort {
+                        column:    TreeColumn::Status,
+                        direction: SortDirection::Ascending,
+                    },
+                );
+            }
+        }
+        let before = paint_buffer(&mut app, 180, 48);
+        if status_sort {
+            let painted_siblings = {
+                let mut roots = [
+                    (20, locate(&before, "child").y),
+                    (40, locate(&before, "other").y),
+                ];
+                roots.sort_by_key(|(_, y)| *y);
+                roots.map(|(pid, _)| pid)
+            };
+            assert_eq!(painted_siblings, [40, 20]);
+            let forests = expansion_trees(&app);
+            let action_siblings: Vec<_> = forests[0]
+                .1
+                .rows
+                .iter()
+                .filter(|row| matches!(row.parent, RowParent::Parent(0)))
+                .map(|row| match &row.key {
+                    ExpansionKey::Process(process) => process.pid,
+                    ExpansionKey::Work(_) => panic!("fixture sessions are processes"),
+                })
+                .collect();
+            assert_eq!(action_siblings, painted_siblings);
+        }
+        let point = marker(&before, "child");
+        assert_eq!(before[(point.x, point.y)].symbol(), "▶");
+        app.click(locate(&before, "child"));
+        let open = paint_buffer(&mut app, 180, 48);
+        assert!(buffer_text(&open).contains("grandchild"));
+        let SelectableSurface::Surface(surface) = focused_surface(&app) else {
+            panic!("the click must focus the tile");
+        };
+        assert!(matches!(
+            app.selections
+                .surface(&surface)
+                .expect("clicked surface")
+                .selection(),
+            TileSelection::Row(SelectedRow::Session { pid: 20, .. })
+        ));
+        let point = marker(&open, "child");
+        assert_eq!(open[(point.x, point.y)].symbol(), "▼");
+        app.click(locate(&open, "child"));
+        assert!(!paint(&mut app).contains("grandchild"));
+    }
 }
 
 #[test]

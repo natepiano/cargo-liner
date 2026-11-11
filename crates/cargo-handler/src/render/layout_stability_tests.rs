@@ -251,8 +251,8 @@ fn paint(app: &mut App, width: u16, height: u16) -> TestResult<DrawnLayout> {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
-    .with_accounts(&app.accounts.table)
     .with_expansion(&app.expansion);
     let width_floor = cells.measure_trees(app.selection_area);
     let mut requested = Vec::new();
@@ -303,8 +303,22 @@ fn waiting_clippy_mac_waiting_keeps_two_columns_at_80_by_45() -> TestResult {
         waiting.requested, returned.requested,
         "returned status keeps requested rows"
     );
-    assert!(waiting.text.contains("waiting"));
-    assert!(clippy.text.contains("clippy (mac)"));
+    assert!(!waiting.text.split_whitespace().any(|word| word == "age"));
+    assert!(!clippy.text.split_whitespace().any(|word| word == "age"));
+    let machines = source.app.census.machines(&[]);
+    assert_eq!(
+        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "state", NOW),
+        "waiting"
+    );
+    source.set_status(AgentActivity::Active(Activity::Verify {
+        step:     VerifyStep::Clippy,
+        location: RunLocation::Mac,
+    }))?;
+    let machines = source.app.census.machines(&[]);
+    assert_eq!(
+        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "state", NOW),
+        "clippy (mac)"
+    );
     assert_eq!(waiting.summary_rows, clippy.summary_rows);
     assert_eq!(
         waiting.columns(),

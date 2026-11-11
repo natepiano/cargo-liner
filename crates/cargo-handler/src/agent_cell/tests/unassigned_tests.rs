@@ -11,6 +11,7 @@ use tui_pane::TerminalApp;
 
 use super::*;
 use crate::census::RoleFallback;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -81,7 +82,7 @@ fn work_buffer(name: &str) -> Buffer {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = cell_order_placed(&placement);
     let owner = cells
         .iter()
@@ -140,7 +141,7 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
             state: &remote,
         },
     ];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     assert_eq!(tiles.len(), 4, "three hierarchy owners and one remote pool");
     for tile in &tiles {
@@ -171,13 +172,13 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let buffer = draw_pool(pool(&tiles, "natedev"), 220);
     for (name, prefix) in [
-        ("ups", "ups thinking"),
-        ("postmaster", "postmaster thinking"),
-        ("opened-session", "opened-session thinking"),
+        ("ups", "— ups"),
+        ("postmaster", "— postmaster"),
+        ("opened-session", "— opened-session"),
     ] {
         assert!(
             row_text(&buffer, name).starts_with(prefix),
@@ -185,26 +186,31 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
             row_text(&buffer, name)
         );
     }
-    assert!(find(&buffer, TREE_ROLE_HEADER).is_none());
+    assert!(find(&buffer, TREE_ROLE_HEADER).is_some());
     assert!(find(&buffer, TREE_TYPE_HEADER).is_none());
     for name in ["ups", "postmaster"] {
         let (name_x, y) = find(&buffer, name).expect("root row");
-        assert!((buffer.area.x..name_x).all(|x| buffer[(x, y)].symbol() == " "));
+        let session_x = find(&buffer, TREE_SESSION_HEADER)
+            .expect("session header")
+            .0;
+        assert_eq!(name_x, session_x);
+        assert!(!row_text(&buffer, name).contains(['├', '└', '│']));
+        assert_eq!(buffer[(name_x, y)].symbol(), &name[..1]);
     }
     let order = ["opened-session", "postmaster", "ups"]
         .map(|name| find(&buffer, name).expect("row drawn").1);
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     let work = work_buffer("ups");
     for (name, prefix) in [
-        ("opened-session", "├── opened-session session thinking"),
-        ("ups-shell", "└── ups-shell shell running"),
-        ("ups-codex", "└── ups-codex worker idle"),
+        ("opened-session", "├── opened-session"),
+        ("ups-shell", "└── ups-shell busy shell"),
+        ("ups-codex", "└── ups-codex worker"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));
     }
     assert!(
         row_text(&work_buffer("postmaster"), "post-task")
-            .starts_with("└── post-task subagent idle")
+            .starts_with("└── post-task worker busy subagent")
     );
 }
 
@@ -215,7 +221,7 @@ fn unassigned_session_header_aligns_with_flat_roots_and_keeps_nested_branch_inde
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     for width in [65, 220] {
         let buffer = draw_pool(pool(&tiles, "natedev"), width);
@@ -235,7 +241,10 @@ fn unassigned_session_header_aligns_with_flat_roots_and_keeps_nested_branch_inde
             .find(|&x| work[(x, row)].symbol() == "└")
             .expect("nested shell keeps its branch glyph");
         assert!(name_x > glyph_x);
-        assert!(name_x > header_x);
+        assert_eq!(
+            name_x,
+            find(&work, TREE_SESSION_HEADER).expect("work header").0
+        );
     }
 }
 
@@ -246,7 +255,7 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let sorts = HashMap::from([(
             TileKey::Unassigned {
@@ -295,7 +304,7 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let key = TileKey::Unassigned {
         machine: "natedev".into(),
     };
@@ -306,8 +315,9 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
         let spans = unassigned_header_spans(entry, before.area, NOW, AccountColumn::Shown);
         let header = &lines(&before)[0];
         assert!(
-            header.contains(&format!("{TREE_SESSION_HEADER} ▲"))
-                && header.contains(TREE_AGE_HEADER)
+            header.contains(TREE_SESSION_HEADER)
+                && !header.contains(TREE_AGE_HEADER)
+                && header.contains("session ▲")
         );
         assert_eq!(header.contains(TREE_DIRECTORY_HEADER), width == 220);
         for span in &spans {
@@ -357,10 +367,13 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
         ) else {
             panic!("drawn session header must select a column");
         };
-        let mut sort = TreeSort::default();
+        let mut sort = TreeSort {
+            column:    TreeColumn::Session,
+            direction: SortDirection::Ascending,
+        };
         for expected_arrow in [
-            format!("{TREE_SESSION_HEADER} ▲"),
             format!("{TREE_SESSION_HEADER} ▼"),
+            format!("{TREE_SESSION_HEADER} ▲"),
         ] {
             sort.select(column);
             let tiles = tile_order_sorted(&placement, &HashMap::from([(key.clone(), sort)]), NOW);
@@ -394,7 +407,7 @@ fn assigned_or_empty_machines_do_not_leave_an_empty_unassigned_tile() {
             state: &empty,
         },
     ];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     assert_eq!(tiles.len(), 1);
     let AgentTile::Agent(entry) = &tiles[0] else {
@@ -415,29 +428,26 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let entry = pool(&tiles, "natedev");
     for width in [65, 220] {
         let buffer = draw_pool(entry, width);
-        let content = header_indented(buffer.area);
-        let (header_x, header_y) = find(&buffer, "age").expect("age header");
-        let (value_x, value_y) = find(&buffer, "21:00").expect("age value");
+        assert!(find(&buffer, "age").is_none());
+        assert!(find(&buffer, "21:00").is_none());
+        let line = entry
+            .lines
+            .iter()
+            .find(|line| line.name() == "free-session")
+            .expect("flat session");
         assert_eq!(
-            header_x + 3,
-            content.right(),
-            "width={width}: {}",
-            lines(&buffer).join("\n")
+            line.details(NOW).properties.last(),
+            Some(&(DetailProperty::Age, "21 hours, 0 minutes".to_owned()))
         );
-        assert_eq!(
-            value_x + summary::cell_width("21:00"),
-            content.right(),
-            "width={width}"
-        );
+        let (header_x, header_y) = find(&buffer, "session").expect("session header");
+        let (_, value_y) = find(&buffer, "free-session").expect("session row");
         assert!(value_y > header_y);
-        for absent in ["type", "role"] {
-            assert!(find(&buffer, absent).is_none(), "{absent}: width={width}");
-        }
+        assert!(find(&buffer, "type").is_none());
         let spans = unassigned_header_spans(entry, buffer.area, NOW, AccountColumn::Shown);
         assert_eq!(
             sort::header_hit(
@@ -447,7 +457,7 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
                     row:    header_y,
                 }
             ),
-            HeaderHit::Column(TreeColumn::Age)
+            HeaderHit::Column(TreeColumn::Session)
         );
     }
 }

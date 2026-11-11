@@ -28,7 +28,7 @@
      the end and updates every cross-reference.
      Full procedure: /plan:to_phased_plan → <PhaseNumbering/>. -->
 
-### Phase 1 — Showrunner cells show account first, a role, a status word and an activity; age moves to a details view  · status: todo
+### Phase 1 — Showrunner cells show account first, a role, a status word and an activity; age moves to a details view  · status: done
 
 **Depends on:** none
 

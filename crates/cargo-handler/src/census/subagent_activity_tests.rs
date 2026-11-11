@@ -22,6 +22,7 @@ use crate::census::HierarchyEdges;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::account::ConfigHome;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::config::AccountsConfig;
 use crate::footer_colors::FooterColors;
 use crate::summary;
@@ -88,7 +89,7 @@ fn subagent_transcript_read_tool_reaches_the_drawn_status_and_append_updates_it(
             name:  "fixture",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
         let area = Rect::new(0, 0, 180, 20);
         let mut buffer = Buffer::empty(area);
@@ -111,7 +112,12 @@ fn subagent_transcript_read_tool_reaches_the_drawn_status_and_append_updates_it(
             .expect("drawn subagent row");
         let text: String = (0..area.width).map(|x| buffer[(x, row)].symbol()).collect();
         assert!(
-            text.split_whitespace().any(|word| word == expected),
+            crate::agent_cell::detail_property_for_test(
+                &machines,
+                "Inspect source files",
+                "state",
+                unix_now()
+            ) == expected,
             "{text}"
         );
         writeln!(fs::OpenOptions::new().append(true).open(&path).expect("append transcript"),"{}",serde_json::json!({"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Edit","input":{}}]}})).expect("append tool");
@@ -198,7 +204,7 @@ fn subagent_metadata_type_precedes_the_fixed_description_role_table_in_drawn_cel
         name:  "fixture",
         state: &state,
     }];
-    let placement = crate::census::AgentPlacement::from_machines(&machines);
+    let placement = crate::census::AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 160, 20);
     let mut buffer = Buffer::empty(area);
@@ -219,7 +225,7 @@ fn subagent_metadata_type_precedes_the_fixed_description_role_table_in_drawn_cel
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header");
     let start = usize::from(summary::cell_width(
-        &header[..header.find("role").expect("role header")],
+        &header[..header.find("activity").expect("activity header")],
     ));
     let end = usize::from(summary::cell_width(
         &header[..header.find("status").expect("status header")],
@@ -323,7 +329,7 @@ fn named_subagent_metadata_draws_only_closed_role_words() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 180, 20);
     let mut buffer = Buffer::empty(area);
@@ -344,7 +350,7 @@ fn named_subagent_metadata_draws_only_closed_role_words() {
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header");
     let role_start = usize::from(summary::cell_width(
-        &header[..header.find("role").expect("role header")],
+        &header[..header.find("activity").expect("activity header")],
     ));
     let role_end = usize::from(summary::cell_width(
         &header[..header.find("status").expect("status header")],
@@ -473,7 +479,7 @@ fn assert_metadata_role_drawn(metadata: &Value, expected: &str) {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 180, 20);
     let mut buffer = Buffer::empty(area);
@@ -494,7 +500,7 @@ fn assert_metadata_role_drawn(metadata: &Value, expected: &str) {
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header");
     let role_start = usize::from(summary::cell_width(
-        &header[..header.find("role").expect("role header")],
+        &header[..header.find("activity").expect("activity header")],
     ));
     let role_end = usize::from(summary::cell_width(
         &header[..header.find("status").expect("status header")],

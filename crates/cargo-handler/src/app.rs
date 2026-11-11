@@ -60,6 +60,7 @@ use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::details::DetailsOverlay;
 use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
@@ -91,12 +92,13 @@ pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 5] = [
+const APP_PANE_DISPLAY_ORDER: [AppPaneId; 6] = [
     AppPaneId::Main,
     AppPaneId::Attract(AttractMode::MovingBand),
     AppPaneId::Attract(AttractMode::MovingText),
     AppPaneId::Attract(AttractMode::Pixelate),
     AppPaneId::Favorites,
+    AppPaneId::Details,
 ];
 
 /// The panes this app supplies to the framework; one variant per
@@ -112,6 +114,7 @@ pub(crate) enum AppPaneId {
     Attract(AttractMode),
     /// The favorites modal and its local keymap scope.
     Favorites,
+    Details,
 }
 
 /// Only a clock request may reuse a body from an earlier frame.
@@ -149,6 +152,7 @@ enum PaintedWordLookup {
 
 /// Top-level application state.
 pub(crate) struct App {
+    pub(crate) details_overlay:   DetailsOverlay,
     frame_request:                FrameRequest,
     painted_frame:                PaintedFrame,
     #[cfg(test)]
@@ -246,7 +250,8 @@ impl App {
         let machines = self
             .census
             .machines(&self.loaded_config.config.machines.remote);
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement =
+            AgentPlacement::from_machines(&machines, self.accounts.table.session_states());
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
         self.expansion.retain(&placement);
@@ -296,6 +301,7 @@ impl App {
         framework.color_mode = color_mode;
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
+            details_overlay: DetailsOverlay::default(),
             #[cfg(test)]
             full_frames: 0,
             frame_request: FrameRequest::Full,
@@ -425,6 +431,7 @@ impl TerminalApp for App {
         let toast_change = self.framework.toasts.next_visual_change_deadline(now);
         let stable_layers = !self.attract.showing()
             && !self.favorites_overlay.is_open()
+            && matches!(self.details_overlay, DetailsOverlay::Closed)
             && self.framework.overlay().is_none();
         if matches!(self.frame_request, FrameRequest::StatusClock)
             && stable_layers
@@ -469,10 +476,17 @@ impl TerminalApp for App {
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
         self.invalidate_body();
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            self.details_overlay.scroll(direction);
+            return;
+        }
         tui_pane::handle_tile_scroll(self, position, direction);
     }
 
     fn click(&mut self, position: Position) {
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            return;
+        }
         tui_pane::handle_tile_click(self, position);
         self.invalidate_body();
     }
@@ -497,6 +511,10 @@ impl TerminalApp for App {
     /// delete rather than reaching a global.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         self.invalidate_body();
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            keymap.dispatch_app_pane(AppPaneId::Details, bind, self);
+            return KeyOutcome::Consumed;
+        }
         tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
 

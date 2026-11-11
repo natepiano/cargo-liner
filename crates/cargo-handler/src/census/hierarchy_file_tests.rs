@@ -13,6 +13,8 @@ use serde_json::Value;
 
 use super::*;
 use crate::census::Agent;
+use crate::census::Machine;
+use crate::census::MachineState;
 use crate::census::ProvenCodexThread;
 use crate::census::StaffRowNames;
 use crate::census::classify;
@@ -310,6 +312,27 @@ fn staff_name_precedes_thread_herdr_and_pid_fallback_names() {
 
 #[test]
 fn staff_worker_roles_use_the_checked_staff_snapshot() {
+    for (kind, expected) in [("producer", "producer"), ("agent", "")] {
+        let source = StaffRoster::parse(&serde_json::to_vec(&serde_json::json!({"schema":2,"rows":[
+            {"id":"producer","kind":kind,"name":"source-name","parent":null,"current_session":"source-session"}
+        ]})).expect("source document")).expect("checked source");
+        let mut rows = vec![row(1, "source-session", "fallback")];
+        classify::attach_staff_names(&mut rows, &source);
+        let state = MachineState::Answered(rows, source.edges.into());
+        assert_eq!(
+            crate::agent_cell::detail_property_for_test(
+                &[Machine {
+                    name:  "fixture",
+                    state: &state,
+                }],
+                "source-name",
+                "role",
+                100
+            ),
+            expected
+        );
+    }
+
     let roster = StaffRoster::parse(&serde_json::to_vec(&serde_json::json!({"schema":2,"rows":[
         {"id":"boss","kind":"showrunner","name":"boss","parent":null,"current_session":"boss"},
         {"id":"a-review","kind":"worker","name":"fixture-impl","parent":"boss","current_session":THREAD,"role":"review"},
