@@ -2522,6 +2522,34 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with both tests passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
 
+### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: todo
+
+**Depends on:** Phase 58d (order only; showrunner, 2026-11-11).
+
+On 2026-11-11, handler reservation 01a1caa4-7b2b-7433-9e96-c0e59669a370 (`refs/heads/cargo-liner-handler`) held 509 paths in its protected merge extent. Its key was trunk 07621aedb and head 500c5f862. The branch has no own content in those paths: `git diff --name-only $(git merge-base origin/main 500c5f862) 500c5f862` lists 0 paths. Its only commits after its merge base are merge 48a5ef138 (main at a6cc171fe), the as-built 1eeb0ae9d and merge 500c5f862. Main moved past the branch after that merge. The port and tile units were refused edits to their own plan docs, and each needed an `--override` from the showrunner.
+
+#### Work Order
+
+**Goal:** a reservation's merge extent holds only paths with the branch's own content. Paths that differ only because the merge branch moved, or that came in only through a merge of the merge branch, are not in the extent.
+
+**Spec:**
+
+1. **Find the cause first.** Quote the line that derives the merge extent. Say whether it compares the head with the trunk tip or with the merge base. Record it before a change.
+2. **Fix it where the extent is derived.** Do not add an exception list. Do not filter paths at the edit hook.
+3. **Keep real protection.** A path the branch changed on its own stays in the extent. This includes a path changed both by the branch and by a merge of the merge branch.
+4. **Regression tests,** each under 1 s, with a recorded template (Phase 58b):
+   - A branch merges the trunk, then the trunk moves on. Another worktree edits a file only the trunk changed; the edit is allowed.
+   - A branch changes a file, then merges the trunk. That file stays protected.
+5. Keep every existing assertion.
+
+**Files:** `crates/cargo-berth/src/` — the merge-extent derivation, chosen by item 1; `crates/cargo-berth/tests/` — item 4.
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev. The item 4 tests fail before the fix and pass after it.
+
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
 #### As-built
