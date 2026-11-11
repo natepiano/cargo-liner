@@ -220,3 +220,46 @@ Tests (red first, each under one second):
 **State:** none
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the five tests above. The live check shows effort on Claude rows and a shell row that does not widen the session column.
+
+### Phase 5 — Reset times in the accounts footer take three clearly different colors  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** the soonest, middle and latest reset times in the accounts footer each draw in a different hue, so the step is plain at a glance.
+
+**Source:** the user, via the showrunner, 2026-11-11, on C264 (returned): "they differ but it's still preetty subtle - i would prefer there being true  color differences". C264 is phase 53 of the earlier handler plan: three steps blended from `reset_nearest` to `reset_farthest`. Dark themes step from green to teal; light themes step in violet lightness.
+
+**Spec:**
+
+Director decisions:
+1. Three theme roles replace the two-end blend: `reset_soonest`, `reset_middle` and `reset_latest`. Each theme file sets all three. No sRGB midpoint. `reset_nearest` and `reset_farthest` go.
+2. Each step is a different hue family: soonest green (the quota comes back soon), middle gold, latest blue. No step is red.
+3. `ResetRank::color` keeps its rank rule: the first quarter of ranks takes `reset_soonest`, the last quarter takes `reset_latest`, and the rest take `reset_middle`. A single reset takes `reset_soonest`.
+4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
+5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
+
+Tests (red first, each under one second):
+1. Each built-in theme file sets the three roles, and a theme file can override each one.
+2. The rank rule gives soonest, middle and latest in order; a single reset gives soonest.
+3. Every pair of steps is at least 20 CIEDE2000 apart in every built-in theme, tint on and off.
+4. The existing contrast, no-red and session-color tests pass with the new colors.
+
+**Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
+
+**Change-Review line:** Reset times in the accounts footer take three clearly different colors | On natedev, run cargo-handler and look at the resets column of the accounts footer | The soonest resets are green, the middle ones gold, and the latest ones blue, on dark and light themes
+
+**Files:**
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the theme role set
+- `crates/cargo-handler/themes/*.toml` — the three roles in each built-in theme
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order and distance
+- `crates/cargo-handler/src/theme/files_tests.rs` — theme file roles
+- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset steps
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows three different hues in the resets column on both themes.
