@@ -4,7 +4,8 @@ use std::io;
 use std::sync::Mutex;
 
 // Keep dependency-owned probes and our pipe creation inside the same spawn boundary.
-static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
+// The parent module of the test-support copy reads it to observe contention.
+pub(super) static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
 
 /// Serialize pipe creation and child spawn.
 ///

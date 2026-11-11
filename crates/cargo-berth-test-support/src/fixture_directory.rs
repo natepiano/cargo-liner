@@ -1,4 +1,4 @@
-//! Private fixture directories on the shared executable cache's filesystem.
+//! Private fixture directories owned by each test.
 
 use std::env;
 use std::fs;
@@ -7,11 +7,12 @@ use tempfile::TempDir;
 
 use crate::repository_template;
 
-/// Create a private directory whose cached executables can be hard-linked.
+/// Create a private directory under the test scratch root.
 ///
-/// Nextest's scratch wrapper supplies a per-test parent on the cache's filesystem.
-/// Outside that wrapper this ignores `TMPDIR` and uses the cache's `private`
-/// directory. The returned owner removes the directory on drop.
+/// Nextest's scratch wrapper uses executable memory storage when available.
+/// Outside that wrapper, this uses the cache's `private` directory.
+/// Cached executables use hard links on the same filesystem and copies across filesystems.
+/// The returned owner removes the directory on drop.
 ///
 /// # Panics
 /// Panics if the executable, fixture parent or private directory cannot be resolved.
@@ -28,5 +29,5 @@ pub fn fixture_tempdir(prefix: &str) -> TempDir {
     tempfile::Builder::new()
         .prefix(prefix)
         .tempdir_in(parent)
-        .expect("private fixture directory should exist on the cache filesystem")
+        .expect("private fixture directory should exist under its scratch parent")
 }

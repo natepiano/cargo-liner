@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+pub(super) use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
@@ -36,8 +37,6 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
 };
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-
-pub(super) const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 
 pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 

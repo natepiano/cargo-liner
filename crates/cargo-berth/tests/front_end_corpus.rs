@@ -10,6 +10,7 @@
 //! carries the rest of that promise: a deletion cannot balance itself out to green.
 
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
@@ -299,7 +300,6 @@ const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 29] = [
                   the work; drift renders name_carrying_trunk_commit for that trunk instead",
     },
 ];
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FRONT_END_CORPUS_JSON: &str = include_str!("fixtures/front_end_corpus.json");
 /// The floor the frozen corpus may never fall below.
 ///

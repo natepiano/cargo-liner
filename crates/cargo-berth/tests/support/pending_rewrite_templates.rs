@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::deferring_run_scope;
 
@@ -22,8 +24,6 @@ const GIT: GitDriver = GitDriver {
     optional_locks:      OptionalLocks::Refused,
     cleared_environment: &["CARGO_BERTH_BYPASS"],
 };
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";

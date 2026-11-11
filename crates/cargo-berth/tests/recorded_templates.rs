@@ -22,16 +22,55 @@ use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::fixture_output_with_deadline;
+use hook_evidence_templates::INCURSION_ANSWERED_LOST_EVIDENCE;
+use hook_evidence_templates::REWRITTEN_TRUNK_LOST_EVIDENCE;
+use integration_templates::CHECKPOINT_WITH_LATER_WORK;
+use integration_templates::ENDED_FIRST_COVER;
+use integration_templates::MERGE_EXTENT_LANES_READY;
+use integration_templates::RELEASE_LANE_READY;
+use ledger_templates::PROJECTION_HISTORY;
+use ledger_templates::RELEASE_ENROLLMENT;
+use ledger_templates::SHARED_ENROLLMENT;
+use ledger_templates::STACKED_ENROLLMENT;
 pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
 pub use prepared_lock_tests::AncestorProofCommits;
 pub use prepared_lock_tests::CONTENT_CHECKPOINT;
 pub use prepared_lock_tests::ContentProofCommits;
 pub use prepared_lock_tests::HOOK_WORKTREE;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER;
+pub use prepared_lock_tests::LIVE_FOREIGN_HOLDER_CHECKOUT;
 pub use prepared_lock_tests::PACKED_SUCCESSOR;
 pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
-pub use prepared_lock_tests::PreparedProofHistory;
+pub use prepared_lock_tests::ReleasedProofHistory;
 pub use prepared_lock_tests::RetainedPredecessorHistory;
 pub use prepared_lock_tests::read_history;
+use reanchoring_templates::ABORTABLE_CHECKPOINT;
+use reanchoring_templates::ACTIVE_BEFORE_OTHER_REBASE;
+use reanchoring_templates::ACTIVE_FIRST_SPLIT;
+use reanchoring_templates::APPLY_CONFLICTED_CHECKPOINT;
+use reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
+use reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
+use reanchoring_templates::CHECKPOINT_BEFORE_OTHER_REBASE;
+use reanchoring_templates::CONFLICTING_TWO_HUNK_CHECKPOINT;
+use reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
+use reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
+use reanchoring_templates::DRAINED_SPLIT_SWITCHED_CHECKPOINT;
+use reanchoring_templates::LOWER_FIRST_SPLIT;
+use reanchoring_templates::ONE_HUNK_CHECKPOINT;
+use reanchoring_templates::RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT;
+use reanchoring_templates::RECONCILED_SOFT_ACTIVE_SPLIT;
+use reanchoring_templates::RECONCILED_SOFT_CHECKPOINT_SPLIT;
+use reanchoring_templates::SPLIT_ACTIVE_PHASE;
+use reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
+use reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
+use reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
+use reanchoring_templates::SPLIT_OUTSTANDING_PHASE;
+use reanchoring_templates::STACKED_UPPER_CHECKPOINT;
+use reanchoring_templates::TWO_REBASE_HISTORY;
+use reanchoring_templates::UNRESERVED_REBASE_PREFIX;
+use reanchoring_templates::UPPER_FIRST_SPLIT;
+use target_rebase_templates::ADVANCED_TARGET_CHECKPOINT;
+use target_rebase_templates::MISSING_TARGET_CHECKPOINT;
 
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
@@ -43,6 +82,15 @@ mod answers_fixtures;
 
 #[path = "support/compaction_fixture.rs"]
 mod compaction_fixture;
+
+#[path = "support/ledger_templates.rs"]
+mod ledger_templates;
+
+#[path = "support/hook_repository.rs"]
+mod hook_repository;
+
+#[path = "support/hook_evidence_templates.rs"]
+mod hook_evidence_templates;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
@@ -100,6 +148,12 @@ pub use gate_templates::read_enrolled_pair;
 pub use gate_templates::set_gate_mode;
 #[path = "support/reanchoring_templates.rs"]
 mod reanchoring_templates;
+
+#[path = "support/target_rebase_templates.rs"]
+mod target_rebase_templates;
+
+#[path = "support/integration_templates.rs"]
+mod integration_templates;
 pub use reanchoring_templates::SplitRefChange;
 pub use reanchoring_templates::SplitWorkflow;
 #[path = "support/split_rebase.rs"]
@@ -149,10 +203,10 @@ fn main() {
             compaction_fixture::PREPARED_COMPACTION,
             answers_fixtures::HOLDER_LIFECYCLE_START,
             edges_fixtures::ORPHANED_MIDDLE_START,
-            reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
-            reanchoring_templates::ACTIVE_FIRST_SPLIT,
-            reanchoring_templates::UPPER_FIRST_SPLIT,
-            reanchoring_templates::LOWER_FIRST_SPLIT,
+            SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
+            ACTIVE_FIRST_SPLIT,
+            UPPER_FIRST_SPLIT,
+            LOWER_FIRST_SPLIT,
             gate_templates::MAIN_PREDECESSOR_INTEGRATION_SUCCESSOR,
             gate_templates::DEFAULT_ANSWERED_GATE,
             gate_templates::ENROLLED_BEFORE_EDITS,
@@ -162,6 +216,7 @@ fn main() {
             parallel_templates::NAMED_OVERLAP,
             parallel_templates::NAMED_METADATA,
         ])
+        .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
         .chain(GATE_SLOW_HISTORIES.iter().copied())
         .chain(EDGES_SLOW_HISTORIES.iter().copied())
@@ -225,6 +280,36 @@ fn main() {
     }
 }
 
+const fn round_two_histories() -> [LedgerTemplate; 25] {
+    [
+        ENDED_FIRST_COVER,
+        CHECKPOINT_WITH_LATER_WORK,
+        MERGE_EXTENT_LANES_READY,
+        RELEASE_LANE_READY,
+        PROJECTION_HISTORY,
+        SHARED_ENROLLMENT,
+        STACKED_ENROLLMENT,
+        RELEASE_ENROLLMENT,
+        INCURSION_ANSWERED_LOST_EVIDENCE,
+        REWRITTEN_TRUNK_LOST_EVIDENCE,
+        DRAINED_SPLIT_SWITCHED_CHECKPOINT,
+        MISSING_TARGET_CHECKPOINT,
+        ADVANCED_TARGET_CHECKPOINT,
+        ONE_HUNK_CHECKPOINT,
+        ABORTABLE_CHECKPOINT,
+        CONFLICTING_TWO_HUNK_CHECKPOINT,
+        APPLY_UNINTERRUPTED_CHECKPOINT,
+        APPLY_CONFLICTED_CHECKPOINT,
+        APPLY_SIDE_BRANCH_CHECKPOINT,
+        UNRESERVED_REBASE_PREFIX,
+        ACTIVE_BEFORE_OTHER_REBASE,
+        CHECKPOINT_BEFORE_OTHER_REBASE,
+        RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT,
+        RECONCILED_SOFT_ACTIVE_SPLIT,
+        RECONCILED_SOFT_CHECKPOINT_SPLIT,
+    ]
+}
+
 const fn recorded_populations() -> [LedgerTemplate; 34] {
     [
         edges_templates::RECORDED_PROJECTION,
@@ -253,14 +338,14 @@ const fn recorded_populations() -> [LedgerTemplate; 34] {
         gate_templates::ENROLLED_PAIR,
         gate_templates::UNENROLLED_PAIR,
         gate_templates::REVALIDATED_CROSS_TARGET_LANDING,
-        reanchoring_templates::TWO_REBASE_HISTORY,
-        reanchoring_templates::SPLIT_ACTIVE_PHASE,
-        reanchoring_templates::SPLIT_OUTSTANDING_PHASE,
-        reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT,
-        reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT,
-        reanchoring_templates::STACKED_UPPER_CHECKPOINT,
-        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION,
-        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING,
+        TWO_REBASE_HISTORY,
+        SPLIT_ACTIVE_PHASE,
+        SPLIT_OUTSTANDING_PHASE,
+        DRAINED_SPLIT_RETENTION_CHECKPOINT,
+        DRAINED_SPLIT_SIBLING_CHECKPOINT,
+        STACKED_UPPER_CHECKPOINT,
+        SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION,
+        SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING,
     ]
 }
 

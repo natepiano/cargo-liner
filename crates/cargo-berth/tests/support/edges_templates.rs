@@ -5,8 +5,10 @@ use std::path::Path;
 use std::process::Output;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::write_file;
@@ -16,8 +18,6 @@ const GIT: GitDriver = GitDriver {
     cleared_environment: &[],
 };
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 
 use cargo_berth_test_support::CrossTargetOrdering;
 use cargo_berth_test_support::IntegrationRepository;
@@ -77,13 +77,7 @@ pub const RECORDED_PROJECTION: LedgerTemplate = LedgerTemplate {
 fn build_recorded_projection(root: &Path) {
     IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE);
     let claim = berth_command(BERTH_EXECUTABLE)
-        .args([
-            "claim",
-            "file:README.md",
-            "--run",
-            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
-            "--json",
-        ])
+        .args(["claim", "file:README.md", "--run", FIRST_RUN, "--json"])
         .current_dir(root)
         .bounded_output()
         .expect("fixture claim should run");

@@ -8,11 +8,13 @@ use std::process::Output;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
@@ -30,7 +32,6 @@ use crate::linked_checkout;
 use crate::loose_refs;
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
@@ -87,6 +88,251 @@ fn build_split_phase(root: &Path, stage: SplitReservationStage) {
     }
     write_state(root, &SplitPhaseState { id, old_tip });
 }
+
+/// One protected hunk, checkpointed before a later rewrite starts.
+pub(super) const ONE_HUNK_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "one-hunk-checkpoint",
+        build: |root| {
+            REWRITE_MAIN.restore_into(root);
+            let fixture = RewriteRepository::at_root(root);
+            let id = fixture.start_checkpoint("one", "base");
+            write_state(
+                root,
+                &SplitPhaseState {
+                    id,
+                    old_tip: fixture.head(),
+                },
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// Two holder commits and conflicting trunk work before a live rebase starts.
+pub(super) const ABORTABLE_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "abortable-checkpoint",
+        build: |root| {
+            ONE_HUNK_CHECKPOINT.restore_into(root);
+            let fixture = RewriteRepository::at_root(root);
+            let mut state: SplitPhaseState = serde_json::from_slice(
+                &fs::read(root.join(STATE_PATH)).expect("checkpoint state should read"),
+            )
+            .expect("checkpoint state should decode");
+            fixture.commit("one", "two");
+            state.old_tip = fixture.head();
+            fixture.upstream_conflict();
+            write_state(root, &state);
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// A two-hunk checkpoint before a deferred amend and conflicting rebase.
+pub(super) const CONFLICTING_TWO_HUNK_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "conflicting-two-hunk-checkpoint",
+        build: |root| {
+            SPLIT_OUTSTANDING_PHASE.restore_into(root);
+            RewriteRepository::at_root(root).upstream_conflict();
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct ApplyCheckpointState {
+    pub(super) id:        String,
+    pub(super) old_start: String,
+    pub(super) first_tip: String,
+    pub(super) old_tip:   String,
+    pub(super) trunk:     String,
+}
+
+/// An apply checkpoint before its uninterrupted rebase starts.
+pub(super) const APPLY_UNINTERRUPTED_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "apply-uninterrupted-checkpoint",
+        build: |root| build_apply_checkpoint(root, ApplyPreparation::Uninterrupted),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// An apply checkpoint with an unreserved conflict path.
+pub(super) const APPLY_CONFLICTED_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "apply-conflicted-checkpoint",
+        build: |root| build_apply_checkpoint(root, ApplyPreparation::Conflicted),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// Two protected commits before a side branch changes during a stopped apply rebase.
+pub(super) const APPLY_SIDE_BRANCH_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "apply-side-branch-checkpoint",
+        build: |root| build_apply_checkpoint(root, ApplyPreparation::SideBranch),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+#[derive(Clone, Copy)]
+enum ApplyPreparation {
+    Uninterrupted,
+    Conflicted,
+    SideBranch,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct OtherReservationState {
+    pub(super) id:        String,
+    pub(super) other_id:  String,
+    pub(super) other_tip: String,
+    pub(super) old_tip:   String,
+    pub(super) trunk:     String,
+}
+
+/// Active holder work before a rebase onto another reservation.
+pub(super) const ACTIVE_BEFORE_OTHER_REBASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-before-other-rebase",
+        build: |root| build_before_other_rebase(root, SplitReservationStage::Active),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// An outstanding checkpoint before a rebase onto another reservation.
+pub(super) const CHECKPOINT_BEFORE_OTHER_REBASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "checkpoint-before-other-rebase",
+        build: |root| build_before_other_rebase(root, SplitReservationStage::Outstanding),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+fn build_before_other_rebase(root: &Path, stage: SplitReservationStage) {
+    REWRITE_MAIN.restore_into(root);
+    let fixture = RewriteRepository::at_root(root);
+    let trunk = GIT.stdout(root, ["rev-parse", "main"]);
+    let parent = root.join(".git/fixture-worktrees");
+    fs::create_dir_all(&parent).expect("worktree parent should exist");
+    let other = parent.join("other-reservation");
+    GIT.add_worktree_without_hooks(root, &other, "other-reservation", "HEAD");
+    let other_claim = claim(&other, "file:other.txt", SECOND_RUN);
+    assert!(
+        other_claim.status.success(),
+        "{}",
+        json_output(&other_claim)
+    );
+    let other_id = reservation_id(&other_claim);
+    commit_file(
+        &other,
+        "other.txt",
+        "other reservation's work\n",
+        "other phase",
+    );
+    let other_tip = GIT.stdout(&other, ["rev-parse", "HEAD"]);
+    let id = fixture.start_phase();
+    fixture.commit("one", "base");
+    let old_tip = fixture.head();
+    if matches!(stage, SplitReservationStage::Outstanding) {
+        fixture.checkpoint(&id);
+    }
+    write_state(
+        root,
+        &OtherReservationState {
+            id,
+            other_id,
+            other_tip,
+            old_tip,
+            trunk,
+        },
+    );
+}
+
+fn build_apply_checkpoint(root: &Path, preparation: ApplyPreparation) {
+    REWRITE_MAIN.restore_into(root);
+    let fixture = RewriteRepository::at_root(root);
+    let old_start = fixture.head();
+    let id = fixture.start_phase();
+    if !matches!(preparation, ApplyPreparation::Conflicted) {
+        fixture.commit("one", "base");
+    }
+    let first_tip = fixture.head();
+    if !matches!(preparation, ApplyPreparation::Uninterrupted) {
+        let later = if matches!(preparation, ApplyPreparation::SideBranch) {
+            "two"
+        } else {
+            "base"
+        };
+        fs::write(fixture.holder.join("phase.txt"), contents("one", later))
+            .expect("protected source should write");
+        fs::write(fixture.holder.join("unreserved.txt"), "holder addition\n")
+            .expect("unreserved conflict should write");
+        GIT.run(&fixture.holder, ["add", "phase.txt", "unreserved.txt"]);
+        let tree = GIT.stdout(&fixture.holder, ["write-tree"]);
+        let tip = GIT.stdout(
+            &fixture.holder,
+            ["commit-tree", &tree, "-p", &first_tip, "-m", "holder phase"],
+        );
+        GIT.run(
+            &fixture.holder,
+            ["update-ref", "refs/heads/holder", &tip, &first_tip],
+        );
+    }
+    let old_tip = fixture.head();
+    fixture.checkpoint(&id);
+    assert!(
+        !journal_events(root)
+            .iter()
+            .any(|event| event["op"] == "widen" && event["reservation_id"] == id)
+    );
+    commit_file(
+        root,
+        "unreserved.txt",
+        "trunk addition\n",
+        "advance trunk outside the reserved scope",
+    );
+    let trunk = GIT.stdout(root, ["rev-parse", "main"]);
+    assert_ne!(trunk, old_start);
+    assert_eq!(pending_markers(root), [] as [PathBuf; 0]);
+    write_state(
+        root,
+        &ApplyCheckpointState {
+            id,
+            old_start,
+            first_tip,
+            old_tip,
+            trunk,
+        },
+    );
+}
+
+/// Unreserved holder work before a live rebase and pruning remove its old commit.
+pub(super) const UNRESERVED_REBASE_PREFIX: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "unreserved-rebase-prefix",
+        build: |root| {
+            REWRITE_MAIN.restore_into(root);
+            let fixture = RewriteRepository::at_root(root);
+            fixture.commit("unreserved", "base");
+            let old_tip = fixture.head();
+            commit_file(root, "upstream.txt", "upstream\n", "advance trunk");
+            write_state(root, &old_tip);
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
 
 /// Two outstanding checkpoints after their second real rebase, with pending markers.
 pub(super) const TWO_REBASE_HISTORY: LedgerTemplate = LedgerTemplate {
@@ -261,6 +507,13 @@ impl RewriteRepository {
             String::from_utf8_lossy(&claimed.stdout)
         );
         reservation_id(&claimed)
+    }
+
+    pub(super) fn start_checkpoint(&self, first: &str, later: &str) -> String {
+        let id = self.start_phase();
+        self.commit(first, later);
+        self.checkpoint(&id);
+        id
     }
 
     pub(super) fn commit(&self, first: &str, later: &str) {
@@ -936,7 +1189,7 @@ pub(super) fn prepare_split_checkpoint(
     );
     if matches!(change, SplitRefChange::UpdatedSibling) {
         assert_eq!(
-            GIT.stdout(&fixture.holder, ["rev-parse", "lower"]),
+            loose_refs::read_loose_ref(fixture.root(), "refs/heads/lower"),
             split_tip
         );
         assert_ne!(new_upper, split_tip);
@@ -1033,6 +1286,19 @@ fn build_drained_sibling_checkpoint(root: &Path) {
     build_drained_checkpoint(root, SplitRefChange::UpdatedSibling);
 }
 
+/// A reconciled checkpoint after its issuing checkout switched branches.
+pub(super) const DRAINED_SPLIT_SWITCHED_CHECKPOINT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "drained-split-switched-checkpoint",
+        build: |root| {
+            build_switched_checkout(root);
+            build_drained_checkpoint(root, SplitRefChange::SwitchedCheckout);
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
 fn build_drained_checkpoint(root: &Path, change: SplitRefChange) {
     let fixture = RewriteRepository::at_root(root);
     let state =
@@ -1112,6 +1378,64 @@ fn build_active_first_split(root: &Path) {
         SplitReservationStage::Active,
     );
     write_state(root, &state);
+}
+
+/// A reconciled interactive split before a second rebase drops a protected hunk.
+pub(super) const RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "reconciled-interactive-checkpoint-split",
+        build: |root| {
+            build_reconciled_split(
+                root,
+                SplitWorkflow::InteractiveRebase,
+                SplitReservationStage::Outstanding,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// A reconciled soft reset split from an active reservation.
+pub(super) const RECONCILED_SOFT_ACTIVE_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "reconciled-soft-active-split",
+        build: |root| {
+            build_reconciled_split(
+                root,
+                SplitWorkflow::SoftReset,
+                SplitReservationStage::Active,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// A reconciled soft reset split from an outstanding checkpoint.
+pub(super) const RECONCILED_SOFT_CHECKPOINT_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "reconciled-soft-checkpoint-split",
+        build: |root| {
+            build_reconciled_split(
+                root,
+                SplitWorkflow::SoftReset,
+                SplitReservationStage::Outstanding,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+fn build_reconciled_split(root: &Path, workflow: SplitWorkflow, stage: SplitReservationStage) {
+    match stage {
+        SplitReservationStage::Active => SPLIT_ACTIVE_PHASE.restore_into(root),
+        SplitReservationStage::Outstanding => SPLIT_OUTSTANDING_PHASE.restore_into(root),
+    }
+    let interval = prepare_first_split(root, workflow, stage);
+    reconcile_first_split(root, &interval, stage);
+    write_state(root, &interval);
 }
 
 fn build_first_stacked_split(root: &Path, order: StackedBranchWriteOrder) {
@@ -1270,5 +1594,26 @@ fn prepare_first_stacked_split(
         first_split,
         split_tip,
         new_upper,
+    }
+}
+
+/// Reconcile the split and check its anchors before a later rewrite.
+pub(super) fn reconcile_first_split(
+    root: &Path,
+    interval: &CompletedSplitState,
+    stage: SplitReservationStage,
+) {
+    let fixture = RewriteRepository::at_root(root);
+    drain_markers(&fixture, &[&interval.id], CheckpointPlacement::BesideTrunk);
+    assert_split_anchors(
+        &fixture,
+        &interval.id,
+        &interval.expected_start,
+        &interval.split_tip,
+        &interval.first_split_tip,
+        stage,
+    );
+    if matches!(stage, SplitReservationStage::Active) {
+        fixture.checkpoint(&interval.id);
     }
 }
