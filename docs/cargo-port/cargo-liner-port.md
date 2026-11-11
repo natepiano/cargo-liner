@@ -884,100 +884,40 @@ The finder offers each binary by its own name, and Package Structure counts the 
 
 ### Phase 4x — CI job header and table margins read clean  · status: done
 
-**Depends on:** Phase 4v (both edit `crates/cargo-port/src/tui/panes/ci/`, `panes/lints/` and `sccache/`) and Phase 4y (the showrunner orders it first, 2026-11-10).
+#### As-built
 
-#### Work Order
-
-**Goal:** a CI job header draws whole at 160 columns, the Lint Runs, CI runs and Sccache rows keep the one-cell margin that other tables keep, and the older narrow and wide pane looks from the Phase 4v design check read clean.
-
-**Source:** Phase 4v design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4v/live/shots_4v_2/`. These defects are older than Phase 4v and outside its Spec.
-1. `w160h45-*-2-main-checkout`: the CI runs header reads `Windows Bui…`, and the Commit values in the same table are 26 cells wide.
-2. `*-1-lint-runs`, and `w60h30-*-2-main-checkout` and `-2-ci-all`: text touches the left border (`│Date`, `│24m 49s 🔴   │`). Other tables keep one cell (`│ Commit`).
-3. `w80h*-*-4-sccache`: the hint row ends `pageup/pagedown page┃` and touches the right border. At 160 columns the row keeps one cell.
-4. Phase 4v final design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4v/live/shots_4v_3/w80h30-color-2-main-git-4_of_4.txt`, rows 3-4: a plain divider sits on the `Remotes` divider (`├───┤`, then `├─ Remotes (1) ─┤`). Phase 4s frames show the same pair.
-5. `w160h45-*-2-ci-all`, row 37: a commit value cuts directly after a separator (`phase 32d —…`).
-6. `w60h30-*-5-lint-on` and `w80h30-*-5-lint-on`: with Lint on, the column labels sit 3 cells right of their values after the Phase 4v Disk change.
-7. Phase 4v final design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4v/live/shots_4v_5/`, `w80h45-*-7-member-*`: the Git description takes 11 rows and Package pads to match, so a taller window shows fewer fields than the 30-row window.
-8. `w60h30-*`, `w80h*-*` and `quota80-*`: the group row keeps the count while the name has one letter (`▶ m… 🌲:13`).
-9. `w80h30-*-7-member-*`: `target/` and `0 B` take two rows when one row fits, and the `target/` indent changes between frames.
-10. `w160h45-*-1-lint-runs` and `-6-lint-runs`: the date column has no header at 160 columns.
-11. `w160h45-*-1-lint-runs`: the Lint value sits 2 cells right of its column because the empty icon slot draws.
-12. `w80h*-*`, `quota80-*` and `w60h30-*-5-lint-on`: a title with one spare cell has a left space and touches the right corner (`┌ Package - alpha┐`).
-13. `w60h30-*`, `w80h*-*` and `quota80-*` Git pages: a section rule sits directly under the top border (`┌ Git - main ───┐`, then `├ Worktrees (13)┤`).
-14. `w80h30-*-2-main-git-2_of_4` and `quota80-*-1-loading`: a Git date cuts inside the time (`2026-03-07 0…`). `w60h30-*-5-lint-on`: the date loses the day (`2026-11-…`) because 9 cells remain after Phase 4v keeps the list columns.
-15. `quota80-*-1-loading-git-last-settled` and `-3_of_3`: messages cut with a free row below them (`GitHub unrea…`, `loading pull…`).
-16. `w160h45-*-2-main-checkout`, `-2-ci-all` and `-2-main-git-*`: Languages and Targets names cut at 160 columns (`└ uni…`, `M↓ Markd…`, `cargo-… binary`).
-17. Phase 4v checkpoint design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4v/live/shots_4v_6/`, `w80h*-*` and `quota80-*`: a cut Path value narrows its label column (`Path     /tmp…` at cell 10, `Lint       60` at cell 12).
-18. `w80h*-*-7-member-*` and `w100h30-*-7-member-*`: cut member names are the same on several rows (`├── cargo…` six times at 80, `├── cargo-be…` twice at 100).
-19. `w80h30-nocolor-7-member-1`: a toast message cuts with ASCII dots after a rule piece (`cargo-liner: ✨ clean ──...`).
-20. `quota80-*-select-*` and `quota80-*-1-loading*`: the Ahead/Behind value cuts with 7 free cells to its right (`↑3 ↓35…       │`).
-21. `w80h45-*-1-lint-runs`, `w80h45-*-2-*` and `w160h45-*-1-lint-runs`, `-6-lint-runs`: a detail pane pages (`1 of 2`) while a pane in the same column has 10 or more empty rows.
-22. `quota80-*-loading-a/b/c`: the Git pane draws 7 blank rows with no state text while it loads.
-23. `w160h45-*-2-ci-all`, `-2-main-checkout` and `-2-main-git-*`: the last Workspace Tests row is a number with no label (`7737`).
-24. Phase 4y design check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4y/live/shots_4y_1/`, `w160h45-color-3-finder-migrate`: the selected finder row keeps the green Type ink on the grey bar, at 2.70:1 contrast.
-25. `w80h30-*-3-finder-migrate`: the finder Dir cell cuts mid-path with no `…`, so the two rows look the same.
-
-**Decision:** showrunner, 2026-11-09: all three go in one follow-up phase. Text on the border breaks the one-cell margin, so it is a defect and not a new look. Director, 2026-11-09: items 4 and 5 move here under the landing rule, because both are older than Phase 4v and outside its Spec. Showrunner, 2026-11-09: item 6 moves here from Phase 4v. Director, 2026-11-09: items 7 to 16 move here under the hard landing, after a compare with frames from the build before Phase 4v. Items 7 to 13, 15 and 16 are older than Phase 4v. Item 14 is older at 80 columns. At 60 columns with Lint on, the phase's kept list columns take 2 cells from Git, and a 10-cell date cannot fit in 9, so a short-date choice goes to the showrunner. Director, 2026-11-10: items 17 to 23 move here under the three-round cap. Phase 4v ran 3 repair rounds, and the branch is equal to or better than main on every live count. Items 18 to 23 are older than Phase 4v. Item 17 shows at 80 columns because the phase gave Package 16 cells, and the older Path rule then narrows the label. The check also listed the Package Lint value at 160 columns, which Spec 10 holds. Director, 2026-11-10: items 24 and 25 move here from the Phase 4y design check, because both are older than Phase 4y. Showrunner, 2026-11-10: the Structure `binary` label stays singular for every count. Showrunner, 2026-11-10: at 160 columns, when the bottom row cannot fit all names, Targets cuts its Source name. Labels never cut, so Languages stays at or above its minimum width, which holds the `Languages` header. Project names stay whole. `projects_reserve_main_width_before_comparisons_arrive` now requires Targets at its minimum width or wider, and whole project names. Director, 2026-11-10: when cut sibling member names collide, each also drops the prefix it shares with the colliding siblings at a `-` or `_` boundary (Spec 16). Showrunner, 2026-11-10: at 80 columns Package takes no cell from Git. Git needs all 17 cells for `not a git repo`, and a pre-phase test pins the 18/17 split. Path draws `/tm…` beside the aligned labels under Spec 15. `narrow_workspace_shows_path_and_disk_values` now expects the cut Path and keeps its `73 B` check. Showrunner, 2026-11-10: with Lint on, the `Projects` header label cuts with the names, as `┃   Proj… Lint CI …`. This is the one exception to the rule that labels never cut. It applies only when the name column already cuts names. A narrower Disk or Main reserve would cut data values, and a header with no indent would break the alignment. Showrunner, 2026-11-10: at 160 columns the bottom row needs 163 cells for whole project names, Languages at its minimum and whole Targets labels. The Source column hides only when its whole header cannot fit, and it comes back in a wider window. This replaces the earlier Source cut, because a Source cell that reads `cargo…` is unreadable.
-
-**Constraints:**
-- Never cut a label. Cut a value, a name or a message first.
-- Change no other look.
-
-**Constraints from prior phases:**
-- Phase 4v: `package_field_label_width` (`panes/package/render.rs`) is the one label-width rule for one-row Package fields. Path and Disk keep their own arms. Spec 15 changes the Path arm only.
-- Phase 4v: from 60 to 80 columns Disk draws whole units (`52 GiB`). Spec 6 starts from those widths.
-- Phase 4v: Git and Lint Runs column widths live in `panes/git/constants.rs` and `panes/lints/constants.rs`.
-- Phase 4v: `GitAboutLayout` names its three description outcomes. Spec 7 keeps that type.
-- Phase 4v: `PopupBorder` selects the Sccache border. Every other popup keeps its border.
-- `crates/tui_pane/` is owned by tile-unit. Edit it through cargo-berth, and trial-merge the tile tip before the checkpoint notice.
-
-**Spec:**
-1. **CI job header.** At 160 columns each CI job header draws whole, and the cells come from the Commit column (`tui/panes/ci/render.rs`).
-2. **Table margin.** Lint Runs at every width and CI runs at 60 columns keep one cell between the left border and the text (`tui/panes/lints/render.rs`, `tui/panes/ci/render.rs`).
-3. **Sccache hint row.** At 80 columns the hint row keeps one cell before the right border (`tui/sccache/render.rs`).
-4. **Git dividers.** The Git pane draws one divider above the `Remotes` title, and a page that starts with a section draws no rule directly under the top border (`tui/panes/git/render.rs`).
-5. **Commit cut.** A commit value does not leave a separator before `…` (`tui/panes/ci/render.rs`).
-6. **Lint-on labels.** At 60 and 80 columns with Lint on, each column label sits over its column. Each value column is as wide as its label, and the name column gives the cells (showrunner, 2026-11-10, after the user's C205 rule: columns stay, names shorten first) (`tui/columns/`).
-7. **Description height.** At 80 columns and 45 rows, the Git description is capped as at 30 rows, and Package does not pad to it (`tui/panes/git/render.rs`, `tui/panes/package/render.rs`).
-8. **Group count.** A group row drops its count when the name would otherwise cut to one letter (`tui/panes/project_list/`).
-9. **Disk rows.** `target/` and its value draw on one row when they fit, with one indent (`tui/panes/package/render.rs`).
-10. **Lint Runs table.** The date column has a `Date` header at 160 columns, and the Package Lint value skips the empty icon slot (`tui/panes/lints/render.rs`, `tui/panes/package/render.rs`).
-11. **Title spare cell.** A pane title with one spare cell draws with no side space, as `┌Package - alpha┐`, and shows the whole name. This is the C301 rule for a title that uses all inner cells (showrunner, 2026-11-10).
-12. **Git dates.** A date value that does not fit drops the time and draws the whole date. In fewer than 10 cells the date draws as `26-11-07` (showrunner, 2026-11-10) (`tui/panes/git/render.rs`).
-13. **Messages.** A Git message wraps onto a free row instead of cutting (`tui/panes/git/render.rs`).
-14. **Wide names.** At 160 columns Languages and Targets names draw whole, and the cells come from free space in the project list. When the row cannot fit all names, Targets hides its Source column until its whole header fits, and Languages keeps its minimum width (showrunner, 2026-11-10) (`tui/panes/layout.rs`).
-15. **Path label.** A Path value that cuts keeps the label column of the other one-row fields, as `/tm…` at 80 columns (showrunner, 2026-11-10) (`tui/panes/package/render.rs`).
-16. **Distinct names.** Cut member names stay different from each other. A full name that fits stays full. A member whose full name does not fit drops the name prefix it shares with its workspace root, as `berth` for `cargo-berth` under `cargo-liner`, and then cuts on the right (showrunner, 2026-11-10) (`tui/panes/project_list/`).
-17. **Toast cut.** A toast message cuts with `…` and never after a rule piece (`crates/tui_pane/src/toasts/`).
-18. **Ahead/Behind.** The value uses the free cells of its row before it cuts (`tui/panes/git/render.rs`).
-19. **Free rows.** A detail pane takes the free rows of its column before it pages (`tui/panes/layout.rs`).
-20. **Git loading.** The Git pane draws `loading…` until its data arrives (`tui/panes/git/render.rs`).
-21. **Tests total.** The Workspace Tests sum row has the `Total` label (`tui/panes/package/render.rs`).
-22. **Finder selection ink.** The selected finder row draws its Type cell in the selection foreground, at 4.5:1 contrast or more (`tui/finder/`).
-23. **Finder Dir cut.** A finder Dir path that does not fit cuts from the left with a leading `…`, as in `…/binws/crates/engine` (`tui/finder/`).
-24. **Changelog.** Add the cargo-port and tui_pane entries.
+- CI: at 160 columns each CI job header draws whole, with cells from the Commit column. A commit value never leaves a separator before `…`. Lint Runs, CI runs and the Sccache hint row keep a one-cell margin at each border.
+- Git: one divider above `Remotes`, and no rule under the top border. A date that does not fit drops the time; under 10 cells it draws as `26-11-07`. Messages wrap onto free rows. The Ahead/Behind value uses the free cells of its row, and a narrow Sync value draws `↑3 ↓6` (`fit_table_sync_text`). The pane draws `loading…` until its data arrives.
+- Project list: with Lint on, each column label sits over its column, and the name column gives the cells. A group row drops its count when the name would cut to one letter. Cut member names stay distinct: a member drops the prefix it shares with its workspace root at a `-` or `_` boundary (`without_shared_prefix`), then cuts on the right.
+- Package: `target/` and its value share one row when they fit. The Lint value skips the empty icon slot. A cut Path keeps the label column of the other one-row fields (`/tm…` at 80 columns). The Workspace Tests sum row has the `Total` label. At 80x45 the Git description keeps the 30-row cap, and Package does not pad to it.
+- Layout: at 160 columns Languages and Targets names draw whole, with cells from free project-list space. A detail pane takes the free rows of its column before it pages; `TargetsData::inner_rows` (`tui/render/mod.rs`) keeps Targets to the rows its entries need.
+- Finder: the selected Type cell draws in the selection foreground at 4.5:1 contrast or more. A Dir path cuts from the left with a leading `…`, and the widest column gives up cells first.
+- Toasts and titles (`tui_pane`): a toast message cuts with `…`, never after a rule piece. A pane title with one spare cell draws corner to corner, as `┌Package - alpha┐` (`GridLines::add_titled`, `fit_title_sides`).
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/ci/` — Specs 1, 2 and 5
-- `crates/cargo-port/src/tui/panes/lints/` — Specs 2 and 10
-- `crates/cargo-port/src/tui/sccache/` — Spec 3
-- `crates/cargo-port/src/tui/panes/git/` — Specs 4, 7, 12, 13, 18 and 20
-- `crates/cargo-port/src/tui/columns/` — Spec 6
-- `crates/cargo-port/src/tui/panes/package/` — Specs 7, 9, 10, 15 and 21
-- `crates/cargo-port/src/tui/panes/project_list/` — Specs 8 and 16
-- `crates/cargo-port/src/tui/panes/layout.rs` — Specs 14 and 19
-- `crates/tui_pane/src/toasts/` — Spec 17
-- `crates/tui_pane/src/pane/title.rs` and `crates/cargo-port/src/tui/panes/package/render.rs` — Spec 11 (`fit_package_title`)
-- `crates/cargo-port/src/tui/finder/` — Specs 22 and 23
-- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` — Spec 24
+- `crates/cargo-port/src/tui/panes/ci/render.rs` — CI header widths and commit cut.
+- `crates/cargo-port/src/tui/panes/lints/render.rs` — Lint Runs margin and `Date` header.
+- `crates/cargo-port/src/tui/panes/git/render.rs` — dividers, dates, messages, Sync fit, loading state; Remotes and Worktrees share column widths.
+- `crates/cargo-port/src/tui/panes/package/render.rs` — Disk rows, Path label, Total row, `fit_package_title`.
+- `crates/cargo-port/src/tui/panes/layout.rs` and `crates/cargo-port/src/tui/render/mod.rs` — wide names and free rows.
+- `crates/cargo-port/src/tui/panes/targets/render.rs` — Source hide rule (`compute_layout`).
+- `crates/cargo-port/src/tui/columns/project.rs` — Lint-on labels, `Proj…` header, distinct member names.
+- `crates/cargo-port/src/tui/sccache/render.rs` — hint row margin.
+- `crates/cargo-port/src/tui/finder/dispatch.rs` — finder cuts and selection ink.
+- `crates/tui_pane/src/toasts/render/format.rs`, `crates/tui_pane/src/pane/title.rs`, `crates/tui_pane/src/pane/frame.rs` — toast cut and title fit.
 
-**Workers:** 2 writers.
-- Slot 1: Specs 1-16 and 18-23, their tests and `crates/cargo-port/CHANGELOG.md`. It owns `panes/package/render.rs`, so Spec 11 stays here with `tui_pane/src/pane/title.rs`.
-- Slot 2: Spec 17, its tests and `crates/tui_pane/CHANGELOG.md`, with the Spec 11 line.
+**Binds later work:** the `Proj…` header rule, the Targets Source hide rule, `fit_title_sides`, the shared Remotes/Worktrees widths with whole Sync counts, and the `without_shared_prefix` outcome, as the Names and titles phase cites them.
 
-**State:** none.
+**Gotchas:**
+- Labels never cut. The one exception: with Lint on, the `Projects` header cuts as `Proj…` only when the name column already cuts names.
+- Targets hides its Source column only when its whole header cannot fit beside whole Target names (163 cells needed at 160 columns); it returns in a wider window.
+- Every cut text ends with `…` through the shared `render::truncate_with_ellipsis`.
+- At 80 columns Package takes no cell from Git: Git needs all 17 cells for `not a git repo`.
+- The Structure `binary` label stays singular for every count.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests pin each defect at the width that showed it. Live captures at 60, 80 and 160 columns in colour and under NO_COLOR, judged by the design check. The 80-column captures page the Package pane to show the Structure box. The checkpoint carries a `Change-Review:` line.
+**Ruled out:**
+- Source name cut at 160 columns — a `cargo…` Source cell is unreadable.
+- Two-cell gap between multi-word CI job headers — the one-cell gap stays.
 
 ### Phase 4z — Names and titles never cut while cells are free  · status: todo
 
@@ -994,23 +934,30 @@ The finder offers each binary by its own name, and Package Structure counts the 
    2. `w60h30-nocolor-5-lint-on.txt` rows 24-28: a toast draws `┌ … [x]─┐` with `metad` / `ata` below. The title is `…` alone, and the word breaks with no mark.
    3. `w160h45-nocolor-2-main-git-2_of_2.txt` row 7: the remote URL draws `natepiano…` while its column and the Tracked and Sync columns have free cells.
 
-**Decision:** showrunner, 2026-11-10: a look the user sees today changes only when it is wrong, clipped, unreadable or against a user rule (user, 2026-11-06). A name cut to one letter is unreadable, so this phase drops the 🌲 mark in that case. The same ruling dropped six other items from the Phase 4x design check, because none is wrong, clipped or unreadable: the finder side margin (no border cell hides finder text), one blank row between Lint Runs records, one title case, the `Worktrees (13)` heading space, and, by the director under the same rule, the Workspace value columns and the two loading message forms. Director, 2026-11-10: Source items 2.1 to 2.3 are clipped or unreadable, so they stay. Under the same rule the director dropped one more item: unloaded Package fields draw `-` beside `—` (older; nothing is clipped). The one-cell gap between multi-word CI job headers at 160 columns (`Windows Build Check Test Suite`) is a look question for the showrunner, sent with the Phase 4x notice; it joins this phase only if the showrunner keeps it.
+**Decision:** showrunner, 2026-11-10: a look the user sees today changes only when it is wrong, clipped, unreadable or against a user rule (user, 2026-11-06). A name cut to one letter is unreadable, so this phase drops the 🌲 mark in that case. The same ruling dropped six other items from the Phase 4x design check, because none is wrong, clipped or unreadable: the finder side margin (no border cell hides finder text), one blank row between Lint Runs records, one title case, the `Worktrees (13)` heading space, and, by the director under the same rule, the Workspace value columns and the two loading message forms. Director, 2026-11-10: Source items 2.1 to 2.3 are clipped or unreadable, so they stay. Under the same rule the director dropped one more item: unloaded Package fields draw `-` beside `—` (older; nothing is clipped). Showrunner, 2026-11-10: the one-cell gap between multi-word CI job headers at 160 columns (`Windows Build Check Test Suite`) stays, because each header is whole and the columns align.
 
 **Constraints:**
 - Change no other look.
 - `crates/tui_pane` belongs to tile-unit. Trial-merge the tile tip before the checkpoint notice.
 
+**Constraints from prior phases:**
+- Phase 4x: with Lint on, the `Projects` header label cuts with the names (`┃   Proj… Lint CI …`) only when the name column already cuts names (`tui/columns/project.rs`). Spec 1 keeps this rule.
+- Phase 4x: Targets hides its Source column only when its whole header cannot fit beside whole Target names (`tui/panes/targets/render.rs`, `compute_layout`).
+- Phase 4x: `GridLines::add_titled` fits titles with `fit_title_sides`; a title with one spare cell draws corner to corner (`┌Package - alpha┐`). Spec 2 keeps this.
+- Phase 4x: Remotes and Worktrees share column widths (`tui/panes/git/render.rs`, near line 1433). `fit_table_sync_text` draws whole counts, then counts without ahead/behind (`↑3 ↓6`).
+- Phase 4x: `without_shared_prefix` (`tui/columns/project.rs`) returns `Option<CellContent>`. When Spec 1 edits this path, replace it with a named outcome (keep the original name, or the name without the shared prefix).
+
 **Spec:**
-1. **Group mark.** When a group row has dropped its count and its name would still cut to one letter, the row also drops its 🌲 mark, and the name takes those cells (`tui/columns/`, `tui/panes/project_list/`).
+1. **Group mark.** When a group row has dropped its count and its name would still cut to one letter, the row also drops its 🌲 mark, and the name takes those cells (`tui/columns/`, `tui/panes/project_list/`). Tests pin the `Proj…` header rule beside the new group-name cases.
 2. **CI title.** A CI runs title that cannot draw whole drops its branch suffix and its page part before it cuts the count, as `┌CI runs (48)─┐` (`tui/panes/ci/render.rs`).
-3. **Toast text.** A toast body breaks at word boundaries, and a cut word ends with `…`. A toast title is never `…` alone: when the title cannot draw one readable word, draw the toast without its title (`crates/tui_pane/src/toasts/`).
-4. **Remote URL.** The Remotes URL uses the free cells of its row, including spare Tracked and Sync cells, before it cuts (`tui/panes/git/render.rs`).
+3. **Toast text.** A toast body breaks at word boundaries, and a cut word ends with `…`. A toast title is never `…` alone: when the title cannot draw one readable word, draw the toast without its title (`crates/tui_pane/src/toasts/`, `crates/tui_pane/src/wrap.rs`). `wrap.rs` makes the unmarked word split; its callers `ToastRenderBody::wrapped_lines`, `wrapped_line_count` and `body_lines_plain` must measure and draw the same lines. Tests cover measurement and drawing, lingering toasts included, and the public wrapper keeps its behavior for other callers.
+4. **Remote URL.** The Remotes URL uses the free cells of its row, including spare Tracked and Sync cells, before it cuts (`tui/panes/git/render.rs`). Remotes and Worktrees columns stay aligned, headers stay whole, and Sync counts stay whole. A test with Remotes and Worktrees together checks URL growth, whole headers, aligned columns and whole Sync counts.
 5. **Changelog.** Add the cargo-port and tui_pane entries.
 
 **Files:**
 - `crates/cargo-port/src/tui/columns/` and `crates/cargo-port/src/tui/panes/project_list/` — Spec 1
 - `crates/cargo-port/src/tui/panes/ci/` — Spec 2
-- `crates/tui_pane/src/toasts/` — Spec 3
+- `crates/tui_pane/src/toasts/` and `crates/tui_pane/src/wrap.rs` — Spec 3
 - `crates/cargo-port/src/tui/panes/git/` — Spec 4
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — Spec 5
 
