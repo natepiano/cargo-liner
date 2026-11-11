@@ -338,7 +338,7 @@ impl MendRunner<'_> {
             sources,
             &self.selection.package_roots,
         )?;
-        ValidatedFixSet::try_from(next.fixes)
+        ValidatedFixSet::try_from((next.fixes, sources))
     }
 
     fn protect_chain(
@@ -375,7 +375,7 @@ impl MendRunner<'_> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let fixes = ValidatedFixSet::try_from(fixes)?;
+        let fixes = ValidatedFixSet::try_from((fixes, sources))?;
         let protected = FunctionLengthPlan::check(
             &fixes.tagged().cloned().collect::<Vec<_>>(),
             &[&fixes],

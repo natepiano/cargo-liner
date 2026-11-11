@@ -4,6 +4,7 @@ mod lexical_regions;
 mod module_map;
 mod parsed_sources;
 mod path_anchor;
+mod source_path_key;
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -22,6 +23,7 @@ pub(crate) use parsed_sources::ParsedSources;
 pub(crate) use path_anchor::PathAnchor;
 pub(crate) use path_anchor::leading_super_count;
 pub(crate) use path_anchor::trim_leading_self;
+pub(crate) use source_path_key::SourcePathKey;
 use syn::Meta;
 use syn::MetaList;
 use syn::Token;

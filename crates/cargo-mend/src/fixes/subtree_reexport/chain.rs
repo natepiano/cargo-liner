@@ -151,7 +151,8 @@ fn collect_links(
         if !forwarding {
             break;
         }
-        let Ok(relative) = file.strip_prefix(root) else {
+        let root_key = sources.path_key(root);
+        let Ok(relative) = file.strip_prefix(root_key.as_path()) else {
             break;
         };
         let mut fact = seed.clone();
