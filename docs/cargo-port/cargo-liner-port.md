@@ -168,39 +168,18 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Ruled out:** a cargo-port copy of the ANSI palette decoder.
 
-### Phase 6 — the Worktrees title keeps its count on every worktree page  · status: todo
+### Phase 6 — the Worktrees title keeps its count on every worktree page  · status: done
 
-**Depends on:** none. It can run beside Phase 3 and Phase 5; it shares only `crates/cargo-port/CHANGELOG.md` with Phase 5.
+#### As-built
 
-#### Work Order
-
-**Goal:** each Git worktree page shows the section title with its count, `Worktrees (13)`, whenever the divider at the same pane width has room for it.
-
-**Source:** showrunner, 2026-11-11 (rows C297 and C301): Phase 4x (21d3cb69c) changed `git_worktree_pages_keep_the_divider_title_and_drawn_page_number`. The test required `Worktrees (13)` on each worktree page. The new `assert_worktree_title` accepts a bare `Worktrees`, and the `├`/`┤` check sits in an `if let Some`, so a page can skip it.
-
-**Decision:** the bare title is not a rule; it is a width defect (director, 2026-11-11). In `push_section_overlays` (`crates/cargo-port/src/tui/panes/git/render.rs`), a divider row gives its title `outer width - 2` cells from `outer.x + 1`. A section on the first content row draws a text label instead, from `inner.x + 1` with `inner width - 1` cells: one cell less, and one cell to the right of a divider title. In the 16-column Git pane of the test, `Worktrees (13)` is 14 cells, so the divider fits it and the first-row label drops the count. The first-row label takes the same start column and width as a divider title, so both rows fit the same title. The count drops only when the divider would also drop it.
-
-**Constraints from prior phases:**
-- `section_title_with_count` (`git/render.rs`) shortens `Worktrees (N of M)` to `Worktrees (M)`, then to `Worktrees`, then cuts the word with an ellipsis, by width. Keep that order.
-- A section on the first content row sits under the top border or the description divider, so it draws its name as text and no second rule (Phase 4x). Keep that.
-- The test sits in `crates/cargo-port/src/tui/render/readability_tests.rs` and runs both `ColorMode::Colored` and `ColorMode::NoColor`.
-
-**Spec:**
-1. **Label width.** The first-row section label starts at the column of a divider title and has the same width. No other row moves.
-2. **Strict test.** Restore the strict rule in `git_worktree_pages_keep_the_divider_title_and_drawn_page_number`: each page that draws a worktree row also draws `Worktrees (13)`. On a divider row, the left and right cells are `├`/`┤` (`┣`/`┫` with no colour). On the first content row, the cell above the title is `┌` or `├` (`┏` or `┣`). Each page runs one of the two checks; no page skips both. Take the row from the found `Worktrees (13)` cell, not from a bare `Worktrees` search. The restored assert fails on the current code.
-3. **Changelog.** Add a cargo-port entry: the Worktrees title keeps its count at the top of a Git page.
+- A section on the first content row draws its title from `outer.x + 1` with `outer width - 2` cells, the same start column and width as a divider title. `push_section_overlays` in `tui/panes/git/render.rs` sets this area. The count drops only when a divider at that width also drops it.
+- `section_title_with_count` keeps its shortening order: `Worktrees (N of M)`, then `Worktrees (M)`, then `Worktrees`, then a cut word with an ellipsis.
+- `assert_worktree_title` in `tui/render/readability_tests.rs` requires `Worktrees (13)` on each worktree page in both `ColorMode`s. On a divider row it checks both side junctions; on the first row it checks the rule above the title.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/git/render.rs` — the first-row label area
-- `crates/cargo-port/src/tui/render/readability_tests.rs` — `assert_worktree_title` and the test loop
-- `crates/cargo-port/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and on the Mac, every test under 1 s, and the restored assert fails before the repair. `verify.sh lint cargo-port` is clean. A live capture of the Git pane at 80 columns shows `Worktrees (N)` at the top of a worktree page. `Change-Review: The Worktrees title keeps its count at the top of a Git page | On natedev, run cargo port at 80 columns, select a project with many worktrees, focus Git and page down to the worktree list | Each worktree page shows the Worktrees title with its count, also when the title is on the first row`.
-
+- `crates/cargo-port/src/tui/panes/git/render.rs` — first-row title area
+- `crates/cargo-port/src/tui/render/readability_tests.rs` — `assert_worktree_title`
+- `crates/cargo-port/CHANGELOG.md` — entry
 
 ### Phase 7 — an idle cargo-port reads almost nothing from disk  · status: todo
 
