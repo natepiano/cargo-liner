@@ -21,6 +21,12 @@ mod reporting;
 mod rust_syntax;
 mod selection;
 
+#[cfg(test)]
+mod diagnostic_tests;
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod support;
+
 use std::env;
 use std::io;
 use std::io::IsTerminal;

@@ -36,6 +36,7 @@ pub(super) use self::diagnostics::assert_codes_at;
 pub(super) use self::diagnostics::diagnostic_spec;
 pub(super) use self::diagnostics::findings_at;
 pub(super) use self::diagnostics::member_report;
+pub(super) use self::diagnostics::single_compile_target;
 pub(super) use self::mend_json::fix_support_for;
 pub(super) use self::mend_json::mend_command;
 pub(super) use self::mend_json::parse_mend_json_output;

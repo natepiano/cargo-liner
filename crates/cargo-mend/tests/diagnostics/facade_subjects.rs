@@ -116,7 +116,7 @@ fn inactive_cfg_facade_does_not_count_as_a_reexport() {
     .expect("write inactive facade");
     fs::write(temp.path().join("src/a/b.rs"), "pub struct Thing;\n").expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_pub_use_fix(&report),
         PubUseFixAvailability::Absent,
@@ -143,7 +143,7 @@ fn macro_generated_facade_counts_as_a_reexport() {
     .expect("write macro facade");
     fs::write(temp.path().join("src/a/b.rs"), "pub struct Thing;\n").expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_unused_pub(&report, "src/a/b.rs"),
         UnusedPublicFinding::Absent,
@@ -180,7 +180,7 @@ fn path_module_and_raw_identifier_facades_use_hir_module_identity() {
     )
     .expect("write raw module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/odd.rs"
@@ -382,7 +382,7 @@ fn non_applicable_named_facade_keeps_manual_cleanup_when_a_glob_blocks_it() {
     )
     .expect("write inherent subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/c.rs");
     let finding = report
         .findings
@@ -438,7 +438,7 @@ fn ancestor_glob_targeting_descendant_module_retains_exact_pub_crate() {
     )
     .expect("write unused control subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/c.rs");
     assert_eq!(
         has_unused_pub(&report, "src/a/b/c.rs"),
@@ -483,7 +483,7 @@ fn unused_named_facade_with_outer_glob_has_no_pub_use_fix() {
     fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
         .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
         .iter()
@@ -528,7 +528,7 @@ fn inherent_glob_retains_exact_pub_crate_through_the_self_type_module() {
     )
     .expect("write inherent implementation");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/impls.rs");
     assert_eq!(
         has_unused_pub(&report, "src/a/b/impls.rs"),
@@ -568,7 +568,7 @@ fn glob_usage_is_attributed_to_the_matching_export_name() {
     )
     .expect("write glob subjects");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -617,7 +617,7 @@ fn raw_identifier_glob_usage_is_attributed_to_the_unraw_export_name() {
     )
     .expect("write raw identifier macro literal");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -679,7 +679,7 @@ fn raw_identifier_module_segments_match_literal_and_parsed_paths() {
     )
     .expect("write raw module macro literal");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -731,7 +731,7 @@ fn extern_crate_declaration_retains_exact_pub_crate_at_a_foreign_boundary() {
     )
     .expect("write extern crate declaration");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.code != DiagnosticCode::OverbroadPubCrate || finding.path != "src/a/b/c/d.rs"
@@ -937,7 +937,7 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
         "mod inactive;\nmod generated;\nmod precedence;\nfn main() {}\n",
     )
     .expect("write combined fixture main");
-    let inactive_report = run_mend_json(&fixture.path().join("Cargo.toml"));
+    let inactive_report = super::compiled_report(&fixture.path().join("Cargo.toml"));
     assert_eq!(
         inactive_report
             .findings
@@ -992,7 +992,7 @@ fn private_import_defers_narrowing_until_the_import_is_removed() {
     fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
         .expect("write unused public item");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_unused_pub(&report, "src/a/child.rs"),
         UnusedPublicFinding::Present,
@@ -1024,7 +1024,7 @@ fn crate_root_pub_crate_facade_keeps_deep_subject_allowed() {
     )
     .expect("write facade subjects");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden_count = report
         .findings
         .iter()
@@ -1059,7 +1059,7 @@ fn restricted_parent_facades_require_manual_cleanup() {
         fs::write(root.join("src/a/b/c/child.rs"), "pub struct Thing;\n")
             .expect("write facade subject");
     }
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(super::compiled_report(&batch.path().join("Cargo.toml")));
     for package_name in [
         "pub_crate_parent_facade_fixture",
         "pub_in_parent_facade_fixture",
@@ -1102,7 +1102,7 @@ fn logical_top_level_path_module_uses_top_level_diagnostics() {
     )
     .expect("write logical top-level module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::NarrowToPubCrate
@@ -1158,7 +1158,7 @@ hidden = []
     )
     .expect("write feature-excluded consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.path != "src/a/child.rs"
@@ -1208,7 +1208,7 @@ fn cfg_test_module_literal_counts_as_facade_usage_in_default_run() {
     )
     .expect("write cfg-test consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.path != "src/a/child.rs"
@@ -1251,7 +1251,7 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
     )
     .expect("write signature caller");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden_help = report
         .findings
         .iter()
@@ -1309,7 +1309,7 @@ fn module_glob_reexport_retains_exact_pub_crate_on_enum_subjects() {
     )
     .expect("write enum subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/child.rs");
 }
 
@@ -1342,7 +1342,7 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
         .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
         .iter()
@@ -1382,7 +1382,7 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     )
     .expect("write later alias use");
 
-    let alias_use_report = run_mend_json(&alias_use.path().join("Cargo.toml"));
+    let alias_use_report = super::compiled_report(&alias_use.path().join("Cargo.toml"));
     assert_eq!(
         has_suspicious_pub(&alias_use_report, "src/a/child.rs"),
         SuspiciousPublicFinding::Absent,
@@ -1419,7 +1419,8 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     )
     .expect("write narrow alias use");
 
-    let mixed_visibility_report = run_mend_json(&mixed_visibility.path().join("Cargo.toml"));
+    let mixed_visibility_report =
+        super::compiled_report(&mixed_visibility.path().join("Cargo.toml"));
     assert_eq!(
         has_suspicious_pub(&mixed_visibility_report, "src/a/child.rs"),
         SuspiciousPublicFinding::Present,
@@ -1457,7 +1458,7 @@ fn used_inner_super_alias_keeps_its_allowance_below_a_wider_facade() {
     )
     .expect("write super alias use");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_suspicious_pub(&report, "src/a/b/child.rs"),
         SuspiciousPublicFinding::Absent,
@@ -1490,7 +1491,7 @@ fn used_super_alias_keeps_its_allowance_at_equal_reach() {
     )
     .expect("write super alias use");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_suspicious_pub(&report, "src/a/child.rs"),
         SuspiciousPublicFinding::Absent,
@@ -1527,7 +1528,7 @@ fn inline_module_references_use_their_lexical_module_identity() {
     fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
         .expect("write unrelated nested subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         has_unused_pub(&report, "src/a/b/child.rs"),
         UnusedPublicFinding::Present,
@@ -1563,7 +1564,7 @@ fn equal_reach_usage_stays_attached_to_its_own_spelling() {
         )
         .expect("write used crate-spelled alias");
     }
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(super::compiled_report(&batch.path().join("Cargo.toml")));
     for package_name in [
         "equal_reach_super_first_fixture",
         "equal_reach_crate_first_fixture",
@@ -1600,7 +1601,7 @@ fn equal_reach_crate_and_other_spellings_do_not_recommend_narrowing() {
         fs::write(root.join("src/a/b.rs"), "pub(super) mod c;\n").expect("write middle module");
         fs::write(root.join("src/a/b/c.rs"), "pub struct Thing;\n").expect("write facade subject");
     }
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(super::compiled_report(&batch.path().join("Cargo.toml")));
     for package_name in [
         "equal_reach_crate_then_other_fixture",
         "equal_reach_other_then_crate_fixture",
@@ -1753,7 +1754,7 @@ pub_in_path = "permitted"
             inherent_items_follow_their_self_type_facade_subject(&mut batch),
         ),
     ];
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(super::compiled_report(&batch.path().join("Cargo.toml")));
     for (member, assert_case) in assertions {
         assert_case(&reports[member]);
     }

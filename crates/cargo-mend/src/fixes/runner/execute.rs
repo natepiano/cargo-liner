@@ -15,10 +15,10 @@ use crate::fixes::inline_path_qualified_type::InlinePathScan;
 use crate::fixes::prefer_module_import;
 use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::ExecutionOutcome;
-use crate::reporting::Finding;
 use crate::reporting::MendFailure;
 use crate::reporting::PassEdits;
 use crate::reporting::SubtreeReexportEdits;
+use crate::reporting::sort_and_dedup_findings;
 use crate::rust_syntax::ParsedSources;
 
 /// A checked selection, with the syntax scans that added findings to its
@@ -186,42 +186,6 @@ impl MendRunner<'_> {
             sources,
         })
     }
-}
-
-/// Preserve compiler input order and the runner's suggestion-sensitive duplicate policy.
-fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
-    findings.sort_by(|a, b| {
-        (
-            a.input_order(),
-            &a.path,
-            a.line,
-            a.column,
-            &a.diagnostic_code,
-            &a.item,
-            &a.message,
-            &a.suggestion,
-        )
-            .cmp(&(
-                b.input_order(),
-                &b.path,
-                b.line,
-                b.column,
-                &b.diagnostic_code,
-                &b.item,
-                &b.message,
-                &b.suggestion,
-            ))
-    });
-    findings.dedup_by(|a, b| {
-        a.input_order() == b.input_order()
-            && a.diagnostic_code == b.diagnostic_code
-            && a.path == b.path
-            && a.line == b.line
-            && a.column == b.column
-            && a.message == b.message
-            && a.item == b.item
-            && a.suggestion == b.suggestion
-    });
 }
 
 #[cfg(test)]

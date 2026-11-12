@@ -364,6 +364,7 @@ fn run_with_refusing_project_rustc(args: &[&str]) -> TempDir {
         COMPILER_PROJECT_HELPERS_SOURCE,
     )
     .expect("write helper source");
+    single_compile_target(&fixture.path().join(COMPILER_PROJECT_DIRECTORY));
     let output = mend_command()
         .current_dir(fixture.path().join(COMPILER_PROJECT_DIRECTORY))
         .env("RUSTC", fixture.path().join(MISSING_PROJECT_RUSTC_PATH))

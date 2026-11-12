@@ -124,6 +124,8 @@ pub(super) const WRAPPER_ALIAS_STAGING_EXTENSION: &str = "staging";
 pub(super) const WRAPPER_CACHE_DIRECTORY_PREFIX: &str = "driver-";
 // `WRAPPER_CACHE_RETENTION_LOCK_FILE` protects live driver copies from removal.
 pub(super) const WRAPPER_CACHE_RETENTION_LOCK_FILE: &str = "retention.lock";
+// The source link lets cache collection recognize another installed build.
+pub(super) const WRAPPER_CACHE_SOURCE_LINK: &str = "source";
 // `WRAPPER_CACHE_PUBLICATION_LOCK_FILE` serializes publication of a driver copy.
 pub(super) const WRAPPER_CACHE_PUBLICATION_LOCK_FILE: &str = "publication.lock";
 // `WRAPPER_DIR_NAME` names the wrapper alias directory.
