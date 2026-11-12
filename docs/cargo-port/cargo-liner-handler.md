@@ -19,6 +19,7 @@
   - Invalid states are unrepresentable: use types (checked constructors, enums, type state), never procedural guards. No bare `Option` in new domain types.
   - No configuration value in code.
   - A folder that a process makes for its own use goes in a `tempfile::TempDir` (Rust) or `tempfile.TemporaryDirectory` (Python) with block under TMPDIR.
+- **Status source:** sdlc owns the accounts session list and the detached-run status rule. A row with no entry draws an empty status cell. cargo-handler never makes a status word of its own. Draw, expansion and display deadlines all take `app.accounts.table.session_states()`.
 
 ## Phases
 
@@ -30,76 +31,33 @@
 
 ### Phase 1 — Showrunner cells show account first, a role, a status word and an activity; age moves to a details view  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** each tile tree reads account, session, role, activity and status. Role is one of four words. Status is one of the four accounts-table words. Age leaves the tile tree and the top-level agents table, and a details view shows it with every other value of the selected row.
-
-**Source:** the user, via the showrunner, 2026-11-11: "in cargo handler, in a showrunner cell - the account should be the first column - the role should only be unit, showrunner, worker, producer, status should be the statuses we use from accounts "busy, idle, paused, exited" - and we need another column for activity that could be fix, timer, astra reviewer, impl, test, reviewer - we can remove the age column - it's not actually that useful - you can remove the age column from the top level agents as well - i think you should calculate it still though - we can show a details pop up view of a row - when you press d on a selected row it can give you all of that information like properties: name: natedev / role: showrunner / ... / age: 32 days, 14 hours, 44 minutes." Screenshot: `/tmp/claude/scratch/until-2026-11-15T0500Z-handler-shot-229e0b/handler_showrunner_cell_0734.png`.
-
-Showrunner, 2026-11-11: run this phase ahead of the other next items. Age is still computed and shows only in the details view, in the long form. Status uses the four accounts-table words. Live-capture the showrunner cell and the top-level agents table against main before the checkpoint.
-
-**Spec:**
-
-Director decisions:
-1. "Account first" means the leftmost column of the tile tree. The session column, with its tree guides, comes second.
-2. The role cell shows `unit`, `showrunner`, `worker` or `producer`. A worker row shows `worker`. Subagents and threads do work for a session, so their role is `worker` (showrunner, 2026-11-11). A shell (a timer or a command) has an empty role cell. An unlabeled session also has an empty role cell, because no source names its role. This replaces the C230 behavior, where a subagent row showed its role word in the role cell. That word now goes to the activity cell (showrunner, 2026-11-11).
-3. The activity cell names the work: `impl`, `test`, `fix`, `reviewer`, `astra designer`, `astra reviewer`, `timer`, or the subagent's or thread's work. The user's word `reviewer` replaces the old `review` text. A unit, showrunner or producer row with no job has an empty activity cell. Any agent session row (unit, showrunner, producer, worker or unlabeled) shows `compacting` in the activity cell while that session compacts (the user, via the showrunner, 2026-11-11: "also the activity for any agent session row of any time can be compacting").
-4. A timer row keeps its countdown. The countdown moves from the status cell to the activity cell (`timer 9:48`). Its status is `busy`.
-5. Status is one of `busy`, `idle`, `paused`, `exited`, read from a per-session list in the accounts report: `"sessions": [{"session": "<id>", "state": "..."}]`. The list comes from `~/.claude/scripts/accounts/session_state.py` `classify`, so the tile and the accounts table cannot disagree. cargo-handler never copies `classify` (showrunner, 2026-11-11). sdlc adds the export; until it lands, a row with no entry has an empty status cell. The detailed words (writing, reading, thinking, waiting) move to the details view as a `state:` line. Showrunner ruling, 2026-11-11: a Claude subagent row draws `busy` while it runs, and its activity can still show `compacting`. A Codex row with no recorded thread id draws `idle` when its process is live, and `exited` when it is not. The accounts export does not change.
-6. Age stays computed for each row. It remains the default sort order, oldest first, with no header marker, because no age column is drawn. The unassigned and showrunner tiles keep main's default, session name ascending. A clicked column header still sorts by that column.
-7. `d` opens the details view for the selected row in a tile tree and in the top-level agents table. It lists each property as `name: value`, in the order the row draws them, then the values no column shows (pid, directory, branch, model, effort where present). Model and effort stay tile columns where the tile has room; the details view lists them in drawn order when they draw, and with the undrawn values when the tile drops them (Phase 4 records Claude effort, C263), and last `age:` in the long form `32 days, 14 hours, 44 minutes`. Drop leading zero units: `14 hours, 44 minutes`; under one minute shows `0 minutes`. `Esc` closes it. Use the existing tui_pane overlay pattern that the favorites and shortcuts overlays use. If `d` is already bound, report it and stop.
-8. A worker with a live detached run never reads `idle` (C269, returned 2026-11-11: at 14:50 the `impl` worker read `fix · idle` while its `verify.sh lint` run was 1 h 25 min old). Two causes:
-   - cargo-handler: the census finds runs only under `<session>/mesh_runs/` with a `mesh_runs.py supervise <record>` process. sdlc renamed both on 2026-11-08 (`ce529466f`): `<session>/detached_runs/` and `detached_runs.py supervise <record>`. So no current run reaches a worker row. Read the new names, each from one constant. Drop the old names: `mesh_runs.py` is deleted, so no old run can be live. The run's step (`lint`, `test`, `waiting`) shows on the details view `state:` line.
-   - The accounts source: `session_state.py` `classify` reports `idle` for a session whose turn ended while its detached run lives. The fix goes there, through the showrunner to sdlc: a live detached run makes its session `busy`. The tile and the accounts count then agree, and cargo-handler adds no rule of its own (decision 5).
-
-Tasks:
-1. Tile tree: move `TreeColumn::Account` first, split `TreeColumn::Role` into `Role` (four-word type) and a new `Activity` column, and remove `TreeColumn::Age` from the drawn columns. Update `ColumnDrop::ORDER` and `GroupFitStep::ORDER` so narrow tiles drop the new column sets in a sensible order: Directory, Branch, Activity, Account.
-2. Status: draw one of the four words for every row, from one status type.
-3. Top-level agents table (`SummaryColumn`, `crates/cargo-handler/src/sort.rs`): remove the Age column from drawing. Keep age computed and the default order.
-4. Details view: bind `d` in the default keymap, add it to the shortcuts overlay, and draw the overlay.
-5. Add a producer role value where the hierarchy source can name one. A row is `producer` only when its source says so.
-6. Update the as-built docs `hierarchy.md`, `interaction.md` and `activity.md` in the same change.
-7. Detached runs: read `detached_runs/` records and `detached_runs.py supervise` processes (decision 8).
-
-Tests (red first, each under one second):
-1. The tile tree header order is account, session, role, activity, status (with optional columns after), and no age header is drawn.
-2. A worker row shows role `worker` and activity `impl`. A unit row shows `unit` and an empty activity.
-3. A timer row shows status `busy` and activity `timer <countdown>`.
-4. Each session state maps to one of the four status words. The tile status and the accounts-table count agree for one fixture.
-5. The top-level agents table draws no age column and keeps the oldest-first order.
-6. `d` opens the details view for the selected row. It shows `age: 32 days, 14 hours, 44 minutes` for a fixture of that age. `Esc` closes it.
-7. The long age form drops leading zero units.
-8. A running record in `<session>/detached_runs/`, with a live `detached_runs.py supervise <record>` process, attaches to its worker row, and the details view `state:` line shows the run's step. A record with no live supervisor attaches nothing.
-
-**Live check (director):** before the checkpoint, capture the natedev showrunner tile and the top-level agents table from a build of this branch and from main, under the safety rule (only terminals and processes the director starts).
-
-**Change-Review line:** Showrunner tiles show account first, a role, an activity and a status word; `d` shows a row's details with its age | On natedev, run cargo-handler in a terminal, look at a showrunner tile, select a row and press d | Account is the first column; role reads unit, showrunner, worker or producer; activity holds impl, test, fix, timer or astra reviewer; status reads busy, idle, paused or exited; no age column; d lists the row's values and its age in days, hours and minutes
+- A tile tree draws account, session (with its tree guides), role, activity, status, then branch and the optional columns. The top-level agents table draws pid, account, session, status, directory. Neither draws an age column.
+- Role is `unit`, `showrunner`, `worker`, `producer`, or empty. Subagents and threads are `worker`; a shell or an unlabeled session has an empty role. A row is `producer` only when its hierarchy source says so.
+- Activity names the job: `impl`, `test`, `fix`, `reviewer`, `astra designer`, `astra reviewer`, `timer <countdown>`, or the subagent's or thread's work. Any agent session row shows `compacting` while it compacts. A timer row's status is `busy`.
+- Status is `busy`, `idle`, `paused` or `exited`, read each scan from the accounts report's per-session list (`ReportedSessionState`), which `session_state.py` `classify` produces. A row with no entry draws an empty status cell. `AgentHeading::new(entry, account_column, footer_colors)` draws the reported word in status ink. The detailed state words (writing, reading, thinking, waiting) show only on the details view `state:` line.
+- Age stays computed and keeps the default order, oldest first, with no header marker; the unassigned and showrunner tiles keep session name ascending.
+- `d` opens a Row details view (tui_pane overlay pattern) for the selected row in a tile tree or the top-level agents table. It lists each property as `name: value` in drawn order, then the undrawn values (pid, directory, branch, model, effort), then `age:` in the long form `32 days, 14 hours, 44 minutes`, with leading zero units dropped and `0 minutes` under one minute. `Esc` closes it.
+- The census finds detached runs under `<session>/detached_runs/` with a live `detached_runs.py supervise <record>` process, from `DETACHED_RUNS_DIRECTORY` and `DETACHED_RUNS_SCRIPT` in `constants.rs`. The run's step shows on the details view `state:` line.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `TreeColumn`, `TreeColumns`, column drop orders, `TreeLine::value`, `draw_tree`
-- `crates/cargo-handler/src/census/placement.rs` — `RoleLabel`
-- `crates/cargo-handler/src/census/mod.rs` — `HierarchyRole`
-- `crates/cargo-handler/src/sort.rs` — `SummaryColumn`, `TreeSort`
-- `crates/cargo-handler/src/summary/mod.rs` — the top-level agents table
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeColumn`, `TreeColumns`, `ColumnDrop::ORDER` and `GroupFitStep::ORDER` (drop Directory, Branch, Activity, Account), `AgentHeading`
+- `crates/cargo-handler/src/details.rs` — the Row details view; tests in `src/render/details_tests.rs`
 - `crates/cargo-handler/src/summary/age.rs` — the long age form
-- `crates/cargo-handler/src/constants.rs` — headers
-- `crates/cargo-handler/src/keymap.rs` — the `d` binding
-- `crates/cargo-handler/src/globals.rs` — the `d` action
-- `crates/cargo-handler/src/app.rs` — the details overlay state
-- `crates/cargo-handler/src/census/activity.rs` — the detached run directory and supervisor names
-- `crates/cargo-handler/src/census/worker_dispatch/sessions.rs` — live supervisor directories
-- `docs/cargo-handler/as-built/activity.md` — the detached run names
-- `docs/cargo-handler/as-built/hierarchy.md` — the tile tree columns
-- `docs/cargo-handler/as-built/interaction.md` — the `d` key
+- `crates/cargo-handler/src/census/activity.rs`, `census/worker_dispatch/sessions.rs`, `constants.rs` — detached run records and supervisors
+- `crates/cargo-handler/src/expansion.rs`, `terminal.rs` — `AgentPlacement` built with session states
+- `crates/cargo-handler/src/keymap.rs`, `globals.rs`, `app.rs` — the `d` binding, action and overlay state
+- `docs/cargo-handler/as-built/hierarchy.md`, `interaction.md`, `activity.md` — columns, the `d` key, detached run names
 
-**Workers:** 1 writer. Nothing splits: the column, status and overlay changes share `agent_cell.rs`, and the tests are crate unit tests beside the code.
-- `impl` — every file above, and the tests.
+**Binds later work:** the producers tile uses the same columns (account first, role `producer`, activity, status from the accounts session list) and the same `d` view. The session column sits second, after account. The `d` view lists model and effort when a tile drops them.
 
-**State:** none
+**Gotchas:**
+- Draw, expansion and display deadlines all build `AgentPlacement` with `app.accounts.table.session_states()`; empty states make a status-sorted tile expand the wrong row.
+- Some Codex producers (brain, morty) have no entry in the accounts session list, so their status cell is empty until sdlc exports them.
+- A worker whose turn ended reads `idle` while its detached run lives until sdlc's `classify` makes such a session `busy`; cargo-handler adds no rule of its own.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` passes with the eight tests above, and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` passes. The live check shows the new column order, the four role words, the four status words, no age column in a tile or in the top-level agents table, the `d` details view with the long age, and a worker with a live detached run that shows the run's step in its details. That worker reads `busy` once sdlc's `classify` change lands.
+**Ruled out:** a copy of `classify` in cargo-handler (the tile and the accounts table must not disagree); the old `mesh_runs/` names (`mesh_runs.py` is deleted); producers in the top-level agents table (not asked).
 
 ### Phase 2 — Word highlight strength is a setting, and the default is easier to see  · status: todo
 
@@ -117,13 +75,20 @@ Director decisions (the showrunner can change them before dispatch):
 1. One setting holds the strength: `word_highlight.emphasis`, with the values `subtle`, `clear` and `strong`. It goes in the cargo-handler config file, beside the theme choice. No value is in code.
 2. `subtle` is the C240 look. `clear` is the new default, and it is easy to see on every built-in theme. `strong` adds bold to the matched text over the `clear` ground.
 3. The theme keeps the ground colors. Emphasis sets how far the match ground moves from the pane ground. The contrast rules in `MatchInk::resolve` still keep the text readable.
-4. The setting reloads like the theme does. An unknown value is a config error that names the three values.
+4. A change to `config.toml` takes effect without a restart. A background reader (never the UI thread) reads the changed file and sends a checked `WordHighlightEmphasis` to the app. An invalid value keeps the last valid emphasis and shows a config error that names `subtle`, `clear` and `strong`. Today only the theme files reload; `config.rs` loads once at startup.
+
+**Constraints from prior phases:**
+- `MatchGroundsCache` and `MatchPaletteState` key their cached results on the theme, the ground and the selected word. Add the emphasis to both keys, and drop the kept body when the emphasis changes.
+- `WordMatchGrounds` keeps separate grounds for plain rows, focused selections and unfocused selections. Keep all three, and keep the `MatchInk::resolve` readability rules.
+- `strong` adds bold to matched cells. `subtle` and `clear` keep the cell's existing modifiers and add none.
 
 Tests (red first, each under one second):
 1. Each emphasis value parses, and an unknown value gives an error that names the three values.
 2. On each built-in theme, the `clear` match ground is farther from the pane ground than the `subtle` ground.
-3. `strong` draws matched cells bold; `subtle` and `clear` do not.
+3. `strong` adds bold to matched cells. `subtle` and `clear` keep existing bold and other modifiers. Unmatched cells keep their styles.
 4. Text on each match ground keeps the required contrast at each emphasis.
+5. Each emphasis keeps a match distinct from its ground on plain rows and in both selection states, on every built-in theme, tint on and off.
+6. A valid config change updates a drawn highlight with no theme change and no new word click. An invalid change keeps the last emphasis and shows its error. A later valid change clears the error.
 
 **Live check (director):** before the checkpoint, capture a clicked word in a cargo-handler terminal from this branch at each emphasis value and from main, under the safety rule. Capture `clear` and `strong` on the default theme and on one light theme (showrunner, 2026-11-11).
 
@@ -133,7 +98,12 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/theme/word_match.rs` — match grounds
 - `crates/cargo-handler/src/word_highlight.rs` — match painting
 - `crates/cargo-handler/src/render/mod.rs` — the painted frame
-- `crates/cargo-handler/src/app.rs` — the config value
+- `crates/cargo-handler/src/app.rs` — the config value and its updates
+- `crates/cargo-handler/src/config.rs` — emphasis parse, default and serialization
+- `crates/cargo-handler/src/terminal.rs` — the background config reader and update delivery
+- `crates/cargo-handler/src/main.rs` — registration of a new reader module
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — selection ground readability and separation
+- `crates/cargo-handler/src/render/word_click_tests.rs` — modifier rules and a changed emphasis
 - `docs/cargo-handler/as-built/colors.md` — word match grounds
 - `docs/cargo-handler/as-built/interaction.md` — the setting
 
@@ -142,7 +112,7 @@ Tests (red first, each under one second):
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows a clearly visible default highlight and three distinct strengths.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows a clearly visible default highlight and three distinct strengths.
 
 ### Phase 3 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
@@ -158,16 +128,24 @@ Tests (red first, each under one second):
 
 Director decisions:
 1. A session is a producer only when the staff source names it so (`StaffKind::Producer`, the Phase 1 `producer` role). No name match.
-2. The producers tile uses the unassigned tile's tree, columns, sort and details view. Each producer is a root row, and its subagents and threads draw under it.
+2. One producers tile holds the producers of every configured machine, with the stable identity `TileKey::Producers`. It uses the shared tree, columns, sort, selection and details view. Each producer is a root row, and its subagents and threads draw under it. Row keys keep the machine, so equal producer names on two machines stay two rows.
 3. The title is `producers`, a constant beside `UNASSIGNED_CELL_TITLE`.
-4. The producers tile draws only when at least one producer is live. It sits before the unassigned tile.
-5. The top-level agents table keeps every producer row.
+4. The producers tile draws when the census holds at least one producer session. Account status does not decide it: a producer with no status entry still draws. The tile sits before every unassigned tile.
+5. The top-level agents table does not change: it lists the same rows as on main. A producer draws once, in the producers tile, and in no unassigned or hierarchy tile.
+
+**Constraints from prior phases:**
+- Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
+- `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. Make the pool kind an enum (unassigned or producers), not a bool or a bare `Option`.
+- Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
 Tests (red first, each under one second):
 1. A producer session draws in the producers tile and not in the unassigned tile.
 2. A session that staff does not name a producer stays in the unassigned tile.
-3. With no live producer, no producers tile draws.
+3. With no producer session, no producers tile draws. Removing the last producer removes the tile.
 4. The producers tile title reads `producers`.
+5. Producers from two machines share one tile; equal names stay distinct rows.
+6. A producer with no status entry still draws in the producers tile.
+7. Sort, expansion, selection, header clicks and `d` work in the producers tile after its membership changes.
 
 **Live check (director):** before the checkpoint, capture the producers tile and the unassigned tile from a build of this branch and from main, under the safety rule.
 
@@ -178,14 +156,21 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/hierarchy.rs` — producer staff rows
 - `crates/cargo-handler/src/constants.rs` — the tile title
 - `crates/cargo-handler/src/render/mod.rs` — tile order
+- `crates/cargo-handler/src/agent_cell.rs` — pooled entries, grouping, keys, order and tree
+- `crates/cargo-handler/src/tiles.rs` — `TileKey::Producers`
+- `crates/cargo-handler/src/interaction.rs` — selection and sort identities
+- `crates/cargo-handler/src/render/painted_surface.rs` — painted headers and row input
+- `crates/cargo-handler/src/expansion.rs` — producer tree expansion
+- `crates/cargo-handler/src/terminal.rs` — display deadlines for the new pool
 - `docs/cargo-handler/as-built/hierarchy.md` — the producers tile
+- `docs/cargo-handler/as-built/tile-layout.md` — producer grouping and identity
 
 **Workers:** 1 writer.
 - `impl` — every file above, and the tests.
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows the producers tile and no producer in the unassigned tile.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
 ### Phase 4 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
@@ -200,17 +185,25 @@ Tests (red first, each under one second):
 **Spec:**
 
 Director decisions:
-1. Cause of the effort gap: Claude writes `effort` at the top level of each assistant record (`{"type":"assistant","effort":"high","message":{...}}`). `ConversationModel::take_claude` reads effort from `message`, so no Claude row has an effort, and the fitter drops the empty column. Codex rows record effort, so only the unassigned tile drew it. Fix the reader: take effort from the top-level record, and the model from `message.model`.
+1. Cause of the effort gap: Claude writes `effort` at the top level of each assistant record (`{"type":"assistant","effort":"high","message":{...}}`). `ConversationModel::take_claude` reads effort from `message`, so no Claude row has an effort, and the fitter drops the empty column. Codex rows record effort, so only the unassigned tile drew it. Fix the reader: take the model from `message.model`. Take effort from the top-level record first, then from the nested effort fields that `take_claude` reads today. Keep the system-record metadata and the effort aliases. A later record with no effort keeps the recorded one.
 2. The effort column keeps its place in the drop order. No column-set change. With effort recorded, it draws wherever the tile has room.
 3. A shell command row's session cell cuts each path argument to its file name: `python3 /tmp/…/scratchpad/watchgates.py 2>&1` draws `python3 watchgates.py 2>&1`.
 4. The session column width comes from the agent rows of the tile. A shell row wider than that width ends in `…` at the column edge. The details view `name:` line keeps the full command.
+
+**Constraints from prior phases:**
+- Phase 1 shows the recorded model and effort in the `d` view. Use `ModelName` and `ReasoningEffort::Unrecorded`. JSON `Option` values stay inside the decode step; add no optional effort field.
+- `TreeLine::name` feeds both the drawn cell and the `d` view `name:` line. Keep the full command for the `d` view and for selection identity. Use a separate display text for the short shell form.
+- Leave shell text out of the preferred session width before the shared metrics and layout demand run. The minimum width still holds the tree guides and the session header. Cut on grapheme boundaries and keep span styles.
+- The cut keeps quotes, spaces, redirections and arguments that are not paths.
 
 Tests (red first, each under one second):
 1. A Claude assistant record with a top-level `effort` gives that effort; its `message.model` gives the model.
 2. A Claude tile with recorded effort draws the effort column at a width that fits it.
 3. A path argument draws as its file name; other arguments are unchanged.
-4. A shell row longer than the widest agent row does not widen the session column, and it ends in `…`.
-5. The details view of that shell row shows the full command.
+4. A shell row longer than the widest agent row does not widen the session column, and it ends in `…` at the exact column edge. Neighbor tiles keep their widths.
+5. The details view of that shell row, opened with `d`, shows the full command.
+6. Effort reading: top-level first, nested fallback, system records, aliases and a missing effort. Bounded first reads, unchanged-file reuse, appends and file replacement keep working.
+7. Quoted paths with spaces, relative paths and redirections cut correctly; other arguments are unchanged.
 
 **Live check (director):** before the checkpoint, capture the natedev showrunner tile and the hana showrunner tile from a build of this branch and from main, under the safety rule.
 
@@ -221,13 +214,17 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/agent_cell.rs` — the shell row text and the session column width
 - `docs/cargo-handler/as-built/hierarchy.md` — the effort source and the shell row text
 - `docs/cargo-handler/as-built/tile-layout.md` — the session column width
+- `crates/cargo-handler/src/census/transcript.rs` — metadata reader tests
+- `crates/cargo-handler/src/render/details_tests.rs` — full shell command in the `d` view
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — shell width and neighbor tiles
+- `docs/cargo-handler/as-built/startup.md` — Claude effort sources
 
 **Workers:** 1 writer.
 - `impl` — every file above, and the tests.
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the five tests above. The live check shows effort on Claude rows and a shell row that does not widen the session column.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
 ### Phase 5 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
@@ -248,11 +245,16 @@ Director decisions:
 4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
 5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
 
+**Constraints from prior phases:**
+- Keep `ResetRank` as the checked rank type, with its strict quarter edges and its single-reset rule. Measure the drawn colors, not only the theme role values. The current gradient test allows four steps and checks only neighbor pairs.
+- `accounts.md` names the new keys that replace `reset_nearest` and `reset_farthest` for custom themes.
+
 Tests (red first, each under one second):
 1. Each built-in theme file sets the three roles, and a theme file can override each one.
 2. The rank rule gives soonest, middle and latest in order; a single reset gives soonest.
-3. Every pair of steps is at least 20 CIEDE2000 apart in every built-in theme, tint on and off.
+3. A footer with all three rank groups draws exactly three reset colors. Every pair is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, tint on and off.
 4. The existing contrast, no-red and session-color tests pass with the new colors.
+5. Equal reset times, one distinct reset and exact quarter edges keep the rank rule. A custom theme without the new roles takes the defaults.
 
 **Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
 
@@ -263,6 +265,7 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/themes/*.toml` — the three roles in each built-in theme
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order and distance
 - `crates/cargo-handler/src/theme/files_tests.rs` — theme file roles
+- `crates/cargo-handler/src/theme/files.rs` — custom theme role load and defaults
 - `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset steps
 
 **Workers:** 1 writer.
@@ -270,4 +273,4 @@ Tests (red first, each under one second):
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with the four tests above. The live check shows three different hues in the resets column on both themes.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
