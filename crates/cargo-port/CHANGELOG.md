@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep the Worktrees title count at the top of each Git page.
 - Give group names the tree mark cells when the count is hidden and only one letter fits.
 - Remove CI title suffixes before the run count loses cells.
 - Cut Remote URLs from the left. Keep their checkout names visible beside aligned Worktrees columns.
