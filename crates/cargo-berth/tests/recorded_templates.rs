@@ -27,6 +27,10 @@ use hook_evidence_templates::REWRITTEN_TRUNK_LOST_EVIDENCE;
 use integration_templates::CHECKPOINT_WITH_LATER_WORK;
 use integration_templates::ENDED_FIRST_COVER;
 use integration_templates::MERGE_EXTENT_LANES_READY;
+use integration_templates::MERGED_TRUNK_ONLY;
+use integration_templates::MERGED_TRUNK_WITH_OWN_WORK;
+use integration_templates::NEWER_TRUNK;
+use integration_templates::PENDING_TRUNK_MERGE;
 use integration_templates::RELEASE_LANE_READY;
 use ledger_templates::PROJECTION_HISTORY;
 use ledger_templates::RELEASE_ENROLLMENT;
@@ -215,6 +219,10 @@ fn main() {
             parallel_templates::NAMED_SEED,
             parallel_templates::NAMED_OVERLAP,
             parallel_templates::NAMED_METADATA,
+            MERGED_TRUNK_ONLY,
+            MERGED_TRUNK_WITH_OWN_WORK,
+            PENDING_TRUNK_MERGE,
+            NEWER_TRUNK,
         ])
         .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)

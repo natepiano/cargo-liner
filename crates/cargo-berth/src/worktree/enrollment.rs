@@ -375,13 +375,14 @@ fn observe_target_footprint(
                 format!("git merge-tree {trunk} {head}: {error}"),
             )
         })?;
-    let working_tree = drift::observe_merge_working_tree(repository, root).map_err(|error| {
-        failure(
-            root,
-            WorktreeEnrollmentFailureReason::GitFailure,
-            format!("git status --porcelain: {error}"),
-        )
-    })?;
+    let working_tree =
+        drift::observe_merge_working_tree(repository, root, &trunk).map_err(|error| {
+            failure(
+                root,
+                WorktreeEnrollmentFailureReason::GitFailure,
+                format!("git status --porcelain: {error}"),
+            )
+        })?;
     let paths = committed
         .into_iter()
         .chain(working_tree.tracked_paths.iter().cloned())

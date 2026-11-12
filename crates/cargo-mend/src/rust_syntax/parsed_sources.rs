@@ -11,8 +11,9 @@ use rustc_hash::FxHashMap;
 use syn::File;
 use syn::parse_file;
 
-use super::module_map;
+use super::SourcePathKey;
 use super::module_map::ModuleMap;
+use super::source_path_key::SourcePathKeys;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::selection::Selection;
 
@@ -36,8 +37,7 @@ impl ParsedSource {
 }
 
 /// The source files and module maps one check reads, each read and parsed at
-/// most once, keyed by lexically normalized path so a module walk and a
-/// directory walk share entries.
+/// most once. `SourcePathKey` gives module walks and directory walks the same identity.
 ///
 /// No entry is ever invalidated, so a cache must not outlive a write to the
 /// tree. That holds by its lifetime: the runner builds one per
@@ -49,8 +49,9 @@ impl ParsedSource {
 /// `!Send`, so a syntax tree never leaves the thread that parsed it.
 #[derive(Default)]
 pub(crate) struct ParsedSources {
-    sources:     RefCell<FxHashMap<PathBuf, Rc<ParsedSource>>>,
-    module_maps: RefCell<FxHashMap<PathBuf, Rc<ModuleMap>>>,
+    pub(super) path_keys: Rc<SourcePathKeys>,
+    sources:              RefCell<FxHashMap<SourcePathKey, Rc<ParsedSource>>>,
+    module_maps:          RefCell<FxHashMap<SourcePathKey, Rc<ModuleMap>>>,
 }
 
 impl From<&BTreeMap<PathBuf, String>> for ParsedSources {
@@ -59,7 +60,7 @@ impl From<&BTreeMap<PathBuf, String>> for ParsedSources {
         let sources = Self::default();
         for (path, text) in files {
             sources.sources.borrow_mut().insert(
-                module_map::lexically_normalized(path),
+                sources.path_key(path),
                 Rc::new(ParsedSource {
                     text:   text.clone(),
                     syntax: OnceCell::new(),
@@ -71,13 +72,26 @@ impl From<&BTreeMap<PathBuf, String>> for ParsedSources {
 }
 
 impl ParsedSources {
+    /// Reuse the identity of a file or root throughout this source snapshot.
+    pub(crate) fn path_key(&self, path: &Path) -> SourcePathKey { self.path_keys.key(path) }
+
+    /// Compare physical identities before rendering a relative diagnostic path.
+    pub(crate) fn display_path(&self, root: &Path, file: &Path) -> String {
+        let root = self.path_key(root);
+        let file = self.path_key(file);
+        file.as_path()
+            .strip_prefix(root.as_path())
+            .unwrap_or(file.as_path())
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
     /// Seed module maps from Cargo's target roots, including integration tests
     /// and targets whose manifest paths do not follow the directory defaults.
     pub(crate) fn for_selection(selection: &Selection) -> Self {
         let parsed_sources = Self::default();
         for package_metadata in &selection.packages {
-            let source_root =
-                module_map::lexically_normalized(&package_metadata.root.join(SOURCE_DIR_SRC));
+            let source_root = parsed_sources.path_key(&package_metadata.root.join(SOURCE_DIR_SRC));
             let crate_roots = package_metadata
                 .targets
                 .iter()
@@ -95,7 +109,7 @@ impl ParsedSources {
     /// The text of `path`, read on the first request. A read failure is
     /// returned and not kept, so a later request reads again.
     pub(crate) fn source(&self, path: &Path) -> io::Result<Rc<ParsedSource>> {
-        let key = module_map::lexically_normalized(path);
+        let key = self.path_key(path);
         if let Some(source) = self.sources.borrow().get(&key) {
             return Ok(Rc::clone(source));
         }
@@ -110,7 +124,7 @@ impl ParsedSources {
     /// The module map of every crate root under `source_root`, resolved on
     /// the first request.
     pub(crate) fn module_map(&self, source_root: &Path) -> Rc<ModuleMap> {
-        let key = module_map::lexically_normalized(source_root);
+        let key = self.path_key(source_root);
         if let Some(module_map) = self.module_maps.borrow().get(&key) {
             return Rc::clone(module_map);
         }
@@ -149,6 +163,13 @@ mod tests {
 
         assert!(Rc::ptr_eq(&first_parsed_source, &repeated_parsed_source));
         assert!(first_parsed_source.syntax().is_ok());
+        #[cfg(unix)]
+        {
+            let alias = temp_dir.path().join("alias.rs");
+            std::os::unix::fs::symlink(&path, &alias).expect("link source");
+            let alias_source = parsed_sources.source(&alias).expect("read linked source");
+            assert!(Rc::ptr_eq(&first_parsed_source, &alias_source));
+        }
     }
 
     #[test]
@@ -163,6 +184,15 @@ mod tests {
         let repeated_module_map = parsed_sources.module_map(&source_root);
 
         assert!(Rc::ptr_eq(&first_module_map, &repeated_module_map));
+        #[cfg(unix)]
+        {
+            let alias = temp_dir.path().join("linked_src");
+            std::os::unix::fs::symlink(&source_root, &alias).expect("link source root");
+            assert!(Rc::ptr_eq(
+                &first_module_map,
+                &parsed_sources.module_map(&alias)
+            ));
+        }
     }
 
     #[test]

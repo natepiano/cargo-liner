@@ -2814,7 +2814,7 @@ fn observe_merge_extent(
         })
         .unwrap_or_else(|| reservation.worktree_root());
     git_cost.worktree_status_queries += 1;
-    let working_tree = drift::observe_merge_working_tree(repository, root.as_ref())?;
+    let working_tree = drift::observe_merge_working_tree(repository, root.as_ref(), trunk)?;
     let cached = holder_group(reservation, reservations, snapshot);
     let mut reservation_ids = cached.iter().map(|holder| holder.id()).collect::<Vec<_>>();
     reservation_ids.sort_unstable();
