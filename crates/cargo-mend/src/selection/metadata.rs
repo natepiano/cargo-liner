@@ -126,6 +126,28 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
     )?;
 
     let metadata = cargo_metadata_for(&manifest_path)?;
+    selection_from_metadata(manifest_path, &metadata)
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_selection(manifest_path: &Path, metadata: &Metadata) -> Result<Selection> {
+    if metadata.packages.iter().any(|package| {
+        !package.dependencies.is_empty()
+            || package.features.contains_key("default")
+            || package.targets.iter().any(|target| {
+                !target.required_features.is_empty()
+                    || target
+                        .crate_types
+                        .iter()
+                        .any(|kind| kind.to_string() == "proc-macro")
+            })
+    }) {
+        bail!("this fixture requires Cargo dependency or feature compilation");
+    }
+    selection_from_metadata(normalize_explicit_manifest_path(manifest_path)?, metadata)
+}
+
+fn selection_from_metadata(manifest_path: PathBuf, metadata: &Metadata) -> Result<Selection> {
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let target_directory = metadata.target_directory.clone().into_std_path_buf();
     let manifest_dir = manifest_path
@@ -135,7 +157,7 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
     let workspace_manifest = workspace_root.join("Cargo.toml");
     let manifest_is_workspace_root = manifest_path == workspace_manifest;
     let manifest =
-        SelectionManifest::resolve(&metadata, &manifest_path, manifest_is_workspace_root)?;
+        SelectionManifest::resolve(metadata, &manifest_path, manifest_is_workspace_root)?;
     let (scope, selected_packages, analysis_root): (_, Vec<&Package>, _) = match manifest {
         SelectionManifest::Workspace => (
             SelectionScope::Workspace,

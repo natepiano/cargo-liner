@@ -79,9 +79,11 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Ruled out:** a visibility model for glob sources — when that module is visible, rustc already reports an ambiguity.
 
-### Phase 3 — cargo-mend tests run under 1 s  · status: todo
+### Phase 3 — cargo-mend tests run under 1 s  · status: done
 
 **Depends on:** Phase 2, Phase 4.
+
+**Result:** landed under the 3-round repair cap with the 1 s goal not met. The branch had fewer slow tests than main on both machines: Mac 89 against 130, natedev 32 against 102. Phase 9 owns the open goal.
 
 #### Work Order
 
@@ -238,3 +240,69 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 **State:** none.
 
 **Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev reads almost nothing over 10 minutes, and each remaining read has a file change that the app shows as its cause. Compare with the Phase 7 binary in 3 pairs at similar load.
+
+### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: todo
+
+**Depends on:** Phase 3.
+
+#### Work Order
+
+**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev and on the Mac. No assertion becomes weaker.
+
+**Source:** Phase 3 reached its 3-round repair cap with this goal open (finding F004, routed here). Phase 3 round 3 final suites, 2026-11-12:
+- Mac 20261112T164244-3431635-f6bd: 1,027 pass, 89 tests at 1 s or more, slowest 2.377 s, load 20.74, 6 of 12 threads. Main at ad8977d87 on the Mac: 130 at 1 s or more, slowest 2.353 s, load 15.81.
+- natedev 20261112T164244-3431634-648f: 1,029 pass, 32 at 1 s or more, slowest 2.169 s, load 23.17, 16 of 32 threads. Round 2 had 3 at load 40.1; the rise is not explained. Main at ad8977d87 on natedev: 102 at 1 s or more, slowest 2.384 s, load 40.27.
+- The slowest Mac tests: `pub_use_outside_subtree_fixes` multi-pass re-export fixes, `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run`, several `pub_use_fixes` tests, `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`, `suspicious_pub_fixes` signature boundaries. Their assertions need the CLI and Cargo boundary.
+
+**Constraints from prior phases:**
+- Phase 3 tries, in order (attempts log `attempts-p3-mend-test-time`): own job queue (removed), private Cargo home per thread (kept), nextest thread group (removed), less driver-cache output, warm driver copies, debug 0 and incremental 0 fixtures, one rustfmt call, 38 syntax-only cases moved in process through `MendRunner::combined_function_plan`, 15 inline cases in `scan.rs`, compiler fixtures on real callbacks (`src/compiler/driver/fixture.rs`), smaller batches. Do not repeat them.
+- The diagnostics tests compile into the `cargo-mend` bin test through `src/diagnostic_tests.rs`.
+- The Astra design review was unavailable at the Phase 3 cap (launch fault). Run it first on this phase's approach.
+
+**Spec:**
+1. **Natedev rise.** Find why natedev went from 3 to 32 slow tests between Phase 3 rounds 2 and 3. Compare the two trees at similar load.
+2. **Trace.** Trace the 10 slowest Mac tests. Give each child process, its time and why it runs.
+3. **Repair the common cost.** Rank: fewer Cargo and rustc runs inside one `cargo-mend --fix` run (a product gain too), a shared prebuilt fixture target, then an in-process CLI entry with real Cargo and rustc. Repair the cost where it lives.
+4. **Keep coverage.** Do not delete, skip or weaken a test. Report each changed assertion with an `Assertion-Change:` line.
+5. **Changelog.** Add an entry when cargo-mend's own run time changes.
+
+**Files:**
+- `crates/cargo-mend/src/`
+- `crates/cargo-mend/tests/`
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs at similar load. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
+
+### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: todo
+
+**Depends on:** Phase 3.
+
+#### Work Order
+
+**Goal:** when a package has a library and a binary with the same name or in the same source folder, cargo-mend reports and fixes each target's findings correctly. A finding in one target does not hide or remove a finding in the other.
+
+**Source:** an Astra review during Phase 3 repair round 4 (2026-11-12, `/tmp/claude/astra/20261112T220344Z-864733/review.md`) found two production defects. Phase 3 did not cause them, so they come here. Neither is reproduced yet.
+1. `crates/cargo-mend/src/compiler/persistence/caller_aware.rs:34`: `CallerKey` is `(package_root, target_def_path)`. A library item and a binary item with the same definition path share one caller set. A binary caller can then hide a valid library finding. The visibility reconciler (`compiler/persistence/visibility_constraint.rs:947`) reads the same merged set.
+2. `crates/cargo-mend/src/selection/display_filter.rs:189`: `target_directory` reduces a target to its source folder. `src/lib.rs` and `src/main.rs` both become `src`. With `--lib`, `src` is in both the allowed and the excluded folders, and the check near line 125 can exclude library findings. Named binaries or examples in one folder share one boundary too.
+
+**Spec:**
+1. **Reproduce first.** For each defect, write a failing test with a fixture project: a library and a binary with the same item path in separate files; a library and a binary root in one folder with `--lib`. If a test passes on the unrepaired code, report that the defect is not real and drop it.
+2. **Callers.** Add the declaration's source identity to the caller key. Keep the union of callers for one physical declaration across compilations.
+3. **Display filter.** Select findings by target ownership or source membership, not by folder.
+4. **Changelog.** Add a fix entry for each defect that a user sees.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/persistence/`
+- `crates/cargo-mend/src/selection/`
+- `crates/cargo-mend/tests/`
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** each new test fails before its repair and passes after. `verify.sh test cargo-mend` passes on natedev and on the Mac with no test at 1 s or more. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: the tests show the result.

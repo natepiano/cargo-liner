@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
 
@@ -188,13 +189,14 @@ impl FunctionLengthPlan {
         workspace: &Path,
         limit: usize,
     ) -> Result<Vec<RetainedFunction>> {
-        let mut added = Vec::new();
+        let mut candidates_by_path = BTreeMap::new();
+        let mut proposed_sources = BTreeMap::new();
         for (path, original) in originals {
             let Ok(before) = function_collector::collect(original) else {
                 continue;
             };
             let candidates = before
-                .iter()
+                .into_iter()
                 .enumerate()
                 .filter(|(_, function)| {
                     needs_measurement(function, path, fixes, limit)
@@ -213,12 +215,20 @@ impl FunctionLengthPlan {
                     .cloned()
                     .collect::<Vec<_>>(),
             )?;
-            let rewritten = file_fixes.rewritten_files()?;
-            let Some(proposed) = rewritten.files.get(path) else {
+            let mut rewritten = file_fixes.rewritten_files()?;
+            let Some(proposed) = rewritten.files.remove(path) else {
                 continue;
             };
-            let after =
-                function_collector::collect(&formatter.formatted(proposed, path, workspace)?)?;
+            proposed_sources.insert(path.clone(), proposed);
+            candidates_by_path.insert(path, candidates);
+        }
+        let formatted_sources = formatter.formatted_batch(&proposed_sources, workspace)?;
+        let mut added = Vec::new();
+        for (path, candidates) in candidates_by_path {
+            let formatted_source = formatted_sources
+                .get(path)
+                .context("formatter omitted a function measurement source")?;
+            let after = function_collector::collect(formatted_source)?;
             for (index, function) in candidates {
                 if let Some(formatted) = after.get(index)
                     && formatted.name == function.name
