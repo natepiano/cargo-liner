@@ -181,31 +181,30 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 - `crates/cargo-port/src/tui/render/readability_tests.rs` — `assert_worktree_title`
 - `crates/cargo-port/CHANGELOG.md` — entry
 
-### Phase 7 — an idle cargo-port reads almost nothing from disk  · status: todo
+### Phase 7 — an idle cargo-port reads almost nothing from disk  · status: done
 
-**Depends on:** none. Urgent (user via the showrunner, 2026-11-12); runs before Phase 3 round 3, Phase 5 and Phase 6 work.
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-port reads almost nothing from disk.
-
-**Source:** user, 2026-11-12, via builds and the showrunner: "tell cargo liner it needs to do something about the cargo-port app." On natedev, an idle `cargo-port port` (up 23 h 50 min) read about 70 MB/s without a stop. IO pressure full avg10 was 25-44%, and the user's keyboard stuck.
-
-**Spec:**
-1. **Cause.** Trace an idle cargo-port: which paths it reads and which loop starts the reads (watcher, rescan, cache refresh). Suspects: target folders, `~/rust/repro`, `/tmp/claude` copies.
-2. **Fix.** Remove the repeated reads at their cause.
-3. **Test.** Add a test that fails while an idle app repeats the reads.
-4. **Changelog.** Add a cargo-port entry.
+- No timed walk of project or target trees runs. A file event records its changed path on a `DiskUsageTracker` (`record_change`) in `scan/disk_measurements.rs`, and `refresh` measures only the recorded paths.
+- A path-less `Flag::Rescan` event calls `request_rescan` on every owned tracker. This is the one full walk.
+- `DiskUsageMeasurements` shares one tracker across nested projects. `DiskUpdateInputs` in `watcher/refresh.rs` records every requested deletion before it groups requests by tracker, then publishes every project entry that the tracker returns.
+- `record_project_disk_change` in `watcher/events.rs` takes a dispatch reference and a `ProjectDiskChange`. `schedule_disk_refresh` in `watcher/refresh.rs` is the explicit refresh path.
+- Hard links resolve through an identity-to-path index. Disk update traces carry `visited_entries` and `identity_entries_examined`.
+- `DiskSizeAggregation` in `scan/disk_usage.rs` is the one size sum for both collectors.
 
 **Files:**
-- `crates/cargo-port/src/` — the watcher, scan or cache code that the trace names
-- `crates/cargo-port/CHANGELOG.md` — entry for the idle disk reads
+- `crates/cargo-port/src/scan/disk_measurements.rs` — `DiskUsageMeasurements`, `DiskUsageTracker`, the identity index and the tracker tests
+- `crates/cargo-port/src/scan/disk_usage.rs` — `DiskSizeAggregation`
+- `crates/cargo-port/src/watcher/refresh.rs` — `DiskUpdateInputs`, `schedule_disk_refresh`
+- `crates/cargo-port/src/watcher/events.rs` — `ProjectDiskChange`, `record_project_disk_change`
+- `crates/cargo-port/src/watcher/disk_burst_tests.rs` — burst, grouped deletion and idle regression tests
+- `crates/cargo-port/CHANGELOG.md` — entry
 
-**Workers:** 1 writer.
+**Binds later work:** the idle-read follow-up keeps `grouped_deletion_checks_keep_root_and_child_changes`, `shared_disk_changes_publish_every_project`, `pathless_rescan_updates_every_owned_disk_tracker` and the idle regression test green, and uses the trace counters for per-update cost.
 
-**State:** none.
+**Gotchas:** no timed walk repairs a missed event update, so each event path must be exact by itself.
 
-**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev makes no timed full walk of the project or target trees, and reads less than the old binary over the same 5 minutes. The remaining idle reads are the next phase's work.
+**Ruled out:** a timed fallback walk.
 
 ### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: todo
 
@@ -216,6 +215,13 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 **Goal:** an idle cargo-port reads almost nothing from disk.
 
 **Source:** Phase 7 live run, 2026-11-12. With event-only disk updates, a 10-minute idle run on natedev read 935,518,208 bytes at load 29-297. The logs show 195 Git refreshes and 189 disk updates, and no idle source scan. The reads are not fully attributed. The old binary read 2,311,979,008 bytes in 5 minutes.
+
+**Constraints from prior phases:**
+- Phase 7 (checkpoint 5696fd2cd) removed the timed full walks. `DiskUsageTracker` in `scan/disk_measurements.rs` keeps each changed path (`record_change`), and `refresh` measures only those paths. `request_rescan` is the one full walk, for a path-less `Flag::Rescan` event.
+- `DiskUsageMeasurements` shares one tracker across nested projects. `DiskUpdateInputs` in `watcher/refresh.rs` groups requests by tracker and publishes every project entry that the tracker returns.
+- `record_project_disk_change` in `watcher/events.rs` takes a dispatch reference and a `ProjectDiskChange`. `schedule_disk_refresh` in `watcher/refresh.rs` is the explicit refresh path.
+- Disk update traces carry `visited_entries` and `identity_entries_examined`. Use them for the per-update cost in the attribution.
+- Keep these tests green: `grouped_deletion_checks_keep_root_and_child_changes`, `shared_disk_changes_publish_every_project`, `pathless_rescan_updates_every_owned_disk_tracker`, and the idle regression test in `watcher/disk_burst_tests.rs`.
 
 **Spec:**
 1. **Cause.** Attribute each idle read to its trigger: the event path that starts each Git refresh and each disk update, and the bytes that each one reads.
