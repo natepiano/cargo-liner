@@ -14,6 +14,7 @@ use crate::census::HierarchyRole;
 use crate::census::Machine;
 use crate::census::RemoteHierarchyAnswers;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::footer_colors::FooterColors;
 use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
@@ -69,7 +70,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
             name:  "remote",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         assert!(
             !placement.is_root("remote", 20),
             "the remote unit stays managed"

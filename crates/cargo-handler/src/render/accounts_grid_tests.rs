@@ -28,6 +28,7 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::scan::ScanStage;
 use crate::interaction::SelectionSurface;
 use crate::sort::AccountsSort;
@@ -69,8 +70,8 @@ fn draw_grid(app: &mut App) -> Buffer {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
-    .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
     let demand = cells.demands(&[]);
     let area = Rect::new(
@@ -467,7 +468,7 @@ fn stacked_account_fact_clicks_select_the_account() {
 fn full_accounts_keep_all_role_rows_in_one_selectable_account() {
     let mut app = interactive_accounts();
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let width = summary::width(
         &machines,
         &placement,
@@ -601,7 +602,7 @@ fn stacked_account_selection_bands_cover_every_fact_and_stop_at_neighbors() {
 fn full_account_selection_bands_cover_all_role_rows() {
     let app = interactive_accounts();
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let width = summary::width(
         &machines,
         &placement,

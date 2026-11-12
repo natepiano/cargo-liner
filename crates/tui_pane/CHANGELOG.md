@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Add `contrast_ratio`, which measures the WCAG contrast of two explicit colours with the palette of `blend_color`.
 - Show the process CPU beside uptime in each framework status line. Update both once each second.
 - Add `Framework::tick_status` and `Framework::status_visual_deadline` so an app with its own event loop keeps the status line current.
 
