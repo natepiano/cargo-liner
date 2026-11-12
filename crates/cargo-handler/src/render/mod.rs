@@ -137,6 +137,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     app.favorites_overlay
         .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
+    app.details_overlay.render(frame, app.framework.color_mode);
 }
 
 /// Paint the production grid with one controlled frame clock.
@@ -186,10 +187,10 @@ fn draw_panes_at(
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
     .with_color_mode(app.framework.color_mode)
     .with_expansion(&app.expansion)
-    .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
     let minimum = cells.measure_trees(area);
@@ -223,6 +224,7 @@ fn draw_panes_at(
             &app.word_highlight,
             frame.buffer_mut(),
             background,
+            app.loaded_config.config.word_highlight.emphasis,
             &mut app.match_inks,
         );
     }
@@ -244,7 +246,7 @@ fn draw_panes_at(
 }
 
 /// `focused_surface` reads logical focus without the held focus used during motion.
-fn focused_surface(app: &App, area: Rect) -> SelectableSurface {
+pub(crate) fn focused_surface(app: &App, area: Rect) -> SelectableSurface {
     let FocusLocation::Cell(focused) = app.tiles.focused_cell() else {
         return SelectableSurface::EmptyCell;
     };
@@ -286,6 +288,7 @@ pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &AccountsTable::NotConfigured,
     );
     cells.draw(
         &mut Buffer::empty(area),
@@ -304,8 +307,8 @@ pub(crate) fn draw_summary_for_test(app: &mut App, area: Rect) -> Buffer {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
-    .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
     let mut buffer = Buffer::empty(area);
     cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
@@ -388,7 +391,6 @@ enum SummarySelectionLayout {
     Prepared(Rc<SummaryLayout>),
 }
 
-/// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
     color_mode:        ColorMode,
     summary_layout:    RefCell<FrameSummaryLayout>,
@@ -435,6 +437,7 @@ pub(crate) fn draw_allocated_tiles_for_test(
         &colors,
         &HashMap::new(),
         SummarySort::default(),
+        &AccountsTable::NotConfigured,
     );
     cells.prepare_frame(|| {
         allocations
@@ -532,8 +535,9 @@ impl<'a> Cells<'a> {
         footer_colors: &'a FooterColors,
         sorts: &HashMap<TileKey, TreeSort>,
         summary_sort: SummarySort,
+        accounts: &'a AccountsTable,
     ) -> Self {
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, accounts.session_states());
         let agents = agent_cell::cell_order_placed(&placement);
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
@@ -554,7 +558,7 @@ impl<'a> Cells<'a> {
             now,
             footer_colors,
             summary_sort,
-            accounts: &AccountsTable::NotConfigured,
+            accounts,
             accounts_sort: AccountsSort::SourceOrder,
         }
     }
@@ -588,12 +592,6 @@ impl<'a> Cells<'a> {
                 tile.set_viewport(state.viewport());
             }
         }
-    }
-
-    /// Attach the UI's current account reading to this frame's cells.
-    const fn with_accounts(mut self, accounts: &'a AccountsTable) -> Self {
-        self.accounts = accounts;
-        self
     }
 
     /// Attach the accounts selection without changing the machine-group selection.
@@ -698,13 +696,23 @@ impl<'a> Cells<'a> {
     /// `record_painted_surface` retains the headers and rows used by this source allocation.
     fn record_painted_surface(&self, content: &TileContent, inner: Rect) {
         if let SelectableSurface::Surface(surface) = selection_surface(content) {
-            let painted_content = match content {
+            let (painted_content, detail_order) = match content {
                 TileContent::Group(key) => match self.tile(key) {
-                    TileLookup::Current(tile) => PaintedSurfaceContent::Tree {
-                        key:     key.clone(),
-                        spans:   self
-                            .header_spans(tile, Rect::new(0, 0, inner.width, inner.height)),
-                        default: tile.default_sort(),
+                    TileLookup::Current(tile) => {
+                        let spans =
+                            self.header_spans(tile, Rect::new(0, 0, inner.width, inner.height));
+                        let order = spans
+                            .iter()
+                            .map(|span| span.column.detail_property())
+                            .collect();
+                        (
+                            PaintedSurfaceContent::Tree {
+                                key: key.clone(),
+                                spans,
+                                default: tile.default_sort(),
+                            },
+                            order,
+                        )
                     },
                     TileLookup::Retired => return,
                 },
@@ -719,10 +727,18 @@ impl<'a> Cells<'a> {
                         inner.width,
                         u16::try_from(layout.height()).unwrap_or(u16::MAX),
                     );
-                    PaintedSurfaceContent::Summary {
-                        agents:   layout.header_spans(area),
-                        accounts: layout.accounts_header_spans(area),
-                    }
+                    let agents = layout.header_spans(area);
+                    let order = agents
+                        .iter()
+                        .map(|span| span.column.detail_property(self.account_column))
+                        .collect();
+                    (
+                        PaintedSurfaceContent::Summary {
+                            agents,
+                            accounts: layout.accounts_header_spans(area),
+                        },
+                        order,
+                    )
                 },
                 TileContent::Empty(_) => return,
             };
@@ -738,6 +754,7 @@ impl<'a> Cells<'a> {
                 area: inner,
                 rows,
                 content: painted_content,
+                detail_order,
             });
         }
     }
@@ -1343,8 +1360,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│   session ▲       status  directory                                      age │",
-        "│   boss of bosses  idle    ~/rust/hana_catalyst/docs/hana               21:00 │",
+        "│   session ▲       role  activity  status  directory                          │",
+        "│   boss of bosses                          ~/rust/hana_catalyst/docs/hana     │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -1489,6 +1506,7 @@ fraying = "leading"
             app.footer_colors.colors(),
             &HashMap::new(),
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         )
         .with_selections(
             Selections::default(),
@@ -1779,6 +1797,7 @@ fraying = "leading"
                 app.footer_colors.colors(),
                 &app.tree_sorts,
                 app.summary_sort,
+                &AccountsTable::NotConfigured,
             )
             .with_color_mode(app.framework.color_mode)
             .with_expansion(&app.expansion);
@@ -1881,6 +1900,7 @@ fraying = "leading"
                 app.footer_colors.colors(),
                 &HashMap::new(),
                 SummarySort::default(),
+                &AccountsTable::NotConfigured,
             );
             let tile = &cells.tiles[0];
             let tree = cells
@@ -1948,6 +1968,7 @@ fraying = "leading"
             app.footer_colors.colors(),
             &HashMap::new(),
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let mut buffer = Buffer::empty(body);
         tui_pane::draw_tile_grid(
@@ -2295,6 +2316,7 @@ fraying = "leading"
             &footer_colors,
             &HashMap::new(),
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let [boss, handler] = [&cells.agents[0], &cells.agents[1]];
         let narrow = 30;
@@ -2379,3 +2401,6 @@ mod layout_stability_tests;
 pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
     selection_tests::complete_astra_frame(rows, edges)
 }
+
+#[cfg(test)]
+mod details_tests;

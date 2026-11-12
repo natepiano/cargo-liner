@@ -21,6 +21,7 @@ use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::Machine;
 use crate::census::MachineState;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::tier::ThreadWorktree;
 use crate::footer_colors::FooterColors;
 
@@ -100,7 +101,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let agents = agent_cell::cell_order_placed(&placement);
     let tiles = agent_cell::group_tiles(&placement, &agents, &HashMap::new(), 1000);
     let area = Rect::new(0, 0, 240, 12);

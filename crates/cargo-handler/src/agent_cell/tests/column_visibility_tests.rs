@@ -13,6 +13,7 @@ use crate::app::App;
 use crate::census::Activity;
 use crate::census::AgentActivity;
 use crate::census::ShellTimerObservation;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::render;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -62,7 +63,7 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let pool = tiles
         .iter()
@@ -83,7 +84,7 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
             &FooterColors::default(),
         );
         assert!(find(&buffer, "free-session").is_some());
-        for absent in ["type", "role", "branch"] {
+        for absent in ["type", "age", "branch"] {
             assert!(
                 find(&buffer, absent).is_none(),
                 "{absent}: {}",
@@ -105,7 +106,7 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
         );
         assert!(!spans.iter().any(|span| matches!(
             span.column,
-            TreeColumn::Type | TreeColumn::Role | TreeColumn::Branch
+            TreeColumn::Type | TreeColumn::Age | TreeColumn::Branch
         )));
     }
 }
@@ -117,7 +118,7 @@ fn tiles_keep_type_and_role_headers_when_their_rows_have_values() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = cell_order_placed(&placement);
     let owner = cells
         .iter()
@@ -126,7 +127,11 @@ fn tiles_keep_type_and_role_headers_when_their_rows_have_values() {
     for width in [65, 220] {
         let buffer = drawn_into(owner, &cells, width, 12);
         let y = find(&buffer, "inspect-widget").expect("work row").1;
-        for (header, word) in [("type", "subagent"), ("role", "reviewer")] {
+        for (header, word) in [
+            ("type", "subagent"),
+            ("role", "worker"),
+            ("activity", "reviewer"),
+        ] {
             let x = find(&buffer, header).expect("occupied column header").0;
             let actual: String = (x..x + summary::cell_width(word))
                 .map(|x| buffer[(x, y)].symbol())
@@ -186,8 +191,7 @@ fn different_tile_columns_fit_independently_and_click_the_drawn_headers() {
         let line = &lines(&buffer)[usize::from(y)];
         let x = summary::cell_width(&line[..line.find("status").expect("status header")]);
         status_positions.push(x);
-        let occupied = line.contains("type");
-        assert_eq!(line.contains("role"), occupied, "{line}");
+        assert!(line.contains("role"), "{line}");
         app.click(Position::new(x, y));
         let (key, selected) = app
             .tree_sorts
@@ -226,7 +230,7 @@ fn equal_tile_column_sets_share_drawn_header_positions() {
         .iter()
         .map(|cell| drawn_into(cell, &cells, 180, 12))
         .collect();
-    for header in ["session", "type", "status", "age"] {
+    for header in ["session", "role", "activity", "status", "type"] {
         let left = find(&buffers[0], header).expect("first header").0;
         let right = find(&buffers[1], header).expect("second header").0;
         assert_eq!(left, right, "{header}");
@@ -265,20 +269,26 @@ fn shared_age_slots_keep_all_headers_aligned_at_the_right_edge() {
             .iter()
             .map(|cell| drawn_into(cell, &cells, width, 12))
             .collect();
-        for header in ["session", "type", "status", "age"] {
+        for header in ["session", "role", "activity", "status", "type"] {
             assert_eq!(
                 find(&buffers[0], header).expect("older header").0,
                 find(&buffers[1], header).expect("younger header").0,
                 "{header}: width={width}"
             );
         }
-        for (buffer, age) in buffers.iter().zip(["6:17:00", "1:05:00"]) {
-            let edge = header_indented(buffer.area).right();
-            assert_eq!(find(buffer, "age").expect("age header").0 + 3, edge);
-            assert_eq!(
-                find(buffer, age).expect("age label").0 + summary::cell_width(age),
-                edge
-            );
+        for (index, buffer) in buffers.iter().enumerate() {
+            assert!(find(buffer, "age").is_none());
+            let name = if index == 0 {
+                "build"
+            } else {
+                "run-the-long-project-build"
+            };
+            let expected = if index == 0 {
+                "6 days, 17 hours, 0 minutes"
+            } else {
+                "1 day, 5 hours, 0 minutes"
+            };
+            assert_eq!(detail_value(&cells[index], name, "age", NOW), expected);
         }
     }
 }
@@ -299,7 +309,7 @@ fn unassigned_rows_without_paths_keep_other_rows_branch_and_directory_columns() 
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let pool = tiles
         .iter()
@@ -357,6 +367,7 @@ fn hidden_accounts_do_not_split_shared_drawn_column_positions() {
         "run-the-long-project-build",
         MINUTE,
     ));
+    long.account = short.account.clone();
     let mut app = App::new_for_test().expect("test app");
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("one screen column");
@@ -375,9 +386,9 @@ fn hidden_accounts_do_not_split_shared_drawn_column_positions() {
     assert!(find(&buffer, "build").is_some());
     assert!(find(&buffer, "run-the-long-project-build").is_some());
     for header in &headers {
-        assert!(!header.contains("account"), "{header}");
+        assert!(header.contains("account"), "{header}");
     }
-    for word in ["session", "status", "age"] {
+    for word in ["account", "session", "role", "activity", "status"] {
         let positions: Vec<_> = headers
             .iter()
             .map(|header| summary::cell_width(&header[..header.find(word).expect("drawn header")]))
@@ -393,7 +404,7 @@ fn allocated_tiles(rows: Vec<AgentRow>, allocations: &[(u32, Rect)]) -> Buffer {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let allocations: Vec<_> = allocations
         .iter()
@@ -476,7 +487,7 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         .find(|line| line.contains("status") && line.contains("account"))
         .expect("drawn status and account headers");
     let status_x = summary::cell_width(&header[..header.find("status").expect("status column")]);
-    let account_x = summary::cell_width(&header[..header.find("account").expect("account column")]);
+    let type_x = summary::cell_width(&header[..header.find("type").expect("type column")]);
     assert!(rows.iter().any(|line| line.contains("running")), "{rows:?}");
     assert!(rows.iter().any(|line| line.contains("waiting")), "{rows:?}");
     assert!(
@@ -484,9 +495,9 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         "{rows:?}"
     );
     assert_eq!(
-        account_x - status_x,
-        9,
-        "seven-cell status plus two-cell gap: {rows:?}"
+        type_x - status_x,
+        summary::cell_width(TREE_STATUS_HEADER) + TABLE_COLUMN_SPACING,
+        "six-cell source status header plus two-cell gap: {rows:?}"
     );
 }
 
@@ -542,7 +553,7 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
             .iter()
             .find(|line| line.contains("session") && line.contains("role"))
             .expect("role header");
-        let role_x = header.find("role").expect("role column");
+        let role_x = header.find("activity").expect("activity column");
         let status_x = header.find("status").expect("status column");
         assert!(rows.iter().any(|line| line.contains("impl")), "{rows:?}");
         assert!(
@@ -607,6 +618,21 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
     second_member.directory.clear();
     let upper = Rect::new(0, 0, 90, 12);
     let lower = Rect::new(0, 14, 90, 12);
+    let state = MachineState::Answered(
+        vec![
+            first.clone(),
+            second.clone(),
+            first_member.clone(),
+            second_member.clone(),
+        ],
+        HierarchyEdges::default().into(),
+    );
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+    let cells = cell_order_placed(&placement);
     let buffer = allocated_tiles(
         vec![first, second, first_member, second_member],
         &[(10, upper), (20, lower)],
@@ -638,39 +664,23 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
             "{word}: {headers:?}"
         );
     }
-    let member_y =
-        ["first-member", "second-member"].map(|name| find(&buffer, name).expect("member row").1);
-    let edge = header_indented(upper).right();
-    let age_text = |y| {
-        (edge - 8..edge)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>()
-    };
-    assert_eq!(age_text(member_y[0]), " 8:20:00");
-    assert_eq!(age_text(member_y[1]), "    5:16");
-    assert_eq!(
-        age_text(find(&buffer, "build").expect("old shell").1),
-        "14:00:00"
+    assert!(
+        !headers
+            .iter()
+            .any(|header| header.split_whitespace().any(|word| word == "age"))
     );
-    assert_eq!(
-        age_text(
-            find(&buffer, "run-the-project-build")
-                .expect("young shell")
-                .1
-        ),
-        "       2"
-    );
-
-    let minute_colon_x = member_y.map(|y| {
-        (0..edge)
-            .rev()
-            .find(|&x| buffer[(x, y)].symbol() == ":")
-            .expect("drawn minute separator")
-    });
-    assert_eq!(
-        minute_colon_x[0], minute_colon_x[1],
-        "minutes align across formerly separate groups"
-    );
+    for (owner, name, expected) in [
+        (10, "first-member", "8 days, 20 hours, 0 minutes"),
+        (20, "second-member", "5 hours, 16 minutes"),
+        (10, "build", "14 days, 0 hours, 0 minutes"),
+        (20, "run-the-project-build", "2 minutes"),
+    ] {
+        let cell = cells
+            .iter()
+            .find(|cell| cell.row.pid == owner)
+            .expect("age owner");
+        assert_eq!(detail_value(cell, name, "age", NOW), expected);
+    }
 }
 
 fn narrow_core_owner() -> AgentRow {
@@ -691,7 +701,8 @@ fn narrow_core_owner() -> AgentRow {
 #[test]
 fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
     let owner = narrow_core_owner();
-    let cell = entry(&owner, None);
+    let mut cell = entry(&owner, None);
+    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
     for width in [30, 32, 40, 50] {
         let buffer = drawn_into(&cell, &[], width, 10);
         let text = lines(&buffer);
@@ -710,7 +721,7 @@ fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
             "one gap between role and status: {header}"
         );
         assert!(
-            text.iter().any(|line| line.contains("waiting")),
+            text.iter().any(|line| line.contains("busy")),
             "status stays whole: width={width}: {text:?}"
         );
         assert!(
@@ -723,15 +734,16 @@ fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
 #[test]
 fn narrow_below_core_cuts_names_before_role_and_never_cuts_status() {
     let owner = narrow_core_owner();
-    let cell = entry(&owner, None);
+    let mut cell = entry(&owner, None);
+    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
     let buffer = drawn_into(&cell, &[], 22, 10);
     let text = lines(&buffer);
     assert!(
-        text.iter().any(|line| line.contains("waiting")),
+        text.iter().any(|line| line.contains("busy")),
         "whole status below core: {text:?}"
     );
     assert!(
-        text.iter().any(|line| line.contains("reviewer")),
+        text.iter().any(|line| line.contains("worker")),
         "eight-cell role still fits after cutting session: {text:?}"
     );
     assert!(
@@ -754,7 +766,7 @@ fn narrow_wide_tile_keeps_every_populated_optional_column() {
         .iter()
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("full headers");
-    for word in ["type", "role", "status", "branch", "directory", "age"] {
+    for word in ["role", "activity", "status", "type", "branch", "directory"] {
         assert!(
             header.contains(word),
             "no unnecessary drop at 200: missing {word}: {text:?}"
@@ -765,11 +777,12 @@ fn narrow_wide_tile_keeps_every_populated_optional_column() {
 #[test]
 fn narrow_review_sixteen_cell_tree_spends_role_before_status() {
     let owner = narrow_core_owner();
-    let cell = entry(&owner, None);
+    let mut cell = entry(&owner, None);
+    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
     let buffer = drawn_into(&cell, &[], 18, 10);
     let text = lines(&buffer);
     assert!(
-        text.iter().any(|line| line.contains("waiting")),
+        text.iter().any(|line| line.contains("busy")),
         "status must remain whole in a sixteen-cell tree: {text:?}"
     );
     assert!(
@@ -810,7 +823,7 @@ fn recorded_models_and_efforts_draw_after_roles_with_blank_shell_values() {
     let effort = header.find("effort").expect("effort header");
     let status = header.find("status").expect("status header");
     assert!(
-        role < model && model < effort && effort < status,
+        role < status && status < model && model < effort,
         "{text:?}"
     );
     assert!(
@@ -829,11 +842,17 @@ fn recorded_models_and_efforts_draw_after_roles_with_blank_shell_values() {
         .find(|line| line.contains("plain-shell"))
         .expect("shell row");
     let model_x = summary::cell_width(&header[..model]);
-    let status_x = summary::cell_width(&header[..status]);
+    let metadata_end = ["branch", "directory"]
+        .into_iter()
+        .filter_map(|name| header.find(name))
+        .filter(|index| *index > model)
+        .min()
+        .unwrap_or(header.len());
+    let metadata_end = summary::cell_width(&header[..metadata_end]);
     let metadata: String = shell
         .chars()
         .skip(usize::from(model_x))
-        .take(usize::from(status_x - model_x))
+        .take(usize::from(metadata_end - model_x))
         .collect();
     assert_eq!(metadata.trim(), "", "{text:?}");
 }
@@ -905,7 +924,7 @@ fn metadata_tile(mut rows: Vec<AgentRow>, width: u16, fit: MetadataFit) -> Buffe
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = cell_order_placed(&placement);
     let owner = cells
         .iter()

@@ -43,6 +43,8 @@ use super::HierarchyRole;
 use super::HierarchySource;
 #[cfg(test)]
 use super::SessionIdentity;
+#[cfg(test)]
+use super::accounts::EMPTY_SESSION_STATES;
 use super::herdr::PaneWork;
 use super::worker_dispatch::WorkerRole;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
@@ -511,6 +513,7 @@ enum StaffParent {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum StaffDocumentRow {
+    Producer(StaffFields),
     Showrunner(StaffFields),
     Unit(StaffFields),
     Worker(StaffFields),
@@ -544,6 +547,7 @@ impl Deref for StaffRow {
 impl StaffDocumentRow {
     fn known(self) -> Option<StaffRow> {
         let (kind, fields) = match self {
+            Self::Producer(fields) => (StaffKind::Producer, fields),
             Self::Showrunner(fields) => (StaffKind::Showrunner, fields),
             Self::Unit(fields) => (StaffKind::Unit, fields),
             Self::Worker(fields) => (StaffKind::Worker, fields),
@@ -570,7 +574,10 @@ impl<'a> ValidatedStaffForest<'a> {
             }
             match &row.parent {
                 StaffParent::Root(())
-                    if matches!(row.kind, StaffKind::Showrunner | StaffKind::Agent) => {},
+                    if matches!(
+                        row.kind,
+                        StaffKind::Producer | StaffKind::Showrunner | StaffKind::Agent
+                    ) => {},
                 StaffParent::Managed(parent) => {
                     let manager = members
                         .get(parent.as_str())
@@ -601,6 +608,7 @@ impl<'a> ValidatedStaffForest<'a> {
 
 #[derive(Clone, Copy, Debug)]
 enum StaffKind {
+    Producer,
     Showrunner,
     Unit,
     Worker,
@@ -613,13 +621,14 @@ impl StaffKind {
             (self, parent),
             (
                 Self::Showrunner | Self::Unit | Self::Worker,
-                Self::Showrunner
+                Self::Producer | Self::Showrunner
             ) | (Self::Worker, Self::Unit)
         )
     }
 
     const fn role(self) -> HierarchyRole {
         match self {
+            Self::Producer => HierarchyRole::Producer,
             Self::Showrunner => HierarchyRole::Showrunner,
             Self::Unit => HierarchyRole::Unit,
             Self::Worker => HierarchyRole::Worker,
@@ -639,6 +648,12 @@ pub(super) enum StaffName<'a> {
 pub(super) enum StaffSessionMembership {
     Listed,
     Unlisted,
+}
+
+/// The staff source identifies a producer independently of hierarchy edges.
+pub(super) enum ProducerMembership {
+    Producer,
+    Other,
 }
 
 impl StaffRoster {
@@ -688,6 +703,18 @@ impl StaffRoster {
             .map_or(StaffSessionMembership::Unlisted, |_| {
                 StaffSessionMembership::Listed
             })
+    }
+
+    pub(super) fn producer_membership(&self, session: &str) -> ProducerMembership {
+        if self
+            .members
+            .values()
+            .any(|member| member.session == session && matches!(member.kind, StaffKind::Producer))
+        {
+            ProducerMembership::Producer
+        } else {
+            ProducerMembership::Other
+        }
     }
 
     pub(super) fn name(&self, session: &str) -> StaffName<'_> {
@@ -1599,7 +1626,7 @@ mod tests {
                 name:  "natedev",
                 state: &state,
             }];
-            let placement = AgentPlacement::from_machines(&machines);
+            let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
             assert_eq!(
                 placement.roots().len(),
                 1,
@@ -1762,7 +1789,7 @@ mod tests {
                 census.apply(update);
                 let machines = census.machines(&[]);
                 assert_eq!(machines[0].state.hierarchy_notice(), expected);
-                let placement = AgentPlacement::from_machines(&machines);
+                let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
                 assert!(
                     !placement.is_root("natedev", 2_778_913),
                     "failure must not unassign the unit"
