@@ -55,6 +55,7 @@ pub(crate) use self::blend::BlendRounding;
 pub use self::blend::blend_color;
 pub(crate) use self::blend::blend_color_with_rounding;
 pub use self::blend::color_distance;
+pub use self::blend::contrast_ratio;
 pub use self::constants::DIM_VALUE_ROLE;
 pub use self::fallback::fallback_theme;
 pub use self::loader::ThemeSource;

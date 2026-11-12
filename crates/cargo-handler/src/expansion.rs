@@ -291,15 +291,7 @@ pub(crate) fn dispatch(app: &mut App, action: HandlerExpansionAction) {
             },
         ),
     };
-    let machines = app
-        .census
-        .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
-    let agents = agent_cell::cell_order_placed(&placement);
-    let tiles = agent_cell::group_tiles(&placement, &agents, &app.tree_sorts, census::unix_now());
-    for tile in tiles {
-        let key = tile.key();
-        let tree = tile.expansion_tree();
+    for (key, tree) in expansion_trees(app) {
         match action {
             HandlerExpansionAction::Shared(ExpansionAction::ExpandAll) => {
                 app.expansion.set_level(key.clone(), &tree, DepthLevel::All);
@@ -328,6 +320,19 @@ pub(crate) fn dispatch(app: &mut App, action: HandlerExpansionAction) {
         }
     }
     app.invalidate_body();
+}
+
+/// Build the action forest with the same status source as the painted frame.
+fn expansion_trees(app: &App) -> Vec<(TileKey, HandlerTree)> {
+    let machines = app
+        .census
+        .machines(&app.loaded_config.config.machines.remote);
+    let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
+    let agents = agent_cell::cell_order_placed(&placement);
+    agent_cell::group_tiles(&placement, &agents, &app.tree_sorts, census::unix_now())
+        .into_iter()
+        .map(|tile| (tile.key(), tile.expansion_tree()))
+        .collect()
 }
 
 fn focused_surface(app: &App) -> SelectableSurface {

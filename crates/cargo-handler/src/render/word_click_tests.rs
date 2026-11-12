@@ -1,11 +1,14 @@
 //! Word presses use the painted grid and preserve row actions.
 
+use std::path::Path;
+
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+use tui_pane::Repaint;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
@@ -15,8 +18,13 @@ use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::config::CargoHandler;
+use crate::config::LoadedConfig;
+use crate::config::WordHighlightEmphasis;
+use crate::config_watch::WordHighlightUpdates;
 use crate::interaction::TileSelection;
 use crate::theme::Role;
+use crate::theme::StartupThemeNotes;
 use crate::word_highlight::WordHighlight;
 use crate::word_highlight::WordHit;
 
@@ -46,6 +54,7 @@ pub(super) fn apply_rows(app: &mut App, rows: Vec<AgentRow>) {
 
 pub(super) fn application() -> TestResult<App> {
     let mut app = App::new_for_test()?;
+    app.loaded_config.config.word_highlight.emphasis = WordHighlightEmphasis::Subtle;
     app.loaded_config.config.tiles.initial_rows = serde_json::from_value(serde_json::json!(8))?;
     app.loaded_config.config.tiles.widen_summary = false;
     let mut other_account = session(50, "other-account", "")?;
@@ -217,7 +226,7 @@ pub(super) fn assert_matches(buffer: &Buffer, word: &str, background: Color) -> 
         })
         .collect();
     assert!(!found.is_empty(), "painted {word}");
-    let grounds = crate::theme::WordMatchGrounds::new(background);
+    let grounds = crate::theme::WordMatchGrounds::new(background, WordHighlightEmphasis::Subtle);
     for point in found {
         let end = point.x + u16::try_from(word.len())?;
         let neighbor = [end, point.x.saturating_sub(1)]
@@ -811,7 +820,8 @@ fn assert_bracketed_account(name: &str) -> TestResult {
             "the bracketed press also marks the plain account"
         );
     }
-    let grounds = crate::theme::WordMatchGrounds::new(match_background()?);
+    let grounds =
+        crate::theme::WordMatchGrounds::new(match_background()?, WordHighlightEmphasis::Subtle);
     let selected_match = grounds.background(grounds.surface(after[(opening.x, opening.y)].bg));
     for x in opening.x + opening_width..opening.x + opening_width + u16::try_from(ACCOUNT.len())? {
         assert_eq!(
@@ -895,5 +905,152 @@ fn a_body_invalidation_keeps_the_painted_word_available_for_a_content_press() ->
         selection,
         TileSelection::Row(crate::interaction::RowIdentity::Shell { pid: 11, .. })
     )));
+    Ok(())
+}
+
+/// `assert_startup_config_error_recovers` checks notice ownership through the real file reader.
+fn assert_startup_config_error_recovers(
+    path: &Path,
+    replace: &impl Fn(&str) -> TestResult,
+) -> TestResult<WordHighlightUpdates> {
+    let loaded = LoadedConfig::load_from::<CargoHandler>(Some(path.to_path_buf()));
+    let mut startup = App::new_for_test_with_startup(loaded, StartupThemeNotes::default())?;
+    let mut startup_renderer = Renderer::new(&mut startup, 80, 35)?;
+    key(&mut startup, KeyCode::Char('s'));
+    key(&mut startup, KeyCode::End);
+    let notice_text = |frame: &Buffer| -> String {
+        frame
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    };
+    let startup_error = notice_text(&startup_renderer.paint(&mut startup)?);
+    assert_eq!(
+        startup_error.matches("unknown variant").count(),
+        1,
+        "{startup_error}"
+    );
+    let updates = WordHighlightUpdates::spawn(path.to_path_buf());
+    assert_eq!(
+        startup.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::NotNeeded
+    );
+    let repeated_error = notice_text(&startup_renderer.paint(&mut startup)?);
+    assert_eq!(
+        repeated_error.matches("unknown variant").count(),
+        1,
+        "{repeated_error}"
+    );
+    replace("strong")?;
+    assert_eq!(
+        startup.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::Needed
+    );
+    let corrected = notice_text(&startup_renderer.paint(&mut startup)?);
+    assert!(!corrected.contains("Notices"), "{corrected}");
+    assert!(!corrected.contains("unknown variant"), "{corrected}");
+    drop(startup_renderer);
+    drop(startup);
+
+    Ok(updates)
+}
+
+#[test]
+fn config_changes_repaint_the_word_and_recover_from_an_invalid_emphasis() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("config.toml");
+    let replace = |value: &str| -> TestResult {
+        let replacement = directory.path().join("next.toml");
+        std::fs::write(
+            &replacement,
+            format!("[word_highlight]\nemphasis = '{value}'\n"),
+        )?;
+        std::fs::rename(replacement, &path)?;
+        Ok(())
+    };
+    replace("invisible")?;
+    let updates = assert_startup_config_error_recovers(&path, &replace)?;
+
+    replace("subtle")?;
+    let mut app = application()?;
+    assert_eq!(
+        app.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::NotNeeded
+    );
+    let mut renderer = Renderer::new(&mut app, 80, 35)?;
+    let before = renderer.paint(&mut app)?;
+    app.click(locate(&before, ACCOUNT)?);
+    let subtle = renderer.paint(&mut app)?;
+    let point = positions(&subtle, ACCOUNT)
+        .into_iter()
+        .find(|point| subtle[*point].bg == match_background().unwrap_or(Color::Reset))
+        .ok_or("the plain subtle match")?;
+    let selected_word = app.word_highlight.clone();
+    let theme = tui_pane::theme();
+
+    replace("clear")?;
+    app.request_clock_frame();
+    assert_eq!(
+        app.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::Needed
+    );
+    let clear = renderer.paint(&mut app)?;
+    assert_ne!(clear[point].bg, subtle[point].bg);
+    assert_eq!(clear[point].modifier, subtle[point].modifier);
+
+    replace("invisible")?;
+    assert_eq!(
+        app.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::Needed
+    );
+    let rejected = renderer.paint(&mut app)?;
+    assert_eq!(rejected[point], clear[point]);
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::End);
+    let error_frame = renderer.paint(&mut app)?;
+    let error_text: String = error_frame
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    for allowed in ["subtle", "clear", "strong"] {
+        assert!(error_text.contains(allowed), "{error_text}");
+    }
+    assert!(error_text.contains("unknown variant"), "{error_text}");
+
+    replace("strong")?;
+    assert_eq!(
+        app.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::Needed
+    );
+    let recovered = renderer.paint(&mut app)?;
+    let recovered_text: String = recovered
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(
+        !recovered_text.contains("unknown variant"),
+        "{recovered_text}"
+    );
+    key(&mut app, KeyCode::Esc);
+    let strong = renderer.paint(&mut app)?;
+    assert_eq!(strong[point].bg, clear[point].bg);
+    assert_eq!(
+        strong[point].modifier,
+        clear[point].modifier | ratatui::style::Modifier::BOLD
+    );
+
+    replace("subtle")?;
+    app.request_clock_frame();
+    assert_eq!(
+        app.apply_word_highlight_update(updates.receive_for_test()?),
+        Repaint::Needed
+    );
+    assert_eq!(renderer.paint(&mut app)?[point], subtle[point]);
+    assert_eq!(app.word_highlight, selected_word);
+    assert!(std::sync::Arc::ptr_eq(&theme, &tui_pane::theme()));
+    drop(updates);
     Ok(())
 }

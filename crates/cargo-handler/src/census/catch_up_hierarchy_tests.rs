@@ -19,6 +19,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::accounts::AccountsTable;
+use super::accounts::EMPTY_SESSION_STATES;
 use super::hierarchy::HierarchyError;
 use super::hierarchy::HierarchyRunner;
 use super::remote::ProbeOutcome;
@@ -81,7 +82,7 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let accounts = AccountsTable::NotConfigured;
     let colors = FooterColors::default();

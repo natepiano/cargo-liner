@@ -27,6 +27,7 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::hierarchy::HierarchyError;
 use crate::census::scan::ScanStage;
 use crate::footer_colors::FooterColor;
@@ -166,7 +167,7 @@ impl Drop for SummaryAppearanceGuard {
 
 fn redraw_account_summary(table: &AccountsTable, colors: &FooterColors) -> Buffer {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 200, 20);
     let mut buffer = Buffer::empty(area);
@@ -317,7 +318,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let frame = SummaryFrame {
         accounts_sort:  AccountsSort::SourceOrder,
@@ -436,7 +437,7 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "both tables share the header style"
     );
     assert!(
-        !lines
+        lines
             .iter()
             .any(|line| line.split_whitespace().any(|word| word == "status")),
         "{joined}"
@@ -754,7 +755,7 @@ fn account_credit_policy_from_wire_controls_balance_emphasis() {
 #[test]
 fn accounts_only_summary_demand_includes_rows_and_all_notes() {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = [];
     let colors = FooterColors::default();
     let mut source = reading();
@@ -1303,7 +1304,7 @@ fn narrow_accounts() -> AccountsTable {
 
 fn narrow_draw(table: &AccountsTable, width: u16, height: u16) -> Buffer {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = [];
     let colors = FooterColors::default();
     let frame = SummaryFrame {
@@ -1623,7 +1624,7 @@ fn summary_height_matches_every_drawn_row_in_full_two_line_and_stacked_layouts()
     let full = accounts::sorted_width(&table, NOW, AccountsSort::SourceOrder);
     let stacked = 23;
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let mut heights = Vec::new();
     for width in [full, 80, 60, stacked] {
         let generous = narrow_draw(&table, width, 40);
@@ -2057,7 +2058,7 @@ fn compact_summary_marks_a_cut_machine_title_with_an_ellipsis() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let table = AccountsTable::NotConfigured;
@@ -2125,7 +2126,7 @@ fn narrow_review_machine_heading_never_cuts_the_count() {
         name:  "abcdef",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let frame = SummaryFrame {
         machines:       &machines,
         placement:      &placement,

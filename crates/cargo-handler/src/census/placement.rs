@@ -19,6 +19,9 @@ use super::account::AccountLabels;
 #[cfg(test)]
 use super::account::ConfigHome;
 #[cfg(test)]
+use super::accounts::EMPTY_SESSION_STATES;
+use super::accounts::SessionStates;
+#[cfg(test)]
 use super::classify;
 #[cfg(test)]
 use super::classify::ProcessEntry;
@@ -82,6 +85,44 @@ pub(crate) enum RootPresentation {
     Unassigned,
 }
 
+/// A named row role has one of four visible words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RowRole {
+    Unlabeled,
+    Unit,
+    Showrunner,
+    Worker,
+    Producer,
+}
+
+impl RowRole {
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Unlabeled => "",
+            Self::Unit => "unit",
+            Self::Showrunner => "showrunner",
+            Self::Worker => "worker",
+            Self::Producer => "producer",
+        }
+    }
+
+    pub(crate) const fn from_hierarchy(role: HierarchyRole) -> Self {
+        match role {
+            HierarchyRole::Producer => Self::Producer,
+            HierarchyRole::Showrunner => Self::Showrunner,
+            HierarchyRole::Unit => Self::Unit,
+            HierarchyRole::Agent => Self::Unlabeled,
+            HierarchyRole::Worker
+            | HierarchyRole::Impl
+            | HierarchyRole::Test
+            | HierarchyRole::Review
+            | HierarchyRole::Fix
+            | HierarchyRole::AstraDesigner
+            | HierarchyRole::AstraReviewer => Self::Worker,
+        }
+    }
+}
+
 /// Why a role is shown, or why the agent has no label.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RoleLabel {
@@ -100,9 +141,17 @@ impl RoleLabel {
     /// The role column of an agent line, including an unlabeled session.
     pub(crate) const fn column_text(self) -> &'static str {
         match self {
-            Self::Unlabeled => "session",
-            Self::ReviewFallback => "review",
-            Self::Stated(role) | Self::Inferred(role) => role.text(),
+            Self::Unlabeled => RowRole::Unlabeled.text(),
+            Self::ReviewFallback => RowRole::Worker.text(),
+            Self::Stated(role) | Self::Inferred(role) => RowRole::from_hierarchy(role).text(),
+        }
+    }
+
+    pub(crate) const fn activity_text(self) -> &'static str {
+        match self {
+            Self::Unlabeled => "",
+            Self::ReviewFallback => "reviewer",
+            Self::Stated(role) | Self::Inferred(role) => role.activity_text(),
         }
     }
 
@@ -215,19 +264,23 @@ pub(crate) struct SessionDispatchWork<'a> {
 /// The one forest shared by tile ordering and summary membership.
 #[derive(Debug)]
 pub(crate) struct AgentPlacement<'a> {
+    pub(crate) session_states: &'a SessionStates,
     /// Every shown row, in machine and census order.
-    pub(crate) rows:    Vec<super::PlacedAgent<'a>>,
+    pub(crate) rows:           Vec<super::PlacedAgent<'a>>,
     /// Threads whose hierarchy manager resolves.
-    pub(crate) threads: Vec<super::ManagedThread<'a>>,
+    pub(crate) threads:        Vec<super::ManagedThread<'a>>,
     /// Launcher-cycle rows promoted after the ordinary roots.
-    rescued_roots:      HashSet<RowIdentity<'a>>,
+    rescued_roots:             HashSet<RowIdentity<'a>>,
     /// Shell/thread pairs joined after their tile membership is normalized.
-    dispatch_folds:     Vec<DispatchPairing<'a>>,
+    dispatch_folds:            Vec<DispatchPairing<'a>>,
 }
 
 impl<'a> AgentPlacement<'a> {
     /// Resolve management links and launchers against every shown machine.
-    pub(crate) fn from_machines(machines: &[Machine<'a>]) -> Self {
+    pub(crate) fn from_machines(
+        machines: &[Machine<'a>],
+        session_states: &'a SessionStates,
+    ) -> Self {
         let mut rows: Vec<_> = machines
             .iter()
             .flat_map(|machine| {
@@ -271,6 +324,7 @@ impl<'a> AgentPlacement<'a> {
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
         let threads = Self::resolve_threads(machines, &managers, &edges);
         let mut placement = Self {
+            session_states,
             rows,
             threads,
             rescued_roots,
@@ -644,8 +698,12 @@ impl<'a> AgentPlacement<'a> {
         let fallback = match row_fallback {
             super::RoleFallback::None => RoleLabel::Unlabeled,
             super::RoleFallback::Review => RoleLabel::ReviewFallback,
+            super::RoleFallback::Producer => RoleLabel::Stated(HierarchyRole::Producer),
             super::RoleFallback::Worker(role) => RoleLabel::Stated(role),
         };
+        if row_fallback == super::RoleFallback::Producer {
+            return fallback;
+        }
         roles.fold(fallback, |label, role| {
             if matches!(role, HierarchyRole::Unit | HierarchyRole::Showrunner) {
                 RoleLabel::Inferred(HierarchyRole::Showrunner)
@@ -848,10 +906,13 @@ mod tests {
             ])
             .into(),
         );
-        let placement = AgentPlacement::from_machines(&[Machine {
-            name:  "local",
-            state: &state,
-        }]);
+        let placement = AgentPlacement::from_machines(
+            &[Machine {
+                name:  "local",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         let labels: Vec<_> = placement
             .rows
             .iter()
@@ -890,10 +951,13 @@ mod tests {
             ])
             .into(),
         );
-        let placement = AgentPlacement::from_machines(&[Machine {
-            name:  "local",
-            state: &state,
-        }]);
+        let placement = AgentPlacement::from_machines(
+            &[Machine {
+                name:  "local",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert_eq!(
             placement
                 .rows
@@ -932,16 +996,19 @@ mod tests {
         ] {
             let worker =
                 MachineState::Answered(worker.rows().to_vec(), HierarchyEdges(edges).into());
-            let placement = AgentPlacement::from_machines(&[
-                Machine {
-                    name:  "natedev",
-                    state: &manager,
-                },
-                Machine {
-                    name:  "mac",
-                    state: &worker,
-                },
-            ]);
+            let placement = AgentPlacement::from_machines(
+                &[
+                    Machine {
+                        name:  "natedev",
+                        state: &manager,
+                    },
+                    Machine {
+                        name:  "mac",
+                        state: &worker,
+                    },
+                ],
+                &EMPTY_SESSION_STATES,
+            );
             assert_eq!(
                 placement.role_label(placement.rows[0].identity),
                 expected_manager
@@ -963,10 +1030,13 @@ mod tests {
             ])
             .into(),
         );
-        let placement = AgentPlacement::from_machines(&[Machine {
-            name:  "local",
-            state: &state,
-        }]);
+        let placement = AgentPlacement::from_machines(
+            &[Machine {
+                name:  "local",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert_eq!(
             placement.role_label(placement.rows[0].identity),
             RoleLabel::Inferred(HierarchyRole::Showrunner)
@@ -1017,7 +1087,7 @@ mod tests {
                 name:  "local",
                 state: &state,
             }];
-            let placement = AgentPlacement::from_machines(&machines);
+            let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
             let links: HashMap<_, _> = placement
                 .rows
                 .iter()
@@ -1093,10 +1163,13 @@ mod tests {
                 ])
                 .into(),
             );
-            let placement = AgentPlacement::from_machines(&[Machine {
-                name:  "local",
-                state: &state,
-            }]);
+            let placement = AgentPlacement::from_machines(
+                &[Machine {
+                    name:  "local",
+                    state: &state,
+                }],
+                &EMPTY_SESSION_STATES,
+            );
             let links: HashMap<_, _> = placement
                 .rows
                 .iter()
@@ -1147,7 +1220,7 @@ mod tests {
                 state: &worker,
             },
         ];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         assert_eq!(placement.rows.len(), 1);
         assert_eq!(placement.threads.len(), 1);
         assert_eq!(placement.threads[0].owner.machine, "mac");
@@ -1171,10 +1244,13 @@ mod tests {
         assert!(!census.lists_an_agent(&[]));
         let unlinked =
             MachineState::Answered(worker.rows().to_vec(), HierarchyEdges::default().into());
-        let placement = AgentPlacement::from_machines(&[Machine {
-            name:  "mac",
-            state: &unlinked,
-        }]);
+        let placement = AgentPlacement::from_machines(
+            &[Machine {
+                name:  "mac",
+                state: &unlinked,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert!(placement.roots().is_empty());
         assert!(placement.threads.is_empty());
     }

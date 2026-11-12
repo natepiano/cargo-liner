@@ -187,9 +187,9 @@ fn observed_cells(app: &App) -> ObservedCells<'_> {
             app.footer_colors.colors(),
             &app.tree_sorts,
             app.summary_sort,
+            &app.accounts.table,
         )
         .with_expansion(&app.expansion)
-        .with_accounts(&app.accounts.table)
         .with_accounts_sort(app.accounts_sort)
         .with_selections(app.selections.clone(), SelectableSurface::EmptyCell),
         allocations: RefCell::new(Vec::new()),
@@ -255,7 +255,7 @@ fn account_refresh_keeps_the_destination_through_animation_frames() {
     // Every width uses the same unchanged destination data.
     let source = fixture(6);
     for (width, search_calls, pending_motion) in
-        [(200, 7, true), (80, 4, true), (50, 2, true), (40, 2, true)]
+        [(200, 7, true), (80, 2, true), (50, 2, true), (40, 2, true)]
     {
         let mut app = fixture(6);
         app.accounts.table = AccountsTable::Ready(
@@ -395,11 +395,11 @@ fn assert_core_columns(text: &[String], width: u16) {
                 "session",
                 "type",
                 "role",
+                "activity",
                 "status",
                 "account",
                 "branch",
-                "directory",
-                "age"
+                "directory"
             ]
             .contains(&word),
             "cut or joined header {word:?} at {width}: {header}"
@@ -412,7 +412,7 @@ fn assert_core_columns(text: &[String], width: u16) {
         "core columns need a gap: {header}"
     );
     assert!(
-        text.iter().any(|line| line.contains("reviewer")),
+        text.iter().any(|line| line.contains("worker")),
         "whole role at {width}: {text:?}"
     );
     if width == 200 {
@@ -494,7 +494,7 @@ fn assert_constrained_width(width: u16) {
         .filter(|tile| matches!(tile.content, TileContent::Group(_)))
         .collect();
     assert_eq!(groups.len(), 6, "all six tiles at {width}x50");
-    for tile in &groups {
+    for (index, tile) in groups.iter().enumerate() {
         let area = tile.frame.inner().intersection(tile.frame.clip());
         let text = lines(&buffer, area);
         assert!(
@@ -507,16 +507,37 @@ fn assert_constrained_width(width: u16) {
             .expect("whole core headers at height 50");
         assert!(header.contains("role"), "core role header: {text:?}");
         if width <= 50 {
-            assert!(
-                text.iter().any(|line| line.contains("▼ long-se…")),
-                "the truncated root remains visible: {text:?}"
+            if width == 40 {
+                assert_eq!(
+                    header.split_whitespace().collect::<Vec<_>>(),
+                    ["session", "role", "status"],
+                    "{text:?}"
+                );
+            }
+            let root = text
+                .iter()
+                .find(|line| line.contains("▼ "))
+                .expect("the truncated root remains visible");
+            let (_, name) = root.split_once("▼ ").expect("the session marker");
+            let session = format!(
+                "▼ {}",
+                name.trim().split("  ").next().expect("the session field")
+            );
+            assert_eq!(
+                session,
+                if width == 40 {
+                    format!("▼ long-session-{}-wi…", index + 1)
+                } else {
+                    "▼ long-se…".to_owned()
+                },
+                "{text:?}"
             );
             assert!(
                 (3..=4).contains(&area.height),
                 "the constrained tile has three or four rows: {text:?}"
             );
             assert_eq!(
-                text.iter().any(|line| line.contains("reviewer")),
+                text.iter().any(|line| line.contains("worker")),
                 area.height == 4,
                 "four rows show the review; three rows show only the root: {text:?}"
             );
@@ -752,8 +773,8 @@ fn narrow_review_end_measures_the_restored_viewport() {
     );
     assert!(
         text.lines()
-            .any(|line| line.contains("showrunner") && line.contains("waiting")),
-        "status must fit beside the revealed role: {text}"
+            .any(|line| line.contains("showrunner") && line.contains("worker")),
+        "the worker role must fit beside the revealed activity: {text}"
     );
 }
 
@@ -898,8 +919,8 @@ fn narrow_growth_at_end_includes_a_wide_role_above_the_saved_window() {
         for word in roles.words() {
             assert!(
                 text.lines()
-                    .any(|line| line.contains(word) && line.contains("waiting")),
-                "{roles:?}: the first enlarged frame must show the whole role and status: {text}"
+                    .any(|line| line.contains(word) && line.contains("worker")),
+                "{roles:?}: the enlarged frame must show the whole activity and role: {text}"
             );
         }
     }
@@ -918,6 +939,7 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
             &colors,
             &sorts,
             app.summary_sort,
+            &AccountsTable::NotConfigured,
         )
         .with_expansion(&app.expansion)
         .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
@@ -938,8 +960,9 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
             if matches!(anchor, NavAction::End) {
                 let saved_window = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, 5), &state);
                 assert!(
-                    tallest.minimum_tile_width() > saved_window.minimum_tile_width(),
-                    "the restored window must include a wider supported role"
+                    tallest.column_width(agent_cell::TreeColumn::Activity)
+                        > saved_window.column_width(agent_cell::TreeColumn::Activity),
+                    "the restored window must include a wider activity"
                 );
             }
             cells.measurements.borrow_mut().clear();
