@@ -81,11 +81,11 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 ### Phase 3 — cargo-mend tests run under 1 s  · status: todo
 
-**Depends on:** Phase 2.
+**Depends on:** Phase 2, Phase 4.
 
 #### Work Order
 
-**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev. No assertion becomes weaker.
+**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev and on the Mac. No assertion becomes weaker.
 
 **Source:** the Phase 2 full suite on 2026-11-11 (one test thread) passed 1,022 tests, but 37 tests that Phase 2 did not change took 1 s or more. The five slowest:
 - `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` — 3.418 s
@@ -106,6 +106,8 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 - After those repairs, a full suite passed 1,020 tests with none at 1 s or more (slowest 0.923 s). The regression since then is not yet explained.
 - A concurrent relink replaces `target/debug/cargo-mend`. Measure a single sample with a copied executable.
 - `inline_path_qualified_type/scan.rs` already holds the ten inline-path cases that compile with rustc in place of a CLI run.
+- Phase 4 (checkpoint 90a8065cf) adds `SourcePathKey` (`src/rust_syntax/source_path_key.rs`), the one owner of source file identity. Merge it before any edit to `function_length_plan.rs`, and keep its three `ValidatedFixSet::try_from((plan.fixes, sources))` calls. Take every timing on a tree that holds that merge, because the first lookup of each file now resolves its canonical path.
+- `ParsedSources` owns the identity keys of one source snapshot, and the snapshot ends before source writes. Keep shared snapshot keys, the declared include directories in `ModuleMap`, relative diagnostic paths, and a fresh snapshot after each write.
 
 **Spec:**
 1. **Measure.** Run the full suite. Record the load average (`uptime`) with each timing. List every test at 1 s or more.
@@ -123,7 +125,7 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` on natedev passes with every test under 1 s, and each timing has its load average. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
+**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs at similar load. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
 ### Phase 4 — mend --fix redirects `extern crate self` alias callers on macOS  · status: done
 
@@ -153,4 +155,40 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 **State:** none.
 
 **Acceptance gate:** `verify.sh test cargo-mend` passes on the Mac and on natedev, every test under 1 s. `verify.sh lint cargo-mend` is clean. `Change-Review: none — the repair makes an existing test pass on macOS; no behavior on natedev changes`.
+
+### Phase 5 — finder match letters are readable in every theme  · status: todo
+
+**Depends on:** none. Runs beside Phase 3 in its own worktree.
+
+#### Work Order
+
+**Goal:** in the finder, the letters that match the query meet a contrast ratio of at least 4.5:1 on `match_bg` in every registered theme.
+
+**Source:** showrunner, 2026-11-11: in the High Contrast Dark theme, the finder draws matched letters White on the LightYellow `match_bg`. That is about 1.1:1, so the matched letters cannot be read. It happens in every finder cell, and it existed before C314.
+
+**Decision:** keep `match_bg` in every theme, because it is the signal of a match. Change only the ink of the matched letters. A theme whose row ink already meets 4.5:1 on its `match_bg` keeps that ink, so its look does not change (director, 2026-11-11).
+
+**Constraints from prior phases:**
+- `highlighted_spans` in `crates/cargo-port/src/tui/finder/dispatch.rs` builds each finder cell. Its `highlight_style` is the row `fg` (`text_default()`) on `finder_match_bg()`.
+- The registered themes are `crate::themes::builtins()` in `crates/cargo-port/src/themes/builtins.rs`. High Contrast Dark (`DEFAULT_HC_DARK_THEME`) sets `match_bg` to `Color::LightYellow` and `text.default` to `Color::White`.
+- `FinderTheme` is in `tui_pane` and cargo-handler and cargo-tile also build it. Keep the fix in cargo-port when it can be. If a `tui_pane` change is necessary, claim the file with `cargo-berth --before` the holder (unit charter), and keep the other crates compiling.
+- The test model is `dim_package_values_meet_contrast_in_each_registered_theme` in `crates/cargo-port/src/tui/panes/package/readability_tests.rs`. It installs each builtin theme, draws the pane and computes the WCAG ratio with `dim_value_contrast`. Use one ratio function; do not add a second copy.
+
+**Spec:**
+1. **Readable matches.** Each matched letter in a finder cell has an ink with a ratio of at least 4.5:1 on `match_bg`, in every builtin theme. Unmatched letters do not change.
+2. **Test.** Add a test in the form of the model test: for each builtin theme, draw the finder with a query that matches letters in each column, read the drawn cells back, and check the ratio of each highlighted cell's `fg` on its `bg`. It fails on the current code in High Contrast Dark.
+3. **Changelog.** Add a cargo-port entry: matched finder letters are readable in High Contrast Dark.
+
+**Files:**
+- `crates/cargo-port/src/tui/finder/dispatch.rs` — the matched-letter ink
+- `crates/cargo-port/src/themes/builtins.rs` — only if the ink belongs in the theme
+- `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the shared ratio function, if the new test reuses it
+- `crates/cargo-port/src/tui/finder/` — the new test
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and on the Mac, every test under 1 s, and the new test fails before the repair. `verify.sh lint cargo-port` is clean. A live finder capture in High Contrast Dark shows the matched letters readable. `Change-Review: The finder's matched letters are readable in High Contrast Dark | On natedev, run cargo port in a terminal, choose the High Contrast Dark theme, open the finder and type a query | The matched letters on the yellow highlight are dark and readable`.
 
