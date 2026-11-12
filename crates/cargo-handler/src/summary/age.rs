@@ -14,6 +14,25 @@ pub(crate) fn age_label(seconds: u64) -> String {
     }
 }
 
+/// Details retain every age unit after the first nonzero unit.
+pub(crate) fn long_age_label(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    let unit = |value: u64, singular: &str| {
+        format!("{value} {singular}{}", if value == 1 { "" } else { "s" })
+    };
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(unit(days, "day"));
+    }
+    if hours > 0 {
+        parts.push(unit(hours % 24, "hour"));
+    }
+    parts.push(unit(minutes % 60, "minute"));
+    parts.join(", ")
+}
+
 /// The next increase in a shared age column's width.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AgeWidthChange {

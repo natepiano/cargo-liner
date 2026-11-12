@@ -197,7 +197,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
     for thread in &placement.threads {
         let child = &thread.owner_row.children[thread.child_index];
         session_starts.push(child.started);
@@ -646,17 +646,23 @@ mod tests {
         app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, mut terminal) = settle_timed_body(&mut app, &mut ticker, 689);
-        assert_drawn_age(&terminal, "session0", "9");
-        assert_drawn_age(&terminal, "session1", "9");
+        assert_drawn_age(&app, &terminal, "session0", "9 minutes", 689);
+        assert_drawn_age(&app, &terminal, "session1", "9 minutes", 689);
         assert_eq!(ticker.poll_at(&mut app, now, 689), Repaint::NotNeeded);
         assert_eq!(ticker.poll_at(&mut app, now, 690), Repaint::Needed);
         paint_timed_body(&mut app, &mut terminal, 690);
-        assert_drawn_age(&terminal, "session0", "10");
-        assert_drawn_age(&terminal, "session1", "9");
+        assert_drawn_age(&app, &terminal, "session0", "10 minutes", 690);
+        assert_drawn_age(&app, &terminal, "session1", "9 minutes", 690);
         assert_eq!(ticker.poll_at(&mut app, now, 691), Repaint::NotNeeded);
     }
 
-    fn assert_drawn_age(terminal: &Terminal<TestBackend>, name: &str, age: &str) {
+    fn assert_drawn_age(
+        app: &App,
+        terminal: &Terminal<TestBackend>,
+        name: &str,
+        age: &str,
+        now: u64,
+    ) {
         let buffer = terminal.backend().buffer();
         let rows: Vec<String> = (buffer.area.y..buffer.area.bottom())
             .map(|y| {
@@ -665,13 +671,16 @@ mod tests {
                     .collect()
             })
             .collect();
-        let row = rows
-            .iter()
-            .find(|row| row.contains(name))
-            .expect("drawn session");
+        assert!(rows.iter().any(|row| row.contains(name)));
         assert!(
-            row.split_whitespace().any(|word| word == age),
-            "drawn age {age}: {row}"
+            !rows
+                .iter()
+                .any(|row| row.split_whitespace().any(|word| word == "age"))
+        );
+        let machines = app.census.machines(&[]);
+        assert_eq!(
+            crate::agent_cell::detail_property_for_test(&machines, name, "age", now),
+            age
         );
     }
 
@@ -695,11 +704,11 @@ mod tests {
         assert_eq!(next_body_change(&app, 100), TextChange::At(1060));
         for at in [100, 699, 700, 999, 1000, 1059] {
             assert_eq!(ticker.poll_at(&mut app, now, at), Repaint::NotNeeded);
-            assert_drawn_age(&terminal, "future", "0");
+            assert_drawn_age(&app, &terminal, "future", "0 minutes", at);
         }
         assert_eq!(ticker.poll_at(&mut app, now, 1060), Repaint::Needed);
         paint_timed_body(&mut app, &mut terminal, 1060);
-        assert_drawn_age(&terminal, "future", "1");
+        assert_drawn_age(&app, &terminal, "future", "1 minute", 1060);
     }
 
     #[test]

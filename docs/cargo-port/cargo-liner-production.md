@@ -24,7 +24,7 @@
 | Unit | Plan | Worktree | Branch | Port | Owns |
 | --- | --- | --- | --- | --- | --- |
 | tile-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile | remove-running-section-tile | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
-| handler-unit | — (plan done; as-built in docs/cargo-handler/as-built/) | /home/natepiano/rust/cargo-liner-handler | cargo-liner-handler | — | crates/cargo-handler/, crates/tui_pane/ |
+| handler-unit | docs/cargo-port/cargo-liner-handler.md | /home/natepiano/rust/cargo-liner-handler | cargo-liner-handler | — | crates/cargo-handler/, crates/tui_pane/ |
 | port-unit | docs/cargo-port/as-built/ | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, crates/cargo-mend/, docs/cargo-port/as-built/ |
 | cargo-liner-style | docs/cargo-liner-style-production.md | /home/natepiano/rust/cargo-liner-style | style/main |  |  |
 
@@ -71,3 +71,5 @@ Changes the user sent back from change review. Each row stays until its fix merg
 | C227 — popups show focus | user asked the showrunner to validate; color mode draws a thin Sccache border where the check says thick in both modes | port | Phase 4v (29ce1bc2f) | returned 2026-11-09; fix merged 5df05544 (2026-11-10), installed on natedev, Mac owed; new change C298 waits for the user's check |
 | C217 — tiles keep their places when the accounts table wraps | the user asked the showrunner to validate it (2026-11-07); the showrunner's live 80x45 check: the tiles switch between two columns and one column when a summary status gets wider | handler | [Stable layout](../cargo-handler/as-built/tile-layout.md#grid-admission-and-stable-layout) (d8b51889a) | fix merged 2026-11-07 (ee2c5c839); new change C257 waits for the user's check; showrunner live 80x45 capture, 150 s: two columns in all 75 frames |
 | C240 — a click on a word highlights every instance in the window | "it's happening but it's too subtle - we need some configurable way to increase its noticeability" | handler | Phase 2 (b8e819e23 on cargo-liner-handler) | returned 2026-11-11 |
+| C264 — reset times in the handler accounts footer step from soonest to latest | "they differ but it's still preetty subtle - i would prefer there being true  color differences" | handler | Phase 5 (74ef12b8b on cargo-liner-handler) | returned 2026-11-11 |
+| C269 — a Codex pane worker shows waiting during every detached run | user screenshot 14:50 EST: worker:handler/impl reads "fix · idle" while its detached lint run is live | handler | Phase 1 (c10ae923f on cargo-liner-handler); classify part to sdlc | returned 2026-11-11 |

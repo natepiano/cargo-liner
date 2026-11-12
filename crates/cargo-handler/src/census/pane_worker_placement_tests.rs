@@ -16,6 +16,7 @@ use tempfile::TempDir;
 
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::accounts::EMPTY_SESSION_STATES;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::hierarchy::StaffDiscovery;
@@ -142,7 +143,7 @@ fn drawn_tiles(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<DrawnTile> {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000)
         .iter()
@@ -391,10 +392,13 @@ fn resumed_pane_workers_keep_their_distinct_staff_managers() {
     assert_eq!(second.name, "second staff worker");
     let tiles = drawn_tiles(rows.clone(), edges.clone());
     let state = MachineState::Answered(rows, edges.into());
-    let placement = AgentPlacement::from_machines(&[Machine {
-        name:  "fixture",
-        state: &state,
-    }]);
+    let placement = AgentPlacement::from_machines(
+        &[Machine {
+            name:  "fixture",
+            state: &state,
+        }],
+        &EMPTY_SESSION_STATES,
+    );
     for (worker, manager) in [(40, 20), (50, 30)] {
         let row = placement
             .rows
@@ -439,10 +443,13 @@ fn a_pane_codex_identity_preserves_its_specific_worker_role() {
         .expect("staff worker edge");
     assert_eq!(edge.role, HierarchyRole::Test);
     let state = MachineState::Answered(rows, edges.into());
-    let placement = AgentPlacement::from_machines(&[Machine {
-        name:  "fixture",
-        state: &state,
-    }]);
+    let placement = AgentPlacement::from_machines(
+        &[Machine {
+            name:  "fixture",
+            state: &state,
+        }],
+        &EMPTY_SESSION_STATES,
+    );
     let worker = placement
         .rows
         .iter()

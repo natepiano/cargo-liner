@@ -14,6 +14,7 @@ use crate::census::AgentActivity;
 use crate::census::RoleFallback;
 use crate::census::RunLocation;
 use crate::census::VerifyStep;
+use crate::census::accounts::AccountsReading;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort::SortDirection;
 
@@ -33,8 +34,10 @@ fn activity_forest() -> MachineState {
     ]
     .map(|(pid, name, activity)| AgentRow {
         role_fallback: RoleFallback::None,
+        session_id: SessionIdentity::Claude(format!("activity-{pid}")),
         activity,
         children: vec![ChildRow {
+            thread_id: CodexThreadId::Recorded(format!("nested-{pid}")),
             activity: AgentActivity::Active(Activity::Verify {
                 step:     VerifyStep::Nextest,
                 location: RunLocation::Mac,
@@ -44,6 +47,20 @@ fn activity_forest() -> MachineState {
         ..agent(pid, name, HOUR + u64::from(pid), None)
     });
     MachineState::Answered(rows.into(), HierarchyEdges::default().into())
+}
+
+fn source_reading() -> AccountsReading {
+    AccountsReading::parse(
+        br#"{
+        "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+            {"session":"activity-20","state":"busy"},{"session":"activity-30","state":"busy"},
+            {"session":"activity-40","state":"busy"},{"session":"activity-50","state":"idle"},
+            {"session":"nested-20","state":"busy"},{"session":"nested-30","state":"busy"},
+            {"session":"nested-40","state":"busy"},{"session":"nested-50","state":"busy"},
+            {"session":"reader-id","state":"busy"},{"session":"writer-id","state":"paused"}
+        ]}],"problems":[]}"#,
+    )
+    .expect("source session fixture")
 }
 
 fn activity_pool(sort: TreeSort) -> Buffer {
@@ -57,7 +74,8 @@ fn activity_pool(sort: TreeSort) -> Buffer {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let reading = source_reading();
+    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
     let sorts = HashMap::from([(
         TileKey::Unassigned {
             machine: "fixture".into(),
@@ -90,22 +108,35 @@ fn status_at<'a>(buffer: &'a Buffer, name: &str) -> &'a Cell {
 #[test]
 fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
     let buffer = activity_pool(TreeSort::default());
-    let status_x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
-    for (name, word) in [
-        ("writer-root", "writing"),
-        ("reader-root", "reading"),
-        ("gate-root", "clippy"),
-        ("waiting-root", "waiting"),
+    let state = activity_forest();
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let reading = source_reading();
+    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let cells = cell_order_placed(&placement);
+    for (name, word, status) in [
+        ("writer-root", "writing", "busy"),
+        ("reader-root", "reading", "busy"),
+        ("gate-root", "clippy", "busy"),
+        ("waiting-root", "waiting", "idle"),
     ] {
-        let y = find(&buffer, name).expect("row").1;
-        let text: String = (status_x..status_x + u16::try_from(word.len()).expect("short word"))
+        let cell = cells
+            .iter()
+            .find(|cell| cell.row.name == name)
+            .expect("fixture session");
+        assert_eq!(detail_value(cell, name, "state", NOW), word);
+        let x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+        let y = find(&buffer, name).expect("source row").1;
+        let drawn: String = (x..x + summary::cell_width(status))
             .map(|x| buffer[(x, y)].symbol())
             .collect();
-        assert_eq!(text, word, "{name}");
+        assert_eq!(drawn, status);
     }
     assert_eq!(
         status_at(&buffer, "writer-root").fg,
-        Role::Busy.style().fg.expect("busy color")
+        Role::Busy.style().fg.expect("busy ink")
     );
     assert_eq!(
         status_at(&buffer, "reader-root").fg,
@@ -113,38 +144,28 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
     );
     assert_eq!(
         status_at(&buffer, "waiting-root").fg,
-        Role::Idle.style().fg.expect("idle color")
+        Role::Idle.style().fg.expect("idle ink")
     );
-    let state = activity_forest();
-    let machines = [Machine {
-        name:  "fixture",
-        state: &state,
-    }];
-    let placement = AgentPlacement::from_machines(&machines);
-    let cells = cell_order_placed(&placement);
     let owner = cells
         .iter()
-        .find(|entry| entry.row.pid == 20)
-        .expect("writer owns work");
+        .find(|cell| cell.row.pid == 20)
+        .expect("writer owner");
     let nested = drawn_into(owner, &cells, 240, 12);
-    assert!(
-        lines(&nested)
-            .iter()
-            .any(|line| line.contains("nextest (mac)"))
+    assert_eq!(
+        detail_value(owner, "nested-20", "state", NOW),
+        "nextest (mac)"
     );
     assert_eq!(
         status_at(&buffer, "gate-root").fg,
-        status_at(&nested, "nested-20").fg,
-        "verify steps share an accent"
+        status_at(&nested, "nested-20").fg
     );
     assert_ne!(
         status_at(&buffer, "gate-root").fg,
         status_at(&buffer, "waiting-root").fg
     );
-    assert_ne!(
+    assert_eq!(
         status_at(&buffer, "gate-root").fg,
-        status_at(&buffer, "writer-root").fg,
-        "gates have their own accent"
+        status_at(&buffer, "writer-root").fg
     );
 }
 
@@ -157,10 +178,11 @@ fn activity_pool_status_sort_uses_drawn_words_and_keeps_workers_under_their_root
         });
         let mut names = ["writer-root", "reader-root", "gate-root", "waiting-root"];
         names.sort_by_key(|name| find(&buffer, name).expect("root").1);
-        let mut expected = ["gate-root", "reader-root", "waiting-root", "writer-root"];
-        if direction == SortDirection::Descending {
-            expected.reverse();
-        }
+        let expected = if direction == SortDirection::Ascending {
+            ["gate-root", "reader-root", "writer-root", "waiting-root"]
+        } else {
+            ["waiting-root", "gate-root", "reader-root", "writer-root"]
+        };
         assert_eq!(names, expected);
         for (pid, root) in [
             (20, "writer-root"),
@@ -173,7 +195,8 @@ fn activity_pool_status_sort_uses_drawn_words_and_keeps_workers_under_their_root
                 name:  "fixture",
                 state: &state,
             }];
-            let placement = AgentPlacement::from_machines(&machines);
+            let reading = source_reading();
+            let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
             let cells = cell_order_placed(&placement);
             let owner = cells
                 .iter()
@@ -217,7 +240,8 @@ fn activity_tree_account_cells_hide_standard_tier_and_show_only_fast() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let reading = source_reading();
+    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
     let cells = cell_order_placed(&placement);
     let rect = area(240, 10);
     let mut buffer = Buffer::empty(rect);
@@ -282,7 +306,8 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let reading = source_reading();
+    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
     let original = cell_order_placed(&placement);
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let sorts = HashMap::from([(
@@ -304,10 +329,10 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
             find(&buffer, "writer-worker").expect("worker").1,
             writer_y + 1
         );
-        assert_eq!(status_at(&buffer, "reader-member").symbol(), "r");
+        assert_eq!(status_at(&buffer, "reader-member").symbol(), "b");
         assert_eq!(
             status_at(&buffer, "writer-member").fg,
-            Role::Busy.style().fg.expect("busy color")
+            Role::Idle.style().fg.expect("paused color")
         );
     }
 }
@@ -352,7 +377,8 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let reading = source_reading();
+    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
     let agents = cell_order_placed(&placement);
     let buffer = drawn_into(&agents[0], &agents, 240, 12);
     let text = lines(&buffer).join("\n");
@@ -370,7 +396,11 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
     let y = find(&buffer, "fix · Repair the widget")
         .expect("task worker")
         .1;
-    assert_eq!(buffer[(role_x, y)].symbol(), "f");
+    assert_eq!(buffer[(role_x, y)].symbol(), "w");
+    let activity_x = find(&buffer, TREE_ACTIVITY_HEADER)
+        .expect("activity header")
+        .0;
+    assert_eq!(buffer[(activity_x, y)].symbol(), "f");
 }
 
 /// Shell activity is independent of the Idle compatibility value on child rows.
@@ -409,11 +439,17 @@ fn shell_state_buffer(width: u16) -> Buffer {
 fn shell_timer_status_draws_digits_without_a_short_fallback_pie() {
     for width in [65, 180] {
         let buffer = shell_state_buffer(width);
-        let x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+        let x = find(&buffer, TREE_ACTIVITY_HEADER)
+            .expect("activity header")
+            .0;
         let y = find(&buffer, "progress-clock").expect("timer row").1;
-        let status: String = (x..x + 7).map(|x| buffer[(x, y)].symbol()).collect();
-        assert_eq!(status.trim_end(), "3:48", "width={width}");
-        assert_eq!(buffer[(x, y)].symbol(), "3", "timer begins at digit height");
+        let status: String = (x..x + 10).map(|x| buffer[(x, y)].symbol()).collect();
+        assert_eq!(status.trim_end(), "timer 3:48", "width={width}");
+        assert_eq!(
+            buffer[(x + 6, y)].symbol(),
+            "3",
+            "timer begins at digit height"
+        );
         let type_x = find(&buffer, "type").expect("type header").0;
         let kind: String = (type_x..type_x + 5)
             .map(|x| buffer[(x, y)].symbol())
@@ -435,7 +471,7 @@ fn shell_rows_draw_running_in_status_and_shell_only_in_type() {
         let kind: String = (type_x..type_x + 5)
             .map(|x| buffer[(x, y)].symbol())
             .collect();
-        assert_eq!(status, "running", "width={width}");
+        assert_eq!(status.trim(), "busy", "width={width}");
         assert_eq!(kind, "shell", "width={width}");
         assert!(!lines(&buffer)[usize::from(y)].contains("command"));
     }
@@ -486,14 +522,20 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
     }));
+    cell.lines.last_mut().expect("running agent").source_state =
+        ReportedSessionState::Reported(SessionState::Busy);
     for width in [180, 65] {
         let buffer = drawn_among(&cell, &[], width);
         let agent_status = status_at(&buffer, "running-agent");
         let shell_status = status_at(&buffer, "compile-project");
-        assert_eq!(agent_status.symbol(), "r");
-        assert_eq!(shell_status.symbol(), "r");
+        assert_eq!(agent_status.symbol(), "b");
+        assert_eq!(shell_status.symbol(), "b");
         assert_eq!(shell_status.fg, agent_status.fg, "width={width}");
-        let timer_status = status_at(&buffer, "progress-clock");
+        let activity_x = find(&buffer, TREE_ACTIVITY_HEADER)
+            .expect("activity header")
+            .0;
+        let y = find(&buffer, "progress-clock").expect("timer row").1;
+        let timer_status = &buffer[(activity_x + 6, y)];
         assert_eq!(timer_status.symbol(), "3");
         assert_eq!(Some(timer_status.fg), Role::Shell.style().fg);
         assert_ne!(timer_status.fg, shell_status.fg);
@@ -556,18 +598,19 @@ fn spent_shell_timers_draw_running_in_busy_ink_at_the_deadline_and_later() {
                 AccountColumn::Hidden,
                 &FooterColors::default(),
             );
-            let x = find(&buffer, "status").expect("status header").0;
+            let x = find(&buffer, "activity").expect("activity header").0;
             let y = find(&buffer, "deadline-build").expect("timed shell").1;
-            let text: String = (x..x + 7).map(|x| buffer[(x, y)].symbol()).collect();
+            let text: String = (x..x + 10).map(|x| buffer[(x, y)].symbol()).collect();
             let untimed = status_at(&buffer, "ordinary-build");
-            let counting = status_at(&buffer, "live-countdown");
-            assert_eq!(untimed.symbol(), "r");
+            let counting_y = find(&buffer, "live-countdown").expect("live timer").1;
+            let counting = &buffer[(x + 6, counting_y)];
+            assert_eq!(untimed.symbol(), "b");
             assert_ne!(counting.fg, untimed.fg, "countdown and Busy ink differ");
             if now < NOW {
-                assert_eq!(text.trim_end(), "0:01", "width={width}, now={now}");
+                assert_eq!(text.trim_end(), "timer 0:01", "width={width}, now={now}");
                 assert_eq!(buffer[(x, y)].fg, counting.fg);
             } else {
-                assert_eq!(text, "running", "width={width}, now={now}");
+                assert_eq!(text.trim_end(), "timer", "width={width}, now={now}");
                 assert_eq!(buffer[(x, y)].fg, untimed.fg, "width={width}, now={now}");
             }
         }

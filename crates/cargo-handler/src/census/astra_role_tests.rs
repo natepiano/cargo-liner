@@ -221,7 +221,8 @@ fn astra_role_words_survive_the_role_boundary() -> Result<(), Error> {
         ("astra-reviewer", "astra reviewer"),
     ] {
         let role: HierarchyRole = serde_json::from_value(serde_json::json!(wire))?;
-        assert_eq!(RoleLabel::Stated(role).column_text(), word);
+        assert_eq!(RoleLabel::Stated(role).column_text(), "worker");
+        assert_eq!(RoleLabel::Stated(role).activity_text(), word);
     }
     Ok(())
 }

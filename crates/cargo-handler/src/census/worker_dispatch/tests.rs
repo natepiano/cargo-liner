@@ -28,6 +28,7 @@ use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::SessionIdentity;
 use crate::census::account::ConfigHome;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::classify::ProcessEntry;
 use crate::census::scan;
 use crate::footer_colors::FooterColors;
@@ -76,7 +77,7 @@ fn captured_tile_detached_dispatch_folds_into_its_codex_pane()
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let shell = &state.rows()[0].children[0];
     assert!(
         placement.folds_dispatch(shell),
@@ -754,10 +755,13 @@ fn drawn_tiles(rows: Vec<AgentRow>) -> Vec<String> {
 
 fn drawn_tiles_with_edges(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
     let state = MachineState::Answered(rows, edges.into());
-    let placement = AgentPlacement::from_machines(&[Machine {
-        name:  "fixture",
-        state: &state,
-    }]);
+    let placement = AgentPlacement::from_machines(
+        &[Machine {
+            name:  "fixture",
+            state: &state,
+        }],
+        &EMPTY_SESSION_STATES,
+    );
     let cells = agent_cell::cell_order_placed(&placement);
     cells
         .iter()
@@ -1194,10 +1198,13 @@ fn folded_worker_role_reaches_the_final_tile_through_placement() {
             vec![agent(10, &[shell, thread])],
             HierarchyEdges::default().into(),
         );
-        let placement = AgentPlacement::from_machines(&[Machine {
-            name:  "fixture",
-            state: &state,
-        }]);
+        let placement = AgentPlacement::from_machines(
+            &[Machine {
+                name:  "fixture",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert!(placement.folds_dispatch(&state.rows()[0].children[0]));
         let DispatchLabel::Worker(worker) = placement.dispatch_label(&state.rows()[0].children[1])
         else {
@@ -1237,10 +1244,13 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
         HierarchyEdges::default()
     };
     let state = MachineState::Answered(vec![root], edges.into());
-    let placement = AgentPlacement::from_machines(&[Machine {
-        name:  "fixture",
-        state: &state,
-    }]);
+    let placement = AgentPlacement::from_machines(
+        &[Machine {
+            name:  "fixture",
+            state: &state,
+        }],
+        &EMPTY_SESSION_STATES,
+    );
     let cells = agent_cell::cell_order_placed(&placement);
     let palette = FooterColors::parse("role.worker=bright-cyan");
     let rect = Rect::new(0, 0, 220, 12);
@@ -1262,8 +1272,8 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
     for (short, recorded, expected_role) in [
         ("impl4", Some("impl"), "impl"),
         ("fix2", Some("fix"), "fix"),
-        ("impl4", Some("review"), "review"),
-        ("arrange", None, "worker"),
+        ("impl4", Some("review"), "reviewer"),
+        ("arrange", None, ""),
         ("mat-test", Some("test"), "test"),
     ] {
         for managed in [false, true] {
@@ -1291,12 +1301,22 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
             let drawn_role: String = (role_x..role_x + 6)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
-            assert_eq!(
-                drawn_role.trim(),
-                expected_role,
-                "{short} managed={managed}"
-            );
+            assert_eq!(drawn_role.trim(), "worker", "{short} managed={managed}");
             assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
+            let activity_x = u16::try_from(text[header].find("activity").expect("activity column"))
+                .expect("column fits");
+            let status_x = u16::try_from(text[header].find("status").expect("status column"))
+                .expect("column fits");
+            let activity: String = (activity_x..status_x)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert_eq!(activity.trim(), expected_role, "{short} managed={managed}");
+            for offset in 0..u16::try_from(expected_role.len()).expect("activity width") {
+                assert_eq!(
+                    buffer[(activity_x + offset, y)].fg,
+                    tui_pane::text_default()
+                );
+            }
             let name_color = Role::Session(SessionHue::First)
                 .style()
                 .fg
@@ -1347,19 +1367,22 @@ fn folded_dispatches_sort_as_single_worker_rows() {
     }
     let state =
         MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default().into());
-    let placement = AgentPlacement::from_machines(&[Machine {
-        name:  "fixture",
-        state: &state,
-    }]);
+    let placement = AgentPlacement::from_machines(
+        &[Machine {
+            name:  "fixture",
+            state: &state,
+        }],
+        &EMPTY_SESSION_STATES,
+    );
     let defaults = agent_cell::cell_order_placed(&placement);
     for (sort, expected) in [
         (TreeSort::default(), ["impl4", "fix2", "arrange"]),
         (
             TreeSort {
-                column:    TreeColumn::Role,
+                column:    TreeColumn::Activity,
                 direction: SortDirection::Ascending,
             },
-            ["fix2", "impl4", "arrange"],
+            ["arrange", "fix2", "impl4"],
         ),
         (
             TreeSort {
