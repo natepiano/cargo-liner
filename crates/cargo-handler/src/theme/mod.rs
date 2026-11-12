@@ -23,6 +23,8 @@ pub(crate) use word_match::WordMatchGrounds;
 #[cfg(test)]
 pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
+pub(crate) use word_match::WordMatchSurface;
+#[cfg(test)]
 mod files_tests;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;

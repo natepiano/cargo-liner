@@ -59,7 +59,7 @@
 
 **Ruled out:** a copy of `classify` in cargo-handler (the tile and the accounts table must not disagree); the old `mesh_runs/` names (`mesh_runs.py` is deleted); producers in the top-level agents table (not asked).
 
-### Phase 2 — Word highlight strength is a setting, and the default is easier to see  · status: todo
+### Phase 2 — Word highlight strength is a setting, and the default is easier to see  · status: done
 
 **Depends on:** Phase 1 (both phases change `render/mod.rs` and `app.rs`)
 

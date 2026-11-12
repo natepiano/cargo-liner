@@ -224,6 +224,7 @@ fn draw_panes_at(
             &app.word_highlight,
             frame.buffer_mut(),
             background,
+            app.loaded_config.config.word_highlight.emphasis,
             &mut app.match_inks,
         );
     }

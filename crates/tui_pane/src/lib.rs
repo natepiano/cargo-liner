@@ -62,6 +62,7 @@ pub use ansi_text::sanitize_ansi_for_output;
 pub use ansi_text::strip_ansi;
 pub use app_config::AppIdentity;
 pub use app_config::AppearanceConfig;
+pub use app_config::ConfigError;
 pub use app_config::InitialRows;
 pub use app_config::LoadedConfig;
 pub use app_config::TileFill;

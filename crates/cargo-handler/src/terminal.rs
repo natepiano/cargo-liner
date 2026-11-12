@@ -32,6 +32,7 @@ use crate::census::accounts::Reading;
 use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
+use crate::config_watch::WordHighlightUpdates;
 use crate::constants::BINARY_NAME;
 use crate::startup_log;
 use crate::summary::age::AgeWidthChange;
@@ -91,6 +92,10 @@ pub(crate) fn run() -> ExitCode {
                 app.loaded_config.config.census.herdr_read_timeout,
             ),
             appearance_updates,
+        )
+        .with_word_highlight_updates(
+            CargoHandler::config_path()
+                .map_or_else(WordHighlightUpdates::default, WordHighlightUpdates::spawn),
         )
     })
 }
@@ -279,11 +284,12 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
 /// grid's motion and the attract screen's frames.
 struct Ticker {
     /// Answers from the census scheduler.
-    updates:      Receiver<CensusUpdate>,
+    updates:                Receiver<CensusUpdate>,
     /// Light or dark appearances observed by the watcher.
-    appearances:  Receiver<Appearance>,
+    appearances:            Receiver<Appearance>,
     /// Deadlines for visible body text and the independent Uptime clock.
-    display_time: DisplayTime,
+    display_time:           DisplayTime,
+    word_highlight_updates: WordHighlightUpdates,
 }
 
 impl Ticker {
@@ -292,11 +298,27 @@ impl Ticker {
         Self {
             updates,
             appearances,
+            word_highlight_updates: WordHighlightUpdates::Disabled,
             display_time: DisplayTime {
                 body:   BodyDisplayTime::Unobserved,
                 uptime: UptimeDisplayTime::Unobserved,
             },
         }
+    }
+
+    fn with_word_highlight_updates(mut self, updates: WordHighlightUpdates) -> Self {
+        self.word_highlight_updates = updates;
+        self
+    }
+
+    fn drain_word_highlight(&self, app: &mut App) -> Repaint {
+        let mut repaint = Repaint::NotNeeded;
+        while let Ok(update) = self.word_highlight_updates.try_recv() {
+            if app.apply_word_highlight_update(update) == Repaint::Needed {
+                repaint = Repaint::Needed;
+            }
+        }
+        repaint
     }
 
     /// Apply every system appearance that arrived since the last pass.
@@ -398,7 +420,12 @@ impl Ticker {
         let accounts_changed = app.accounts.refresh();
         let census_changed = self.drain_census(app);
         let appearance_changed = self.drain_appearances(app);
-        if accounts_changed || census_changed || appearance_changed {
+        let emphasis_changed = self.drain_word_highlight(app);
+        if accounts_changed
+            || census_changed
+            || appearance_changed
+            || emphasis_changed == Repaint::Needed
+        {
             self.display_time.body = BodyDisplayTime::Unobserved;
         }
         let ages_moved = self.ages_moved(app, unix_now);
@@ -414,6 +441,7 @@ impl Ticker {
         if accounts_changed
             || census_changed
             || appearance_changed
+            || emphasis_changed == Repaint::Needed
             || ages_moved
             || favorites == Repaint::Needed
             || grid_moving
