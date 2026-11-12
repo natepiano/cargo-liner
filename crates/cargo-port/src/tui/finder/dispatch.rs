@@ -22,6 +22,7 @@ use ratatui::widgets::TableState;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::accent_color;
+use tui_pane::contrast_ratio;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -40,6 +41,7 @@ use crate::tui::app::App;
 use crate::tui::constants::FINDER_POPUP_HEIGHT;
 use crate::tui::constants::FIT_ELLIPSIS;
 use crate::tui::constants::MAX_FINDER_RESULTS;
+use crate::tui::constants::READABLE_TEXT_CONTRAST_FLOOR;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::FinderAction;
 use crate::tui::overlays::FinderPane;
@@ -408,11 +410,36 @@ pub(in crate::tui) fn render_finder_pane_body(
     );
 }
 
-/// Build a `Line` where characters matching the fuzzy query get a tinted
-/// background, similar to Zed's finder highlighting.
+/// Select the original, black, or white ink for a finder match.
+enum MatchInkSelection {
+    Preserve,
+    Black,
+    White,
+}
+
+/// Select readable ink for the background from `finder_match_bg`.
+fn match_ink(ink: Color, background: Color) -> Color {
+    let selection = match (
+        contrast_ratio(ink, background),
+        contrast_ratio(Color::Black, background),
+    ) {
+        (_, None) => MatchInkSelection::Preserve,
+        (Some(ratio), _) if ratio >= READABLE_TEXT_CONTRAST_FLOOR => MatchInkSelection::Preserve,
+        (_, Some(ratio)) if ratio >= READABLE_TEXT_CONTRAST_FLOOR => MatchInkSelection::Black,
+        _ => MatchInkSelection::White,
+    };
+    match selection {
+        MatchInkSelection::Preserve => ink,
+        MatchInkSelection::Black => Color::Black,
+        MatchInkSelection::White => Color::White,
+    }
+}
+
+/// Draw query matches with readable ink on the background from `finder_match_bg`.
 fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
     let base_style = Style::default().fg(fg);
-    let highlight_style = base_style.bg(finder_match_bg());
+    let background = finder_match_bg();
+    let highlight_style = base_style.fg(match_ink(fg, background)).bg(background);
 
     if text.is_empty() || query.is_empty() {
         return Line::from(Span::styled(text.to_owned(), base_style));
@@ -613,14 +640,34 @@ fn fit_dir_column(
 mod tests {
     use std::path::PathBuf;
 
+    use anyhow::Context;
+    use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use tui_pane::ColorMode;
     use tui_pane::PaneSelectionState;
+    use tui_pane::contrast_ratio;
 
+    use super::FINDER_HEADERS;
     use super::fit_dir_column;
+    use super::handle_finder_text_key;
     use super::search_finder;
     use crate::project::AbsolutePath;
+    use crate::project::Cargo;
+    use crate::project::CheckoutInfo;
+    use crate::project::CommitDate;
+    use crate::project::Comparison;
+    use crate::project::ExampleGroup;
+    use crate::project::GitStatus;
+    use crate::project::HeadState;
+    use crate::project::LocalGitState;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::TrackedRef;
+    use crate::tui::app::App;
+    use crate::tui::constants::READABLE_TEXT_CONTRAST_FLOOR;
     use crate::tui::finder::index;
     use crate::tui::finder::index::FinderItem;
     use crate::tui::finder::index::FinderKind;
@@ -836,5 +883,126 @@ mod tests {
             assert_eq!(Some(type_cell.fg), selection_ink);
         }
         Ok(())
+    }
+
+    #[test]
+    fn finder_matches_meet_contrast_in_each_registered_theme() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("match-project");
+        let mut app = finder_app(AbsolutePath::from(path));
+        let mut failures = Vec::new();
+        for variant in crate::themes::builtins() {
+            let _theme = test_support::ThemeOverride::install(variant.theme);
+            app.framework.color_mode = ColorMode::Colored;
+            input::open_finder(&mut app);
+            handle_finder_text_key(&mut app, KeyCode::Char('m'));
+            handle_finder_text_key(&mut app, KeyCode::End);
+            let buffer = test_support::draw_ui(&mut app, 160)?;
+            app.project_list.finder.query.clear();
+            let baseline = test_support::draw_ui(&mut app, 160)?;
+            let (_, header_y) = test_support::position(&buffer, "Name")?;
+            let mut example_rows = 0;
+            for (row, index) in app.project_list.finder.results.iter().enumerate() {
+                let item = &app.project_list.finder.index[*index];
+                if item.kind != FinderKind::Example {
+                    continue;
+                }
+                example_rows += 1;
+                for (header, value) in FINDER_HEADERS.into_iter().zip([
+                    item.display_name.as_str(),
+                    item.parent_label.as_str(),
+                    item.branch.as_str(),
+                    item.dir.as_str(),
+                    item.kind.label(),
+                ]) {
+                    let (x, _) = test_support::find_text_cell(
+                        &buffer,
+                        ratatui::layout::Rect::new(0, header_y, 160, 1),
+                        header,
+                    )
+                    .context("finder column header")?;
+                    let y = header_y + 1 + u16::try_from(row)?;
+                    failures.extend(check_column(
+                        &buffer,
+                        &baseline,
+                        (x, y),
+                        value,
+                        variant.id.as_str(),
+                        header,
+                    )?);
+                }
+            }
+            assert_eq!(
+                example_rows, 2,
+                "both selected and unselected example rows must draw"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    fn check_column(
+        buffer: &Buffer,
+        baseline: &Buffer,
+        start: (u16, u16),
+        value: &str,
+        theme_name: &str,
+        header: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut failures = Vec::new();
+        let mut matches = 0;
+        for (offset, letter) in value.chars().enumerate() {
+            let position = (start.0 + u16::try_from(offset)?, start.1);
+            let cell = &buffer[position];
+            let original = &baseline[position];
+            assert_eq!(cell.symbol(), letter.to_string(), "{theme_name} {header}");
+            if letter == 'm' && cell.bg == tui_pane::finder_match_bg() {
+                matches += 1;
+                let background = cell.bg;
+                let ratio = contrast_ratio(cell.fg, background).context("explicit match colors")?;
+                if ratio < READABLE_TEXT_CONTRAST_FLOOR {
+                    failures.push(format!(
+                        "{theme_name} {header} {:?}: {:?} on {:?}: {ratio}:1",
+                        cell.symbol(),
+                        cell.fg,
+                        cell.bg
+                    ));
+                }
+                if contrast_ratio(original.fg, background).context("explicit original ink")?
+                    >= READABLE_TEXT_CONTRAST_FLOOR
+                {
+                    assert_eq!(cell.fg, original.fg, "readable match ink stays unchanged");
+                }
+            } else {
+                assert_eq!(cell.fg, original.fg, "unmatched letters stay unchanged");
+                assert_eq!(cell.bg, original.bg, "unmatched backgrounds stay unchanged");
+            }
+        }
+        assert!(matches > 0, "{theme_name} {header}: no highlighted letter");
+        Ok(failures)
+    }
+
+    fn finder_app(path: AbsolutePath) -> App {
+        let mut package = Package {
+            path,
+            name: Some("match-project".to_string()),
+            ..Package::default()
+        };
+        package.cargo = Cargo {
+            examples: vec![ExampleGroup {
+                category: String::new(),
+                names:    vec!["match-one".to_string(), "match-two".to_string()],
+            }],
+            ..Cargo::default()
+        };
+        package.local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+            status:              GitStatus::Clean,
+            head:                HeadState::Branch("match-branch".to_string()),
+            last_commit:         CommitDate::NoCommits,
+            ahead_behind_local:  Comparison::NotCompared,
+            primary_tracked_ref: TrackedRef::Untracked,
+            bisect:              None,
+        }));
+        test_support::make_app(&[RootItem::Rust(RustProject::Package(package))])
     }
 }

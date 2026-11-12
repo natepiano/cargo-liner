@@ -541,6 +541,7 @@ pub use theme::active_focus_color;
 pub use theme::apply_system_appearance;
 pub use theme::blend_color;
 pub use theme::color_distance;
+pub use theme::contrast_ratio;
 pub use theme::dim_value_color;
 pub use theme::ensure_theme_state_installed;
 pub use theme::error_color;
