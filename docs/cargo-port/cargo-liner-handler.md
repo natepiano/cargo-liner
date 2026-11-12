@@ -19,6 +19,7 @@
   - Invalid states are unrepresentable: use types (checked constructors, enums, type state), never procedural guards. No bare `Option` in new domain types.
   - No configuration value in code.
   - A folder that a process makes for its own use goes in a `tempfile::TempDir` (Rust) or `tempfile.TemporaryDirectory` (Python) with block under TMPDIR.
+- **Live checks:** a live check uses only terminals and handler processes the worker starts, with each pid from its own launch chain. Captures open as split panes in the unit tab, never as new tabs, and each pane closes when its capture ends. A scratch `XDG_CONFIG_HOME` holds a symlink `herdr` → `~/.config/herdr`, or the handler loses the herdr socket and draws a broken screen.
 - **Status source:** sdlc owns the accounts session list and the detached-run status rule. A row with no entry draws an empty status cell. cargo-handler never makes a status word of its own. Draw, expansion and display deadlines all take `app.accounts.table.session_states()`.
 
 ## Phases
@@ -61,58 +62,27 @@
 
 ### Phase 2 — Word highlight strength is a setting, and the default is easier to see  · status: done
 
-**Depends on:** Phase 1 (both phases change `render/mod.rs` and `app.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** a clicked word's matches are easy to see by default. The user can set how strong the highlight is.
-
-**Source:** the user, change review C240, 2026-11-11: "it's happening but it's too subtle - we need some configurable way to increase its noticeability". C240 shipped the word highlight in ce532875.
-
-**Spec:**
-
-Director decisions (the showrunner can change them before dispatch):
-1. One setting holds the strength: `word_highlight.emphasis`, with the values `subtle`, `clear` and `strong`. It goes in the cargo-handler config file, beside the theme choice. No value is in code.
-2. `subtle` is the C240 look. `clear` is the new default, and it is easy to see on every built-in theme. `strong` adds bold to the matched text over the `clear` ground.
-3. The theme keeps the ground colors. Emphasis sets how far the match ground moves from the pane ground. The contrast rules in `MatchInk::resolve` still keep the text readable.
-4. A change to `config.toml` takes effect without a restart. A background reader (never the UI thread) reads the changed file and sends a checked `WordHighlightEmphasis` to the app. An invalid value keeps the last valid emphasis and shows a config error that names `subtle`, `clear` and `strong`. Today only the theme files reload; `config.rs` loads once at startup.
-
-**Constraints from prior phases:**
-- `MatchGroundsCache` and `MatchPaletteState` key their cached results on the theme, the ground and the selected word. Add the emphasis to both keys, and drop the kept body when the emphasis changes.
-- `WordMatchGrounds` keeps separate grounds for plain rows, focused selections and unfocused selections. Keep all three, and keep the `MatchInk::resolve` readability rules.
-- `strong` adds bold to matched cells. `subtle` and `clear` keep the cell's existing modifiers and add none.
-
-Tests (red first, each under one second):
-1. Each emphasis value parses, and an unknown value gives an error that names the three values.
-2. On each built-in theme, the `clear` match ground is farther from the pane ground than the `subtle` ground.
-3. `strong` adds bold to matched cells. `subtle` and `clear` keep existing bold and other modifiers. Unmatched cells keep their styles.
-4. Text on each match ground keeps the required contrast at each emphasis.
-5. Each emphasis keeps a match distinct from its ground on plain rows and in both selection states, on every built-in theme, tint on and off.
-6. A valid config change updates a drawn highlight with no theme change and no new word click. An invalid change keeps the last emphasis and shows its error. A later valid change clears the error.
-
-**Live check (director):** before the checkpoint, capture a clicked word in a cargo-handler terminal from this branch at each emphasis value and from main, under the safety rule. Capture `clear` and `strong` on the default theme and on one light theme (showrunner, 2026-11-11).
-
-**Change-Review line:** A clicked word's matches are easy to see, and `word_highlight.emphasis` sets the strength | On natedev, run cargo-handler, click a word, then set `word_highlight.emphasis` to subtle, clear and strong | The default highlight is easy to see; strong also makes the matched words bold; subtle is the old look
+- The `[word_highlight] emphasis` setting in the cargo-handler config takes `subtle`, `clear` or `strong`. The default is `clear`. `subtle` is the earlier look. `clear` doubles the distance of the match ground from the focus ground. `strong` uses the `clear` ground and makes matched cells bold; `subtle` and `clear` add no modifier.
+- `WordHighlightEmphasisVisitor` names the three values for any wrong TOML type.
+- `config_watch.rs` runs a notify reader thread on the config directory. It sends `WordHighlightUpdate`, and the UI loop drains it and repaints the retained bodies. `ConfigReaderThread` joins on drop.
+- `WordHighlightConfigStatus { Current, Rejected(String) }` in `app.rs`: an invalid value keeps the last emphasis. The settings pane shows `Rejected` and `ConfigError::Write`. A later valid file clears the error.
+- `MatchGroundsCache` and `MatchPaletteState` key on the theme, the ground, the selected word and the emphasis. `WordMatchGrounds` keeps separate grounds for plain rows, focused selections and unfocused selections, under the `MatchInk::resolve` readability rules.
+- tui_pane `LoadedConfig.error` is an `Option<ConfigError>` with `Parse` and `Write` cases, so a startup parse error clears when a valid file arrives. `load_from` is public.
 
 **Files:**
-- `crates/cargo-handler/src/theme/word_match.rs` — match grounds
-- `crates/cargo-handler/src/word_highlight.rs` — match painting
-- `crates/cargo-handler/src/render/mod.rs` — the painted frame
-- `crates/cargo-handler/src/app.rs` — the config value and its updates
-- `crates/cargo-handler/src/config.rs` — emphasis parse, default and serialization
-- `crates/cargo-handler/src/terminal.rs` — the background config reader and update delivery
-- `crates/cargo-handler/src/main.rs` — registration of a new reader module
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — selection ground readability and separation
-- `crates/cargo-handler/src/render/word_click_tests.rs` — modifier rules and a changed emphasis
-- `docs/cargo-handler/as-built/colors.md` — word match grounds
-- `docs/cargo-handler/as-built/interaction.md` — the setting
+- `crates/cargo-handler/src/config_watch.rs` — the config reader thread
+- `crates/cargo-handler/src/config.rs` — the emphasis setting and its visitor
+- `crates/cargo-handler/src/theme/word_match.rs` — the `clear` and `strong` grounds
+- `crates/cargo-handler/src/app.rs` — `WordHighlightConfigStatus`
+- `crates/tui_pane/src/app_config/loaded.rs` — `ConfigError`
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `WordHighlightConfigStatus::Current` hides the handler notice and `Rejected` shows it; a `ConfigError::Write` shows on its own; cargo-tile shows both `ConfigError` cases. A new ink keeps readability and its color difference at every emphasis, tested in `render/word_contrast_tests.rs`. A change to the highlight keeps the retained-body repaint.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows a clearly visible default highlight and three distinct strengths.
+**Gotchas:**
+- A symlinked `config.toml` whose target is outside the config directory gets no live update.
+- A reader setup failure shows its cause and ends the reader. Recovery needs a restart.
 
 ### Phase 3 — Tile columns read session, account, role, activity, status, branch; a long session name is cut before those columns drop; the details view groups its lines into sections, aligns them and copies a value with y  · status: todo
 
@@ -154,16 +124,18 @@ Director decisions:
 10. Each value starts one cell after the longest label and its colon, left aligned, in one column across all sections. The view has a margin of one space before each label and heading, and one space after the longest value. The overlay width comes from these margins.
 11. The details view has a selected line. Up and Down move it, and they skip the heading lines and blank lines. The selected line draws in the shared selection style.
 12. `y` copies the selected line's value to the clipboard and shows the same copy notice as cargo-port. It copies the value only, without its label.
-13. The yank path is shared through tui_pane. tui_pane already owns the copy registration, routing and clipboard call (`crates/tui_pane/src/copy.rs`). The worker first lists which parts of cargo-port's `y` still live in cargo-port. Each such part moves into tui_pane, and cargo-port calls it there. No part is copied. Reserve the cargo-port files with `cargo-berth` before the first edit.
+13. The yank path is shared through tui_pane. tui_pane already owns the copy registration, routing and clipboard call (`crates/tui_pane/src/copy.rs`). The generic copy outcome and its notice move from cargo-port's `copy_focused_selection_with_backend` into tui_pane. The output-specific parts (collapse of output selections, the copied line count) stay in cargo-port. No part is copied. Reserve the cargo-port files with `cargo-berth` before the first edit.
+14. The details view routes `y` explicitly. `Framework::copy_selection` resolves the Main focus, and `DetailsOverlay` does not change that focus, so the open details view registers its own copy target.
 
 **Constraints from prior phases:**
 - Phase 1: draw, expansion and display deadlines all build `AgentPlacement` with `app.accounts.table.session_states()`.
 - Phase 1: the `d` view lists the values a tile drops.
+- Phase 2: the word highlight config status keeps its surfaces. `WordHighlightConfigStatus::Current` hides the handler notice and `Rejected` shows it; a `ConfigError::Write` shows on its own; cargo-tile shows both `ConfigError` cases. The settings pane changes in this phase keep these notices and their tests.
 - Phase 6 (shell rows) uses this phase's session cut. A shell row never sets the preferred session width.
 
 Tests (red first, each under one second):
 1. The tile tree header order is session, account, role, activity, status, branch, then the optional columns.
-2. The C320 case: a natedev showrunner tile fixture with one long session name, at the C320 width. Branch drops, the long name ends in `…`, and account, role, activity and status all draw.
+2. The C320 case: a natedev showrunner tile fixture with one long session name, at the C320 width of 92 columns, and at 90 columns (the unassigned tile in the same screen). Branch drops, the long name ends in `…`, and account, role, activity and status all draw.
 3. As the width shrinks, the optional columns and directory drop first, then branch, then the session name is cut. Account, role, activity and status stay.
 4. Below the session minimum width, account drops first and status drops last.
 5. Tiles that share a screen column draw one session width and aligned columns after a cut.
@@ -210,16 +182,17 @@ Tests (red first, each under one second):
 
 Director decisions:
 1. The column assignment uses each detail tile's full content-row count (every row of its tree, not only the rows it draws).
-2. When each screen column holds two tiles, the longest tile shares a column with the shortest, the next longest with the next shortest, and so on. For other counts, tiles go longest first to the column with the fewest total rows; with two tiles in each column this gives the same pairs.
+2. The column assignment is a function of the rank order only. Rank the detail tiles by full content-row count, longest first. Deal the ranks to the columns in snake order: left to right, then right to left, and so on. With two tiles in each column, column j holds rank j and rank 2c−1−j: the longest with the shortest, the next longest with the next shortest.
 3. The summary tile keeps its place. Only the detail tiles move.
-4. Ties keep the current order. The order changes only when the ranking of full row counts changes, and the existing grid motion animates the move.
-5. The column assignment lives in the shared tui_pane grid (`crates/tui_pane/src/tiles/grid/`), as a placement rule that an app selects. cargo-handler selects the balanced rule. cargo-tile keeps its current order, because no one asked for a change there.
-6. Within a column, the tiles keep their current relative order (hierarchy order, then unassigned).
+4. Ties keep the current order. Because the assignment uses only the rank order, a row change that keeps the ranking moves no tile. A tile moves only when the ranking changes, and the existing grid motion animates the move.
+5. The ranking input is a new full-tree row count that `Cells::demands` supplies beside `TileDemand.rows`. `TileDemand.rows` counts headings and width-dependent rows, so it is not the ranking input. `TileGrid::sync_measured_demands` applies the placement, and a ranking change invalidates the layout cache. The private `flow_layout.rs` packer has no production caller and is not this rule.
+6. The column assignment lives in the shared tui_pane grid (`crates/tui_pane/src/tiles/grid/`), as a placement rule that an app selects. cargo-handler selects the balanced rule. cargo-tile keeps its current order, because no one asked for a change there.
+7. Within a column, the tiles keep their current relative order (hierarchy order, then unassigned).
 
 Tests (red first, each under one second):
 1. The natedev case: tiles of 42, 42, 11 and 3 rows in two columns give the columns {42, 3} and {42, 11}, in any column order.
 2. With six tiles in three columns, each column holds one long and one short tile by the pairing rule.
-3. Equal row counts keep the current order. A row change that does not change the ranking moves no tile.
+3. Equal row counts keep the current order. A row change that does not change the ranking moves no tile: in two columns, `[10,9,8,7,6,5]` and `[11,9,8,7,6,5]` give the same columns.
 4. The summary tile keeps its slot.
 5. cargo-tile's grid order tests pass unchanged.
 6. A long tile draws more of its rows after the pairing than before, at the natedev size, read from the rendered buffer.
@@ -229,8 +202,8 @@ Tests (red first, each under one second):
 **Change-Review line:** Long and short tiles share a column, so the long ones show more rows | On natedev, run cargo-handler with two long and two short tiles | The longest tile sits in a column with the shortest, the next longest with the next shortest; the long tiles show more of their rows
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid/` — the placement rule
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/terminal.rs` — full row counts and the rule selection
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `crates/tui_pane/src/tiles/grid/` — the placement rule, `TileGrid::sync_measured_demands` and the layout cache
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/terminal.rs` — full row counts (`Cells::demands`) and the rule selection
 - `crates/cargo-handler/src/render/` — the pairing and rows-drawn tests
 - `docs/cargo-handler/as-built/tile-layout.md` — the column assignment
 
@@ -262,7 +235,8 @@ Director decisions:
 
 **Constraints from prior phases:**
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
-- `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. Make the pool kind an enum (unassigned or producers), not a bool or a bare `Option`.
+- `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
+- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
 Tests (red first, each under one second):
@@ -347,8 +321,10 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/render/narrow_width_tests.rs` — shell width and neighbor tiles
 - `docs/cargo-handler/as-built/startup.md` — Claude effort sources
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Workers:** 2 writers.
+- `metadata` — `census/model.rs`, `census/transcript.rs` tests, `docs/cargo-handler/as-built/startup.md`: the effort reader.
+- `shell` — `agent_cell.rs` shell text and session width, `render/details_tests.rs`, `render/narrow_width_tests.rs`, `hierarchy.md`, `tile-layout.md`.
+Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **State:** none
 
@@ -374,6 +350,8 @@ Director decisions:
 5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
 
 **Constraints from prior phases:**
+- The theme constructors load only `mauve` and `astra_reviewer` from the bundled TOML today; Rust `RolePalette` supplies the other roles. Load the new reset roles from the bundled theme files, with inheritance and custom-override tests. The Phase 2 config reader handles emphasis only; themes use the theme-loading path.
+- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. The new inks keep their readability and differences at every emphasis; add these cases to `render/word_contrast_tests.rs`.
 - Keep `ResetRank` as the checked rank type, with its strict quarter edges and its single-reset rule. Measure the drawn colors, not only the theme role values. The current gradient test allows four steps and checks only neighbor pairs.
 - `accounts.md` names the new keys that replace `reset_nearest` and `reset_farthest` for custom themes.
 
@@ -416,17 +394,24 @@ Tests (red first, each under one second):
 **Spec:**
 
 Director decisions:
-1. Key conflict, reported to the showrunner on 2026-11-12: Enter is bound in cargo-handler today. It toggles the selected row (`global.toggle_row = enter`), and Right and Left also open and close rows. Director proposal: Enter takes the full-screen tile, as in cargo-tile. Right and Left keep row open and close. `toggle_row` stays an action with no default key. The showrunner confirms this before the build.
-2. `crates/cargo-tile/src/grid_view.rs` (the expanded cell identity, scrolling, motion clock and its Esc key) moves into tui_pane as one shared type. cargo-tile and cargo-handler both use it. No part is copied.
-3. cargo-tile's Enter, Esc, scroll and motion keep their current behavior.
-4. In cargo-handler, the full-screen tile draws the same tree, columns and selection as the grid tile, at the full pane size. Row keys, `d` and word clicks work in it as in the grid.
-5. Reserve the cargo-tile files with `cargo-berth` before the first edit.
+1. Keys, confirmed by the showrunner on 2026-11-12: Enter takes the full-screen tile in cargo-handler, as `global.expand = enter` does in cargo-tile. Right and Left keep row open and close. `toggle_row` stays an action with no default key; a user can bind it in config.
+2. The shared view state moves into tui_pane: `crates/cargo-tile/src/grid_view.rs` (the expanded cell identity, scrolling, motion clock), and `draw_cell_view` and `ExpandedCell` from cargo-tile's `render.rs`. The tile identity is a type parameter. Each app's `terminal.rs` advances the motion clock. No part is copied.
+3. Each app has its own key policy around the shared state. `CellViewport::key` takes Left and Right and uses Up and Down to scroll in cargo-tile. In cargo-handler, Up and Down select rows and Right and Left open and close rows, in the full-screen tile too.
+4. Esc in cargo-handler closes the first open layer: the details view, then the full-screen tile, then the word highlight.
+5. cargo-tile's Enter, Esc, scroll and motion keep their current behavior.
+6. In cargo-handler, the full-screen tile draws the same tree, columns and selection as the grid tile, at the full pane size. Row keys, `d` and word clicks work in it as in the grid.
+7. Reserve the cargo-tile files with `cargo-berth` before the first edit.
+
+**Constraints from prior phases:**
+- Phase 2: a config update calls `invalidate_body` to repaint retained bodies. The full-screen tile repaints on the same signal. The word highlight notice surfaces from Phase 2 stay as they are.
 
 Tests (red first, each under one second):
 1. In cargo-handler, Enter on a focused tile draws that tile at the full pane size; Esc returns to the grid with the same focus and selection.
 2. Right and Left still open and close the selected row.
 3. cargo-tile's existing expand, Esc and scroll tests pass unchanged.
 4. The shared tui_pane type has its own tests for expand, collapse and scroll.
+5. Each key is tested through each app's normal key dispatch: Enter, Esc order (details, full screen, word highlight), Up, Down, Right, Left.
+6. The full-screen motion animates, and a word highlight change repaints the full-screen tile (the Phase 2 retained-body invalidation).
 
 **Live check (director):** before the checkpoint, capture cargo-handler's grid, the full-screen tile after Enter, and the grid after Esc, from a build of this branch, under the safety rule.
 
@@ -434,8 +419,8 @@ Tests (red first, each under one second):
 
 **Files:**
 - `crates/tui_pane/src/` — the shared full-screen tile type
-- `crates/cargo-tile/src/grid_view.rs`, `app.rs`, `render.rs`, `render/frame_preparation.rs`, `constants.rs` — use the shared type (reserved with berth first)
-- `crates/cargo-handler/src/globals.rs`, `keymap.rs`, `app.rs`, `render/mod.rs` — Enter and Esc, and the full-screen draw
+- `crates/cargo-tile/src/grid_view.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/frame_preparation.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs` — use the shared type; `draw_cell_view` and `ExpandedCell` leave `render.rs` (reserved with berth first)
+- `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/terminal.rs` — Enter and Esc, the key policy, the motion clock and the full-screen draw
 - `docs/cargo-handler/as-built/interaction.md`, `docs/cargo-tile/as-built/` — the keys
 
 **Workers:** 1 writer.
@@ -460,14 +445,18 @@ Tests (red first, each under one second):
 Director decisions:
 1. A new theme role, `waiting`, sits under `[variants.roles]` in each built-in theme file (`default_dark.toml`, `default_light.toml`, `high_contrast.toml`, `starter.toml`). Its value is red or near red. No color value goes in code.
 2. A custom theme without `waiting` takes the value from the built-in theme it extends, as the other roles do today.
-3. The activity word `waiting` (`Activity::Waiting`, `census/activity.rs`) draws in the `waiting` ink in every tile kind. All other activity words keep their inks.
+3. Every tile cell that draws the word `waiting` draws it in the `waiting` ink, in every tile kind. The worker first lists each path that draws the word today: `TreeLine::activity_text` draws hierarchy jobs, and `Activity::Waiting` (`census/activity.rs`) reaches the row's state text. Phase 10 adds the report status path. All other words keep their inks.
 4. `waiting` is at least 4.5:1 against its drawn ground in every built-in theme, with the pane tint on and off and on a selected row. It differs from the `busy`, `idle` and `unreachable` inks, so `waiting` does not read as an unreachable account.
 
 Tests (red first, each under one second):
-1. A row whose activity is `waiting` draws that word in the `waiting` ink, in a showrunner tile and in a unit tile, read from the rendered buffer.
+1. A row that draws `waiting` draws that word in the `waiting` ink, in a showrunner tile and in a unit tile, for each path the worker lists, read from the rendered buffer.
 2. A row with any other activity keeps its current ink.
 3. `waiting` is at least 4.5:1 on its ground in every built-in theme, tint on and off, selected and not selected.
 4. Each built-in theme file sets `waiting`, and the value differs from `busy`, `idle` and `unreachable`. A custom theme without it takes the built-in value.
+
+**Constraints from prior phases:**
+- The theme constructors load only `mauve` and `astra_reviewer` from the bundled TOML today; Rust `RolePalette` supplies the other roles. Load `waiting` from the bundled theme files, with inheritance and custom-override tests.
+- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. `waiting` keeps 4.5:1 and its difference from `busy`, `idle` and `unreachable` at every emphasis; add these cases to `render/word_contrast_tests.rs`.
 
 **Live check (director):** before the checkpoint, capture the cargo-liner tile from a build of this branch, on the dark and the light default themes, under the safety rule. A unit row that reads `waiting` draws it in red.
 
@@ -477,7 +466,7 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/themes/*.toml` — the `waiting` role
 - `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/src/theme/files.rs` — the role
 - `crates/cargo-handler/src/agent_cell.rs` — the activity cell ink
-- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the ink and contrast tests
+- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs`, `crates/cargo-handler/src/render/word_contrast_tests.rs` — the ink and contrast tests
 - `docs/cargo-handler/as-built/colors.md` — the `waiting` ink
 
 **Workers:** 1 writer.
@@ -503,12 +492,14 @@ Director decisions:
 1. `SessionState` (`crates/cargo-handler/src/census/accounts.rs`) adds `Waiting`, read from the accounts report word `waiting`. `ReportedSessionState` and the status cell draw it. cargo-handler makes no state of its own: the word comes only from the report.
 2. The status word `waiting` draws in the Phase 9 `waiting` ink. This phase adds no theme role.
 3. The status column width comes from the words it draws. A tile that draws `waiting` fits the longer word with the Phase 3 drop order unchanged.
-4. The details view `state:` line keeps the detached run's step.
+4. The accounts footer counts a waiting session in its busy column. `RoleSessionCounts` and the footer columns do not change, and the totals stay equal to the session count. This needs no look change; sdlc's report contract for `role_counts` must say how it counts `waiting`, and this phase starts only with that contract.
+5. The details view `state:` line keeps the detached run's step.
 
 Tests (red first, each under one second):
-1. The accounts report word `waiting` reads as `SessionState::Waiting`; an unknown word stays unavailable, as today.
-2. A worker row with a `waiting` entry draws `waiting` in the status cell, in the `waiting` ink, read from the rendered buffer.
-3. A tile with a `waiting` row draws the whole word, and account, role, activity and status all draw at the Phase 3 C320 width.
+1. The accounts report word `waiting` reads as `SessionState::Waiting`. An unknown word still rejects the whole reading, and the last valid reading stays, as today (`SessionStateWire.state` deserializes into `SessionState`).
+2. An accounts footer fixture with one waiting session counts it under busy, and the total matches.
+3. A worker row with a `waiting` entry draws `waiting` in the status cell, in the `waiting` ink, read from the rendered buffer.
+4. A tile with a `waiting` row draws the whole word, and account, role, activity and status all draw at the Phase 3 C320 width.
 
 **Live check (director):** before the checkpoint, start one detached `verify.sh` run from a worker under the safety rule. Capture that worker's row from a build of this branch while the run lives: its status cell reads `waiting`.
 
