@@ -150,41 +150,23 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Ruled out:** a lookup-only repair in `module_imports.rs`, because stored keys stay lexical; a test that counts resolution calls, because it is a new check outside the scope.
 
-### Phase 5 — finder match letters are readable in every theme  · status: todo
+### Phase 5 — finder match letters are readable in every theme  · status: done
 
-**Depends on:** none. Runs beside Phase 3 in its own worktree.
+#### As-built
 
-#### Work Order
-
-**Goal:** in the finder, the letters that match the query meet a contrast ratio of at least 4.5:1 on `match_bg` in every registered theme.
-
-**Source:** showrunner, 2026-11-11: in the High Contrast Dark theme, the finder draws matched letters White on the LightYellow `match_bg`. That is about 1.1:1, so the matched letters cannot be read. It happens in every finder cell, and it existed before C314.
-
-**Decision:** keep `match_bg` in every theme, because it is the signal of a match. Change only the ink of the matched letters. A theme whose row ink already meets 4.5:1 on its `match_bg` keeps that ink, so its look does not change (director, 2026-11-11).
-
-**Constraints from prior phases:**
-- `highlighted_spans` in `crates/cargo-port/src/tui/finder/dispatch.rs` builds each finder cell. Its `highlight_style` is the row `fg` (`text_default()`) on `finder_match_bg()`.
-- The registered themes are `crate::themes::builtins()` in `crates/cargo-port/src/themes/builtins.rs`. High Contrast Dark (`DEFAULT_HC_DARK_THEME`) sets `match_bg` to `Color::LightYellow` and `text.default` to `Color::White`.
-- `FinderTheme` is in `tui_pane` and cargo-handler and cargo-tile also build it. Keep the fix in cargo-port when it can be. If a `tui_pane` change is necessary, claim the file with `cargo-berth --before` the holder (unit charter), and keep the other crates compiling.
-- The test model is `dim_package_values_meet_contrast_in_each_registered_theme` in `crates/cargo-port/src/tui/panes/package/readability_tests.rs`. It installs each builtin theme, draws the pane and computes the WCAG ratio with `dim_value_contrast`. Use one ratio function; do not add a second copy.
-
-**Spec:**
-1. **Readable matches.** Each matched letter in a finder cell has an ink with a ratio of at least 4.5:1 on `match_bg`, in every builtin theme. Unmatched letters do not change.
-2. **Test.** Add a test in the form of the model test: for each builtin theme, draw the finder with a query that matches letters in each column, read the drawn cells back, and check the ratio of each highlighted cell's `fg` on its `bg`. It fails on the current code in High Contrast Dark.
-3. **Changelog.** Add a cargo-port entry: matched finder letters are readable in High Contrast Dark.
+- Matched finder letters keep the row ink when it has a ratio of at least 4.5:1 on `finder_match_bg`. Else they use black, else white. `MatchInkSelection` (`Preserve`, `Black`, `White`) and `match_ink` in `tui/finder/dispatch.rs` make this choice.
+- Every theme keeps its match background. Only the ink of the matched letters changes.
+- `tui_pane::contrast_ratio(foreground, background) -> Option<f64>` gives the WCAG ratio with the palette decoder of `blend_color`. It gives `None` for `Color::Reset`.
+- `READABLE_TEXT_CONTRAST_FLOOR = 4.5` in cargo-port `tui/constants.rs` is the one floor. Production code and both contrast tests use it.
 
 **Files:**
-- `crates/cargo-port/src/tui/finder/dispatch.rs` — the matched-letter ink
-- `crates/cargo-port/src/themes/builtins.rs` — only if the ink belongs in the theme
-- `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the shared ratio function, if the new test reuses it
-- `crates/cargo-port/src/tui/finder/` — the new test
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/tui/finder/dispatch.rs` — match ink and `finder_matches_meet_contrast_in_each_registered_theme`
+- `crates/cargo-port/src/tui/constants.rs` — `READABLE_TEXT_CONTRAST_FLOOR`
+- `crates/tui_pane/src/theme/blend.rs` — `contrast_ratio`
+- `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — uses `tui_pane::contrast_ratio`
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — entries
 
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and on the Mac, every test under 1 s, and the new test fails before the repair. `verify.sh lint cargo-port` is clean. A live finder capture in High Contrast Dark shows the matched letters readable. `Change-Review: The finder's matched letters are readable in High Contrast Dark | On natedev, run cargo port in a terminal, choose the High Contrast Dark theme, open the finder and type a query | The matched letters on the yellow highlight are dark and readable`.
+**Ruled out:** a cargo-port copy of the ANSI palette decoder.
 
 ### Phase 6 — the Worktrees title keeps its count on every worktree page  · status: todo
 
