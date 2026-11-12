@@ -28,6 +28,7 @@ mod tile_view;
 pub use appearance::AppearanceConfig;
 pub use identity::AppIdentity;
 pub use initial_rows::InitialRows;
+pub use loaded::ConfigError;
 pub use loaded::LoadedConfig;
 pub use theme_install::install_theme;
 pub(crate) use theme_install::resolve_appearance;

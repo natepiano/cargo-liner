@@ -16,6 +16,7 @@ use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::scan::ScanStage;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::UNASSIGNED_CELL_TITLE;
@@ -91,7 +92,7 @@ fn app_pool_buffer(app: &App, machine: &str) -> Buffer {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = agent_cell::tile_order_sorted(&placement, &app.tree_sorts, NOW);
     let entry = tiles
         .iter()
@@ -117,7 +118,7 @@ fn click_pool_header(app: &mut App, machine: &str, column: TreeColumn) {
         let machines = app
             .census
             .machines(&app.loaded_config.config.machines.remote);
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let tiles = agent_cell::tile_order_sorted(&placement, &app.tree_sorts, NOW);
         let entry = tiles
             .iter()
@@ -285,14 +286,14 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
     let spans = agent_cell::unassigned_header_spans(pool, AREA, NOW, AccountColumn::Hidden);
     assert!(
-        !spans.iter().any(|span| span.column == TreeColumn::Role),
-        "the pool has no role values, so it draws no role column"
+        spans.iter().any(|span| span.column == TreeColumn::Role),
+        "the role column remains present for unlabeled sessions"
     );
     let header_y = label_position(&buffer, TREE_SESSION_HEADER).1;
     let header: String = (AREA.x..AREA.right())
         .map(|x| buffer[(x, header_y)].symbol())
         .collect();
-    assert!(!header.split_whitespace().any(|word| word == "role"));
+    assert!(header.split_whitespace().any(|word| word == "role"));
 }
 
 #[test]
@@ -308,7 +309,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
             state: &remote,
         },
     ];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let agents = agent_cell::cell_order_placed(&placement);
     let sorts = std::collections::HashMap::from([(
         key("natedev"),
@@ -342,7 +343,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
     assert_eq!(text_row(&buffer, "mac ·"), "mac · no agents");
     assert_eq!(
         text_row(&buffer, "director"),
-        "10 claude director idle 4:00 /fixture/director"
+        "10 claude director /fixture/director"
     );
     assert!((0..AREA.height).all(|y| {
         let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();

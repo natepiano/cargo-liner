@@ -27,6 +27,8 @@ pub(super) const PERF_LOG_FILE: &str = "cargo-port-tui-perf.log";
 pub(super) const PREVIOUS_PERF_LOG_FILE: &str = "cargo-port-tui-perf.prev.log";
 
 // render
+/// Minimum contrast ratio for readable text.
+pub(super) const READABLE_TEXT_CONTRAST_FLOOR: f64 = 4.5;
 /// Mark the cut start or end of a fitted value.
 pub(super) const FIT_ELLIPSIS: &str = "…";
 /// Show at most this many affected paths in the confirm dialog before a

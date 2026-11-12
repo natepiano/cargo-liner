@@ -21,6 +21,7 @@ use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::account::Program;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::activity::Activity;
 use crate::census::codex::CodexThread;
 use crate::config::AccountsConfig;
@@ -140,7 +141,7 @@ fn drawn(rows: Vec<AgentRow>, work: RootWork) -> (Vec<String>, Vec<String>, Vec<
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let mut summary = Buffer::empty(AREA);
     summary::draw(
@@ -328,6 +329,23 @@ fn codex_session_own_rollout_draws_idle_and_then_reading_after_append() {
                 .expect("activity record");
         }
         let rows = fixture.scan();
+        let state = MachineState::Answered(
+            rows.clone(),
+            crate::census::HierarchyEdges::default().into(),
+        );
+        let machines = [Machine {
+            name:  "fixture",
+            state: &state,
+        }];
+        assert_eq!(
+            crate::agent_cell::detail_property_for_test(
+                &machines,
+                "pid 10",
+                "state",
+                crate::census::unix_now()
+            ),
+            expected
+        );
         let (summary, tree, _) = drawn(rows.clone(), RootWork::Present);
         let (_, _, pool) = drawn(rows, RootWork::Absent);
         for surface in [&summary, &tree, &pool] {
@@ -336,7 +354,7 @@ fn codex_session_own_rollout_draws_idle_and_then_reading_after_append() {
                 .find(|line| line.contains("pid 10") || line.starts_with("10 "))
                 .expect("Codex session row");
             assert!(
-                row.split_whitespace().any(|word| word == expected),
+                !row.split_whitespace().any(|word| word == "age"),
                 "{expected}: {row}"
             );
         }

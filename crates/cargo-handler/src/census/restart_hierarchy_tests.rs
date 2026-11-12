@@ -24,6 +24,7 @@ use serde::Deserialize;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::accounts::AccountsTable;
+use super::accounts::EMPTY_SESSION_STATES;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::hierarchy::HierarchyCache;
@@ -116,7 +117,7 @@ fn summary_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let accounts = AccountsTable::NotConfigured;
     let colors = FooterColors::default();
@@ -156,7 +157,7 @@ fn tiles(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Vec<String> {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000)
         .iter()
@@ -194,7 +195,7 @@ fn unassigned_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000);
     let entry = tiles

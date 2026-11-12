@@ -13,12 +13,13 @@ use crate::census::RunLocation;
 use crate::census::ServiceTier;
 use crate::census::VerifyStep;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 
 fn row(pid: u32, name: &str, activity: AgentActivity) -> AgentRow {
     let mut row: AgentRow = serde_json::from_value(serde_json::json!({
-        "agent":"codex", "name":name, "status":null,
+        "agent":"codex", "name":name, "session_id":name, "status":null,
         "pid":pid, "started":100 + pid, "directory":"/fixture", "desktop":null,
         "branch":null, "launched_by":null, "children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
     }))
@@ -57,8 +58,19 @@ fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
+    let source = AccountsTable::Ready(
+        crate::census::accounts::AccountsReading::parse(
+            br#"{
+        "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+            {"session":"writer-session","state":"busy"},{"session":"reader-session","state":"busy"},
+            {"session":"local-gate","state":"busy"},{"session":"remote-gate","state":"busy"},
+            {"session":"waiting-session","state":"idle"}
+        ]}],"problems":[]}"#,
+        )
+        .expect("source states"),
+    );
     let area = Rect::new(0, 0, 220, 12);
     let mut buffer = Buffer::empty(area);
     draw(
@@ -66,7 +78,7 @@ fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
         area,
         &SummaryFrame {
             accounts_sort: AccountsSort::SourceOrder,
-            accounts: &AccountsTable::NotConfigured,
+            accounts: &source,
             machines: &machines,
             placement: &placement,
             cells: &cells,
@@ -130,25 +142,32 @@ fn activity_summary_sorts_drawn_words_and_preserves_active_gate_and_waiting_colo
             "waiting-session",
         ];
         actual.sort_by_key(|name| position(&buffer, name).1);
-        let mut expected = [
-            "local-gate",
-            "remote-gate",
-            "reader-session",
-            "waiting-session",
-            "writer-session",
-        ];
-        if direction == SortDirection::Descending {
-            expected.reverse();
-        }
+        let expected = if direction == SortDirection::Ascending {
+            [
+                "writer-session",
+                "reader-session",
+                "local-gate",
+                "remote-gate",
+                "waiting-session",
+            ]
+        } else {
+            [
+                "waiting-session",
+                "writer-session",
+                "reader-session",
+                "local-gate",
+                "remote-gate",
+            ]
+        };
         assert_eq!(actual, expected);
         let status_x = position(&buffer, SummaryColumn::Status.header()).0;
         let cell = |name| &buffer[(status_x, position(&buffer, name).1)];
         for (name, word) in [
-            ("writer-session", "writing"),
-            ("reader-session", "reading"),
-            ("local-gate", "clippy"),
-            ("remote-gate", "nextest (mac)"),
-            ("waiting-session", "waiting"),
+            ("writer-session", "busy"),
+            ("reader-session", "busy"),
+            ("local-gate", "busy"),
+            ("remote-gate", "busy"),
+            ("waiting-session", "idle"),
         ] {
             let y = position(&buffer, name).1;
             let text: String = (status_x
@@ -168,10 +187,10 @@ fn activity_summary_sorts_drawn_words_and_preserves_active_gate_and_waiting_colo
         );
         assert_eq!(cell("local-gate").fg, cell("remote-gate").fg);
         assert_ne!(cell("local-gate").fg, cell("waiting-session").fg);
-        assert_ne!(
+        assert_eq!(
             cell("local-gate").fg,
             cell("writer-session").fg,
-            "gates have their own accent"
+            "Busy source states share one ink"
         );
     }
 }
