@@ -3432,6 +3432,36 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
 
+### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: todo
+
+**Depends on:** Phase 37 (order only; the showrunner queued it after the queued phases, 2026-11-12).
+
+On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests as LEAK. A LEAK test leaves a child process or an open pipe after it ends. Phase 53 fixed one leak in the second test on 2026-11-05; the leak is back. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261112T015550-3381833-1e2c.log`, lines 54-55.
+
+#### Work Order
+
+**Goal:** nextest reports PASS, not LEAK, for both tests.
+
+**Spec:**
+
+1. Find each child process and pipe that these tests leave open after they return:
+   - `tests::all_accounts_status_refuses_non_root_with_sudo_instruction` (0.254 s)
+   - `tests::install_prints_a_completed_toolchain_before_a_later_lock_finishes` (0.266 s)
+2. Make each test wait for or stop every child it starts, on a pass and on a failed assertion. A process cleans up like a tempdir: a guard ends it when the scope ends.
+3. Close each pipe end the test holds before the test returns.
+4. Keep every assertion as it is. Do not raise the nextest leak timeout.
+
+**Files:**
+- `crates/cargo-tile/tests/cli_lifecycle.rs`
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. An intermittent leak is a defect.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
+- `verify.sh test cargo-tile --mac` reports neither test as LEAK.
+
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
 **Depends on:** none (it named Phase 39 only for file order; Phase 39 has not started)
