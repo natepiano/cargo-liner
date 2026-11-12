@@ -6,6 +6,7 @@ mod app;
 mod census;
 mod cli;
 mod config;
+mod config_watch;
 mod constants;
 mod details;
 mod footer_colors;

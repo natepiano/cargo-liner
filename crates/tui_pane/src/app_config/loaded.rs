@@ -2,6 +2,9 @@
 //! struct, written back when the file does not spell out every setting,
 //! and saved after edits.
 
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -16,15 +19,30 @@ use toml_edit::TableLike;
 use super::constants::CONFIG_FILENAME;
 use super::identity::AppIdentity;
 
-/// A load attempt: the config that will be used, plus the text of
-/// whatever went wrong reading it or writing it back. Surfaced in the
-/// settings overlay's Notices.
+/// `ConfigError` distinguishes a rejected configuration from a failed write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// `ConfigError::Parse` reports a configuration that the parser rejects.
+    Parse(String),
+    /// `ConfigError::Write` reports a failed restate or save operation.
+    Write(String),
+}
+
+impl Display for ConfigError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(error) | Self::Write(error) => formatter.write_str(error),
+        }
+    }
+}
+
+/// `LoadedConfig` holds the active configuration and an error for the settings notices.
 #[derive(Debug)]
 pub struct LoadedConfig<C> {
     /// The config the app runs with.
     pub config: C,
-    /// Parse, restate or save failure text.
-    pub error:  Option<String>,
+    /// A parse failure or a restate or save failure.
+    pub error:  Option<ConfigError>,
 }
 
 impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
@@ -38,8 +56,10 @@ impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
     #[must_use]
     pub fn load<I: AppIdentity>() -> Self { Self::load_from::<I>(I::config_path()) }
 
-    /// [`Self::load`] against an explicit path.
-    fn load_from<I: AppIdentity>(path: Option<PathBuf>) -> Self {
+    /// `LoadedConfig::load_from` reads an explicit path with the same rules as
+    /// `LoadedConfig::load`.
+    #[must_use]
+    pub fn load_from<I: AppIdentity>(path: Option<PathBuf>) -> Self {
         let Some(path) = path else {
             return Self::defaults(None);
         };
@@ -47,7 +67,7 @@ impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
             return Self::defaults(None);
         };
         toml::from_str(&text).map_or_else(
-            |error| Self::defaults(Some(error.to_string())),
+            |error| Self::defaults(Some(ConfigError::Parse(error.to_string()))),
             |config| {
                 let mut loaded = Self {
                     config,
@@ -59,8 +79,8 @@ impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
         )
     }
 
-    /// The default config, carrying `error`.
-    fn defaults(error: Option<String>) -> Self {
+    /// `LoadedConfig::defaults` retains the error with the default configuration.
+    fn defaults(error: Option<ConfigError>) -> Self {
         Self {
             config: C::default(),
             error,
@@ -73,14 +93,12 @@ impl<C: Serialize> LoadedConfig<C> {
     /// the config directory when it is missing, and keep any failure in
     /// [`Self::error`] (cleared on success).
     ///
-    /// The failure is kept as text for the settings overlay rather than
-    /// returned as an error type: every caller renders it, none of them
-    /// recover.
+    /// `LoadedConfig::save` retains a `ConfigError::Write` failure for the settings overlay.
     pub fn save<I: AppIdentity>(&mut self) { self.save_to::<I>(I::config_path()); }
 
     /// [`Self::save`] against an explicit path.
     fn save_to<I: AppIdentity>(&mut self, path: Option<PathBuf>) {
-        self.error = write_config::<C, I>(&self.config, path);
+        self.error = write_config::<C, I>(&self.config, path).map(ConfigError::Write);
     }
 }
 
@@ -327,7 +345,8 @@ mod tests {
 
         assert_eq!(loaded.config, Sample::default());
         let error = loaded.error.expect("a parse error should be kept");
-        assert!(error.contains("invalid type"), "{error}");
+        assert!(matches!(&error, ConfigError::Parse(_)), "{error}");
+        assert!(error.to_string().contains("invalid type"), "{error}");
         assert_eq!(read(&path), broken);
     }
 
@@ -338,7 +357,7 @@ mod tests {
         let path = scratch.0.path().join("nested").join(CONFIG_FILENAME);
         let mut loaded = LoadedConfig {
             config: Sample::default(),
-            error:  Some("stale".to_string()),
+            error:  Some(ConfigError::Write("stale".to_string())),
         };
 
         loaded.save_to::<Sample>(Some(path.clone()));
@@ -359,8 +378,10 @@ mod tests {
         loaded.save_to::<Sample>(None);
 
         assert_eq!(
-            loaded.error.as_deref(),
-            Some("no OS config directory: cannot write config.toml")
+            loaded.error,
+            Some(ConfigError::Write(
+                "no OS config directory: cannot write config.toml".to_string()
+            ))
         );
     }
 

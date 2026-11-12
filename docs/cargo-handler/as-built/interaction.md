@@ -170,3 +170,34 @@ A layout-only hit test cannot reproduce the visible input target during motion.
 The census can change after a paint and before a press.
 Retained geometry makes input describe what the user saw.
 Stable identities preserve selection when names, rows, and physical workers change.
+
+### Word highlight strength
+
+Set the strength beside `[appearance]` in `config.toml`:
+
+```toml
+[word_highlight]
+emphasis = "clear"
+```
+
+The accepted values are `subtle`, `clear`, and `strong`.
+`subtle` retains the C240 appearance.
+`clear` increases the match ground's distance from the pane ground.
+`strong` also adds bold to the matched text.
+The default is `clear`.
+
+`config_watch.rs` watches the configuration directory on a background thread.
+It reads and parses `config.toml` after a file change.
+It retains the directory watch across atomic file replacements.
+The reader sends a checked emphasis through a channel.
+The terminal loop applies the emphasis and invalidates the retained body.
+The existing clicked word therefore changes without another click or a theme change.
+The UI thread performs no configuration file reads.
+
+An invalid value retains the last valid emphasis.
+The settings pane shows a config error that names all three accepted values.
+A later valid file clears that error, including a parse error from startup.
+The reader owns the parse status.
+A save failure keeps its separate notice until a save succeeds.
+The application stops and joins the reader before it releases the configuration directory.
+Other configuration sections retain their existing application rules.

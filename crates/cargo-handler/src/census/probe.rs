@@ -18,6 +18,8 @@ use serde::ser::SerializeMap;
 use serde::ser::SerializeStruct;
 #[cfg(test)]
 use serde_json::Error;
+#[cfg(test)]
+use tui_pane::ConfigError;
 
 use super::Account;
 use super::Agent;
@@ -777,7 +779,7 @@ mod tests {
             .to_string();
         let loaded = LoadedConfig {
             config: Config::default(),
-            error:  Some(error.clone()),
+            error:  Some(ConfigError::Parse(error.clone())),
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

@@ -9,6 +9,7 @@
 //! `config.toml`, and swaps the active theme in place. Text rows replace
 //! their scheduler settings when committed; the remaining rows report state.
 
+use tui_pane::ConfigError;
 use tui_pane::SettingStep;
 use tui_pane::SettingTarget;
 use tui_pane::SettingsRows;
@@ -19,6 +20,7 @@ use tui_pane::parse_list;
 use tui_pane::step_framework_setting;
 
 use crate::app::App;
+use crate::app::WordHighlightConfigStatus;
 use crate::census::HierarchySource;
 use crate::config::CargoHandler;
 use crate::config::StaffFilePath;
@@ -152,7 +154,10 @@ fn notices(app: &App) -> Vec<(&'static str, String)> {
         .into_iter()
         .map(|note| ("theme", note))
         .collect();
-    if let Some(error) = &app.loaded_config.error {
+    if let WordHighlightConfigStatus::Rejected(error) = &app.word_highlight_config_status {
+        notices.push(("config", error.clone()));
+    }
+    if let Some(ConfigError::Write(error)) = &app.loaded_config.error {
         notices.push(("config", error.clone()));
     }
     notices
