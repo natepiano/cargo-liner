@@ -219,3 +219,29 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Acceptance gate:** `verify.sh test cargo-port` passes on natedev and on the Mac, every test under 1 s, and the restored assert fails before the repair. `verify.sh lint cargo-port` is clean. A live capture of the Git pane at 80 columns shows `Worktrees (N)` at the top of a worktree page. `Change-Review: The Worktrees title keeps its count at the top of a Git page | On natedev, run cargo port at 80 columns, select a project with many worktrees, focus Git and page down to the worktree list | Each worktree page shows the Worktrees title with its count, also when the title is on the first row`.
 
+
+### Phase 7 — an idle cargo-port reads almost nothing from disk  · status: todo
+
+**Depends on:** none. Urgent (user via the showrunner, 2026-11-12); runs before Phase 3 round 3, Phase 5 and Phase 6 work.
+
+#### Work Order
+
+**Goal:** an idle cargo-port reads almost nothing from disk.
+
+**Source:** user, 2026-11-12, via builds and the showrunner: "tell cargo liner it needs to do something about the cargo-port app." On natedev, an idle `cargo-port port` (up 23 h 50 min) read about 70 MB/s without a stop. IO pressure full avg10 was 25-44%, and the user's keyboard stuck.
+
+**Spec:**
+1. **Cause.** Trace an idle cargo-port: which paths it reads and which loop starts the reads (watcher, rescan, cache refresh). Suspects: target folders, `~/rust/repro`, `/tmp/claude` copies.
+2. **Fix.** Remove the repeated reads at their cause.
+3. **Test.** Add a test that fails while an idle app repeats the reads.
+4. **Changelog.** Add a cargo-port entry.
+
+**Files:**
+- `crates/cargo-port/src/` — the watcher, scan or cache code that the trace names
+- `crates/cargo-port/CHANGELOG.md` — entry for the idle disk reads
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev reads almost nothing over 10 minutes.
