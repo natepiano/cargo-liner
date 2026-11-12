@@ -226,4 +226,30 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **State:** none.
 
-**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev reads almost nothing over 10 minutes.
+**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev makes no timed full walk of the project or target trees, and reads less than the old binary over the same 5 minutes. The remaining idle reads are the next phase's work.
+
+### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: todo
+
+**Depends on:** Phase 7 (event-only disk updates). Runs in Phase 7's worktree after the Phase 7 checkpoint.
+
+#### Work Order
+
+**Goal:** an idle cargo-port reads almost nothing from disk.
+
+**Source:** Phase 7 live run, 2026-11-12. With event-only disk updates, a 10-minute idle run on natedev read 935,518,208 bytes at load 29-297. The logs show 195 Git refreshes and 189 disk updates, and no idle source scan. The reads are not fully attributed. The old binary read 2,311,979,008 bytes in 5 minutes.
+
+**Spec:**
+1. **Cause.** Attribute each idle read to its trigger: the event path that starts each Git refresh and each disk update, and the bytes that each one reads.
+2. **Fix.** Remove each read that no change the app shows needs. Examples: a Git refresh for an event in an ignored or target path, or a second refresh for one burst of events.
+3. **Test.** Add a test that fails while an event that the app does not show starts a Git refresh or a disk read.
+4. **Changelog.** Add a cargo-port entry.
+
+**Files:**
+- `crates/cargo-port/src/` — the watcher and Git refresh code that the trace names
+- `crates/cargo-port/CHANGELOG.md` — entry for the idle Git and disk reads
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev reads almost nothing over 10 minutes, and each remaining read has a file change that the app shows as its cause. Compare with the Phase 7 binary in 3 pairs at similar load.
