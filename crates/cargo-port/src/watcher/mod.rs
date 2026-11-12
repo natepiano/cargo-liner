@@ -1,6 +1,7 @@
-//! Uses recursive roots on macOS and project/discovery folder watches elsewhere.
-//! New discovery folders receive temporary candidate watches. Build trees and Git
-//! objects are skipped; disk polling supplies build sizes on both backends.
+//! `RegisteredRoots` tracks recursive roots on macOS and folder watches elsewhere.
+//! Discovery folders receive temporary candidate watches. Build trees and Git objects stay
+//! unwatched. `DiskUsageTracker` supplies startup measurements and updates changed paths for the
+//! watcher.
 
 mod events;
 mod probe;

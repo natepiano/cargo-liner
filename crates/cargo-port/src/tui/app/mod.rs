@@ -646,6 +646,14 @@ impl App {
         self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
         });
+        if let Ok(mut store) = self.scan.metadata_store().lock() {
+            let disk_paths = all_paths
+                .iter()
+                .cloned()
+                .chain(disk_entries.iter().map(|(_, path)| path.clone()))
+                .collect();
+            store.disk_usage.retain_projects(&disk_paths);
+        }
         let discovered: HashSet<_> = disk_entries.iter().map(|(_, path)| path).collect();
         self.scan.source_measurements.retain_projects(|root| {
             discovered.contains(root) || matches!(self.project_list.at_path(root), Found(_))

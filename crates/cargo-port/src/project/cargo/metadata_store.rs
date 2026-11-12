@@ -25,6 +25,7 @@ use crate::constants::DOT_CARGO_DIR;
 use crate::constants::RUST_TOOLCHAIN;
 use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::project::AbsolutePath;
+use crate::scan::DiskUsageMeasurements;
 use crate::scan::MetadataRefreshQueue;
 
 /// Process-wide cache of `cargo metadata` results, keyed by checkout root.
@@ -35,6 +36,8 @@ use crate::scan::MetadataRefreshQueue;
 /// this type directly.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceMetadataStore {
+    /// `DiskUsageMeasurements` shares disk indexes between startup scans and watcher updates.
+    pub(crate) disk_usage:         DiskUsageMeasurements,
     by_checkout_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
     /// Latest dispatch stamp for each checkout. The process-wide sequence
     /// prevents a removed and recreated checkout from accepting old replies.

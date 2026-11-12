@@ -11,8 +11,9 @@ use std::time::Instant;
 use super::disk_probe_scope;
 use super::fire_disk_updates;
 use super::project_disk_sizes;
-use super::schedule_disk_poll;
+use super::schedule_disk_refresh;
 use crate::channel;
+use crate::config::WatcherConfig;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::test_support;
@@ -20,7 +21,7 @@ use crate::watcher::ProjectEntry;
 use crate::watcher::watch_test_support;
 
 #[test]
-fn target_symlink_artifacts_reach_polled_project_size() -> Result<(), Box<dyn Error>> {
+fn target_symlink_artifacts_reach_explicit_project_size() -> Result<(), Box<dyn Error>> {
     let scratch = tempfile::tempdir()?;
     let project = AbsolutePath::from(scratch.path().join("project"));
     let artifacts = scratch.path().join("artifacts");
@@ -43,11 +44,16 @@ fn target_symlink_artifacts_reach_polled_project_size() -> Result<(), Box<dyn Er
         },
     )]);
     let now = Instant::now();
-    let mut last_poll = now
+    let requested_at = now
         .checked_sub(Duration::from_secs(30))
         .ok_or("monotonic clock cannot represent the previous poll")?;
     let mut pending = HashMap::new();
-    schedule_disk_poll(now, &mut last_poll, &projects, &mut pending);
+    schedule_disk_refresh(
+        &mut pending,
+        "linked-target",
+        requested_at,
+        &WatcherConfig::default(),
+    );
     let (done_sender, done_receiver) = mpsc::channel();
     fire_disk_updates(
         test_support::test_runtime().handle(),
