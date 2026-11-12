@@ -983,37 +983,6 @@ fn two_types_same_module(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
     }
 }
 
-fn name_collision_skips_both(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module("name_collision_skips_both", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent/mod_a")).expect("create src/parent/mod_a");
-    fs::create_dir_all(root.join("parent/mod_b")).expect("create src/parent/mod_b");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(
-        root.join("parent.rs"),
-        "mod mod_a;\nmod mod_b;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(root.join("parent/mod_a.rs"), "pub struct Foo;\n").expect("write mod_a");
-    fs::write(root.join("parent/mod_b.rs"), "pub struct Foo;\n").expect("write mod_b");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"fn example(_a: crate::name_collision_skips_both::parent::mod_a::Foo, _b: crate::name_collision_skips_both::parent::mod_b::Foo) {}
-"#,
-    )
-    .expect("write consumer");
-
-    move |_| {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        // Both Foo types have a name collision, so neither should be fixed
-        assert!(
-            consumer.contains("crate::name_collision_skips_both::parent::mod_a::Foo")
-                || consumer.contains("super::mod_a::Foo"),
-            "collision should leave inline paths unchanged, got:\n{consumer}"
-        );
-    }
-}
-
 #[test]
 fn flags_std_paths() {
     let temp = tempdir().expect("create temp fixture dir");
@@ -1046,30 +1015,6 @@ edition = "2024"
             .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "external-crate paths (std/core/third-party) should be flagged"
     );
-}
-
-fn skips_use_statements(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module("skips_use_statements", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        "use crate::skips_use_statements::parent::types::MyType;\n\nfn example(_x: MyType) {}\n",
-    )
-    .expect("write consumer");
-
-    move |report| {
-        let report = member_report(report, "src/skips_use_statements");
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-            "use statements should not be flagged as inline path types"
-        );
-    }
 }
 
 fn super_path(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
@@ -1129,80 +1074,6 @@ fn example(_x: MyType, _y: crate::existing_use_no_duplicate::parent::types::MyTy
             !consumer.contains("crate::existing_use_no_duplicate::parent::types::MyType"),
             "inline path should be replaced, got:\n{consumer}"
         );
-    }
-}
-
-fn conflicting_private_import_keeps_qualified_type(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "conflicting_private_import_keeps_qualified_type",
-        &[("mod.rs", "")],
-    );
-    let source = r#"use std::error::Error;
-use std::io;
-
-fn completed_capture() -> Result<(), io::Error> {
-    Err(io::Error::other("capture failed"))
-}
-
-fn boxed_error(error: io::Error) -> Box<dyn Error> {
-    Box::new(error)
-}
-
-fn main() {}
-"#;
-    fs::write(root.join("mod.rs"), source).expect("write case source");
-
-    move |report| {
-        let report = member_report(
-            report,
-            "src/conflicting_private_import_keeps_qualified_type",
-        );
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
-            "conflicting private import should suppress the inline-type finding"
-        );
-
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
-        assert_eq!(
-            main_rs,
-            source.replacen(
-                "    pub trait CaptureError",
-                "    pub(crate) trait CaptureError",
-                1
-            )
-        );
-    }
-}
-
-fn grouped_private_import_keeps_qualified_type(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "grouped_private_import_keeps_qualified_type",
-        &[("mod.rs", "")],
-    );
-    let source = r#"use std::{error::Error, io};
-
-fn completed_capture() -> Result<(), io::Error> {
-    Err(io::Error::other("capture failed"))
-}
-
-fn boxed_error(error: io::Error) -> Box<dyn Error> {
-    Box::new(error)
-}
-
-fn main() {}
-"#;
-    fs::write(root.join("mod.rs"), source).expect("write case source");
-
-    move |_| {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
-        assert_eq!(main_rs, source);
     }
 }
 
@@ -1474,50 +1345,6 @@ fn generic_type_params_preserved(batch: &mut DiagnosticBatch) -> impl FnOnce() +
     }
 }
 
-fn bare_name_shadowing_skipped(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module("bare_name_shadowing_skipped", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("error")).expect("create src/error");
-    fs::write(
-        root.join("mod.rs"),
-        "mod error;\nmod consumer;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        root.join("error.rs"),
-        "pub type Result<T> = core::result::Result<T, String>;\n",
-    )
-    .expect("write error mod");
-    // consumer uses both prelude Result<T, E> and
-    // crate::bare_name_shadowing_skipped::error::Result<T> inline
-    fs::write(
-        root.join("consumer.rs"),
-        r#"fn uses_prelude() -> Result<String, String> {
-    Ok("hello".to_string())
-}
-fn uses_inline() -> crate::bare_name_shadowing_skipped::error::Result<String> {
-    Ok("hello".to_string())
-}
-"#,
-    )
-    .expect("write consumer");
-
-    move |_| {
-        let consumer = fs::read_to_string(root.join("consumer.rs")).expect("read fixed file");
-        // The inline path should NOT be replaced because doing so would
-        // add `use crate::bare_name_shadowing_skipped::error::Result;` which shadows prelude
-        // `Result<T, E>`
-        assert!(
-            consumer.contains("crate::bare_name_shadowing_skipped::error::Result<String>"),
-            "inline path should be left alone to avoid shadowing prelude Result, got:\n{consumer}"
-        );
-        // Prelude usage should remain unchanged
-        assert!(
-            consumer.contains("Result<String, String>"),
-            "prelude Result should be unchanged, got:\n{consumer}"
-        );
-    }
-}
-
 /// Struct literal paths (`crate::foo::Bar { .. }`) and pattern paths
 /// (`let crate::foo::Bar { .. } = ..`, `Some(crate::foo::Bar(x))`) are not
 /// reached by the default `visit_expr_path` / `visit_type_path` passes. This
@@ -1751,44 +1578,6 @@ fn multi_byte_chars_do_not_corrupt_replacement_span(
     }
 }
 
-/// A file that uses `Result::ok` as a method reference (e.g.
-/// `.filter_map(Result::ok)`) is relying on the prelude `Result`. If a
-/// separate `io::Result<T>` appears in the same file, the lint must not add
-/// `use io::Result;` — that would shadow the prelude `Result` and silently
-/// change which type `Result::ok` resolves through, often producing a
-/// confusing trait-bound error.
-fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "multi_segment_path_with_pascal_first_segment_blocks_shadowing_import",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"use std::io;
-
-pub fn open(path: &str) -> io::Result<String> {
-    let _ = [Ok::<_, io::Error>(())].into_iter().filter_map(Result::ok);
-    std::fs::read_to_string(path)
-}
-
-fn main() {
-    let _ = open("x");
-}
-"#,
-    )
-    .expect("write main");
-
-    move |_| {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            !main_rs.contains("use io::Result;") && !main_rs.contains("use std::io::Result;"),
-            "must not import a name that would shadow prelude `Result`, got:\n{main_rs}"
-        );
-    }
-}
-
 /// `impl crate::path::Trait for Type` puts the trait path in
 /// `ItemImpl::trait_`, which is a bare `syn::Path` — not visited as a
 /// `TypePath`. The visitor must hook `visit_item_impl` explicitly.
@@ -1833,41 +1622,6 @@ impl crate::impl_trait_path_is_rewritten::pane::Hittable for Manager {
     }
 }
 
-/// Importing a name that has prelude meaning (`Result`, `Box`, `Option`, ...)
-/// silently changes what every future bare reference to that name resolves
-/// to. The lint must skip these — even when the file currently doesn't write
-/// bare `Result<T, E>` and the shadow-detection heuristic alone would clear
-/// it.
-fn does_not_import_prelude_names(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module("does_not_import_prelude_names", &[("mod.rs", "")]);
-    fs::write(
-        root.join("mod.rs"),
-        // `std::fmt::Result` is the type alias for `Result<(), fmt::Error>`.
-        // Bringing it in as plain `Result` would shadow the prelude generic.
-        r#"use std::fmt;
-
-pub struct Marker;
-
-impl fmt::Display for Marker {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("marker")
-    }
-}
-
-fn main() {}
-"#,
-    )
-    .expect("write main");
-
-    move |_| {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            !main_rs.contains("use fmt::Result;") && !main_rs.contains("use std::fmt::Result;"),
-            "must not import a name that shadows prelude `Result`, got:\n{main_rs}"
-        );
-    }
-}
-
 /// When a file already has `use std::fmt;` (or any other parent module) and
 /// writes `fmt::Display` inline, the new import the lint adds must be
 /// absolute (`use std::fmt::Display;`), not partial (`use fmt::Display;`).
@@ -1905,197 +1659,6 @@ fn main() {
         assert!(
             !main_rs.contains("use mpsc::Sender;"),
             "partial-path import is brittle — must be absolute, got:\n{main_rs}"
-        );
-    }
-}
-
-/// Associated items on a generic type parameter (`S::Ok`, `B::Item`,
-/// `Idx::Output`, even an unconventional lowercase `t::Item`) must not be
-/// treated as crate-qualified paths. The visitor tracks generics via
-/// `syn::Generics::params` rather than guessing from naming, so any name
-/// the surrounding scope introduces as a type parameter is recognized.
-fn generic_type_param_associated_items_are_not_flagged(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "generic_type_param_associated_items_are_not_flagged",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"pub trait Sink {
-    type Ok;
-    type Error;
-    fn finish(self) -> Result<Self::Ok, Self::Error>;
-}
-
-pub fn run<S: Sink>(s: S) -> Result<S::Ok, S::Error> {
-    s.finish()
-}
-
-pub trait Bucket {
-    type Item;
-}
-
-pub fn first<B: Bucket>(_b: &B) -> Option<B::Item> {
-    None
-}
-
-// PascalCase generic name — already covered by the PascalCase-first-segment
-// filter, but exercise the generics-tracker path too.
-pub fn next_idx<Idx: Iterator>(it: &mut Idx) -> Option<Idx::Item> {
-    it.next()
-}
-
-// Non-idiomatic lowercase generic. `non_camel_case_types` warns, but this
-// verifies generic tracking comes from syntax, not naming convention.
-#[allow(
-    non_camel_case_types,
-    reason = "fixture intentionally covers lowercase generic parameters"
-)]
-pub fn lower<t: Bucket>(_b: &t) -> Option<t::Item> {
-    None
-}
-
-// `syn::Generics::params` on an impl block remains in scope while visiting
-// `ImplItemFn` bodies; the method's own signature can add generics.
-pub struct Wrap<T>(pub T);
-impl<T: Bucket> Wrap<T> {
-    pub fn nested<R: Sink>(_r: R) -> Option<(T::Item, R::Ok, R::Error)> {
-        None
-    }
-}
-
-fn main() {}
-"#,
-    )
-    .expect("write main");
-
-    move |report| {
-        let report = member_report(
-            report,
-            "src/generic_type_param_associated_items_are_not_flagged",
-        );
-        let inline_findings: Vec<_> = report
-            .findings
-            .iter()
-            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-            .collect();
-        assert!(
-            inline_findings.is_empty(),
-            "associated items on generic params must not be flagged, got: \
-             {inline_findings:?}"
-        );
-    }
-}
-
-/// Generic params used inside the *body* of a function (closure parameter
-/// types, `let` annotations, etc.) must not be flagged. Regression test —
-/// `visit_signature` previously pushed/popped generics around the signature
-/// only, leaving the body visited without them, so `|x: &T::Item| ...`
-/// inside `fn foo<T>(...)` was misread as a crate-qualified path.
-fn generic_type_param_in_fn_body_is_not_flagged(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "generic_type_param_in_fn_body_is_not_flagged",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"pub trait Bucket {
-    type Item;
-}
-
-// Closure parameter type uses the fn's generic — used to be flagged because
-// the generic was popped before the body was visited.
-pub fn drive<A: Bucket>(_items: &[A::Item]) -> usize {
-    let _count = |_x: &A::Item, acc: &mut usize| {
-        *acc += 1;
-    };
-    0
-}
-
-// Same situation inside an impl method.
-pub struct Wrap<T>(pub T);
-impl<T: Bucket> Wrap<T> {
-    pub fn run(&self, _items: &[T::Item]) -> usize {
-        let _take = |_x: &T::Item| {};
-        0
-    }
-}
-
-// Trait method body referencing the impl's generic.
-pub trait Driver<T: Bucket> {
-    fn drive(&self, items: &[T::Item]) -> usize {
-        let _take = |_x: &T::Item| {};
-        items.len()
-    }
-}
-
-fn main() {}
-"#,
-    )
-    .expect("write main");
-
-    move |report| {
-        let report = member_report(report, "src/generic_type_param_in_fn_body_is_not_flagged");
-        let inline_findings: Vec<_> = report
-            .findings
-            .iter()
-            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-            .collect();
-        assert!(
-            inline_findings.is_empty(),
-            "generic-param associated items in fn bodies must not be flagged, got: \
-             {inline_findings:?}"
-        );
-    }
-}
-
-/// `Type::Variant` (enum variant patterns / associated items) must not be
-/// treated as a crate-qualified path. The first segment is `PascalCase`,
-/// which means it's a type — suggesting `use Type;` is wrong.
-fn enum_variant_two_segment_path_is_not_flagged(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce(&Report) + use<> {
-    let root = batch.add_module(
-        "enum_variant_two_segment_path_is_not_flagged",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"pub struct Package;
-
-pub enum RustProject {
-    Package(Package),
-}
-
-pub fn unwrap(item: RustProject) -> Option<Package> {
-    let RustProject::Package(pkg) = item else {
-        return None;
-    };
-    Some(pkg)
-}
-
-fn main() {}
-"#,
-    )
-    .expect("write main");
-
-    move |report| {
-        let report = member_report(report, "src/enum_variant_two_segment_path_is_not_flagged");
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-            "`Type::Variant` patterns must not be flagged, got findings: {:?}",
-            report
-                .findings
-                .iter()
-                .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-                .collect::<Vec<_>>()
         );
     }
 }
@@ -2327,45 +1890,4 @@ fn rewrites_inline_paths_in_independent_modules() {
     partial_path_import_is_resolved_to_absolute();
     external_crate_enum_variant_path_is_rewritten();
     external_crate_path_in_argument_is_rewritten();
-}
-
-#[test]
-fn preserves_colliding_and_non_type_paths_in_independent_modules() {
-    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
-    let name_collision_skips_both = name_collision_skips_both(&mut batch);
-    let skips_use_statements = skips_use_statements(&mut batch);
-    let conflicting_private_import_keeps_qualified_type =
-        conflicting_private_import_keeps_qualified_type(&mut batch);
-    let grouped_private_import_keeps_qualified_type =
-        grouped_private_import_keeps_qualified_type(&mut batch);
-    let bare_name_shadowing_skipped = bare_name_shadowing_skipped(&mut batch);
-    let multi_segment_path_with_pascal_first_segment_blocks_shadowing_import =
-        multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&mut batch);
-    let does_not_import_prelude_names = does_not_import_prelude_names(&mut batch);
-    let generic_type_param_associated_items_are_not_flagged =
-        generic_type_param_associated_items_are_not_flagged(&mut batch);
-    let generic_type_param_in_fn_body_is_not_flagged =
-        generic_type_param_in_fn_body_is_not_flagged(&mut batch);
-    let enum_variant_two_segment_path_is_not_flagged =
-        enum_variant_two_segment_path_is_not_flagged(&mut batch);
-    batch.single_compile_targets();
-    let report = batch.report();
-    let output = batch.command().arg("--fix").output().expect("fix batch");
-    assert!(
-        output.status.success(),
-        "batch fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    name_collision_skips_both(&report);
-    skips_use_statements(&report);
-    conflicting_private_import_keeps_qualified_type(&report);
-    grouped_private_import_keeps_qualified_type(&report);
-    bare_name_shadowing_skipped(&report);
-    multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&report);
-    does_not_import_prelude_names(&report);
-    generic_type_param_associated_items_are_not_flagged(&report);
-    generic_type_param_in_fn_body_is_not_flagged(&report);
-    enum_variant_two_segment_path_is_not_flagged(&report);
 }

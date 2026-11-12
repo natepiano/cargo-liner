@@ -134,12 +134,13 @@ pub(in crate::fixes) fn scan_selection(
     sources: &ParsedSources,
 ) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection, sources)?;
-    let fixes = ValidatedFixSet::try_from(
+    let fixes = ValidatedFixSet::try_from((
         findings_with_fixes
             .iter()
             .map(|finding| finding.use_fix.clone())
             .collect::<Vec<_>>(),
-    )?;
+        sources,
+    ))?;
     Ok(ImportScan {
         findings: findings_with_fixes
             .iter()

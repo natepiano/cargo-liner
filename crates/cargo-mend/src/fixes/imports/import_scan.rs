@@ -182,7 +182,30 @@ impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
     type Error = Error;
 
     fn try_from(fixes: Vec<TaggedFix>) -> Result<Self> {
-        let fixes = canonical_fixes(fixes);
+        Self::try_from((fixes, &ParsedSources::default()))
+    }
+}
+
+impl TryFrom<(Vec<UseFix>, &ParsedSources)> for ValidatedFixSet {
+    type Error = Error;
+
+    fn try_from((fixes, sources): (Vec<UseFix>, &ParsedSources)) -> Result<Self> {
+        let tagged = fixes
+            .into_iter()
+            .map(|fix| TaggedFix {
+                fix_kind: None,
+                fix,
+            })
+            .collect::<Vec<_>>();
+        Self::try_from((tagged, sources))
+    }
+}
+
+impl TryFrom<(Vec<TaggedFix>, &ParsedSources)> for ValidatedFixSet {
+    type Error = Error;
+
+    fn try_from((fixes, sources): (Vec<TaggedFix>, &ParsedSources)) -> Result<Self> {
+        let fixes = canonical_fixes(fixes, sources);
 
         let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
         for tagged in &fixes {
@@ -227,10 +250,12 @@ impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
 }
 
 /// Normalizes physical file identity and collapses byte-identical proposals before planning.
-pub(super) fn canonical_fixes(mut fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
+pub(super) fn canonical_fixes(
+    mut fixes: Vec<TaggedFix>,
+    sources: &ParsedSources,
+) -> Vec<TaggedFix> {
     for tagged in &mut fixes {
-        tagged.fix.path =
-            fs::canonicalize(&tagged.fix.path).unwrap_or_else(|_| tagged.fix.path.clone());
+        tagged.fix.path = sources.path_key(&tagged.fix.path).into_path_buf();
     }
     fixes.sort_by(|left, right| {
         (

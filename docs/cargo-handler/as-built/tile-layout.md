@@ -38,6 +38,10 @@ Count text uses `top-level agent` or `top-level agents`.
 The unassigned count follows the current pooled rows.
 
 `cell_order_placed` constructs agent entries and tree lines from `AgentPlacement`.
+Root headings show the reported status in the same ink as the tree status cell.
+An unavailable status has no heading segment or separator.
+Headings omit age and detailed state words.
+Expansion actions and redraw deadlines use the same account status source as the frame.
 `ChildLine` classifies work, carriers, and separate sessions exhaustively.
 Shells, subagents, and worker threads draw once as work lines.
 Carrier processes contribute kept descendants without drawing another line.
@@ -45,9 +49,13 @@ A managed session or thread leaves its former owner's work list.
 Cross-machine descendants retain their machine label.
 Pool roots use flat branches; their descendants keep ordinary tree guides.
 
-`TreeColumn` includes Session, Type, Role, Model, Effort, Status, Account, Branch, Directory, and Age.
+`TreeColumn` draws Account, Session, Role, Activity, Status, Type, Model, Effort, Branch, and Directory.
+Age remains a sort key and appears in the details view.
 Type identifies shells and subagents; session and worker rows leave it blank.
-Role uses the accepted hierarchy role, subagent role, or observed timer purpose.
+Role shows unit, showrunner, producer, or worker.
+Activity shows the assigned work or `timer <countdown>`.
+An expired timer shows `timer` and keeps status `busy`.
+A subagent shows role `worker` and its source role word in Activity.
 Model and effort come from the conversation's own census fields.
 Unknown values and shell metadata remain blank.
 See [activity](activity.md) for status and role details.
@@ -55,7 +63,8 @@ See [activity](activity.md) for status and role details.
 `AccountColumn::of` makes one frame-wide decision across all rows and machines.
 Two labels for one program make accounts visible everywhere.
 Unrecorded accounts do not count as a second label.
-Header program labels, summary labels, and tree account columns use that same decision.
+Header program labels and summary labels use that decision.
+Tree account columns retain recorded accounts.
 
 ### Measurement and column fit
 
@@ -82,7 +91,7 @@ Population and ages still consider complete rows.
 3. Directory.
 4. Branch.
 5. Type.
-6. Age.
+6. Activity.
 7. Account.
 
 Matching fitted groups merge after each step.

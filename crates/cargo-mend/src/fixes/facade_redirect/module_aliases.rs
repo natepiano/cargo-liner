@@ -1,13 +1,18 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::Ident;
 use syn::Item;
+use syn::ItemUse;
+use syn::UseTree;
 use syn::ext::IdentExt;
 
 use super::module_path;
+use super::self_crate_alias::SelfCrateAlias;
 use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
 use crate::rust_syntax::ParsedSources;
@@ -25,14 +30,54 @@ use crate::rust_syntax::ParsedSources;
 pub(in crate::fixes) struct ModuleAliases {
     /// The crate-relative path of each binding, e.g. `screen::capture`, mapped
     /// to the crate-relative path of the module it binds.
-    targets: BTreeMap<Vec<String>, Vec<String>>,
+    targets:      BTreeMap<Vec<String>, Vec<String>>,
     /// Each module's glob imports of other modules of the crate, e.g.
     /// `screen::tests` to `[screen]` for a `use super::*;` there.
-    globs:   BTreeMap<Vec<String>, Vec<Vec<String>>>,
-    modules: BTreeSet<Vec<String>>,
+    globs:        BTreeMap<Vec<String>, Vec<Vec<String>>>,
+    modules:      BTreeSet<Vec<String>>,
+    root_aliases: BTreeMap<String, Vec<String>>,
+}
+
+/// Whether a use item names this crate or an external crate.
+pub(in crate::fixes) enum CrateUse<'a> {
+    Local(Cow<'a, ItemUse>),
+    External,
+}
+
+/// Module bindings precede the extern prelude, including bindings supplied by globs.
+enum ModuleAliasResolution<'a> {
+    Bound(&'a Vec<String>),
+    Declared,
+    Unbound,
+    Blocked,
 }
 
 impl ModuleAliases {
+    pub(in crate::fixes) fn is_root_self_alias(&self, name: &str) -> bool {
+        self.root_aliases.contains_key(name)
+    }
+
+    pub(in crate::fixes) fn classify_use<'a>(&self, item: &'a ItemUse) -> CrateUse<'a> {
+        if item.leading_colon.is_none() {
+            return CrateUse::Local(Cow::Borrowed(item));
+        }
+        let UseTree::Path(prefix) = &item.tree else {
+            return CrateUse::External;
+        };
+        if !self.is_root_self_alias(&prefix.ident.unraw().to_string()) {
+            return CrateUse::External;
+        }
+        let mut local = item.clone();
+        if let UseTree::Path(prefix) = &mut local.tree {
+            prefix.ident = Ident::new("crate", prefix.ident.span());
+        }
+        CrateUse::Local(Cow::Owned(local))
+    }
+
+    pub(in crate::fixes) fn contains_module(&self, path: &[String]) -> bool {
+        self.modules.contains(path)
+    }
+
     /// The module bindings of `files`, each paired with the module path it
     /// occupies and read through `sources`. A binding counts only when its
     /// target is a module of these files: an inline `mod` or a file's own
@@ -56,6 +101,7 @@ impl ModuleAliases {
             modules,
             bindings,
             globs,
+            root_aliases,
         } = alias_collector;
         let targets = bindings
             .into_iter()
@@ -76,6 +122,10 @@ impl ModuleAliases {
             targets,
             globs,
             modules,
+            root_aliases: root_aliases
+                .into_iter()
+                .map(|name| (name, Vec::new()))
+                .collect(),
         })
     }
 
@@ -122,18 +172,58 @@ impl ModuleAliases {
         alias: &[String],
         visited: &mut BTreeSet<Vec<String>>,
     ) -> Option<&'aliases Vec<String>> {
+        match self.module_target(alias, visited) {
+            ModuleAliasResolution::Bound(target) => Some(target),
+            ModuleAliasResolution::Unbound => {
+                alias.last().and_then(|name| self.root_aliases.get(name))
+            },
+            ModuleAliasResolution::Declared | ModuleAliasResolution::Blocked => None,
+        }
+    }
+
+    fn module_target<'aliases>(
+        &'aliases self,
+        alias: &[String],
+        visited: &mut BTreeSet<Vec<String>>,
+    ) -> ModuleAliasResolution<'aliases> {
         if let Some(target) = self.targets.get(alias) {
-            return Some(target);
+            return ModuleAliasResolution::Bound(target);
         }
-        let (name, module) = alias.split_last()?;
-        if self.modules.contains(alias) || !visited.insert(module.to_vec()) {
-            return None;
+        let Some((name, module)) = alias.split_last() else {
+            return ModuleAliasResolution::Unbound;
+        };
+        if self.modules.contains(alias) {
+            return ModuleAliasResolution::Declared;
         }
-        self.globs.get(module)?.iter().find_map(|source| {
+        if !visited.insert(module.to_vec()) {
+            // A glob cycle supplies no new binding. Search the other glob sources.
+            return ModuleAliasResolution::Unbound;
+        }
+        let mut resolution = ModuleAliasResolution::Unbound;
+        for source in self.globs.get(module).into_iter().flatten() {
             let mut through_glob = source.clone();
             through_glob.push(name.clone());
-            self.target(&through_glob, visited)
-        })
+            match self.module_target(&through_glob, &mut visited.clone()) {
+                ModuleAliasResolution::Bound(target) => {
+                    if let ModuleAliasResolution::Bound(previous) = resolution
+                        && previous != target
+                    {
+                        return ModuleAliasResolution::Blocked;
+                    }
+                    resolution = ModuleAliasResolution::Bound(target);
+                },
+                ModuleAliasResolution::Blocked => return ModuleAliasResolution::Blocked,
+                // A glob cannot import a private module. A visible module conflicts with
+                // another glob binding, so the compiler rejects that original crate.
+                ModuleAliasResolution::Declared => {
+                    if matches!(resolution, ModuleAliasResolution::Unbound) {
+                        resolution = ModuleAliasResolution::Declared;
+                    }
+                },
+                ModuleAliasResolution::Unbound => {},
+            }
+        }
+        resolution
     }
 }
 
@@ -148,9 +238,10 @@ enum LastSegment {
 /// The module paths and the `use` bindings `ModuleAliases::collect` has seen.
 #[derive(Default)]
 struct AliasCollector {
-    modules:  BTreeSet<Vec<String>>,
-    bindings: BTreeMap<Vec<String>, Vec<String>>,
-    globs:    BTreeMap<Vec<String>, Vec<Vec<String>>>,
+    modules:      BTreeSet<Vec<String>>,
+    bindings:     BTreeMap<Vec<String>, Vec<String>>,
+    globs:        BTreeMap<Vec<String>, Vec<Vec<String>>>,
+    root_aliases: BTreeSet<String>,
 }
 
 impl AliasCollector {
@@ -158,6 +249,16 @@ impl AliasCollector {
     /// walks every inline `mod` among them.
     fn collect_items(&mut self, module_path: &[String], items: &[Item]) {
         for item in items {
+            if let SelfCrateAlias::Named(name) = SelfCrateAlias::classify(item) {
+                let name = name.unraw().to_string();
+                let mut alias = module_path.to_vec();
+                alias.push(name.clone());
+                self.bindings.insert(alias, Vec::new());
+                if module_path.is_empty() {
+                    self.root_aliases.insert(name);
+                }
+                continue;
+            }
             match item {
                 Item::Use(item_use) if item_use.leading_colon.is_none() => {
                     for binding in imports::collect_use_bindings(&item_use.tree) {

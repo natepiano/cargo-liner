@@ -9,6 +9,7 @@ use crate::agent_cell::AgentTile;
 use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::sort::AccountsSort;
 
 const NOW: u64 = 1_792_166_400;
@@ -81,7 +82,7 @@ fn summary_headers_name_the_account_and_session_columns() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let lines = text(&draw_summary(&machines, &placement));
     let header = lines
         .iter()
@@ -98,7 +99,6 @@ fn summary_headers_name_the_account_and_session_columns() {
             "account",
             "session",
             "status",
-            "age",
             "desktop",
             "directory"
         ]
@@ -116,7 +116,7 @@ fn summary_omits_the_desktop_header_when_no_drawn_row_has_a_desktop() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let buffer = draw_summary(&machines, &placement);
     let rows = text(&buffer);
     let header = rows
@@ -186,7 +186,7 @@ fn summary_keeps_the_desktop_header_and_value_when_a_drawn_row_has_one() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let rows = text(&draw_summary(&machines, &placement));
     let header = rows
         .iter()
@@ -210,7 +210,7 @@ fn sessions_without_hierarchy_draw_only_in_unassigned_and_do_not_inflate_summary
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let summary = text(&draw_summary(&machines, &placement));
     assert!(
         summary
@@ -277,7 +277,7 @@ fn a_session_with_work_has_one_summary_entry_and_one_tile_instead_of_an_unassign
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let summary = text(&draw_summary(&machines, &placement));
     assert!(
         summary

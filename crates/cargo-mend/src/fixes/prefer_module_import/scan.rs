@@ -254,7 +254,7 @@ pub(crate) fn scan_selection(
     });
     Ok(PreferModuleImportScan {
         findings: all_findings,
-        fixes:    ValidatedFixSet::try_from(all_fixes)?,
+        fixes:    ValidatedFixSet::try_from((all_fixes, sources))?,
     })
 }
 
@@ -277,7 +277,9 @@ fn scan_file(
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
-    let file_context = ScanFileContext::new(analysis_root, path, text);
+    let analysis_root = crate_sources.sources.path_key(analysis_root);
+    let file_key = crate_sources.sources.path_key(path);
+    let file_context = ScanFileContext::new(analysis_root.as_path(), file_key.as_path(), text);
     let indexed = file_context.source();
 
     let (raw_candidates, mut inline_candidates) =
@@ -1206,6 +1208,28 @@ fn collect(identity: u64) {
             "fn f() { let α = (); run(); crate::util::run(); }"
         );
         assert_eq!(findings[1].highlight_len, "crate::util::run".len());
+        #[cfg(unix)]
+        {
+            let linked_root = dir.path().join("linked");
+            std::os::unix::fs::symlink(dir.path(), &linked_root)?;
+            let physical = std::fs::canonicalize(&path)?;
+            let (linked_findings, _) = super::scan_file(
+                &linked_root,
+                super::CrateSources {
+                    source_root: dir.path(),
+                    sources:     &sources,
+                },
+                &physical,
+                &module_map,
+            )?;
+            assert_eq!(linked_findings.len(), 2);
+            for finding in linked_findings {
+                assert_eq!(
+                    finding.path, "lib.rs",
+                    "linked analysis roots keep relative paths"
+                );
+            }
+        }
         fixes.sort_by_key(|fix| Reverse(fix.start));
         let mut rewritten = text.to_string();
         for fix in fixes {

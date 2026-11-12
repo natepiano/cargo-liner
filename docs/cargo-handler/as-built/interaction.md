@@ -94,7 +94,8 @@ They do not rebuild hit regions from a newer census.
 A different header starts in its natural direction.
 Tree sorting changes siblings, preserving the hierarchy and rails.
 Names compare without case, then use original spelling as a tie breaker.
-Trees start with session ascending.
+Trees start with the oldest row first.
+The hidden age sort has no header marker.
 Summary sorting stays within each machine.
 A tile's sort uses `TileKey`, including the per-machine unassigned tile.
 Pruning removes sorts for departed tiles.
@@ -118,6 +119,24 @@ The mark pass scans tokens only while a word is active.
 `invalidate_body` retains the buffer while invalidating reuse.
 A second press before repaint can therefore read the same painted word.
 The status-clock path reuses a body only while Reusable.
+
+### Row details
+
+`d` opens details for the selected row in the focused tree or top-level agents table.
+The modal retains a snapshot of the row's values.
+It lists the drawn properties first and the remaining recorded properties next.
+It retains the program and the source account as separate properties.
+`state:` retains the detailed activity word.
+`age:` appears last in days, hours, and minutes.
+The age omits leading zero units.
+An age under one minute shows `0 minutes`.
+
+The details pane uses the shared `PopupFrame` and its own keymap scope.
+Esc closes the modal.
+Up, Down, and the wheel scroll wrapped properties in a small terminal.
+The modal consumes other keys and pointer presses.
+These events cannot change the underlying row selection.
+The shortcuts overlay lists the global `d` binding.
 
 ### Overlays and settings
 
@@ -151,3 +170,34 @@ A layout-only hit test cannot reproduce the visible input target during motion.
 The census can change after a paint and before a press.
 Retained geometry makes input describe what the user saw.
 Stable identities preserve selection when names, rows, and physical workers change.
+
+### Word highlight strength
+
+Set the strength beside `[appearance]` in `config.toml`:
+
+```toml
+[word_highlight]
+emphasis = "clear"
+```
+
+The accepted values are `subtle`, `clear`, and `strong`.
+`subtle` retains the C240 appearance.
+`clear` increases the match ground's distance from the pane ground.
+`strong` also adds bold to the matched text.
+The default is `clear`.
+
+`config_watch.rs` watches the configuration directory on a background thread.
+It reads and parses `config.toml` after a file change.
+It retains the directory watch across atomic file replacements.
+The reader sends a checked emphasis through a channel.
+The terminal loop applies the emphasis and invalidates the retained body.
+The existing clicked word therefore changes without another click or a theme change.
+The UI thread performs no configuration file reads.
+
+An invalid value retains the last valid emphasis.
+The settings pane shows a config error that names all three accepted values.
+A later valid file clears that error, including a parse error from startup.
+The reader owns the parse status.
+A save failure keeps its separate notice until a save succeeds.
+The application stops and joins the reader before it releases the configuration directory.
+Other configuration sections retain their existing application rules.
