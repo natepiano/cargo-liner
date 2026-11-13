@@ -378,3 +378,39 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **State:** none.
 
 **Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.
+
+### Phase 13b — cargo-port applies startup results fast under high load  · status: todo
+
+**Depends on:** Phase 13 (both edit the startup disk path and `crates/cargo-port/CHANGELOG.md`). Runs next, before Phase 12, in its own worktree.
+
+#### Work Order
+
+**Goal:** at startup under high load, the Disk usage row completes well under the 2 minute limit. Each background result applies to the app in little time.
+
+**Source:** the showrunner, 2026-11-13, add-on ruling on the Phase 13 proof. Paired natedev starts at the same load (about 53 to 145) gave these results:
+1. Before Phase 8 (`596c2c75a`): Disk usage done at 120.8 s.
+2. Phase 13 fix: done at 115.6 s. The cargo-liner walk took 10.6 s.
+3. In both builds the main loop applies at most `MAX_MSGS_PER_FRAME` (50, `tui/app/async_tasks/constants.rs:28`) results per frame in `tui/app/async_tasks/poll.rs`. One frame took 18.5 s to apply 50 results. The apply time per run sums to 111-132 s.
+4. In 100 s the perf log held 2461 `watcher_git_event_probes` and 901 `watcher_project_event` lines (`watcher/events.rs`). Many came from files under `/tmp` and `~/.claude` that are not project files, for example Claude session `.jsonl` files.
+5. At load 128 the Disk usage row timed out in both builds.
+
+**Spec:**
+1. **Slow apply.** Find which result kinds make one frame apply 50 results in 18.5 s. Use the perf log and add perf fields where the log cannot tell. Make each apply cheap; remove the waste, not the work the screen needs.
+2. **Watcher events.** Find why watcher events from `/tmp` and `~/.claude` that are not project files reach cargo-port's queue. Drop events outside the watched project roots at the source, in the watcher, before they cost a Git probe or a queue message.
+3. **Test.** Add tests that fail before each fix and pass after. They run under 1 s and do not depend on real disk timing or load.
+4. **Changelog.** Add a cargo-port fix entry.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/` — the background apply path that the cause names
+- `crates/cargo-port/src/watcher/` — event filtering at the source
+- `crates/cargo-port/CHANGELOG.md` — entry
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:**
+1. The tests fail before the repair and pass after.
+2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
+3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13 build, then this build. The Disk usage row in this build completes well under the 120 s limit.
+4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the Disk usage row completes with no failure.
