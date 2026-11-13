@@ -499,6 +499,7 @@ fn a_later_machine_header_keeps_its_row_after_an_earlier_notice_changes() -> Tes
     app.census.apply(CensusUpdate::Local {
         rows:      vec![word_click_tests::session(10, "local-owner", "local-work")?],
         hierarchy: HierarchySnapshot {
+            facts:  crate::census::CensusFacts::default().into(),
             edges:  HierarchyEdges::default(),
             notice: HierarchyNotice::Failed(HierarchyError::TimedOut),
         },

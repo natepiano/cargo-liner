@@ -12,9 +12,12 @@ use crate::census::AgentPlacement;
 use crate::census::HierarchyEdge;
 use crate::census::HierarchyRole;
 use crate::census::Machine;
+use crate::census::MachineState;
 use crate::census::RemoteHierarchyAnswers;
 use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::census::herdr::PaneState;
+use crate::census::hierarchy::StaffRunPointer;
 use crate::footer_colors::FooterColors;
 use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
@@ -34,6 +37,76 @@ fn rows() -> Vec<AgentRow> {
         .expect("remote session fixture")
     })
     .into()
+}
+
+#[test]
+fn probe_census_facts_preserve_observations_and_name_missing_remote_fields()
+-> Result<(), &'static str> {
+    use crate::census::CensusFacts;
+    use crate::census::Observed;
+    use crate::census::SourceHealth;
+    use crate::census::UnknownReason;
+    use crate::census::WorkerFacts;
+    let recorded = CensusFacts {
+        staff:    Observed::Known(SourceHealth::Loaded),
+        accounts: Observed::Known(SourceHealth::Unreadable(UnknownReason(
+            "accounts: command failed".into(),
+        ))),
+        workers:  Observed::Known(std::collections::BTreeMap::from([(
+            "unit".into(),
+            WorkerFacts {
+                current_run:      Observed::Known(StaffRunPointer::NoRun),
+                pane:             Observed::Known(PaneState::Stopped),
+                runs:             Observed::Known(Vec::new()),
+                activity_started: Observed::Known(123),
+            },
+        )])),
+    };
+    for facts in [None, Some(recorded)] {
+        let mut report =
+            ProbeReport::from_answer("old-remote".into(), rows(), HierarchyEdges::default());
+        report.facts = facts.clone();
+        let bytes = serde_json::to_vec(&report).expect("probe report");
+        let state = RemoteHierarchyAnswers::default().apply("old-remote", parse_answer(&bytes));
+        let MachineState::Answered(actual_rows, snapshot) = state else {
+            return Err("probe rows must survive");
+        };
+        assert_eq!(actual_rows, rows());
+        if let Some(expected) = facts {
+            assert_eq!(*snapshot.facts, expected);
+        } else {
+            assert_eq!(
+                snapshot.facts.staff,
+                Observed::unknown("remote probe has no staff read")
+            );
+            assert_eq!(
+                snapshot.facts.accounts,
+                Observed::unknown("remote probe has no accounts read")
+            );
+            let Observed::Known(workers) = snapshot.facts.workers else {
+                return Err("old rows retain unknown worker facts");
+            };
+            for worker in workers.values() {
+                assert_eq!(
+                    worker.current_run,
+                    Observed::unknown("remote probe has no current run")
+                );
+                assert_eq!(
+                    worker.pane,
+                    Observed::unknown("remote probe has no pane state")
+                );
+                assert_eq!(
+                    worker.runs,
+                    Observed::unknown("remote probe has no run states")
+                );
+                assert_eq!(
+                    worker.activity_started,
+                    Observed::unknown("remote probe has no activity start")
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]

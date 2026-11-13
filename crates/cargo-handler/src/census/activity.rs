@@ -22,8 +22,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::Observed;
+use super::SourceHealth;
+use super::UnknownReason;
 use super::classify::ProcessEntry;
 use super::hierarchy::FileRevision;
+use super::hierarchy::StaffMemberLookup;
 use super::hierarchy::StaffRoster;
 use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
@@ -33,6 +37,7 @@ use super::transcript::RecordKind;
 use super::transcript::WatchedDirectoryIdentity;
 use crate::constants::DETACHED_RUNS_DIRECTORY;
 use crate::constants::DETACHED_RUNS_SCRIPT;
+use crate::constants::QUEUED_DELIVERY_PREFIXES;
 use crate::constants::RUN_WATCH_RECOVERY;
 use crate::constants::RUN_WATCH_RETRY;
 use crate::constants::TRANSCRIPT_TAIL_START;
@@ -189,23 +194,41 @@ impl<'de> Deserialize<'de> for AgentActivity {
 }
 
 /// Incremental turn and tool observations from one conversation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ActivityRead {
     current: AgentActivity,
+    /// The start of the fact behind `current`, or the reason that fact has no start.
+    started: Observed<u64>,
 }
+
 impl Default for ActivityRead {
-    fn default() -> Self {
-        Self {
-            current: AgentActivity::Idle,
-        }
-    }
+    fn default() -> Self { Self::from_activity(AgentActivity::Idle) }
 }
+
 impl ActivityRead {
     /// Seed a transcript read with the session boundary's reported turn state.
-    pub(super) const fn from_activity(current: AgentActivity) -> Self { Self { current } }
+    pub(super) fn from_activity(current: AgentActivity) -> Self {
+        Self {
+            current,
+            started: Observed::unknown("no running detached run or open pass start"),
+        }
+    }
+
+    /// Retain the source start while the displayed activity remains the same.
+    pub(super) fn observe(&mut self, activity: AgentActivity, started: &Observed<u64>) {
+        if self.current != activity
+            || matches!(self.started, Observed::Unknown(_))
+            || matches!(started, Observed::Unknown(_))
+        {
+            self.started = started.clone();
+        }
+        self.current = activity;
+    }
+
+    pub(super) fn started(&self) -> Observed<u64> { self.started.clone() }
 
     /// The last event's semantic activity.
-    pub(super) const fn activity(self) -> AgentActivity { self.current }
+    pub(super) const fn activity(&self) -> AgentActivity { self.current }
     /// Observe a whole Codex rollout line.
     pub(super) fn take_codex(&mut self, line: &Value) {
         let payload = &line["payload"];
@@ -368,7 +391,7 @@ pub(super) struct TranscriptRead {
 }
 
 impl TranscriptRead {
-    pub(super) const fn new(reported: AgentActivity) -> Self {
+    pub(super) fn new(reported: AgentActivity) -> Self {
         Self {
             cursor:     JsonlCursor::NeverRead,
             bytes_read: 0,
@@ -429,6 +452,12 @@ struct RunPayload {
     status:      RunStatus,
     started_at:  Option<f64>,
     cwd:         Option<PathBuf>,
+    #[serde(default)]
+    run_id:      String,
+    #[serde(default)]
+    label:       String,
+    #[serde(default)]
+    delivery:    String,
 }
 
 /// Only validated, running detached records may compete for a worker's activity.
@@ -437,10 +466,13 @@ struct RunPayload {
 pub(super) enum RunRecord {
     Ignored,
     Running(DetachedRun),
+    FinishedQueued(DetachedRun),
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct DetachedRun {
+    id:         String,
+    label:      String,
     worker:     RunWorkerReference,
     pid:        u32,
     requested:  RequestedStep,
@@ -498,7 +530,7 @@ pub(super) enum RunDirector<'a> {
 impl RunRecord {
     /// Bind the decoded record to the file that supplied it.
     pub(super) fn at_file(mut self, path: &Path) -> Self {
-        if let Self::Running(run) = &mut self {
+        if let Self::Running(run) | Self::FinishedQueued(run) = &mut self {
             run.record = RunRecordPath::File(path.to_owned());
         }
         self
@@ -512,28 +544,42 @@ impl RunRecord {
                         reference: worker, ..
                     },
                 ..
+            })
+            | Self::FinishedQueued(DetachedRun {
+                worker:
+                    RunWorkerReference::Identified {
+                        reference: worker, ..
+                    },
+                ..
             }) => worker.session(staff),
-            Self::Running(_) | Self::Ignored => None,
+            Self::Running(_) | Self::FinishedQueued(_) | Self::Ignored => None,
         }
     }
 
     pub(super) fn seat(&self) -> RunSeat<'_> {
-        match self {
-            Self::Running(DetachedRun {
-                worker:
-                    RunWorkerReference::Identified {
-                        seat: RecordedRunSeat::Named(name),
-                        ..
-                    }
-                    | RunWorkerReference::NamedSeat(name),
+        let run = match self {
+            Self::Running(run) | Self::FinishedQueued(run) => run,
+            Self::Ignored => return RunSeat::Unrecorded,
+        };
+        match &run.worker {
+            RunWorkerReference::Identified {
+                seat: RecordedRunSeat::Named(name),
                 ..
-            }) => RunSeat::Named(&name.0),
-            Self::Running(_) | Self::Ignored => RunSeat::Unrecorded,
+            }
+            | RunWorkerReference::NamedSeat(name) => RunSeat::Named(&name.0),
+            RunWorkerReference::Identified {
+                seat: RecordedRunSeat::Unrecorded,
+                ..
+            } => RunSeat::Unrecorded,
         }
     }
 
     pub(super) fn directory(&self) -> RunDirectory<'_> {
         if let Self::Running(DetachedRun {
+            record: RunRecordPath::File(path),
+            ..
+        })
+        | Self::FinishedQueued(DetachedRun {
             record: RunRecordPath::File(path),
             ..
         }) = self
@@ -559,9 +605,84 @@ impl RunRecord {
             }) => worker
                 .parent_session(staff)
                 .map_or(RunDirector::Unrecorded, RunDirector::Session),
-            Self::Running(_) | Self::Ignored => RunDirector::Unrecorded,
+            Self::Running(_) | Self::FinishedQueued(_) | Self::Ignored => RunDirector::Unrecorded,
         }
     }
+
+    /// A named seat can identify a worker within its checked current unit run.
+    pub(super) fn ownership(&self, session: &str, staff: &StaffRoster) -> RunOwnership {
+        let owned = self.session(staff).map_or_else(
+            || {
+                matches!((self.seat(), staff.member(session)),
+                    (RunSeat::Named(seat), StaffMemberLookup::Managed { member, .. }) if seat == member.name)
+            },
+            |id| id == session,
+        );
+        if owned {
+            RunOwnership::Worker
+        } else {
+            RunOwnership::Other
+        }
+    }
+
+    /// Retain the record state without treating an absent supervisor as live activity.
+    pub(super) fn fact(&self, processes: &[ProcessEntry]) -> super::Observed<DetachedRunFact> {
+        let (run, state) = match self {
+            Self::Running(run) => {
+                let live = processes.iter().any(|process| process.pid == run.pid
+                    && matches!(&run.record, RunRecordPath::File(path) if supervisor_record(process) == Some(path.as_path())));
+                (
+                    run,
+                    if live {
+                        DetachedRunState::Running
+                    } else {
+                        DetachedRunState::Missing
+                    },
+                )
+            },
+            Self::FinishedQueued(run) => (run, DetachedRunState::FinishedQueued),
+            Self::Ignored => {
+                return super::Observed::unknown("detached record has no usable worker or start");
+            },
+        };
+        Observed::Known(DetachedRunFact {
+            id: run.id.clone(),
+            label: run.label.clone(),
+            state,
+            started: epoch_seconds(run.started_at),
+        })
+    }
+}
+
+/// A current run record keeps its supervisor and result state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DetachedRunState {
+    Running,
+    FinishedQueued,
+    Missing,
+}
+
+/// A detached record remains available after its supervisor exits.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct DetachedRunFact {
+    pub(super) id:      String,
+    pub(super) label:   String,
+    pub(super) state:   DetachedRunState,
+    pub(super) started: super::Observed<u64>,
+}
+
+pub(super) fn epoch_seconds(stamp: f64) -> super::Observed<u64> {
+    // JSON timestamps are epoch seconds and can include a fractional part.
+    stamp
+        .to_string()
+        .split('.')
+        .next()
+        .and_then(|seconds| seconds.parse().ok())
+        .map_or_else(
+            || super::Observed::unknown("activity start is not an epoch timestamp"),
+            Observed::Known,
+        )
 }
 
 /// The detached supervisor's command line names its exact record.
@@ -605,10 +726,15 @@ impl From<RunPayload> for RunRecord {
         let Some(started_at) = payload.started_at.filter(|at| at.is_finite()) else {
             return Self::Ignored;
         };
-        if payload.status != RunStatus::Running {
+        let queued = QUEUED_DELIVERY_PREFIXES
+            .iter()
+            .any(|prefix| payload.delivery.starts_with(prefix));
+        if payload.status != RunStatus::Running && !queued {
             return Self::Ignored;
         }
-        Self::Running(DetachedRun {
+        let run = DetachedRun {
+            id: payload.run_id,
+            label: payload.label,
             worker,
             pid: payload.pid,
             requested: verification_arguments(&payload.command)
@@ -623,7 +749,12 @@ impl From<RunPayload> for RunRecord {
             worktree: payload
                 .cwd
                 .map_or(ThreadWorktree::Unrecorded, ThreadWorktree::Recorded),
-        })
+        };
+        if payload.status == RunStatus::Running {
+            Self::Running(run)
+        } else {
+            Self::FinishedQueued(run)
+        }
     }
 }
 
@@ -1001,6 +1132,7 @@ pub(super) fn run_activity(
 /// Parsed detached-run records retained by one local census scanner.
 #[derive(Debug)]
 pub(super) struct RunRecords {
+    failures:        HashMap<PathBuf, super::UnknownReason>,
     sessions:        HashMap<PathBuf, HashMap<OsString, RunFile>>,
     watches:         HashMap<PathBuf, RunDirectoryWatch>,
     install_watch:   fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
@@ -1192,6 +1324,7 @@ impl RunDirectoryWatch {
 impl Default for RunRecords {
     fn default() -> Self {
         Self {
+            failures:                     HashMap::new(),
             sessions:                     HashMap::new(),
             watches:                      HashMap::new(),
             install_watch:                RunDirectoryWatch::install,
@@ -1215,7 +1348,80 @@ enum RunFileContent {
     ReadFailed,
 }
 
+/// `RunOwnership` names whether a run record belongs to one worker session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RunOwnership {
+    Worker,
+    Other,
+}
+
+/// A run directory read keeps every valid record beside the first failure.
+pub(super) struct RunRecordsRead {
+    pub(super) records: Vec<RunRecord>,
+    pub(super) health:  SourceHealth,
+}
+
+impl RunRecordsRead {
+    const fn failed(reason: UnknownReason) -> Self {
+        Self {
+            records: Vec::new(),
+            health:  SourceHealth::Unreadable(reason),
+        }
+    }
+}
+
 impl RunRecords {
+    /// Read current records before supervisor validation selects activity.
+    /// One unreadable record names the directory's failure and keeps its valid siblings.
+    pub(super) fn current(&mut self, session: &Path) -> RunRecordsRead {
+        let directory = session.join(DETACHED_RUNS_DIRECTORY);
+        match fs::metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() => {},
+            Ok(_) => {
+                return RunRecordsRead::failed(UnknownReason(format!(
+                    "{} is not a directory",
+                    directory.display()
+                )));
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return RunRecordsRead {
+                    records: Vec::new(),
+                    health:  SourceHealth::Absent,
+                };
+            },
+            Err(error) => {
+                return RunRecordsRead::failed(UnknownReason(format!(
+                    "{}: {error}",
+                    directory.display()
+                )));
+            },
+        }
+        let records = self.read_matching(
+            session,
+            |bytes| serde_json::from_slice(bytes).ok(),
+            |path| fs::read(path),
+            |record| !matches!(record, RunRecord::Ignored),
+        );
+        let failure = self.failures.get(session).cloned().or_else(|| {
+            self.sessions.get(session).and_then(|files| {
+                files.iter().find_map(|(name, file)| match file.content {
+                    RunFileContent::MalformedJson => Some(UnknownReason(format!(
+                        "{}: invalid detached record",
+                        directory.join(name).display()
+                    ))),
+                    RunFileContent::ReadFailed => Some(UnknownReason(format!(
+                        "{}: detached record cannot be read",
+                        directory.join(name).display()
+                    ))),
+                    RunFileContent::Parsed(_) => None,
+                })
+            })
+        });
+        RunRecordsRead {
+            records,
+            health: failure.map_or(SourceHealth::Loaded, SourceHealth::Unreadable),
+        }
+    }
     /// Deliver a fixture's file event before the next scan.
     #[cfg(test)]
     pub(super) fn record_changed(&self, session: &Path, name: OsString) {
@@ -1256,6 +1462,7 @@ impl RunRecords {
 
     /// Retire sessions no current worker refers to.
     pub(super) fn retain_sessions(&mut self, seen: &HashSet<PathBuf>) {
+        self.failures.retain(|path, _| seen.contains(path));
         self.sessions.retain(|path, _| seen.contains(path));
         self.watches.retain(|path, _| seen.contains(path));
     }
@@ -1307,9 +1514,21 @@ impl RunRecords {
                 {
                     self.directory_reads += 1;
                 }
-                let seen: HashSet<_> = fs::read_dir(&directory)
-                    .into_iter()
-                    .flatten()
+                let listing = match fs::read_dir(&directory) {
+                    Ok(listing) => {
+                        self.failures.remove(session);
+                        listing
+                    },
+                    Err(error) => {
+                        self.failures.insert(
+                            session.to_owned(),
+                            super::UnknownReason(format!("{}: {error}", directory.display())),
+                        );
+                        watch.invalidate();
+                        return Vec::new();
+                    },
+                };
+                let seen: HashSet<_> = listing
                     .flatten()
                     .map(|entry| entry.file_name())
                     .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "json"))

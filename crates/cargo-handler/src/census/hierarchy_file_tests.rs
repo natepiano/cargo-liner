@@ -16,7 +16,10 @@ use crate::census::Agent;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::ProvenCodexThread;
+use crate::census::SourceHealth;
+use crate::census::SourceRead;
 use crate::census::StaffRowNames;
+use crate::census::UnknownReason;
 use crate::census::classify;
 
 const THREAD: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a";
@@ -39,6 +42,11 @@ fn staff_identity_resolves_the_current_session_and_manager() {
     };
     assert_eq!(root.session(&roster), Some("claude-live"));
     assert_eq!(root.parent_session(&roster), None);
+    assert_eq!(
+        roster.for_current_runs().workers("unit-live").count(),
+        0,
+        "a unit without a current run contributes no worker membership"
+    );
     let missing = WorkerReference::Staff {
         staff_id: "unlisted".into(),
     };
@@ -159,6 +167,7 @@ fn a_missing_staff_file_preserves_live_names_without_an_error() {
     let source = HierarchySource::File(path.to_string_lossy().into_owned());
     let reader = StaffFileReader::default();
     let roster = reader.roster(&source);
+    assert!(matches!(reader.read(&source), SourceRead::Absent));
     let mut rows = vec![row(1, "claude-live", "herdr name")];
     classify::attach_staff_names(&mut rows, &roster);
     assert_eq!(roster.names, BTreeMap::new());
@@ -169,6 +178,7 @@ fn a_missing_staff_file_preserves_live_names_without_an_error() {
         StaffPublication::Ready(HierarchySnapshot {
             edges: HierarchyEdges(edges),
             notice: HierarchyNotice::Clear,
+            ..
         }) if edges.is_empty()
     ));
 }
@@ -245,12 +255,22 @@ fn staff_file_reuses_mtime_and_reloads_changed_and_missing_files() {
 fn staff_foreign_schema_and_unreadable_files_publish_no_error_row() {
     let directory = tempfile::tempdir().expect("staff directory");
     let path = directory.path().join("staff.json");
-    for bytes in [br#"{"schema":3,"rows":[]}"#.as_slice(), b"broken JSON"] {
+    for (bytes, reason) in [
+        (
+            br#"{"schema":3,"rows":[]}"#.as_slice(),
+            "staff schema 3; expected schema 2",
+        ),
+        (b"broken JSON".as_slice(), "unreadable hierarchy output"),
+    ] {
         fs::write(&path, bytes).expect("invalid staff file");
         let reader = StaffFileReader::default();
         let source = HierarchySource::File(path.to_string_lossy().into_owned());
+        assert_eq!(
+            reader.read(&source).health(),
+            SourceHealth::Unreadable(UnknownReason(reason.into()))
+        );
         assert!(
-            matches!(reader.publication(&source), StaffPublication::Ready(HierarchySnapshot { edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear }) if edges.is_empty())
+            matches!(reader.publication(&source), StaffPublication::Ready(HierarchySnapshot { edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear, .. }) if edges.is_empty())
         );
         assert!(matches!(
             reader.roster(&source).name("claude-live"),
@@ -262,7 +282,7 @@ fn staff_foreign_schema_and_unreadable_files_publish_no_error_row() {
         matches!(
             StaffFileReader::default().publication(&source),
             StaffPublication::Ready(HierarchySnapshot {
-                edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear
+                edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear, ..
             }) if edges.is_empty()
         ),
         "a directory cannot supply staff names"
@@ -387,7 +407,7 @@ fn assert_rejected_staff(mut change: impl FnMut(&mut Value)) {
     assert_eq!(reader.roster(&source).edges, HierarchyEdges::default());
     assert!(
         matches!(reader.publication(&source), StaffPublication::Ready(HierarchySnapshot {
-        edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear
+        edges: HierarchyEdges(edges), notice: HierarchyNotice::Clear, ..
     }) if edges.is_empty())
     );
 }

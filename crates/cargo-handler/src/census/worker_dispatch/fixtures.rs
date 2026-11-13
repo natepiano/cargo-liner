@@ -46,7 +46,7 @@ pub(in crate::census) fn write_worker_fixture(directory: &Path, entries: &Value)
         serde_json::json!({"id":"boss", "kind":"showrunner", "name":"boss",
             "parent":null, "current_session":"boss-session"}),
         serde_json::json!({"id":"unit", "kind":"unit", "name":"unit",
-            "parent":"boss", "current_session":"director-id"}),
+            "parent":"boss", "current_session":"director-id", "run":directory}),
     ];
     for (name, entry) in entries.as_object().expect("worker entries") {
         let mut row = serde_json::json!({"id":name, "kind":"worker", "name":name,

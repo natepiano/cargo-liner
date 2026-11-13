@@ -307,7 +307,7 @@ fn waiting_clippy_mac_waiting_keeps_two_columns_at_80_by_45() -> TestResult {
     assert!(!clippy.text.split_whitespace().any(|word| word == "age"));
     let machines = source.app.census.machines(&[]);
     assert_eq!(
-        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "state", NOW),
+        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "activity", NOW),
         "waiting"
     );
     source.set_status(AgentActivity::Active(Activity::Verify {
@@ -316,7 +316,7 @@ fn waiting_clippy_mac_waiting_keeps_two_columns_at_80_by_45() -> TestResult {
     }))?;
     let machines = source.app.census.machines(&[]);
     assert_eq!(
-        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "state", NOW),
+        crate::agent_cell::detail_property_for_test(&machines, "cargo-liner", "activity", NOW),
         "clippy (mac)"
     );
     assert_eq!(waiting.summary_rows, clippy.summary_rows);
