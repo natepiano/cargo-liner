@@ -135,6 +135,23 @@ impl ReservationLifecycle {
         }
     }
 
+    /// End active work after the registry and Git verify checkpoint-free integration.
+    pub(crate) fn integrate_absent_holder(
+        &mut self,
+        witness: RewrittenIntegrationTrunkCommit,
+    ) -> Result<(), LifecycleTransitionError> {
+        match self {
+            Self::Active => {
+                *self = Self::Released {
+                    disposition: ReleaseDisposition::RewrittenIntegration(witness),
+                };
+                Ok(())
+            },
+            Self::Outstanding { .. } => Err(LifecycleTransitionError::CheckpointRequiresActive),
+            Self::Released { .. } => Err(LifecycleTransitionError::AlreadyReleased),
+        }
+    }
+
     /// Replace invalidated git-backed release evidence without erasing its history.
     pub(crate) fn replace_release_disposition(
         &mut self,
@@ -477,6 +494,17 @@ impl Display for LifecycleTransitionError {
 }
 
 impl Error for LifecycleTransitionError {}
+
+impl RewrittenIntegrationTrunkCommit {
+    /// Materialize the verified historical witness as an integration result.
+    pub(crate) fn integration_status(&self) -> IntegrationEvidenceStatus {
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid: self.as_ref().clone(),
+            proof:     IntegrationProof::RewrittenWitnessAncestor,
+            witness:   IntegrationWitness::Historical(self.clone()),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
