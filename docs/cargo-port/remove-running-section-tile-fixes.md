@@ -2551,44 +2551,23 @@ On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ti
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
 
-### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: todo
+### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: done
 
 **Depends on:** Phase 58g (order only; showrunner, 2026-11-13).
 
-On 2026-11-13 the port unit director ran two phases in two worktrees: its home worktree and `cargo-liner-port-8`. cargo-berth maps the director's `CLAUDE_CODE_SESSION_ID` to the home worktree. A plain `cargo-berth drift --reservation <phase 8 id>` was refused with `session_worktree_mismatch`. The only way through was an `env -C` or `-u CLAUDE_CODE_SESSION_ID` prefix, and `~/.claude/docs/direct/berth_decisions.md` forbids an env-var prefix: every cargo-berth call is one plain command in the director's working directory.
+On 2026-11-13 the port unit director ran two phases in two worktrees. A plain `cargo-berth drift --reservation <phase 8 id>` from the home worktree was refused with `session_worktree_mismatch`. The only way through was an env-var prefix, which `~/.claude/docs/direct/berth_decisions.md` forbids.
 
-The refusal comes from `validate_session_mapping` (`crates/cargo-berth/src/coordination_identity.rs:817-882`): when the named reservation's holder worktree differs from the issuing worktree, it returns `SessionWorktreeMismatch` (`:851-881`).
+#### As-built
 
-#### Work Order
+- The session store keeps `owned_reservations`: for each resolved session, the reservations that the session claimed, with their coordination runs. A claim adds to the set (`SelectionOrigin::Claim`); a widen changes only the current selection. Release, resolve and retire remove the reservation, and an empty set is dropped. `SessionIdentityStore::apply` holds the one copy of this logic.
+- `board`, `check`, `claim` and `drift` with `--reservation <id>` call `session::select_owned_reservation` (`session/reservation_command.rs`). For an active reservation in the caller's set, the verb discovers its worktree from the holder root, after a check of the holder worktree id and the common Git directory. Any other id returns to the old rules and their refusals. A changed holder identity is refused.
+- Each journal event records `resolved_session` (the session that the process resolved, hook payloads included). The actor worktree is the holder; `identity_inputs.invocation_directory` stays the process directory.
+- Tests: `explicit_reservations_route_each_owned_holder_and_refuse_other_owners` (both reservations from either worktree; another session's id refused) and `explicit_reservation_widens_its_holder_until_release` (check and claim widen the holder; a released id is refused). Both failed on the code before the change. One existing mismatch test now uses plain `drift --full`; every other `session_worktree_mismatch` test is unchanged.
+- Gate: lint and 1,383 cargo-berth tests on natedev after the merge of main. The two new tests take 0.13 s and 0.17 s.
+- Director review only (no workers). The four findings were repaired: the duplicated mapping change, the import placement, a doc comment, and an owned `bool`.
+- Checkpoint: a95a7bc7e on `tile-phase-58i`; tip 3f8be08d3 merges this branch and main c07faa23c.
 
-**Goal:** a plain `cargo-berth <verb> --reservation <id>` works for every reservation that the caller's session owns, whatever worktree holds it. The verb acts on the reservation's holder worktree. A reservation that the session does not own is still refused.
-
-**Spec:**
-
-1. Ownership record (showrunner, 2026-11-13). Today the session store keeps one selection per session (`session/mod.rs:350`), and each claim or widen replaces it (`:451`, `:509`). The journal's environment values (`ledger/journal.rs:207`) do not prove the resolved session, because hook payloads override them (`session/mod.rs:55`). The approved rule:
-   1. For each session, the store keeps the set of reservations that the session claimed. The claim writes it from the resolved session.
-   2. A reservation leaves the set when it is released, resolved or retired. The set holds only active reservations.
-   3. The current selection stays for commands without `--reservation`.
-2. A command with `--reservation <id>` is accepted when `<id>` is in the caller's set and active. It acts on that reservation's holder worktree. Any other id is refused as now. Name each verb that changes.
-3. A command with `--reservation <id>` writes the resolved session and the chosen holder worktree to the journal.
-4. Keep every refusal for an inactive reservation and for a stale mapping. A command without `--reservation` keeps its current worktree rules.
-5. Regression tests: the owner session acts on both of its reservations from either worktree; another session's id stays refused; a released id is refused. Each test fails on the code before the change.
-6. Update each `session_worktree_mismatch` test whose case this change makes valid. Keep each test whose case stays a refusal. Report each test that changed and why.
-7. Each new or changed test runs under 1 s.
-
-**Files:**
-
-- `crates/cargo-berth/src/coordination_identity.rs` — the mismatch rule
-- `crates/cargo-berth/src/` — verb dispatch and session mapping, when the change is there
-- `crates/cargo-berth/tests/drift.rs` — the regression test
-- `crates/cargo-berth/tests/` — the existing `session_worktree_mismatch` tests (`edges.rs`, `answers.rs`, `gate.rs`, `liveness.rs`, `hooks.rs`, `front_end_corpus.rs`, `fixtures/front_end_corpus.json`, `support/gate_fixtures.rs`)
-- `crates/cargo-berth-test-support/src/` — a two-worktree fixture, when one is needed
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; the regression test fails on the code before the change.
+**Files:** `crates/cargo-berth/src/{cli,drift/execution,ledger/journal,verb/board,verb/check,verb/claim/acquisition}.rs`, `crates/cargo-berth/src/session/{mod,reservation_command}.rs`, `crates/cargo-berth/tests/drift.rs`.
 
 ### Phase 58j — Sixteen cargo-berth drift, phase and presentation tests run under 1 s  · status: todo
 
