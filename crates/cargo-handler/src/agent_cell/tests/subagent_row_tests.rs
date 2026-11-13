@@ -325,7 +325,7 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
         .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header");
     assert!(
-        header.split_whitespace().next() == Some("account"),
+        header.split_whitespace().next() == Some("session"),
         "{header}"
     );
     for name in [
@@ -378,7 +378,14 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         hue:            SessionHue::First,
         rails:          Vec::new(),
         branch:         Branch::Last,
-        subject:        LineSubject::ManagedThread(&thread, HierarchyRole::Test),
+        subject:        LineSubject::ManagedThread(
+            &thread,
+            HierarchyRole::Test,
+            RowIdentity {
+                machine: "natedev",
+                pid:     root.pid,
+            },
+        ),
     }));
     let rect = area(104, 12);
     let colors = FooterColors::parse("role.unassigned=purple\nrole.worker=bright-cyan");
@@ -471,7 +478,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
         .collect();
     assert_eq!(
         &words[..5],
-        &["account", "session", "role", "activity", "status"],
+        &["session", "account", "role", "activity", "status"],
         "{headers}"
     );
     for (name, expected_type, expected_role) in [

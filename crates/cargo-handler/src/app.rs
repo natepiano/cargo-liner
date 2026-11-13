@@ -63,6 +63,7 @@ use crate::config::LoadedConfig;
 use crate::config_watch::WordHighlightUpdate;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::details::DetailsOverlay;
+use crate::details::DetailsPane;
 use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
@@ -335,6 +336,7 @@ impl App {
         );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         framework.color_mode = color_mode;
+        framework.register_copy_selection::<DetailsPane>();
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
             details_overlay: DetailsOverlay::default(),

@@ -38,8 +38,8 @@ use crate::interaction::TileSelection;
 const NOW: u64 = 1_792_166_400;
 const CORE_WIDTH: u16 = 28;
 const ROLE_GROWTH_WIDTH: u16 = 80;
-const ROLE_SOURCE_HEIGHT: u16 = 70;
-const ROLE_GROWN_HEIGHT: u16 = 140;
+const ROLE_SOURCE_HEIGHT: u16 = 72;
+const ROLE_GROWN_HEIGHT: u16 = 144;
 const ERROR: &str = "claude1: scratch reading failed";
 const LABELS: [&str; 6] = [
     "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
@@ -484,7 +484,11 @@ fn assert_width(width: u16) {
 /// The viewport fits the accounts while narrow tiles still overflow their work rows.
 fn assert_constrained_width(width: u16) {
     let mut app = fixture(6);
-    let height = if width <= 50 { 59 } else { 51 };
+    let height = match width {
+        80 => 53,
+        0..=50 => 59,
+        _ => 51,
+    };
     let buffer = paint(&mut app, width, height);
     let placements = app
         .tiles
@@ -510,7 +514,7 @@ fn assert_constrained_width(width: u16) {
             if width == 40 {
                 assert_eq!(
                     header.split_whitespace().collect::<Vec<_>>(),
-                    ["session", "role", "status"],
+                    ["session", "role", "activity", "status"],
                     "{text:?}"
                 );
             }
@@ -526,9 +530,9 @@ fn assert_constrained_width(width: u16) {
             assert_eq!(
                 session,
                 if width == 40 {
-                    format!("▼ long-session-{}-wi…", index + 1)
-                } else {
                     "▼ long-se…".to_owned()
+                } else {
+                    format!("▼ long-session-{}-wi…", index + 1)
                 },
                 "{text:?}"
             );
@@ -659,12 +663,12 @@ fn narrow_summary_resize_keeps_account_clicks_and_end_selection_on_painted_rows(
         })
     );
     app.loaded_config.config.tiles.view = TileView::Summary;
-    paint(&mut app, 40, 10);
+    paint(&mut app, 40, 11);
     app.selections
         .surface_mut(&SelectionSurface::Summary)
         .expect("summary navigation")
         .navigate(NavAction::End);
-    let buffer = paint(&mut app, 34, 10);
+    let buffer = paint(&mut app, 34, 11);
     let area = app
         .selections
         .surface(&SelectionSurface::Summary)
@@ -1002,10 +1006,10 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
 fn narrow_growth_reports_fixture_counts() {
     for (count, width, expected_groups, expected_summary_rows) in [
         (6, 200, 6, 28),
-        (6, 80, 6, 28),
+        (6, 80, 6, 30),
         (6, 50, 6, 30),
-        (6, 40, 6, 30),
-        (20, 34, 2, 44),
+        (6, 40, 6, 31),
+        (20, 34, 1, 45),
     ] {
         let mut app = fixture(count);
         paint(&mut app, width, 50);
@@ -1128,12 +1132,29 @@ fn assert_astra_compression(
             "Astra hierarchy remains drawn at width {width}"
         );
         if width == core {
-            let text = lines(&compressed, compressed.area).join("\n");
-            assert!(
-                text.lines().any(|line| line.contains("session")
-                    && line.contains("role")
-                    && line.contains("status")),
-                "whole Astra core headers at width {width}: {text}"
+            let tile = placements
+                .iter()
+                .find(|tile| {
+                    selection_surface(&tile.content) == SelectableSurface::Surface(surface.clone())
+                })
+                .expect("Astra tile");
+            let text = lines(
+                &compressed,
+                tile.frame.inner().intersection(tile.frame.clip()),
+            )
+            .join("\n");
+            let header = text
+                .lines()
+                .find(|line| line.contains("session") && line.contains("status"))
+                .expect("Astra core header");
+            assert_eq!(
+                header
+                    .trim_matches('│')
+                    .split_whitespace()
+                    .filter(|word| !matches!(*word, "▲" | "▼"))
+                    .collect::<Vec<_>>(),
+                ["session", "activity", "status"],
+                "width {width}: {text}"
             );
         }
         paint(app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);

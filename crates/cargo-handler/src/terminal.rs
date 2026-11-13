@@ -253,6 +253,14 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
     {
         next = next.earlier(TextChange::At(at));
     }
+    if let AccountsTable::FailedKeepingLast { last, .. } = &app.accounts.table {
+        next = next.earlier(
+            DisplayText::AgentAge {
+                started: last.received_at,
+            }
+            .next_change(now),
+        );
+    }
     let reading = match &app.accounts.table {
         AccountsTable::Ready(reading) | AccountsTable::FailedKeepingLast { last: reading, .. } => {
             Some(reading)
@@ -876,6 +884,29 @@ mod tests {
             (3700, Repaint::NotNeeded),
             (3701, Repaint::Needed),
             (3702, Repaint::NotNeeded),
+        ] {
+            assert_body_boundary(&mut app, &mut ticker, &mut terminal, now, at, expected);
+        }
+    }
+
+    #[test]
+    fn failed_accounts_reading_repaints_the_retained_report_age() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut reading = AccountsReading::parse(br#"{"accounts":[],"problems":[]}"#)
+            .expect("empty account reading");
+        reading.received_at = 100;
+        app.accounts.table = AccountsTable::Ready(reading);
+        app.accounts
+            .table
+            .apply(Err(AccountsFailure::InvalidReading));
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, mut terminal) = settle_body(&mut app, &mut ticker, 100);
+        for (at, expected) in [
+            (159, Repaint::NotNeeded),
+            (160, Repaint::Needed),
+            (161, Repaint::NotNeeded),
+            (219, Repaint::NotNeeded),
+            (220, Repaint::Needed),
         ] {
             assert_body_boundary(&mut app, &mut ticker, &mut terminal, now, at, expected);
         }

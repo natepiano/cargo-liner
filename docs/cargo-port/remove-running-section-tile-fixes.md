@@ -2529,9 +2529,45 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the hooks test and both ledger variants passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
 
+### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: todo
+
+**Depends on:** Phase 58d (order only; the same test files and the same lock causes).
+
+On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ticket 1439 on an unchanged tree (base 5142c3ca4; nextest 6 of 12 threads, load 18.48 on 12 CPUs). 1363 tests ran and 3 failed; ticket 1438 passed all 1363 at the same base. Log (natedev): `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T184934-4073552-8f6b.log`.
+
+1. `gate::hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` failed after 6.363 s: "gate worker should report mutation lock contention" (`tests/gate.rs`, log line 518).
+2. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` failed after 1.225 s (log line 713). This is Phase 58d item 1. Phase 58d's three Mac full suites are its check.
+3. `ledger::explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open` failed after 1.813 s: "git ref write refused by lock .../packed-refs.lock (age: 0.458 seconds; process holders unavailable)" (`tests/ledger.rs`, log line 770).
+
+#### Work Order
+
+**Goal:** the gate deadline test and the unrelated-process ledger test pass on every run under load, and each takes less than 1 s.
+
+**Spec:**
+
+1. For item 1, find why the worker did not report mutation lock contention before the outer gate deadline. Quote the line that takes the mutation lock and the line that sets the deadline. Make the order of the two events fixed by the test, not by timing.
+2. For item 3, find why the holder of `packed-refs.lock` was unavailable. Use the cause and fix of Phase 58d item 2 when they apply; do not make a second copy of that fix.
+3. Make each test deterministic: no sleep, no retry, no longer wait, no raised limit. Keep every assertion.
+4. If Phase 58d's Mac suites show item 2 still fails, fix it here with the same rules.
+5. Before the fix, show each failure in a scratch run that forces the late order (for example, a held lock or a slow step in test support). Do not commit that scratch change.
+
+**Files:**
+
+- `crates/cargo-berth/tests/gate.rs` — item 1
+- `crates/cargo-berth/tests/ledger.rs` — item 3
+- `crates/cargo-berth/tests/hooks.rs` — item 2, only under spec item 4
+- `crates/cargo-berth-test-support/` — shared lock helpers
+- `crates/cargo-berth/src/` — the lock path or the holder diagnostic, when the cause is there
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s.
+
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
 
-**Depends on:** Phase 58d (order only; showrunner, 2026-11-11).
+**Depends on:** Phase 58g (order only; flaky tests stop other units' style tickets, so 58g runs first).
 
 On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main (4a6d4d3b7, 5c0778b96) and their worktrees were removed. `cargo-berth resolve <id> --integrated-as <full oid>` refused with exit 5: "the reservation must have a protected checkpoint first; cargo-berth release records one". Release runs only from the holder worktree, and `--rehome` needs a worktree at the recorded path. Both were retired with `--retire-orphan`, which records no integration.
 

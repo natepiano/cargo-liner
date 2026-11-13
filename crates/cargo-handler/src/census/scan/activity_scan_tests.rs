@@ -281,13 +281,14 @@ fn assert_drawn_worker_details(rows: Vec<AgentRow>, expected: &str) -> Result<()
     );
     terminal.draw(|frame| app.draw(frame, &keymap))?;
     let details = drawn_rows(terminal.backend().buffer());
-    for property in [format!("state: {expected}"), "status: idle".to_owned()] {
-        assert!(
-            details
-                .iter()
-                .any(|line| line.split('│').any(|cell| cell.trim() == property)),
-            "missing {property}: {details:?}"
-        );
+    for (label, value) in [("state", expected), ("status", "idle")] {
+        let marker = format!("{label}:");
+        let actual = details
+            .iter()
+            .find_map(|line| line.split_once(&marker))
+            .map(|(_, rest)| rest.split('│').next().unwrap_or_default().trim())
+            .ok_or("missing aligned property")?;
+        assert_eq!(actual, value, "{label}: {details:?}");
     }
     Ok(())
 }
