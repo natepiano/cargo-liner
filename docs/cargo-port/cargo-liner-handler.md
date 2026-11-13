@@ -178,12 +178,17 @@ Director decisions:
 6. The tile activity cell does not change. Only the `d` view joins the live word.
 7. Each `d` value with a tile cell for the same row draws in that cell's ink: account, session name, role, activity, status (the `waiting` ink included), type, model, effort, branch and directory. Use the function the tile cell uses for its ink; do not copy the ink rules. Values with no tile cell (pid, desktop, age, the hierarchy names) keep the default text ink.
 8. A selected line keeps the selection background. Its value ink goes through `footer_colors::SelectedGroundInk::resolve` after the cell ink, as the tile row does in `render/mod.rs`. Use that resolver; do not copy it.
+9. A left click on a `d` value line selects that line, as the arrow keys do. A click on a heading line, a blank line or outside the overlay changes nothing. The wheel keeps its arrow-key behavior. Source: the user, returning C331: "you need to make the details tab accept mouse clicking a row as well as navigating with the arrows - i shouldn't have to ask this".
+10. The click uses the `tui_pane` mouse path that cargo-port uses (`TerminalApp::click`, the `Viewport` hit test, `table_row_at`). Add no second hit-test geometry.
+11. Every cargo-handler view has mouse and keyboard parity: each list a key moves through, a left click selects and the wheel scrolls. Audit the tiles, the `d` view, the favorites overlay and each other overlay. Fix each gap in this phase, and name each view and its result in the reply.
 
 Tests (red first, each under one second):
 1. No row's `d` view has a `family:` line or a `state:` line, read from the rendered overlay. The `agent` and `now` sections keep their other lines in order.
 2. A worker with job `impl` and live `clippy` shows `activity: impl · clippy`. A unit director with live `thinking` shows `activity: thinking`. An idle unit director with no job shows `activity: —`. A compacting row shows `activity: compacting`. Each shows its accounts word in `status:`.
 3. For each value in decision 7, the `d` view value draws the same foreground as the tile cell of the same row, read from both rendered buffers. Include a row with a waiting status, selected and not selected, on the dark and the light default themes, in a focused and a remembered selection.
 4. The Phase 3 tests `details_navigation_skips_headings_and_y_copies_only_the_value` and `assert_full_frame_copy_notice` stay green. `y` copies the value text only, with no ink.
+5. A click on the second value line of an open `d` view selects it; `y` then copies that value. A click on a heading line keeps the selection. Drive the click through `TerminalApp::click`.
+6. For each view that decision 11 fixes, a click on a row selects the row that the arrow keys reach.
 
 **Constraints from prior phases:**
 - Phase 3: the four sections, the heading lines, the value column and `y` stay. The `DetailsOverlay` copy target stays.
@@ -193,9 +198,11 @@ Tests (red first, each under one second):
 **Live check (director):** before the checkpoint, open the `d` view on a unit director row and on a worker row, from a build of this branch, on the dark and the light default themes, under the safety rule. No `family:` or `state:` line shows; `activity:` shows the job and the live word; each value has its tile color.
 
 **Change-Review line:** The details view drops family and state, shows activity and status, and colors each value as the tile does | On natedev, press d on a unit director row and on a worker row | No family or state line; activity shows the job and what the agent does now; each value has the color it has in the tile
+**Change-Review line:** A click on a details row selects it, as the arrows do, and each view accepts the mouse and the keys the same way | On natedev, press d on a row, click a value line, then press y | The clicked line is selected and y copies its value; clicks select rows in every list
 
 **Files:**
 - `crates/cargo-handler/src/details.rs` — the properties, the `now` order and the value inks
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs` — the `d` view click, and each view that the parity audit fixes
 - `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details` and the shared cell inks
 - `crates/cargo-handler/src/render/mod.rs` — the selected-row ink path the `d` view shares
 - `crates/cargo-handler/src/render/details_tests.rs` — the `d` view tests
@@ -259,6 +266,7 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/remote.rs`, `crates/cargo-handler/src/census/probe/hierarchy_transport_tests.rs` — the census facts on the hierarchy answer
 - `crates/cargo-handler/src/render/drawn_frame_tests.rs`, `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — fixtures that build the hierarchy snapshot, and the current-run row
 - `crates/cargo-handler/src/census/activity_regression_tests.rs`, `crates/cargo-handler/src/census/astra_role_tests.rs` — staff fixtures with a current-run pointer, and the `activity:` label
+- `crates/cargo-handler/src/census/model.rs`, `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `MetadataFixture::new` and the placement fixture, with a unit run pointer and an active worker pass
 - `crates/cargo-handler/src/census/accounts.rs` — the typed accounts read
 - `crates/cargo-handler/src/census/worker_dispatch/` — run facts the dispatch reader holds
 - `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs` — the tests
@@ -400,13 +408,13 @@ Tests (red first, each under one second):
 
 **Source:** the user, via natedev and the showrunner, 2026-11-13, on C1513 (starting and waiting columns, rejected): "the account unit should make sure this synchronizes with cargo handler (talk to cargo liner for assignment) - it is important that everything works the same way". Showrunner context: status keeps four values only: busy, idle, paused, exited. Each busy showrunner, unit and worker shows an activity (starting, waiting, thinking, running, compacting, and so on). The handler unit owns the cargo-handler side. The accounts unit agrees one definition with the handler unit.
 
-**Pending decision:** the shared definition, agreed with the accounts unit: each activity word, the census fact that gives it, and the accounts report fields that change. The director records it here before dispatch.
+**Decided (showrunner, 2026-11-13):** one owner for each field. `status` is from `session_state.py` through `accounts.py status --json`; cargo-handler makes no status word. `activity` is from the census in Rust; the accounts board reads it from `cargo-handler census --json`. No Python copy of the activity classifier. The `waiting` ink moves to the activity word.
 
 **Spec:**
 
 Director decisions:
 1. The status cell shows only `busy`, `idle`, `paused` or `exited`, from the accounts report. `starting` and `waiting` leave the status.
-2. A busy row's activity cell shows its activity word from the census, by the shared definition. `census --json` prints the same word in `activity`.
+2. A busy row's activity cell shows its activity word from the census. `census --json` prints each session as `{session, status, activity}`, with `activity` null on a row that is not busy.
 3. The accounts table drops its `starting` and `waiting` columns.
 4. Director call: the `waiting` bright yellow ink (Phase 5) moves from the status word to the activity word `waiting`. The other activity words keep their inks.
 
