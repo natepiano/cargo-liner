@@ -154,6 +154,18 @@ pub(super) struct RowAdmissibleColumnLayout {
 }
 
 impl ColumnLayout {
+    /// Count logical positions per column, including the summary depth.
+    pub(super) fn column_capacities(&self, detail_slots: usize, columns: usize) -> Vec<usize> {
+        if columns == self.widths.len() {
+            self.widths.clone()
+        } else {
+            let positions = detail_slots + TABLE_CELL + self.summary_depth - 1;
+            (0..columns)
+                .map(|column| positions / columns + usize::from(column < positions % columns))
+                .collect()
+        }
+    }
+
     /// Count the summary once, however many logical positions it occupies.
     pub(super) fn residents(&self, column: usize) -> usize {
         if column == 0 {
@@ -217,12 +229,10 @@ pub(super) fn candidate_content_widths<Id: Clone>(
     let positions = target.len() + TABLE_CELL + depth - 1;
     let opened = Layout::horizontal(constraints_for_sizes(&fills(columns))).split(area);
     let mut widths = Vec::with_capacity(positions);
-    for (column, &rect) in opened.iter().enumerate() {
-        let count = if columns == base.widths.len() {
-            base.widths[column]
-        } else {
-            positions / columns + usize::from(column < positions % columns)
-        };
+    for (&rect, count) in opened
+        .iter()
+        .zip(base.column_capacities(target.len(), columns))
+    {
         widths.extend(std::iter::repeat_n(
             frame_inner(share_borders(rect, area)).width,
             count,
