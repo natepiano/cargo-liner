@@ -250,11 +250,14 @@ Director decisions:
 1. Add a visible subcommand, `cargo-handler census --json`, in `cli.rs` beside the hidden `probe`. It scans once, prints one JSON document on stdout, and exits 0. It opens no terminal and draws nothing. Diagnostics go to stderr, as `probe` does.
 2. The command builds its answer through the functions the TUI uses: the local scan, the configured remote probes, the hierarchy, the staff source and the accounts session states. The status word and the activity text come from the functions that fill the tile status and activity cells. Add no second reader and no copy of a rule.
 3. A fact the JSON needs that the census does not have today, such as a detached run's label or start time, goes into the census, so that the TUI and the command have it. It does not go into the command alone.
-4. The JSON has a top-level `schema` integer, starting at 1, and `machines`, then one entry for each unit director and each worker:
-   - `staff_id`, `name`, `parent_staff_id`, `machine`;
-   - `role` (`showrunner`, `unit`, `worker` or `producer`), `status` (the tile status word, or null with no accounts entry), `activity` (the tile activity text);
-   - `runs`: each detached run, with its `label` and `started_at` (ISO 8601 with offset).
-   A field with no value is null, never a missing key.
+4. The JSON has a top-level `schema` integer, starting at 1, `machines`, `directors` and `workers`. The field set is unit-board's, sent by the showrunner 2026-11-13. Times are epoch seconds. A field with no value is null, never a missing key.
+   - Each director: `staff_id`, `name`, `machine`, `current_run_id` (the staff run pointer), `status` (the tile status word, or null with no accounts entry), `activity` (the tile activity text), `activity_started_at`.
+   - Each worker: `staff_id`, `name` (the display name), `parent_staff_id` (its unit), `machine`, `status`, `activity`, `activity_started_at` (the start of the current activity or wait).
+   - Each worker's `pass`: `role` (`impl`, `test`, `fix` or `review`) and `phase` (the phase instance id), or null with no open pass.
+   - Each worker's `pane`: `open`, `stopped`, `closed` or `unknown`.
+   - Each worker's `runs`: each detached run, with `label`, `started_at` and `state` (`running`, `finished_queued` for a finished run with a queued result, or `missing`).
+   - `unknown`: on a director, worker or run that the census cannot read, an object with `reason` text; null otherwise. A pane or run the census cannot read never reads as an empty list.
+   Wait holders and wait reasons stay in the run records; the JSON does not carry them.
 5. The serde types are the contract. Document each field in the type's doc comments and in a `census --json` section of `crates/cargo-handler/README.md`, with one example document. A field rename or removal increments `schema`.
 6. A remote machine that does not answer gives a `machines` entry with its error text and no rows. The command still exits 0. A bad configuration or a failed local scan exits non-zero with the error on stderr.
 7. The command reads no file on a UI thread, because it has none. It uses the configured probe and read timeouts.
@@ -262,10 +265,11 @@ Director decisions:
 
 Tests (red first, each under one second):
 1. With a fixture census of one showrunner, one unit director and two workers, one with a detached run, the command's JSON lists each with every field in decision 4. The status and activity equal the tile cell text for the same rows, read from the rendered tile.
-2. A row with no accounts entry has `"status": null`. A worker with no run has `"runs": []`.
-3. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs, in the JSON and in the tile.
-4. An unreachable remote machine gives its `machines` entry with the error, and the command exits 0.
-5. The JSON parses against the README example's field set: the same keys, the same types.
+2. Each run `state` value and each `pane` value comes out of a fixture that holds it. A pane or run the census cannot read gives `unknown` with its reason.
+3. A row with no accounts entry has `"status": null`. A worker with no run has `"runs": []`.
+4. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs, in the JSON and in the tile.
+5. An unreachable remote machine gives its `machines` entry with the error, and the command exits 0.
+6. The JSON parses against the README example's field set: the same keys, the same types.
 
 **Constraints from prior phases:**
 - Phase 5: a waiting status reads `waiting`, from `ReportedSessionState`. The JSON gives the word; ink does not apply.
