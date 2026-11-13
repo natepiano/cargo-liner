@@ -76,12 +76,21 @@ fn every_toast_style_keeps_a_blank_cell_before_the_close_button() -> Result<(), 
 
 #[test]
 fn an_opening_error_toast_keeps_its_first_sentence_on_one_page() -> Result<(), Box<dyn Error>> {
-    for (sentence, pane) in [
+    for (sentence, pane, expected) in [
         (
             "Crate metadata is unavailable until crates.io recovers.",
             Rect::new(46, 20, 34, 9),
+            vec![
+                "Crate metadata is",
+                "unavailable until",
+                "crates.io recovers.",
+            ],
         ),
-        ("abcdefghijklmnopqr.", Rect::new(66, 16, 13, 13)),
+        (
+            "abcdefghijklmnopqr.",
+            Rect::new(66, 16, 13, 13),
+            vec!["abcd…", "efgh…", "ijkl…", "mnop…", "qr."],
+        ),
     ] {
         for mode in [ColorMode::Colored, ColorMode::NoColor] {
             let mut toasts = Toasts::<TestApp>::new();
@@ -126,12 +135,13 @@ fn an_opening_error_toast_keeps_its_first_sentence_on_one_page() -> Result<(), B
                             .to_owned()
                     })
                     .collect();
-                assert_eq!(
-                    body.join(" ").replace("… ", ""),
-                    sentence,
-                    "{mode:?}: {elapsed:?}"
-                );
+                assert_eq!(body, expected, "{mode:?}: {elapsed:?}");
                 if pane.width == 13 {
+                    assert_eq!(
+                        body.join(" ").replace("… ", ""),
+                        sentence,
+                        "{mode:?}: {elapsed:?}"
+                    );
                     assert_eq!(body.last().map(String::as_str), Some("qr."));
                     assert_eq!(body.len(), 5);
                 }
