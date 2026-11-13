@@ -32,6 +32,7 @@ use crate::census::ChildKind;
 use crate::census::SessionIdentity;
 use crate::census::transcript::SubagentRole;
 use crate::census::worker_dispatch::WorkerIdentity;
+use crate::details::DetailsOverlay;
 use crate::tiles::TileKey;
 
 /// A selectable surface includes the summary as well as census tiles.
@@ -725,10 +726,11 @@ impl InputContext for App {
         self.framework.hit_test_at(pos)
     }
 
-    /// The favorites modal has no mouse selection yet, but still
-    /// absorbs every click so none reaches the grid underneath it.
+    /// App modals consume pointer events before the grid.
     fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> {
-        if self.favorites_overlay.is_open() {
+        if self.favorites_overlay.is_open()
+            || matches!(self.details_overlay, DetailsOverlay::Open { .. })
+        {
             ModalHit::MissedRow
         } else {
             ModalHit::Closed

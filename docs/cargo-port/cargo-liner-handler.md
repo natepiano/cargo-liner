@@ -202,10 +202,10 @@ Tests (red first, each under one second):
 
 **Files:**
 - `crates/cargo-handler/src/details.rs` — the properties, the `now` order and the value inks
-- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs` — the `d` view click, and each view that the parity audit fixes
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/tui_pane/src/favorites_overlay/mod.rs` — the `d` view click, and each view that the parity audit fixes
 - `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details` and the shared cell inks
 - `crates/cargo-handler/src/render/mod.rs` — the selected-row ink path the `d` view shares
-- `crates/cargo-handler/src/render/details_tests.rs` — the `d` view tests
+- `crates/cargo-handler/src/render/details_tests.rs`, `crates/cargo-handler/src/render/favorites_tests.rs` — the `d` view tests and the favorites click tests
 - `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs`, `crates/cargo-handler/src/summary/age_layout_tests.rs` — tests that read the removed lines
 - `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/interaction.md` — the `d` lines and inks
 - `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — tests that read the removed `state:` line
@@ -219,7 +219,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the new `d` lines and the tile colors on both default themes.
 
-### Phase 7 — The census keeps each worker's current run, pane state, run states and activity start, and names what it cannot read  · status: todo
+### Phase 7 — The census keeps each worker's current run, pane state, run states and activity start, and names what it cannot read  · status: done
 
 **Depends on:** none
 
@@ -267,9 +267,11 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/render/drawn_frame_tests.rs`, `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — fixtures that build the hierarchy snapshot, and the current-run row
 - `crates/cargo-handler/src/census/activity_regression_tests.rs`, `crates/cargo-handler/src/census/astra_role_tests.rs` — staff fixtures with a current-run pointer, and the `activity:` label
 - `crates/cargo-handler/src/census/model.rs`, `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `MetadataFixture::new` and the placement fixture, with a unit run pointer and an active worker pass
-- `crates/cargo-handler/src/census/accounts.rs` — the typed accounts read
+- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/accounts_source_tests.rs` — the typed accounts read and its source outcomes
+- `crates/cargo-handler/src/constants.rs` — the delivery prefixes and the progress history file name
+- `crates/cargo-handler/src/terminal.rs` — puts the accounts monitor's read outcome into the local census facts
 - `crates/cargo-handler/src/census/worker_dispatch/` — run facts the dispatch reader holds
-- `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs` — the tests
+- `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/census/scan/current_run_repair_tests.rs` — the tests
 - `docs/cargo-handler/as-built/hierarchy.md` — the current-run rule and the new facts
 
 **Workers:** 1 writer.

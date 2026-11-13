@@ -355,9 +355,14 @@ mod tests {
             .expect("director metadata");
             std::fs::write(root.path().join("staff.json"), json!({"schema":2,"rows":[
                 {"id":"boss","kind":"showrunner","name":"boss","parent":null,"current_session":"boss-session"},
-                {"id":"unit","kind":"unit","name":"unit","parent":"boss","current_session":"director"},
+                {"id":"unit","kind":"unit","name":"unit","parent":"boss","current_session":"director","run":root.path()},
                 {"id":"worker","kind":"worker","name":"own worker","parent":"unit","current_session":THREAD}
             ]}).to_string()).expect("staff metadata");
+            std::fs::write(
+                root.path().join("progress_history_state.json"),
+                json!({"pass":{"worker":{"worker_id":"worker","status":"active","started_at":100}}}).to_string(),
+            )
+            .expect("current worker pass");
             Self { root, rollout }
         }
 
