@@ -328,7 +328,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - Phase 8 added Git event visibility (`crates/cargo-port/src/project/git/event_visibility.rs`), measured Git output (`project/git/measured_output.rs`), disk read observation (`process_observation/disk_reads.rs`) and `scan/disk_totals.rs`. Keep their tests green.
 - Phase 7: `DiskUsageTracker` in `scan/disk_measurements.rs` measures only changed paths; `request_rescan` is the one full walk.
 - Phase 13: a hard-link alias group in `DiskUsageIndex` is a sorted set; a new link updates only its own and the counted link's totals. Keep `hard_link_group_scan_reads_each_alias_a_few_times` green.
-- Phase 13b drops watcher events outside the project roots at the source. Idle reads against the `bd55fde2d` baseline then include that change; name its share apart from this phase's repairs.
+- Phase 13b drops Cargo home folder events other than the Cargo config file at the watcher (`RegisteredRoots::config_source_event_matters`). Events under `/tmp` and `~/.claude` stay, because they are user `include_dirs`. Idle reads against the `bd55fde2d` baseline then include that change; name its share apart from this phase's repairs.
 - A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
 - Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
@@ -367,30 +367,56 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** the remaining startup time under high load is the main loop's background apply (one frame took 18.5 s for 50 results), older than Phase 8. Phase 13b owns it.
 
-### Phase 13b — cargo-port applies startup results fast under high load  · status: todo
+### Phase 13b — cargo-port applies startup results fast under high load  · status: done
 
-**Depends on:** Phase 13 (both edit the startup disk path and `crates/cargo-port/CHANGELOG.md`). Runs next, before Phase 12, in its own worktree.
+#### As-built
+
+- Cause: for each git, lint, CI, language or metadata result, `handle_bg_msg` built `project_row_presentation` (every row, every target expanded) before and after the apply. That was about 99% of the slow apply time; the apply itself was about 1%.
+- `poll_background` applies a frame batch with one `RowPresentationBatch`: the first row message captures the before copy, and `finish_row_batch` compares once after the batch, only when no handler already raised `row_generation`. `handle_bg_msg` is now test-only and runs a batch of one.
+- `RegisteredRoots::config_source_event_matters` drops Cargo home folder events other than the Cargo config file, such as `.global-cache-journal`. Events under `/tmp` and `~/.claude` stay, because they are user `include_dirs`.
+- `poll_background_slow_msg` logs each background message that takes `SLOW_BG_MSG_MS` (10 ms) or more, with its kind (`BackgroundMsg` derives `strum::IntoStaticStr`).
+- Proof on natedev, paired starts at similar load: Disk usage done at 79.5 s against 165.5 s (timeout) for the Phase 13 build. Slowest frame 15.9 s → 2.6 s; saturated frames 149 → 53.
+- Tests: `row_message_burst_builds_row_presentation_at_most_twice` (20 row messages, at most 2 builds) and `cargo_home_routes_only_its_config_file`.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — `handle_batched_bg_msg`, `finish_row_batch`, `RowPresentationBatch`, `affects_row_presentation`
+- `crates/cargo-port/src/tui/app/async_tasks/poll.rs`, `constants.rs` — batch loop, slow-message trace
+- `crates/cargo-port/src/tui/app/mod.rs` — test-only `ROW_PRESENTATION_BUILDS` counter
+- `crates/cargo-port/src/watcher/roots.rs`, `events.rs` — config source filter
+- `crates/cargo-port/src/scan/background.rs` — `IntoStaticStr`
+- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`, `src/watcher/watch_role_tests.rs` — tests
+- `crates/cargo-port/CHANGELOG.md` — fix entry
+
+**Gotchas:** one `RepoInfo` result can still take 2.6 s on the frame path, and the largest disk walks take 36 to 65 s. Phase 13c owns the frame time.
+
+### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: todo
+
+**Depends on:** Phase 12 (both edit cargo-port and `crates/cargo-port/CHANGELOG.md`). Runs after Phase 12.
 
 #### Work Order
 
-**Goal:** at startup under high load, the Disk usage row completes well under the 2 minute limit. Each background result applies to the app in little time.
+**Goal:** at startup under high load, no frame takes more than 100 ms. Heavy result work runs off the frame path, so the app never stalls.
 
-**Source:** the showrunner, 2026-11-13, add-on ruling on the Phase 13 proof. Paired natedev starts at the same load (about 53 to 145) gave these results:
-1. Before Phase 8 (`596c2c75a`): Disk usage done at 120.8 s.
-2. Phase 13 fix: done at 115.6 s. The cargo-liner walk took 10.6 s.
-3. In both builds the main loop applies at most `MAX_MSGS_PER_FRAME` (50, `tui/app/async_tasks/constants.rs:28`) results per frame in `tui/app/async_tasks/poll.rs`. One frame took 18.5 s to apply 50 results. The apply time per run sums to 111-132 s.
-4. In 100 s the perf log held 2461 `watcher_git_event_probes` and 901 `watcher_project_event` lines (`watcher/events.rs`). Many came from files under `/tmp` and `~/.claude` that are not project files, for example Claude session `.jsonl` files.
-5. At load 128 the Disk usage row timed out in both builds.
+**Source:** the showrunner, 2026-11-13, ruling on the Phase 13b proof: a 2.6 s frame is a stall the user sees. Phase 13b paired natedev starts (load 86 to 74) gave these results:
+1. Slowest frame 2.6 s, 53 saturated frames.
+2. Slow messages (`poll_background_slow_msg`, 10 ms or more): `RepoInfo` 11 messages, 13.1 s in total, at most 2.6 s; `LanguageStatsBatch` 77, 2.0 s; `CiRuns` 7, 0.66 s.
+3. The first row message of each frame batch also carries the before copy of the row presentation (`RowPresentationBatch::Captured`), so its time includes one full presentation build.
+
+**Constraints from prior phases:**
+- Phase 3: cargo-port draws a frame only when something changed; `row_generation` drives the redraw. Keep that rule.
+- Phase 13b: `poll_background` compares the row presentation once per frame batch (`finish_row_batch`). Keep `row_message_burst_builds_row_presentation_at_most_twice` green.
+- `handle_repo_info` (`tui/app/async_tasks/repo_handlers.rs`) keeps `first_commit` and compares `last_fetched` before it invalidates the GitHub fetch cache. Keep that behavior.
 
 **Spec:**
-1. **Slow apply.** Find which result kinds make one frame apply 50 results in 18.5 s. Use the perf log and add perf fields where the log cannot tell. Make each apply cheap; remove the waste, not the work the screen needs.
-2. **Watcher events.** Find why watcher events from `/tmp` and `~/.claude` that are not project files reach cargo-port's queue. Drop events outside the watched project roots at the source, in the watcher, before they cost a Git probe or a queue message.
-3. **Test.** Add tests that fail before each fix and pass after. They run under 1 s and do not depend on real disk timing or load.
-4. **Changelog.** Add a cargo-port fix entry.
+1. **Measure.** Use `poll_background_slow_msg` and frame timing to find each message kind and step over 100 ms. Add perf fields where the log cannot tell which step costs the time.
+2. **Off the frame path.** Move the `RepoInfo` result work and any other heavy apply work off the frame path, to a background task or into bounded steps. The frame applies only cheap state changes.
+3. **Row presentation.** If one presentation build costs more than the frame budget under load, make it cheaper or incremental. Keep the draw-only-on-change rule.
+4. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
+5. **Changelog.** Add a cargo-port fix entry.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/` — the background apply path that the cause names
-- `crates/cargo-port/src/watcher/` — event filtering at the source
+- `crates/cargo-port/src/tui/app/async_tasks/` — the apply path and `repo_handlers.rs`
+- `crates/cargo-port/src/tui/app/mod.rs` — `project_row_presentation`, if the build cost is the cause
 - `crates/cargo-port/CHANGELOG.md` — entry
 
 **Workers:** 1 writer.
@@ -400,5 +426,5 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Acceptance gate:**
 1. The tests fail before the repair and pass after.
 2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
-3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13 build, then this build. The Disk usage row in this build completes well under the 120 s limit.
-4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the Disk usage row completes with no failure.
+3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13b build, then this build. In this build no frame takes more than 100 ms, and Disk usage done is not later than in the Phase 13b build.
+4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the app answers keys at once while startup runs.
