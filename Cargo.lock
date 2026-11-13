@@ -479,6 +479,7 @@ dependencies = [
  "clap",
  "crossterm",
  "gix",
+ "libc",
  "ratatui",
  "rustix",
  "schemars",

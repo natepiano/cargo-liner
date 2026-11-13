@@ -13,8 +13,6 @@ use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(not(target_os = "linux"))]
-use std::process::Command;
 use std::process::Output;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
@@ -22,33 +20,15 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::SystemTime;
 
-#[cfg(not(target_os = "linux"))]
-use super::child;
-#[cfg(not(target_os = "linux"))]
-use super::command;
 use super::command::GitCommandOutputAvailability;
 use super::constants::GIT_LOCK_EXTENSION;
 use super::constants::GIT_LOCK_REFUSAL_PREFIX;
 use super::constants::GIT_LOCK_REFUSAL_SUFFIX;
-#[cfg(not(target_os = "linux"))]
-use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_UPDATE_REF_COMMAND;
-#[cfg(not(target_os = "linux"))]
-use super::constants::LSOF_BINARY;
-#[cfg(not(target_os = "linux"))]
-use super::constants::LSOF_INTERSECT_ARG;
-#[cfg(not(target_os = "linux"))]
-use super::constants::LSOF_PARENT_PROBE_DEADLINE;
-#[cfg(not(target_os = "linux"))]
-use super::constants::LSOF_PROCESS_IDS_ARG;
-#[cfg(not(target_os = "linux"))]
-use super::constants::LSOF_PROCESS_SELECTOR_ARG;
 #[cfg(target_os = "linux")]
 use super::constants::PROCESS_DESCRIPTORS_DIRECTORY;
 #[cfg(target_os = "linux")]
 use super::constants::PROCESS_DIRECTORY;
-#[cfg(not(target_os = "linux"))]
-use super::protocol::CONTROL_REPLY_DEADLINE;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::InvalidReservationScopePath;
@@ -403,71 +383,15 @@ fn inspect_git_lock_holders(process_root: &Path, path: &Path, lock_owner: u32) -
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn git_lock_holders(path: &Path) -> GitLockHolders {
-    let started = std::time::Instant::now();
-    // Start the full scan first so the parent probe cannot reduce its running time.
-    let full_scan = command::with_spawn_lock(|| {
-        child::ChildProcess::spawn(
-            std::process::Command::new(LSOF_BINARY)
-                .args([LSOF_PROCESS_IDS_ARG, GIT_PATHSPEC_SEPARATOR])
-                .arg(path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped()),
-        )
-    });
-    if let Some(parent) = rustix::process::getppid() {
-        let mut command = std::process::Command::new(LSOF_BINARY);
-        command
-            .args([LSOF_INTERSECT_ARG, LSOF_PROCESS_SELECTOR_ARG])
-            .arg(parent.as_raw_nonzero().to_string());
-        let remaining = CONTROL_REPLY_DEADLINE.saturating_sub(started.elapsed());
-        if let GitLockHolders::OpenByProcesses(holders) =
-            inspect_lsof_holders(command, path, LSOF_PARENT_PROBE_DEADLINE.min(remaining))
-        {
-            return GitLockHolders::OpenByProcesses(holders);
-        }
-    }
-    let remaining = CONTROL_REPLY_DEADLINE.saturating_sub(started.elapsed());
-    let Ok(Ok(full_scan)) = full_scan else {
-        return GitLockHolders::Unavailable;
-    };
-    if remaining.is_zero() {
-        return GitLockHolders::Unavailable;
-    }
-    // Only the full scan can establish that no process holds the lock.
-    lsof_holders_from_output(full_scan.output(Vec::new(), remaining, |_| {}))
-}
+#[cfg(target_os = "macos")]
+#[path = "lock_holders_macos.rs"]
+mod lock_holders_macos;
 
-#[cfg(not(target_os = "linux"))]
-fn inspect_lsof_holders(mut command: Command, path: &Path, deadline: Duration) -> GitLockHolders {
-    let result = child::command_output(
-        command
-            .args([LSOF_PROCESS_IDS_ARG, GIT_PATHSPEC_SEPARATOR])
-            .arg(path),
-        deadline,
-    );
-    lsof_holders_from_output(result)
-}
+#[cfg(target_os = "macos")]
+fn git_lock_holders(path: &Path) -> GitLockHolders { lock_holders_macos::open_file_holders(path) }
 
-#[cfg(not(target_os = "linux"))]
-fn lsof_holders_from_output(result: std::io::Result<Output>) -> GitLockHolders {
-    let Ok(output) = result else {
-        return GitLockHolders::Unavailable;
-    };
-    let holders = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|pid| pid.parse().ok())
-        .collect::<Vec<_>>();
-    if !holders.is_empty() {
-        GitLockHolders::OpenByProcesses(holders)
-    } else if output.status.code() == Some(1) && output.stderr.is_empty() {
-        GitLockHolders::NoProcessHoldsIt
-    } else {
-        GitLockHolders::Unavailable
-    }
-}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn git_lock_holders(_: &Path) -> GitLockHolders { GitLockHolders::Unavailable }
 
 #[cfg(test)]
 mod tests {
