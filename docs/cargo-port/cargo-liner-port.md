@@ -265,7 +265,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs under matched conditions, with process counts, per-test times and the suite time. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
-### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: todo
+### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: done
 
 **Depends on:** Phase 3.
 
@@ -309,3 +309,37 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **State:** the saved mend report, when the caller key changes its schema (`compiler/persistence/schema.rs`).
 
 **Acceptance gate:** each new test fails before its repair and passes after. `verify.sh test cargo-mend` passes on natedev and on the Mac. No new or changed test takes 1 s or more, and no other test is newly at 1 s or more against the Phase 3 final slow lists (`phases/3/port-test-final-mac-slow-tests.json` and `port-test-final-natedev-slow-tests.json` in the unit session folder) at similar load. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: the tests show the result.
+
+### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: todo
+
+**Depends on:** Phase 8 (both edit `crates/cargo-port/CHANGELOG.md`).
+
+#### Work Order
+
+**Goal:** cargo-port has one source for the default project-list row bindings. The keymap file that cargo-port writes, the help, and the key dispatch all agree: Right expands a row and Left collapses it, with no modifier.
+
+**Source:** the style unit found the mismatch (ticket 1462); the showrunner sent it on 2026-11-13. The director traced it:
+1. `crates/cargo-port/src/tui/keymap/resolved.rs:33`: `ResolvedKeymap::defaults()` binds `ExpandRow` and `CollapseRow` to Shift+Right and Shift+Left.
+2. `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs:36`: the framework keymap, which dispatches the keys, uses `ProjectListAction::bindings()`, with no modifier.
+3. The Shift choice is older than Phase 2q. A comment, removed in 04a516486, gave its reason: the legacy pane-scope match in `handle_normal_key` had to avoid the plain-arrow `NavAction` bindings. That match is gone. The framework now binds plain arrows in the project-list scope.
+4. `crates/cargo-port/src/tui/keymap/load.rs:205` writes `ResolvedKeymap::default_toml()` when no keymap file exists. The framework then loads that file (`tui/app/construct.rs:287`). A new install therefore gets `expand_row = "Shift+Right"`, and the help shows that binding.
+5. `ResolvedKeymap.project_list` has no dispatch reader. `load.rs` uses it for the default file text, Vim conflict checks and load results.
+
+**Spec:**
+1. **Reproduce first.** Write a test that compares each `ProjectListAction` default in `ResolvedKeymap::defaults()` with `ProjectListAction::bindings()`. It must fail on the current code.
+2. **One source.** Build the `project_list` defaults in `ResolvedKeymap` from the same function that the framework uses. Remove the `KeyModifiers` argument from `ExpansionAction::key_bindings` if no caller then needs it. Correct its doc comment if it stays.
+3. **Written file.** A test reads the default keymap text and finds `expand_row` and `collapse_row` bound to plain Right and Left.
+4. **User file.** Do not rewrite an existing keymap file. A file that already binds Shift+Right keeps its binding.
+5. **Comments.** Correct the doc comments that name the removed `handle_normal_key` (for example `tui/app/mod.rs:3797`).
+6. **Changelog.** Add a fix entry: a new keymap file binds row expand and collapse to plain Right and Left.
+
+**Files:**
+- `crates/cargo-port/src/tui/keymap/`
+- `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`
+- `crates/cargo-port/src/tui/app/mod.rs` (comments only)
+- `crates/tui_pane/src/keymap/expansion_action.rs`
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the comparison test fails before the repair and passes after. `verify.sh test cargo-port` and `verify.sh test tui_pane` pass on the Mac. No new test takes 1 s or more. `verify.sh lint cargo-port` is clean. No `Change-Review:` line: the tests show the result.
