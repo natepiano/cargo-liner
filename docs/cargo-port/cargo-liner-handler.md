@@ -113,59 +113,26 @@
 
 ### Phase 4 — Long and short tiles share a column, so the long ones show more rows  · status: done
 
-**Depends on:** Phase 3 (it uses the Phase 3 row measures and column widths)
+#### As-built
 
-#### Work Order
-
-**Goal:** the grid pairs the longest tile with the shortest tile in one screen column, the next longest with the next shortest, and so on. Long tiles then get the rows that short tiles do not use.
-
-**Source:** the user, via the showrunner, 2026-11-12: "in cargo-handler we should factor content rows into cell organization - there are 4 detail cells right now - and the two longest ones are on the left - 41 and 42 - if each of these were paired with the two smallest cells automatically then we could see more - i.e. pair the longest with the shortest, the next longest with the next shortest - factoring their full content rows into account to calculate the cell ordering". Showrunner context: on natedev the left column held natedev (42 content rows) above hana (42), and the right column held cargo-liner (11) above unassigned (3), so each long tile showed about 28 to 36 of its 42 rows. Showrunner: if the layout code lives in tui_pane or is shared with cargo-tile, the change goes there.
-
-**Spec:**
-
-Director decisions:
-1. The column assignment uses each detail tile's full content-row count: every row of its tree, with every row open, plus its root row. Collapse, scroll position and viewport height do not change the count.
-2. The column assignment is a function of the rank order only. Rank the detail tiles by full content-row count, longest first. Deal the ranks to the columns in snake order: left to right, then right to left, and so on. With two tiles in each column, column j holds rank j and rank 2c−1−j: the longest with the shortest, the next longest with the next shortest.
-3. The summary tile keeps its place. Only the detail tiles move. The grid keeps its current slot shape: the number of detail slots in each column, the summary depth and span, and any empty cell the user opened. The rule changes only which detail tile fills which detail slot. Empty cells are not ranked and keep their slots.
-4. Unequal capacities: the snake skips a column that has no free detail slot and continues in the same direction. With an odd tile count, the last rank goes to the next column in snake order that has a free slot.
-5. Ties keep the current order. Because the assignment uses only the rank order, a row change that keeps the ranking moves no tile. With the same tile membership and the same grid geometry (pane size, column count and summary depth), a tile moves only when the ranking changes. A resize, a column-count change, a summary depth change or a membership change can move tiles; after one, the columns are the snake deal of the unchanged ranks over the new slot shape. The existing grid motion animates each move.
-6. The ranking input is a new full-tree row count that `Cells::demands` (`crates/cargo-handler/src/render/mod.rs`) supplies apart from `TileDemand.rows`. `TileDemand.rows` counts headings and width-dependent rows, so it is not the ranking input. `TileGrid::sync_measured_demands` applies the placement. A ranking change and a column membership change each invalidate the cached placement and header positions. The private `flow_layout.rs` packer has no production caller and is not this rule.
-7. The column assignment lives in the shared tui_pane grid (`crates/tui_pane/src/tiles/grid/`), as a placement rule that an app selects. cargo-handler selects the balanced rule. cargo-tile keeps its current order, because no one asked for a change there.
-8. Within a column, the tiles keep their current relative order (hierarchy order, then unassigned).
-
-**Constraints from prior phases:**
-- `Cells::with_expansion` calls `AgentTile::apply_expansion`, which removes closed rows before `Cells::demands` runs. Take the full count before that filter, from the unfiltered tree.
-- The ranking state has a name that states the rule: for example an enum with a source-order case and a ranked case. Do not add a field to `TileDemand` or `TileDemands`. The app supplies the ranking through a `TileCells` trait method whose default is source order, so cargo-tile and the shared test fixtures keep source order with no edit, no dummy counts and no bare `Option` field. cargo-tile files are held by the tile unit (berth, 2026-11-13); this phase does not edit cargo-tile.
-- Phase 3 lays out each screen x from the union of the column sets of the tiles at that x (`align_screen_columns`, `agent_cell.rs`). A tile that lacks a column keeps a blank slot. `TreeMetrics.widths` hold the measured demand widths; `TreeColumnAlignment::Fitted { widths, spacing, slots }` holds the drawn widths. A reassignment changes which tiles share an x, so the union slots and the Fitted widths are computed again after the placement. Keep the measured widths apart from the Fitted widths.
-- Keep `converging_column_groups_share_every_drawn_header_and_age_right_edge` and `different_tile_columns_share_core_positions_and_click_the_drawn_headers` green, also for the frame after a reassignment.
-
-Tests (red first, each under one second):
-1. The natedev case: tiles of 42, 42, 11 and 3 rows in two columns give the columns {42, 3} and {42, 11}, in any column order.
-2. With six tiles in three columns, each column holds one long and one short tile by the pairing rule.
-3. Equal row counts keep the current order. A row change that does not change the ranking moves no tile: in two columns, `[10,9,8,7,6,5]` and `[11,9,8,7,6,5]` give the same columns.
-4. The summary tile keeps its slot.
-5. cargo-tile's grid order tests pass unchanged.
-6. A long tile draws more of its rows after the pairing than before, at the natedev size, read from the rendered buffer.
-7. Five tiles in two columns, a summary that spans columns, and a column that holds the summary each fill the existing detail slots by the snake rule. An empty cell the user opened keeps its slot.
-8. Collapsing a row, scrolling a tile and changing the pane height do not change the ranking input.
-9. A membership change and a column-count change invalidate the cached placement and header positions; header clicks hit the drawn headers in the next frame.
-
-**Live check (director):** before the checkpoint, capture the natedev grid from a build of this branch and from main at the same size, under the safety rule. Each long tile shares a column with a short tile, and each long tile's `content rows: N of M` shows more drawn rows than on main.
-
-**Change-Review line:** Long and short tiles share a column, so the long ones show more rows | On natedev, run cargo-handler with two long and two short tiles | The longest tile sits in a column with the shortest, the next longest with the next shortest; the long tiles show more of their rows
+- The shared tui_pane grid places detail tiles by a rule that the app selects. `TileColumnOrder<Id>` has `SourceOrder` and `LongestWithShortest(Vec<(Id, usize)>)`. `TileCells::column_order()` returns `SourceOrder` by default, so cargo-tile keeps source order.
+- cargo-handler returns `LongestWithShortest` from each tile's full tree rows (`full_tree_rows`): every row with every row open, plus the root row, taken before expansion removes closed rows. Collapse, scroll and pane height do not change it.
+- `TileGrid` holds `ColumnRanks`. `ColumnRanks::arrange(slots, column_capacities, depth)` deals the ranks, longest first, over the columns in snake order (`SweepDirection`). A full column is skipped. The summary tile and empty cells keep their slots. Inside a column, tiles keep source order. A tie keeps the previous rank.
+- `CompleteColumnRanks::for_slots` builds one unique rank list against the admitted slots: it drops duplicates and ids without a slot, and puts slot ids absent from the order last, in source order.
+- `ColumnLayout::column_capacities(detail_slots, columns)` is the one capacity calculation.
+- Grid geometry is pane size, column count and summary depth. With the same membership and geometry, a tile moves only when the ranking changes. A change to membership or geometry re-deals the unchanged ranks over the new slot shape. Grid motion animates each move.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `crates/tui_pane/src/tiles/grid/` — the placement rule, `TileGrid::sync_measured_demands` and the layout cache
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — full row counts (`Cells::demands`, before `Cells::with_expansion` filters rows), the union column slots after placement, and the rule selection
-- `crates/cargo-handler/src/render/` — the pairing and rows-drawn tests
+- `crates/tui_pane/src/tiles/grid/column_order.rs` — `TileColumnOrder`, `ColumnRanks`, `CompleteColumnRanks`, `SweepDirection`
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs` — holds `ColumnRanks` and applies it at layout
+- `crates/tui_pane/src/tiles/grid/layout.rs` — `ColumnLayout::column_capacities`
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — full tree rows and the rule selection
+- `crates/tui_pane/src/tiles/grid/column_order_tests.rs`, `ranked_column_grid_tests.rs`, `crates/cargo-handler/src/render/ranked_column_tests.rs` — placement tests
 - `docs/cargo-handler/as-built/tile-layout.md` — the column assignment
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** the full-screen tile keeps `ColumnRanks` across expand and collapse; it does not clear or rebuild them. A new detail tile, such as the producers tile, takes part in the ranking.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the long tiles paired with the short tiles.
+**Gotchas:** the summary depth is part of the grid geometry. A collapse that changes the summary depth changes the column capacities, so tiles can move with unchanged ranks.
 
 ### Phase 5 — The word "waiting" draws in red in every tile  · status: todo
 
@@ -242,6 +209,7 @@ Director decisions:
 - Shared boundary (director decision, 2026-11-13): cargo-tile's `draw_cell_view` reads its roster and prepared tables, and `ExpandedCell` uses app row and header measures. A generic tile identity alone cannot move them. tui_pane owns the expanded identity, the motion clock, and the motion and clipping geometry. Each app supplies its content measures and draws its content into the rect that tui_pane gives, through one tui_pane trait. cargo-tile's roster and table reads stay in cargo-tile, behind its trait implementation.
 - cargo-handler `Cells` owns row selection, the tree viewport, the painted headers and the Phase 3 shared column fitting. The full-screen tile uses that selection and viewport; it does not use cargo-tile's scroll state, so there is one viewport owner. The expanded tile fits its columns as a `TreeSizing::Local` tile at the full pane width. On collapse, the grid fits the shared columns again, and the blank slots of Phase 3 come back.
 - Phase 3 registers the details view as its own copy target and draws the copy notice above a details view that fills the frame (`render/mod.rs`). Keep both paths with the full-screen layer under the details view.
+- Phase 4: `TileGrid` holds the column placement state (`ColumnRanks`, `crates/tui_pane/src/tiles/grid/column_order.rs`), and the app selects the rule with `TileCells::column_order`. cargo-handler returns `TileColumnOrder::LongestWithShortest` from each tile's full tree rows; cargo-tile keeps the default source order. Expand and collapse change no tile membership, so they keep the ranks. When the pane size and the ranking do not change, a collapse puts every tile back in the column it held before Enter. Do not clear or rebuild the ranks for the full-screen tile.
 
 Tests (red first, each under one second):
 1. In cargo-handler, Enter on a focused tile draws that tile at the full pane size; Esc returns to the grid with the same focus and selection.
@@ -407,6 +375,7 @@ Director decisions:
 3. `ResetRank::color` keeps its rank rule: the first quarter of ranks takes `reset_soonest`, the last quarter takes `reset_latest`, and the rest take `reset_middle`. A single reset takes `reset_soonest`.
 4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
 5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
+6. One contrast measure (showrunner, 2026-11-13). The footer color tests use `tui_pane::contrast_ratio` (`crates/tui_pane/src/theme/blend.rs`). The `contrast_ratio` helper in `footer_colors/tests.rs` goes. The shared measure returns `Option<f64>`, which is `None` for `Color::Reset`; a test unwraps it with a message that names the two colors.
 
 **Constraints from prior phases:**
 - Phase 5 extends the bundled theme loading with the `waiting` role. Extend that loader with the new reset roles; do not make a second load path. Keep the `waiting` inheritance and contrast tests green. Load the new reset roles from the bundled theme files, with inheritance and custom-override tests. The Phase 2 config reader handles emphasis only; themes use the theme-loading path.
@@ -420,6 +389,7 @@ Tests (red first, each under one second):
 3. A footer with all three rank groups draws exactly three reset colors. Every pair is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, tint on and off.
 4. The existing contrast, no-red and session-color tests pass with the new colors.
 5. Equal reset times, one distinct reset and exact quarter edges keep the rank rule. A custom theme without the new roles takes the defaults.
+6. The footer color tests in `footer_colors/tests.rs` and `footer_colors/ground_tests.rs` pass with `tui_pane::contrast_ratio`, with their floors unchanged.
 
 **Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
 
@@ -431,6 +401,7 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order and distance
 - `crates/cargo-handler/src/theme/files_tests.rs` — theme file roles
 - `crates/cargo-handler/src/theme/files.rs` — custom theme role load and defaults
+- `crates/cargo-handler/src/footer_colors/tests.rs`, `crates/cargo-handler/src/footer_colors/ground_tests.rs` — the footer contrast tests on the shared measure
 - `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset steps
 
 **Workers:** 1 writer.
@@ -443,3 +414,46 @@ Tests (red first, each under one second):
 ### Phase 10 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` red ink for the status word is in Phase 5.
+
+### Phase 11 — Five slow tests run in under one second  · status: todo
+
+**Depends on:** Phase 9 (it changes `render/word_contrast_tests.rs`)
+
+#### Work Order
+
+**Goal:** five tests that took one second or more now run in under one second in the full package run, with the same assertions.
+
+**Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
+
+**Spec:**
+
+Director decisions:
+1. The Delegation Context invariant holds: no test takes one second or more. Each test below took one second or more in a full run on natedev.
+2. Keep every assertion and every case each test checks. Cut the work per case: shared setup built once, fewer redundant frames or renders, cheaper fixtures. Do not split a test into parts to hide its total time, and do not mark a test ignored or slow.
+3. Find the cost first: measure each test alone and in its full package run, and name the step that takes the time.
+
+The tests and their measured times:
+1. tui_pane `startup_cells_leave_no_line_before_their_first_row` (`crates/tui_pane/src/tiles/draw/paint_tests.rs`) — 1.081 s, Phase 3.
+2. tui_pane `every_frame_of_a_key_keeps_the_motion_rules` (`crates/tui_pane/src/tiles/grid/tests/motion_rules.rs`, through `assert_motion_rules`) — 1.081 s, Phase 3; 1.051 s, Phase 4.
+3. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_dark` (`crates/cargo-handler/src/render/word_contrast_tests.rs`, through `check_astra_word_matches`) — 1.125 s, Phase 4.
+4. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_light` (same file) — 1.324 s, Phase 4.
+5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
+
+**Constraints from prior phases:**
+- `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
+- Phase 9 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+
+**Change-Review line:** none (test code only)
+
+**Files:**
+- `crates/tui_pane/src/tiles/draw/paint_tests.rs` — test 1
+- `crates/tui_pane/src/tiles/grid/tests/motion_rules.rs` — test 2 and `assert_motion_rules`
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — tests 3 and 4 and `check_astra_word_matches`
+- `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
+
+**Workers:** 1 writer.
+- `impl` — every file above.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the five tests runs in under one second in its full package run, with its assertions unchanged.
