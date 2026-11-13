@@ -178,12 +178,17 @@ Director decisions:
 6. The tile activity cell does not change. Only the `d` view joins the live word.
 7. Each `d` value with a tile cell for the same row draws in that cell's ink: account, session name, role, activity, status (the `waiting` ink included), type, model, effort, branch and directory. Use the function the tile cell uses for its ink; do not copy the ink rules. Values with no tile cell (pid, desktop, age, the hierarchy names) keep the default text ink.
 8. A selected line keeps the selection background. Its value ink goes through `footer_colors::SelectedGroundInk::resolve` after the cell ink, as the tile row does in `render/mod.rs`. Use that resolver; do not copy it.
+9. A left click on a `d` value line selects that line, as the arrow keys do. A click on a heading line, a blank line or outside the overlay changes nothing. The wheel keeps its arrow-key behavior. Source: the user, returning C331: "you need to make the details tab accept mouse clicking a row as well as navigating with the arrows - i shouldn't have to ask this".
+10. The click uses the `tui_pane` mouse path that cargo-port uses (`TerminalApp::click`, the `Viewport` hit test, `table_row_at`). Add no second hit-test geometry.
+11. Every cargo-handler view has mouse and keyboard parity: each list a key moves through, a left click selects and the wheel scrolls. Audit the tiles, the `d` view, the favorites overlay and each other overlay. Fix each gap in this phase, and name each view and its result in the reply.
 
 Tests (red first, each under one second):
 1. No row's `d` view has a `family:` line or a `state:` line, read from the rendered overlay. The `agent` and `now` sections keep their other lines in order.
 2. A worker with job `impl` and live `clippy` shows `activity: impl · clippy`. A unit director with live `thinking` shows `activity: thinking`. An idle unit director with no job shows `activity: —`. A compacting row shows `activity: compacting`. Each shows its accounts word in `status:`.
 3. For each value in decision 7, the `d` view value draws the same foreground as the tile cell of the same row, read from both rendered buffers. Include a row with a waiting status, selected and not selected, on the dark and the light default themes, in a focused and a remembered selection.
 4. The Phase 3 tests `details_navigation_skips_headings_and_y_copies_only_the_value` and `assert_full_frame_copy_notice` stay green. `y` copies the value text only, with no ink.
+5. A click on the second value line of an open `d` view selects it; `y` then copies that value. A click on a heading line keeps the selection. Drive the click through `TerminalApp::click`.
+6. For each view that decision 11 fixes, a click on a row selects the row that the arrow keys reach.
 
 **Constraints from prior phases:**
 - Phase 3: the four sections, the heading lines, the value column and `y` stay. The `DetailsOverlay` copy target stays.
@@ -193,14 +198,19 @@ Tests (red first, each under one second):
 **Live check (director):** before the checkpoint, open the `d` view on a unit director row and on a worker row, from a build of this branch, on the dark and the light default themes, under the safety rule. No `family:` or `state:` line shows; `activity:` shows the job and the live word; each value has its tile color.
 
 **Change-Review line:** The details view drops family and state, shows activity and status, and colors each value as the tile does | On natedev, press d on a unit director row and on a worker row | No family or state line; activity shows the job and what the agent does now; each value has the color it has in the tile
+**Change-Review line:** A click on a details row selects it, as the arrows do, and each view accepts the mouse and the keys the same way | On natedev, press d on a row, click a value line, then press y | The clicked line is selected and y copies its value; clicks select rows in every list
 
 **Files:**
 - `crates/cargo-handler/src/details.rs` — the properties, the `now` order and the value inks
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/tui_pane/src/favorites_overlay/mod.rs` — the `d` view click, and each view that the parity audit fixes
 - `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details` and the shared cell inks
 - `crates/cargo-handler/src/render/mod.rs` — the selected-row ink path the `d` view shares
-- `crates/cargo-handler/src/render/details_tests.rs` — the `d` view tests
+- `crates/cargo-handler/src/render/details_tests.rs`, `crates/cargo-handler/src/render/favorites_tests.rs` — the `d` view tests and the favorites click tests
 - `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs`, `crates/cargo-handler/src/summary/age_layout_tests.rs` — tests that read the removed lines
 - `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/interaction.md` — the `d` lines and inks
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — tests that read the removed `state:` line
+- `crates/cargo-handler/src/summary/mod.rs` — `status_text`, which loses its last caller
+- `crates/cargo-handler/src/census/codex_session_tests.rs`, `crates/cargo-handler/src/census/subagent_activity_tests.rs`, `crates/cargo-handler/src/render/layout_stability_tests.rs` — tests that read the removed `state:` line
 
 **Workers:** 1 writer.
 - `impl` — every file above, and the tests.
@@ -209,7 +219,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the new `d` lines and the tile colors on both default themes.
 
-### Phase 7 — The census keeps each worker's current run, pane state, run states and activity start, and names what it cannot read  · status: todo
+### Phase 7 — The census keeps each worker's current run, pane state, run states and activity start, and names what it cannot read  · status: done
 
 **Depends on:** none
 
@@ -253,9 +263,15 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/activity.rs` — the run states and the activity start
 - `crates/cargo-handler/src/census/herdr.rs` — the pane states
 - `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/mod.rs` — the probe fields and the shared scan
-- `crates/cargo-handler/src/census/accounts.rs` — the typed accounts read
+- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/remote.rs`, `crates/cargo-handler/src/census/probe/hierarchy_transport_tests.rs` — the census facts on the hierarchy answer
+- `crates/cargo-handler/src/render/drawn_frame_tests.rs`, `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — fixtures that build the hierarchy snapshot, and the current-run row
+- `crates/cargo-handler/src/census/activity_regression_tests.rs`, `crates/cargo-handler/src/census/astra_role_tests.rs` — staff fixtures with a current-run pointer, and the `activity:` label
+- `crates/cargo-handler/src/census/model.rs`, `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `MetadataFixture::new` and the placement fixture, with a unit run pointer and an active worker pass
+- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/accounts_source_tests.rs` — the typed accounts read and its source outcomes
+- `crates/cargo-handler/src/constants.rs` — the delivery prefixes and the progress history file name
+- `crates/cargo-handler/src/terminal.rs` — puts the accounts monitor's read outcome into the local census facts
 - `crates/cargo-handler/src/census/worker_dispatch/` — run facts the dispatch reader holds
-- `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs` — the tests
+- `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/census/scan/current_run_repair_tests.rs` — the tests
 - `docs/cargo-handler/as-built/hierarchy.md` — the current-run rule and the new facts
 
 **Workers:** 1 writer.
@@ -327,7 +343,113 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check output matches the TUI, and the phase report names the measured run time.
 
-### Phase 9 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
+### Phase 9 — The accounts table shows the date each Claude login ends  · status: todo
+
+**Depends on:** Phase 7 (it changes `census/accounts.rs`, the typed accounts read)
+
+#### Work Order
+
+**Goal:** the accounts table has a `login ends` column, so the user sees when each Claude account must sign in again.
+
+**Source:** the user, via natedev and the showrunner, 2026-11-13: "yes i want to see this in the accounts table (propagated to cargo handler)". "This" is the date each Claude account's login ends. The wire contract comes from natedev's accounts unit, through the showrunner.
+
+**Spec:**
+
+Wire contract (natedev's accounts unit):
+- cargo-handler already runs `accounts.py status --stored --json` (`census/command_inputs.rs`) and reads `accounts[]`.
+- Each `accounts[]` item gets `login_ends_at`: an ISO 8601 UTC string in the same form as `resets_at`, or null. Codex rows, and Claude rows with no stored value, give null.
+- The value comes from `agent-notes/usage.json`, which cargo-handler already watches. No new input file.
+- The field reaches `~/.claude` main with the accounts phase `login-end-date`. This phase can land first.
+
+Director decisions:
+1. `AccountWire` gets `login_ends_at: Option<String>` with `#[serde(default)]`. An older report without the key parses, and its rows show an empty cell.
+2. `AccountUsage` keeps the value as `Reading<DateTime<Utc>>`, parsed by the function that parses `resets_at`. A malformed value fails the same way as a malformed `resets_at`.
+3. A new `AccountsColumn::LoginEnds` sits after `Resets`. Its header is `login ends`, lower case like the other headers. Its value uses `reset_label`, the date form of the `resets` column. A null value gives an empty cell, as `resets` does.
+4. The column sorts by date, as `resets` does, with an empty value in the place `resets` gives it.
+5. The column draws in the default table ink. It takes no rank color.
+6. On a narrow pane, the column drops after `enabled` and before `credits`. Director call: the date changes once a week, so it gives way before the credit amount.
+
+Tests (red first, each under one second):
+1. A report with `login_ends_at` on a Claude row and null on a Codex row draws the date in the Claude row and an empty cell in the Codex row, read from the rendered accounts table.
+2. A report without the `login_ends_at` key parses, and every `login ends` cell is empty.
+3. The `login ends` cell text equals the `resets` cell text for the same instant, today, within six days and later.
+4. A click on the `login ends` header sorts the rows by that date, in both directions.
+5. On a narrow pane, `enabled` drops first, then `login ends`, then `credits`.
+
+**Constraints from prior phases:**
+- Phase 7: the accounts read returns a typed outcome: loaded, absent or unreadable. The new field goes into the loaded reading.
+- The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
+
+**Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
+
+**Change-Review line:** The accounts table shows the date each Claude login ends | On natedev, run cargo-handler and look at the accounts table | A `login ends` column shows a date for each Claude account and is empty for Codex accounts
+
+**Files:**
+- `crates/cargo-handler/src/census/accounts.rs` — `AccountWire::login_ends_at`, `AccountUsage::login_ends_at`
+- `crates/cargo-handler/src/sort.rs` — `AccountsColumn::LoginEnds` and its header
+- `crates/cargo-handler/src/summary/accounts.rs` — the cell value, the sort and the drop order
+- `crates/cargo-handler/src/census/accounts_wire_tests.rs` — tests 1 and 2
+- `crates/cargo-handler/src/summary/accounts_tests.rs` — tests 3 and 5
+- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs` — test 4
+- `docs/cargo-handler/as-built/accounts.md` — the `login ends` column
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the login end dates.
+
+### Phase 10 — Status reads busy, idle, paused or exited; starting and waiting are activities, the same in the accounts board and cargo-handler  · status: todo
+
+**Depends on:** Phase 7 (the census facts); Phase 8 (`census --json`, which the accounts board reads); Phase 9 (it changes the accounts table columns)
+
+#### Work Order
+
+**Goal:** a session's status has four values, and what a busy session does is its activity, read from the census, so the accounts board and cargo-handler show the same words.
+
+**Source:** the user, via natedev and the showrunner, 2026-11-13, on C1513 (starting and waiting columns, rejected): "the account unit should make sure this synchronizes with cargo handler (talk to cargo liner for assignment) - it is important that everything works the same way". Showrunner context: status keeps four values only: busy, idle, paused, exited. Each busy showrunner, unit and worker shows an activity (starting, waiting, thinking, running, compacting, and so on). The handler unit owns the cargo-handler side. The accounts unit agrees one definition with the handler unit.
+
+**Decided (showrunner, 2026-11-13):** one owner for each field. `status` is from `session_state.py` through `accounts.py status --json`; cargo-handler makes no status word. `activity` is from the census in Rust; the accounts board reads it from `cargo-handler census --json`. No Python copy of the activity classifier. The `waiting` ink moves to the activity word.
+
+**Spec:**
+
+Director decisions:
+1. The status cell shows only `busy`, `idle`, `paused` or `exited`, from the accounts report. `starting` and `waiting` leave the status.
+2. A busy row's activity cell shows its activity word from the census. `census --json` prints each session as `{session, status, activity}`, with `activity` null on a row that is not busy.
+3. The accounts table drops its `starting` and `waiting` columns.
+4. Director call: the `waiting` bright yellow ink (Phase 5) moves from the status word to the activity word `waiting`. The other activity words keep their inks.
+
+Tests (red first, each under one second):
+1. Each status value draws in the status cell; no row draws `starting` or `waiting` there.
+2. Each activity word of the shared definition comes out of a census fixture that holds its fact, in the tile and in `census --json`.
+3. The activity word `waiting` draws in the `waiting` ink on the dark and the light default themes.
+4. The accounts table has no `starting` or `waiting` column.
+
+**Constraints from prior phases:**
+- Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Add no second reader.
+- The Delegation Context Status source: cargo-handler never makes a status word of its own.
+
+**Live check (director):** on natedev, compare the accounts board with cargo-handler while a unit starts, waits and works. Both show the same status and the same activity for each row.
+
+**Change-Review line:** Status reads busy, idle, paused or exited, and starting and waiting show as activities | On natedev, open the accounts board and cargo-handler while a unit starts and waits | Both show the same four status words and the same activity word for each busy row
+
+**Files:**
+- `crates/cargo-handler/src/census/accounts.rs` — the four status values
+- `crates/cargo-handler/src/agent_cell.rs` — the activity word and its ink
+- `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/summary/accounts.rs` — the removed columns
+- `crates/cargo-handler/src/census/report.rs` — the `census --json` activity
+- `crates/cargo-handler/src/census/accounts_wire_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/census/report_tests.rs` — the tests
+- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/colors.md` — status, activity and ink
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the same words in both tools.
+
+### Phase 11 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
 
 **Depends on:** Phase 3 (both change the handler key handling)
 
@@ -382,7 +504,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the full-screen tile and the return to the grid.
 
-### Phase 10 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 12 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -404,7 +526,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
-- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 9 full-screen tile with its selection, expansion and `y` copy.
+- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 11 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
@@ -443,7 +565,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 11 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 13 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -501,7 +623,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 12 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 14 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -555,17 +677,17 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 13 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 15 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 14 — Six slow tests run in under one second  · status: todo
+### Phase 16 — Nine slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs`); Phase 12 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 14 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
-**Goal:** six tests that took one second or more now run in under one second in the full package run, with the same assertions.
+**Goal:** nine tests that took one second or more now run in under one second in the full package run, with the same assertions.
 
 **Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
 
@@ -583,11 +705,14 @@ The tests and their measured times:
 4. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_light` (same file) — 1.324 s, Phase 4.
 5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
 6. cargo-handler `row_details_key_shows_properties_and_long_age_then_escape_closes` (`crates/cargo-handler/src/render/details_tests.rs`) — 1.06 to 1.24 s, Phase 5.
+7. cargo-handler `codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec` (`crates/cargo-handler/src/census/codex.rs`) — 1.047 s, tile Phase 62 gate.
+8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate.
+9. cargo-handler `an_explicit_resume_id_cannot_name_an_unproven_non_user_thread` (same file) — 1.038 s, tile Phase 62 gate.
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 12 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
-- Phase 6 changes `render/details_tests.rs`. Keep its new cases.
+- Phase 14 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 
 **Change-Review line:** none (test code only)
 
@@ -597,10 +722,12 @@ The tests and their measured times:
 - `crates/cargo-handler/src/render/word_contrast_tests.rs` — tests 3 and 4 and `check_astra_word_matches`
 - `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
 - `crates/cargo-handler/src/render/details_tests.rs` — test 6
+- `crates/cargo-handler/src/census/codex.rs` — test 7
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 and 9
 
 **Workers:** 1 writer.
 - `impl` — every file above.
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the six tests runs in under one second in its full package run, with its assertions unchanged.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the nine tests runs in under one second in its full package run, with its assertions unchanged.

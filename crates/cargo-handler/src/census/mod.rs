@@ -63,16 +63,19 @@ use std::time::UNIX_EPOCH;
 
 pub(crate) use account::Account;
 pub(crate) use account::AccountColumn;
+use accounts::AccountsTable;
 pub(crate) use activity::Activity;
 pub(crate) use activity::AgentActivity;
+use activity::DetachedRunFact;
 #[cfg(test)]
 pub(crate) use activity::RunLocation;
 #[cfg(test)]
 pub(crate) use activity::VerifyStep;
-pub(crate) use herdr::PaneWork;
+use herdr::PaneState;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
+use hierarchy::StaffRunPointer;
 use model::ModelName;
 use model::ReasoningEffort;
 pub(crate) use placement::AgentPlacement;
@@ -119,7 +122,7 @@ pub(crate) enum Agent {
 
 impl Agent {
     /// The row's `agent` cell.
-    pub(crate) const fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_AGENT,
             Self::Codex | Self::CodexThreadHost => CODEX_AGENT,
@@ -339,6 +342,129 @@ pub(crate) enum StaffRowName {
     #[default]
     Unlisted,
     Named(String),
+}
+
+/// A source failure remains distinct from a valid empty answer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct UnknownReason(pub(crate) String);
+
+/// A fact carries either its value or the reason it is unknown.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Observed<T> {
+    Known(T),
+    Unknown(UnknownReason),
+}
+
+impl<T> Observed<T> {
+    fn unknown(reason: impl Into<String>) -> Self { Self::Unknown(UnknownReason(reason.into())) }
+}
+
+/// A completed source read keeps valid absence separate from failure.
+#[derive(Clone, Debug)]
+enum SourceRead<T> {
+    Loaded(T),
+    Absent,
+    Unreadable(UnknownReason),
+}
+
+/// Source health travels without copying the source document.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceHealth {
+    Loaded,
+    Absent,
+    Unreadable(UnknownReason),
+}
+
+impl<T> SourceRead<T> {
+    fn health(&self) -> SourceHealth {
+        match self {
+            Self::Loaded(_) => SourceHealth::Loaded,
+            Self::Absent => SourceHealth::Absent,
+            Self::Unreadable(reason) => SourceHealth::Unreadable(reason.clone()),
+        }
+    }
+}
+
+/// Facts share the same lifetime as the machine's rows and hierarchy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default = "CensusFacts::older_probe")]
+pub(crate) struct CensusFacts {
+    staff:    Observed<SourceHealth>,
+    accounts: Observed<SourceHealth>,
+    workers:  Observed<BTreeMap<String, WorkerFacts>>,
+}
+
+/// One worker's retained observations do not define its accounts status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default = "WorkerFacts::older_probe")]
+struct WorkerFacts {
+    current_run:      Observed<StaffRunPointer>,
+    pane:             Observed<PaneState>,
+    runs:             Observed<Vec<DetachedRunFact>>,
+    activity_started: Observed<u64>,
+}
+
+impl WorkerFacts {
+    /// An older remote probe sends rows without the worker facts.
+    fn older_probe() -> Self {
+        Self {
+            current_run:      Observed::unknown("remote probe has no current run"),
+            pane:             Observed::unknown("remote probe has no pane state"),
+            runs:             Observed::unknown("remote probe has no run states"),
+            activity_started: Observed::unknown("remote probe has no activity start"),
+        }
+    }
+}
+
+impl CensusFacts {
+    /// An older remote probe sends rows without the census facts.
+    fn older_probe() -> Self {
+        Self {
+            staff:    Observed::unknown("remote probe has no staff read"),
+            accounts: Observed::unknown("remote probe has no accounts read"),
+            workers:  Observed::unknown("remote probe has no worker facts"),
+        }
+    }
+
+    fn remote_rows(rows: &[AgentRow]) -> Self {
+        let workers: BTreeMap<_, _> = rows
+            .iter()
+            .flat_map(|row| {
+                row.session_id
+                    .ids()
+                    .chain(
+                        row.children
+                            .iter()
+                            .filter_map(|child| match &child.thread_id {
+                                CodexThreadId::Recorded(id) => Some(id.as_str()),
+                                CodexThreadId::Unrecorded => None,
+                            }),
+                    )
+            })
+            .map(|id| (id.to_owned(), WorkerFacts::older_probe()))
+            .collect();
+        if workers.is_empty() {
+            Self::older_probe()
+        } else {
+            Self {
+                workers: Observed::Known(workers),
+                ..Self::older_probe()
+            }
+        }
+    }
+}
+
+impl Default for CensusFacts {
+    /// A snapshot built before the scan reads its sources names that state.
+    fn default() -> Self {
+        Self {
+            staff:    Observed::unknown("this snapshot has no staff read"),
+            accounts: Observed::unknown("this snapshot has no accounts read"),
+            workers:  Observed::unknown("this snapshot has no worker facts"),
+        }
+    }
 }
 
 /// One agent someone can talk to, or an app server transporting workers
@@ -567,15 +693,31 @@ impl RemoteHierarchyAnswers {
         answer: Result<(Vec<AgentRow>, HierarchyAnswer), String>,
     ) -> MachineState {
         match answer {
+            Ok((rows, HierarchyAnswer::WithFacts(snapshot))) => {
+                let answer = match snapshot.notice {
+                    HierarchyNotice::Clear => HierarchyAnswer::Answered(snapshot.edges),
+                    HierarchyNotice::NoSessionMatched => HierarchyAnswer::Unmatched(snapshot.edges),
+                    HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed { reason },
+                };
+                let mut state = self.apply(host, Ok((rows, answer)));
+                if let MachineState::Answered(_, hierarchy) = &mut state {
+                    hierarchy.facts = snapshot.facts;
+                }
+                state
+            },
             Ok((rows, HierarchyAnswer::Answered(edges))) => {
                 self.edges.insert(host.to_string(), edges.clone());
-                MachineState::Answered(rows, edges.into())
+                let mut snapshot: HierarchySnapshot = edges.into();
+                snapshot.facts = CensusFacts::remote_rows(&rows).into();
+                MachineState::Answered(rows, snapshot)
             },
             Ok((rows, HierarchyAnswer::Unmatched(edges))) => {
                 self.edges.insert(host.to_string(), edges.clone());
+                let facts = CensusFacts::remote_rows(&rows);
                 MachineState::Answered(
                     rows,
                     HierarchySnapshot {
+                        facts: facts.into(),
                         edges,
                         notice: HierarchyNotice::NoSessionMatched,
                     },
@@ -583,9 +725,11 @@ impl RemoteHierarchyAnswers {
             },
             Ok((rows, HierarchyAnswer::Failed { reason })) => {
                 let edges = self.edges.entry(host.to_string()).or_default();
+                let facts = CensusFacts::remote_rows(&rows);
                 MachineState::Answered(
                     rows,
                     HierarchySnapshot {
+                        facts:  facts.into(),
                         edges:  edges.clone(),
                         notice: HierarchyNotice::Failed(reason),
                     },
@@ -636,6 +780,8 @@ pub(crate) struct Census {
     /// Each remote's latest answer, by ssh name. A remote configured
     /// but absent here has not answered yet.
     remotes:    HashMap<String, MachineState>,
+    /// The `AccountsMonitor` outcome that each local snapshot carries.
+    accounts:   Observed<SourceHealth>,
 }
 
 impl Census {
@@ -652,6 +798,15 @@ impl Census {
             local_name,
             local: MachineState::Scanning,
             remotes: HashMap::new(),
+            accounts: Observed::unknown("the accounts monitor has not answered"),
+        }
+    }
+
+    /// Keep the TUI's one accounts read as the local census accounts fact.
+    pub(crate) fn record_local_accounts(&mut self, table: &AccountsTable) {
+        self.accounts = table.health();
+        if let MachineState::Answered(_, hierarchy) = &mut self.local {
+            hierarchy.facts.accounts = self.accounts.clone();
         }
     }
 
@@ -659,8 +814,13 @@ impl Census {
     pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
         let (slot, state) = match update {
             CensusUpdate::Local {
-                rows, hierarchy, ..
-            } => (&mut self.local, MachineState::Answered(rows, hierarchy)),
+                rows,
+                mut hierarchy,
+                ..
+            } => {
+                hierarchy.facts.accounts = self.accounts.clone();
+                (&mut self.local, MachineState::Answered(rows, hierarchy))
+            },
             CensusUpdate::Remote { host, state } => (
                 self.remotes.entry(host).or_insert(MachineState::Scanning),
                 state,
@@ -759,6 +919,8 @@ pub(crate) fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use accounts::AccountsFailure;
+    use accounts::AccountsTable;
     use hierarchy::HierarchyAnswer;
     use hierarchy::HierarchyError;
 
@@ -799,6 +961,7 @@ mod tests {
             ] {
                 let rows = vec![row(1)];
                 let hierarchy = HierarchySnapshot {
+                    facts: CensusFacts::default().into(),
                     edges: HierarchyEdges::default(),
                     notice,
                 };
@@ -865,6 +1028,7 @@ mod tests {
                 HierarchyAnswer::Failed { reason, .. } => HierarchyNotice::Failed(*reason),
                 HierarchyAnswer::Answered(_) => HierarchyNotice::Clear,
                 HierarchyAnswer::Unmatched(_) => HierarchyNotice::NoSessionMatched,
+                HierarchyAnswer::WithFacts(snapshot) => snapshot.notice,
             };
             let state = answers.apply(host, Ok((vec![row(started)], hierarchy)));
             assert!(census.apply(CensusUpdate::Remote {
@@ -877,6 +1041,7 @@ mod tests {
                 &MachineState::Answered(
                     vec![row(started)],
                     HierarchySnapshot {
+                        facts: CensusFacts::older_probe().into(),
                         edges: expected,
                         notice
                     }
@@ -898,11 +1063,40 @@ mod tests {
             MachineState::Answered(
                 vec![row(6)],
                 HierarchySnapshot {
+                    facts:  CensusFacts::older_probe().into(),
                     edges:  HierarchyEdges::default(),
                     notice: HierarchyNotice::Failed(HierarchyError::ExitedUnsuccessfully),
                 }
             )
         );
+    }
+
+    /// The one accounts read of the TUI supplies the local accounts fact.
+    #[test]
+    fn local_facts_carry_the_accounts_read_outcome() {
+        let mut census = Census::new("natedev".to_string());
+        let update = || CensusUpdate::Local {
+            rows:      vec![row(1)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        };
+        assert!(census.apply(update()));
+        census.record_local_accounts(&AccountsTable::Failed(AccountsFailure::Command(
+            HierarchyError::ExitedUnsuccessfully,
+        )));
+        let expected = Observed::Known(SourceHealth::Unreadable(UnknownReason(
+            AccountsFailure::Command(HierarchyError::ExitedUnsuccessfully).to_string(),
+        )));
+        let local_accounts = |census: &Census| match &census.local {
+            MachineState::Answered(_, hierarchy) => Some(hierarchy.facts.accounts.clone()),
+            MachineState::Scanning | MachineState::Failed(_) => None,
+        };
+        assert_eq!(local_accounts(&census), Some(expected.clone()));
+        assert!(
+            !census.apply(update()),
+            "the next scan keeps the same accounts fact"
+        );
+        assert_eq!(local_accounts(&census), Some(expected));
     }
 
     /// An update that repeats what the census already holds changes
@@ -935,9 +1129,11 @@ mod tests {
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Completed,
         }));
+        let mut expected: HierarchySnapshot = HierarchyEdges::default().into();
+        expected.facts.accounts = Observed::unknown("the accounts monitor has not answered");
         assert_eq!(
             census.machines(&[])[0].state,
-            &MachineState::Answered(vec![row(3)], HierarchyEdges::default().into()),
+            &MachineState::Answered(vec![row(3)], expected),
         );
 
         let failed = CensusUpdate::Remote {

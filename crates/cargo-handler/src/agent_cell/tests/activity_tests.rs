@@ -126,7 +126,7 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
             .iter()
             .find(|cell| cell.row.name == name)
             .expect("fixture session");
-        assert_eq!(detail_value(cell, name, "state", NOW), word);
+        assert_eq!(detail_value(cell, name, "activity", NOW), word);
         let x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
         let y = find(&buffer, name).expect("source row").1;
         let drawn: String = (x..x + summary::cell_width(status))
@@ -152,7 +152,7 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         .expect("writer owner");
     let nested = drawn_into(owner, &cells, 240, 12);
     assert_eq!(
-        detail_value(owner, "nested-20", "state", NOW),
+        detail_value(owner, "nested-20", "activity", NOW),
         "nextest (mac)"
     );
     assert_eq!(

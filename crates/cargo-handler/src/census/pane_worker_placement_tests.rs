@@ -47,9 +47,9 @@ impl Fixture {
                 {"id":"boss", "kind":"showrunner", "name":"staff boss",
                  "parent":null, "current_session":"boss-session"},
                 {"id":"first-unit", "kind":"unit", "name":"first staff unit",
-                 "parent":"boss", "current_session":"first-unit-session"},
+                 "parent":"boss", "current_session":"first-unit-session", "run":root.path()},
                 {"id":"second-unit", "kind":"unit", "name":"second staff unit",
-                 "parent":"boss", "current_session":"second-unit-session"},
+                 "parent":"boss", "current_session":"second-unit-session", "run":root.path()},
                 {"id":"first-worker", "kind":"worker", "name":"first staff worker",
                  "parent":"first-unit", "current_session":FIRST_THREAD, "role":null},
                 {"id":"second-worker", "kind":"worker", "name":"second staff worker",
@@ -58,6 +58,15 @@ impl Fixture {
             .expect("staff JSON"),
         )
         .expect("staff file");
+        std::fs::write(
+            root.path().join("progress_history_state.json"),
+            serde_json::to_vec(&json!({"pass":{
+                "first-worker":{"worker_id":"first-worker","status":"active","started_at":100},
+                "second-worker":{"worker_id":"second-worker","status":"active","started_at":100}
+            }}))
+            .expect("current worker passes JSON"),
+        )
+        .expect("current worker passes");
         let setting =
             StaffFileSetting::new(HierarchySource::File(staff.to_string_lossy().into_owned()));
         Self { root, setting }
