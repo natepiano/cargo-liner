@@ -181,7 +181,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** a timed fallback walk.
 
-### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: todo
+### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: done
 
 **Depends on:** Phase 7 (event-only disk updates). Runs in its own worktree `/home/natepiano/rust/cargo-liner-port-8`, branch `port-phase-8`, from main at `b1d063fae`.
 

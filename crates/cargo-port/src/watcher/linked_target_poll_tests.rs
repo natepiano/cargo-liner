@@ -18,6 +18,7 @@ use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::test_support;
 use crate::watcher::ProjectEntry;
+use crate::watcher::runtime::GitRefreshDemand;
 use crate::watcher::watch_test_support;
 
 #[test]
@@ -36,11 +37,15 @@ fn target_symlink_artifacts_reach_explicit_project_size() -> Result<(), Box<dyn 
     let projects = HashMap::from([(
         project.clone(),
         ProjectEntry {
-            label:          "linked-target".to_string(),
-            abs_path:       project.clone(),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "linked-target".to_string(),
+            abs_path:             project.clone(),
+            repo_root:            None,
+            git_dir:              None,
+            common_git_dir:       None,
         },
     )]);
     let now = Instant::now();

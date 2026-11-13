@@ -3,6 +3,8 @@ mod checkout;
 mod command;
 mod constants;
 mod discovery;
+mod event_visibility;
+mod measured_output;
 mod probes;
 mod repo;
 mod submodule;
@@ -19,6 +21,10 @@ pub(crate) use checkout::HeadState;
 pub(crate) use checkout::LocalGitState;
 pub(crate) use checkout::TrackedRef;
 pub(crate) use checkout::worktree_ahead_behind_primary;
+#[cfg(test)]
+pub(crate) use command::GIT_COMMAND_METADATA_STORE;
+#[cfg(test)]
+pub(crate) use command::GIT_COMMANDS;
 pub(crate) use discovery::GitRepoPresence;
 pub(crate) use discovery::WorktreeStatus;
 pub(crate) use discovery::get_worktree_health;
@@ -26,6 +32,8 @@ pub(crate) use discovery::get_worktree_status;
 pub(crate) use discovery::git_repo_root;
 pub(crate) use discovery::resolve_common_git_dir;
 pub(crate) use discovery::resolve_git_dir;
+pub(crate) use event_visibility::GitEventRefresh;
+pub(crate) use event_visibility::GitEventVisibilityCache;
 pub(crate) use repo::FirstCommit;
 pub(crate) use repo::GitOrigin;
 pub(crate) use repo::PushDisabledReason;

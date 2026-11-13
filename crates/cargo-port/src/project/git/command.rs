@@ -11,12 +11,21 @@ use tui_pane::PERF_LOG_TARGET;
 
 use super::constants::GIT_BINARY;
 use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
+use super::measured_output;
+use crate::process_observation::DiskReadBytes;
 
 /// Standard output of a git command that exited 0.
 #[derive(Debug)]
 pub(super) struct GitStdout(String);
 
 impl GitStdout {
+    pub(super) fn nul_paths(&self) -> impl Iterator<Item = &Path> {
+        self.0
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
+    }
+
     pub(super) fn trimmed(&self) -> &str { self.0.trim() }
     pub(super) fn lines(&self) -> impl Iterator<Item = &str> { self.0.lines() }
 }
@@ -85,9 +94,37 @@ fn git_command(repo_root: &Path) -> Command {
     command
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static GIT_COMMAND_METADATA_STORE: std::cell::RefCell<
+        std::sync::Weak<std::sync::Mutex<crate::project::WorkspaceMetadataStore>>
+    > = const { std::cell::RefCell::new(std::sync::Weak::new()) };
+}
+
 fn run(repo_root: &Path, op: &str, args: &[&str]) -> Result<Output, GitReadError> {
+    #[cfg(test)]
+    {
+        GIT_COMMANDS.with(|commands| commands.set(commands.get() + 1));
+        GIT_COMMAND_METADATA_STORE.with(|store| {
+            if let Some(store) = store.borrow().upgrade() {
+                assert!(
+                    store.try_lock().is_ok(),
+                    "Git command {op} must start without the shared metadata store lock"
+                );
+            }
+        });
+    }
     let started = std::time::Instant::now();
-    let output = git_command(repo_root).args(args).output();
+    let reads = crate::process_observation::DiskReadMeasurement::start();
+    let mut command = git_command(repo_root);
+    command.args(args);
+    let result = measured_output::run(&mut command);
+    let child_reads = result
+        .as_ref()
+        .map_or(DiskReadBytes::Unavailable, |(_, bytes)| *bytes);
+    let read_bytes = reads.finish().plus(child_reads);
+    let output = result.map(|(output, _)| output);
     let status = output
         .as_ref()
         .ok()
@@ -99,6 +136,7 @@ fn run(repo_root: &Path, op: &str, args: &[&str]) -> Result<Output, GitReadError
         repo_root = %repo_root.display(),
         op,
         status,
+        read_bytes = %read_bytes,
         "git_info_get_call"
     );
     output.map_err(|error| GitReadError::logged(op, GitReadCause::NotStarted(error.kind())))
