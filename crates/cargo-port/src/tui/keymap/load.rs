@@ -32,7 +32,7 @@ use super::constants::LEGACY_CLEAN_SCOPES;
 use super::constants::LEGACY_PAUSE_LINT_ACTION_KEY;
 use super::constants::PAUSE_ALL_LINTS_ACTION_KEY;
 use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
-use super::resolved::ResolvedKeymap;
+use super::resolved_keymap::ResolvedKeymap;
 use crate::config;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::NavigationKeys;

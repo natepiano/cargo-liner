@@ -11,6 +11,7 @@ use super::TileGrowth;
 use super::frame_inner;
 use super::has_visible_body_row;
 use super::rows_readout_height;
+use crate::tiles::grid::ColumnPreparation;
 /// The grid keeps its next layout ready while an expanded cell covers it.
 pub(in crate::tiles) fn prepare_covered_grid<Id: Clone + Eq + Debug>(
     grid: &mut TileGrid<Id>,
@@ -50,11 +51,18 @@ pub(super) fn prepare_grid<Id: Clone + Eq + Debug>(
         || grid.preparation_allocations(area, growth),
         || grid.motion_preparation_allocations(area, growth),
     );
-    let selected = grid.sync_measured_demands(growth, |widths| {
-        let mut demands = cells.demands(widths);
-        add_readout_rows(&mut demands, widths);
-        demands
-    });
+    let (selected, preparation) =
+        grid.sync_measured_demands(growth, cells.column_order(), |widths| {
+            let mut demands = cells.demands(widths);
+            add_readout_rows(&mut demands, widths);
+            demands
+        });
+    if matches!(preparation, ColumnPreparation::Reassigned) {
+        cells.prepare_moving_frame(
+            || grid.preparation_allocations(area, growth),
+            || grid.motion_preparation_allocations(area, growth),
+        );
+    }
     let cells_widths = selected.widths;
     let cells_demands = selected.demands;
     let progress = grid.progress();

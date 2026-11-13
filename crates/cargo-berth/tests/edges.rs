@@ -1126,6 +1126,21 @@ fn run_berth_with_git_trace(
     let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
+    if unavailable_target.is_empty() {
+        let mut command = berth_command(BERTH_EXECUTABLE);
+        command
+            .args(arguments)
+            .current_dir(repository_root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove(SESSION_ENVIRONMENT);
+        let output = cargo_berth_test_support::capture_git_trace(&mut command, &trace_path)
+            .expect("cargo-berth should run with native Git tracing");
+        return TracedBerth {
+            output,
+            trace_path,
+            _directory: directory,
+        };
+    }
     cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
         &wrapper_path,
         TRACING_GIT_WRAPPER,
