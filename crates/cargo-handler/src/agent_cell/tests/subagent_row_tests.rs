@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::census::Activity;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::footer_colors::FooterTint;
 use crate::sort::SortDirection;
 
@@ -32,7 +33,7 @@ fn column(buffer: &Buffer, header: &str, next: &str, name: &str) -> String {
             let text: String = (0..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
-            text.split_whitespace().next() == Some("session") && text.contains("status")
+            text.contains("session") && text.contains("status")
         })
         .expect("tree header");
     let header_text: String = (0..buffer.area.width)
@@ -40,27 +41,25 @@ fn column(buffer: &Buffer, header: &str, next: &str, name: &str) -> String {
         .collect();
     let start =
         summary::cell_width(&header_text[..header_text.find(header).expect("column header")]);
-    let end = header_text.find(next).map_or_else(
-        || {
-            [
-                "session",
-                "type",
-                "role",
-                "status",
-                "account",
-                "branch",
-                "directory",
-                "age",
-            ]
-            .into_iter()
-            .filter_map(|label| header_text.find(label))
-            .map(|offset| summary::cell_width(&header_text[..offset]))
-            .filter(|&x| x > start)
-            .min()
-            .unwrap_or(buffer.area.width)
-        },
-        |offset| summary::cell_width(&header_text[..offset]),
-    );
+    let end = [
+        "account",
+        "session",
+        "role",
+        "activity",
+        "status",
+        "type",
+        "model",
+        "effort",
+        "branch",
+        "directory",
+    ]
+    .into_iter()
+    .chain(std::iter::once(next))
+    .filter_map(|label| header_text.find(label))
+    .map(|offset| summary::cell_width(&header_text[..offset]))
+    .filter(|&column| column > start)
+    .min()
+    .unwrap_or(buffer.area.width);
     let row = find(buffer, name).expect("work row").1;
     (start..end)
         .map(|x| buffer[(x, row)].symbol())
@@ -92,14 +91,14 @@ fn subagent_rows_show_reading_and_idle_in_the_status_column() {
             }],
             ..agent(10, "director", HOUR, None)
         };
+        let cell = entry(&root, None);
         assert_eq!(
-            column(
-                &rendered(&root),
-                "status",
-                "account",
-                "Inspect source files"
-            ),
+            detail_value(&cell, "Inspect source files", "state", NOW),
             expected
+        );
+        assert_eq!(
+            column(&rendered(&root), "status", "type", "Inspect source files"),
+            "busy"
         );
     }
 }
@@ -177,7 +176,7 @@ fn subagent_account_width_and_sort_use_the_shown_session_account() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let defaults = cell_order_placed(&placement);
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let sorts = defaults
@@ -265,7 +264,7 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
         name:  "fixture",
         state: &before,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let baseline = account_column(&cell_order_placed(&placement));
     assert_eq!(baseline, AccountColumn::Hidden);
 
@@ -297,7 +296,7 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
         name:  "fixture",
         state: &after,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = cell_order_placed(&placement);
     let frame_column = account_column(&cells);
     assert_eq!(
@@ -323,10 +322,10 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
     let drawn = lines(&buffer);
     let header = drawn
         .iter()
-        .find(|line| line.split_whitespace().next() == Some("session"))
+        .find(|line| line.contains("session") && line.contains("status"))
         .expect("tree header");
     assert!(
-        !header.split_whitespace().any(|word| word == "account"),
+        header.split_whitespace().next() == Some("session"),
         "{header}"
     );
     for name in [
@@ -379,7 +378,14 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         hue:            SessionHue::First,
         rails:          Vec::new(),
         branch:         Branch::Last,
-        subject:        LineSubject::ManagedThread(&thread, HierarchyRole::Test),
+        subject:        LineSubject::ManagedThread(
+            &thread,
+            HierarchyRole::Test,
+            RowIdentity {
+                machine: "natedev",
+                pid:     root.pid,
+            },
+        ),
     }));
     let rect = area(104, 12);
     let colors = FooterColors::parse("role.unassigned=purple\nrole.worker=bright-cyan");
@@ -404,10 +410,10 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
     }
     let plain = FooterTint::Plain.style(Style::default().fg(text_default()));
     for (name, role) in [
-        ("unlabeled session", "session"),
-        ("hierarchy worker", "impl"),
-        ("fallback reviewer", "review"),
-        ("managed worker", "test"),
+        ("unlabeled session", ""),
+        ("hierarchy worker", "worker"),
+        ("fallback reviewer", "worker"),
+        ("managed worker", "worker"),
     ] {
         let y = find(&buffer, name).expect("session or worker row").1;
         let drawn: String = (0..summary::cell_width(role))
@@ -460,7 +466,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
             let line: String = (0..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
-            line.split_whitespace().next() == Some("session") && line.contains("status")
+            line.contains("session") && line.contains("status")
         })
         .expect("tree header");
     let headers: String = (0..buffer.area.width)
@@ -470,21 +476,25 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
         .split_whitespace()
         .filter(|word| !matches!(*word, "▲" | "▼"))
         .collect();
-    assert_eq!(&words[..3], &["session", "type", "role"], "{headers}");
+    assert_eq!(
+        &words[..5],
+        &["session", "account", "role", "activity", "status"],
+        "{headers}"
+    );
     for (name, expected_type, expected_role) in [
         ("cargo test", "shell", ""),
         ("Review source changes", "subagent", "reviewer"),
         ("Do the requested work", "subagent", ""),
-        ("seat task", "", "worker"),
+        ("seat task", "", ""),
         ("director", "", ""),
     ] {
         assert_eq!(
-            column(&buffer, "type", "role", name),
+            column(&buffer, "type", "activity", name),
             expected_type,
             "{name}"
         );
         assert_eq!(
-            column(&buffer, "role", "status", name),
+            column(&buffer, "activity", "status", name),
             expected_role,
             "{name}"
         );
@@ -539,11 +549,11 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
         })
         .collect();
     for buffer in &buffers {
-        for header in ["role", "account", "branch", "directory"] {
+        for header in ["branch", "directory"] {
             assert!(find(buffer, header).is_none(), "empty {header} is omitted");
         }
     }
-    for header in ["type", "status", "age"] {
+    for header in ["account", "role", "activity", "status", "type"] {
         let positions: Vec<_> = buffers
             .iter()
             .map(|buffer| find(buffer, header).expect("drawn column").0)
@@ -553,33 +563,19 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
             "{header}: {positions:?}"
         );
     }
-    let widest = buffers
-        .iter()
-        .map(|buffer| {
-            let (type_x, y) = find(buffer, "type").expect("type header");
-            let status_x = find(buffer, "status").expect("status header").0;
-            (y + 1..buffer.area.height)
-                .map(|row| {
-                    (type_x..status_x)
-                        .map(|x| buffer[(x, row)].symbol())
-                        .collect::<String>()
-                        .trim_end()
-                        .chars()
-                        .count()
-                })
-                .max()
-                .expect("data rows")
-                .max("type".len())
-        })
-        .max()
-        .expect("tile fixtures");
     for buffer in &buffers {
-        let type_x = find(buffer, "type").expect("type header").0;
         let status_x = find(buffer, "status").expect("status header").0;
+        let type_x = find(buffer, "type").expect("type header").0;
         assert_eq!(
-            usize::from(status_x - type_x),
-            widest + 2,
-            "two-space gap after the widest type in the shared screen column"
+            type_x - status_x,
+            summary::cell_width(TREE_STATUS_HEADER) + TABLE_COLUMN_SPACING,
+            "six status cells and a two-space gap"
+        );
+        let (_, y) = find(buffer, "session").expect("tree header");
+        assert!(
+            !lines(buffer)[usize::from(y)]
+                .split_whitespace()
+                .any(|word| word == "age")
         );
     }
 }

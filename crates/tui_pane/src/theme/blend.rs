@@ -94,6 +94,29 @@ pub fn color_distance(color: Color, other: Color) -> Option<u16> {
     u16::try_from((weighted / COLOR_DISTANCE_SCALE).isqrt()).ok()
 }
 
+/// Measure the WCAG contrast ratio of two explicit colors.
+/// Return `None` when either color is [`Color::Reset`].
+/// Decode named and indexed colors with the palette used by [`blend_color`].
+#[must_use]
+pub fn contrast_ratio(foreground: Color, background: Color) -> Option<f64> {
+    let foreground = channels(foreground)?;
+    let background = channels(background)?;
+    let luminance = |channels: (u8, u8, u8)| {
+        let [red, green, blue] = <[u8; 3]>::from(channels).map(|channel| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126f64.mul_add(red, 0.7152f64.mul_add(green, 0.0722 * blue))
+    };
+    let ink = luminance(foreground);
+    let ground = luminance(background);
+    Some((ink.max(ground) + 0.05) / (ink.min(ground) + 0.05))
+}
+
 /// The gap between two channels, squared, wide enough to hold the
 /// weight [`color_distance`] multiplies it by.
 fn squared(from: u8, to: u8) -> u32 {

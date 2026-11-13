@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use ratatui::buffer::Cell;
 use ratatui::layout::Position;
+use tui_pane::ExpansionAction;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
@@ -14,17 +15,22 @@ use super::word_click_tests;
 use super::word_click_tests::Renderer;
 use super::word_click_tests::TestResult;
 use super::*;
+use crate::app::expansion;
+use crate::app::expansion::HandlerExpansionAction;
+use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::theme;
 use crate::theme::ResetThemeFixture;
 use crate::theme::SessionHue;
 use crate::theme::WordMatchLimit;
+use crate::theme::WordMatchSurface;
 use crate::word_highlight::HighlightWord;
 use crate::word_highlight::PaintedWords;
 use crate::word_highlight::WordHighlight;
 use crate::word_highlight::WordHit;
 
 const MINIMUM_CONTRAST: f64 = 4.5;
+const WAITING_HUE_TOLERANCE: f64 = 0.25;
 // The `palette_application` sessions set `started` to 100; at `BEFORE_AGE_STEP`, their age is four
 // minutes.
 const BEFORE_AGE_STEP: u64 = 399;
@@ -88,6 +94,7 @@ enum SelectionDistanceLimit {
 
 /// `UnmatchedFrame` keeps the unmarked background for one `MatchGround`.
 struct UnmatchedFrame {
+    plain_match: Color,
     buffer:      Buffer,
     words:       PaintedWords,
     ground:      MatchGround,
@@ -285,7 +292,7 @@ fn measure_matches(
         return Err(format!("drawn token {word} must be nonempty").into());
     };
     app.word_highlight = WordHighlight::Word(token);
-    let background = word_click_tests::match_background()?;
+    let background = reference.plain_match;
     // Draw the first match through App. Reuse its unchanged text for later words.
     let (after, painted) = if app.painted_words.is_uncaptured() {
         let after = renderer.paint(app)?;
@@ -295,7 +302,8 @@ fn measure_matches(
         reference.words.apply_with_inks(
             &app.word_highlight,
             &mut after,
-            background,
+            word_click_tests::match_background()?,
+            app.loaded_config.config.word_highlight.emphasis,
             &mut app.match_inks,
         );
         (after, &reference.words)
@@ -335,12 +343,21 @@ fn measure_matches(
     assert!(count > 0, "{word} must have a drawn match on {ground:?}");
     eprintln!("WORD_CONTRAST {ground:?} word={word} minimum={minimum:.9}");
     for (selection, selected_match) in selected_grounds {
-        assert_selected_match_distinct(
-            selection,
-            background,
-            selected_match,
-            reference.tile_ground,
-        );
+        if app.loaded_config.config.word_highlight.emphasis == WordHighlightEmphasis::Subtle {
+            assert_selected_match_distinct(
+                selection,
+                background,
+                selected_match,
+                reference.tile_ground,
+            );
+        } else {
+            for original in [selection, background] {
+                assert!(
+                    footer_colors::perceptual_distance(selected_match, original)
+                        >= MINIMUM_VISIBLE_GROUND_DIFFERENCE
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -438,17 +455,28 @@ fn measure_theme(
     // `WordMatchGrounds` uses the theme ground for tinted and untinted frames.
     let tile_ground = tui_pane::theme().text.bg_focus.color;
     let words_in_frame = PaintedWords::capture(&baseline, app.tiles.pointer_regions());
-    let reference = UnmatchedFrame {
+    let mut reference = UnmatchedFrame {
+        plain_match: word_click_tests::match_background()?,
         buffer: baseline,
         words: words_in_frame,
         ground,
         tile_ground,
     };
-    for (word, _) in words
-        .into_iter()
-        .filter(|(word, _)| ContrastWords::of(word) == subset)
-    {
-        measure_matches(&mut app, &mut renderer, &word, &reference, &mut failures)?;
+    for emphasis in [
+        WordHighlightEmphasis::Subtle,
+        WordHighlightEmphasis::Clear,
+        WordHighlightEmphasis::Strong,
+    ] {
+        app.loaded_config.config.word_highlight.emphasis = emphasis;
+        reference.plain_match =
+            theme::WordMatchGrounds::new(word_click_tests::match_background()?, emphasis)
+                .background(WordMatchSurface::Plain);
+        for (word, _) in words
+            .iter()
+            .filter(|(word, _)| ContrastWords::of(word) == subset)
+        {
+            measure_matches(&mut app, &mut renderer, word, &reference, &mut failures)?;
+        }
     }
     Ok(failures)
 }
@@ -1437,7 +1465,7 @@ fn assert_smallest_selection_step(
     drawn_match: Color,
     tile_ground: Color,
 ) -> TestResult {
-    let grounds = theme::WordMatchGrounds::new(plain_match);
+    let grounds = theme::WordMatchGrounds::new(plain_match, WordHighlightEmphasis::Subtle);
     let surface = grounds.surface(selection);
     let step = grounds.step(surface);
     let selected_match_visibility_bound =
@@ -1516,6 +1544,96 @@ fn check_selected_match_ground(name: &str) -> TestResult {
     result
 }
 
+/// Read each strength from a painted frame on all three row grounds.
+fn measure_emphasized_frames() -> TestResult {
+    let mut references = Vec::new();
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let mut app = word_click_tests::application()?;
+        let mut renderer = Renderer::new(&mut app, 80, 35)?;
+        let layout = renderer.paint(&mut app)?;
+        let selected = word_click_tests::locate(&layout, "first-work")?;
+        let away = word_click_tests::locate(&layout, "second-work")?;
+        for surface in [
+            MatchGround::Base,
+            MatchGround::SelectedFocused,
+            MatchGround::SelectedUnfocused,
+        ] {
+            app.click(away);
+            if !matches!(surface, MatchGround::Base) {
+                app.click(selected);
+            }
+            if matches!(surface, MatchGround::SelectedUnfocused) {
+                app.click(away);
+            }
+            app.word_highlight.clear();
+            let baseline = renderer.paint(&mut app)?;
+            let words = PaintedWords::capture(&baseline, app.tiles.pointer_regions());
+            references.push((baseline, words, selected, surface, tint));
+        }
+    }
+    let WordHit::Word(word) = HighlightWord::from_token("first-work") else {
+        return Err("the fixture word is empty".into());
+    };
+    let highlight = WordHighlight::Word(word);
+    let mut cache = crate::word_highlight::MatchInkCache::default();
+    let background = word_click_tests::match_background()?;
+    let mut previous = Vec::new();
+    for emphasis in [
+        WordHighlightEmphasis::Subtle,
+        WordHighlightEmphasis::Clear,
+        WordHighlightEmphasis::Strong,
+    ] {
+        let plain =
+            theme::WordMatchGrounds::new(background, emphasis).background(WordMatchSurface::Plain);
+        for (index, (baseline, words, point, surface, tint)) in references.iter().enumerate() {
+            let original = &baseline[*point];
+            let mut frame = baseline.clone();
+            words.apply_with_inks(&highlight, &mut frame, background, emphasis, &mut cache);
+            let matched = &frame[*point];
+            let distance = footer_colors::perceptual_distance(matched.bg, original.bg);
+            assert!(
+                distance >= MINIMUM_VISIBLE_GROUND_DIFFERENCE,
+                "{emphasis:?} {surface:?} tint={tint}: distance={distance}"
+            );
+            assert_matched_ink(original, matched, "first-work", *point)?;
+            let bound = MINIMUM_CONTRAST.min(glyph_contrast(original.fg, original.bg)?);
+            assert!(
+                glyph_contrast(matched.fg, matched.bg)? >= bound,
+                "{emphasis:?} {surface:?}"
+            );
+            let expected = if emphasis == WordHighlightEmphasis::Strong {
+                original.modifier | ratatui::style::Modifier::BOLD
+            } else {
+                original.modifier
+            };
+            assert_eq!(matched.modifier, expected);
+            if !matches!(surface, MatchGround::Base) {
+                assert!(
+                    footer_colors::perceptual_distance(matched.bg, plain)
+                        >= MINIMUM_VISIBLE_GROUND_DIFFERENCE
+                );
+            }
+            match emphasis {
+                WordHighlightEmphasis::Subtle => previous.push(matched.bg),
+                WordHighlightEmphasis::Clear => {
+                    if matches!(surface, MatchGround::Base) {
+                        let subtle =
+                            footer_colors::perceptual_distance(previous[index], original.bg);
+                        assert!(
+                            distance > subtle,
+                            "clear={distance}, subtle={subtle}, tint={tint}"
+                        );
+                    }
+                    previous[index] = matched.bg;
+                },
+                WordHighlightEmphasis::Strong => assert_eq!(matched.bg, previous[index]),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn measure_selected_match_grounds() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut app = palette_application(&directory.path().join("statusline.conf"))?;
@@ -1560,7 +1678,7 @@ fn measure_selected_match_grounds() -> TestResult {
         )?;
         let drawn_match = after[(selected.x, selected.y)].bg;
         let limit = selection_distance_limit(selection, plain_match, drawn_match, tile_ground);
-        let grounds = theme::WordMatchGrounds::new(plain_match);
+        let grounds = theme::WordMatchGrounds::new(plain_match, WordHighlightEmphasis::Subtle);
         let surface = grounds.surface(selection);
         let next_step = grounds
             .step(surface)
@@ -1984,6 +2102,7 @@ fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
     for tint in [false, true] {
         tui_pane::set_focused_pane_tint(tint);
         let mut app = selection_tests::astra_application();
+        app.loaded_config.config.word_highlight.emphasis = WordHighlightEmphasis::Subtle;
         app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.clone());
         app.footer_colors.refresh();
         let mut renderer = Renderer::new(&mut app, 180, 60)?;
@@ -2027,7 +2146,8 @@ fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
                 let buffer = renderer.paint(&mut app)?;
                 let cell = &buffer[(x, role_word.y)];
                 let plain_match = word_click_tests::match_background()?;
-                let grounds = theme::WordMatchGrounds::new(plain_match);
+                let grounds =
+                    theme::WordMatchGrounds::new(plain_match, WordHighlightEmphasis::Subtle);
                 let expected = match ground {
                     MatchGround::Base => plain_match,
                     _ => grounds.background(grounds.surface(selection)),
@@ -2090,4 +2210,222 @@ fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_dark() -> TestResu
 #[test]
 fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_light() -> TestResult {
     check_astra_word_matches("High Contrast Light", AstraWordRole::Reviewer)
+}
+
+fn check_emphasized_theme(name: &str) -> TestResult {
+    let variant = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("the emphasis theme")?;
+    let reset = ResetThemeFixture::with_theme(variant.theme);
+    tui_pane::set_transparent_background(false);
+    let result = measure_emphasized_frames();
+    drop(reset);
+    result
+}
+
+#[test]
+fn emphasis_grounds_and_modifiers_in_default_dark() -> TestResult {
+    check_emphasized_theme("Default Dark")
+}
+
+#[test]
+fn emphasis_grounds_and_modifiers_in_default_light() -> TestResult {
+    check_emphasized_theme("Default Light")
+}
+
+#[test]
+fn emphasis_grounds_and_modifiers_in_high_contrast_dark() -> TestResult {
+    check_emphasized_theme("High Contrast Dark")
+}
+
+#[test]
+fn emphasis_grounds_and_modifiers_in_high_contrast_light() -> TestResult {
+    check_emphasized_theme("High Contrast Light")
+}
+
+fn waiting_status_application() -> TestResult<App> {
+    use crate::census::accounts::AccountsReading;
+    use crate::census::accounts::AccountsTable;
+
+    let mut app = word_click_tests::application()?;
+    let mut owner = word_click_tests::session(10, "waiting-owner", "")?;
+    owner.children = vec![serde_json::from_value(serde_json::json!({
+        "kind":"thread", "depth":0, "name":"waiting-worker", "started":101,
+        "thread_id":"waiting-thread", "activity":{"active":"waiting"}
+    }))?];
+    word_click_tests::apply_rows(
+        &mut app,
+        vec![
+            owner,
+            word_click_tests::session(20, "busy-control", "")?,
+            word_click_tests::session(30, "idle-control", "")?,
+        ],
+    );
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(
+            br#"{
+        "accounts":[{"label":"claude1","roles":[],"use_credits":false,"read_ok":true,"sessions":[
+            {"session":"word-session-10","state":"waiting"},
+            {"session":"waiting-thread","state":"waiting"},
+            {"session":"word-session-20","state":"busy"},
+            {"session":"word-session-30","state":"idle"}
+        ]}],"problems":[]
+    }"#,
+        )
+        .map_err(|error| error.to_string())?,
+    );
+    expansion::dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
+    Ok(app)
+}
+
+fn assert_waiting_word_ink(cell: &Cell, other_inks: &[Color]) -> TestResult {
+    let ratio = glyph_contrast(cell.fg, cell.bg)?;
+    assert!(
+        ratio >= MINIMUM_CONTRAST,
+        "waiting: {cell:?}, covered contrast={ratio}"
+    );
+    for ink in other_inks {
+        assert_ne!(cell.fg, *ink, "waiting keeps a distinct ink: {cell:?}");
+    }
+    Ok(())
+}
+
+fn waiting_fixture_status(buffer: &Buffer, label: &str, word: &str) -> TestResult<Position> {
+    let row = word_click_tests::locate(buffer, label)?;
+    word_click_tests::positions(buffer, word)
+        .into_iter()
+        .find(|point| point.y == row.y && point.x > row.x)
+        .ok_or_else(|| format!("missing {word} status for {label}").into())
+}
+
+#[test]
+fn waiting_summary_status_uses_the_waiting_theme_ink() -> TestResult {
+    let reset = ResetThemeFixture::install();
+    tui_pane::set_transparent_background(false);
+    let mut app = waiting_status_application()?;
+    app.loaded_config.config.tiles.view = TileView::Summary;
+    let mut renderer = Renderer::new(&mut app, 100, 20)?;
+    let buffer = renderer.paint(&mut app)?;
+    let point = waiting_fixture_status(&buffer, "waiting-owner", "waiting")?;
+    let expected = Role::Waiting.style().fg.ok_or("waiting ink")?;
+    for x in point.x..point.x + 7 {
+        assert_eq!(buffer[(x, point.y)].fg, expected);
+    }
+    assert_eq!(
+        (point.x..point.x + 7)
+            .map(|x| buffer[(x, point.y)].symbol())
+            .collect::<String>(),
+        "waiting"
+    );
+    drop(reset);
+    Ok(())
+}
+
+fn check_waiting_status_matches(name: &str) -> TestResult {
+    let builtin = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("theme")?;
+    let reset = ResetThemeFixture::with_theme(builtin.theme);
+    tui_pane::set_transparent_background(false);
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let mut app = waiting_status_application()?;
+        let mut renderer = Renderer::new(&mut app, 100, 35)?;
+        let initial = renderer.paint(&mut app)?;
+        let worker = word_click_tests::locate(&initial, "waiting-worker")?;
+        let away = word_click_tests::locate(&initial, "busy-control")?;
+        let waiting = waiting_fixture_status(&initial, "waiting-worker", "waiting")?;
+        for ground in [
+            MatchGround::Base,
+            MatchGround::SelectedFocused,
+            MatchGround::SelectedUnfocused,
+        ] {
+            app.click(away);
+            if !matches!(ground, MatchGround::Base) {
+                app.click(worker);
+            }
+            if matches!(ground, MatchGround::SelectedUnfocused) {
+                app.click(away);
+            }
+            app.word_highlight.clear();
+            let baseline = renderer.paint(&mut app)?;
+            let before = &baseline[waiting];
+            match ground {
+                MatchGround::Base => {
+                    assert_ne!(before.bg, tui_pane::active_focus_color());
+                    assert_ne!(before.bg, tui_pane::remembered_focus_color());
+                },
+                MatchGround::SelectedFocused => {
+                    assert_eq!(before.bg, tui_pane::active_focus_color());
+                },
+                MatchGround::SelectedUnfocused => {
+                    assert_eq!(before.bg, tui_pane::remembered_focus_color());
+                },
+            }
+            let other_inks = [
+                baseline[waiting_fixture_status(&baseline, "busy-control", "busy")?].fg,
+                baseline[waiting_fixture_status(&baseline, "idle-control", "idle")?].fg,
+                Role::Unreachable.style().fg.ok_or("unreachable ink")?,
+            ];
+            assert_waiting_word_ink(before, &other_inks)?;
+            let [red, green, blue] = rgb(before.fg)?;
+            assert!(
+                red > blue
+                    && green > blue
+                    && (red - green).abs() <= red.max(green) * WAITING_HUE_TOLERANCE,
+                "unmatched waiting retains its yellow hue: {before:?}"
+            );
+            let painted = PaintedWords::capture(&baseline, app.tiles.pointer_regions());
+            let WordHit::Word(token) = HighlightWord::from_token("waiting") else {
+                return Err("waiting token".into());
+            };
+            for emphasis in [
+                WordHighlightEmphasis::Subtle,
+                WordHighlightEmphasis::Clear,
+                WordHighlightEmphasis::Strong,
+            ] {
+                let mut matched = baseline.clone();
+                painted.apply_with_inks(
+                    &WordHighlight::Word(token.clone()),
+                    &mut matched,
+                    word_click_tests::match_background()?,
+                    emphasis,
+                    &mut app.match_inks,
+                );
+                for x in waiting.x..waiting.x + 7 {
+                    let after = &matched[(x, waiting.y)];
+                    assert_ne!(after.bg, before.bg, "{name} {ground:?} {emphasis:?}");
+                    assert_waiting_word_ink(after, &other_inks)?;
+                    assert_matched_ink(before, after, "waiting", Position::new(x, waiting.y))?;
+                }
+            }
+        }
+    }
+    drop(reset);
+    Ok(())
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_default_dark() -> TestResult {
+    check_waiting_status_matches("Default Dark")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_default_light() -> TestResult {
+    check_waiting_status_matches("Default Light")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_dark() -> TestResult {
+    check_waiting_status_matches("High Contrast Dark")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_light() -> TestResult {
+    check_waiting_status_matches("High Contrast Light")
 }

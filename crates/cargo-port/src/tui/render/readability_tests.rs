@@ -1050,29 +1050,30 @@ fn app_with_paged_worktrees(root: &Path) -> anyhow::Result<App> {
     Ok(app)
 }
 
-/// A worktree page names its section. A section in the page draws the whole
-/// divider. A section on the first row, under the top border or the description
-/// divider, draws its name as text and no second rule.
+/// The `Buffer` shows `Worktrees (13)` on each worktree page. On a divider row the
+/// title has both side junctions of its `ColorMode`; on the first row it sits under a rule.
 fn assert_worktree_title(buffer: &Buffer, area: Rect, mode: ColorMode) -> anyhow::Result<()> {
-    if test_support::find_text_cell(buffer, area, "Worktrees (13)").is_some() {
-        return Ok(());
-    }
-    let (_, y) = test_support::find_text_cell(buffer, area, "Worktrees").with_context(|| {
-        format!(
-            "worktree title on the worktree page: {:?}",
-            test_support::rows(buffer)
-        )
-    })?;
-    let rules = match mode {
-        ColorMode::Colored => ["┌", "├"],
-        ColorMode::NoColor => ["┏", "┣"],
+    let (_, y) =
+        test_support::find_text_cell(buffer, area, "Worktrees (13)").with_context(|| {
+            format!(
+                "worktree title on the worktree page: {:?}",
+                test_support::rows(buffer)
+            )
+        })?;
+    let (left, right, rules) = match mode {
+        ColorMode::Colored => ("├", "┤", ["┌", "├"]),
+        ColorMode::NoColor => ("┣", "┫", ["┏", "┣"]),
     };
-    let above = buffer[(area.x, y - 1)].symbol();
-    assert!(
-        rules.contains(&above),
-        "a title without its divider sits under a rule: {:?}",
-        test_support::rows(buffer)
-    );
+    if buffer[(area.x, y)].symbol() == left {
+        assert_eq!(buffer[(area.right() - 1, y)].symbol(), right);
+    } else {
+        let above = buffer[(area.x, y - 1)].symbol();
+        assert!(
+            rules.contains(&above),
+            "a title without its divider sits under a rule: {:?}",
+            test_support::rows(buffer)
+        );
+    }
     Ok(())
 }
 
@@ -1149,14 +1150,6 @@ fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::
             let buffer = draw_paged_ui(&mut app)?;
             let area = app.panes.tiled_layout.area(PaneId::Git);
             assert!(app.panes.git.viewport.visible_rows() > 1);
-            if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Worktrees (13)") {
-                let (left, right) = match mode {
-                    ColorMode::Colored => ("├", "┤"),
-                    ColorMode::NoColor => ("┣", "┫"),
-                };
-                assert_eq!(buffer[(area.x, y)].symbol(), left);
-                assert_eq!(buffer[(area.right() - 1, y)].symbol(), right);
-            }
             for index in 0..13 {
                 if test_support::find_text_cell(&buffer, area, &format!("b{index:02}")).is_some() {
                     seen.insert(index);

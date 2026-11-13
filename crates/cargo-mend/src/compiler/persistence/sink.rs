@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use super::schema::DeclarationIdentity;
 use super::schema::StoredFinding;
 use super::schema::StoredModuleMountFact;
 use super::schema::StoredPubUseFixFact;
@@ -19,6 +20,11 @@ pub(in crate::compiler) struct FindingsSink {
     pub module_mount_facts:         Vec<StoredModuleMountFact>,
 }
 
+struct DeclarationCallers {
+    declaration: DeclarationIdentity,
+    callers:     BTreeMap<String, UseSiteReference>,
+}
+
 /// The set of modules that reference each item, keyed by the referenced
 /// item's def-path.
 ///
@@ -29,21 +35,25 @@ pub(in crate::compiler) struct FindingsSink {
 /// thousand times costs ten thousand identical records that every consumer
 /// immediately collapses back to one.
 #[derive(Default)]
-pub(in crate::compiler) struct UseSiteIndex(BTreeMap<String, BTreeMap<String, UseSiteReference>>);
+pub(in crate::compiler) struct UseSiteIndex(BTreeMap<String, DeclarationCallers>);
 
 impl UseSiteIndex {
     /// A semantic path use wins over signature-only reach, which wins over an
     /// import declaration retained to keep visibility rewrites safe.
     pub(in crate::compiler) fn insert(
         &mut self,
-        target_def_path: String,
+        declaration: DeclarationIdentity,
         caller_module_def_path: String,
         use_site_reference: UseSiteReference,
     ) {
         let recorded = self
             .0
-            .entry(target_def_path)
-            .or_default()
+            .entry(declaration.def_path.clone())
+            .or_insert_with(|| DeclarationCallers {
+                declaration,
+                callers: BTreeMap::new(),
+            })
+            .callers
             .entry(caller_module_def_path)
             .or_insert(use_site_reference);
         if matches!(
@@ -64,7 +74,7 @@ impl UseSiteIndex {
     pub(in crate::compiler) fn callers(&self, target_def_path: &str) -> BTreeSet<String> {
         self.0
             .get(target_def_path)
-            .map(|callers| callers.keys().cloned().collect())
+            .map(|entry| entry.callers.keys().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -73,18 +83,23 @@ impl UseSiteIndex {
     /// analyzed the same crate.
     pub(in crate::compiler) fn into_use_sites(self) -> Vec<UseSite> {
         self.0
-            .into_iter()
-            .flat_map(|(target_def_path, callers)| {
-                callers
-                    .into_iter()
-                    .map(
-                        move |(caller_module_def_path, use_site_reference)| UseSite {
-                            target_def_path: target_def_path.clone(),
-                            caller_module_def_path,
-                            reference: use_site_reference,
-                        },
-                    )
-            })
+            .into_values()
+            .flat_map(
+                |DeclarationCallers {
+                     declaration,
+                     callers,
+                 }| {
+                    callers
+                        .into_iter()
+                        .map(
+                            move |(caller_module_def_path, use_site_reference)| UseSite {
+                                declaration: declaration.clone(),
+                                caller_module_def_path,
+                                reference: use_site_reference,
+                            },
+                        )
+                },
+            )
             .collect()
     }
 }

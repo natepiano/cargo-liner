@@ -2,10 +2,10 @@ use std::path::Path;
 
 use anyhow::Context;
 use ratatui::layout::Position;
-use ratatui::style::Color;
 use tui_pane::ColorMode;
 use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
+use tui_pane::contrast_ratio;
 
 use crate::ci::CiStatus;
 use crate::config::LintIndicator;
@@ -17,6 +17,7 @@ use crate::project::GithubRunCount;
 use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
+use crate::tui::constants::READABLE_TEXT_CONTRAST_FLOOR;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitCheckout;
@@ -72,35 +73,6 @@ fn worktree_group_ci_keeps_its_empty_value_on_one_row() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn contrast_channels(color: Color) -> anyhow::Result<[f64; 3]> {
-    Ok(match color {
-        Color::Rgb(r, g, b) => [f64::from(r), f64::from(g), f64::from(b)],
-        Color::DarkGray => [127.0; 3],
-        Color::Gray => [229.0; 3],
-        Color::White => [255.0; 3],
-        Color::Black => [0.0; 3],
-        color => anyhow::bail!("unexpected dim value colour: {color:?}"),
-    })
-}
-
-fn dim_value_contrast(foreground: Color, background: [f64; 3]) -> anyhow::Result<f64> {
-    let foreground = contrast_channels(foreground)?;
-    let luminance = |channels: [f64; 3]| {
-        let [r, g, b] = channels.map(|channel| {
-            let value = channel / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        });
-        0.2126f64.mul_add(r, 0.7152f64.mul_add(g, 0.0722 * b))
-    };
-    let ink = luminance(foreground);
-    let ground = luminance(background);
-    Ok((ink.max(ground) + 0.05) / (ink.min(ground) + 0.05))
-}
-
 #[test]
 fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
@@ -123,7 +95,7 @@ fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result
             } else {
                 PaneId::Git
             });
-            let background = contrast_channels(tui_pane::pane_background(focused))?;
+            let background = tui_pane::pane_background(focused);
             for (ci, text) in [
                 (CiDisplay::NoWorkflow, "No CI"),
                 (CiDisplay::NoRuns, "No CI runs"),
@@ -160,11 +132,16 @@ fn dim_package_values_meet_contrast_in_each_registered_theme() -> anyhow::Result
                 for value in [text, "—"] {
                     let position = test_support::position(&buffer, value)?;
                     assert_eq!(buffer[position].bg, tui_pane::pane_background(focused));
-                    let ratio = dim_value_contrast(buffer[position].fg, background)?;
-                    let normal =
-                        dim_value_contrast(tui_pane::theme().text.default.color, background)?;
+                    let ratio = contrast_ratio(buffer[position].fg, background)
+                        .context("explicit dim colors")?;
+                    let normal = contrast_ratio(tui_pane::theme().text.default.color, background)
+                        .context("explicit normal colors")?;
                     assert!(ratio < normal, "dim values stay below normal text");
-                    assert!(ratio >= 4.5, "{} {value}: {ratio}:1", variant.id.as_str());
+                    assert!(
+                        ratio >= READABLE_TEXT_CONTRAST_FLOOR,
+                        "{} {value}: {ratio}:1",
+                        variant.id.as_str()
+                    );
                 }
             }
         }

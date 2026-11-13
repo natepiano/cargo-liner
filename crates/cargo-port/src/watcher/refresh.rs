@@ -29,13 +29,15 @@ use crate::project::ResolvedBranch;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::DirSizes;
+use crate::scan::DiskUpdateScope;
+use crate::scan::DiskUsageTracker;
+#[cfg(test)]
 use crate::scan::DiskUsageTree;
 use crate::scan::MetadataDispatchContext;
 
 pub(super) const DISK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Build trees have no watches. Reuse the bounded disk workers at a slow cadence.
-/// Running work is left alone so a slow walk cannot accumulate queued polls.
+/// The watcher calls `schedule_disk_poll_with_config` to detect deletions without tree walks.
 pub(super) fn schedule_disk_poll_with_config(
     now: Instant,
     last_poll: &mut Instant,
@@ -48,6 +50,9 @@ pub(super) fn schedule_disk_poll_with_config(
     }
     *last_poll = now;
     for entry in projects.values() {
+        if entry.is_alive() || entry.abs_path.is_dir() {
+            continue;
+        }
         let state = pending_disk
             .entry(entry.label.clone())
             .or_insert(WatchState::Idle);
@@ -114,6 +119,7 @@ fn linked_target_scope(path: &AbsolutePath, target: &AbsolutePath) -> DiskProbeS
     DiskProbeScope::ProjectTree
 }
 
+#[cfg(test)]
 fn project_disk_sizes(path: &AbsolutePath, scope: &DiskProbeScope) -> DirSizes {
     let tree = DiskUsageTree {
         root_abs_path: path.clone(),
@@ -577,8 +583,9 @@ pub(super) fn fire_disk_updates(
         .map(|(key, _)| key.clone())
         .collect();
 
+    let mut requests: HashMap<AbsolutePath, DiskRefreshRequest> = HashMap::new();
     for project_label in ready {
-        let Some(entry) = projects.values().find(|e| e.label == project_label) else {
+        let Some(entry) = projects.values().find(|entry| entry.label == project_label) else {
             if let Some(state) = pending_disk.get_mut(&project_label) {
                 *state = WatchState::Idle;
             }
@@ -587,16 +594,147 @@ pub(super) fn fire_disk_updates(
         if let Some(state) = pending_disk.get_mut(&project_label) {
             mark_running(state);
         }
+        let tracker = metadata_dispatch.disk_tracker(&entry.abs_path);
+        if !entry.abs_path.is_dir() {
+            tracker.record_change(&entry.abs_path);
+        }
+        let root = tracker.tree().root_abs_path.clone();
+        requests
+            .entry(root.clone())
+            .or_insert_with(|| DiskRefreshRequest {
+                root,
+                labels: Vec::new(),
+                inputs: DiskUpdateInputs::new(metadata_dispatch, &entry.abs_path),
+            })
+            .labels
+            .push(project_label);
+    }
+    for request in requests.into_values() {
         spawn_disk_update(
             handle,
             disk_limit,
             disk_done_tx.clone(),
             background_tx.clone(),
-            project_label.clone(),
-            entry.abs_path.clone(),
-            disk_probe_scope(metadata_dispatch, &entry.abs_path),
+            request,
         );
     }
+}
+
+struct DiskRefreshRequest {
+    root:   AbsolutePath,
+    labels: Vec<String>,
+    inputs: DiskUpdateInputs,
+}
+
+struct DiskUpdateInputs {
+    project: DiskUsageTracker,
+    targets: Vec<(AbsolutePath, TargetDiskUpdate)>,
+}
+
+enum TargetDiskUpdate {
+    InProject,
+    Linked(DiskUsageTracker),
+    External {
+        workspace_root: AbsolutePath,
+        target_dir:     AbsolutePath,
+        tracker:        DiskUsageTracker,
+    },
+}
+
+impl DiskUpdateInputs {
+    fn new(dispatch: &MetadataDispatchContext, project: &AbsolutePath) -> Self {
+        let tracker = dispatch.disk_tracker(project);
+        let targets = tracker
+            .tree()
+            .entries
+            .iter()
+            .map(|path| {
+                let target = match disk_probe_scope(dispatch, path) {
+                    DiskProbeScope::ProjectTree => TargetDiskUpdate::InProject,
+                    DiskProbeScope::TreeAndLinkedTarget { target_dir } => {
+                        TargetDiskUpdate::Linked(dispatch.target_disk_tracker(path, &target_dir))
+                    },
+                    DiskProbeScope::TreeAndExternalTarget {
+                        workspace_root,
+                        target_dir,
+                    } => TargetDiskUpdate::External {
+                        tracker: dispatch.target_disk_tracker(path, &target_dir),
+                        workspace_root,
+                        target_dir,
+                    },
+                };
+                (path.clone(), target)
+            })
+            .collect();
+        Self {
+            project: tracker,
+            targets,
+        }
+    }
+
+    fn measure(self) -> ProjectDiskUpdate {
+        let mut update = self.project.refresh();
+        let mut target_bytes = HashMap::new();
+        let mut external_targets = Vec::new();
+        for (path, target) in self.targets {
+            match target {
+                TargetDiskUpdate::InProject => {},
+                TargetDiskUpdate::Linked(tracker) => {
+                    let bytes = measure_target(&tracker, update.scope, &mut target_bytes);
+                    if let Some((_, sizes)) =
+                        update.entries.iter_mut().find(|(entry, _)| *entry == path)
+                    {
+                        sizes.total = sizes.total.saturating_add(bytes);
+                        sizes.in_project_target = sizes.in_project_target.saturating_add(bytes);
+                    }
+                },
+                TargetDiskUpdate::External {
+                    workspace_root,
+                    target_dir,
+                    tracker,
+                } => {
+                    let bytes = measure_target(&tracker, update.scope, &mut target_bytes);
+                    external_targets.push(BackgroundMsg::OutOfTreeTargetSize {
+                        workspace_root,
+                        target_dir,
+                        bytes,
+                    });
+                },
+            }
+        }
+        ProjectDiskUpdate {
+            entries: update.entries,
+            external_targets,
+            visited_entries: update.visited_entries,
+            identity_entries_examined: update.identity_entries_examined,
+        }
+    }
+}
+
+fn measure_target(
+    tracker: &DiskUsageTracker,
+    scope: DiskUpdateScope,
+    measured: &mut HashMap<AbsolutePath, u64>,
+) -> u64 {
+    *measured
+        .entry(tracker.tree().root_abs_path.clone())
+        .or_insert_with(|| {
+            if matches!(scope, DiskUpdateScope::WholeTree) {
+                tracker.request_rescan();
+            }
+            tracker
+                .refresh()
+                .entries
+                .first()
+                .map_or(0, |(_, sizes)| sizes.total)
+        })
+}
+
+struct ProjectDiskUpdate {
+    entries:                   Vec<(AbsolutePath, DirSizes)>,
+    external_targets:          Vec<BackgroundMsg>,
+    visited_entries:           usize,
+    identity_entries_examined: usize,
 }
 
 fn spawn_disk_update(
@@ -604,9 +742,7 @@ fn spawn_disk_update(
     disk_limit: &Arc<Semaphore>,
     disk_done_tx: StdSender<String>,
     background_tx: Sender<BackgroundMsg>,
-    project_label: String,
-    abs_path: AbsolutePath,
-    target_probe: DiskProbeScope,
+    request: DiskRefreshRequest,
 ) {
     let handle = handle.clone();
     let disk_limit = Arc::clone(disk_limit);
@@ -618,48 +754,29 @@ fn spawn_disk_update(
         tracing::trace!(
             target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(queue_started.elapsed().as_millis()),
-            path = %project_label,
-            abs_path = %abs_path.display(),
+            abs_path = %request.root.display(),
             "watcher_disk_queue_wait"
         );
-
         let started = Instant::now();
-        let abs_for_msg = abs_path.clone();
-        let (sizes, target_probe) = tokio::task::spawn_blocking(move || {
-            (project_disk_sizes(&abs_path, &target_probe), target_probe)
-        })
-        .await
-        .unwrap_or_else(|_| (scan::DirSizes::default(), DiskProbeScope::ProjectTree));
-        tracing::trace!(
-            target: PERF_LOG_TARGET,
-            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
-            path = %project_label,
-            bytes = sizes.total,
-            "watcher_disk_usage"
-        );
-        let _ = background_tx.send(disk_refresh_message(&abs_for_msg, sizes));
-        if let DiskProbeScope::TreeAndExternalTarget {
-            workspace_root,
-            target_dir,
-        } = target_probe
-        {
-            let probe_path = target_dir.clone();
-            if let Ok(bytes) = tokio::task::spawn_blocking(move || {
-                let resolved = probe_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| probe_path.to_path_buf());
-                scan::dir_size(&resolved)
-            })
-            .await
-            {
-                let _ = background_tx.send(BackgroundMsg::OutOfTreeTargetSize {
-                    workspace_root,
-                    target_dir,
-                    bytes,
-                });
+        if let Ok(update) = tokio::task::spawn_blocking(move || request.inputs.measure()).await {
+            tracing::trace!(
+                target: PERF_LOG_TARGET,
+                elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
+                abs_path = %request.root.display(),
+                visited_entries = update.visited_entries,
+                identity_entries_examined = update.identity_entries_examined,
+                "watcher_disk_usage"
+            );
+            for (path, sizes) in update.entries {
+                let _ = background_tx.send(disk_refresh_message(&path, sizes));
+            }
+            for message in update.external_targets {
+                let _ = background_tx.send(message);
             }
         }
-        let _ = disk_done_tx.send(project_label);
+        for label in request.labels {
+            let _ = disk_done_tx.send(label);
+        }
     });
 }
 

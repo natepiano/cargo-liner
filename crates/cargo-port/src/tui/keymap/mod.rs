@@ -2,7 +2,7 @@ mod actions;
 mod canonical;
 mod constants;
 mod load;
-mod resolved;
+mod resolved_keymap;
 mod scope_map;
 
 pub(crate) use actions::CiRunsAction;
@@ -28,6 +28,6 @@ pub(crate) use load::migrate_removed_action_keys_on_disk;
 pub(crate) use load::override_keymap_path_for_test;
 #[cfg(test)]
 pub(crate) use load::override_keymap_path_for_test_if_absent;
-pub(crate) use resolved::ResolvedKeymap;
+pub(crate) use resolved_keymap::ResolvedKeymap;
 pub(crate) use scope_map::ScopeMap;
 pub(crate) use tui_pane::KeyBind;

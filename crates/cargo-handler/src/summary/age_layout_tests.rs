@@ -1,4 +1,4 @@
-//! Summary and tile age cells share one right edge.
+//! Tables retain age ordering and show long ages only in details.
 
 #![expect(
     clippy::expect_used,
@@ -6,10 +6,11 @@
 )]
 #![expect(clippy::panic, reason = "missing drawn age labels fail the fixture")]
 
-use agent_cell::TreeColumn;
-
 use super::*;
 use crate::census::HierarchyEdges;
+use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::details::DetailProperty;
+use crate::details::RowDetailsLookup;
 use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
@@ -39,36 +40,20 @@ fn locate(buffer: &Buffer, label: &str) -> (u16, u16) {
     panic!("missing {label}: {buffer:?}");
 }
 
-fn age_header_row(buffer: &Buffer) -> u16 {
-    (0..buffer.area.height)
-        .find(|&y| {
-            row_text(buffer, y)
+fn assert_hidden_age_order(buffer: &Buffer) -> Vec<String> {
+    for y in 0..buffer.area.height {
+        assert!(
+            !row_text(buffer, y)
                 .split_whitespace()
                 .any(|word| word == "age")
-        })
-        .expect("drawn age header")
-}
-
-fn assert_age_right_edge(buffer: &Buffer) -> Vec<String> {
-    let header_y = age_header_row(buffer);
-    let header = row_text(buffer, header_y);
-    let age_header = cell_width(&header[..header.find("age").expect("age header")]);
-    let age_end = age_header + cell_width("age");
-    let expected = [" 8:20:00", "    5:16", "14:00:00", "       2"];
-    let age_start = age_end - cell_width(expected[0]);
-    let mut labels = Vec::new();
-    for ((name, _), expected) in AGES.into_iter().zip(expected) {
-        let (_, y) = locate(buffer, name);
-        let actual: String = (age_start..age_end)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect();
-        assert_eq!(
-            actual, expected,
-            "{name}: age and header share a right edge"
         );
-        labels.push(actual);
     }
-    labels
+    let mut rows: Vec<_> = AGES
+        .iter()
+        .map(|(name, _)| (locate(buffer, name).1, (*name).to_owned()))
+        .collect();
+    rows.sort_by_key(|(y, _)| *y);
+    rows.into_iter().map(|(_, name)| name).collect()
 }
 
 #[test]
@@ -82,7 +67,7 @@ fn summary_and_tree_ages_right_align_values_and_header() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 160, 20);
     let mut summary = Buffer::empty(area);
@@ -98,13 +83,14 @@ fn summary_and_tree_ages_right_align_values_and_header() {
             now:            NOW,
             account_column: AccountColumn::Shown,
             footer_colors:  &FooterColors::default(),
-            sort:           SummarySort {
-                column:    SummaryColumn::Name,
-                direction: SortDirection::Ascending,
-            },
+            sort:           SummarySort::default(),
         },
     );
-    let summary_labels = assert_age_right_edge(&summary);
+    let summary_labels = assert_hidden_age_order(&summary);
+    assert_eq!(
+        summary_labels,
+        ["fourteen-days", "eight-days", "five-hours", "two-minutes"]
+    );
     let mut root = rows[0].clone();
     root.name = "root".into();
     root.children=rows.iter().map(|row|serde_json::from_value(serde_json::json!({"depth":0,"kind":"thread","name":row.name,"started":row.started})).expect("thread row")).collect();
@@ -113,19 +99,11 @@ fn summary_and_tree_ages_right_align_values_and_header() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let original = agent_cell::cell_order_placed(&placement);
     let sorts = original
         .iter()
-        .map(|entry| {
-            (
-                entry.id.clone(),
-                TreeSort {
-                    column:    TreeColumn::Session,
-                    direction: SortDirection::Ascending,
-                },
-            )
-        })
+        .map(|entry| (entry.id.clone(), TreeSort::default()))
         .collect();
     let cells = agent_cell::cell_order_sorted(&placement, &sorts, NOW);
     let mut tree = Buffer::empty(area);
@@ -138,7 +116,7 @@ fn summary_and_tree_ages_right_align_values_and_header() {
         AccountColumn::Shown,
         &FooterColors::default(),
     );
-    let tree_labels = assert_age_right_edge(&tree);
+    let tree_labels = assert_hidden_age_order(&tree);
     assert_eq!(
         summary_labels, tree_labels,
         "the same ages draw the same text in both tables"
@@ -156,7 +134,7 @@ fn summary_pid_digits_end_under_the_right_aligned_pid_header() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 120, 12);
     let mut buffer = Buffer::empty(area);
@@ -214,7 +192,7 @@ fn summary_age_header_ends_at_the_last_digit_used_by_its_rows() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 160, 12);
     let mut buffer = Buffer::empty(area);
@@ -236,13 +214,27 @@ fn summary_age_header_ends_at_the_last_digit_used_by_its_rows() {
             },
         },
     );
-    let header_y = age_header_row(&buffer);
-    let header = row_text(&buffer, header_y);
-    let header_x = cell_width(&header[..header.find("age").expect("age column header")]);
-    let end = header_x + 3;
-    for (name, expected) in [("week-old", " 7:21:00"), ("twenty-days", "20:00:00")] {
-        let (_, y) = locate(&buffer, name);
-        let actual: String = (end - 8..end).map(|x| buffer[(x, y)].symbol()).collect();
-        assert_eq!(actual, expected, "{name}: no second field");
+    for y in 0..buffer.area.height {
+        assert!(
+            !row_text(&buffer, y)
+                .split_whitespace()
+                .any(|word| word == "age")
+        );
+    }
+    for row in state.rows() {
+        let selected = crate::interaction::RowIdentity::session("fixture", row);
+        let RowDetailsLookup::Found(details) = agent_cell::row_details(&placement, &selected, NOW)
+        else {
+            panic!("the displayed row has details");
+        };
+        let expected = match row.name.as_str() {
+            "week-old" => "7 days, 21 hours, 0 minutes",
+            "twenty-days" => "20 days, 0 hours, 0 minutes",
+            _ => panic!("unexpected fixture row"),
+        };
+        assert_eq!(
+            details.properties.last(),
+            Some(&(DetailProperty::Age, expected.to_owned()))
+        );
     }
 }

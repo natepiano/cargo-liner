@@ -94,7 +94,8 @@ They do not rebuild hit regions from a newer census.
 A different header starts in its natural direction.
 Tree sorting changes siblings, preserving the hierarchy and rails.
 Names compare without case, then use original spelling as a tie breaker.
-Trees start with session ascending.
+Trees start with the oldest row first.
+The hidden age sort has no header marker.
 Summary sorting stays within each machine.
 A tile's sort uses `TileKey`, including the per-machine unassigned tile.
 Pruning removes sorts for departed tiles.
@@ -118,6 +119,47 @@ The mark pass scans tokens only while a word is active.
 `invalidate_body` retains the buffer while invalidating reuse.
 A second press before repaint can therefore read the same painted word.
 The status-clock path reuses a body only while Reusable.
+
+### Row details
+
+`d` opens details for the selected row in the focused tree or top-level agents table.
+The modal retains a snapshot of the row's values.
+The modal groups its values into four sections:
+
+1. The `agent` section contains account, family, model, effort, and type.
+2. The `hierarchy` section contains showrunner, unit, worker, and role.
+3. The `location` section contains directory, branch, desktop, and pid.
+4. The `now` section contains activity, status, state, and age.
+
+An unassigned session or shell uses `name:` in the hierarchy section.
+The hierarchy values use names from the accepted placement chain.
+The family value retains the previous program value.
+Effort always appears; an unknown effort shows `—`.
+Other empty values and empty sections do not appear.
+Each section starts with a title-style heading.
+One blank line separates sections.
+All values start one cell after the longest label and its colon.
+The modal reserves one space before labels and headings, and one space after the longest value.
+The name remains complete when the tree cuts its displayed name.
+`state:` retains the detailed activity word.
+`age:` appears last in days, hours, and minutes.
+The age omits leading zero units.
+An age under one minute shows `0 minutes`.
+
+The details pane uses the shared `PopupFrame` and its own keymap scope.
+Esc closes the modal.
+Up, Down, and the wheel select value lines and skip headings and blank lines.
+The selected line uses the shared selection style.
+The viewport follows the selected value when the terminal is small.
+Navigation moves through a wrapped value before it selects another value.
+A newly selected wrapped value starts at its first display row.
+`y` copies the selected value without its label.
+The details pane supplies its own copy target because the framework retains Main focus.
+The shared `tui_pane` clipboard path shows the copy notice used by cargo-port.
+The copy notice appears above the details modal, including when the modal fills the terminal.
+The modal consumes other keys and pointer presses.
+These events cannot change the underlying row selection.
+The shortcuts overlay lists the global `d` binding.
 
 ### Overlays and settings
 
@@ -151,3 +193,34 @@ A layout-only hit test cannot reproduce the visible input target during motion.
 The census can change after a paint and before a press.
 Retained geometry makes input describe what the user saw.
 Stable identities preserve selection when names, rows, and physical workers change.
+
+### Word highlight strength
+
+Set the strength beside `[appearance]` in `config.toml`:
+
+```toml
+[word_highlight]
+emphasis = "clear"
+```
+
+The accepted values are `subtle`, `clear`, and `strong`.
+`subtle` retains the C240 appearance.
+`clear` increases the match ground's distance from the pane ground.
+`strong` also adds bold to the matched text.
+The default is `clear`.
+
+`config_watch.rs` watches the configuration directory on a background thread.
+It reads and parses `config.toml` after a file change.
+It retains the directory watch across atomic file replacements.
+The reader sends a checked emphasis through a channel.
+The terminal loop applies the emphasis and invalidates the retained body.
+The existing clicked word therefore changes without another click or a theme change.
+The UI thread performs no configuration file reads.
+
+An invalid value retains the last valid emphasis.
+The settings pane shows a config error that names all three accepted values.
+A later valid file clears that error, including a parse error from startup.
+The reader owns the parse status.
+A save failure keeps its separate notice until a save succeeds.
+The application stops and joins the reader before it releases the configuration directory.
+Other configuration sections retain their existing application rules.

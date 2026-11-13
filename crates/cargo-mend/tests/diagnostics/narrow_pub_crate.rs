@@ -1291,13 +1291,12 @@ edition = "2024"
 
     // Compile the test binary after the compiler fixes.
     let test_build = cargo_command()
-        .arg("nextest")
-        .arg("run")
-        .arg("--no-run")
+        .arg("build")
+        .arg("--tests")
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .output()
-        .expect("run cargo nextest run --no-run");
+        .expect("run cargo build --tests");
     assert!(
         test_build.status.success(),
         "test target must still compile after --fix-compiler:\n{}\n{}",

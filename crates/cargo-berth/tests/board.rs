@@ -10,12 +10,13 @@ mod edges_templates;
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
+#[path = "support/proof_subject_templates.rs"]
+mod proof_subject_templates;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
@@ -60,6 +61,10 @@ pub use prepared_lock_tests::PREPARED_LOCK_REPOSITORIES;
 pub use prepared_lock_tests::ReleasedProofHistory;
 pub use prepared_lock_tests::RetainedPredecessorHistory;
 pub use prepared_lock_tests::read_history;
+use proof_subject_templates::DIFFERENT_TARGET;
+use proof_subject_templates::EQUIVALENT_TARGET;
+use proof_subject_templates::INITIALIZED_REPOSITORY;
+use proof_subject_templates::STATE;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -69,15 +74,6 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Refused,
     cleared_environment: &[],
-};
-
-/// The repository most tests here start from: a source file committed on `main`, then
-/// `cargo-berth init`.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
-    build:            build_initialized_repository,
 };
 
 use std::fs;
@@ -4423,40 +4419,53 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
 
 #[test]
 fn proof_subject_changes_force_rechecks_at_an_unchanged_target() {
-    for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
-        let fixture =
-            rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Outstanding);
-        // These mutations require an outstanding subject even after an equivalent proof warms.
-        dirty_source(fixture.repository.path(), "src/lib.rs");
-        let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
-            .expect("baseline journal should read");
-        for proof_subject_change in [
-            ProofSubjectChange::Widen,
-            ProofSubjectChange::Resnapshot,
-            ProofSubjectChange::ReleaseDispositionReplacement,
-        ] {
-            fs::write(
-                fixture.repository.path().join(JOURNAL_PATH),
-                &baseline_journal,
-            )
-            .expect("baseline journal should restore before each independent subject mutation");
-            invalidate_projection(fixture.repository.path());
-            if matches!(
-                proof_subject_change,
-                ProofSubjectChange::ReleaseDispositionReplacement
-            ) {
-                append_journal_operation(
-                    fixture.repository.path(),
-                    &serde_json::json!({
-                        "op": "release",
-                        "reservation_id": fixture.reservation_id,
-                        "disposition": {"kind": "integrated"},
-                    }),
+    std::thread::scope(|workers| {
+        for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
+            workers.spawn(move || {
+                let fixture = rewritten_reservation_fixture(
+                    target_rewrite,
+                    ReservationCompletion::Outstanding,
                 );
-            }
-            assert_proof_subject_change_rechecks(&fixture, target_rewrite, proof_subject_change);
+                // These mutations require an outstanding subject even after an equivalent proof
+                // warms.
+                dirty_source(fixture.repository.path(), "src/lib.rs");
+                let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
+                    .expect("baseline journal should read");
+                for proof_subject_change in [
+                    ProofSubjectChange::Widen,
+                    ProofSubjectChange::Resnapshot,
+                    ProofSubjectChange::ReleaseDispositionReplacement,
+                ] {
+                    fs::write(
+                        fixture.repository.path().join(JOURNAL_PATH),
+                        &baseline_journal,
+                    )
+                    .expect(
+                        "baseline journal should restore before each independent subject mutation",
+                    );
+                    invalidate_projection(fixture.repository.path());
+                    if matches!(
+                        proof_subject_change,
+                        ProofSubjectChange::ReleaseDispositionReplacement
+                    ) {
+                        append_journal_operation(
+                            fixture.repository.path(),
+                            &serde_json::json!({
+                                "op": "release",
+                                "reservation_id": fixture.reservation_id,
+                                "disposition": {"kind": "integrated"},
+                            }),
+                        );
+                    }
+                    assert_proof_subject_change_rechecks(
+                        &fixture,
+                        target_rewrite,
+                        proof_subject_change,
+                    );
+                }
+            });
         }
-    }
+    });
 }
 
 #[test]
@@ -6726,86 +6735,31 @@ fn rewritten_reservation_fixture(
     target_rewrite: TargetRewrite,
     reservation_completion: ReservationCompletion,
 ) -> RewrittenReservationFixture {
-    let repository = initialized_repository();
-    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let reservation_id = reservation_id(&claim(repository.path(), "file:src/lib.rs", FIRST_RUN));
-    fs::write(
-        repository.path().join("src/lib.rs"),
-        "pub fn protected() {}\n",
+    let template = match target_rewrite {
+        TargetRewrite::Equivalent => EQUIVALENT_TARGET,
+        TargetRewrite::Different => DIFFERENT_TARGET,
+    };
+    let repository = template.instantiate();
+    let state: proof_subject_templates::RewrittenTargetState = serde_json::from_slice(
+        &fs::read(repository.path().join(STATE)).expect("proof state should read"),
     )
-    .expect("protected source should write");
-    git(repository.path(), &["add", "src/lib.rs"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "protected identity",
-        ],
-    );
-    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        repository.path(),
-        &serde_json::json!({
-            "op": "checkpoint",
-            "reservation_id": reservation_id,
-            "protected_tip": protected_tip,
-            "trunk_snapshot": protected_tip,
-        }),
-    );
-    append_journal_operation(
-        repository.path(),
-        &serde_json::json!({
-            "op": "evidence_revalidated",
-            "reservation_id": reservation_id,
-            "status": {
-                "status": "integrated",
-                "trunk_oid": protected_tip,
-                "proof": "protected_tip_ancestor",
-            },
-            "edit_blocking_status": "clear",
-        }),
-    );
+    .expect("proof state should decode");
     if matches!(reservation_completion, ReservationCompletion::Released) {
         append_journal_operation(
             repository.path(),
             &serde_json::json!({
                 "op": "release",
-                "reservation_id": reservation_id,
+                "reservation_id": state.reservation_id,
                 "disposition": {"kind": "integrated"},
             }),
         );
     }
-    if matches!(target_rewrite, TargetRewrite::Different) {
-        fs::write(
-            repository.path().join("src/lib.rs"),
-            "pub fn replacement() {}\n",
-        )
-        .expect("replacement source should write");
-        git(repository.path(), &["add", "src/lib.rs"]);
-    }
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "--amend",
-            "-m",
-            "rewritten target",
-        ],
-    );
-    let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     RewrittenReservationFixture {
         repository,
-        reservation_id,
-        phase_start_head,
-        protected_tip,
-        target,
+        reservation_id: state.reservation_id,
+        phase_start_head: state.phase_start_head,
+        protected_tip: state.protected_tip,
+        target: state.target,
     }
 }
 
@@ -7695,7 +7649,19 @@ fn checkpoint_predecessor(fixture: &OrderedFixture) {
 }
 
 fn run_board_with_git_trace(repository_root: &Path) -> TracedBoard {
-    run_board_with_git_wrapper(repository_root, TRACING_GIT_WRAPPER)
+    let directory = cargo_berth_test_support::fixture_tempdir("board-trace-");
+    let trace_path = directory.path().join("trace");
+    let mut command = berth_command(BERTH_EXECUTABLE);
+    command
+        .args(["board", "--json"])
+        .current_dir(repository_root);
+    let output = cargo_berth_test_support::capture_git_trace(&mut command, &trace_path)
+        .expect("board should run with native Git tracing");
+    TracedBoard {
+        output,
+        trace_path,
+        _directory: directory,
+    }
 }
 
 /// Run a board process with a traceable, narrowly injected Git failure.
@@ -7752,28 +7718,6 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 }
 
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
-
-fn build_initialized_repository(repository_root: &Path) {
-    git(
-        repository_root,
-        &["init", "--quiet", "--initial-branch", "main"],
-    );
-    git(
-        repository_root,
-        &["config", "user.email", "test@example.com"],
-    );
-    git(repository_root, &["config", "user.name", "Test User"]);
-    fs::create_dir_all(repository_root.join("src")).expect("source directory should exist");
-    fs::write(repository_root.join("src/lib.rs"), "pub fn value() {}\n")
-        .expect("source should write");
-    git(repository_root, &["add", "."]);
-    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
-    assert!(
-        run_berth(repository_root, &["init", "--json"])
-            .status
-            .success()
-    );
-}
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::path::PathBuf {
     let root = parent.join(branch);

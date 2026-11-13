@@ -242,25 +242,45 @@ fn astra_probe_extension_preserves_the_legacy_role_vocabulary()
     #[derive(serde::Deserialize)]
     struct OldReport {
         edges: Vec<OldEdge>,
+        rows:  Vec<OldRow>,
     }
-    let member: AstraMembership = serde_json::from_value(serde_json::json!({
-        "staff_id":"designer","session":"astra-thread","home":"/fixture/codex","account":"codex1","role":"astra-designer","work":"busy"
-    }))?;
-    let mut row: AgentRow = serde_json::from_value(
-        serde_json::json!({"agent":"codex","pid":30,"name":"Astra","started":100,"directory":"/fixture","children":[],"codex_session":{"resume_argument":"astra-thread"}}),
-    )?;
-    row.session_id = row.session_id.with_astra(member);
-    let edges = HierarchyEdges(vec![HierarchyEdge {
-        manager: "boss".into(),
-        member:  "astra-thread".into(),
-        role:    HierarchyRole::AstraDesigner,
-    }]);
-    let output = probe::encode_astra_test_report(vec![row.clone()], edges.clone())?;
-    let old: OldReport = serde_json::from_slice(&output)?;
-    assert!(matches!(old.edges[0].role, OldRole::Worker));
-    let (rows, restored) = probe::parse_report(&output)?;
-    assert_eq!(rows, vec![row]);
-    assert_eq!(restored, edges);
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum OldFallback {
+        None,
+    }
+    #[derive(serde::Deserialize)]
+    struct OldRow {
+        role_fallback: OldFallback,
+    }
+    for role in [
+        HierarchyRole::AstraDesigner,
+        HierarchyRole::AstraReviewer,
+        HierarchyRole::Producer,
+    ] {
+        let member: AstraMembership = serde_json::from_value(serde_json::json!({
+            "staff_id":"designer","session":"astra-thread","home":"/fixture/codex","account":"codex1","role":"astra-designer","work":"busy"
+        }))?;
+        let mut row: AgentRow = serde_json::from_value(
+            serde_json::json!({"agent":"codex","pid":30,"name":"Astra","started":100,"directory":"/fixture","children":[],"codex_session":{"resume_argument":"astra-thread"}}),
+        )?;
+        row.session_id = row.session_id.with_astra(member);
+        if role == HierarchyRole::Producer {
+            row.role_fallback = RoleFallback::Producer;
+        }
+        let edges = HierarchyEdges(vec![HierarchyEdge {
+            manager: "boss".into(),
+            member: "astra-thread".into(),
+            role,
+        }]);
+        let output = probe::encode_astra_test_report(vec![row.clone()], edges.clone())?;
+        let old: OldReport = serde_json::from_slice(&output)?;
+        assert!(matches!(old.edges[0].role, OldRole::Worker));
+        assert!(matches!(old.rows[0].role_fallback, OldFallback::None));
+        let (rows, restored) = probe::parse_report(&output)?;
+        assert_eq!(rows, vec![row]);
+        assert_eq!(restored, edges);
+    }
     Ok(())
 }
 

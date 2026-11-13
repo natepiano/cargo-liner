@@ -342,73 +342,75 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
-        let repo = IntegrationRepository::from_recorded_template(crate::COVER_LANDING);
-        let state: serde_json::Value = serde_json::from_slice(
-            &fs::read(repo.root().join(".git/cover-landing.json"))
-                .expect("landing state should read"),
-        )
-        .expect("landing state should decode");
-        let lane_id = state["lane_id"].as_str().expect("lane ID").to_owned();
-        let cover_id = state["cover_id"].as_str().expect("cover ID").to_owned();
-        let lane_work = repo.capture();
-        for merge_commit in [true, false] {
-            repo.restore(&lane_work);
-            if merge_commit {
-                repo.git(
-                    &repo.integration,
-                    &["merge", "--no-ff", "--no-edit", "landing-lane"],
-                );
-            } else {
-                repo.git(&repo.integration, &["merge", "--ff-only", "landing-lane"]);
-            }
-            let lane_landed = repo.board();
-            assert_eq!(
-                reservation_row(&lane_landed, &lane_id)["lifecycle"]["stage"],
-                "released",
-                "{lane_landed}"
-            );
-            let cover = reservation_row(&lane_landed, &cover_id);
-            assert_eq!(cover["lifecycle"]["stage"], "active", "{lane_landed}");
-            assert!(
-                cover["merge_extent"]["scopes"]
-                    .as_array()
-                    .expect("cover extent")
-                    .iter()
-                    .any(|scope| scope["path"] == "lane.txt"),
-                "the cover grows when lane work lands: {lane_landed}"
-            );
+        std::thread::scope(|workers| {
+            for merge_commit in [true, false] {
+                workers.spawn(move || {
+                    let repo = IntegrationRepository::from_recorded_template(crate::COVER_LANDING);
+                    let state: serde_json::Value = serde_json::from_slice(
+                        &fs::read(repo.root().join(".git/cover-landing.json"))
+                            .expect("landing state should read"),
+                    )
+                    .expect("landing state should decode");
+                    let lane_id = state["lane_id"].as_str().expect("lane ID").to_owned();
+                    let cover_id = state["cover_id"].as_str().expect("cover ID").to_owned();
+                    if merge_commit {
+                        repo.git(
+                            &repo.integration,
+                            &["merge", "--no-ff", "--no-edit", "landing-lane"],
+                        );
+                    } else {
+                        repo.git(&repo.integration, &["merge", "--ff-only", "landing-lane"]);
+                    }
+                    let lane_landed = repo.board();
+                    assert_eq!(
+                        reservation_row(&lane_landed, &lane_id)["lifecycle"]["stage"],
+                        "released",
+                        "{lane_landed}"
+                    );
+                    let cover = reservation_row(&lane_landed, &cover_id);
+                    assert_eq!(cover["lifecycle"]["stage"], "active", "{lane_landed}");
+                    assert!(
+                        cover["merge_extent"]["scopes"]
+                            .as_array()
+                            .expect("cover extent")
+                            .iter()
+                            .any(|scope| scope["path"] == "lane.txt"),
+                        "the cover grows when lane work lands: {lane_landed}"
+                    );
 
-            if merge_commit {
-                repo.git(
-                    repo.root(),
-                    &["merge", "--no-ff", "--no-edit", "integration"],
-                );
-            } else {
-                repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+                    if merge_commit {
+                        repo.git(
+                            repo.root(),
+                            &["merge", "--no-ff", "--no-edit", "integration"],
+                        );
+                    } else {
+                        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+                    }
+                    let landed = repo.board();
+                    assert_eq!(
+                        reservation_row(&landed, &cover_id)["lifecycle"]["stage"],
+                        "released",
+                        "{landed}"
+                    );
+                    assert_eq!(
+                        reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
+                        "released",
+                        "{landed}"
+                    );
+                    repo.remove_integration_branch();
+                    let deleted = repo.board();
+                    assert!(
+                        deleted["payload"]["data"]["alerts"]["entries"]
+                            .as_array()
+                            .expect("board alerts")
+                            .iter()
+                            .all(|alert| alert["kind"] != "target_missing"
+                                && alert["kind"] != "target_uncovered"),
+                        "{deleted}"
+                    );
+                });
             }
-            let landed = repo.board();
-            assert_eq!(
-                reservation_row(&landed, &cover_id)["lifecycle"]["stage"],
-                "released",
-                "{landed}"
-            );
-            assert_eq!(
-                reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
-                "released",
-                "{landed}"
-            );
-            repo.remove_integration_branch();
-            let deleted = repo.board();
-            assert!(
-                deleted["payload"]["data"]["alerts"]["entries"]
-                    .as_array()
-                    .expect("board alerts")
-                    .iter()
-                    .all(|alert| alert["kind"] != "target_missing"
-                        && alert["kind"] != "target_uncovered"),
-                "{deleted}"
-            );
-        }
+        });
     }
 
     #[test]
@@ -920,84 +922,88 @@ fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
 
 #[test]
 fn failed_journal_append_does_not_move_the_retention_ref() {
-    let repository = initialized_repository();
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
-    commit_file(
-        repository.path(),
-        "src/lib.rs",
-        "first\n",
-        "first phase commit",
-    );
-    let claim = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
-    let reservation_id = reservation_id(&claim);
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
-            .status
-            .success()
-    );
-    let retention_ref = format!("{RETENTION_REF_PREFIX}{reservation_id}");
-    let retained_tip_before = git_stdout(repository.path(), &["rev-parse", &retention_ref]);
-    commit_file(
-        repository.path(),
-        "src/lib.rs",
-        "replacement\n",
-        "replacement phase commit",
-    );
-    let replacement_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    assert_ne!(retained_tip_before, replacement_tip);
+    std::thread::scope(|workers| {
+        workers.spawn(|| {
+            let repository = initialized_repository();
+            git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+            commit_file(
+                repository.path(),
+                "src/lib.rs",
+                "first\n",
+                "first phase commit",
+            );
+            let claim = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
+            let reservation_id = reservation_id(&claim);
+            assert!(
+                run_berth(repository.path(), &["release", &reservation_id])
+                    .status
+                    .success()
+            );
+            let retention_ref = format!("{RETENTION_REF_PREFIX}{reservation_id}");
+            let retained_tip_before = git_stdout(repository.path(), &["rev-parse", &retention_ref]);
+            commit_file(
+                repository.path(),
+                "src/lib.rs",
+                "replacement\n",
+                "replacement phase commit",
+            );
+            let replacement_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+            assert_ne!(retained_tip_before, replacement_tip);
 
-    let wrapper_directory = tempdir().expect("wrapper directory should exist");
-    let wrapper_path = wrapper_directory.path().join("git");
-    fs::write(&wrapper_path, PAUSING_GIT_WRAPPER).expect("git wrapper should write");
-    let mut wrapper_permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    wrapper_permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, wrapper_permissions)
-        .expect("git wrapper should be executable");
-    let ready_path = wrapper_directory.path().join("ready");
-    let continue_path = wrapper_directory.path().join("continue");
-    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(wrapper_directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    let mut release = cargo_berth_test_support::TestProcessGroup::spawn(
-        berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-            .args(["release", &reservation_id, "--json"])
-            .current_dir(repository.path())
-            .env("PATH", wrapped_path)
-            .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
-            .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
-            .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
-            .env_remove(RUN_ENVIRONMENT)
-            .stdin(Stdio::null()),
-    )
-    .expect("release should start");
-    wait_for_path(&ready_path, release.child_mut());
+            let wrapper_directory = tempdir().expect("wrapper directory should exist");
+            let wrapper_path = wrapper_directory.path().join("git");
+            fs::write(&wrapper_path, PAUSING_GIT_WRAPPER).expect("git wrapper should write");
+            let mut wrapper_permissions = fs::metadata(&wrapper_path)
+                .expect("git wrapper metadata should read")
+                .permissions();
+            wrapper_permissions.set_mode(0o755);
+            fs::set_permissions(&wrapper_path, wrapper_permissions)
+                .expect("git wrapper should be executable");
+            let ready_path = wrapper_directory.path().join("ready");
+            let continue_path = wrapper_directory.path().join("continue");
+            let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+            let wrapped_path = std::env::join_paths(
+                std::iter::once(wrapper_directory.path().to_path_buf())
+                    .chain(std::env::split_paths(&original_path)),
+            )
+            .expect("wrapped PATH should join");
+            let mut release = cargo_berth_test_support::TestProcessGroup::spawn(
+                berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+                    .args(["release", &reservation_id, "--json"])
+                    .current_dir(repository.path())
+                    .env("PATH", wrapped_path)
+                    .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
+                    .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
+                    .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
+                    .env_remove(RUN_ENVIRONMENT)
+                    .stdin(Stdio::null()),
+            )
+            .expect("release should start");
+            wait_for_path(&ready_path, release.child_mut());
 
-    let journal_path = repository.path().join(JOURNAL_PATH);
-    let original_permissions = fs::metadata(&journal_path)
-        .expect("journal metadata should read")
-        .permissions();
-    let mut read_only_permissions = original_permissions.clone();
-    read_only_permissions.set_mode(original_permissions.mode() & !0o222);
-    fs::set_permissions(&journal_path, read_only_permissions)
-        .expect("journal should become read-only");
-    fs::write(&continue_path, b"continue\n").expect("git wrapper should continue");
-    let release = release
-        .wait_with_output()
-        .expect("release should finish after append failure");
-    fs::set_permissions(&journal_path, original_permissions)
-        .expect("journal permissions should restore");
+            let journal_path = repository.path().join(JOURNAL_PATH);
+            let original_permissions = fs::metadata(&journal_path)
+                .expect("journal metadata should read")
+                .permissions();
+            let mut read_only_permissions = original_permissions.clone();
+            read_only_permissions.set_mode(original_permissions.mode() & !0o222);
+            fs::set_permissions(&journal_path, read_only_permissions)
+                .expect("journal should become read-only");
+            fs::write(&continue_path, b"continue\n").expect("git wrapper should continue");
+            let release = release
+                .wait_with_output()
+                .expect("release should finish after append failure");
+            fs::set_permissions(&journal_path, original_permissions)
+                .expect("journal permissions should restore");
 
-    assert_eq!(release.status.code(), Some(4));
-    assert_eq!(
-        git_stdout(repository.path(), &["rev-parse", &retention_ref]),
-        retained_tip_before
-    );
-    reanchoring::failed_append_preserves_rewrite_marker_and_retention();
+            assert_eq!(release.status.code(), Some(4));
+            assert_eq!(
+                git_stdout(repository.path(), &["rev-parse", &retention_ref]),
+                retained_tip_before
+            );
+        });
+        reanchoring::failed_append_preserves_rewrite_marker_and_retention();
+    });
 }
 
 #[test]

@@ -23,40 +23,50 @@ pub(in crate::fixes) enum RedirectTarget {
 
 /// Which of a redirect's paths a caller received.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TargetSide {
+pub(in crate::fixes) enum TargetSide {
     /// The `Everywhere` path, or a `Scoped` redirect's `inside` path.
     Inside,
     /// A `Scoped` redirect's `outside` path.
     Outside,
 }
 
+/// Whether a caller keeps the facade path or receives a replacement path.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::fixes) enum CallerRedirect<'a> {
+    KeepFacade,
+    Redirect {
+        path: &'a [String],
+        side: TargetSide,
+    },
+}
+
 impl FacadeRedirect {
-    /// The path a caller in `caller_module` writes instead of the facade path,
-    /// and which side of the redirect it came from, or `None` when that caller
-    /// keeps the facade path.
-    pub(super) fn target_for(&self, caller_module: &[String]) -> Option<(&[String], TargetSide)> {
+    /// Selects retention or redirection for the caller's module.
+    pub(in crate::fixes) fn target_for(&self, caller_module: &[String]) -> CallerRedirect<'_> {
         if self.unchanged_module.as_deref() == Some(caller_module) {
-            return None;
+            return CallerRedirect::KeepFacade;
         }
-        match &self.target {
-            RedirectTarget::Everywhere(path) => Some((path, TargetSide::Inside)),
+        let (path, side) = match &self.target {
+            RedirectTarget::Everywhere(path) => (path.as_slice(), TargetSide::Inside),
             RedirectTarget::Scoped {
                 scope,
                 inside,
                 outside,
             } => {
                 if caller_module.starts_with(scope) {
-                    Some((inside, TargetSide::Inside))
+                    (inside.as_slice(), TargetSide::Inside)
                 } else {
-                    Some((outside, TargetSide::Outside))
+                    (outside.as_slice(), TargetSide::Outside)
                 }
             },
-        }
+        };
+        CallerRedirect::Redirect { path, side }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::CallerRedirect;
     use super::FacadeRedirect;
     use super::RedirectTarget;
     use super::TargetSide;
@@ -82,12 +92,21 @@ mod tests {
         let outside = path("tool::Widget");
         assert_eq!(
             facade_redirect.target_for(&path("tool::render")),
-            Some((inside.as_slice(), TargetSide::Inside))
+            CallerRedirect::Redirect {
+                path: inside.as_slice(),
+                side: TargetSide::Inside,
+            }
         );
         assert_eq!(
             facade_redirect.target_for(&path("app")),
-            Some((outside.as_slice(), TargetSide::Outside))
+            CallerRedirect::Redirect {
+                path: outside.as_slice(),
+                side: TargetSide::Outside,
+            }
         );
-        assert_eq!(facade_redirect.target_for(&path("tool::panel")), None);
+        assert_eq!(
+            facade_redirect.target_for(&path("tool::panel")),
+            CallerRedirect::KeepFacade
+        );
     }
 }

@@ -44,9 +44,13 @@ Astra pane idle or unknown state cannot erase a live run.
 
 ### Detached records and worker rows
 
-`RunRecords` caches records under discovered session `mesh_runs` directories.
+`RunRecords` caches records under discovered session `detached_runs` directories.
 `RunRecord::{Ignored, Running(DetachedRun)}` retains running records with valid live supervisor evidence.
-The supervisor must name the exact record.
+The live `detached_runs.py supervise <record>` process must name the exact record.
+`DETACHED_RUNS_DIRECTORY` and `DETACHED_RUNS_SCRIPT` define the producer names.
+Records carry `staff_id` or a named `worker` seat.
+The worker details show the verification step on the `state:` line.
+The status cell keeps the accounts-source word.
 A command need not be a recognized verification command.
 `RequestedStep::Unknown` shows `waiting`.
 A script hidden inside `bash -c` does not acquire a verification step from its filename.
@@ -96,11 +100,12 @@ Unknown metadata can still identify a generic Agent.
 `SubagentParent::{OwningSession, RecordedSubagent}` preserves nested subagents.
 An absent or finished parent returns the subagent to its owning session.
 
-`ShellPurpose::{Timer, Command}` comes from `ShellTimerObservation`, rather than the displayed command or description.
-Only `ObservedCountdown` gives the role `timer`.
-`ShellState::CountingDown(PositiveRemainingTime)` draws remaining digits.
-Expiry changes the status to `running` with the Busy ink.
-An untimed row named `sleep 300`, or `sleep infinity`, has no timer role.
+`ShellPurpose::{Timer(Timer), Command}` comes from `ShellTimerObservation`, rather than the displayed command or description.
+Only `ObservedCountdown` gives the activity `timer`.
+`ShellState::CountingDown(PositiveRemainingTime)` adds the remaining digits after `timer`.
+Expiry leaves the activity `timer`.
+The status remains `busy` with the Busy ink.
+An untimed row named `sleep 300`, or `sleep infinity`, has no timer activity.
 The type column identifies shell rows once.
 
 ### Wire compatibility

@@ -85,25 +85,25 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
         ),
         (
             RoleLabel::Stated(HierarchyRole::Impl),
-            "impl",
+            "worker",
             FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Test),
-            "test",
+            "worker",
             FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Review),
-            "review",
+            "worker",
             FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Fix),
-            "fix",
+            "worker",
             FooterTint::Plain,
         ),
-        (RoleLabel::Unlabeled, "session", FooterTint::Plain),
+        (RoleLabel::Unlabeled, "", FooterTint::Plain),
     ] {
         let expected = expected
             .style(text_default().into())
@@ -228,7 +228,14 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
             hue:            SessionHue::First,
             rails:          Vec::new(),
             branch:         Branch::Last,
-            subject:        LineSubject::ManagedThread(&worker, role),
+            subject:        LineSubject::ManagedThread(
+                &worker,
+                role,
+                RowIdentity {
+                    machine: "natedev",
+                    pid:     root.pid,
+                },
+            ),
         }));
         let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
         assert_color(&buffer, label, text_default());
@@ -247,11 +254,11 @@ fn tree_column(buffer: &Buffer, header: &str, y: u16) -> String {
     let end = [
         "session",
         "role",
+        "activity",
         "status",
         "account",
         "branch",
         "directory",
-        "age",
     ]
     .into_iter()
     .filter_map(|label| find(buffer, label))
@@ -259,23 +266,32 @@ fn tree_column(buffer: &Buffer, header: &str, y: u16) -> String {
     .map(|(x, _)| x)
     .min()
     .unwrap_or(buffer.area.width);
-    (start..end)
+    let value = (start..end)
         .map(|x| buffer[(x, y)].symbol())
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect::<String>();
+    if header == "account" {
+        value
+            .trim()
+            .split("  ")
+            .next()
+            .expect("account field")
+            .to_owned()
+    } else {
+        value.trim().to_owned()
+    }
 }
 
 #[test]
 fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() {
     let colors = FooterColors::parse("account.codex1=bright-cyan");
-    for (state, status, color) in [
+    for (state, source_state, status, color) in [
         (
             AgentActivity::Active(Activity::Thinking),
-            "thinking",
+            SessionState::Busy,
+            "busy",
             Role::Busy,
         ),
-        (AgentActivity::Idle, "idle", Role::Idle),
+        (AgentActivity::Idle, SessionState::Idle, "idle", Role::Idle),
     ] {
         let worker = ChildRow {
             worker_task: WorkerTask::Unrecorded,
@@ -288,6 +304,10 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
             role_fallback: RoleFallback::None,
             children: vec![worker.clone()],
             ..agent(10, "root", HOUR, None)
+        };
+        let manager = RowIdentity {
+            machine: "natedev",
+            pid:     root.pid,
         };
         let mut cells = vec![(entry(&root, None), false)];
         for role in [
@@ -307,17 +327,20 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 hue:            SessionHue::First,
                 rails:          Vec::new(),
                 branch:         Branch::Last,
-                subject:        LineSubject::ManagedThread(&worker, role),
+                subject:        LineSubject::ManagedThread(&worker, role, manager),
             }));
             cells.push((cell, true));
         }
-        for (cell, inherits_directory) in cells {
+        for (mut cell, inherits_directory) in cells {
+            for line in &mut cell.lines {
+                line.source_state = ReportedSessionState::Reported(source_state);
+            }
             for width in [80, WIDE] {
                 let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
                 if width == WIDE {
                     let (session_x, header_y) =
                         find(&buffer, "session").expect("full session header");
-                    for header in ["role", "status", "account", "age"] {
+                    for header in ["account", "role", "activity", "status"] {
                         let (x, y) = find(&buffer, header).expect("full tree column header");
                         assert_eq!(y, header_y, "{header} remains in the full header");
                         assert!(x > session_x, "{header} remains its own column");

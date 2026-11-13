@@ -4,6 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 
 use super::*;
@@ -105,4 +106,55 @@ fn an_off_highlight_leaves_every_painted_cell_unchanged() {
     let before = buffer.clone();
     WordHighlight::Off.apply(&mut buffer, MATCH_BACKGROUND);
     assert_eq!(buffer, before);
+}
+
+#[test]
+fn emphasis_preserves_modifiers_and_adds_bold_only_to_strong_matches() {
+    for emphasis in [
+        WordHighlightEmphasis::Subtle,
+        WordHighlightEmphasis::Clear,
+        WordHighlightEmphasis::Strong,
+    ] {
+        for modifiers in [
+            Modifier::empty(),
+            Modifier::BOLD,
+            Modifier::ITALIC | Modifier::UNDERLINED,
+        ] {
+            let mut buffer = painted("claude1 claude12 Claude1");
+            buffer.set_style(
+                buffer.area,
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Black)
+                    .add_modifier(modifiers),
+            );
+            let before = buffer.clone();
+            let painted = PaintedWords::capture(&buffer, vec![buffer.area]);
+            let mut highlight = WordHighlight::Off;
+            highlight.press(painted_word(&buffer, Position::new(2, 0)));
+            painted.apply_with_inks(
+                &highlight,
+                &mut buffer,
+                MATCH_BACKGROUND,
+                emphasis,
+                &mut MatchInkCache::default(),
+            );
+            for point in buffer.area.positions() {
+                let expected = if point.y == 0 && point.x < 7 {
+                    if emphasis == WordHighlightEmphasis::Strong {
+                        modifiers | Modifier::BOLD
+                    } else {
+                        modifiers
+                    }
+                } else {
+                    assert_eq!(buffer[point], before[point], "unmatched cell {point:?}");
+                    modifiers
+                };
+                assert_eq!(
+                    buffer[point].modifier, expected,
+                    "{emphasis:?} at {point:?}"
+                );
+            }
+        }
+    }
 }

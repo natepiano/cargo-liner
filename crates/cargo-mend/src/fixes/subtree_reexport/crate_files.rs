@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -56,13 +55,13 @@ impl CrateFiles {
         let mut test_only = BTreeSet::new();
         for (file, module_path) in module_map.declared_files() {
             if module_map.is_test_only(file) {
-                test_only.insert(canonical(file));
+                test_only.insert(canonical(file, sources));
             }
-            modules.insert(canonical(file), module_path);
+            modules.insert(canonical(file, sources), module_path);
         }
         for (file, module_path) in mounts {
             modules
-                .entry(canonical(&file))
+                .entry(canonical(&file, sources))
                 .or_insert(FileModulePath::Known(module_path));
         }
         Self { modules, test_only }
@@ -101,11 +100,9 @@ pub(super) struct OwnerCrate<'a> {
     pub(super) sources: &'a ParsedSources,
 }
 
-/// `path` with symlinks and `..` resolved, so a path the module walk built and
-/// one joined from a report fact compare equal; `path` itself when it cannot
-/// be resolved.
-pub(super) fn canonical(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+/// Use the shared source identity for module paths and report paths.
+pub(super) fn canonical(path: &Path, sources: &ParsedSources) -> PathBuf {
+    sources.path_key(path).into_path_buf()
 }
 
 #[cfg(test)]
@@ -135,16 +132,42 @@ mod tests {
         )?;
         fs::write(root.join("unrelated.rs"), "pub fn unrelated() {}\n")?;
 
-        let reached =
-            ModuleMap::reachable_sources([root.join("b/src/lib.rs")], &ParsedSources::default())?;
+        let sources = ParsedSources::default();
+        let reached = ModuleMap::reachable_sources([root.join("b/src/lib.rs")], &sources)?;
 
         assert_eq!(
             reached,
             ["b/src/lib.rs", "wrapper.rs", "shared.rs"]
-                .map(|file| canonical(&root.join(file)))
+                .map(|file| canonical(&root.join(file), &sources))
                 .into_iter()
                 .collect()
         );
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(root.join("linked/src"))?;
+            fs::create_dir(root.join("other"))?;
+            fs::write(root.join("linked/src/lib.rs"), "mod bridge;\n")?;
+            fs::write(root.join("other/bridge.rs"), "include!(\"shared.rs\");\n")?;
+            fs::write(root.join("linked/src/shared.rs"), "pub fn declared() {}\n")?;
+            fs::write(root.join("other/shared.rs"), "pub fn physical() {}\n")?;
+            std::os::unix::fs::symlink(
+                root.join("other/bridge.rs"),
+                root.join("linked/src/bridge.rs"),
+            )?;
+            let reached = ModuleMap::reachable_sources([root.join("linked/src/lib.rs")], &sources)?;
+            assert_eq!(
+                reached,
+                [
+                    "linked/src/lib.rs",
+                    "other/bridge.rs",
+                    "linked/src/shared.rs"
+                ]
+                .map(|file| canonical(&root.join(file), &sources))
+                .into_iter()
+                .collect(),
+                "relative includes use the declared file directory"
+            );
+        }
         Ok(())
     }
 

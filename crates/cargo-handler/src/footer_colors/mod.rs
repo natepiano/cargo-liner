@@ -995,7 +995,8 @@ impl FooterColors {
             | HierarchyRole::Review
             | HierarchyRole::Fix
             | HierarchyRole::Worker
-            | HierarchyRole::Agent => FooterTint::Plain,
+            | HierarchyRole::Agent
+            | HierarchyRole::Producer => FooterTint::Plain,
         }
     }
 

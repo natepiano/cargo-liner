@@ -80,6 +80,9 @@ pub(super) fn route_folder_event_with_config(
     background_tx: &Sender<BackgroundMsg>,
     watcher_config: &WatcherConfig,
 ) -> Vec<Event> {
+    if event.need_rescan() {
+        return vec![event.clone()];
+    }
     let roles: Vec<_> = event
         .paths
         .iter()
@@ -282,6 +285,20 @@ fn replay_buffered_events_with_config(
     watcher_config: &WatcherConfig,
 ) {
     for event in events {
+        if event.need_rescan() {
+            if let Some(dispatch) = ctx.metadata_dispatch {
+                dispatch.request_disk_rescan();
+            }
+            for entry in ctx.event.projects.values() {
+                refresh::schedule_disk_refresh(
+                    pending_disk,
+                    &entry.label,
+                    Instant::now(),
+                    watcher_config,
+                );
+            }
+            continue;
+        }
         for event_path in &event.paths {
             handle_notify_event(
                 event_path,
@@ -395,18 +412,8 @@ pub(super) fn handle_notify_event(
         if let Some(lint_runtime) = lint_runtime
             && entry.is_alive()
             && let Some(event) = event
-            && let Some(lint_trigger) =
-                lint::classify_event_path(&entry.abs_path, event.kind, event_path)
         {
-            tracing::debug!(
-                project_root = %entry.abs_path.display(),
-                event_path = %event_path.display(),
-                trigger = ?lint_trigger.trigger,
-                event_kind = ?lint_trigger.event_kind,
-                removal = lint_trigger.is_removal(),
-                "watcher_lint_trigger"
-            );
-            lint_runtime.lint_trigger(lint_trigger);
+            dispatch_project_lint(lint_runtime, entry, event, event_path);
         }
         if let Some(dispatch) = metadata_dispatch
             && entry.is_alive()
@@ -437,6 +444,14 @@ pub(super) fn handle_notify_event(
             entry.abs_path.as_path(),
             resolved_target.as_deref(),
         );
+        if let Some(dispatch) = metadata_dispatch {
+            let change = if event.is_some_and(Event::need_rescan) {
+                ProjectDiskChange::Rescan
+            } else {
+                ProjectDiskChange::ChangedPath
+            };
+            record_project_disk_change(dispatch, entry, event_path, change);
+        }
         refresh::schedule_disk_refresh(pending_disk, &entry.label, now, watcher_config);
         if !is_target_event && let Some(refresh_key) = refresh::git_refresh_key(entry) {
             refresh::enqueue_git_refresh(
@@ -452,6 +467,45 @@ pub(super) fn handle_notify_event(
     }
 
     schedule_discovery_probe(event_path, ctx, pending_new, now, watcher_config);
+}
+
+fn dispatch_project_lint(
+    runtime: &RuntimeHandle,
+    entry: &ProjectEntry,
+    event: &Event,
+    path: &Path,
+) {
+    let Some(trigger) = lint::classify_event_path(&entry.abs_path, event.kind, path) else {
+        return;
+    };
+    tracing::debug!(
+        project_root = %entry.abs_path.display(),
+        event_path = %path.display(),
+        trigger = ?trigger.trigger,
+        event_kind = ?trigger.event_kind,
+        removal = trigger.is_removal(),
+        "watcher_lint_trigger"
+    );
+    runtime.lint_trigger(trigger);
+}
+
+#[derive(Clone, Copy)]
+enum ProjectDiskChange {
+    ChangedPath,
+    Rescan,
+}
+
+fn record_project_disk_change(
+    dispatch: &MetadataDispatchContext,
+    entry: &ProjectEntry,
+    path: &Path,
+    change: ProjectDiskChange,
+) {
+    let tracker = dispatch.disk_tracker(&entry.abs_path);
+    match change {
+        ProjectDiskChange::Rescan => tracker.request_rescan(),
+        ProjectDiskChange::ChangedPath => tracker.record_change(path),
+    }
 }
 
 fn schedule_discovery_probe(

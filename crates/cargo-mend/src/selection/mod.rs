@@ -18,4 +18,6 @@ pub(crate) use metadata::SelectionScope;
 pub(crate) use metadata::TargetMetadata;
 pub(crate) use metadata::TargetSupport;
 pub(crate) use metadata::build_cargo_check_plan;
+#[cfg(test)]
+pub(crate) use metadata::fixture_selection;
 pub(crate) use metadata::resolve_cargo_selection;

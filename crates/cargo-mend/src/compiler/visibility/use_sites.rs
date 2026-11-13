@@ -66,11 +66,14 @@ use super::VisibilityAudience;
 use super::annotation;
 use super::annotation::VisibilityReach;
 use super::annotation::VisibilitySyntax;
+use super::source;
 use crate::compiler::facade::FacadeSpellingAgreement;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsageByName;
+use crate::compiler::persistence::DeclarationIdentity;
 use crate::compiler::persistence::UseSiteIndex;
 use crate::compiler::persistence::UseSiteReference;
+use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1673,6 +1676,8 @@ pub(super) fn collect_use_sites(
 
     let mut index = UseSiteIndex::default();
     let mut def_paths: FxHashMap<DefId, String> = FxHashMap::default();
+    let parsed = ParsedSources::default();
+    let mut declarations: FxHashMap<DefId, DeclarationIdentity> = FxHashMap::default();
     for (target, caller_module, reference) in pairs {
         let target_def_path = def_paths
             .entry(target)
@@ -1682,7 +1687,17 @@ pub(super) fn collect_use_sites(
             .entry(caller_module)
             .or_insert_with(|| tcx.def_path_str(caller_module))
             .clone();
-        index.insert(target_def_path, caller_module_def_path, reference);
+        let declaration = if let Some(declaration) = declarations.get(&target) {
+            declaration.clone()
+        } else {
+            let Some(file) = source::real_file_path(tcx, tcx.def_span(target)) else {
+                continue;
+            };
+            let declaration = DeclarationIdentity::new(&parsed.path_key(&file), target_def_path);
+            declarations.insert(target, declaration.clone());
+            declaration
+        };
+        index.insert(declaration, caller_module_def_path, reference);
     }
     index
 }

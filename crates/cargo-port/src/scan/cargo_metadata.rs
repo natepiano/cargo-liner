@@ -232,6 +232,33 @@ pub(crate) struct MetadataDispatchContext {
 }
 
 impl MetadataDispatchContext {
+    pub(crate) fn request_disk_rescan(&self) {
+        self.metadata_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .disk_usage
+            .request_rescan();
+    }
+
+    pub(crate) fn disk_tracker(&self, project: &AbsolutePath) -> super::DiskUsageTracker {
+        self.metadata_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .disk_usage
+            .for_project(project)
+    }
+
+    pub(crate) fn target_disk_tracker(
+        &self,
+        project: &AbsolutePath,
+        target: &AbsolutePath,
+    ) -> super::DiskUsageTracker {
+        self.metadata_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .disk_usage
+            .for_target(project, target)
+    }
     /// Lock the store briefly and clone the resolved `target_directory`
     /// for any `path` inside a known workspace. Callers that hold a live
     /// `App` should use `App::resolve_target_dir` instead; this shim
