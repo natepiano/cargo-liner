@@ -8,6 +8,9 @@
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
+#[path = "support/proof_subject_templates.rs"]
+mod proof_subject_templates;
+
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -18,6 +21,10 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use absent_holder_templates::CLEAN_MERGED_HOLDER;
+use absent_holder_templates::LATER_UNMERGED_HOLDER;
+use absent_holder_templates::MERGED_ACTIVE_HOLDER;
+use absent_holder_templates::SWITCHED_BRANCH_HOLDER;
 use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -174,6 +181,8 @@ mod edges_fixtures;
 #[path = "support/overlap_fixtures.rs"]
 mod overlap_fixtures;
 
+#[path = "support/absent_holder_templates.rs"]
+mod absent_holder_templates;
 #[path = "support/liveness_fixtures.rs"]
 mod liveness_fixtures;
 
@@ -207,6 +216,8 @@ fn main() {
         .chain([
             integration_parent_reservations::PARENT_RESERVATION,
             integration_parent_reservations::UNRELATED_RESERVATION,
+            proof_subject_templates::EQUIVALENT_TARGET,
+            proof_subject_templates::DIFFERENT_TARGET,
             gate_fixtures::THREE_COMMIT_REBASE,
             compaction_fixture::PREPARED_COMPACTION,
             answers_fixtures::HOLDER_LIFECYCLE_START,
@@ -227,6 +238,10 @@ fn main() {
             MERGED_TRUNK_WITH_OWN_WORK,
             PENDING_TRUNK_MERGE,
             NEWER_TRUNK,
+            MERGED_ACTIVE_HOLDER,
+            LATER_UNMERGED_HOLDER,
+            SWITCHED_BRANCH_HOLDER,
+            CLEAN_MERGED_HOLDER,
         ])
         .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)

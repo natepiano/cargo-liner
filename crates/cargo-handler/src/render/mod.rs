@@ -33,6 +33,7 @@ use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
+use tui_pane::TileColumnOrder;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::TileWidthFloor;
@@ -416,6 +417,8 @@ struct Cells<'a> {
     placement:         AgentPlacement<'a>,
     /// Grouped tiles, apart from the per-session summary hue lookup.
     tiles:             Vec<AgentTile<'a>>,
+    /// Full tree counts remain independent of the visible tree rows.
+    full_tree_rows:    Vec<(TileKey, usize)>,
     /// The unix second the ages are measured to.
     now:               u64,
     /// Footer colors already loaded by the app.
@@ -546,6 +549,10 @@ impl<'a> Cells<'a> {
         let placement = AgentPlacement::from_machines(&machines, accounts.session_states());
         let agents = agent_cell::cell_order_placed(&placement);
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
+        let full_tree_rows = tiles
+            .iter()
+            .map(|tile| (tile.key(), tile.full_tree_rows()))
+            .collect();
         let account_column = agent_cell::account_column(&agents);
         Self {
             color_mode: ColorMode::Colored,
@@ -561,6 +568,7 @@ impl<'a> Cells<'a> {
             account_column,
             placement,
             tiles,
+            full_tree_rows,
             now,
             footer_colors,
             summary_sort,
@@ -845,6 +853,10 @@ impl TileCells<TileKey> for Cells<'_> {
     }
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn column_order(&self) -> TileColumnOrder<TileKey> {
+        TileColumnOrder::LongestWithShortest(self.full_tree_rows.clone())
+    }
 
     /// Measure each tile at its allocated content width. Account rows choose
     /// their full, two-line or stacked layout from the summary's width.
@@ -2386,6 +2398,9 @@ mod drawn_frame_tests;
 
 #[cfg(test)]
 mod layout_stability_tests;
+
+#[cfg(test)]
+mod ranked_column_tests;
 
 /// Draw the complete frame for census placement tests, including tile titles.
 #[cfg(test)]

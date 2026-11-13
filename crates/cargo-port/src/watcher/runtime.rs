@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver as StdReceiver;
 use std::thread;
@@ -39,6 +41,7 @@ use crate::http::HttpClient;
 use crate::lint::RuntimeHandle;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::GitEventVisibilityCache;
 #[cfg(test)]
 use crate::project::ProjectFields;
 use crate::project::WorkspaceMetadataStore;
@@ -239,18 +242,46 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     })
 }
 
+/// `GitRefreshDemand` records a requested checkout probe until the watcher launches it.
+#[derive(Default)]
+pub struct GitRefreshDemand(AtomicBool);
+
+impl GitRefreshDemand {
+    pub(super) fn request(&self) { self.0.store(true, Ordering::Relaxed); }
+    pub(super) fn take(&self) -> GitRefreshRequest {
+        if self.0.swap(false, Ordering::Relaxed) {
+            GitRefreshRequest::Pending
+        } else {
+            GitRefreshRequest::Absent
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum GitRefreshRequest {
+    Pending,
+    Absent,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static MANIFEST_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Per-project tracking state.
 pub struct ProjectEntry {
-    pub label:          String,
-    pub abs_path:       AbsolutePath,
-    pub repo_root:      Option<AbsolutePath>,
+    pub git_event_visibility: Mutex<GitEventVisibilityCache>,
+    pub git_refresh_demand:   GitRefreshDemand,
+    pub label:                String,
+    pub abs_path:             AbsolutePath,
+    pub repo_root:            Option<AbsolutePath>,
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
-    pub git_dir:        Option<AbsolutePath>,
+    pub git_dir:              Option<AbsolutePath>,
     /// The shared git directory that holds branch refs. For linked worktrees
     /// this points at the primary repo's `.git` directory.
-    pub common_git_dir: Option<AbsolutePath>,
+    pub common_git_dir:       Option<AbsolutePath>,
 }
 
 impl ProjectEntry {
@@ -258,7 +289,11 @@ impl ProjectEntry {
     /// `rm -rf` of a worktree removes `Cargo.toml` early in its
     /// traversal, so this is the cheapest watcher-side signal that the
     /// project is being torn down.
-    pub fn is_alive(&self) -> bool { self.abs_path.join(CARGO_TOML).is_file() }
+    pub fn is_alive(&self) -> bool {
+        #[cfg(test)]
+        MANIFEST_PROBES.with(|probes| probes.set(probes.get() + 1));
+        self.abs_path.join(CARGO_TOML).is_file()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -659,6 +694,10 @@ fn apply_watch_request(
         .and_then(project::resolve_common_git_dir);
     state.discovered.insert(req.abs_path.clone());
     let entry = ProjectEntry {
+        git_event_visibility: std::sync::Mutex::new(
+            crate::project::GitEventVisibilityCache::default(),
+        ),
+        git_refresh_demand: GitRefreshDemand::default(),
         label: req.project_label,
         abs_path: req.abs_path.clone(),
         repo_root: req.repo_root,
@@ -754,6 +793,7 @@ mod tests {
     use crate::watcher::probe;
     use crate::watcher::refresh;
     use crate::watcher::roots::WatchRootRegistrationFailureReason;
+    use crate::watcher::watch_test_support;
 
     const SOURCE_EVENT_LINT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -1239,11 +1279,15 @@ mod tests {
             projects.insert(
                 AbsolutePath::from(path.clone()),
                 ProjectEntry {
-                    label:          path.display().to_string(),
-                    abs_path:       AbsolutePath::from(path.clone()),
-                    repo_root:      None,
-                    git_dir:        None,
-                    common_git_dir: None,
+                    git_event_visibility: std::sync::Mutex::new(
+                        crate::project::GitEventVisibilityCache::default(),
+                    ),
+                    git_refresh_demand:   GitRefreshDemand::default(),
+                    label:                path.display().to_string(),
+                    abs_path:             AbsolutePath::from(path.clone()),
+                    repo_root:            None,
+                    git_dir:              None,
+                    common_git_dir:       None,
                 },
             );
         }
@@ -1785,20 +1829,17 @@ mod tests {
         (
             AbsolutePath::from(abs_path),
             ProjectEntry {
-                label:          project_label.to_string(),
-                abs_path:       AbsolutePath::from(abs_path),
-                repo_root:      None,
-                git_dir:        None,
-                common_git_dir: None,
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                project_label.to_string(),
+                abs_path:             AbsolutePath::from(abs_path),
+                repo_root:            None,
+                git_dir:              None,
+                common_git_dir:       None,
             },
         )
-    }
-
-    fn assert_pending_disk(states: &HashMap<String, WatchState>, project_path: &str) {
-        assert!(matches!(
-            states.get(project_path),
-            Some(WatchState::Pending { .. })
-        ));
     }
 
     fn event_with_path(path: &AbsolutePath) -> Event {
@@ -1837,21 +1878,29 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                label:          "~/my_project".to_string(),
-                abs_path:       AbsolutePath::from(project_dir.clone()),
-                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
-                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
-                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/my_project".to_string(),
+                abs_path:             AbsolutePath::from(project_dir.clone()),
+                repo_root:            Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:              Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir:       Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
         projects.insert(
             AbsolutePath::from(member_dir.clone()),
             ProjectEntry {
-                label:          "~/my_project/crates/member".to_string(),
-                abs_path:       AbsolutePath::from(member_dir.clone()),
-                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
-                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
-                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/my_project/crates/member".to_string(),
+                abs_path:             AbsolutePath::from(member_dir.clone()),
+                repo_root:            Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:              Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir:       Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
 
@@ -1868,6 +1917,32 @@ mod tests {
         )
     }
 
+    fn assert_single_git_probe(
+        messages: &mut Vec<BackgroundMsg>,
+        background_rx: &Receiver<BackgroundMsg>,
+        project_dir: &AbsolutePath,
+    ) {
+        messages.extend(background_rx.try_iter());
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message,
+            BackgroundMsg::RepoInfo { path, .. } if *path == *project_dir))
+                .count(),
+            1,
+            "one event must probe the repository once"
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message,
+            BackgroundMsg::CheckoutInfo { path, .. } if *path == *project_dir))
+                .count(),
+            1,
+            "one event must probe the checkout once"
+        );
+    }
+
     fn assert_repo_git_fast_path(event_rel_path: &str, context: &str) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (project_dir, _, projects, watch_roots, project_parents, discovered) =
@@ -1882,7 +1957,7 @@ mod tests {
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
-        let (git_done_tx, _git_done_rx) = mpsc::channel();
+        let (git_done_tx, git_done_rx) = mpsc::channel();
 
         events::handle_event(
             &project_dir.join(event_rel_path),
@@ -1891,6 +1966,21 @@ mod tests {
             &mut pending_disk,
             &mut pending_git,
             &mut pending_new,
+        );
+
+        let first_messages = background_rx.len();
+        events::handle_event(
+            &project_dir.join(event_rel_path),
+            &event_context,
+            &background_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+        assert_eq!(
+            background_rx.len(),
+            first_messages,
+            "one burst repeated the immediate Git probes"
         );
 
         let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
@@ -1902,11 +1992,15 @@ mod tests {
             &projects,
             &mut pending_git,
         );
-        let messages = collect_messages_until(
+        git_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Git refresh completed");
+        let mut messages = collect_messages_until(
             &background_rx,
             |msg| matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. } if *path == *project_dir),
         );
 
+        assert_single_git_probe(&mut messages, &background_rx, &project_dir);
         let mut got_root_git_info = false;
         for msg in &messages {
             if matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. } if *path == *project_dir)
@@ -1922,6 +2016,36 @@ mod tests {
             "{context}"
         );
         assert!(pending_new.is_empty(), "{context}");
+        let key = AbsolutePath::from(project_dir.join(".git"));
+        refresh::handle_git_completion(&mut pending_git, &key, &WatcherConfig::default());
+        events::handle_event(
+            &project_dir.join(event_rel_path),
+            &event_context,
+            &background_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+        refresh::fire_git_updates(
+            test_support::test_runtime().handle(),
+            &git_limit,
+            &git_done_tx,
+            &background_tx,
+            &projects,
+            &mut pending_git,
+        );
+        git_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("later Git refresh completed");
+        assert_eq!(
+            background_rx
+                .try_iter()
+                .filter(|message| matches!(message,
+            BackgroundMsg::CheckoutInfo { path, .. } if *path == *project_dir))
+                .count(),
+            1,
+            "a later change must refresh the checkout"
+        );
     }
 
     #[allow(
@@ -1963,11 +2087,15 @@ mod tests {
         projects.insert(
             AbsolutePath::from(wt_root.clone()),
             ProjectEntry {
-                label:          "~/main_repo_style_fix".to_string(),
-                abs_path:       AbsolutePath::from(wt_root.clone()),
-                repo_root:      Some(AbsolutePath::from(wt_root.clone())),
-                git_dir:        Some(AbsolutePath::from(wt_git_dir.clone())),
-                common_git_dir: Some(AbsolutePath::from(common_git_dir)),
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/main_repo_style_fix".to_string(),
+                abs_path:             AbsolutePath::from(wt_root.clone()),
+                repo_root:            Some(AbsolutePath::from(wt_root.clone())),
+                git_dir:              Some(AbsolutePath::from(wt_git_dir.clone())),
+                common_git_dir:       Some(AbsolutePath::from(common_git_dir)),
             },
         );
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
@@ -2015,7 +2143,7 @@ mod tests {
             &mut pending_new,
         );
 
-        assert_pending_disk(&pending_disk, "~/rust/bevy");
+        watch_test_support::assert_pending_disk(&pending_disk, "~/rust/bevy");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
@@ -2024,15 +2152,19 @@ mod tests {
     fn tracked_file_edit_and_revert_refresh_git_status() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("demo");
-        write_tracked_file(&project_dir, "fn main() {}\n");
+        watch_test_support::write_tracked_file(&project_dir, "fn main() {}\n");
         test_support::init_git_repo(&project_dir);
 
-        let projects = tracked_file_projects(&project_dir);
+        let projects = watch_test_support::tracked_file_projects(&project_dir);
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
-        let event_context =
-            tracked_file_event_context(&watch_roots, &projects, &project_parents, &discovered);
+        let event_context = watch_test_support::tracked_file_event_context(
+            &watch_roots,
+            &projects,
+            &project_parents,
+            &discovered,
+        );
         let (background_tx, background_rx) = channel::unbounded();
         let (git_done_tx, git_done_rx) = mpsc::channel();
         let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
@@ -2103,7 +2235,10 @@ mod tests {
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        write_tracked_file(&project_dir, "fn main() { println!(\"changed\"); }\n");
+        watch_test_support::write_tracked_file(
+            &project_dir,
+            "fn main() { println!(\"changed\"); }\n",
+        );
         run_refresh(
             &project_dir.join("src").join("main.rs"),
             Modified,
@@ -2112,7 +2247,7 @@ mod tests {
             &mut pending_new,
         );
 
-        write_tracked_file(&project_dir, "fn main() {}\n");
+        watch_test_support::write_tracked_file(&project_dir, "fn main() {}\n");
         run_refresh(
             &project_dir.join("src").join("main.rs"),
             Clean,
@@ -2180,44 +2315,9 @@ mod tests {
         // arriving on `BackgroundMsg::ProjectRefreshed` for the
         // watched root), not the derived target counts.
         assert!(matches!(refreshed, RootItem::Rust(RustProject::Package(_))));
-        assert_pending_disk(&pending_disk, "~/rust/demo");
+        watch_test_support::assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
-    }
-
-    fn tracked_file_event_context<'a>(
-        watch_roots: &'a [AbsolutePath],
-        projects: &'a HashMap<AbsolutePath, ProjectEntry>,
-        project_parents: &'a HashSet<AbsolutePath>,
-        discovered: &'a HashSet<AbsolutePath>,
-    ) -> EventContext<'a> {
-        EventContext {
-            watch_roots,
-            projects,
-            project_parents,
-            discovered,
-        }
-    }
-
-    fn tracked_file_projects(project_dir: &Path) -> HashMap<AbsolutePath, ProjectEntry> {
-        let mut projects = HashMap::new();
-        projects.insert(
-            AbsolutePath::from(project_dir.to_path_buf()),
-            ProjectEntry {
-                label:          "~/demo".to_string(),
-                abs_path:       AbsolutePath::from(project_dir.to_path_buf()),
-                repo_root:      Some(AbsolutePath::from(project_dir.to_path_buf())),
-                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
-                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
-            },
-        );
-        projects
-    }
-
-    fn write_tracked_file(project_dir: &Path, contents: &str) {
-        std::fs::create_dir_all(project_dir.join("src")).expect("create src");
-        std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
-        std::fs::write(project_dir.join("src").join("main.rs"), contents).expect("write main.rs");
     }
 
     #[test]
@@ -2238,11 +2338,15 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                label:          "~/my_project".to_string(),
-                abs_path:       AbsolutePath::from(project_dir.clone()),
-                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
-                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
-                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/my_project".to_string(),
+                abs_path:             AbsolutePath::from(project_dir.clone()),
+                repo_root:            Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:              Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir:       Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
@@ -2259,18 +2363,35 @@ mod tests {
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        events::handle_event(
-            &project_dir.join(".git").join("objects").join("pack.tmp"),
-            &event_context,
-            &background_tx,
-            &mut pending_disk,
-            &mut pending_git,
-            &mut pending_new,
-        );
+        for relative in [
+            ".git/objects/pack.tmp",
+            ".git/index.lock",
+            ".git/refs/heads/main.lock",
+            ".git/logs/HEAD.lock",
+        ] {
+            MANIFEST_PROBES.with(|probes| probes.set(0));
+            events::handle_event(
+                &project_dir.join(relative),
+                &event_context,
+                &background_tx,
+                &mut pending_disk,
+                &mut pending_git,
+                &mut pending_new,
+            );
 
-        assert!(pending_disk.is_empty());
-        assert!(pending_git.is_empty());
-        assert!(pending_new.is_empty());
+            MANIFEST_PROBES.with(|probes| assert_eq!(probes.get(), 0, "{relative}"));
+            assert!(pending_disk.is_empty(), "{relative}");
+            assert!(pending_git.is_empty(), "{relative}");
+            assert!(pending_new.is_empty(), "{relative}");
+            for entry in projects.values() {
+                let classification =
+                    events::classify_project_git_event(&project_dir.join(relative), entry);
+                assert_eq!(
+                    classification.manifest_probes, 0,
+                    "{relative} probed an unrelated manifest"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2453,27 +2574,7 @@ mod tests {
         std::fs::create_dir_all(&wt_root).expect("create worktree root");
         std::fs::write(wt_root.join("Cargo.toml"), b"[package]").expect("write wt Cargo.toml");
 
-        let mut projects = HashMap::new();
-        projects.insert(
-            AbsolutePath::from(main_root.clone()),
-            ProjectEntry {
-                label:          "~/main_repo".to_string(),
-                abs_path:       AbsolutePath::from(main_root.clone()),
-                repo_root:      Some(AbsolutePath::from(main_root)),
-                git_dir:        Some(AbsolutePath::from(common_git_dir.clone())),
-                common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
-            },
-        );
-        projects.insert(
-            AbsolutePath::from(wt_root.clone()),
-            ProjectEntry {
-                label:          "~/main_repo_style_fix".to_string(),
-                abs_path:       AbsolutePath::from(wt_root.clone()),
-                repo_root:      Some(AbsolutePath::from(wt_root)),
-                git_dir:        Some(AbsolutePath::from(wt_git_dir)),
-                common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
-            },
-        );
+        let projects = shared_git_projects(main_root, wt_root, &common_git_dir, wt_git_dir);
 
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
@@ -2522,9 +2623,93 @@ mod tests {
             })
             .count();
         assert_eq!(affected_count, 2, "both projects affected by shared event");
-        // Touch wt_root to assert it's still part of the affected set
-        // even though it doesn't have its own pending_git key.
-        let _ = wt_root;
+        let key = AbsolutePath::from(common_git_dir.as_path());
+        assert_eq!(refresh::requested_git_checkouts(&projects, &key).len(), 2);
+        for (event_path, expected) in [
+            (
+                common_git_dir.join("worktrees/style_fix/index"),
+                vec![tmp.path().join("main_repo_style_fix")],
+            ),
+            (
+                common_git_dir.join("info/exclude"),
+                vec![
+                    tmp.path().join("main_repo"),
+                    tmp.path().join("main_repo_style_fix"),
+                ],
+            ),
+            (
+                branch_ref.clone(),
+                vec![
+                    tmp.path().join("main_repo"),
+                    tmp.path().join("main_repo_style_fix"),
+                ],
+            ),
+        ] {
+            assert_git_refresh_checkouts(
+                &event_context,
+                &background_tx,
+                &event_path,
+                &key,
+                &expected,
+            );
+        }
+    }
+
+    fn shared_git_projects(
+        main_root: PathBuf,
+        wt_root: PathBuf,
+        common_git_dir: &Path,
+        wt_git_dir: PathBuf,
+    ) -> HashMap<AbsolutePath, ProjectEntry> {
+        let mut projects = HashMap::new();
+        projects.insert(
+            AbsolutePath::from(main_root.clone()),
+            ProjectEntry {
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/main_repo".to_string(),
+                abs_path:             AbsolutePath::from(main_root.clone()),
+                repo_root:            Some(AbsolutePath::from(main_root)),
+                git_dir:              Some(AbsolutePath::from(common_git_dir)),
+                common_git_dir:       Some(AbsolutePath::from(common_git_dir)),
+            },
+        );
+        projects.insert(
+            AbsolutePath::from(wt_root.clone()),
+            ProjectEntry {
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                "~/main_repo_style_fix".to_string(),
+                abs_path:             AbsolutePath::from(wt_root.clone()),
+                repo_root:            Some(AbsolutePath::from(wt_root)),
+                git_dir:              Some(AbsolutePath::from(wt_git_dir)),
+                common_git_dir:       Some(AbsolutePath::from(common_git_dir)),
+            },
+        );
+
+        projects
+    }
+
+    fn assert_git_refresh_checkouts(
+        context: &EventContext<'_>,
+        sender: &Sender<BackgroundMsg>,
+        event_path: &Path,
+        key: &AbsolutePath,
+        expected: &[PathBuf],
+    ) {
+        let mut disk = HashMap::new();
+        let mut git = HashMap::new();
+        let mut new = HashMap::new();
+        events::handle_event(event_path, context, sender, &mut disk, &mut git, &mut new);
+        let actual: HashSet<_> = refresh::requested_git_checkouts(context.projects, key)
+            .into_iter()
+            .collect();
+        let expected: HashSet<_> = expected.iter().cloned().map(AbsolutePath::from).collect();
+        assert_eq!(actual, expected, "{}", event_path.display());
     }
 
     #[test]
@@ -2802,7 +2987,7 @@ mod tests {
         }
 
         assert!(saw_passed, "{assertion}");
-        assert_pending_disk(&pending_disk, "~/rust/demo");
+        watch_test_support::assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
@@ -3016,7 +3201,7 @@ mod tests {
             &mut pending_new,
         );
 
-        assert_pending_disk(&pending_disk, "~/existing_project");
+        watch_test_support::assert_pending_disk(&pending_disk, "~/existing_project");
         assert!(pending_new.is_empty());
     }
 
@@ -3209,15 +3394,19 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                label:          label.clone(),
-                abs_path:       AbsolutePath::from(project_dir.clone()),
-                repo_root:      git_metadata
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                label.clone(),
+                abs_path:             AbsolutePath::from(project_dir.clone()),
+                repo_root:            git_metadata
                     .is_tracked()
                     .then(|| AbsolutePath::from(project_dir.clone())),
-                git_dir:        git_metadata
+                git_dir:              git_metadata
                     .is_tracked()
                     .then(|| AbsolutePath::from(project_dir.join(".git"))),
-                common_git_dir: git_metadata
+                common_git_dir:       git_metadata
                     .is_tracked()
                     .then(|| AbsolutePath::from(project_dir.join(".git"))),
             },
@@ -3297,7 +3486,7 @@ mod tests {
 
         refresh::handle_disk_completion(&mut pending, "~/rust/bevy", &WatcherConfig::default());
 
-        assert_pending_disk(&pending, "~/rust/bevy");
+        watch_test_support::assert_pending_disk(&pending, "~/rust/bevy");
     }
 
     #[test]
@@ -3527,11 +3716,15 @@ mod tests {
         projects.insert(
             AbsolutePath::from(linked_dir.clone()),
             ProjectEntry {
-                label:          label.clone(),
-                abs_path:       AbsolutePath::from(linked_dir.clone()),
-                repo_root:      None,
-                git_dir:        None,
-                common_git_dir: None,
+                git_event_visibility: std::sync::Mutex::new(
+                    crate::project::GitEventVisibilityCache::default(),
+                ),
+                git_refresh_demand:   GitRefreshDemand::default(),
+                label:                label.clone(),
+                abs_path:             AbsolutePath::from(linked_dir.clone()),
+                repo_root:            None,
+                git_dir:              None,
+                common_git_dir:       None,
             },
         );
         let watch_roots = vec![AbsolutePath::from(tmp.path())];

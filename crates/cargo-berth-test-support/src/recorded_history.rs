@@ -93,6 +93,9 @@ pub fn relocate_tree(root: &Path, relocations: &[(String, String)]) {
             let Ok(text) = String::from_utf8(bytes) else {
                 continue;
             };
+            if !relocations.iter().any(|(old, _)| text.contains(old)) {
+                continue;
+            }
             let relocated = match path.extension().and_then(|value| value.to_str()) {
                 Some("json") => {
                     let mut value: Value =
@@ -118,7 +121,14 @@ pub fn relocate_tree(root: &Path, relocations: &[(String, String)]) {
                     .fold(text.clone(), |text, (old, new)| text.replace(old, new)),
             };
             if relocated != text {
-                fs::write(path, relocated).expect("relocated history should write");
+                let permissions = fs::metadata(&path)
+                    .expect("history file permissions should read")
+                    .permissions();
+                // A copied executable can share its inode with the fixture cache.
+                fs::remove_file(&path).expect("previous history name should remove");
+                fs::write(&path, relocated).expect("relocated history should write");
+                fs::set_permissions(path, permissions)
+                    .expect("history file permissions should restore");
             }
         }
     }

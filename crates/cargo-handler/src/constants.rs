@@ -188,6 +188,8 @@ pub(crate) const CLAUDE_ROLE: &str = "claude";
 pub(crate) const CODEX_ROLE: &str = "codex";
 /// `[variants.roles]` key for a `busy` status.
 pub(crate) const BUSY_ROLE: &str = "busy";
+/// `[variants.roles]` key for a `waiting` status.
+pub(crate) const WAITING_ROLE: &str = "waiting";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
 /// Role column text for a shell whose program is `sleep`.

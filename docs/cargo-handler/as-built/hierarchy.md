@@ -134,7 +134,7 @@ The existing census compaction detector supplies that state for every session ro
 
 Each account row supplies `sessions: [{session, state}]` beside its `role_counts`.
 The reader merges these lists into one session map.
-`SessionState` accepts `busy`, `idle`, `paused`, and `exited`.
+`SessionState` accepts `busy`, `starting`, `waiting`, `idle`, `paused`, and `exited`.
 The external accounts classifier owns these meanings.
 Rust reads its result without repeating its classification rules.
 Claude rows use their `session_id` string as the lookup key.
@@ -146,6 +146,10 @@ A Codex row without a thread ID shows `idle` with a live process, or `exited` wi
 Conflicting account entries remove only that session status.
 Retained account readings retain their session states after a refresh failure.
 A live shell shows `busy` independently of its countdown.
+A reported `waiting` status uses the `waiting` theme role in every tile.
+The full session heading uses the same ink.
+The theme files supply its bright yellow color for dark and light appearances.
+Other statuses and the hierarchy activity column keep their existing inks.
 
 Age remains a computed sort value.
 Showrunner and unassigned tiles start in session name order.

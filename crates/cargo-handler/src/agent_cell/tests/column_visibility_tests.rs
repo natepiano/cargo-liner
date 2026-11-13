@@ -40,6 +40,63 @@ enum MetadataColumns {
     Neither,
 }
 
+#[test]
+fn waiting_workers_keep_whole_status_and_core_columns_at_phase_three_widths() {
+    let mut root = agent(10, "owner-with-a-long-session-name", HOUR, None);
+    root.account =
+        serde_json::from_value(serde_json::json!({"home":"~/.claude1","label":"claude1"}))
+            .expect("account");
+    let mut worker = child(
+        0,
+        ChildKind::Thread,
+        None,
+        "worker-with-a-long-session-name",
+        MINUTE,
+    );
+    worker.account = root.account.clone();
+    root.children.push(worker);
+    let mut cell = entry(&root, None);
+    cell.lines[0].subject = LineSubject::ManagedThread(
+        &root.children[0],
+        HierarchyRole::Impl,
+        RowIdentity {
+            machine: "natedev",
+            pid:     root.pid,
+        },
+    );
+    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Waiting);
+    for width in [60, 70, 90, 92] {
+        let buffer = drawn_into(&cell, &[], width, 12);
+        let columns = header_spans(&cell, area(width, 12), NOW, AccountColumn::Shown);
+        for column in [
+            TreeColumn::Account,
+            TreeColumn::Role,
+            TreeColumn::Activity,
+            TreeColumn::Status,
+        ] {
+            assert!(
+                columns.iter().any(|span| span.column == column),
+                "width={width}: {:?}",
+                lines(&buffer)
+            );
+        }
+        let (x, y) = find(&buffer, "waiting").expect("the whole status word");
+        assert_eq!(
+            (x..x + 7)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>(),
+            "waiting"
+        );
+        for word in ["claude1", "worker", "impl"] {
+            assert!(
+                lines(&buffer).iter().any(|line| line.contains(word)),
+                "width={width} {word}: {:?}",
+                lines(&buffer)
+            );
+        }
+    }
+}
+
 fn column_rows() -> Vec<AgentRow> {
     let mut owner = agent(10, "owner", HOUR, None);
     owner.children = vec![child(

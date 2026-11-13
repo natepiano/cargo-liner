@@ -46,6 +46,7 @@ impl FinishedHistory {
     ) -> Vec<HistoryWindowChange> {
         let ids = match &event.operation {
             JournalOperation::Release { reservation_id, .. }
+            | JournalOperation::IntegrateAbsentHolder { reservation_id, .. }
             | JournalOperation::ReplaceReleaseDisposition { reservation_id, .. }
             | JournalOperation::Checkpoint { reservation_id, .. }
             | JournalOperation::Resnapshot { reservation_id, .. }
@@ -167,9 +168,20 @@ impl ExpiredHistory {
                 {
                     retained.insert(reservation.id());
                 },
+                Ok(ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                    integration_status,
+                    ..
+                }) if !matches!(
+                    integration_status,
+                    IntegrationEvidenceStatus::Integrated { .. }
+                ) =>
+                {
+                    retained.insert(reservation.id());
+                },
                 Ok(
                     ReservationEvidenceState::Active { .. }
                     | ReservationEvidenceState::Released { .. }
+                    | ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { .. }
                     | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. },
                 ) => {},
             }

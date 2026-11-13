@@ -1,7 +1,7 @@
 # High Contrast — cargo-handler's built-in high-contrast pair, mirrored as
 # TOML.
 #
-# The app reads the Astra role shades from this file.
+# The app reads the Astra and waiting role colors from this file.
 # The Rust constructors supply the other values.
 #
 # Copy this file into ~/.config/cargo-handler/themes/ as a starting point
@@ -57,6 +57,7 @@ astra_reviewer = { r = 166, g = 179, b = 135 }
 mauve          = { r = 188, g = 167, b = 188 }
 reset_farthest = { r = 69, g = 196, b = 153 }
 reset_nearest  = { r = 125, g = 191, b = 110 }
+waiting        = { r = 255, g = 255, b = 0 }
 word_match     = { r = 38, g = 38, b = 38 }
 
 busy   = { color = "LightGreen", bold = true }
@@ -121,6 +122,7 @@ astra_reviewer = { r = 15, g = 43, b = 6 }
 mauve          = { r = 106, g = 60, b = 65 }
 reset_farthest = { r = 82, g = 55, b = 154 }
 reset_nearest  = { r = 115, g = 0, b = 235 }
+waiting        = { r = 122, g = 122, b = 0 }
 word_match     = { r = 240, g = 240, b = 240 }
 
 busy   = { color = { r = 0, g = 100, b = 0 }, bold = true }

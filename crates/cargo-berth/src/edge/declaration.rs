@@ -83,6 +83,7 @@ fn introduces_ordering(operation: &JournalOperation) -> bool {
         | JournalOperation::UnrecordedTargetsPinned { .. }
         | JournalOperation::Renew { .. }
         | JournalOperation::Release { .. }
+        | JournalOperation::IntegrateAbsentHolder { .. }
         | JournalOperation::ReplaceReleaseDisposition { .. }
         | JournalOperation::EvidenceRevalidated { .. }
         | JournalOperation::ScopedPatchEquivalenceChecked { .. }

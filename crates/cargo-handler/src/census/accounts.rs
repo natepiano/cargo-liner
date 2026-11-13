@@ -104,6 +104,7 @@ impl ReportedSessionState {
     pub(crate) const fn color_role(self) -> Role {
         match self {
             Self::Reported(SessionState::Busy | SessionState::Starting) => Role::Busy,
+            Self::Reported(SessionState::Waiting) => Role::Waiting,
             Self::Unavailable | Self::Reported(_) => Role::Idle,
         }
     }

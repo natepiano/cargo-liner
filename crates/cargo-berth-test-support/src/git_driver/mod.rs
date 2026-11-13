@@ -17,6 +17,7 @@ use std::process::Output;
 use crate::CommandDeadlineExt as _;
 use crate::FixtureCommand as Command;
 use crate::constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use crate::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
 
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
@@ -274,7 +275,7 @@ impl GitDriver {
             .collect();
         let mut command = git_command(self.executable);
         if self.optional_locks == OptionalLocks::Refused {
-            command.arg("--no-optional-locks");
+            command.arg(GIT_NO_OPTIONAL_LOCKS_ARG);
         }
         command.args(&arguments).current_dir(repository_root);
         for name in self.cleared_environment {

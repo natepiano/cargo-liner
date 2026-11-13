@@ -1,8 +1,6 @@
 //! Named git command, flag, reference, and status spellings.
 
 // Environment names, values, and inherited read policy.
-#[cfg(not(target_os = "linux"))]
-use std::time::Duration;
 /// Keep internally spawned hooks on this berth executable unless the caller selected another.
 pub(super) const BERTH_EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
@@ -264,39 +262,24 @@ pub(super) const GIT_MERGE_TREE_CONFLICT_EXIT_CODE: i32 = 1;
 pub(super) const GIT_NOT_ANCESTOR_EXIT_CODE: i32 = 1;
 
 // refusal diagnostics and process inspection
+/// Extension of a Git lock file.
+pub(super) const GIT_LOCK_EXTENSION: &str = "lock";
 /// Prefix surrounding the refused path in Git's stable English diagnostic.
 pub(super) const GIT_LOCK_REFUSAL_PREFIX: &str = "Unable to create '";
 /// Suffix identifying an existing lock rather than another write error.
 pub(super) const GIT_LOCK_REFUSAL_SUFFIX: &str = "': File exists";
-/// Extension of a Git lock file.
-pub(super) const GIT_LOCK_EXTENSION: &str = "lock";
-/// Linux process inspection root.
-#[cfg(target_os = "linux")]
-pub(super) const PROCESS_DIRECTORY: &str = "/proc";
 /// Per-process open file descriptors.
 #[cfg(target_os = "linux")]
 pub(super) const PROCESS_DESCRIPTORS_DIRECTORY: &str = "fd";
-/// Process holder inspection on other supported systems.
-#[cfg(not(target_os = "linux"))]
-pub(super) const LSOF_BINARY: &str = "/usr/sbin/lsof";
-/// Combine the lsof file and process selectors.
-#[cfg(not(target_os = "linux"))]
-pub(super) const LSOF_INTERSECT_ARG: &str = "-a";
-/// Select the lsof process ids.
-#[cfg(not(target_os = "linux"))]
-pub(super) const LSOF_PROCESS_SELECTOR_ARG: &str = "-p";
-/// Bound the parent probe to twice its measured 25 ms duration.
-#[cfg(not(target_os = "linux"))]
-pub(super) const LSOF_PARENT_PROBE_DEADLINE: Duration = std::time::Duration::from_millis(50);
-/// Request process ids alone from lsof.
-#[cfg(not(target_os = "linux"))]
-pub(super) const LSOF_PROCESS_IDS_ARG: &str = "-t";
+/// Linux process inspection root.
+#[cfg(target_os = "linux")]
+pub(super) const PROCESS_DIRECTORY: &str = "/proc";
 
-/// Configuration overlay for explicit private-ref writes.
-pub(super) const RETENTION_REF_CONFIG: &[(&str, &str)] = &[("core.hooksPath", "/dev/null")];
 /// Only deferrable maintenance yields immediately when another ref writer holds a lock.
 pub(super) const RETENTION_MAINTENANCE_CONFIG: &[(&str, &str)] = &[
     ("core.hooksPath", "/dev/null"),
     ("core.packedRefsTimeout", "0"),
     ("core.filesRefLockTimeout", "0"),
 ];
+/// Configuration overlay for explicit private-ref writes.
+pub(super) const RETENTION_REF_CONFIG: &[(&str, &str)] = &[("core.hooksPath", "/dev/null")];

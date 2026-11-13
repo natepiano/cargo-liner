@@ -15,6 +15,7 @@ use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::ReferenceLookup;
 use crate::git::RepositorySnapshot;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
@@ -23,6 +24,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
+use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
@@ -49,12 +51,15 @@ use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
+use crate::reservation::AbsentHolderIntegration;
+use crate::reservation::AbsentHolderIntegrationChecks;
 use crate::reservation::IncursionIncident;
 use crate::reservation::IncursionIncidentStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
+use crate::reservation::RecordedWorkHead;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
@@ -107,6 +112,8 @@ pub(crate) enum ReservationRecoveryDecision {
     Rehome(WorktreeRecoveryReason),
     /// Record a verified alternate commit already reachable from the reservation's target.
     IntegratedAs(RewrittenIntegrationTrunkCommit),
+    /// The registry and Git verified an active reservation without a checkpoint.
+    IntegratedAbsentHolder(AbsentHolderIntegration),
     /// Record deliberate user-confirmed abandonment.
     Abandon(AbandonmentReason),
     /// Retire a confirmed orphan while preserving that distinct audit outcome.
@@ -537,7 +544,10 @@ fn recovery_retention_deletions(
     terminal_successor: ReservationId,
     reservations: &RetainedReservationSet,
 ) -> Result<Vec<ReservationId>, RecoveryRejection> {
-    if !matches!(operation, JournalOperation::Release { .. }) {
+    if !matches!(
+        operation,
+        JournalOperation::Release { .. } | JournalOperation::IntegrateAbsentHolder { .. }
+    ) {
         return Ok(Vec::new());
     }
     ordering_graph
@@ -626,11 +636,72 @@ fn validate_recovery_request(
     match git::reachability(repository_root, trunk_commit.as_ref(), &target_oid)
         .map_err(RecoveryRejection::Git)?
     {
-        Reachability::Ancestor => Ok(ReservationRecoveryDecision::IntegratedAs(trunk_commit)),
+        Reachability::Ancestor => {
+            let reservation = reservations
+                .reservation(reservation_id)
+                .map_err(RecoveryRejection::Replay)?;
+            if matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
+                validate_absent_holder_integration(
+                    repository,
+                    reservation,
+                    repository_trunk,
+                    trunk_commit,
+                )
+            } else {
+                Ok(ReservationRecoveryDecision::IntegratedAs(trunk_commit))
+            }
+        },
         Reachability::NotAncestor | Reachability::ObjectUnknown => Err(
             RecoveryRejection::UnreachableIntegrationEvidence(reachability_basis),
         ),
     }
+}
+
+/// Verify absence, a clean recorded work head, and ancestry at the repository trunk.
+fn validate_absent_holder_integration(
+    repository: &RepositorySnapshot,
+    reservation: &Reservation,
+    trunk: &IntegrationTarget,
+    target: RewrittenIntegrationTrunkCommit,
+) -> Result<ReservationRecoveryDecision, RecoveryRejection> {
+    let registry = WorktreeRegistry::read(repository).map_err(RecoveryRejection::Registry)?;
+    let RecordedWorkHead::Clean(work_head) = reservation.recorded_work_head() else {
+        return Err(RecoveryRejection::CheckpointRequired);
+    };
+    let claim_branch_at_target = match reservation.head_snapshot() {
+        ClaimHeadSnapshot::Branch { full_ref, .. } => {
+            match git::reference_lookup(repository.repository_root(), &full_ref.to_string())
+                .map_err(RecoveryRejection::Git)?
+            {
+                ReferenceLookup::Present(branch_tip) => {
+                    git::reachability(repository.repository_root(), &branch_tip, target.as_ref())
+                        .map_err(RecoveryRejection::Git)?
+                },
+                ReferenceLookup::Missing => Reachability::Ancestor,
+            }
+        },
+        ClaimHeadSnapshot::Detached { .. } => Reachability::Ancestor,
+    };
+    let trunk_head = reservation::current_trunk(&repository.object_reader(), trunk.short_name())
+        .map_err(RecoveryRejection::Git)?;
+    let work_head_at_target =
+        git::reachability(repository.repository_root(), work_head, target.as_ref())
+            .map_err(RecoveryRejection::Git)?;
+    let target_at_trunk =
+        git::reachability(repository.repository_root(), target.as_ref(), &trunk_head)
+            .map_err(RecoveryRejection::Git)?;
+    AbsentHolderIntegration::verify(
+        work_head.clone(),
+        target,
+        &AbsentHolderIntegrationChecks {
+            holder_presence: registry.holder_identity_presence(reservation.actor().worktree),
+            work_head_at_target,
+            claim_branch_at_target,
+            target_at_trunk,
+        },
+    )
+    .map(ReservationRecoveryDecision::IntegratedAbsentHolder)
+    .map_err(|_| RecoveryRejection::CheckpointRequired)
 }
 
 fn configured_recovery_trunk(config: &BerthConfig) -> Result<IntegrationTarget, RecoveryError> {
@@ -705,6 +776,17 @@ fn recovery_operation(
             reservation_id,
             &trunk_commit,
         ),
+        ReservationRecoveryDecision::IntegratedAbsentHolder(evidence) => Ok((
+            JournalOperation::IntegrateAbsentHolder {
+                reservation_id,
+                evidence: evidence.clone(),
+            },
+            ResolvePayloadSeed::Released {
+                reservation_id,
+                disposition: ReleaseDisposition::RewrittenIntegration(evidence.target),
+            },
+            PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
+        )),
         ReservationRecoveryDecision::Abandon(reason) => disposition_operation(
             reservation,
             reservation_id,
@@ -756,7 +838,41 @@ fn rewritten_integration_operation(
             },
             protected_tip,
         ),
+        ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+            integration,
+            integration_status,
+        } if !matches!(
+            integration_status,
+            IntegrationEvidenceStatus::Integrated { .. }
+        ) =>
+        {
+            let superseded = ReleaseDisposition::RewrittenIntegration(integration.target);
+            if !matches!(
+                git::reachability(
+                    repository_root,
+                    &integration.work_head,
+                    trunk_commit.as_ref()
+                )
+                .map_err(RecoveryRejection::Git)?,
+                Reachability::Ancestor
+            ) {
+                return Err(RecoveryRejection::CheckpointRequired);
+            }
+            return Ok((
+                JournalOperation::ReplaceReleaseDisposition {
+                    reservation_id,
+                    superseded,
+                    replacement: disposition.clone(),
+                },
+                ResolvePayloadSeed::Released {
+                    reservation_id,
+                    disposition,
+                },
+                PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
+            ));
+        },
         ReservationEvidenceState::Released { .. }
+        | ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { .. }
         | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
             return Err(RecoveryRejection::AlreadyResolved);
         },
@@ -819,15 +935,26 @@ fn retire_orphan_operation(
     ) {
         return disposition_operation(reservation, reservation_id, disposition);
     }
-    match reservation
+    let (superseded, integration_status) = match reservation
         .evidence_state()
         .map_err(RecoveryRejection::Replay)?
     {
         ReservationEvidenceState::Released {
-            disposition: superseded,
+            disposition,
             integration_status,
             ..
-        } if release_evidence_is_lost(&superseded, &integration_status) => Ok((
+        } => (disposition, integration_status),
+        ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+            integration,
+            integration_status,
+        } => (
+            ReleaseDisposition::RewrittenIntegration(integration.target),
+            integration_status,
+        ),
+        _ => return Err(RecoveryRejection::AlreadyResolved),
+    };
+    if release_evidence_is_lost(&superseded, &integration_status) {
+        Ok((
             JournalOperation::ReplaceReleaseDisposition {
                 reservation_id,
                 superseded,
@@ -838,8 +965,9 @@ fn retire_orphan_operation(
                 disposition,
             },
             PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
-        )),
-        _ => Err(RecoveryRejection::AlreadyResolved),
+        ))
+    } else {
+        Err(RecoveryRejection::AlreadyResolved)
     }
 }
 

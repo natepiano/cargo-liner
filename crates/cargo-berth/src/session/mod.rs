@@ -462,6 +462,7 @@ impl SessionMappingChange {
             },
             JournalOperation::Checkpoint { reservation_id, .. }
             | JournalOperation::Release { reservation_id, .. }
+            | JournalOperation::IntegrateAbsentHolder { reservation_id, .. }
             | JournalOperation::MergeExtentObserved {
                 reservation_id,
                 extent: MergeExtent::Empty { .. },

@@ -2048,6 +2048,14 @@ pub(crate) enum AgentTile<'a> {
 }
 
 impl AgentTile<'_> {
+    /// Count the full tree before expansion removes hidden rows.
+    pub(crate) const fn full_tree_rows(&self) -> usize {
+        match self {
+            Self::Agent(entry) => entry.lines.len().saturating_add(1),
+            Self::Unassigned(entry) => entry.lines.len(),
+        }
+    }
+
     /// Stable identity independent of the current sessions in a pool.
     pub(crate) fn key(&self) -> TileKey {
         match self {

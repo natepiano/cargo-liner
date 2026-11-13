@@ -5,6 +5,7 @@ use notify::EventKind;
 use notify::event::ModifyKind;
 use notify::event::RemoveKind;
 
+use super::GitRefreshDemand;
 use super::ProjectEntry;
 use super::WatcherLoopState;
 use crate::channel;
@@ -36,11 +37,15 @@ fn cargo_config_on_discovery_path_still_routes_to_metadata() -> Result<(), Box<d
         0
     );
     let entry = ProjectEntry {
-        label:          project.to_string(),
-        abs_path:       project,
-        repo_root:      None,
-        git_dir:        None,
-        common_git_dir: None,
+        git_event_visibility: std::sync::Mutex::new(
+            crate::project::GitEventVisibilityCache::default(),
+        ),
+        git_refresh_demand:   GitRefreshDemand::default(),
+        label:                project.to_string(),
+        abs_path:             project,
+        repo_root:            None,
+        git_dir:              None,
+        common_git_dir:       None,
     };
     roots::register_project_sources(&mut watcher, &mut registered, &entry);
     assert_eq!(

@@ -596,6 +596,7 @@ pub use tiles::TABLE_CELL;
 pub use tiles::TILE_ROWS_CONTENT_LABEL;
 pub use tiles::TileAction;
 pub use tiles::TileCells;
+pub use tiles::TileColumnOrder;
 pub use tiles::TileContent;
 pub use tiles::TileDemand;
 pub use tiles::TileDemands;
