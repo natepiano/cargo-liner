@@ -105,6 +105,8 @@ mod hook_evidence_templates;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+#[path = "support/integration_parent_reservations.rs"]
+mod integration_parent_reservations;
 #[path = "support/linked_checkout.rs"]
 mod linked_checkout;
 #[path = "support/successor_templates.rs"]
@@ -212,6 +214,8 @@ fn main() {
     let templates: Vec<_> = recorded_populations()
         .into_iter()
         .chain([
+            integration_parent_reservations::PARENT_RESERVATION,
+            integration_parent_reservations::UNRELATED_RESERVATION,
             proof_subject_templates::EQUIVALENT_TARGET,
             proof_subject_templates::DIFFERENT_TARGET,
             gate_fixtures::THREE_COMMIT_REBASE,
