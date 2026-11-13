@@ -1709,11 +1709,23 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 7. The Phase 32 round 1 Mac suite (2026-11-09, `phases/32/repair_summary_round1.txt`) had twelve `shim_registration::installed` tests at 1.458-1.570 s, all finishing together, and one leaky test, `cli_lifecycle::tests::uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`. Phase 32 does not touch these files. Measure them in a loaded Mac full suite. Fix the shared cost at its cause, and stop the process that outlives the leaky test. Do not raise a limit.
 8. `shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group` took 3.349 s in the Phase 59 Mac gate (`phases/59/mac_gate_r3.log`). The four ownership tests took 0.57-0.69 s in the same suite. Measure startup and cleanup apart, then fix the largest cost at its cause. Keep every assertion at `reader_scenario_cases.py:2024-2065`.
 9. The Phase 32i round 3 natedev gate suite (2026-11-11, run `20261111T011717-1578511-7053`) had three reader scenarios over 1 s. Phase 32i does not touch these tests. The source-switch test took 1.088 s. `reader_accepts_live_writer_under_different_locale_and_timezone` took 1.103 s. `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.592 s. Measure both new tests with the item 2 timeline. Fix each cost at its cause.
+10. A natedev cargo-tile full suite on the handler branch (no cargo-tile edits, heavy load; showrunner, 2026-11-13) passed 1292 tests. Nine existing tests took more than 1 s:
+    - `reader_keeps_parent_family_across_its_only_childs_source_switch` — 1.757 s
+    - `reader_excludes_a_live_command_without_sweeping_its_capture` — 1.673 s
+    - `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` — 1.507 s
+    - `darwin_membership_beyond_the_credential_limit_keeps_account_children_running` (`shim_registration/shared_capture.rs`) — 1.313 s
+    - `reader_scenario_sigkill_removes_its_processes_and_folder` — 1.137 s
+    - `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` — 1.103 s
+    - `installing_repairs_a_runner_missing_group_and_other_execution` (`hook.rs`) — 1.071 s
+    - `reader_scenario_timeout_removes_its_processes_and_folder` — 1.066 s
+    - `unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` — 1.013 s
+    Apply item 2 to each, and fix each cost at its cause. A test over 1 s is a defect, also under load.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/installed.rs` — item 7, test module only.
 - `crates/cargo-tile/tests/cli_lifecycle.rs` — item 7, the leaky test.
-- `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
+- `crates/cargo-tile/src/hook.rs` — only `fixture_runner`, the native capture entry's startup and the item 10 test.
+- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 10, the darwin membership test.
 - `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
 - `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — items 6 and 8, the named-shell preparation and the SIGKILL scenario.
@@ -1723,7 +1735,7 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 
 **Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it. Phase 59: a reader scenario runs under an owner process that holds a lifetime pipe (`reader_scenarios.rs:180-222`). A group registers before its session is created, and the owner ends the groups before it removes the folder. Keep this order and the four ownership tests (`reader_scenarios.rs:265-286`).
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s, and no leaky test; lint.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests, of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) and of each item 10 test below 1 s, and no leaky test; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -2620,32 +2632,17 @@ On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed 
 
 **Ruled out:** protecting a trunk-only path restored to HEAD during a pending merge — it was unprotected before this change too, and the merge commit closes the window; protecting fewer paths for octopus merges — keeping every dirty path protects more.
 
-### Phase 60 — The toast first-sentence test fails when a word breaks across rows  · status: todo
+### Phase 60 — The toast first-sentence test fails when a word breaks across rows  · status: done
 
-**Depends on:** Phase 58f (order only; showrunner, 2026-11-11).
+#### As-built
 
-Port Phase 4z (f84dc83d2) changed `an_opening_error_toast_keeps_its_first_sentence_on_one_page` in `crates/tui_pane/src/toasts/render/sentence_tests.rs` to compare `body.join(" ").replace("… ", "") == sentence`. The long-word row needs the replace. But the replace also lets the first sentence pass when one of its words breaks across rows.
-
-#### Work Order
-
-**Goal:** the first-sentence case fails when any word of the sentence breaks across rows; the long-word case keeps its current checks.
-
-**Spec:**
-
-1. Give each case its own expected rows. For the first sentence ("Crate metadata is unavailable until crates.io recovers."), assert each drawn body row equals its expected text, with no `…` replace. A word broken across rows then fails the test.
-2. Keep the long-word case ("abcdefghijklmnopqr.") asserts as they are: the last row is "qr.", and the body has 5 rows.
-3. Keep every other assertion in the test. Change no product code.
-4. Before the change, show that the strict check fails on a body that breaks a word across rows (for example, by a narrower pane in a scratch run). Do not commit that scratch change.
+- `an_opening_error_toast_keeps_its_first_sentence_on_one_page` (`crates/tui_pane/src/toasts/render/sentence_tests.rs`) gives each case its own expected rows and asserts `body == expected` with no `…` replace.
+- The first-sentence case expects "Crate metadata is", "unavailable until" and "crates.io recovers.". A word broken across rows fails the test.
+- The long-word case expects "abcd…" to "qr.". It keeps its rebuilt-text, row-count and last-row checks.
+- A scratch run at an 18-column pane broke "unavailable" across rows, and the strict check failed. The scratch change is not in the commit. No product code changed.
 
 **Files:**
-
-- `crates/tui_pane/src/toasts/render/sentence_tests.rs`
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect.
-
-**Acceptance gate:** `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; the test runs under 1 s.
+- `crates/tui_pane/src/toasts/render/sentence_tests.rs` — the expected rows for each case
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
@@ -3431,6 +3428,99 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - After the change, on each machine: sorted by start `timestamp`, both priority-100 readers (source-switch and SIGKILL) run one at a time before the priority-90 group, in either order, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
+
+### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: todo
+
+**Depends on:** Phase 37 (order only; the showrunner queued it after the queued phases, 2026-11-12).
+
+On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests as LEAK. A LEAK test leaves a child process or an open pipe after it ends. Phase 53 fixed one leak in the second test on 2026-11-05; the leak is back. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261112T015550-3381833-1e2c.log`, lines 54-55.
+
+#### Work Order
+
+**Goal:** nextest reports PASS, not LEAK, for both tests.
+
+**Spec:**
+
+1. Find each child process and pipe that these tests leave open after they return:
+   - `tests::all_accounts_status_refuses_non_root_with_sudo_instruction` (0.254 s)
+   - `tests::install_prints_a_completed_toolchain_before_a_later_lock_finishes` (0.266 s)
+2. Make each test wait for or stop every child it starts, on a pass and on a failed assertion. A process cleans up like a tempdir: a guard ends it when the scope ends.
+3. Close each pipe end the test holds before the test returns.
+4. Keep every assertion as it is. Do not raise the nextest leak timeout.
+
+**Files:**
+- `crates/cargo-tile/tests/cli_lifecycle.rs`
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. An intermittent leak is a defect.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
+- `verify.sh test cargo-tile --mac` reports neither test as LEAK.
+
+### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: todo
+
+**Depends on:** Phase 61 (order only).
+
+Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside its uptime on the status line. The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
+
+#### Work Order
+
+**Goal:** the status line of cargo-tile, cargo-port and cargo-handler shows the app's own disk reads per second after CPU, for example `Uptime: 12s CPU: 3.1% Reads/s: 64 KB`. Port's Phase 7 fixes an idle cargo-port that read about 70 MB/s from disk; this value shows that kind of fault at once (showrunner, 2026-11-12).
+
+**Spec:**
+
+1. Read the current process's own bytes read from storage through sysinfo, which `tui_pane` already uses: `Process::disk_usage().total_read_bytes` after a refresh of this process alone (`ProcessesToUpdate::Some(&[own pid])`, `ProcessRefreshKind::nothing().with_disk_usage()`). sysinfo 0.39.6 reads `/proc/<pid>/io` on Linux and `proc_pid_rusage` (`ri_diskio_bytesread`) on macOS, so one path serves both platforms. Add no per-platform reader and no `unsafe` code (showrunner, 2026-11-12). Start no subprocess. The read runs on the same once-a-second status tick as the CPU sample, so the value changes once each second, as CPU does.
+2. Sample it the same way as `CpuSampler` (`crates/tui_pane/src/bar/cpu.rs`): the rate is the byte change over the wall time between two samples. Before two samples, and when a read fails, show `—`. Share one sampling shape with CPU; make no second copy of the sample logic.
+3. Draw `Reads/s: <value>` after the CPU value in `crates/tui_pane/src/bar/status_line.rs`, with the same label and value styles. The value is a short byte rate in decimal units: `0 B`, `512 B`, `12 KB`, `3.4 MB`, `70 MB` (one decimal below 10, none at 10 or more, the CPU label's rule). The label `Reads/s` carries the per-second unit.
+4. The status-line gap tests keep their behavior at narrow widths: the new segment drops or shortens by the same rules as the CPU segment.
+
+**Tests:** a table row per rate in the sampler test (pending, zero, KB and MB values); a label table like `the_process_cpu_label_formats_pending_and_both_precisions`; a status-line row that shows the segment after `CPU:`.
+
+**Files:**
+- `crates/tui_pane/src/bar/cpu.rs` (or a sibling `disk_reads.rs` that shares its sample shape)
+- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/constants.rs`
+- `crates/tui_pane/src/framework/mod.rs` (the sampler on the status tick)
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. CPU work ranks first: the new read adds no subprocess, and each status tick refreshes only this process, with only disk usage.
+
+**Acceptance gate:**
+- `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
+- Change-Review: the cargo-tile, cargo-port and cargo-handler status lines show `Reads/s:` with the app's own disk read rate after `CPU:`, and the value changes once each second.
+
+### Phase 63 — Two shim mode tests pass under load  · status: todo
+
+**Depends on:** none (showrunner, 2026-11-13).
+
+On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits), two `cargo-tile` tests failed beside two other package suites. Each passes alone. Both fail in `assert_mode` (`crates/cargo-tile/tests/shim_modes.rs:604`) with "read observed artifact mode: NotFound".
+
+#### Work Order
+
+**Goal:** both tests pass in a full package run under load, with every current assertion.
+
+**Spec:**
+
+1. Find which path `assert_mode` reads when each test fails:
+   - `caller_descriptors_reach_captured_cargo` (`shim_modes.rs:925`)
+   - `unset_home_does_not_abort_either_capture_path` (`shim_modes.rs:1197`)
+2. Find the cause before a change. The test can read the artifact before the shim or the fake cargo writes it. The shim or the test can also use a time limit. Quote the line that makes the artifact.
+3. Make the test read the artifact only after the process that writes it ends or signals that it is written. Do not add a retry, a sleep or a longer wait.
+4. If the cause is in the shim, fix it in the shim.
+5. Keep every assertion as it is.
+6. Show the failure before the change: run both tests under load until one fails, or force the order that the cause names.
+
+**Files:**
+- `crates/cargo-tile/tests/shim_modes.rs`
+- `crates/cargo-tile/src/` — the shim capture paths, only if item 4 applies
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. A test that fails under load is a defect.
+
+**Acceptance gate:** `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Both tests run under 1 s.
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
