@@ -33,6 +33,7 @@ use super::roots::RegisteredRoots;
 use super::roots::Subscription;
 use super::roots::WatchedFolderRole;
 use super::runtime;
+use super::runtime::GitRefreshDemand;
 use super::runtime::ProjectEntry;
 use super::runtime::WatcherLoopState;
 use super::runtime::WatcherRegistrationPhase;
@@ -94,11 +95,15 @@ fn workspace(path: &Path) -> AbsolutePath {
 
 fn project_entry(path: AbsolutePath) -> ProjectEntry {
     ProjectEntry {
-        label:          path.display().to_string(),
-        abs_path:       path,
-        repo_root:      None,
-        git_dir:        None,
-        common_git_dir: None,
+        git_event_visibility: std::sync::Mutex::new(
+            crate::project::GitEventVisibilityCache::default(),
+        ),
+        git_refresh_demand:   GitRefreshDemand::default(),
+        label:                path.display().to_string(),
+        abs_path:             path,
+        repo_root:            None,
+        git_dir:              None,
+        common_git_dir:       None,
     }
 }
 

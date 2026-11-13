@@ -256,7 +256,7 @@ pub(crate) fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, Dir
     background_workers::measure_files(|| measure_dir_sizes_for_tree(tree))
 }
 
-/// `DiskSizeAggregation` combines file measurements for the walker and `DiskUsageIndex`.
+/// `DiskSizeAggregation` combines measurements from the full disk walk.
 pub(super) struct DiskSizeAggregation<'tree> {
     tree:   &'tree DiskUsageTree,
     totals: HashMap<AbsolutePath, DirSizes>,

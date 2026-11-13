@@ -206,7 +206,7 @@ When the `pub_use_outside_subtree` fix removes a re-export, a caller that reache
 
 **Ruled out:** a timed fallback walk.
 
-### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: todo
+### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: done
 
 **Depends on:** Phase 7 (event-only disk updates). Runs in Phase 7's worktree after the Phase 7 checkpoint.
 
