@@ -1,6 +1,8 @@
 //! Handler theme files require their own five-entry session palette.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use serde::Deserialize;
@@ -18,6 +20,36 @@ use tui_pane::ThemeVariant;
 use tui_pane::ThemeVariantFile;
 
 use super::SessionHue;
+use crate::constants::WAITING_ROLE;
+
+/// `bundled_role_styles` returns the `StyleSpec` maps from the `STYLES` cache.
+/// The cache groups bundled role styles by theme name.
+pub(super) fn bundled_role_styles() -> &'static BTreeMap<String, BTreeMap<String, StyleSpec>> {
+    static STYLES: LazyLock<BTreeMap<String, BTreeMap<String, StyleSpec>>> = LazyLock::new(|| {
+        [
+            include_str!("../../themes/default_dark.toml"),
+            include_str!("../../themes/default_light.toml"),
+            include_str!("../../themes/high_contrast.toml"),
+        ]
+        .into_iter()
+        .filter_map(|text| parse_family(text).ok())
+        .flat_map(|family| family.variants)
+        .map(|variant| {
+            (
+                variant.name,
+                variant
+                    .roles
+                    .into_iter()
+                    .filter(|(key, _)| {
+                        matches!(key.as_str(), "mauve" | "astra_reviewer" | WAITING_ROLE)
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+    });
+    &STYLES
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

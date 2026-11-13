@@ -519,15 +519,24 @@ impl TerminalApp for App {
             self.details_overlay.scroll(direction);
             return;
         }
+        if self.favorites_overlay.is_open() {
+            self.favorites_overlay.scroll(position, direction);
+            return;
+        }
         tui_pane::handle_tile_scroll(self, position, direction);
     }
 
     fn click(&mut self, position: Position) {
+        self.invalidate_body();
         if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            self.details_overlay.click(position);
+            return;
+        }
+        if self.favorites_overlay.is_open() {
+            self.favorites_overlay.click(position);
             return;
         }
         tui_pane::handle_tile_click(self, position);
-        self.invalidate_body();
     }
 
     /// Settling the window costs several round trips to the window

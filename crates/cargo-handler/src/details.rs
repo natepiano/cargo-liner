@@ -1,11 +1,16 @@
 //! `RowDetails` retains the values of one selected row.
 //! `DetailsOverlay` selects value lines within four sections.
 
+use std::collections::BTreeMap;
+
 use crossterm::event::KeyCode;
 use ratatui::Frame;
+use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::Bindings;
 use tui_pane::ClipboardBackend;
@@ -22,6 +27,7 @@ use tui_pane::ScrollDirection;
 use tui_pane::Shortcuts;
 use tui_pane::SystemClipboard;
 use tui_pane::TabStop;
+use tui_pane::Viewport;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -31,6 +37,7 @@ use crate::app::AppPaneId;
 use crate::census;
 use crate::census::AgentPlacement;
 use crate::constants::ROW_DETAILS_TITLE;
+use crate::interaction::RowSpan;
 use crate::interaction::SelectableSurface;
 use crate::interaction::SurfaceSelection;
 use crate::interaction::TileSelection;
@@ -40,7 +47,6 @@ use crate::render;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DetailProperty {
     Account,
-    Family,
     Model,
     Effort,
     Type,
@@ -55,7 +61,6 @@ pub(crate) enum DetailProperty {
     Pid,
     Activity,
     Status,
-    State,
     Age,
 }
 
@@ -63,7 +68,6 @@ impl DetailProperty {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Account => "account",
-            Self::Family => "family",
             Self::Model => "model",
             Self::Effort => "effort",
             Self::Type => "type",
@@ -78,17 +82,16 @@ impl DetailProperty {
             Self::Pid => "pid",
             Self::Activity => "activity",
             Self::Status => "status",
-            Self::State => "state",
             Self::Age => "age",
         }
     }
 
     const fn section(self) -> &'static str {
         match self {
-            Self::Account | Self::Family | Self::Model | Self::Effort | Self::Type => "agent",
+            Self::Account | Self::Model | Self::Effort | Self::Type => "agent",
             Self::Showrunner | Self::Unit | Self::Worker | Self::Name | Self::Role => "hierarchy",
             Self::Directory | Self::Branch | Self::Desktop | Self::Pid => "location",
-            Self::Activity | Self::Status | Self::State | Self::Age => "now",
+            Self::Activity | Self::Status | Self::Age => "now",
         }
     }
 }
@@ -96,7 +99,8 @@ impl DetailProperty {
 /// The details snapshot always includes an effort value.
 #[derive(Clone, Debug)]
 pub(crate) struct RowDetails {
-    pub(crate) properties: Vec<(DetailProperty, String)>,
+    pub(crate) properties:  Vec<(DetailProperty, String)>,
+    pub(crate) value_lines: BTreeMap<DetailProperty, Line<'static>>,
 }
 
 impl RowDetails {
@@ -129,6 +133,33 @@ impl RowDetails {
         self.label_width() + values + 6
     }
 
+    /// Keep each source span's ink when a value wraps.
+    fn value_spans(
+        &self,
+        property: DetailProperty,
+        text: &str,
+        offset: usize,
+    ) -> Vec<Span<'static>> {
+        let Some(line) = self.value_lines.get(&property) else {
+            return vec![Span::raw(text.to_owned())];
+        };
+        let mut spans = Vec::new();
+        let mut consumed = 0;
+        for span in &line.spans {
+            let span_start = consumed;
+            consumed += span.content.len();
+            let start = offset.max(span_start);
+            let end = (offset + text.len()).min(consumed);
+            if start < end {
+                spans.push(Span::styled(
+                    span.content[start - span_start..end - span_start].to_owned(),
+                    line.style.patch(span.style),
+                ));
+            }
+        }
+        spans
+    }
+
     fn lines(&self, width: u16, selected: usize, color_mode: ColorMode) -> DetailLines {
         let labels = self.label_width();
         let value_start = labels + 3;
@@ -137,6 +168,7 @@ impl RowDetails {
         let mut section = "";
         let mut selected_start = 0;
         let mut value_heights = Vec::new();
+        let mut rows = Vec::new();
         for (index, (property, value)) in self.properties.iter().enumerate() {
             if property.section() != section {
                 if !lines.is_empty() {
@@ -151,18 +183,25 @@ impl RowDetails {
                 ));
             }
             let start = lines.len();
+            let mut value_offset = 0;
             for (part, text) in wrap_value(value, value_width).into_iter().enumerate() {
-                let text = if part == 0 {
+                let prefix = if part == 0 {
                     format!(
-                        " {}:{}{} ",
+                        " {}:{}",
                         property.label(),
                         " ".repeat(labels - property.label().len() + 1),
-                        text
                     )
                 } else {
-                    format!("{}{text} ", " ".repeat(value_start))
+                    " ".repeat(value_start)
                 };
-                let line = Line::from(text);
+                let mut spans = vec![Span::raw(prefix)];
+                spans.extend(self.value_spans(*property, &text, value_offset));
+                spans.push(Span::raw(" "));
+                value_offset += text.len();
+                if value[value_offset..].starts_with('\n') {
+                    value_offset += 1;
+                }
+                let line = Line::from(spans);
                 lines.push(if index == selected {
                     line.style(tui_pane::selection_style(
                         PaneFocusState::Active,
@@ -176,11 +215,13 @@ impl RowDetails {
                 selected_start = start;
             }
             value_heights.push(lines.len() - start);
+            rows.push(RowSpan::single(start).with_continuations(lines.len() - start - 1));
         }
         DetailLines {
             lines,
             selected_start,
             value_heights,
+            rows,
         }
     }
 }
@@ -190,6 +231,7 @@ struct DetailLines {
     lines:          Vec<Line<'static>>,
     selected_start: usize,
     value_heights:  Vec<usize>,
+    rows:           Vec<RowSpan>,
 }
 
 /// Open the selected row without changing the underlying focus.
@@ -209,9 +251,12 @@ pub(crate) fn open_selected(app: &mut App) {
         .census
         .machines(&app.loaded_config.config.machines.remote);
     let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
-    if let RowDetailsLookup::Found(details) =
-        agent_cell::row_details(&placement, &selected, census::unix_now())
-    {
+    if let RowDetailsLookup::Found(details) = agent_cell::row_details_with_inks(
+        &placement,
+        &selected,
+        census::unix_now(),
+        app.footer_colors.colors(),
+    ) {
         app.details_overlay.open(details);
     }
 }
@@ -250,7 +295,8 @@ pub(crate) enum DetailsOverlay {
         selected:      usize,
         wrapped_row:   usize,
         value_heights: Vec<usize>,
-        offset:        u16,
+        viewport:      Viewport,
+        painted_rows:  Vec<RowSpan>,
     },
 }
 
@@ -262,8 +308,34 @@ impl DetailsOverlay {
             selected: 0,
             wrapped_row: 0,
             value_heights,
-            offset: 0,
+            viewport: Viewport::new(),
+            painted_rows: Vec::new(),
         };
+    }
+
+    /// Select a value through the last rendered viewport.
+    pub(crate) fn click(&mut self, position: Position) {
+        let Self::Open {
+            selected,
+            wrapped_row,
+            viewport,
+            painted_rows,
+            ..
+        } = self
+        else {
+            return;
+        };
+        let Some(line) = tui_pane::table_row_at(viewport, position) else {
+            return;
+        };
+        if let Some((index, span)) = painted_rows
+            .iter()
+            .enumerate()
+            .find(|(_, span)| span.start() <= line && line < span.end())
+        {
+            *selected = index;
+            *wrapped_row = line - span.start();
+        }
     }
 
     pub(crate) fn scroll(&mut self, direction: ScrollDirection) {
@@ -294,12 +366,22 @@ impl DetailsOverlay {
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, color_mode: ColorMode) {
+        self.render_for_focus(frame, color_mode, PaneFocusState::Active);
+    }
+
+    pub(crate) fn render_for_focus(
+        &mut self,
+        frame: &mut Frame,
+        color_mode: ColorMode,
+        focus: PaneFocusState,
+    ) {
         let Self::Open {
             details,
             selected,
             wrapped_row,
             value_heights,
-            offset,
+            viewport,
+            painted_rows,
         } = self
         else {
             return;
@@ -307,28 +389,68 @@ impl DetailsOverlay {
         let width = u16::try_from(details.width())
             .unwrap_or(u16::MAX)
             .min(frame.area().width);
-        let rendered = details.lines(width.saturating_sub(2), *selected, color_mode);
-        let area = PopupFrame {
+        let mut rendered = details.lines(width.saturating_sub(2), *selected, color_mode);
+        let selection_style = tui_pane::selection_style(focus, color_mode);
+        for line in rendered
+            .lines
+            .iter_mut()
+            .skip(rendered.selected_start)
+            .take(rendered.value_heights[*selected])
+        {
+            line.style = selection_style;
+        }
+        let popup = PopupFrame {
             color_mode,
             title: Some(ROW_DETAILS_TITLE.to_owned()),
             border_color: tui_pane::title_color(),
             width,
             height: u16::try_from(rendered.lines.len().saturating_add(2)).unwrap_or(u16::MAX),
         }
-        .render(frame);
+        .render_with_areas(frame);
+        let area = popup.inner;
         *value_heights = rendered.value_heights;
         *wrapped_row = (*wrapped_row).min(value_heights[*selected].saturating_sub(1));
         let cursor =
             u16::try_from(rendered.selected_start.saturating_add(*wrapped_row)).unwrap_or(u16::MAX);
-        *offset = (*offset)
+        let offset = u16::try_from(viewport.scroll_offset())
+            .unwrap_or(u16::MAX)
             .min(cursor)
             .max(cursor.saturating_add(1).saturating_sub(area.height));
+        viewport.set_len(rendered.lines.len());
+        // The top border is the header for the shared table hit test.
+        viewport.set_content_area(Rect::new(
+            area.x,
+            popup.outer.y,
+            area.width,
+            area.height.saturating_add(1),
+        ));
+        viewport.set_viewport_rows(usize::from(area.height));
+        viewport.set_scroll_offset(usize::from(offset));
+        *painted_rows = rendered.rows;
         let paragraph = Paragraph::new(rendered.lines).style(
             Style::default()
                 .fg(tui_pane::text_default())
                 .bg(tui_pane::pane_background(true)),
         );
-        frame.render_widget(paragraph.scroll((*offset, 0)), area);
+        frame.render_widget(paragraph.scroll((offset, 0)), area);
+        let selected_end = u16::try_from(
+            rendered
+                .selected_start
+                .saturating_add(value_heights[*selected]),
+        )
+        .unwrap_or(u16::MAX);
+        let visible_start = u16::try_from(rendered.selected_start)
+            .unwrap_or(u16::MAX)
+            .max(offset);
+        let visible_end = selected_end.min(offset.saturating_add(area.height));
+        let selected_area = Rect::new(
+            area.x,
+            area.y.saturating_add(visible_start.saturating_sub(offset)),
+            area.width,
+            visible_end.saturating_sub(visible_start),
+        )
+        .intersection(area);
+        render::apply_row_selection(frame.buffer_mut(), selected_area, selection_style);
     }
 }
 

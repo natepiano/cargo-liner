@@ -75,7 +75,7 @@ fn column(buffer: &Buffer, header: &str, next: &str, name: &str) -> String {
 fn subagent_rows_show_reading_and_idle_in_the_status_column() {
     for (activity, expected) in [
         (AgentActivity::Active(Activity::Reading), "reading"),
-        (AgentActivity::Idle, "idle"),
+        (AgentActivity::Idle, MISSING_VALUE),
     ] {
         let root = AgentRow {
             account: account("claude1"),
@@ -93,7 +93,7 @@ fn subagent_rows_show_reading_and_idle_in_the_status_column() {
         };
         let cell = entry(&root, None);
         assert_eq!(
-            detail_value(&cell, "Inspect source files", "state", NOW),
+            detail_value(&cell, "Inspect source files", "activity", NOW),
             expected
         );
         assert_eq!(

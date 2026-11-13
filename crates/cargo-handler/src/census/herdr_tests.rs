@@ -7,13 +7,22 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mpsc::Sender;
+use ratatui::buffer::Cell;
 use tempfile::TempDir;
 use thread::JoinHandle;
 
 use super::*;
+use crate::census::CensusFacts;
+use crate::census::CensusUpdate;
+use crate::census::HierarchyNotice;
+use crate::census::HierarchySnapshot;
+use crate::census::Observed;
+use crate::census::WorkerFacts;
 use crate::census::account::ConfigHome;
+use crate::census::accounts::AccountsTable;
 use crate::census::codex::CodexThread;
 use crate::census::codex_names::SessionName;
+use crate::census::scan::ScanStage;
 use crate::config::Config;
 
 fn process(pid: u32, parent: u32, started: u64, name: &str) -> ProcessEntry {
@@ -227,6 +236,7 @@ fn a_scan_uses_cached_names_without_waiting_for_the_api() {
     let generation = names.generation;
     answers
         .send(NameAnswer {
+            panes: HashMap::new(),
             work: HashMap::new(),
             generation,
             names: vec![(
@@ -308,6 +318,7 @@ fn the_initial_probe_uses_the_background_answer() {
     let generation = names.generation;
     answers
         .send(NameAnswer {
+            panes: HashMap::new(),
             work: HashMap::new(),
             generation,
             names: vec![(
@@ -601,6 +612,7 @@ impl ProbeAnswers {
     fn answer(&self, generation: u64, label: &str) {
         self.answers
             .send(NameAnswer {
+                panes: HashMap::new(),
                 work: HashMap::new(),
                 generation,
                 names: vec![(
@@ -706,6 +718,7 @@ fn an_absent_herdr_answer_ends_the_probe_wait_immediately() {
     probe
         .answers
         .send(NameAnswer {
+            panes:      HashMap::new(),
             work:       HashMap::new(),
             generation: probe.names.generation,
             names:      Vec::new(),
@@ -816,13 +829,53 @@ fn raw_pane_states_apply_to_proven_and_nested_codex_processes() {
         }),
     );
     let mut reader = HerdrReader::default();
-    for (raw, expected) in [
-        (json!("working"), PaneWork::Busy),
-        (json!("idle"), PaneWork::Idle),
-        (json!("done"), PaneWork::Idle),
-        (json!("future-state"), PaneWork::Unknown),
-        (Value::Null, PaneWork::Unknown),
-        (json!({"future":"shape"}), PaneWork::Unknown),
+    let mut status_paint = Vec::new();
+    for (raw, expected, observed) in [
+        (
+            json!("working"),
+            PaneWork::Busy,
+            Observed::Known(PaneState::Open),
+        ),
+        (
+            json!("idle"),
+            PaneWork::Idle,
+            Observed::Known(PaneState::Open),
+        ),
+        (
+            json!("done"),
+            PaneWork::Idle,
+            Observed::Known(PaneState::Open),
+        ),
+        (
+            json!("stopped"),
+            PaneWork::Busy,
+            Observed::Known(PaneState::Stopped),
+        ),
+        (
+            json!("exited"),
+            PaneWork::Busy,
+            Observed::Known(PaneState::Closed),
+        ),
+        (
+            json!("dead"),
+            PaneWork::Busy,
+            Observed::Known(PaneState::Closed),
+        ),
+        (
+            json!("future-state"),
+            PaneWork::Unknown,
+            crate::census::Observed::unknown("unrecognized pane state: future-state"),
+        ),
+        (
+            Value::Null,
+            PaneWork::Unknown,
+            crate::census::Observed::unknown("pane state is not reported"),
+        ),
+        (
+            json!({"future":"shape"}),
+            PaneWork::Unknown,
+            crate::census::Observed::unknown("pane state is not reported"),
+        ),
     ] {
         let mut snapshots = 0;
         reader.refresh_from(&processes, &mut links, &sockets, |path, method, params| {
@@ -835,6 +888,16 @@ fn raw_pane_states_apply_to_proven_and_nested_codex_processes() {
         });
         assert_eq!(snapshots, 1, "names and state share one snapshot");
         assert_eq!(reader.work.get(&(2, 20)), Some(&expected));
+        assert_eq!(reader.panes.get(&(2, 20)), Some(&observed));
+        let painted = drawn_accounts_status(observed).expect("drawn waiting status");
+        if status_paint.is_empty() {
+            status_paint = painted;
+        } else {
+            assert_eq!(
+                painted, status_paint,
+                "pane lifecycle cannot change status text or ink"
+            );
+        }
         assert_eq!(name(&links[&2]), "proven thread");
     }
     reader.refresh_from(&processes, &mut links, &sockets, |_, _, _| Err(()));
@@ -845,11 +908,100 @@ fn raw_pane_states_apply_to_proven_and_nested_codex_processes() {
 }
 
 #[test]
+fn claude_pane_records_only_its_pane_state() {
+    let (mut processes, mut links, sockets) = fixture();
+    processes[1] = process(2, 1, 20, "claude");
+    links.clear();
+    let mut reader = HerdrReader::default();
+    reader.refresh_from(&processes, &mut links, &sockets, |path, method, params| {
+        let mut value = answer(path, method, params)?;
+        if method == "session.snapshot" {
+            value["snapshot"]["panes"][0]["agent_status"] = json!("working");
+        }
+        Ok(value)
+    });
+    assert_eq!(
+        reader.work.get(&(2, 20)),
+        None,
+        "a Claude tile keeps its status source"
+    );
+    assert_eq!(
+        reader.panes.get(&(2, 20)),
+        Some(&Observed::Known(PaneState::Open))
+    );
+    assert!(links.is_empty(), "a Claude pane names no Codex session");
+}
+
+fn drawn_accounts_status(pane: Observed<PaneState>) -> Result<Vec<Cell>, &'static str> {
+    use tui_pane::TerminalApp;
+    let mut app = crate::app::App::new_for_test().expect("isolated app");
+    let rows = serde_json::from_value(json!([{
+        "agent":"claude","session_id":"pane-worker","name":"pane-worker",
+        "started":100,"pid":2,"directory":"/fixture","children":[]
+    }]))
+    .expect("pane worker row");
+    let facts = WorkerFacts {
+        pane,
+        ..crate::census::WorkerFacts::older_probe()
+    };
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: HierarchySnapshot {
+            edges:  crate::census::HierarchyEdges::default(),
+            notice: HierarchyNotice::Clear,
+            facts:  CensusFacts {
+                workers: Observed::Known(std::collections::BTreeMap::from([(
+                    "pane-worker".into(),
+                    facts,
+                )])),
+                ..crate::census::CensusFacts::default()
+            }
+            .into(),
+        },
+        stage: ScanStage::Completed,
+    });
+    app.accounts.table = AccountsTable::Ready(
+        crate::census::accounts::AccountsReading::parse(
+            &serde_json::to_vec(&json!({
+                "accounts":[{"label":"fixture","roles":[],"use_credits":false,
+                    "sessions":[{"session":"pane-worker","state":"waiting"}]}],"problems":[]
+            }))
+            .expect("accounts JSON"),
+        )
+        .expect("accounts reading"),
+    );
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).expect("test terminal");
+    let keymap = app.keymap();
+    terminal
+        .draw(|frame| app.draw(frame, &keymap))
+        .expect("first frame");
+    app.tiles.settle_for_test();
+    terminal
+        .draw(|frame| app.draw(frame, &keymap))
+        .expect("settled frame");
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if line.contains("pane-worker")
+            && let Some(offset) = line.find("waiting")
+        {
+            let x = u16::try_from(line[..offset].chars().count()).expect("status column");
+            return Ok((x..x + 7).map(|x| buffer[(x, y)].clone()).collect());
+        }
+    }
+    Err("waiting status must draw")
+}
+
+#[test]
 fn a_completed_snapshot_delivers_work_with_the_same_generation() {
     let mut probe = ProbeAnswers::new();
     probe
         .answers
         .send(NameAnswer {
+            panes:      HashMap::new(),
             generation: probe.names.generation,
             names:      Vec::new(),
             work:       HashMap::from([((2, 20), PaneWork::Busy)]),

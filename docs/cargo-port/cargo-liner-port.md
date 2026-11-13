@@ -181,38 +181,34 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** a timed fallback walk.
 
-### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: todo
+### Phase 8 — an idle cargo-port reads from disk only for changes it shows  · status: done
 
-**Depends on:** Phase 7 (event-only disk updates). Runs in its own worktree `/home/natepiano/rust/cargo-liner-port-8`, branch `port-phase-8`, from main at `b1d063fae`.
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-port reads almost nothing from disk.
-
-**Source:** Phase 7 live run, 2026-11-12. With event-only disk updates, a 10-minute idle run on natedev read 935,518,208 bytes at load 29-297. The logs show 195 Git refreshes and 189 disk updates, and no idle source scan. The reads are not fully attributed. The old binary read 2,311,979,008 bytes in 5 minutes.
-
-**Constraints from prior phases:**
-- Phase 7 (checkpoint 5696fd2cd) removed the timed full walks. `DiskUsageTracker` in `scan/disk_measurements.rs` keeps each changed path (`record_change`), and `refresh` measures only those paths. `request_rescan` is the one full walk, for a path-less `Flag::Rescan` event.
-- `DiskUsageMeasurements` shares one tracker across nested projects. `DiskUpdateInputs` in `watcher/refresh.rs` groups requests by tracker and publishes every project entry that the tracker returns.
-- `record_project_disk_change` in `watcher/events.rs` takes a dispatch reference and a `ProjectDiskChange`. `schedule_disk_refresh` in `watcher/refresh.rs` is the explicit refresh path.
-- Disk update traces carry `visited_entries` and `identity_entries_examined`. Use them for the per-update cost in the attribution.
-- Keep these tests green: `grouped_deletion_checks_keep_root_and_child_changes`, `shared_disk_changes_publish_every_project`, `pathless_rescan_updates_every_owned_disk_tracker`, and the idle regression test in `watcher/disk_burst_tests.rs`.
-
-**Spec:**
-1. **Cause.** Attribute each idle read to its trigger: the event path that starts each Git refresh and each disk update, and the bytes that each one reads.
-2. **Fix.** Remove each read that no change the app shows needs. Examples: a Git refresh for an event in an ignored or target path, or a second refresh for one burst of events.
-3. **Test.** Add a test that fails while an event that the app does not show starts a Git refresh or a disk read.
-4. **Changelog.** Add a cargo-port entry.
+- Git ignore rules set event visibility. An event in an ignored path, a target path or a Git lock file starts no Git refresh. `GitEventVisibilityCache` keeps the rules for the life of the watcher. It checks each rule file's size and time before use, and drops the rules of a replaced directory. A change to a shared `info/exclude` refreshes each linked checkout once.
+- Each shown event queues one Git refresh (`GitEventRefresh`, `GitRefreshRequest`). There is no immediate probe.
+- Disk totals update from the changed files and their hard-link aliases, with no new walk.
+- Git commands run without the shared metadata store lock. A test hook in `project/git/command.rs` checks the lock at each Git command start.
+- Traces carry a per-command Git read measure (`DiskReadBytes`) and a process disk-read observation.
+- Idle reads fell about 70% in three paired natedev traces. The remaining reads are not yet linked to shown events.
 
 **Files:**
-- `crates/cargo-port/src/` — the watcher and Git refresh code that the trace names
-- `crates/cargo-port/CHANGELOG.md` — entry for the idle Git and disk reads
+- `crates/cargo-port/src/project/git/event_visibility.rs` — the ignore-rule cache and event visibility
+- `crates/cargo-port/src/project/git/measured_output.rs` — Git output with the per-command read measure
+- `crates/cargo-port/src/project/git/command.rs` — Git command start and the lock test hook
+- `crates/cargo-port/src/process_observation/disk_reads.rs` — process disk-read observation
+- `crates/cargo-port/src/scan/disk_totals.rs` — disk totals from changed files and hard-link aliases
+- `crates/cargo-port/src/watcher/events.rs`, `refresh.rs`, `runtime.rs` — event routing and refresh demand
+- `crates/cargo-port/CHANGELOG.md` — entry
 
-**Workers:** 1 writer.
+**Binds later work:** the low-load idle-read measurement builds on `event_visibility.rs`, `measured_output.rs` and `process_observation/disk_reads.rs`, and uses `bd55fde2d` as its fixed baseline.
 
-**State:** none.
+**Gotchas:**
+- On natedev at high load, swap-ins (`pswpin` about equal to `pgmajfault`) make up many idle reads. They are not app file reads.
+- Trace logging changes Git output capture in `measured_output::run`.
+- A trace run can hang and leave the traced app alive in its own process group.
 
-**Acceptance gate:** the test fails before the repair. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint clean. A live idle run on natedev reads almost nothing over 10 minutes, and each remaining read has a file change that the app shows as its cause. Compare with the Phase 7 binary in 3 pairs at similar load.
+**Ruled out:** closing the idle-read gate on high-load measurements.
 
 ### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: todo
 
@@ -296,36 +292,89 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply`, so target-selection behavior needs CLI tests. `caller_aware.rs` skips caller suppression for `OverbroadPubCrate` and `ForbiddenPubInCrate`.
 
-### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: todo
+### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: done
 
-**Depends on:** Phase 8 (both edit `crates/cargo-port/CHANGELOG.md`).
+#### As-built
+
+- `ExpansionAction::key_bindings()` in tui_pane takes no argument. It binds `ExpandRow` to plain Right and `CollapseRow` to plain Left.
+- `ResolvedKeymap::defaults()` builds `project_list` from `ProjectListAction::key_bindings()`, the same source as the framework keymap. cargo-handler `globals.rs` uses the same call.
+- A new keymap file binds `expand_row = "right"` and `collapse_row = "left"`. An existing keymap file keeps its bindings and its bytes.
+- Doc comments in `tui/app/mod.rs` no longer name the removed `handle_normal_key`.
+- Tests: `project_list_defaults_match_framework_bindings` and the default-text test in `resolved_keymap.rs`; `existing_shift_arrow_keymap_keeps_its_bindings_and_file` in `load.rs`.
+
+**Files:**
+- `crates/tui_pane/src/keymap/expansion_action.rs` — `ExpansionAction::key_bindings`
+- `crates/cargo-port/src/tui/keymap/resolved_keymap.rs` — `ResolvedKeymap::defaults`, comparison and default-text tests
+- `crates/cargo-port/src/tui/keymap/load.rs` — the existing-file test
+- `crates/cargo-handler/src/globals.rs` — the third caller
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — entries; the tui_pane entry is marked Breaking
+
+**Gotchas:** `ResolvedKeymap.project_list` has no dispatch reader. It sets only the default file text, Vim conflict checks and load results.
+
+### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
+
+**Depends on:** Phase 8 (its idle-read repairs) and Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`).
 
 #### Work Order
 
-**Goal:** cargo-port has one source for the default project-list row bindings. The keymap file that cargo-port writes, the help, and the key dispatch all agree: Right expands a row and Left collapses it, with no modifier.
+**Goal:** an idle cargo-port reads almost nothing from disk, and each remaining read has a file change that the app shows as its cause.
 
-**Source:** the style unit found the mismatch (ticket 1462); the showrunner sent it on 2026-11-13. The director traced it:
-1. `crates/cargo-port/src/tui/keymap/resolved.rs:33`: `ResolvedKeymap::defaults()` binds `ExpandRow` and `CollapseRow` to Shift+Right and Shift+Left.
-2. `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs:36`: the framework keymap, which dispatches the keys, uses `ProjectListAction::bindings()`, with no modifier.
-3. The Shift choice is older than Phase 2q. A comment, removed in 04a516486, gave its reason: the legacy pane-scope match in `handle_normal_key` had to avoid the plain-arrow `NavAction` bindings. That match is gone. The framework now binds plain arrows in the project-list scope.
-4. `crates/cargo-port/src/tui/keymap/load.rs:205` writes `ResolvedKeymap::default_toml()` when no keymap file exists. The framework then loads that file (`tui/app/construct.rs:287`). A new install therefore gets `expand_row = "Shift+Right"`, and the help shows that binding.
-5. `ResolvedKeymap.project_list` has no dispatch reader. `load.rs` uses it for the default file text, Vim conflict checks and load results.
+**Source:** the showrunner's landing call for Phase 8, 2026-11-13. Phase 8 landed with finding F001 open: the remaining idle reads are not all tied to a shown change. This phase starts with that finding.
+- Three idle pairs on natedev, Phase 7 binary against the Phase 8 binary: 496,861,184 → 149,938,176 bytes; 813,076,480 → 252,506,112 bytes; the third Phase 8 run read 47.7 MB. Shown events explain 30.3%, 22.8% and 21.3% of the Phase 8 reads.
+- Bounded trace run 20261113T134151-2254388-a1ec: 71,749,632 bytes over 120 s at load 40-48. 47,218,688 bytes during syscalls, 10,878,976 between syscalls, 13,651,968 in Git child processes. 1,882 of 1,908 major-fault samples hit heap or anonymous memory.
+- natedev had 16 GB of swap in use, and its swap-in count was close to its major-fault count. Swap-in of the app's own memory is not an app read.
+
+**Constraints from prior phases:**
+- Phase 8 added Git event visibility (`crates/cargo-port/src/project/git/event_visibility.rs`), measured Git output (`project/git/measured_output.rs`), disk read observation (`process_observation/disk_reads.rs`) and `scan/disk_totals.rs`. Keep their tests green.
+- Phase 7: `DiskUsageTracker` in `scan/disk_measurements.rs` measures only changed paths; `request_rescan` is the one full walk.
+- A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
+- Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
+- The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
+- `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
 
 **Spec:**
-1. **Reproduce first.** Write a test that compares each `ProjectListAction` default in `ResolvedKeymap::defaults()` with `ProjectListAction::bindings()`. It must fail on the current code.
-2. **One source.** Build the `project_list` defaults in `ResolvedKeymap` from the same function that the framework uses. Remove the `KeyModifiers` argument from `ExpansionAction::key_bindings` if no caller then needs it. Correct its doc comment if it stays.
-3. **Written file.** A test reads the default keymap text and finds `expand_row` and `collapse_row` bound to plain Right and Left.
-4. **User file.** Do not rewrite an existing keymap file. A file that already binds Shift+Right keeps its binding.
-5. **Comments.** Correct the doc comments that name the removed `handle_normal_key` (for example `tui/app/mod.rs:3797`). Change only comments in `tui/app/mod.rs`.
-6. **Changelog.** Add a fix entry: a new keymap file binds row expand and collapse to plain Right and Left.
+1. **Measure at low load.** Run each idle measurement when the natedev 1-minute load average is under 8. Record the load and the `pswpin` and `pgmajfault` counts from `/proc/vmstat` before and after each run.
+2. **Swap apart from app reads.** Host counters cannot name the process that swapped in. Exclude bytes as swap-in only with per-process evidence, such as the app's own major-fault count or fault samples on its anonymous mappings. Report bytes with no attribution as unexplained; do not drop them.
+3. **Two run kinds.** Attribution runs turn on trace logging. Acceptance runs use normal logging, so the measure does not change Git capture. Count an unavailable measure as missing evidence.
+4. **Fixed baseline and workload.** The baseline is the Phase 8 checkpoint `bd55fde2d`. Keep a copy of each executable. Both binaries watch the same roots with the same configuration. Start each measured interval after the startup scans and deferred startup work finish.
+5. **Cause.** Attribute each remaining read to its source: a file syscall with its path, a Git child process with its command and trigger event, or a page fault with its mapping.
+6. **Fix only shown defects.** Remove each read that no change the app shows needs. For each removed read, add a test that fails while an event that the app does not show starts that read, and add a cargo-port changelog entry. If the low-load measurements show no such read, the phase closes on the measurements alone, with no code change.
 
 **Files:**
-- `crates/cargo-port/src/tui/keymap/`
-- `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`
-- `crates/cargo-port/src/tui/app/mod.rs`
-- `crates/tui_pane/src/keymap/expansion_action.rs`
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/` — the watcher, Git and disk code that the trace names
+- `crates/cargo-port/CHANGELOG.md` — entry for the removed idle reads
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** the comparison test fails before the repair and passes after. `verify.sh test cargo-port` and `verify.sh test tui_pane` pass on the Mac. No new test takes 1 s or more. `verify.sh lint cargo-port` is clean. The checkpoint carries a `Change-Review:` line: on a new install, Right expands a project row and Left collapses it, and the help shows the plain arrows.
+**State:** none.
+
+**Acceptance gate:** a 10-minute idle acceptance run on natedev at load under 8 reads almost nothing apart from swap-in that per-process evidence proves. Each remaining read has a file change that the app shows as its cause, and unexplained bytes are listed. Compare with the `bd55fde2d` binary in 3 alternating pairs at similar load and on the same workload. When the phase changes code: each new test fails before its repair, `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+
+### Phase 13 — cargo-port finishes its startup disk usage step  · status: todo
+
+**Depends on:** Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`). Runs before Phase 12, in its own worktree.
+
+#### Work Order
+
+**Goal:** at startup, the Disk usage row completes for every project. It does not show "Disk usage failed".
+
+**Source:** the showrunner, 2026-11-13. On natedev the installed cargo-port from main `13182d0dc` (Phase 8) showed "Disk usage failed" in its startup panel. `include_dirs` were `/etc`, `/tmp`, `~/.claude`, `~/rust` and `~/worktrees`. Load was about 198. The director traced the failure condition:
+1. `sweep_startup_timeouts` in `tui/app/async_tasks/startup_phase/tracker.rs:397` marks the Disk usage row failed when the row stays visible past `STARTUP_ROW_TIMEOUT` (2 minutes, `tui/constants.rs:67`) without completing.
+2. The row completes when `startup.disk.seen` holds every expected path. `tui/app/async_tasks/disk_handlers.rs:114` and `:126-133` insert into `seen`. `maybe_complete_startup_disk` (`tracker.rs:502`) logs `seen` and `expected` on completion.
+3. No perf log from that startup exists, so the cause is not proven. Two causes are possible: the startup walk took longer than 2 minutes at that load, or some expected path never reaches `seen`. Phase 8 changed disk totals to update from changed files and hard-link aliases (`scan/disk_totals.rs`).
+
+**Spec:**
+1. **Cause.** Reproduce on natedev with the same `include_dirs`, in a terminal you start yourself, with the perf log on. Record `seen`, `expected`, the paths that never reach `seen`, the walk time and the load. Compare with the `596c2c75a` binary (before Phase 8) once. Post the cause on the board as soon as you know it.
+2. **Fix.** When an expected path never reaches `seen`, make each startup disk result insert its paths. When the walk is slow, find the slow part and remove the waste. Do not hide the defect with a longer timeout only.
+3. **Test.** Add a test that fails before the fix: a startup disk pass whose expected paths all reach `seen`, for the input that the cause names. It runs under 1 s and does not depend on the timing of the real disk.
+4. **Changelog.** Add a cargo-port fix entry.
+
+**Files:**
+- `crates/cargo-port/src/` — the startup disk path that the cause names
+- `crates/cargo-port/CHANGELOG.md` — entry
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.

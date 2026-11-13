@@ -126,22 +126,27 @@ The status-clock path reuses a body only while Reusable.
 The modal retains a snapshot of the row's values.
 The modal groups its values into four sections:
 
-1. The `agent` section contains account, family, model, effort, and type.
+1. The `agent` section contains account, model, effort, and type.
 2. The `hierarchy` section contains showrunner, unit, worker, and role.
 3. The `location` section contains directory, branch, desktop, and pid.
-4. The `now` section contains activity, status, state, and age.
+4. The `now` section contains activity, status, and age.
 
 An unassigned session or shell uses `name:` in the hierarchy section.
 The hierarchy values use names from the accepted placement chain.
-The family value retains the previous program value.
 Effort always appears; an unknown effort shows `—`.
+Activity and status always appear.
 Other empty values and empty sections do not appear.
 Each section starts with a title-style heading.
 One blank line separates sections.
 All values start one cell after the longest label and its colon.
 The modal reserves one space before labels and headings, and one space after the longest value.
 The name remains complete when the tree cuts its displayed name.
-`state:` retains the detailed activity word.
+`activity:` joins the job and the live activity with ` · `.
+The value shows a repeated word once.
+The value omits the live activity when it is `idle` or `—`.
+An absent job and live activity show `—`.
+`status:` retains the accounts-board word.
+The tile activity cell retains its existing text.
 `age:` appears last in days, hours, and minutes.
 The age omits leading zero units.
 An age under one minute shows `0 minutes`.
@@ -149,7 +154,17 @@ An age under one minute shows `0 minutes`.
 The details pane uses the shared `PopupFrame` and its own keymap scope.
 Esc closes the modal.
 Up, Down, and the wheel select value lines and skip headings and blank lines.
+A left click selects the value at the clicked display line.
+A click on a wrapped continuation selects that value and that continuation.
+Clicks on headings, blank lines, borders, and outside the modal leave the selection unchanged.
+The modal records its viewport and value spans during rendering.
+The shared `table_row_at` hit test resolves clicks through that viewport.
+The top border supplies the table header row.
+Values use the tile cell ink for account, session name, role, activity, status, type, model, effort, branch, and directory.
+The account value retains the separate service-tier ink.
+Pid, desktop, age, and hierarchy names use the default text ink.
 The selected line uses the shared selection style.
+`SelectedGroundInk::resolve` keeps each selected value readable on the selection background.
 The viewport follows the selected value when the terminal is small.
 Navigation moves through a wrapped value before it selects another value.
 A newly selected wrapped value starts at its first display row.
@@ -157,7 +172,7 @@ A newly selected wrapped value starts at its first display row.
 The details pane supplies its own copy target because the framework retains Main focus.
 The shared `tui_pane` clipboard path shows the copy notice used by cargo-port.
 The copy notice appears above the details modal, including when the modal fills the terminal.
-The modal consumes other keys and pointer presses.
+The modal consumes other keys and pointer presses after its row selection.
 These events cannot change the underlying row selection.
 The shortcuts overlay lists the global `d` binding.
 
@@ -167,6 +182,28 @@ The shortcuts overlay lists the global `d` binding.
 An open Settings, Keymap, or GlobalShortcuts overlay consumes its wheel event before the tile.
 Global shortcuts use the available terminal height before paging.
 Their selected key spans share the widest displayed key width.
+
+The favorites overlay also consumes clicks and wheel steps before the tiles.
+A left click selects a favorite through its rendered `Viewport` and cached navigation line map.
+The wheel moves through the same favorite rows as Up and Down.
+Clicks on section headings and blank lines leave the selection unchanged.
+Wheel steps outside its content leave the selection unchanged.
+Selecting a favorite cancels a pending deletion confirmation, as keyboard navigation does.
+The shared favorites controller keeps this behavior available to its other hosts.
+
+The mouse parity audit covers each handler view:
+
+| View | Selection and wheel path |
+| --- | --- |
+| Agent tiles and unassigned tiles | Painted row mapping selects rows and scrolls the surface under the pointer. |
+| Agents and accounts summary | Painted row spans include continuation lines and pinned headings. |
+| Row details | `Viewport`, `table_row_at`, and rendered value spans select values. The wheel uses arrow navigation. |
+| Favorites | The existing viewport and navigation line map select favorites. The wheel uses the same navigation actions. |
+| Settings | Framework hit testing selects settings rows. Framework wheel handling uses settings navigation. |
+| Keymap | Framework hit testing and wheel handling use the keymap viewport. |
+| Global shortcuts | Framework hit testing and wheel handling use the shortcuts viewport. |
+| Attract screen | This view has no row list. |
+| Toast notices | These notices have no keyboard row list in cargo-handler. |
 
 `SettingsPane::change_selection` owns every settings row change.
 It ends an edit before selecting another row.

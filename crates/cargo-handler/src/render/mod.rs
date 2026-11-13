@@ -147,6 +147,18 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     }
 }
 
+/// Keep the cell foreground readable on the selected row's background.
+pub(crate) fn apply_row_selection(buffer: &mut Buffer, area: Rect, style: Style) {
+    buffer.set_style(area, style);
+    if let Some(ground) = style.bg {
+        for position in area.positions() {
+            let cell = &mut buffer[position];
+            cell.fg =
+                crate::footer_colors::SelectedGroundInk::resolve(cell.fg, ground).foreground();
+        }
+    }
+}
+
 /// Paint the production grid with one controlled frame clock.
 #[cfg(test)]
 pub(crate) fn draw_at_for_test(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>, now: u64) {
@@ -523,15 +535,7 @@ impl<'a> Cells<'a> {
                     )
                     .intersection(area)
                     .intersection(buffer.area);
-                    buffer.set_style(row, style);
-                    if let Some(ground) = style.bg {
-                        for position in row.positions() {
-                            let cell = &mut buffer[position];
-                            cell.fg =
-                                crate::footer_colors::SelectedGroundInk::resolve(cell.fg, ground)
-                                    .foreground();
-                        }
-                    }
+                    apply_row_selection(buffer, row, style);
                 }
             }
         }
@@ -2410,3 +2414,6 @@ pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -
 
 #[cfg(test)]
 mod details_tests;
+
+#[cfg(test)]
+mod favorites_tests;

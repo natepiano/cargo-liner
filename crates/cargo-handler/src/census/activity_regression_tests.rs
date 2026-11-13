@@ -423,6 +423,23 @@ fn captured_tile_run_rows_with_compaction(
         .tempdir_in(root)?;
     let runs = write_captured_tile_runs(&captured, directory.path(), implementation)?;
     write_captured_compaction(&captured, directory.path(), compaction)?;
+    let mut passes = serde_json::Map::new();
+    let started = captured["runs"][0]["started_at"].clone();
+    for member in captured["staff"]["rows"]
+        .as_array_mut()
+        .ok_or("captured staff rows")?
+    {
+        if member["kind"] == "unit" {
+            member["run"] = serde_json::json!(directory.path());
+        } else if member["kind"] == "worker" {
+            let id = member["id"].as_str().ok_or("captured staff worker")?;
+            passes.insert(
+                id.to_owned(),
+                serde_json::json!({"worker_id":id,"status":"active","started_at":started}),
+            );
+        }
+    }
+    captured["unit_owner"]["pass"] = Value::Object(passes);
     fs::write(
         directory.path().join("progress_history_state.json"),
         serde_json::to_vec(&captured["unit_owner"])?,
@@ -501,9 +518,9 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
     for (status, without_run) in [
-        ("idle", "idle"),
-        ("unknown", "unknown"),
-        ("working", "thinking"),
+        ("idle", "astra designer"),
+        ("unknown", "astra designer"),
+        ("working", "astra designer · thinking"),
     ] {
         for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
             let rows = captured_tile_run_rows(
@@ -529,7 +546,7 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
                 .find(|line| line.contains("impl") && line.contains("astra designer"))
                 .ok_or("the Astra pane worker must draw its status")?;
             let expected = match implementation {
-                CapturedImplRun::Live => "waiting",
+                CapturedImplRun::Live => "astra designer · waiting",
                 CapturedImplRun::Finished => without_run,
             };
             assert!(
@@ -553,7 +570,7 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
                         state: &state,
                     }],
                     name,
-                    "state",
+                    "activity",
                     crate::census::unix_now()
                 ),
                 expected

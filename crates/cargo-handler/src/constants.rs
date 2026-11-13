@@ -188,6 +188,8 @@ pub(crate) const CLAUDE_ROLE: &str = "claude";
 pub(crate) const CODEX_ROLE: &str = "codex";
 /// `[variants.roles]` key for a `busy` status.
 pub(crate) const BUSY_ROLE: &str = "busy";
+/// `[variants.roles]` key for a `waiting` status.
+pub(crate) const WAITING_ROLE: &str = "waiting";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
 /// Role column text for a shell whose program is `sleep`.
@@ -480,6 +482,12 @@ pub(crate) const PROCESS_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const RUN_WATCH_RECOVERY: Duration = Duration::from_secs(30);
 /// Retry an unavailable run watch at the local census interval.
 pub(crate) const RUN_WATCH_RETRY: Duration = Duration::from_secs(2);
+
+// census run sources
+/// The recorder file that holds a unit run's passes and its owner.
+pub(crate) const PROGRESS_HISTORY_STATE_FILE: &str = "progress_history_state.json";
+/// A finished run whose `delivery` starts with one of these still holds a result.
+pub(crate) const QUEUED_DELIVERY_PREFIXES: [&str; 3] = ["queued:", "held:", "pending:"];
 
 // desktops
 /// How long the scanner keeps what `KWin` and tmux answered before

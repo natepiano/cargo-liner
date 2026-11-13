@@ -59,7 +59,9 @@ Known values are `impl`, `test`, `review`, `fix`, `astra-designer`, and `astra-r
 Other values publish `HierarchyRole::Worker`.
 Worker names do not determine roles.
 
-Missing, unreadable, or invalid staff files supply an empty roster.
+`StaffFileReader::read` returns `SourceRead::{Loaded, Absent, Unreadable}`.
+An absent file supplies a valid empty roster.
+An unreadable or invalid file supplies an empty roster and retains its reason.
 Invalid files never publish a partial forest.
 Access failures clear the cache for another attempt.
 A parsed invalid revision stays empty until its modification time changes.
@@ -74,7 +76,7 @@ Production discovery reads the staff file directly.
 The asynchronous hierarchy request machinery remains for scheduler fixtures.
 It does not imply a configured hierarchy shell command.
 
-`HierarchySnapshot { edges, notice }` keeps links and discovery health together.
+`HierarchySnapshot { edges, notice, facts }` keeps links, discovery health, and census facts together.
 `HierarchyNotice` supports `Clear`, `Failed`, and `NoSessionMatched`.
 A match can use a scanned manager, member, or hosted thread.
 Remote failure handling retains the host's last successful edges.
@@ -85,6 +87,33 @@ Probe schema 3 separates visible `rows` from transport-only `thread_hosts`.
 Optional fields include `codex_session`, `astra_member`, `astra_edges`, and `hierarchy_notice`.
 The legacy `hierarchy_failed` flag preserves failure handling for older receivers.
 Astra edges retain a generic worker edge beside the extension.
+
+### Current runs and retained census facts
+
+The staff row's `run` field selects one absolute run directory.
+`StaffRunPointer::{Current(RunId), NoRun}` retains this selection without a nullable domain field.
+A current pass map limits a unit's worker links to that run.
+The pass map holds one pass object with `instance_id`, or a map of pass slots.
+A missing or unreadable pass map supplies no workers. The director's activity start keeps the read failure as its reason.
+When a worker has more than one pass, the active pass with the newest start supplies the activity start.
+An older open run cannot supply workers or activity for the selected unit.
+A current run remains readable when its supervisor is absent.
+
+`CensusFacts` retains staff health, accounts health, and each worker's observations.
+The local accounts health comes from the one accounts read of the TUI accounts monitor. The probe uses its own single read.
+Each worker retains its current run, pane lifecycle, detached records, and activity start.
+Detached records distinguish a running supervisor, a finished result awaiting delivery, and a missing supervisor.
+Only validated running records supply tile activity.
+A malformed or unreadable record does not hide its valid siblings. The worker's run fact becomes unknown with the first failure reason.
+Pane observations distinguish open, stopped, closed, and unknown states without changing the accounts status word.
+Activity starts use epoch seconds from the running record or the open pass.
+Repeated scans keep the start while the activity remains the same.
+Without either source, the start remains unknown.
+
+`Observed::{Known, Unknown}` retains unreadable facts with their reasons.
+The probe adds these facts with serde defaults.
+An older remote retains its rows and names each missing fact with `remote probe has no ...`.
+A local snapshot without a source names each missing fact with `this snapshot has no ...`.
 
 ### Proven identities and placement
 
@@ -134,7 +163,7 @@ The existing census compaction detector supplies that state for every session ro
 
 Each account row supplies `sessions: [{session, state}]` beside its `role_counts`.
 The reader merges these lists into one session map.
-`SessionState` accepts `busy`, `idle`, `paused`, and `exited`.
+`SessionState` accepts `busy`, `starting`, `waiting`, `idle`, `paused`, and `exited`.
 The external accounts classifier owns these meanings.
 Rust reads its result without repeating its classification rules.
 Claude rows use their `session_id` string as the lookup key.
@@ -146,6 +175,10 @@ A Codex row without a thread ID shows `idle` with a live process, or `exited` wi
 Conflicting account entries remove only that session status.
 Retained account readings retain their session states after a refresh failure.
 A live shell shows `busy` independently of its countdown.
+A reported `waiting` status uses the `waiting` theme role in every tile.
+The full session heading uses the same ink.
+The theme files supply its bright yellow color for dark and light appearances.
+Other statuses and the hierarchy activity column keep their existing inks.
 
 Age remains a computed sort value.
 Showrunner and unassigned tiles start in session name order.
@@ -156,7 +189,15 @@ The details view groups values into agent, hierarchy, location, and now sections
 Its hierarchy section shows the accepted showrunner, unit, and worker names.
 Unassigned sessions and shells show their full name instead.
 The details view shows the long age last in the now section.
-Detailed state words, such as `thinking` and `clippy`, appear as `state:` in details.
+The agent section contains account, model, effort, and type.
+The now section contains activity, status, and age, in that order.
+The activity value joins the job and the live activity without repeated words.
+It omits the live word when it is `idle` or `—`.
+An absent job and live activity show `—`.
+The status value retains the accounts-board word.
+Values with tile cells share their ink functions.
+Hierarchy names, pid, desktop, and age retain the default text ink.
+Selected values use `SelectedGroundInk::resolve` on the selection background.
 
 ### Dispatch pairing and names
 

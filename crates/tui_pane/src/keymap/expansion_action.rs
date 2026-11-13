@@ -1,5 +1,4 @@
 use crossterm::event::KeyCode;
-use crossterm::event::KeyModifiers;
 
 use super::Bindings;
 use super::KeyBind;
@@ -25,26 +24,20 @@ impl ExpansionAction {
     #[must_use]
     pub fn bindings() -> Bindings<Self> {
         let mut bindings = Bindings::new();
-        for (key, action) in Self::key_bindings(KeyModifiers::NONE) {
+        for (key, action) in Self::key_bindings() {
             bindings.bind(key, action);
         }
         bindings
     }
 
-    /// Return the defaults with modifiers for row arrows in a separate navigation scope.
+    /// Return the default tree bindings with plain row arrows.
     #[must_use]
-    pub fn key_bindings(row_modifiers: KeyModifiers) -> [(KeyBind, Self); 4] {
+    pub fn key_bindings() -> [(KeyBind, Self); 4] {
         [
             (KeyBind::from_char('='), Self::ExpandAll),
             (KeyBind::from_char('-'), Self::CollapseAll),
-            (
-                KeyBind::from_parts(KeyCode::Right, row_modifiers),
-                Self::ExpandRow,
-            ),
-            (
-                KeyBind::from_parts(KeyCode::Left, row_modifiers),
-                Self::CollapseRow,
-            ),
+            (KeyBind::from(KeyCode::Right), Self::ExpandRow),
+            (KeyBind::from(KeyCode::Left), Self::CollapseRow),
         ]
     }
 

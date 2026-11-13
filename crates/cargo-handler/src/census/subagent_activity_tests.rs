@@ -115,7 +115,7 @@ fn subagent_transcript_read_tool_reaches_the_drawn_status_and_append_updates_it(
             crate::agent_cell::detail_property_for_test(
                 &machines,
                 "Inspect source files",
-                "state",
+                "activity",
                 unix_now()
             ) == expected,
             "{text}"

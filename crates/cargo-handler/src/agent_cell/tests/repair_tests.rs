@@ -393,7 +393,7 @@ fn minimum_tile_width_reserves_depth_three_guides_and_status() {
     assert!(text.contains(&deep_cell.lines[0].lead()), "{text}");
     assert!(find(&buffer, "status").is_some(), "{text}");
     assert_eq!(
-        detail_value(&deep_cell, "Dispatch-worker", "state", NOW),
-        "idle"
+        detail_value(&deep_cell, "Dispatch-worker", "activity", NOW),
+        MISSING_VALUE
     );
 }

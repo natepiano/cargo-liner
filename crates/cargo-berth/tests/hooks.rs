@@ -52,6 +52,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::ObservedIncursion;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::ReleasedWorkEvidence;
+use cargo_berth_test_support::TestProcessGroup;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::spawn_hook_verb;
@@ -750,35 +751,41 @@ fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -
         .open(root.join(MUTATION_LOCK_PATH))?;
     lock.try_lock()?;
     let started = Instant::now();
-    let checked = berth_command(BERTH_EXECUTABLE)
-        .args(["check", "file:unheld.rs", "--json"])
-        .current_dir(root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env("CARGO_BERTH_SESSION_ID", session)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
-        .output()?;
+    let checked_child = TestProcessGroup::spawn(
+        berth_command(BERTH_EXECUTABLE)
+            .args(["check", "file:unheld.rs", "--json"])
+            .current_dir(root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env("CARGO_BERTH_SESSION_ID", session)
+            .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
+    let payload = edit_payload(root, "unheld.rs", Some(session));
+    let mut child = TestProcessGroup::spawn(
+        berth_command(BERTH_EXECUTABLE)
+            .args(["hook", "pre-tool-use"])
+            .current_dir(root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+            .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
+    child
+        .child_mut()
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin"))?
+        .write_all(&serde_json::to_vec(&payload)?)?;
+    let checked = checked_child.wait_with_output()?;
     let envelope = json_output(&checked)?;
     assert_eq!(checked.status.code(), Some(6), "{envelope}");
     assert_eq!(envelope["status"], "contention");
     assert_eq!(envelope["blocked_by"], serde_json::json!([]));
     assert_eq!(envelope["reservations"], serde_json::json!([]));
-    let payload = edit_payload(root, "unheld.rs", Some(session));
-    let mut child = berth_command(BERTH_EXECUTABLE)
-        .args(["hook", "pre-tool-use"])
-        .current_dir(root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove("CARGO_BERTH_SESSION_ID")
-        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
-        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "5")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| failure("hook stdin"))?
-        .write_all(&serde_json::to_vec(&payload)?)?;
     let output = child.wait_with_output()?;
     assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
     assert_engine_authored_refusal(

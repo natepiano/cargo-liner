@@ -27,6 +27,7 @@ use super::refresh;
 use super::roots;
 use super::roots::WatchRegistration;
 use super::runtime;
+use super::runtime::GitRefreshDemand;
 use super::runtime::ProjectEntry;
 use crate::channel;
 use crate::channel::Sender;
@@ -280,11 +281,15 @@ fn target_size_reaches_project_after_explicit_refresh() {
     let projects = HashMap::from([(
         project_path.clone(),
         ProjectEntry {
-            label:          "scratch-project".to_string(),
-            abs_path:       project_path.clone(),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "scratch-project".to_string(),
+            abs_path:             project_path.clone(),
+            repo_root:            None,
+            git_dir:              None,
+            common_git_dir:       None,
         },
     )]);
     let (background_tx, background_rx) = channel::unbounded();

@@ -5,10 +5,10 @@
 use super::account::ConfigHome;
 use super::activity;
 use super::activity::ActivityRead;
+use super::activity::DetachedRunState;
 use super::activity::RunRecord;
 use super::classify::ProcessEntry;
 use super::*;
-use crate::summary;
 
 fn process(pid: u32, parent: u32, arguments: &[&str]) -> ProcessEntry {
     ProcessEntry {
@@ -338,6 +338,124 @@ fn activity_newest_live_run_wins_then_reveals_the_older_run_when_it_finishes() {
 }
 
 #[test]
+fn detached_run_states_keep_queued_results_and_missing_supervisors() -> Result<(), &'static str> {
+    let processes = [supervisor(100), process(101, 100, &["cargo", "check"])];
+    for (pid, status, queued, expected) in [
+        (100, "running", false, DetachedRunState::Running),
+        (200, "finished", true, DetachedRunState::FinishedQueued),
+        (300, "running", false, DetachedRunState::Missing),
+    ] {
+        let mut value = serde_json::json!({
+            "run_id":format!("run-{pid}"),"thread_id":"worker", "worker":"test",
+            "pid":pid,"command":["bash","verify.sh","test"], "status":status,
+            "started_at":123.5,"delivery":if queued { "queued: result" } else { "" },"label":"package test"
+        });
+        let path =
+            std::path::PathBuf::from(format!("/fixture/session/detached_runs/run-{pid}.json"));
+        let record = serde_json::from_value::<RunRecord>(value.take())
+            .expect("run record")
+            .at_file(&path);
+        let Observed::Known(fact) = record.fact(&processes) else {
+            return Err("usable run fact");
+        };
+        assert_eq!(fact.state, expected);
+        assert_eq!(fact.started, Observed::Known(123));
+        assert_eq!(fact.label, "package test");
+        assert_eq!(
+            activity::run_activity(&[record], &processes, "worker").text(),
+            if expected == activity::DetachedRunState::Running {
+                "check"
+            } else {
+                "—"
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn activity_source_starts_survive_repeated_scans_and_change_with_the_activity() {
+    let mut read = ActivityRead::default();
+    for (activity, source, expected) in [
+        (
+            Activity::Reading,
+            Observed::Known(100),
+            Observed::Known(100),
+        ),
+        (
+            Activity::Reading,
+            Observed::Known(110),
+            Observed::Known(100),
+        ),
+        (
+            Activity::Writing,
+            Observed::Known(120),
+            Observed::Known(120),
+        ),
+        (
+            Activity::Writing,
+            Observed::unknown("no source"),
+            Observed::unknown("no source"),
+        ),
+    ] {
+        read.observe(AgentActivity::Active(activity), &source);
+        assert_eq!(read.started(), expected);
+    }
+}
+
+#[test]
+fn activity_start_keeps_the_source_failure_reason_on_the_probe_wire()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut read = ActivityRead::default();
+    let reason = Observed::unknown("current pass cannot be read: permission denied");
+    read.observe(AgentActivity::Active(Activity::Reading), &reason);
+    let received: Observed<u64> = serde_json::from_slice(&serde_json::to_vec(&read.started())?)?;
+    assert_eq!(received, reason);
+    Ok(())
+}
+
+#[test]
+fn malformed_run_sibling_keeps_the_valid_supervised_activity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let runs = directory.path().join("detached_runs");
+    std::fs::create_dir(&runs)?;
+    let path = runs.join("gate.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id":"gate","thread_id":"worker","worker":"test","pid":100,
+            "command":["bash","verify.sh","test"],"status":"running","started_at":123
+        }))?,
+    )?;
+    std::fs::write(runs.join("broken.json"), "{")?;
+    let processes = [
+        process(
+            100,
+            1,
+            &[
+                "python3",
+                "detached_runs.py",
+                "supervise",
+                path.to_str().ok_or("record path")?,
+            ],
+        ),
+        process(101, 100, &["cargo", "check"]),
+    ];
+    let mut reader = activity::RunRecords::for_test();
+    let read = reader.current(directory.path());
+    assert!(
+        matches!(&read.health, SourceHealth::Unreadable(UnknownReason(reason)) if reason.contains("broken.json")),
+        "the failed sibling keeps its reason"
+    );
+    assert_eq!(
+        activity::run_activity(&read.records, &processes, "worker").text(),
+        "check"
+    );
+    Ok(())
+}
+
+#[test]
 fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
     let rows = [
         Some("busy"),
@@ -358,7 +476,7 @@ fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
     }))
     .expect("legacy report encodes");
     let (decoded, _) = probe::parse_report(&encoded).expect("older schema-three report reads");
-    let words: Vec<_> = decoded.iter().map(summary::status_text).collect();
+    let words: Vec<_> = decoded.iter().map(|row| row.activity.text()).collect();
     assert_eq!(
         words,
         [
@@ -382,7 +500,7 @@ fn activity_probe_round_trip_keeps_the_step_location_and_legacy_child_busy_state
     }]})).expect("mixed-version probe encodes");
     let (rows, _) = probe::parse_report(&bytes).expect("new activity and old child decode");
     assert_eq!(
-        crate::summary::status_text(&rows[0]),
+        rows[0].activity.text(),
         "nextest (mac)",
         "semantic activity overrides a legacy field"
     );
@@ -390,7 +508,7 @@ fn activity_probe_round_trip_keeps_the_step_location_and_legacy_child_busy_state
     let encoded = serde_json::to_vec(&serde_json::json!({"schema":3,"machine":"mac","rows":rows}))
         .expect("new report serializes");
     let (decoded, _) = probe::parse_report(&encoded).expect("new report reads back");
-    assert_eq!(crate::summary::status_text(&decoded[0]), "nextest (mac)");
+    assert_eq!(decoded[0].activity.text(), "nextest (mac)");
     assert_eq!(decoded[0].children[0].activity.text(), "thinking");
 }
 

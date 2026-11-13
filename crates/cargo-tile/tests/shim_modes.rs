@@ -54,6 +54,8 @@ record_descriptors descriptors
 true > "$SHIM_TEST_OBSERVATIONS/cargo-output"
 if [ -d "$SHIM_TEST_DEFAULT_ROOT" ]; then
     cp -pR "$SHIM_TEST_DEFAULT_ROOT" "$SHIM_TEST_OBSERVATIONS/root"
+else
+    true > "$SHIM_TEST_OBSERVATIONS/root-absent"
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/retain-log" ]; then
     for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
@@ -481,7 +483,13 @@ exec sh "$SHIM_TEST_SHIM" "$@"
         }
 
         /// Inspect copies whose metadata was preserved while the registration was live.
-        fn assert_capture_modes(&self, capture_path: CapturePath) {
+        fn assert_capture_modes(&self, capture_path: CapturePath, output: &Output) {
+            assert!(
+                !self.observations.join("root-absent").exists(),
+                "the shim ran cargo with no capture root; shim status: {}; shim stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
             let snapshot = self.observations.join("root");
             assert_mode(&self.parent, 0o1777);
             assert_mode(&self.root, 0o755);
@@ -623,7 +631,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             &arguments,
         );
         toolchain.assert_cargo(&output, caller_umask, &arguments);
-        toolchain.assert_capture_modes(capture_path);
+        toolchain.assert_capture_modes(capture_path, &output);
         assert_mode(&toolchain.root, 0o755);
     }
 
@@ -645,7 +653,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             assert_eq!(output.stdout, b"cargo-stdout\n");
             assert_eq!(output.stderr, b"cargo-stderr\n");
         }
-        toolchain.assert_capture_modes(capture_path);
+        toolchain.assert_capture_modes(capture_path, &output);
     }
 
     /// F001: script must retain world-readable output after a sweep before publication.
@@ -699,7 +707,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             }
             let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
             toolchain.assert_cargo(&output, 0o066, &["build"]);
-            toolchain.assert_capture_modes(capture_path);
+            toolchain.assert_capture_modes(capture_path, &output);
             assert_mode(&toolchain.root, 0o755);
         }
     }
@@ -711,7 +719,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             let toolchain = InstalledToolchain::new();
             let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
             toolchain.assert_cargo(&output, 0o066, &["build"]);
-            toolchain.assert_capture_modes(capture_path);
+            toolchain.assert_capture_modes(capture_path, &output);
         }
     }
 
@@ -935,7 +943,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 .env("SHIM_TEST_WRITE_DESCRIPTOR", descriptor);
             let output = command.output().expect("run installed shim to completion");
             toolchain.assert_cargo(&output, 0o066, &["build"]);
-            toolchain.assert_capture_modes(CapturePath::NoTerminal);
+            toolchain.assert_capture_modes(CapturePath::NoTerminal, &output);
             let shim_pid = String::from_utf8(toolchain.observed("shim-pid")).expect("ASCII pid");
             assert_eq!(
                 toolchain.observed("environment"),
@@ -974,7 +982,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             caller,
             "cargo holds neither descriptor the shim routes the pipe around on"
         );
-        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        toolchain.assert_capture_modes(CapturePath::NoTerminal, &output);
     }
 
     /// A numeric cargo exit status comes back as the shim's own status.
@@ -986,7 +994,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
         assert_eq!(output.status.code(), Some(status), "{output:?}");
         assert_eq!(output.stdout, b"cargo-stdout\n");
         assert_eq!(output.stderr, b"cargo-stderr\n");
-        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        toolchain.assert_capture_modes(CapturePath::NoTerminal, &output);
         toolchain.assert_cleaned_up();
     }
 
@@ -1155,7 +1163,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             &["build"],
         );
         toolchain.assert_cargo(&output, 0o066, &["build"]);
-        toolchain.assert_capture_modes(capture_path);
+        toolchain.assert_capture_modes(capture_path, &output);
         let inherited = fs::read(toolchain.observations.join("directory-fields"))
             .expect("cargo records its unchanged HOME");
         assert_eq!(
@@ -1201,7 +1209,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 let toolchain = InstalledToolchain::new();
                 let output = toolchain.run(capture_path, HomeSelection::Unset, 0o077, &["build"]);
                 toolchain.assert_cargo(&output, 0o077, &["build"]);
-                toolchain.assert_capture_modes(capture_path);
+                toolchain.assert_capture_modes(capture_path, &output);
             },
         );
     }
@@ -1522,7 +1530,7 @@ sys.exit(child.wait())
             &["build", "a b", ""],
         );
         toolchain.assert_cargo(&output, 0o077, &["build", "a b", ""]);
-        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        toolchain.assert_capture_modes(CapturePath::NoTerminal, &output);
     }
 
     #[test]
@@ -1568,6 +1576,6 @@ exec {} "$@"
         toolchain.assert_cargo(&output, 0o066, &arguments);
         assert_eq!(output.stdout, b"cargo-stdout\n");
         assert_eq!(output.stderr, b"cargo-stderr\n");
-        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        toolchain.assert_capture_modes(CapturePath::NoTerminal, &output);
     }
 }
