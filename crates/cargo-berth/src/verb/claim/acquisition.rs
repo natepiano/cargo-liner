@@ -146,7 +146,7 @@ pub(crate) fn execute(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
-    let invocation_directory = match std::env::current_dir() {
+    let invocation_directory = match session::command_directory() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string());
@@ -753,7 +753,7 @@ fn acquire_new(
         overlap_authorization,
         answer_recovery: _,
     } = claim_request;
-    let invocation_directory = std::env::current_dir()?;
+    let invocation_directory = session::command_directory()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
     let claim_run_validation = coordination_run_selection.resolve(resolved_edit_authorization);
@@ -999,7 +999,7 @@ fn acquire_first_touch_with_reservation_selection(
         declared_scopes,
         conflict_handling,
     } = request;
-    let invocation_directory = std::env::current_dir()?;
+    let invocation_directory = session::command_directory()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
     let run_validation =
@@ -2373,7 +2373,7 @@ fn acquire_named(
         overlap_authorization,
         answer_recovery: _,
     } = request;
-    let worktree = WorktreeContext::discover(&std::env::current_dir()?)?;
+    let worktree = WorktreeContext::discover(&session::command_directory()?)?;
     let identity = ledger::resolve_identity(&worktree)?;
     let run_validation = coordination_run_selection.resolve(identity);
     let actor = identity.journal_mutation_actor_for(run_validation.actor_run_id());

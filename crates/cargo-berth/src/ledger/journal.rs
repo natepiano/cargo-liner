@@ -75,6 +75,9 @@ use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluatorVersion;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::reservation::WorktreeRecoveryReason;
+use crate::session;
+use crate::session::HarnessSessionId;
+use crate::session::HarnessSessionIdentity;
 
 /// The authority recorded for a worktree ownership change.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -105,6 +108,12 @@ pub(crate) struct JournalEvent {
         skip_serializing_if = "JournalMutationIdentityInputs::was_unrecorded"
     )]
     identity_inputs:                  JournalMutationIdentityInputs,
+    /// The resolved session that authorized this command.
+    #[serde(
+        default,
+        skip_serializing_if = "ResolvedSessionAtMutation::was_unrecorded"
+    )]
+    resolved_session:                 ResolvedSessionAtMutation,
     /// The time this fact was recorded.
     pub(super) at:                    RecordedAt,
     /// The cache generation this append publishes.
@@ -132,6 +141,7 @@ impl JournalEvent {
             event_id: EventId::new(),
             actor,
             identity_inputs: JournalMutationIdentityInputs::record(),
+            resolved_session: ResolvedSessionAtMutation::record(),
             at: RecordedAt::now(),
             projection_generation,
             operation,
@@ -147,6 +157,34 @@ impl JournalEvent {
     /// Return the projection generation published by this journal fact.
     pub(crate) const fn projection_generation(&self) -> ProjectionGeneration {
         self.projection_generation
+    }
+}
+
+/// The session selected by the process boundary, including hook payloads.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ResolvedSessionAtMutation {
+    /// Older records do not identify the resolved session.
+    #[default]
+    Unrecorded,
+    /// This command has no usable session.
+    Unavailable,
+    /// This command resolved one session.
+    Available { session_id: HarnessSessionId },
+}
+
+impl ResolvedSessionAtMutation {
+    const fn was_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+
+    fn record() -> Self {
+        match session::current_process_harness_session() {
+            HarnessSessionIdentity::Available {
+                harness_session_id, ..
+            } => Self::Available {
+                session_id: harness_session_id,
+            },
+            HarnessSessionIdentity::Unavailable => Self::Unavailable,
+        }
     }
 }
 
@@ -3932,6 +3970,7 @@ mod tests {
                 event_id: EventId::new(),
                 actor: actor.clone(),
                 identity_inputs: JournalMutationIdentityInputs::Unrecorded,
+                resolved_session: super::ResolvedSessionAtMutation::Unrecorded,
                 at: at.clone(),
                 projection_generation: ProjectionGeneration::from(generation),
                 operation,
@@ -4018,6 +4057,7 @@ mod tests {
                 event_id:              EventId::new(),
                 actor:                 actor.clone(),
                 identity_inputs:       JournalMutationIdentityInputs::Unrecorded,
+                resolved_session:      super::ResolvedSessionAtMutation::Unrecorded,
                 at:                    "2026-08-23T17:35:12.456Z".parse::<RecordedAt>()?,
                 projection_generation: ProjectionGeneration::from(0),
                 operation:             fold_operation(operation)?,
@@ -4166,6 +4206,7 @@ mod tests {
                     .expect("coordination run identifier should parse"),
             },
             identity_inputs:       JournalMutationIdentityInputs::Unrecorded,
+            resolved_session:      super::ResolvedSessionAtMutation::Unrecorded,
             at:                    "2026-08-23T17:34:54.123Z"
                 .parse::<RecordedAt>()
                 .expect("recorded timestamp should parse"),
