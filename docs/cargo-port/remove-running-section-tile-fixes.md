@@ -2493,53 +2493,21 @@ Checkpoint 868e5e1e4 on `tile-phase-58c`.
 
 **Binds later work:** recover a stranded reservation with `resolve --rehome`, never by a new claim.
 
-### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: todo
+### Phase 58d — Two cargo-berth tests fail only some of the time on the Mac  · status: done
 
 **Depends on:** Phase 58e (order only; showrunner, 2026-11-11).
 
 The showrunner reported two intermittent failures on the Mac at style tip ad23f4563 (1,358 passed, 2 failed). Earlier runs at the same tip passed. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T033213-2377391-406a.log`, lines 719-800. An intermittent test is a defect.
 
-#### Work Order
+#### As-built
 
-**Goal:** both tests pass in every run, in loaded Mac and natedev full suites, and each runs under 1 s. Each item 6 test also runs under 1 s.
+- `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` starts both concurrent commands under bounded process guards (`tests/hooks.rs:754`), so the test controls the ledger lock contention. It runs in 0.121 s.
+- On macOS the lock holder scan no longer runs lsof. `crates/cargo-berth/src/git/lock_holders_macos.rs` reads process ids, owners and open files in process through libproc. It has four reviewed unsafe functions, which the user approved. The owner query uses `PROC_PIDT_SHORTBSDINFO` (`pbsi_uid`), so a non-root user can read the owner of a root process; a unit test checks `process_owner(1)`.
+- The item 6 slow tests use recorded templates (`tests/support/proof_subject_templates.rs`, `recorded_templates.rs`). Git tracing for test support is in `cargo-berth-test-support/src/git_trace.rs`.
+- Gate: natedev lint and package, 1,372 tests with none at 1 s or more. Mac lint and the four focused Mac lock tests pass at 0.16 to 0.48 s.
+- Not done, moved to Phase 58g spec item 0 at the repair cap (showrunner, 2026-11-13): the Mac scan of a file with no holder still answers "process holders unavailable", and the three Mac full suites did not run.
 
-**Spec:**
-
-1. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:728`) exited 2 after 1.498 s: "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock." Find which operation held the ledger lock and why the test did not expect it. The answer is either a test that starts its contention too early or late, or a product path that holds the lock longer than its contract allows.
-2. `ledger::explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` failed after 4.142 s: "git ref write refused by lock .../.git/packed-refs.lock (age: 0.370 seconds; process holders unavailable)". The test is now two variants, `_for_writing` and `_for_reading` (`tests/ledger.rs:2470` and `2475`). Both call `assert_held_retention_lock_names_this_process` (`tests/ledger.rs:2487`), which makes `packed-refs.lock` itself. Investigate both variants through that helper. Find why holder discovery reports "process holders unavailable" for the lock the test holds.
-3. Find each cause before a change. Record it with the line that takes the lock. Do not add a retry, a sleep or a longer wait to hide the race. Do not raise a limit.
-4. Keep every assertion. A test that checks contention keeps checking it, with the contention under the test's control.
-5. Make each test run under 1 s. The first took 1.498 s, the second 4.142 s.
-6. **Slow tests from the Phase 58c reruns** (showrunner, 2026-11-11). On natedev at load 44 to 161, these untouched tests took 1 s or more. Find each cause and make each test run under 1 s. Items 3 and 4 apply.
-   - `gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 2.088 s.
-   - `gate::trunk_gate_remembers_first_target_landing_after_target_revalidation` — 1.233 s.
-   - `lifecycle::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding` — 1.12 to 1.14 s.
-   - `lifecycle::integration_cover::cover_ends_after_integration_lands_by_merge_or_fast_forward` — 1.12 to 1.14 s.
-   - `lifecycle::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.002 s.
-   - `hooks::a_contended_ledger_states_the_engine_message` — 1.613 s.
-   - `hooks::a_claim_under_only_the_claude_code_session_binds_that_session` — 1.394 s.
-   - `hooks::a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file` — 1.323 s.
-   - `hooks::a_commit_outside_the_covered_branch_still_reports_the_cover_incursion` — 1.296 s.
-   - `hooks::a_covered_merge_keeps_another_holders_incursion_visible` — 1.241 s.
-   - `hooks::a_defer_claim_under_the_claude_code_session_authorizes_its_edit` — 1.165 s.
-   - `hooks::a_payload_without_session_identity_ignores_the_ambient_variable` — 1.005 s.
-   - `liveness::active_checkpoint_release_reconciles_outstanding_retention_refs` — 1.074 s.
-   - `liveness::active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint` — 1.009 s.
-   - **From the Phase 58e gate** (natedev, load 30 to 40, 2026-11-11): 178 package tests took 1 s or more. Phase 58e changed none of them. List them from a fresh natedev package run before the first change, and apply items 3 and 4 to each.
-
-**Files:**
-
-- `crates/cargo-berth/tests/hooks.rs` — item 1
-- `crates/cargo-berth/tests/ledger.rs` — item 2
-- `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/liveness.rs` — item 6
-- `crates/cargo-berth/tests/` — the other measured tests of item 6, their template helpers and their `recorded_templates.rs` registration
-- `crates/cargo-berth/src/` — the lock paths and slow paths, chosen by items 1, 2 and 6
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more; a new slow test gets a recorded template.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the hooks test and both ledger variants passing and under 1 s; no item 6 test at 1 s or more in the natedev suite.
+**Files:** `crates/cargo-berth/src/git/{lock_holders_macos.rs,error.rs,constants.rs}`, `crates/cargo-berth/Cargo.toml`, `crates/cargo-berth/tests/{hooks,board,edges,lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/proof_subject_templates.rs`, `crates/cargo-berth-test-support/src/{constants,git_trace,lib,recorded_history,repository_template}.rs`, `crates/cargo-berth-test-support/src/git_driver/mod.rs`.
 
 ### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: todo
 
@@ -2553,10 +2521,15 @@ On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ti
 
 #### Work Order
 
-**Goal:** the gate deadline test and the unrelated-process ledger test pass on every run under load, and each takes less than 1 s.
+**Goal:** the gate deadline test and the unrelated-process ledger test pass on every run under load, and each takes less than 1 s. On the Mac, a lock file with no holder gets the answer "no process holds it".
 
 **Spec:**
 
+0. **The Mac holder scan answers "unavailable" for a file with no holder** (Phase 58d review finding F007, moved here at the repair cap; showrunner, 2026-11-13). Phase 58d replaced lsof with an in-process libproc scan (`crates/cargo-berth/src/git/lock_holders_macos.rs`). A scan of a fresh file with no holder returned `Unavailable` in 71.9 ms at load 31.35. The scan answers `Unavailable` when it cannot read a process that has the lock file's owner (`lock_holders_macos.rs:46-63`). The Linux scan has the same rule (`git/error.rs:363-375`).
+   1. First, with no product change, find each same-user process that macOS refuses, and the call and errno it returns. Report the process names, the call and the errno to the director. The director sends them and a proposed rule change to the showrunner. Make no product change before the showrunner answers.
+   2. Then apply the rule that the showrunner approves.
+   3. Measure the scan once at load below 24. The target is under 50 ms.
+   4. Remove the acceptance of `process holders unavailable` from the ledger holder tests (`tests/ledger.rs:2440-2444`). A test of a file with no holder must fail on that answer.
 1. For item 1, find why the worker did not report mutation lock contention before the outer gate deadline. Quote the line that takes the mutation lock and the line that sets the deadline. Make the order of the two events fixed by the test, not by timing.
 2. For item 3, find why the holder of `packed-refs.lock` was unavailable. Use the cause and fix of Phase 58d item 2 when they apply; do not make a second copy of that fix.
 3. Make each test deterministic: no sleep, no retry, no longer wait, no raised limit. Keep every assertion.
@@ -2570,12 +2543,13 @@ On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ti
 - `crates/cargo-berth/tests/hooks.rs` — item 2, only under spec item 4
 - `crates/cargo-berth-test-support/` — shared lock helpers
 - `crates/cargo-berth/src/` — the lock path or the holder diagnostic, when the cause is there
+- `crates/cargo-berth/src/git/lock_holders_macos.rs` — spec item 0
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect.
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect. Phase 58d: the four libproc unsafe functions are user-approved; add no other unsafe code without user approval.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s.
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
 
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
 
@@ -2612,6 +2586,40 @@ On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed 
 **Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
 
 **Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev.
+
+### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: todo
+
+**Depends on:** none. It goes first among the cargo-berth phases: the CI point stays red until it lands (showrunner, 2026-11-13).
+
+The showrunner's CI point validation ran in a gate checkout (`/tmp/claude/session/4dbdb78e-.../cargo-liner-gate-*/checkout`). Two `cargo-berth::board` tests failed there. Both pass on main in `/home/natepiano/rust/cargo-liner`. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 2000-2054.
+
+1. `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` failed after 1.333 s. It panicked at `crates/cargo-berth-test-support/src/integration_repository.rs:872`: the claim answered "target `other-target` does not resolve to a local branch".
+2. `board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker` failed after 0.370 s. It panicked at `crates/cargo-berth/tests/board.rs:463`: the board listed only `refs/heads/main`, without the `refs/heads/integration` entry.
+
+#### Work Order
+
+**Goal:** both tests pass in any checkout, with every assertion, and each runs under 1 s.
+
+**Spec:**
+
+1. Find what each test reads from the invoking checkout and not from its fixture. Examples: the current directory, a Git variable, the user's Git config, the invoking repository's refs or a cargo-berth state path. Quote the line that reads it.
+2. Make each test read only its own fixture. If cargo-berth itself reads the invoking checkout where it must read the fixture, fix it in cargo-berth.
+3. Show each failure before the change: run the test from a checkout that is not the main worktree, as the gate does.
+4. Keep every assertion. Add no retry, sleep or longer wait.
+5. Make test 1 run under 1 s (it took 1.333 s).
+
+**Files:**
+
+- `crates/cargo-berth/tests/board.rs`
+- `crates/cargo-berth-test-support/src/integration_repository.rs`
+- `crates/cargo-berth-test-support/src/` — shared fixture setup, when the cause is there
+- `crates/cargo-berth/src/` — only under spec item 2
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; both tests pass from a checkout that is not the main worktree.
 
 ### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: done
 
