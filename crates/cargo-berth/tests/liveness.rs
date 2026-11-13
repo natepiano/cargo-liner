@@ -5,8 +5,15 @@
 
 //! Behavior tests for liveness.
 
+#[path = "support/absent_holder_templates.rs"]
+mod absent_holder_templates;
 #[path = "support/liveness_fixtures.rs"]
 mod liveness_fixtures;
+use absent_holder_templates::AbsentHolderHistory;
+use absent_holder_templates::CLEAN_MERGED_HOLDER;
+use absent_holder_templates::LATER_UNMERGED_HOLDER;
+use absent_holder_templates::MERGED_ACTIVE_HOLDER;
+use absent_holder_templates::SWITCHED_BRANCH_HOLDER;
 use liveness_fixtures::AbandonAndRetireDispositionsRemainDistinctAfterReplayState;
 use liveness_fixtures::AssertCheckSessionRejectionsHistory;
 use liveness_fixtures::AssertMarkerClaimRevalidationHistory;
@@ -2136,4 +2143,331 @@ fn rewritten_integration_replacement_accepts_merged_ancestry() {
             .code(),
         Some(0)
     );
+}
+
+#[test]
+fn absent_holder_integrates_without_checkpoint_and_replays() {
+    let repository = MERGED_ACTIVE_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    remove_integration_holder(repository.path(), &history);
+    let resolved = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &history.reservation_id,
+            "--integrated-as",
+            &history.target,
+            "--json",
+        ],
+    );
+    assert_success(&resolved);
+    let journal =
+        fs::read_to_string(repository.path().join(JOURNAL_PATH)).expect("journal should read");
+    assert!(!journal.contains("\"op\":\"checkpoint\""));
+    let events: Vec<Value> = journal
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("journal event should decode"))
+        .collect();
+    let integrated = events
+        .iter()
+        .find(|event| event["op"] == "integrate_absent_holder")
+        .expect("checkpoint-free integration should have an audit event");
+    assert_eq!(integrated["evidence"]["work_head"], history.work_head);
+    assert_eq!(integrated["evidence"]["target"], history.target);
+    assert_eq!(
+        integrated["evidence"]["reason"],
+        "holder_absent_and_head_integrated"
+    );
+    assert!(integrated["actor"]["worktree"].is_string());
+    assert!(integrated["actor"]["run"].is_string());
+    fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should remove");
+    assert_success(&run_berth(
+        repository.path(),
+        &["init", "--repair-projection", "--json"],
+    ));
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&board);
+    let board = json_output(&board);
+    let reservation = reservation_row(&board, &history.reservation_id);
+    assert_eq!(reservation["lifecycle"]["stage"], "released");
+    let lifecycle = run_berth(
+        repository.path(),
+        &["board", "--reservation", &history.reservation_id, "--json"],
+    );
+    assert_success(&lifecycle);
+    assert_eq!(
+        json_output(&lifecycle)["payload"]["data"]["lifecycle"]["status"],
+        "released_without_checkpoint"
+    );
+    assert_eq!(
+        reservation["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            &history.claim_head,
+        ],
+    );
+    let rewritten = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&rewritten);
+    let rewritten = json_output(&rewritten);
+    assert_eq!(
+        reservation_row(&rewritten, &history.reservation_id)["integration_evidence"]["status"]["status"],
+        "trunk_rewritten"
+    );
+}
+
+#[test]
+fn checkpoint_free_replay_keeps_journaled_head_after_extent_changes() {
+    let repository = MERGED_ACTIVE_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    assert_ne!(history.work_head, history.claim_head);
+    remove_integration_holder(repository.path(), &history);
+    assert_success(&run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &history.reservation_id,
+            "--integrated-as",
+            &history.target,
+            "--json",
+        ],
+    ));
+    append_changed_merge_extent(repository.path(), &history);
+    fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should remove");
+    assert_success(&run_berth(
+        repository.path(),
+        &["init", "--repair-projection", "--json"],
+    ));
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&board);
+    let board = json_output(&board);
+    let reservation = reservation_row(&board, &history.reservation_id);
+    assert_eq!(
+        reservation["merge_extent"]["at_release"]["key"]["head"],
+        history.claim_head
+    );
+    assert_eq!(
+        reservation["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            &history.claim_head,
+        ],
+    );
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&board);
+    let board = json_output(&board);
+    assert_eq!(
+        reservation_row(&board, &history.reservation_id)["integration_evidence"]["status"]["status"],
+        "trunk_rewritten",
+        "the board must judge journaled work head {} instead of merge extent head {}",
+        history.work_head,
+        history.claim_head
+    );
+    let replacement = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &history.reservation_id,
+            "--integrated-as",
+            &history.claim_head,
+            "--json",
+        ],
+    );
+    assert_eq!(replacement.status.code(), Some(5));
+    assert_eq!(
+        json_output(&replacement)["message"],
+        "the reservation must have a protected checkpoint first; cargo-berth release records one"
+    );
+}
+
+fn append_changed_merge_extent(root: &Path, history: &AbsentHolderHistory) {
+    let path = root.join(JOURNAL_PATH);
+    let mut journal = fs::read_to_string(&path).expect("journal should read");
+    let previous: Value = serde_json::from_str(journal.lines().last().expect("journal has events"))
+        .expect("last event should decode");
+    let integrated: Value = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event should decode"))
+        .find(|event| event["op"] == "integrate_absent_holder")
+        .expect("integration should be journaled");
+    assert_eq!(integrated["evidence"]["work_head"], history.work_head);
+    let mut event = serde_json::json!({
+        "op": "merge_extent_observed",
+        "event_id": uuid::Uuid::now_v7().to_string(),
+        "projection_generation": previous["projection_generation"]
+            .as_u64().expect("generation should exist") + 1,
+        "reservation_id": history.reservation_id,
+        "extent": {
+            "status": "empty",
+            "key": {
+                "trunk": history.target,
+                "head": history.claim_head,
+                "working_tree": {"tracked_paths": [], "untracked_paths": []},
+            },
+        },
+        "run_status": "ended",
+    });
+    for field in ["schema_version", "actor", "at"] {
+        event[field] = previous[field].clone();
+    }
+    journal.push_str(&event.to_string());
+    journal.push('\n');
+    fs::write(path, journal).expect("changed merge extent should append");
+}
+
+#[test]
+fn absent_holder_refuses_an_ancestor_target_that_lacks_its_work_head() {
+    let repository = MERGED_ACTIVE_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    remove_integration_holder(repository.path(), &history);
+    assert_checkpoint_free_refusal(repository.path(), &history, &history.claim_head);
+}
+
+#[test]
+fn absent_holder_refuses_a_later_unmerged_commit_after_its_claim_head_landed() {
+    let repository = LATER_UNMERGED_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    assert_ne!(history.work_head, history.claim_head);
+    assert_ne!(history.work_head, history.target);
+    remove_integration_holder(repository.path(), &history);
+    assert_checkpoint_free_refusal(repository.path(), &history, &history.target);
+}
+
+#[test]
+fn checkpoint_free_integration_refuses_a_live_holder() {
+    let repository = CLEAN_MERGED_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    assert_clean_integrated_holder(repository.path(), &history, &history.holder);
+    assert_checkpoint_free_refusal(repository.path(), &history, &history.target);
+}
+
+#[test]
+fn checkpoint_free_integration_refuses_a_live_holder_at_a_moved_path() {
+    let repository = CLEAN_MERGED_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    let moved = history.holder.with_file_name("moved-holder");
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "move",
+            history.holder.to_str().expect("holder path"),
+            moved.to_str().expect("moved path"),
+        ],
+    );
+    assert_clean_integrated_holder(repository.path(), &history, &moved);
+    assert_checkpoint_free_refusal(repository.path(), &history, &history.target);
+}
+
+#[test]
+fn checkpoint_free_integration_refuses_an_unverifiable_registration() {
+    let repository = CLEAN_MERGED_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    assert_clean_integrated_holder(repository.path(), &history, &history.holder);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "lock",
+            history.holder.to_str().expect("holder path"),
+        ],
+    );
+    fs::remove_dir_all(&history.holder).expect("locked holder should remove");
+    assert_checkpoint_free_refusal(repository.path(), &history, &history.target);
+}
+
+#[test]
+fn absent_holder_integrates_work_recorded_after_a_branch_switch() {
+    let repository = SWITCHED_BRANCH_HOLDER.instantiate();
+    let history: AbsentHolderHistory = recorded_history::read(repository.path());
+    assert_eq!(
+        git_stdout(repository.path(), &["rev-parse", "absent-holder"]),
+        history.claim_head
+    );
+    assert_ne!(history.work_head, history.claim_head);
+    assert_clean_integrated_holder(repository.path(), &history, &history.holder);
+    remove_integration_holder(repository.path(), &history);
+    let resolved = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &history.reservation_id,
+            "--integrated-as",
+            &history.target,
+            "--json",
+        ],
+    );
+    assert_success(&resolved);
+    let journal =
+        fs::read_to_string(repository.path().join(JOURNAL_PATH)).expect("journal should read");
+    assert!(journal.contains("\"op\":\"integrate_absent_holder\""));
+    assert!(!journal.contains("\"op\":\"checkpoint\""));
+}
+
+fn assert_clean_integrated_holder(root: &Path, history: &AbsentHolderHistory, holder: &Path) {
+    assert_eq!(git_stdout(holder, &["status", "--porcelain"]), "");
+    assert_eq!(
+        git_stdout(holder, &["rev-parse", "HEAD"]),
+        history.work_head
+    );
+    git(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &history.work_head,
+            &history.target,
+        ],
+    );
+}
+
+fn remove_integration_holder(root: &Path, history: &AbsentHolderHistory) {
+    git(
+        root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            history.holder.to_str().expect("holder path"),
+        ],
+    );
+}
+
+fn assert_checkpoint_free_refusal(root: &Path, history: &AbsentHolderHistory, target: &str) {
+    let resolved = run_berth(
+        root,
+        &[
+            "resolve",
+            &history.reservation_id,
+            "--integrated-as",
+            target,
+            "--json",
+        ],
+    );
+    assert_eq!(
+        resolved.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&resolved.stdout)
+    );
+    assert_eq!(
+        json_output(&resolved)["message"],
+        "the reservation must have a protected checkpoint first; cargo-berth release records one"
+    );
+    let journal = fs::read_to_string(root.join(JOURNAL_PATH)).expect("journal should read");
+    assert!(!journal.contains("\"op\":\"integrate_absent_holder\""));
+    assert!(!journal.contains("\"op\":\"checkpoint\""));
 }

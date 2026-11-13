@@ -718,10 +718,34 @@ impl TargetIntegrationReachability {
                         candidate_ancestors.insert(protected_tip.as_ref().clone());
                     }
                 },
+                ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                    integration,
+                    integration_status,
+                } => {
+                    candidate_ancestors.insert(integration.work_head);
+                    candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
+                    candidate_ancestors.insert(integration.target.as_ref().clone());
+                },
                 ReservationEvidenceState::Active { .. }
                 | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {},
             }
         }
+        Self::append_edge_candidate_ancestors(
+            &mut candidate_ancestors,
+            reservations,
+            ordering_graph,
+            edge_candidates,
+        )?;
+        Ok(candidate_ancestors.into_iter().collect())
+    }
+
+    /// Add the work and proof heads needed by the selected ordering edges.
+    fn append_edge_candidate_ancestors(
+        candidate_ancestors: &mut HashSet<GitObjectId>,
+        reservations: &RetainedReservationSet,
+        ordering_graph: &OrderingGraph,
+        edge_candidates: TrunkEdgeCandidates<'_>,
+    ) -> Result<(), ReservationReplayError> {
         if let TrunkEdgeCandidates::Included { scope, target_tips } = edge_candidates {
             candidate_ancestors.extend(target_tips.iter().cloned());
             for predecessor_id in observed_predecessors(ordering_graph, scope) {
@@ -741,12 +765,20 @@ impl TargetIntegrationReachability {
                         candidate_ancestors.insert(protected_tip.as_ref().clone());
                         candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
                     },
+                    ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                        integration,
+                        integration_status,
+                        ..
+                    } => {
+                        candidate_ancestors.insert(integration.work_head);
+                        candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
+                    },
                     ReservationEvidenceState::Active { .. }
                     | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {},
                 }
             }
         }
-        Ok(candidate_ancestors.into_iter().collect())
+        Ok(())
     }
 
     fn for_ancestor(&self, ancestor: &GitObjectId) -> Reachability {
@@ -776,11 +808,17 @@ impl TargetIntegrationReachability {
             };
             let protected_tip = match &snapshot.evidence {
                 RepositoryReservationEvidence::Outstanding { protected_tip, .. }
-                | RepositoryReservationEvidence::Released { protected_tip, .. } => protected_tip,
+                | RepositoryReservationEvidence::Released { protected_tip, .. } => {
+                    protected_tip.as_ref()
+                },
+                RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                    integration,
+                    ..
+                } => &integration.work_head,
                 RepositoryReservationEvidence::Active
                 | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
             };
-            additional.push(protected_tip.as_ref().clone());
+            additional.push(protected_tip.clone());
             additional.extend(
                 reservations
                     .reservation(predecessor_id)?
@@ -841,13 +879,18 @@ fn cross_target_predecessor_evidence(
                     protected_tip,
                     integration_status,
                     ..
-                } => (protected_tip, integration_status),
+                } => (protected_tip.as_ref(), integration_status),
+                RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                    integration,
+                    integration_status,
+                    ..
+                } => (&integration.work_head, integration_status),
                 RepositoryReservationEvidence::Active
                 | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return None,
             };
             let outcome = match trunk {
                 JudgedTargetTip::Resolved(trunk_oid) => {
-                    let tip = reachability.for_ancestor(protected_tip.as_ref());
+                    let tip = reachability.for_ancestor(protected_tip);
                     let proof_commits = reservations
                         .reservation(predecessor_id)
                         .map(crate::reservation::Reservation::target_proof_commits)
@@ -1146,6 +1189,15 @@ impl PredecessorEvidenceStanding {
                 };
                 (subject, integration_status)
             },
+            RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                integration,
+                integration_status,
+            } => (
+                SuccessorIncorporationSubject::RewrittenIntegrationWitness(
+                    integration.target.clone(),
+                ),
+                integration_status,
+            ),
             RepositoryReservationEvidence::Active
             | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
                 return Self::NoProtectedTip;
@@ -3064,6 +3116,9 @@ fn complete_reconciliation_plan(
                         disposition:        disposition.clone(),
                     },
                     RepositoryReservationEvidence::Released { .. }
+                    | RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                        ..
+                    }
                     | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
                 };
             }
@@ -4203,6 +4258,27 @@ fn repository_evidence(
             disposition,
             materialized,
         )),
+        ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { integration, .. } => {
+            let status = match target_evidence_context.repository_trunk {
+                JudgedTargetTip::Resolved(trunk) => {
+                    integration.target.revalidate_ancestry(trunk, |ancestor| {
+                        target_evidence_context
+                            .integration_reachability
+                            .for_ancestor(ancestor)
+                    })
+                },
+                JudgedTargetTip::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+            };
+            Ok(RepositoryEvidenceObservation {
+                evidence:
+                    RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                        integration,
+                        integration_status: status,
+                    },
+                revalidation:            EvidenceRevalidationObservation::Apply,
+                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+            })
+        },
         ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
             Ok(RepositoryEvidenceObservation {
                 evidence:                RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
@@ -4229,6 +4305,13 @@ fn retained_released_evidence(
         } => RepositoryReservationEvidence::Released {
             protected_tip,
             disposition,
+            integration_status,
+        },
+        ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+            integration,
+            integration_status,
+        } => RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+            integration,
             integration_status,
         },
         ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
@@ -4659,17 +4742,21 @@ fn append_evidence_and_retention(
             integration_status,
             RetentionDecision::Repair,
         ),
+        RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+            integration,
+            integration_status,
+        } => (
+            integration.target.as_ref(),
+            integration_status,
+            released_retention_decision(reservation.id(), reservations, ordering_graph)?,
+        ),
         RepositoryReservationEvidence::Released {
             protected_tip,
             integration_status,
             disposition,
         } => {
             let retention =
-                if ordering_graph.has_nonterminal_dependent(reservation.id(), reservations)? {
-                    RetentionDecision::Repair
-                } else {
-                    RetentionDecision::Delete
-                };
+                released_retention_decision(reservation.id(), reservations, ordering_graph)?;
             let retained_commit = match disposition.revalidation_subject() {
                 ReleaseRevalidationSubject::RewrittenIntegration(witness) => witness.as_ref(),
                 ReleaseRevalidationSubject::ProtectedTip | ReleaseRevalidationSubject::None => {
@@ -4690,6 +4777,36 @@ fn append_evidence_and_retention(
         },
         RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
     }
+    append_revalidated_evidence(
+        reservation,
+        repository_evidence_observation,
+        evidence,
+        changes,
+    )
+}
+
+/// Retain released evidence only while an unfinished dependent needs it.
+fn released_retention_decision(
+    reservation_id: ReservationId,
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+) -> Result<RetentionDecision, ReservationReplayError> {
+    Ok(
+        if ordering_graph.has_nonterminal_dependent(reservation_id, reservations)? {
+            RetentionDecision::Repair
+        } else {
+            RetentionDecision::Delete
+        },
+    )
+}
+
+/// Record a changed integration result and the scoped comparison that established it.
+fn append_revalidated_evidence(
+    reservation: &Reservation,
+    repository_evidence_observation: &RepositoryEvidenceObservation,
+    evidence: &IntegrationEvidenceStatus,
+    changes: &mut ReconciliationChanges,
+) -> Result<(), ReservationReplayError> {
     let evidence_revalidation = match repository_evidence_observation.revalidation {
         EvidenceRevalidationObservation::Apply => EvidenceRevalidation::Required(evidence),
         EvidenceRevalidationObservation::PreserveMaterialized => {
@@ -4706,6 +4823,10 @@ fn append_evidence_and_retention(
         }
         | ReservationEvidenceState::Released {
             integration_status, ..
+        }
+        | ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+            integration_status,
+            ..
         } => integration_status,
         ReservationEvidenceState::Active { .. }
         | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
@@ -5170,6 +5291,23 @@ fn rebuild_settlement_retention(
                     continue;
                 };
                 (protected_tip, Some(disposition))
+            },
+            ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                integration, ..
+            } => {
+                match released_retention_decision(reservation.id(), reservations, ordering_graph)? {
+                    RetentionDecision::Repair => reconciliation.action.retention_repairs.push(
+                        ReservationRetentionRefRepair::new(
+                            reservation.id(),
+                            integration.target.as_ref().clone(),
+                        ),
+                    ),
+                    RetentionDecision::Delete => reconciliation
+                        .action
+                        .retention_deletions
+                        .push(reservation.id()),
+                }
+                continue;
             },
             ReservationEvidenceState::Active { .. }
             | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => continue,

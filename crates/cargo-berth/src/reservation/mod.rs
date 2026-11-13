@@ -8,6 +8,7 @@
 //! the lifecycle and its transitions, and the faults that stop a replay. This root declares
 //! them and re-exports the names the rest of the crate uses.
 
+mod absent_holder;
 mod conflict;
 mod constants;
 mod containment;
@@ -21,6 +22,9 @@ mod retention;
 mod scoped_patch_evaluation;
 mod unchanged;
 
+pub(crate) use absent_holder::AbsentHolderIntegration;
+pub(crate) use absent_holder::AbsentHolderIntegrationChecks;
+pub(crate) use absent_holder::RecordedWorkHead;
 pub(crate) use conflict::ReservationConflict;
 pub(crate) use containment::ActingHeadContainment;
 pub(crate) use evidence::IntegrationEvidenceObservation;

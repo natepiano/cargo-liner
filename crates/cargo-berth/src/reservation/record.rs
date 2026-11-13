@@ -12,6 +12,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::absent_holder::AbsentHolderIntegration;
+use super::absent_holder::AbsentHolderIntegrationRecord;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
@@ -78,6 +80,9 @@ pub(crate) struct Reservation {
     pub(super) retained_protected_tip:                            RetainedProtectedTip,
     pub(super) integration_trunk_snapshot:                        IntegrationTrunkSnapshot,
     pub(super) integration_status:                                IntegrationEvidenceStatus,
+    /// The journaled work head and witness for an integration without a checkpoint.
+    #[serde(default)]
+    pub(super) absent_holder_integration:                         AbsentHolderIntegrationRecord,
     /// Every commit that has proved this reservation's work at its target.
     pub(super) target_proof_commits:                              Vec<GitObjectId>,
     pub(super) worktree_root:                                     CanonicalWorktreeRoot,
@@ -132,6 +137,12 @@ impl Reservation {
         {
             self.target_proof_commits.push(trunk_oid.clone());
         }
+    }
+
+    /// Retain the current integration proof and advance its comparison subject.
+    pub(super) fn retain_integration_proof(&mut self) -> Result<(), ReservationReplayError> {
+        self.retain_target_proof(&self.integration_status.clone());
+        self.advance_integration_proof_subject_revision()
     }
 
     pub(crate) fn target_proof_commits(&self) -> &[GitObjectId] { &self.target_proof_commits }
@@ -484,6 +495,21 @@ impl Reservation {
                     })
                 },
                 RetainedProtectedTip::NotCheckpointed
+                    if matches!(disposition, ReleaseDisposition::RewrittenIntegration(_)) =>
+                {
+                    let AbsentHolderIntegrationRecord::Verified(integration) =
+                        &self.absent_holder_integration
+                    else {
+                        return Err(ReservationReplayError::MissingProtectedTip(self.id));
+                    };
+                    Ok(
+                        ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                            integration:        integration.clone(),
+                            integration_status: self.integration_status.clone(),
+                        },
+                    )
+                },
+                RetainedProtectedTip::NotCheckpointed
                     if matches!(
                         disposition,
                         ReleaseDisposition::Abandoned(_)
@@ -581,6 +607,13 @@ pub(crate) enum ReservationEvidenceState {
         /// The most recently materialized integration result.
         integration_status: IntegrationEvidenceStatus,
     },
+    /// An absent holder's recorded work was verified on the trunk without a checkpoint.
+    IntegrationVerifiedWithoutCheckpoint {
+        /// The journaled work head and verified trunk witness.
+        integration:        AbsentHolderIntegration,
+        /// The current result of witness revalidation.
+        integration_status: IntegrationEvidenceStatus,
+    },
     /// A user-confirmed active-work retirement that has no checkpoint evidence.
     ReleasedWithoutCheckpoint {
         /// The abandonment or orphan-retirement decision that ended the work.
@@ -631,6 +664,11 @@ impl From<ReservationEvidenceState> for ReservationLifecycleSnapshot {
             },
             ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
                 Self::ReleasedWithoutCheckpoint { disposition }
+            },
+            ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+                integration, ..
+            } => Self::ReleasedWithoutCheckpoint {
+                disposition: ReleaseDisposition::RewrittenIntegration(integration.target),
             },
         }
     }
