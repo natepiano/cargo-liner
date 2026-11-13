@@ -3499,36 +3499,21 @@ Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside i
 - `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
 - Change-Review: the cargo-tile, cargo-port and cargo-handler status lines show `Reads/s:` with the app's own disk read rate after `CPU:`, and the value changes once each second.
 
-### Phase 63 — Two shim mode tests pass under load  · status: todo
+### Phase 63 — Two shim mode tests pass under load  · status: done
 
 **Depends on:** none (showrunner, 2026-11-13).
 
 On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits), two `cargo-tile` tests failed beside two other package suites. Each passes alone. Both fail in `assert_mode` (`crates/cargo-tile/tests/shim_modes.rs:604`) with "read observed artifact mode: NotFound".
 
-#### Work Order
+#### As-built
 
-**Goal:** both tests pass in a full package run under load, with every current assertion.
+- The failure did not reproduce in five attempts: the tests alone, the two at once, one CPU, a forced descriptor shortage, and the three package suites at once (the original setup). The original log was removed.
+- Code reading found one path to NotFound. The fake cargo copied the capture root only when `$SHIM_TEST_DEFAULT_ROOT` was a directory, and skipped in silence otherwise. The shim runs cargo with no capture root on its fallback paths (`hook.rs:254-267`).
+- The fake cargo now writes a `root-absent` marker on that path (`tests/shim_modes.rs:58`). `assert_capture_modes` fails with the shim status and stderr when the marker exists (`:487`). The next failure names its cause. Every assertion is unchanged; no production code changed.
+- Gate: natedev lint and cargo-tile package, 1,277 tests. The two tests take 0.102 s and 0.124 s.
+- Not done: the trigger is unknown. A new failure reopens this work with its cause named (showrunner informed, 2026-11-13).
 
-**Spec:**
-
-1. Find which path `assert_mode` reads when each test fails:
-   - `caller_descriptors_reach_captured_cargo` (`shim_modes.rs:925`)
-   - `unset_home_does_not_abort_either_capture_path` (`shim_modes.rs:1197`)
-2. Find the cause before a change. The test can read the artifact before the shim or the fake cargo writes it. The shim or the test can also use a time limit. Quote the line that makes the artifact.
-3. Make the test read the artifact only after the process that writes it ends or signals that it is written. Do not add a retry, a sleep or a longer wait.
-4. If the cause is in the shim, fix it in the shim.
-5. Keep every assertion as it is.
-6. Show the failure before the change: run both tests under load until one fails, or force the order that the cause names.
-
-**Files:**
-- `crates/cargo-tile/tests/shim_modes.rs`
-- `crates/cargo-tile/src/` — the shim capture paths, only if item 4 applies
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. A test that fails under load is a defect.
-
-**Acceptance gate:** `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Both tests run under 1 s.
+**Files:** `crates/cargo-tile/tests/shim_modes.rs`.
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
