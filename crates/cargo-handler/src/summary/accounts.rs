@@ -130,6 +130,8 @@ fn compare_accounts(
             _ => Ordering::Equal,
         },
         AccountsColumn::Busy
+        | AccountsColumn::Starting
+        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -153,11 +155,13 @@ fn summed_counts<'a>(
         })
         .try_fold(
             RoleSessionCounts {
-                busy:   0,
-                idle:   0,
-                paused: 0,
-                exited: 0,
-                total:  0,
+                busy:     0,
+                starting: 0,
+                waiting:  0,
+                idle:     0,
+                paused:   0,
+                exited:   0,
+                total:    0,
             },
             RoleSessionCounts::checked_add,
         )
@@ -177,6 +181,14 @@ const fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn
     match column {
         AccountsColumn::Busy => match counts {
             Reading::Known(counts) => Reading::Known(counts.busy),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Starting => match counts {
+            Reading::Known(counts) => Reading::Known(counts.starting),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Waiting => match counts {
+            Reading::Known(counts) => Reading::Known(counts.waiting),
             Reading::Unavailable => Reading::Unavailable,
         },
         AccountsColumn::Idle => match counts {
@@ -438,12 +450,14 @@ fn values(row: &AccountUsage, now: u64) -> [String; AccountsColumn::ALL.len()] {
     })
 }
 
-/// `total_values` sums the five counts from recorded roles.
+/// `total_values` sums the seven counts from recorded roles.
 fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()] {
     let counts = summed_counts(reading.accounts.iter().flat_map(|account| &account.roles));
     AccountsColumn::ALL.map(|column| match column {
         AccountsColumn::Account => "total".to_owned(),
         AccountsColumn::Busy
+        | AccountsColumn::Starting
+        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -519,6 +533,8 @@ const fn on_first_line(column: AccountsColumn) -> bool {
         | AccountsColumn::Roles
         | AccountsColumn::WeeklyLeft
         | AccountsColumn::Busy
+        | AccountsColumn::Starting
+        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -742,14 +758,26 @@ impl AccountLines {
     }
 
     /// Append source problems and the last refresh failure.
-    fn push_notes(&mut self, reading: &AccountsReading, failure: FailureNote<'_>, width: u16) {
+    fn push_notes(
+        &mut self,
+        reading: &AccountsReading,
+        failure: FailureNote<'_>,
+        width: u16,
+        now: u64,
+    ) {
         for problem in &reading.problems {
             self.lines
                 .extend(wrap_line(note(problem.clone()), width, 0));
         }
         if let FailureNote::Failed(failure) = failure {
-            self.lines
-                .extend(wrap_line(note(failure.to_string()), width, 0));
+            self.lines.extend(wrap_line(
+                note(format!(
+                    "{failure}; showing the reading from {} min ago",
+                    now.saturating_sub(reading.received_at) / 60
+                )),
+                width,
+                0,
+            ));
         }
     }
 
@@ -1058,6 +1086,6 @@ pub(super) fn build_lines(
         }
         result.push_role_row(&fit, Span::raw(" "), &cells, width);
     }
-    result.push_notes(reading, failure, width);
+    result.push_notes(reading, failure, width, now);
     result
 }
