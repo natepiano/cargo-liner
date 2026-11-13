@@ -57,6 +57,7 @@ use crate::scan::ProjectStorage;
 use crate::sccache::SccacheSummary;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
+use crate::tui::app::ROW_PRESENTATION_BUILDS;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::test_support;
 
@@ -331,6 +332,29 @@ fn delayed_storage_reply_after_identical_disk_reply_changes_the_row_frame_input(
     assert_eq!(app.scan.generation(), detail_generation);
     assert!(frames.needs_draw(&app, now));
     assert!(!frames.needs_draw(&app, now));
+}
+
+#[test]
+fn row_message_burst_builds_row_presentation_at_most_twice() {
+    let paths = ["/tmp/phase13b-first", "/tmp/phase13b-second"];
+    let mut app = test_support::make_app(&[project(paths[0]), project(paths[1])]);
+    let sender = app.background.background_sender();
+    for path in paths.iter().cycle().take(20) {
+        sender
+            .send(BackgroundMsg::NoRepository {
+                path: AbsolutePath::from(*path),
+            })
+            .expect("queue row message");
+    }
+    ROW_PRESENTATION_BUILDS.with(|builds| builds.set(0));
+
+    let stats = app.poll_background();
+
+    assert_eq!(stats.bg_msgs, 20);
+    assert!(
+        ROW_PRESENTATION_BUILDS.with(std::cell::Cell::get) <= 2,
+        "one frame batch compares the row presentation once"
+    );
 }
 
 #[test]
