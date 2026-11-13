@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,6 +11,10 @@ use notify::RecursiveMode;
 use notify::Watcher;
 use notify::WatcherKind;
 
+use super::ProjectEntry;
+use super::WatchState;
+use super::events::EventContext;
+use super::runtime::GitRefreshDemand;
 use crate::channel::Sender;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
@@ -69,4 +74,51 @@ pub(super) fn target_metadata(
         metadata_store: Arc::new(Mutex::new(store)),
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
     }
+}
+
+pub(super) fn assert_pending_disk(states: &HashMap<String, WatchState>, project_path: &str) {
+    assert!(matches!(
+        states.get(project_path),
+        Some(WatchState::Pending { .. })
+    ));
+}
+
+pub(super) fn tracked_file_event_context<'a>(
+    watch_roots: &'a [AbsolutePath],
+    projects: &'a HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: &'a HashSet<AbsolutePath>,
+    discovered: &'a HashSet<AbsolutePath>,
+) -> EventContext<'a> {
+    EventContext {
+        watch_roots,
+        projects,
+        project_parents,
+        discovered,
+    }
+}
+
+pub(super) fn tracked_file_projects(project_dir: &Path) -> HashMap<AbsolutePath, ProjectEntry> {
+    let mut projects = HashMap::new();
+    projects.insert(
+        AbsolutePath::from(project_dir.to_path_buf()),
+        ProjectEntry {
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "~/demo".to_string(),
+            abs_path:             AbsolutePath::from(project_dir.to_path_buf()),
+            repo_root:            Some(AbsolutePath::from(project_dir.to_path_buf())),
+            git_dir:              Some(AbsolutePath::from(project_dir.join(".git"))),
+            common_git_dir:       Some(AbsolutePath::from(project_dir.join(".git"))),
+        },
+    );
+    projects
+}
+
+#[allow(clippy::expect_used, reason = "tests panic on fixture errors")]
+pub(super) fn write_tracked_file(project_dir: &Path, contents: &str) {
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+    std::fs::write(project_dir.join("src").join("main.rs"), contents).expect("write main.rs");
 }

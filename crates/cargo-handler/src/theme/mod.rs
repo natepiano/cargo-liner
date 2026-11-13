@@ -18,14 +18,10 @@
 //! drift by the tests at the bottom of this file.
 
 mod files;
-mod word_match;
-pub(crate) use word_match::WordMatchGrounds;
-#[cfg(test)]
-pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
 mod files_tests;
+mod word_match;
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
@@ -41,6 +37,11 @@ use tui_pane::TextTheme;
 use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeVariant;
+pub(crate) use word_match::WordMatchGrounds;
+#[cfg(test)]
+pub(crate) use word_match::WordMatchLimit;
+#[cfg(test)]
+pub(crate) use word_match::WordMatchSurface;
 
 pub(crate) use self::files::AppearanceDiagnostic;
 pub(crate) use self::files::StartupThemeNotes;
@@ -58,6 +59,7 @@ use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::IDLE_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
+use crate::constants::WAITING_ROLE;
 use crate::footer_colors;
 use crate::footer_colors::FooterColor;
 
@@ -70,6 +72,7 @@ pub(crate) enum SessionRowInk {
     Claude,
     Codex,
     Busy,
+    Waiting,
     Shell,
     Idle,
     Account(FooterColor),
@@ -85,7 +88,8 @@ impl SessionRowInk {
             Self::LauncherLabel => Some(Self::Claude),
             Self::Claude => Some(Self::Codex),
             Self::Codex => Some(Self::Busy),
-            Self::Busy => Some(Self::Shell),
+            Self::Busy => Some(Self::Waiting),
+            Self::Waiting => Some(Self::Shell),
             Self::Shell => Some(Self::Idle),
             Self::Idle | Self::Account(_) | Self::Management(_) => None,
         })
@@ -101,6 +105,7 @@ impl SessionRowInk {
             Self::Claude => Role::Claude,
             Self::Codex => Role::Codex,
             Self::Busy => Role::Busy,
+            Self::Waiting => Role::Waiting,
             Self::Shell => Role::Shell,
             Self::Idle => Role::Idle,
         };
@@ -155,6 +160,8 @@ pub(crate) enum Role {
     Codex,
     /// A `busy` status.
     Busy,
+    /// A reported `waiting` status.
+    Waiting,
     /// A `shell` status.
     Shell,
     /// An `idle` status, a status the summary does not know, and a
@@ -168,11 +175,12 @@ pub(crate) enum Role {
 
 impl Role {
     /// Every role, in the order [`RolePalette`] lists them.
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::WordMatch,
         Self::Claude,
         Self::Codex,
         Self::Busy,
+        Self::Waiting,
         Self::Shell,
         Self::Idle,
         Self::Unreachable,
@@ -190,6 +198,7 @@ impl Role {
             Self::Claude => CLAUDE_ROLE,
             Self::Codex => CODEX_ROLE,
             Self::Busy => BUSY_ROLE,
+            Self::Waiting => WAITING_ROLE,
             Self::Shell => SHELL_ROLE,
             Self::Idle => IDLE_ROLE,
             Self::Unreachable => UNREACHABLE_ROLE,
@@ -208,6 +217,7 @@ impl Role {
             Self::Claude => SessionRowInk::Claude.style(),
             Self::Codex => SessionRowInk::Codex.style(),
             Self::Busy => SessionRowInk::Busy.style(),
+            Self::Waiting => SessionRowInk::Waiting.style(),
             Self::Shell => SessionRowInk::Shell.style(),
             Self::Idle => SessionRowInk::Idle.style(),
             Self::Session(_) => footer_colors::readable_session_style(tui_pane::role_style(
@@ -301,12 +311,13 @@ struct RolePalette {
 
 impl RolePalette {
     /// The value for `role`.
-    const fn spec(&self, role: Role) -> StyleSpec {
+    fn spec(&self, role: Role) -> StyleSpec {
         match role {
             Role::WordMatch => self.word_match,
             Role::Claude => self.claude,
             Role::Codex => self.codex,
             Role::Busy => self.busy,
+            Role::Waiting => files::bundled_role_styles()[DEFAULT_DARK_THEME][WAITING_ROLE],
             Role::Shell => self.shell,
             Role::Idle => self.idle,
             Role::Unreachable => self.unreachable,
@@ -327,30 +338,12 @@ impl RolePalette {
     }
 }
 
-/// The bundled theme files own the Astra role shades.
-fn astra_roles(mut roles: BTreeMap<String, StyleSpec>, name: &str) -> BTreeMap<String, StyleSpec> {
-    static SHADES: LazyLock<BTreeMap<String, BTreeMap<String, StyleSpec>>> = LazyLock::new(|| {
-        [
-            include_str!("../../themes/default_dark.toml"),
-            include_str!("../../themes/default_light.toml"),
-            include_str!("../../themes/high_contrast.toml"),
-        ]
-        .into_iter()
-        .filter_map(|text| files::parse_family(text).ok())
-        .flat_map(|family| family.variants)
-        .map(|variant| {
-            (
-                variant.name,
-                variant
-                    .roles
-                    .into_iter()
-                    .filter(|(key, _)| matches!(key.as_str(), "mauve" | "astra_reviewer"))
-                    .collect(),
-            )
-        })
-        .collect()
-    });
-    if let Some(shades) = SHADES.get(name) {
+/// The bundled theme files own these appearance-specific role colors.
+fn bundled_roles(
+    mut roles: BTreeMap<String, StyleSpec>,
+    name: &str,
+) -> BTreeMap<String, StyleSpec> {
+    if let Some(shades) = files::bundled_role_styles().get(name) {
         roles.extend(shades.clone());
     }
     roles
@@ -518,7 +511,7 @@ fn default_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
-        roles:       astra_roles(DEFAULT_DARK_ROLES.map(), DEFAULT_DARK_THEME),
+        roles:       bundled_roles(DEFAULT_DARK_ROLES.map(), DEFAULT_DARK_THEME),
     }
 }
 
@@ -567,7 +560,7 @@ fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       astra_roles(DEFAULT_LIGHT_ROLES.map(), DEFAULT_LIGHT_THEME),
+        roles:       bundled_roles(DEFAULT_LIGHT_ROLES.map(), DEFAULT_LIGHT_THEME),
     }
 }
 
@@ -620,7 +613,7 @@ fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       astra_roles(HIGH_CONTRAST_DARK_ROLES.map(), DEFAULT_HC_DARK_THEME),
+        roles:       bundled_roles(HIGH_CONTRAST_DARK_ROLES.map(), DEFAULT_HC_DARK_THEME),
     }
 }
 
@@ -672,7 +665,7 @@ fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       astra_roles(HIGH_CONTRAST_LIGHT_ROLES.map(), DEFAULT_HC_LIGHT_THEME),
+        roles:       bundled_roles(HIGH_CONTRAST_LIGHT_ROLES.map(), DEFAULT_HC_LIGHT_THEME),
     }
 }
 
@@ -688,6 +681,11 @@ mod tests {
     use tui_pane::ThemeVariantFile;
 
     use super::*;
+
+    const WAITING_HUE_TOLERANCE_DIVISOR: u8 = 4;
+    const MINIMUM_WAITING_CONTRAST: f64 = 4.5;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
     const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
@@ -749,6 +747,71 @@ mod tests {
             tui_pane::set_transparent_background(self.transparent);
             tui_pane::set_focused_pane_tint(self.tinted);
         }
+    }
+
+    #[test]
+    fn waiting_theme_files_supply_distinct_yellow_inks() -> TestResult {
+        for template in [
+            include_str!("../../themes/default_dark.toml"),
+            include_str!("../../themes/default_light.toml"),
+            include_str!("../../themes/high_contrast.toml"),
+            include_str!("../../themes/starter.toml"),
+        ] {
+            for variant in files::parse_family(template)?.variants {
+                let waiting = variant.roles.get("waiting").ok_or("waiting role")?;
+                let Color::Rgb(red, green, blue) = waiting.color else {
+                    return Err("waiting must specify an RGB yellow".into());
+                };
+                assert!(
+                    red > blue
+                        && green > blue
+                        && red.abs_diff(green) <= red.max(green) / WAITING_HUE_TOLERANCE_DIVISOR,
+                    "{}: {waiting:?}",
+                    variant.name
+                );
+                for other in ["busy", "idle", "unreachable"] {
+                    assert_ne!(
+                        waiting.color, variant.roles[other].color,
+                        "{} {other}",
+                        variant.name
+                    );
+                }
+                if let Some(builtin) = builtins()
+                    .iter()
+                    .find(|builtin| builtin.id.as_str() == variant.name)
+                {
+                    assert_eq!(builtin.theme.roles["waiting"], *waiting, "{}", variant.name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bundled_light_waiting_values_meet_contrast_without_resolution() -> TestResult {
+        for template in [LIGHT_TEMPLATE, HC_TEMPLATE] {
+            for variant in files::parse_family(template)?.variants {
+                if variant.appearance != Appearance::Light {
+                    continue;
+                }
+                let waiting = variant.roles[WAITING_ROLE].color;
+                let theme = variant.into_theme();
+                let ground = theme.text.bg_focus.color;
+                assert!(
+                    contrast_ratio(waiting, ground) >= MINIMUM_WAITING_CONTRAST,
+                    "{waiting:?} on {ground:?}"
+                );
+                let Color::Rgb(red, green, blue) = waiting else {
+                    return Err("waiting must specify RGB yellow".into());
+                };
+                let brighter = Color::Rgb(red.saturating_add(1), green.saturating_add(1), blue);
+                assert!(
+                    contrast_ratio(brighter, ground) < MINIMUM_WAITING_CONTRAST,
+                    "{waiting:?} can be brighter on {ground:?}"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]

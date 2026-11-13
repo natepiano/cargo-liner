@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bind row expand and collapse to plain Right and Left in a new keymap file.
+- Stop the timed full walks of every project and target tree in an idle session; file events update disk sizes from the changed paths.
+- Ignore Git lock files and ignored file events when scheduling Git refreshes. Keep ignore rules in watcher state. Refresh changed rules and affected checkouts once. Update disk totals from changed files and their hard-link aliases.
+- Keep the Worktrees title count at the top of each Git page.
+- Keep matched finder letters readable in High Contrast Dark. Preserve readable ink and every theme's match background.
+
 - Give group names the tree mark cells when the count is hidden and only one letter fits.
 - Remove CI title suffixes before the run count loses cells.
 - Cut Remote URLs from the left. Keep their checkout names visible beside aligned Worktrees columns.

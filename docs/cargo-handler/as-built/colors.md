@@ -61,6 +61,21 @@ Astra mauve also uses a per-theme shade.
 The theme TOML files remain the source for those appearance-specific shades.
 Account blue and teal use purpose-specific seeds before readability resolution.
 
+### Waiting status
+
+The `waiting` theme role supplies the bright yellow ink for a reported waiting status.
+The bundled dark themes use bright yellow.
+The bundled light themes use RGB `(122, 122, 0)`, the brightest equal-channel yellow that meets 4.5:1 on white.
+The readability resolver adjusts the ink for glyph coverage and selection grounds.
+The theme loader preserves the built-in value when a custom theme omits it.
+A custom theme can replace that value under `[variants.roles]`.
+`SessionRowInk::Waiting` applies the status readability rules.
+Selection retains readable yellow ink.
+Every word-match emphasis keeps the 4.5:1 contrast floor.
+The match resolver can change the foreground to satisfy that floor.
+Waiting keeps a different ink from busy, idle, and unreachable.
+The hierarchy activity column keeps its existing text and ink.
+
 ### Grounds and glyph contrast
 
 `FooterTint::{Footer, Management, Plain}` changes only the intended foreground.
@@ -105,10 +120,21 @@ It changes OKLCH lightness while preserving hue and chroma.
 Selected rows require readable contrast, rather than the unselected palette's distance floor.
 Unselected colors remain unchanged.
 
-`WordHighlight` uses the theme's match ground and selected-match ground.
+`word_highlight.emphasis` sets the strength of a matched word.
+`clear` is the default.
+`subtle` retains the C240 grounds.
+`clear` doubles the theme match ground's perceptual distance from the pane ground.
+`strong` uses the clear ground and adds bold to the matched cells.
+Subtle and clear retain every existing cell modifier.
+Unmatched cells retain their complete styles.
+
+`WordMatchGrounds` keeps separate grounds for plain, focused, and unfocused selected rows.
+The selection search retains its visibility floor and readability cap.
+The theme's declared appearance sets the lightness direction.
 `MatchInk::resolve` keeps an existing foreground when it meets the required covered contrast.
 Otherwise it applies the smallest needed lightness change along that ink's hue.
-Resolved match inks are reused for the theme and word.
+Both match caches include the theme, the source ground, and the emphasis.
+The ink palette also includes the selected word.
 See [interaction](interaction.md) for token rules and painted-frame lookup.
 
 On opaque screens, `tui_pane::tint_painted` supplies the focused interior and readout ground.

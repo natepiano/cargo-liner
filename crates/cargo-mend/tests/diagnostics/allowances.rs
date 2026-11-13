@@ -1,6 +1,7 @@
 use serde_json::Value;
 use tempfile::TempDir;
 
+use super::compiled_report;
 use crate::support::*;
 
 fn write_minimal_manifest(temp: &TempDir, package_name: &str) {
@@ -434,7 +435,7 @@ pub fn collect_repository_files() -> RepositoryFiles {
     )
     .expect("write child module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -504,7 +505,7 @@ pub struct LaunchParams {
     )
     .expect("write sibling boundary");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -584,7 +585,7 @@ pub struct ClickParams {
     )
     .expect("write sibling boundary");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -663,7 +664,7 @@ pub struct ClickParams {
     )
     .expect("write sibling outward type");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -732,7 +733,7 @@ pub use tools::brp_execute::BrpExecute;
     )
     .expect("write leaf module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -796,7 +797,7 @@ pub struct TypeGuideSummary {
     )
     .expect("write response types");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -881,7 +882,7 @@ impl Sha256Cache {
     )
     .expect("write child module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -952,7 +953,7 @@ pub struct ParsedInvalidWikilink;
     )
     .expect("write child module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -1003,7 +1004,7 @@ fn main() {
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 0);
     assert_eq!(report.summary.fixable_with_fix, 0);
@@ -1209,7 +1210,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 0);
     assert_eq!(report.summary.fixable_with_fix, 0);
@@ -1304,7 +1305,7 @@ edition = "2024"
     )
     .expect("write child boundary");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 0);
     assert_eq!(report.summary.fixable_with_fix, 0);
@@ -1465,7 +1466,7 @@ fn main() {
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 0);
     assert_eq!(report.summary.fixable_with_fix, 0);
@@ -1609,7 +1610,7 @@ impl super::ToolFn for ListThings {
     )
     .expect("write tool child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -1670,7 +1671,7 @@ pub enum ResponseStatus {
     )
     .expect("write api child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
@@ -1766,7 +1767,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let codes = report
         .findings
         .iter()
@@ -1853,7 +1854,7 @@ impl App {
     )
     .expect("write focus child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let focus_findings: Vec<_> = report
         .findings
         .iter()
@@ -2007,7 +2008,7 @@ fn path_modules_use_logical_identity_for_signature_exposure() {
             assert_parent_signature_exposure_uses_logical_identity(&mut batch),
         ),
     ];
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(compiled_report(&batch.path().join("Cargo.toml")));
     for (member, assert_case) in assertions {
         assert_case(&reports[member]);
     }
@@ -2044,7 +2045,7 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
     )
     .expect("write signature carrier");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             matches!(
@@ -2122,7 +2123,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(report.findings.iter().any(|finding| {
         finding.path == "src/lib.rs"
             && finding.line_start == 3
@@ -2182,7 +2183,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -2236,7 +2237,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -2292,7 +2293,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.path == "src/a/b/c.rs"
@@ -2350,7 +2351,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             !(finding.path == "src/a/left.rs" && finding.item.as_deref() == Some("struct Target"))
@@ -2395,7 +2396,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -2471,7 +2472,7 @@ pub struct NonRawReturn;
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for (item, carrier_spelling) in [
         ("struct RawParameter", "raw"),
         ("struct RawReturn", "raw"),
@@ -2566,7 +2567,7 @@ impl crate::a::b::carrier::Carrier {
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for target in [
         "struct QualifiedTarget",
         "struct ImportedTarget",
@@ -2651,7 +2652,7 @@ impl RestrictedContract for TraitCarrier { type Output = c::TraitTarget; }
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for (line_start, carrier) in [(1, "inherent method"), (2, "restricted trait")] {
         let finding = report
             .findings
@@ -2731,7 +2732,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -2798,7 +2799,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_findings = report
         .findings
         .iter()
@@ -2849,7 +2850,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_findings = report
         .findings
         .iter()
@@ -2930,7 +2931,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = |path: &str| {
         report
             .findings
@@ -2990,7 +2991,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3065,7 +3066,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report
             .findings
@@ -3114,7 +3115,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.path != "src/container/carrier/targets.rs" || finding.line_start != 2
@@ -3173,7 +3174,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(report.findings.iter().all(|finding| {
         finding.path != "src/a/b/original.rs" || finding.item.as_deref() != Some("struct Carrier")
     }));
@@ -3254,7 +3255,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3327,7 +3328,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
         .iter()
@@ -3379,7 +3380,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3474,7 +3475,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3546,7 +3547,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report
             .findings
@@ -3595,7 +3596,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let method_codes = report
         .findings
         .iter()
@@ -3662,7 +3663,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_findings = report
         .findings
         .iter()
@@ -3721,7 +3722,7 @@ fn assert_canonical_pub_in_spelling_respects_signature_reach(
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3808,7 +3809,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3865,7 +3866,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3922,7 +3923,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -3975,7 +3976,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -4029,7 +4030,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -4091,7 +4092,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -4143,7 +4144,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -4175,7 +4176,7 @@ fn stale_facade_in_unresolvable_chain_requires_structure() {
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -4235,7 +4236,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_findings = report
         .findings
         .iter()
@@ -4292,7 +4293,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report
             .findings
@@ -4361,7 +4362,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let private_finding = report
         .findings
         .iter()
@@ -4429,7 +4430,7 @@ fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
             ],
         );
     }
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(compiled_report(&batch.path().join("Cargo.toml")));
     for package_name in [
         "restricted_sibling_reexport_first_fixture",
         "restricted_sibling_private_first_fixture",
@@ -4515,7 +4516,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             !(finding.path == "src/api/public_case.rs"
@@ -4586,7 +4587,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for private_path in ["src/api/self_case.rs", "src/api/in_self_case.rs"] {
         assert!(
             report.findings.iter().any(|finding| {
@@ -4641,7 +4642,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for line_start in [1, 2] {
         let finding = report
             .findings
@@ -4711,7 +4712,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_findings = report
         .findings
         .iter()
@@ -4761,7 +4762,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report
             .findings
@@ -4848,7 +4849,7 @@ pub union UnionCarrier {
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for carrier in ["Struct", "Union"] {
         assert_field_signature_reach(&report, carrier);
     }
@@ -4938,7 +4939,7 @@ fn restricted_struct_and_union_fields_remain_forbidden_without_facades() {
     )
     .expect("write field declarations");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let field_findings = report
         .findings
         .iter()
@@ -4992,7 +4993,7 @@ pub(super) fn outer_surface(_: OuterTarget) {}
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let finding_at = |line_start| {
         report
             .findings
@@ -5082,7 +5083,7 @@ pub(crate) const SharedSurface: ValueTarget = ValueTarget;
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_declaration_identity_findings(&report);
 }
 
@@ -5323,6 +5324,21 @@ pub_in_path = "permitted"
                 &mut batch,
             ),
         ),
+    ];
+    let reports = batch.partition_report(compiled_report(&batch.path().join("Cargo.toml")));
+    for (member, assert_case) in assertions {
+        assert_case(&reports[member]);
+    }
+}
+
+#[test]
+fn parent_facade_annotations_with_permitted_visibility() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let assertions = [
         (
             "is_narrowed_to_an_internal_parent_super_facade_in_mod_rs",
             suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_mod_rs(&mut batch),
@@ -5342,7 +5358,7 @@ pub_in_path = "permitted"
             suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent(&mut batch),
         ),
     ];
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(compiled_report(&batch.path().join("Cargo.toml")));
     for (member, assert_case) in assertions {
         assert_case(&reports[member]);
     }

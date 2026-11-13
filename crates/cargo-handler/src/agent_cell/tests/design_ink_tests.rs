@@ -12,6 +12,71 @@ use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
 use crate::theme;
 
+#[test]
+fn waiting_status_words_use_the_configured_ink_in_showrunner_and_unit_tiles() {
+    let mut palette = theme::builtins().remove(0).theme;
+    let waiting = Color::Rgb(255, 255, 160);
+    palette
+        .roles
+        .insert("waiting".into(), tui_pane::StyleSpec::from_color(waiting));
+    let reset = theme::ResetThemeFixture::with_theme(palette);
+    tui_pane::set_transparent_background(false);
+    for role in [HierarchyRole::Showrunner, HierarchyRole::Unit] {
+        let mut root = agent(10, "owner-session", HOUR, None);
+        root.children
+            .push(child(0, ChildKind::Thread, None, "worker-session", MINUTE));
+        let mut cell = entry(&root, None);
+        cell.role_label = RoleLabel::Stated(role);
+        cell.source_state = ReportedSessionState::Reported(SessionState::Waiting);
+        cell.lines[0].subject = LineSubject::ManagedThread(
+            &root.children[0],
+            HierarchyRole::Impl,
+            RowIdentity {
+                machine: "natedev",
+                pid:     root.pid,
+            },
+        );
+        cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Waiting);
+        cell.lines.insert(0, tile_root_line(&cell));
+        for width in [60, 70, 90, 92, 180] {
+            let buffer = drawn_into(&cell, &[], width, 12);
+            let (status, header_y) = find(&buffer, "status").expect("status header");
+            for label in ["owner-session", "worker-session"] {
+                let y = u16::try_from(
+                    lines(&buffer)
+                        .iter()
+                        .enumerate()
+                        .find(|(row, text)| *row > usize::from(header_y) && text.contains(label))
+                        .expect("session row below the header")
+                        .0,
+                )
+                .expect("row coordinate");
+                let actual: String = (status..status + 7)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                assert_eq!(actual, "waiting", "{role:?} width={width}");
+                for x in status..status + 7 {
+                    assert_eq!(buffer[(x, y)].fg, waiting, "{role:?} {label} width={width}");
+                }
+            }
+            if header_y > 0 {
+                let (x, y) = find(&buffer, "waiting").expect("full heading status");
+                assert!(y < header_y);
+                for x in x..x + 7 {
+                    assert_eq!(
+                        buffer[(x, y)].fg,
+                        waiting,
+                        "the full heading uses waiting ink"
+                    );
+                }
+            }
+            let (x, y) = find(&buffer, "impl").expect("unchanged activity");
+            assert_eq!(buffer[(x, y)].fg, tui_pane::text_default());
+        }
+    }
+    drop(reset);
+}
+
 /// The acceptance rule fixes stem coverage at 208/255 independently of production.
 fn busy_stem_contrast(ink: Color, ground: Color) -> f64 {
     #[expect(
@@ -38,6 +103,7 @@ fn busy_stem_contrast(ink: Color, ground: Color) -> f64 {
 fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffer {
     let mut root = agent(10, "owner", HOUR, None);
     root.activity = AgentActivity::Active(activity);
+    root.name = "root-status-session".into();
     root.children = [
         ("thinking-thread", ChildKind::Thread, Activity::Thinking),
         ("running-thread", ChildKind::Thread, Activity::Running),
@@ -81,6 +147,11 @@ fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffe
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
     }));
+    for line in &mut entry.lines {
+        line.source_state = ReportedSessionState::Reported(SessionState::Busy);
+    }
+    entry.source_state = ReportedSessionState::Reported(SessionState::Busy);
+    entry.lines.insert(0, tile_root_line(&entry));
     let rect = area(100, 15);
     let mut buffer = Buffer::empty(rect);
     buffer.set_style(rect, Style::default().bg(ground));
@@ -118,12 +189,12 @@ fn busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes() {
                     let status_x = find(&buffer, "status").expect("status header").0;
                     let mut inks = Vec::new();
                     for (label, word) in [
-                        ("thinking-thread", "thinking"),
-                        ("running-thread", "running"),
-                        ("thinking-subagent", "thinking"),
-                        ("running-subagent", "running"),
-                        ("running-shell", "running"),
-                        ("managed-session", AgentActivity::Active(activity).text()),
+                        ("thinking-thread", "busy"),
+                        ("running-thread", "busy"),
+                        ("thinking-subagent", "busy"),
+                        ("running-subagent", "busy"),
+                        ("running-shell", "busy"),
+                        ("managed-session", "busy"),
                     ] {
                         let y = find(&buffer, label).expect("activity row").1;
                         let actual: String = (status_x..status_x + summary::cell_width(word))
@@ -137,9 +208,16 @@ fn busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes() {
                         }
                         inks.push(cell.fg);
                     }
-                    let (x, y) = find(&buffer, AgentActivity::Active(activity).text())
-                        .expect("owner header status");
-                    inks.push(buffer[(x, y)].fg);
+                    let y = find(&buffer, "root-status-session")
+                        .expect("owner session row")
+                        .1;
+                    assert_eq!(
+                        (status_x..status_x + 4)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>(),
+                        "busy"
+                    );
+                    inks.push(buffer[(status_x, y)].fg);
                     if inks.iter().any(|ink| *ink != inks[0]) {
                         failures.push(format!(
                             "{name} tint={tint} focused={focused} {activity:?}: {inks:?}"
@@ -172,23 +250,29 @@ fn check_statuses(ground: Color) {
             step:     VerifyStep::Check,
             location: RunLocation::Local,
         }),
+        AgentActivity::Active(Activity::Thinking),
     ];
     root.children = activities
         .iter()
         .enumerate()
         .map(|(index, &activity)| {
-            let mut row = child(
-                0,
-                ChildKind::Subagent(SubagentRole::Unrecorded),
-                None,
-                &format!("job-{index}"),
-                10,
-            );
+            let mut row = child(0, ChildKind::Thread, None, &format!("job-{index}"), 10);
             row.activity = activity;
             row
         })
         .collect();
-    let cell = entry(&root, None);
+    let mut cell = entry(&root, None);
+    let source_states = [
+        SessionState::Idle,
+        SessionState::Paused,
+        SessionState::Busy,
+        SessionState::Exited,
+        SessionState::Busy,
+        SessionState::Waiting,
+    ];
+    for (line, state) in cell.lines.iter_mut().zip(source_states) {
+        line.source_state = ReportedSessionState::Reported(state);
+    }
     let rect = area(150, 15);
     let mut buffer = Buffer::empty(rect);
     buffer.set_style(rect, Style::default().bg(ground));
@@ -201,8 +285,8 @@ fn check_statuses(ground: Color) {
         AccountColumn::Hidden,
         &FooterColors::default(),
     );
-    for activity in activities {
-        let word = activity.text();
+    for state in source_states {
+        let word = state.text();
         let (x, y) = find(&buffer, word).expect("drawn activity word");
         for offset in 0..summary::cell_width(word) {
             let cell = &buffer[(x + offset, y)];
@@ -270,8 +354,8 @@ fn check_role_and_account_cells(ground: Color) {
     let roles = [
         (RoleLabel::Stated(HierarchyRole::Showrunner), "showrunner"),
         (RoleLabel::Stated(HierarchyRole::Unit), "unit"),
-        (RoleLabel::Stated(HierarchyRole::Impl), "impl"),
-        (RoleLabel::Unlabeled, "session"),
+        (RoleLabel::Stated(HierarchyRole::Impl), "worker"),
+        (RoleLabel::Unlabeled, ""),
     ];
     let members: Vec<_> = labels
         .iter()
@@ -354,12 +438,7 @@ fn tree_role_and_account_words_meet_contrast_on_every_tile_ground() {
     tui_pane::set_focused_pane_tint(tinted);
 }
 
-#[test]
-fn status_cells_keep_glyph_coverage_contrast_on_every_drawn_pane_ground() {
-    let previous = tui_pane::theme();
-    let transparent = tui_pane::transparent_background();
-    let tinted = tui_pane::focused_pane_tint_enabled();
-    let mut failures = Vec::new();
+fn status_coverage_owner() -> AgentRow {
     let mut root = agent(10, "status-owner", HOUR, None);
     root.children = [
         AgentActivity::Idle,
@@ -403,7 +482,25 @@ fn status_cells_keep_glyph_coverage_contrast_on_every_drawn_pane_ground() {
             92,
         )
     });
-    let entry = entry(&root, None);
+    root
+}
+
+#[test]
+fn status_cells_keep_glyph_coverage_contrast_on_every_drawn_pane_ground() {
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let mut failures = Vec::new();
+    let root = status_coverage_owner();
+    let mut entry = entry(&root, None);
+    for (line, state) in entry.lines.iter_mut().zip([
+        SessionState::Idle,
+        SessionState::Paused,
+        SessionState::Busy,
+        SessionState::Exited,
+    ]) {
+        line.source_state = ReportedSessionState::Reported(state);
+    }
     let rect = area(180, 14);
     // Reuse the cache across theme, focus and tint changes, as the app does.
     let colors = FooterColors::default();
@@ -474,16 +571,17 @@ fn light_running_and_waiting_stems_keep_readable_contrast() {
         .enumerate()
         .map(|(index, activity)| ChildRow {
             activity: AgentActivity::Active(activity),
-            ..child(
-                0,
-                ChildKind::Subagent(SubagentRole::Unrecorded),
-                None,
-                &format!("stem-{index}"),
-                MINUTE,
-            )
+            ..child(0, ChildKind::Thread, None, &format!("stem-{index}"), MINUTE)
         })
         .collect();
-    let entry = entry(&root, None);
+    let mut entry = entry(&root, None);
+    for (line, state) in entry
+        .lines
+        .iter_mut()
+        .zip([SessionState::Busy, SessionState::Idle])
+    {
+        line.source_state = ReportedSessionState::Reported(state);
+    }
     let rect = area(180, 10);
     let mut buffer = Buffer::empty(rect);
     buffer.set_style(rect, Style::default().bg(tui_pane::pane_background(false)));
@@ -499,7 +597,7 @@ fn light_running_and_waiting_stems_keep_readable_contrast() {
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
-    for word in ["running", "waiting"] {
+    for word in ["busy", "idle"] {
         let (x, y) = find(&buffer, word).expect("drawn status word");
         let cell = &buffer[(x, y)];
         let ratio = tests::covered_role_contrast(cell.fg, cell.bg);

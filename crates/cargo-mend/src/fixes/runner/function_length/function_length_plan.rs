@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
 
@@ -77,7 +78,7 @@ impl FunctionLengthPlan {
             return Ok(Self::default());
         }
         let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
-        let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+        let fixes = ValidatedFixSet::try_from((plan.fixes, sources))?;
         let limit = formatter::threshold(workspace)?;
         let paths = fixes.iter().map(|fix| &fix.path).collect::<BTreeSet<_>>();
         let changes_function =
@@ -122,7 +123,7 @@ impl FunctionLengthPlan {
         if let Formatter::Unavailable { cause } = formatter {
             let plan = imports::plan_module_imports(proposals.to_vec(), sources, package_roots)?;
             return Ok(Self {
-                fixes: ValidatedFixSet::try_from(plan.fixes)?,
+                fixes: ValidatedFixSet::try_from((plan.fixes, sources))?,
                 protection: LengthProtection::Unavailable { cause },
                 ..Self::default()
             });
@@ -154,7 +155,7 @@ impl FunctionLengthPlan {
             let preserved = decision.preserved_sources().collect::<Vec<_>>();
             let selected = preserve_dependencies(proposals, &originals, &preserved);
             let plan = imports::plan_module_imports(selected, sources, package_roots)?;
-            let fixes = ValidatedFixSet::try_from(plan.fixes)?;
+            let fixes = ValidatedFixSet::try_from((plan.fixes, sources))?;
             let added =
                 decision.measure_functions(&originals, &fixes, &formatter, workspace, limit)?;
             if added.is_empty() {
@@ -188,13 +189,14 @@ impl FunctionLengthPlan {
         workspace: &Path,
         limit: usize,
     ) -> Result<Vec<RetainedFunction>> {
-        let mut added = Vec::new();
+        let mut candidates_by_path = BTreeMap::new();
+        let mut proposed_sources = BTreeMap::new();
         for (path, original) in originals {
             let Ok(before) = function_collector::collect(original) else {
                 continue;
             };
             let candidates = before
-                .iter()
+                .into_iter()
                 .enumerate()
                 .filter(|(_, function)| {
                     needs_measurement(function, path, fixes, limit)
@@ -213,12 +215,20 @@ impl FunctionLengthPlan {
                     .cloned()
                     .collect::<Vec<_>>(),
             )?;
-            let rewritten = file_fixes.rewritten_files()?;
-            let Some(proposed) = rewritten.files.get(path) else {
+            let mut rewritten = file_fixes.rewritten_files()?;
+            let Some(proposed) = rewritten.files.remove(path) else {
                 continue;
             };
-            let after =
-                function_collector::collect(&formatter.formatted(proposed, path, workspace)?)?;
+            proposed_sources.insert(path.clone(), proposed);
+            candidates_by_path.insert(path, candidates);
+        }
+        let formatted_sources = formatter.formatted_batch(&proposed_sources, workspace)?;
+        let mut added = Vec::new();
+        for (path, candidates) in candidates_by_path {
+            let formatted_source = formatted_sources
+                .get(path)
+                .context("formatter omitted a function measurement source")?;
+            let after = function_collector::collect(formatted_source)?;
             for (index, function) in candidates {
                 if let Some(formatted) = after.get(index)
                     && formatted.name == function.name

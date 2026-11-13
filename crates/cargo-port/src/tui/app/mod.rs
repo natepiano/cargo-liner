@@ -523,9 +523,8 @@ impl App {
         B: ClipboardBackend,
     {
         let outcome = self.framework.copy_selection(self, backend);
-        // A deliberate output-pane yank reports the line count and
-        // collapses the selection back to following the tail. The generic
-        // CopyOutcome only carries the label, so the count is read here.
+        // Output copies retain the line count and collapse the selection to the tail.
+        // The shared outcome carries only the payload label.
         if matches!(outcome, CopyOutcome::Copied { .. }) && self.focus_is(PaneId::Output) {
             let live = self.inflight.owned_run().output().to_vec();
             let count = self.panes.output.selection_line_count(&live);
@@ -534,22 +533,7 @@ impl App {
             self.show_timed_toast("Copy", format!("Copied {count} {lines}"));
             return;
         }
-        self.show_copy_outcome(outcome);
-    }
-
-    fn show_copy_outcome(&mut self, outcome: CopyOutcome) {
-        match outcome {
-            CopyOutcome::Copied { label } => {
-                self.show_timed_toast("Copy", format!("Copied {}", label.noun()));
-            },
-            CopyOutcome::NothingToCopy => self.show_timed_toast("Copy", "Nothing to copy"),
-            CopyOutcome::Unavailable { reason } => {
-                self.show_timed_toast("Clipboard unavailable", reason.to_string());
-            },
-            CopyOutcome::Failed { reason } => {
-                self.show_timed_toast("Copy failed", reason.to_string());
-            },
-        }
+        tui_pane::show_copy_outcome(&mut self.framework.toasts, outcome);
     }
 
     pub(super) fn show_timed_warning_toast(
@@ -646,6 +630,14 @@ impl App {
         self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
         });
+        if let Ok(mut store) = self.scan.metadata_store().lock() {
+            let disk_paths = all_paths
+                .iter()
+                .cloned()
+                .chain(disk_entries.iter().map(|(_, path)| path.clone()))
+                .collect();
+            store.disk_usage.retain_projects(&disk_paths);
+        }
         let discovered: HashSet<_> = disk_entries.iter().map(|(_, path)| path).collect();
         self.scan.source_measurements.retain_projects(|root| {
             discovered.contains(root) || matches!(self.project_list.at_path(root), Found(_))
@@ -3589,11 +3581,8 @@ mod tests {
 
         // ── Base-pane navigation routed through framework keymap ──────────
 
-        /// `Ctrl-f` / `Ctrl-b` page the project list when vim mode is on. They
-        /// are vim-only motions (not keymappable), so the test enables
-        /// `ArrowsAndVim`; with vim off these keys do nothing. Validates that
-        /// `handle_normal_key` consults the framework keymap's navigation scope
-        /// after the legacy pane-scope match.
+        /// `Ctrl-f` and `Ctrl-b` page the project list through the framework navigation scope.
+        /// These motions require `ArrowsAndVim` and cannot be rebound.
         #[test]
         fn ctrl_b_and_ctrl_f_page_the_project_list() {
             let projects: Vec<_> = (0..40)
@@ -3786,10 +3775,9 @@ mod tests {
             assert_eq!(app.project_list.cursor(), 2);
         }
 
-        /// Rebinding `ProjectListAction::ExpandRow` to `Tab` (with
-        /// `GlobalAction::NextPane` rebound away) expands the current row.
-        /// Validates that the legacy pane-scope match in `handle_normal_key`
-        /// drives `ExpandRow` through its match arm.
+        /// The framework dispatches `ProjectListAction::ExpandRow` through its project list scope.
+        /// Binding it to `Tab` expands the current row when `GlobalAction::NextPane` uses another
+        /// key.
         #[test]
         fn project_list_action_expand_row_rebound_to_tab_expands() {
             let tmp = tempfile::tempdir().expect("tempdir");

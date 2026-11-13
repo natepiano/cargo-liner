@@ -28,6 +28,14 @@ use super::visibility;
 use super::visibility::FindingsPersistence;
 use crate::reporting::EXIT_CODE_ERROR;
 
+#[cfg(test)]
+mod fixture;
+
+#[cfg(test)]
+pub(crate) use fixture::analyze_fixture_json;
+#[cfg(test)]
+pub(crate) use fixture::read_fixture_selection;
+
 #[derive(Debug)]
 struct AnalysisCallbacks {
     driver_settings: DriverSettings,

@@ -3273,6 +3273,8 @@ mod tests {
         let (received, scan) = HerdrNames::with_pending_answer(|herdr| {
             let mut scanner = scanner();
             scanner.processes = ProcessCensus::for_test();
+            // Initialize sysinfo before measuring publication with a pending Herdr answer.
+            scanner.processes.read(&[]);
             scanner.herdr = herdr;
             let scan = std::thread::spawn(move || {
                 let mut stages = Vec::new();

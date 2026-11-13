@@ -1,3 +1,6 @@
+#[path = "ranked_column_grid_tests.rs"]
+mod ranked_columns;
+
 use super::*;
 use crate::tiles::constants::MIN_TILE_HEIGHT;
 use crate::tiles::constants::SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT;

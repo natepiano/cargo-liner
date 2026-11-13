@@ -4,6 +4,7 @@
 //! the themes directory by.
 
 use std::collections::BTreeMap;
+use std::fmt::Formatter;
 #[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
@@ -11,7 +12,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::de::Error;
+use serde::de::Visitor;
 use tui_pane::AppConfig;
 use tui_pane::AppIdentity;
 use tui_pane::AppearanceConfig;
@@ -221,21 +226,86 @@ impl From<HerdrReadTimeout> for u64 {
 #[serde(transparent)]
 pub(crate) struct AccountsConfig(pub(crate) BTreeMap<String, String>);
 
+/// `WordHighlightEmphasis` sets the configured strength of a matched word.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum WordHighlightEmphasis {
+    Subtle,
+    #[default]
+    Clear,
+    Strong,
+}
+
+impl WordHighlightEmphasis {
+    const VALUES: [Self; 3] = [Self::Subtle, Self::Clear, Self::Strong];
+    const NAMES: [&'static str; 3] = [Self::Subtle.name(), Self::Clear.name(), Self::Strong.name()];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Subtle => "subtle",
+            Self::Clear => "clear",
+            Self::Strong => "strong",
+        }
+    }
+}
+
+impl Serialize for WordHighlightEmphasis {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+/// `WordHighlightEmphasisVisitor` names all allowed values for every rejected TOML type.
+struct WordHighlightEmphasisVisitor;
+
+impl Visitor<'_> for WordHighlightEmphasisVisitor {
+    type Value = WordHighlightEmphasis;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("one of ")?;
+        formatter
+            .debug_list()
+            .entries(WordHighlightEmphasis::NAMES)
+            .finish()
+    }
+
+    fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+        WordHighlightEmphasis::VALUES
+            .into_iter()
+            .find(|emphasis| emphasis.name() == value)
+            .ok_or_else(|| E::unknown_variant(value, &WordHighlightEmphasis::NAMES))
+    }
+}
+
+impl<'de> Deserialize<'de> for WordHighlightEmphasis {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_str(WordHighlightEmphasisVisitor)
+    }
+}
+
+/// `WordHighlightConfig` controls `[word_highlight]` without changing the theme.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct WordHighlightConfig {
+    pub(crate) emphasis: WordHighlightEmphasis,
+}
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
-    pub(crate) appearance: AppearanceConfig<CargoHandler>,
+    pub(crate) appearance:     AppearanceConfig<CargoHandler>,
+    /// `Config::word_highlight` sets the strength of matching words.
+    pub(crate) word_highlight: WordHighlightConfig,
     /// `[tiles]` — how the tile grid is arranged and viewed.
-    pub(crate) tiles:      TilesConfig,
+    pub(crate) tiles:          TilesConfig,
     /// `[machines]` — the remote machines the summary lists.
-    pub(crate) machines:   MachinesConfig,
+    pub(crate) machines:       MachinesConfig,
     /// `[census]` — discovery of this machine's agent hierarchy.
-    pub(crate) census:     CensusConfig,
+    pub(crate) census:         CensusConfig,
     /// `[accounts]` — labels for this machine's agent configuration homes.
-    pub(crate) accounts:   AccountsConfig,
+    pub(crate) accounts:       AccountsConfig,
 }
 
 impl AppConfig for Config {
@@ -286,6 +356,9 @@ dark_theme = \"Default Dark\"
 iterm2_profile = \"cargo-handler\"
 transparent = true
 
+[word_highlight]
+emphasis = \"clear\"
+
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
@@ -307,6 +380,23 @@ herdr_read_timeout = 1000
         let written =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
         assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn word_highlight_emphasis_parses_and_reports_allowed_values() {
+        for emphasis in ["subtle", "clear", "strong"] {
+            let saved = round_trip(&format!("[word_highlight]\nemphasis = \"{emphasis}\"\n"));
+            assert!(saved.contains(&format!("emphasis = \"{emphasis}\"")));
+            assert_eq!(round_trip(&saved), saved);
+        }
+        for value in ["'invisible'", "1", "true", "1.5", "[]", "{}", "1979-05-27"] {
+            let error =
+                toml::from_str::<Config>(&format!("[word_highlight]\nemphasis = {value}\n"))
+                    .expect_err("an invalid emphasis must fail");
+            for allowed in ["subtle", "clear", "strong"] {
+                assert!(error.to_string().contains(allowed), "{value}: {error}");
+            }
+        }
     }
 
     #[test]

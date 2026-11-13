@@ -7,6 +7,7 @@
 //! runs produced.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::hash::DefaultHasher;
@@ -657,6 +658,45 @@ impl IntegrationRepository {
             ],
         );
         self.git(self.root(), &["branch", "-D", "integration"]);
+    }
+
+    /// Assert command success, with fixture refs and linked checkouts on failure.
+    ///
+    /// # Panics
+    /// Panics when the command fails.
+    pub fn assert_success(&self, output: &Output) {
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            self.git_state()
+        );
+    }
+
+    /// Read the fixture's branch refs and linked checkout records for a failure report.
+    ///
+    /// # Panics
+    /// Panics when git cannot start.
+    #[must_use]
+    pub fn git_state(&self) -> String {
+        let mut state = format!("fixture: {}\n", self.root().display());
+        for arguments in [
+            &["for-each-ref", "refs/heads"][..],
+            &["worktree", "list", "--porcelain"][..],
+        ] {
+            let output = self.git_driver().output(self.root(), arguments);
+            writeln!(
+                state,
+                "git {} ({})\nstdout: {}\nstderr: {}\n",
+                arguments.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .expect("fixture state should format");
+        }
+        state
     }
 
     /// Run git in `checkout` and assert it succeeded.

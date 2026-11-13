@@ -56,3 +56,39 @@ pub(crate) use render::CompilerStats;
 pub(crate) use render::OutputFormat;
 pub(crate) use render::render_human_report;
 pub(crate) use render::render_timing;
+
+/// Preserve compiler input order and the runner's suggestion-sensitive duplicate policy.
+pub(crate) fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
+    findings.sort_by(|a, b| {
+        (
+            a.input_order(),
+            &a.path,
+            a.line,
+            a.column,
+            &a.diagnostic_code,
+            &a.item,
+            &a.message,
+            &a.suggestion,
+        )
+            .cmp(&(
+                b.input_order(),
+                &b.path,
+                b.line,
+                b.column,
+                &b.diagnostic_code,
+                &b.item,
+                &b.message,
+                &b.suggestion,
+            ))
+    });
+    findings.dedup_by(|a, b| {
+        a.input_order() == b.input_order()
+            && a.diagnostic_code == b.diagnostic_code
+            && a.path == b.path
+            && a.line == b.line
+            && a.column == b.column
+            && a.message == b.message
+            && a.item == b.item
+            && a.suggestion == b.suggestion
+    });
+}

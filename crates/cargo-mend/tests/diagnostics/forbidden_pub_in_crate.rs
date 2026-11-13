@@ -1,5 +1,6 @@
 use tempfile::TempDir;
 
+use super::compiled_report;
 use crate::support::*;
 
 #[test]
@@ -49,7 +50,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
 
     assert_rejected_annotations(&report);
 }
@@ -83,7 +84,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let blocked = report
         .findings
         .iter()
@@ -142,7 +143,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for line_start in 1..=4 {
         let finding = report
             .findings
@@ -209,7 +210,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
         .iter()
@@ -270,7 +271,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let target_finding = report
         .findings
         .iter()
@@ -327,7 +328,7 @@ bench = false
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         assert_codes(&report, "src/a/b/c.rs", &expected_codes);
         if pub_in_path == "forbidden" {
             assert_headline_and_help(
@@ -382,7 +383,7 @@ bench = false
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         assert_codes(&report, "src/a/b/c.rs", &expected_codes);
         if pub_in_path == "forbidden" {
             // No `consider using: `pub`` here: a `pub use` cannot be wider than
@@ -435,7 +436,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(
         &report,
         "src/a/b.rs",
@@ -493,7 +494,7 @@ bench = false
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         assert_codes(&report, "src/a/b/c.rs", &expected_codes);
         if pub_in_path == PubInPath::Required.config_value() {
             assert_headline_and_help(
@@ -532,7 +533,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/a/b/c.rs", &[DiagnosticCode::SuspiciousPub]);
     assert_eq!(
         report.summary.fixable_with_fix, 1,
@@ -592,7 +593,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/a/b/c.rs", &[]);
     assert_eq!(report.summary.fixable_with_fix, 0, "{report:#?}");
 
@@ -846,7 +847,7 @@ bench = false
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         assert_codes(&report, "src/a.rs", &[]);
     }
 }
@@ -881,7 +882,7 @@ bench = false
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         assert_headline_and_help(
             &report,
             "src/a/b/c.rs",
@@ -919,7 +920,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(
         &report,
         "src/a/b/c.rs",
@@ -1019,7 +1020,7 @@ fn no_facade_callers_select_only_compiling_advice() {
             ],
         );
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let report = compiled_report(&temp.path().join("Cargo.toml"));
         if expected_headline == "accepted" {
             assert_codes(&report, "src/a/b/c.rs", &[]);
         } else {
@@ -1082,7 +1083,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_eq!(
         report.summary.fixable_with_fix, 1,
         "a resolved boundary must advertise the fix that writes it: {report:#?}",
@@ -1114,32 +1115,32 @@ bench = false
 #[test]
 fn signature_only_exact_boundary_needs_no_facade() {
     let temp = create_signature_only_boundary_fixture(NamingCaller::Absent);
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/a/b/c.rs", &[]);
 }
 
 #[test]
 fn exact_boundary_accepts_a_caller_naming_the_item() {
     let temp = create_signature_only_boundary_fixture(NamingCaller::Present);
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/a/b/c.rs", &[]);
 }
 
 #[test]
 fn a_sibling_binary_keeps_an_exact_signature_boundary_accepted() {
     let lib_only = create_cross_target_signature_only_fixture(SiblingBinary::Absent);
-    let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
+    let lib_only_report = compiled_report(&lib_only.path().join("Cargo.toml"));
     assert_codes(&lib_only_report, "src/a/target.rs", &[]);
 
     let with_binary = create_cross_target_signature_only_fixture(SiblingBinary::Present);
-    let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
+    let with_binary_report = compiled_report(&with_binary.path().join("Cargo.toml"));
     assert_codes(&with_binary_report, "src/a/target.rs", &[]);
 }
 
 #[test]
 fn sibling_binary_caller_accepts_its_exact_boundary() {
     let lib_only = create_cross_target_no_facade_fixture(SiblingBinary::Absent);
-    let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
+    let lib_only_report = compiled_report(&lib_only.path().join("Cargo.toml"));
     assert_headline_and_help(
         &lib_only_report,
         "src/a/c.rs",
@@ -1148,14 +1149,14 @@ fn sibling_binary_caller_accepts_its_exact_boundary() {
     );
 
     let with_binary = create_cross_target_no_facade_fixture(SiblingBinary::Present);
-    let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
+    let with_binary_report = compiled_report(&with_binary.path().join("Cargo.toml"));
     assert_codes(&with_binary_report, "src/a/c.rs", &[]);
 }
 
 #[test]
 fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
     let signature_only = create_cross_target_facade_signature_fixture(SiblingBinary::Absent);
-    let signature_only_report = run_mend_json(&signature_only.path().join("Cargo.toml"));
+    let signature_only_report = compiled_report(&signature_only.path().join("Cargo.toml"));
     assert_headline_and_help(
         &signature_only_report,
         "src/a/target.rs",
@@ -1164,7 +1165,7 @@ fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
     );
 
     let with_facade = create_cross_target_facade_signature_fixture(SiblingBinary::Present);
-    let with_facade_report = run_mend_json(&with_facade.path().join("Cargo.toml"));
+    let with_facade_report = compiled_report(&with_facade.path().join("Cargo.toml"));
     assert_headline_and_help(
         &with_facade_report,
         "src/a/target.rs",
@@ -1224,7 +1225,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_headline_and_help(
         &report,
         "member-a/src/lib.rs",
@@ -1265,7 +1266,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/a/b.rs", &[]);
 }
 
@@ -1298,7 +1299,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(
         &report,
         "src/a/b.rs",
@@ -1351,7 +1352,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
         .iter()
@@ -1430,7 +1431,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let unconverged: Vec<_> = report
         .findings
         .iter()
@@ -1720,7 +1721,7 @@ edition = "2024"
     );
     pin_pub_in_path(temp.path(), PubInPath::Required);
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     // Each target reports the declaration once — the library and the binary are
     // separate crates that happen to share the file. What must not double is the
     // advertised fix: `retain_one_restricted_annotation_fix_per_site` demotes the
@@ -1747,6 +1748,22 @@ edition = "2024"
         "pub(in crate::a) fn exact() {}\n",
         "the shared declaration must be rewritten exactly once"
     );
+
+    // Add distinct compiler findings after the shared rewrite check.
+    // Syntax scans cannot produce OverbroadPubCrate findings.
+    write_sources(
+        &temp,
+        &[
+            ("src/lib.rs", "mod a;\nmod library_only;\n"),
+            ("src/main.rs", "mod a;\nmod binary_only;\n\nfn main() {}\n"),
+            ("src/library_only.rs", "pub(crate) fn library_only() {}\n"),
+            ("src/binary_only.rs", "pub(crate) fn binary_only() {}\n"),
+        ],
+    );
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
+    for path in ["src/library_only.rs", "src/binary_only.rs"] {
+        assert_codes(&report, path, &[DiagnosticCode::OverbroadPubCrate]);
+    }
 }
 
 /// A bounded `pub(in crate::…)` is auto-fixable, but only by removing it, and
@@ -1800,7 +1817,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for suffix in [
         "src/animation/sequence.rs",
         "src/animation/sequence/installation.rs",
@@ -1906,7 +1923,7 @@ bench = false
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     for suffix in [
         "src/animation/sequence.rs",
         "src/animation/sequence/playback.rs",
@@ -1954,7 +1971,7 @@ fn bounded_pub_in_path_is_fixable_when_the_boundary_widens_or_respells_it() {
                            build() -> Pose {\n    Pose\n}\n";
     let temp = create_widening_boundary_fixture(sequence_source);
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let finding_at = |line_start: usize| {
         report
             .findings
@@ -2143,7 +2160,7 @@ fn assert_note(report: &Report, suffix: &str, note: &str) {
 fn widening_past_a_trait_impl_interface_is_reported_without_a_fix() {
     let temp = create_interface_ceiling_fixture();
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
 
     let widening = report
         .findings
@@ -2357,7 +2374,7 @@ edition = "2024"
         ],
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let reported_lines: Vec<_> = report
         .findings
         .iter()
@@ -2408,6 +2425,6 @@ fn cfg_shifted_reexport_keeps_its_cross_target_facade() {
             ),
         ],
     );
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert_codes(&report, "src/x/parent/data.rs", &[]);
 }

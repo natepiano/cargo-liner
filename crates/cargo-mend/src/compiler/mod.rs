@@ -17,6 +17,8 @@ pub(crate) use build::CompilerFixOutcome;
 pub(crate) use build::RunWrapper;
 pub(crate) use build::RunningExecutable;
 pub(crate) use build::SelectionResult;
+#[cfg(test)]
+pub(crate) use build::fixture_scope_fingerprint;
 pub(crate) use build::run_cargo_fix;
 pub(crate) use build::run_selection;
 pub(crate) use constants::CARGO_FLAG_ALL_TARGETS;
@@ -30,6 +32,10 @@ pub(crate) use constants::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 pub(crate) use constants::DRIVER_ENV;
 pub(crate) use constants::PRELUDE_MODULE_NAME;
 pub(crate) use constants::SOURCE_DIR_SRC;
+#[cfg(test)]
+pub(crate) use driver::analyze_fixture_json;
 pub(crate) use driver::driver_main;
+#[cfg(test)]
+pub(crate) use driver::read_fixture_selection;
 pub(crate) use persistence::SourceModuleMount;
 pub(crate) use toolchain_probes::ToolchainProbes;

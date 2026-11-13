@@ -711,7 +711,7 @@ impl HitTestRegistry for App {
             AppPaneId::Main => Some(&self.tiles),
             // The attract screen has no click behavior, and the
             // favorites modal absorbs clicks before this pane walk.
-            AppPaneId::Attract(_) | AppPaneId::Favorites => None,
+            AppPaneId::Attract(_) | AppPaneId::Favorites | AppPaneId::Details => None,
         }
     }
 

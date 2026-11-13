@@ -19,6 +19,7 @@ use notify::RecursiveMode;
 use notify::Watcher;
 use notify::WatcherKind;
 use notify::event::CreateKind;
+use notify::event::Flag;
 use notify::event::ModifyKind;
 use notify::event::RemoveKind;
 
@@ -32,6 +33,7 @@ use super::roots::RegisteredRoots;
 use super::roots::Subscription;
 use super::roots::WatchedFolderRole;
 use super::runtime;
+use super::runtime::GitRefreshDemand;
 use super::runtime::ProjectEntry;
 use super::runtime::WatcherLoopState;
 use super::runtime::WatcherRegistrationPhase;
@@ -93,11 +95,15 @@ fn workspace(path: &Path) -> AbsolutePath {
 
 fn project_entry(path: AbsolutePath) -> ProjectEntry {
     ProjectEntry {
-        label:          path.display().to_string(),
-        abs_path:       path,
-        repo_root:      None,
-        git_dir:        None,
-        common_git_dir: None,
+        git_event_visibility: std::sync::Mutex::new(
+            crate::project::GitEventVisibilityCache::default(),
+        ),
+        git_refresh_demand:   GitRefreshDemand::default(),
+        label:                path.display().to_string(),
+        abs_path:             path,
+        repo_root:            None,
+        git_dir:              None,
+        common_git_dir:       None,
     }
 }
 
@@ -578,4 +584,61 @@ fn assert_removal_replies(removed_tree: RemovedTree) {
     if matches!(removed_tree, RemovedTree::Project) {
         assert!(watcher.active.contains(second.as_path()));
     }
+}
+
+#[test]
+fn pathless_rescan_updates_every_owned_disk_tracker() {
+    let scratch = tempfile::tempdir().expect("scratch root");
+    let roots: Vec<_> = ["first", "second"]
+        .map(|name| {
+            let path = AbsolutePath::from(scratch.path().join(name));
+            std::fs::create_dir(&path).expect("project directory");
+            std::fs::write(path.join("log"), "old").expect("initial log");
+            path
+        })
+        .into_iter()
+        .collect();
+    let (sender, receiver) = channel::unbounded();
+    let dispatch = MetadataDispatchContext {
+        handle:         test_support::test_runtime().handle().clone(),
+        sender:         sender.clone(),
+        metadata_store: Arc::new(Mutex::new(WorkspaceMetadataStore::new())),
+        metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
+    };
+    let mut state = watcher_state();
+    for root in &roots {
+        state
+            .projects
+            .insert(root.clone(), project_entry(root.clone()));
+        assert_eq!(dispatch.disk_tracker(root).refresh().entries[0].1.total, 3);
+        std::fs::write(root.join("log"), "new content").expect("changed log");
+    }
+    let mut event = Event::new(EventKind::Other);
+    event.attrs.set_flag(Flag::Rescan);
+    let (mut watcher, mut registered) = discovery_root(scratch.path());
+    let routed =
+        events::route_folder_event(&mut watcher, &mut registered, &event, &mut state, &sender);
+    let context = WatcherDispatchContext {
+        event:             EventContext {
+            watch_roots:     &roots,
+            projects:        &state.projects,
+            project_parents: &state.project_parents,
+            discovered:      &state.discovered,
+        },
+        background_tx:     &sender,
+        lint_runtime:      None,
+        metadata_dispatch: Some(&dispatch),
+    };
+    events::replay_buffered_events(
+        &routed,
+        &context,
+        &mut state.pending_disk,
+        &mut state.pending_git,
+        &mut state.pending_new,
+    );
+    assert_eq!(state.pending_disk.len(), 2);
+    for root in &roots {
+        assert_eq!(dispatch.disk_tracker(root).refresh().entries[0].1.total, 11);
+    }
+    assert!(receiver.is_empty());
 }

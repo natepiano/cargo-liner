@@ -31,10 +31,13 @@ use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
 use super::transcript::WatchedDirectoryIdentity;
+use crate::constants::DETACHED_RUNS_DIRECTORY;
+use crate::constants::DETACHED_RUNS_SCRIPT;
 use crate::constants::RUN_WATCH_RECOVERY;
 use crate::constants::RUN_WATCH_RETRY;
 use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::VERIFY_SCRIPT;
+#[cfg(test)]
 use crate::theme::Role;
 
 /// One activity, with no contradictory separate turn state.
@@ -63,6 +66,7 @@ pub(crate) enum Activity {
     Running,
     Asking,
     Waiting,
+    Starting,
     /// The gate and the machine executing it.
     Verify {
         step:     VerifyStep,
@@ -114,6 +118,7 @@ impl AgentActivity {
                 Activity::Running => "running",
                 Activity::Asking => "asking",
                 Activity::Waiting => "waiting",
+                Activity::Starting => "starting",
                 Activity::Verify { step, location } => match (step, location) {
                     (VerifyStep::Fmt, RunLocation::Local) => "fmt",
                     (VerifyStep::Clippy, RunLocation::Local) => "clippy",
@@ -137,6 +142,7 @@ impl AgentActivity {
     }
 
     /// Gates share an accent; waits and closed turns are dim.
+    #[cfg(test)]
     pub(crate) const fn color_role(self) -> Role {
         match self {
             Self::Active(Activity::Verify { .. }) => Role::Codex,
@@ -160,6 +166,7 @@ impl From<Option<&str>> for AgentActivity {
             Some("web") => Self::Active(Activity::Web),
             Some("asking") => Self::Active(Activity::Asking),
             Some("waiting") => Self::Active(Activity::Waiting),
+            Some("starting") => Self::Active(Activity::Starting),
             _ => Self::Unreported,
         }
     }
@@ -531,7 +538,9 @@ impl RunRecord {
             ..
         }) = self
             && let Some(runs) = path.parent()
-            && runs.file_name().is_some_and(|name| name == "mesh_runs")
+            && runs
+                .file_name()
+                .is_some_and(|name| name == DETACHED_RUNS_DIRECTORY)
             && let Some(unit) = runs.parent()
         {
             return RunDirectory::Unit(unit);
@@ -555,13 +564,13 @@ impl RunRecord {
     }
 }
 
-/// The exact record named by a mesh supervisor's command line.
+/// The detached supervisor's command line names its exact record.
 pub(super) fn supervisor_record(process: &ProcessEntry) -> Option<&Path> {
     let args = &process.arguments;
     let script = args.iter().position(|word| {
         Path::new(word)
             .file_name()
-            .is_some_and(|name| name == "mesh_runs.py")
+            .is_some_and(|name| name == DETACHED_RUNS_SCRIPT)
     })?;
     let program = Path::new(args.first()?).file_name()?.to_str()?;
     if script > 1 || (script == 1 && !program.starts_with("python") && program != "py") {
@@ -1073,7 +1082,7 @@ impl RunDirectoryWatch {
         changed: Arc<Mutex<RunChanges>>,
         watch_lost: Arc<AtomicBool>,
     ) -> RunWatchBackend {
-        let directory = session.join("mesh_runs");
+        let directory = session.join(DETACHED_RUNS_DIRECTORY);
         let watched_directory = directory.clone();
         let backend = RecommendedWatcher::new(
             move |answer: notify::Result<Event>| {
@@ -1124,7 +1133,7 @@ impl RunDirectoryWatch {
     }
 
     fn rearm(&mut self, session: &Path, now: Instant) {
-        let identity = WatchedDirectoryIdentity::read(&session.join("mesh_runs"));
+        let identity = WatchedDirectoryIdentity::read(&session.join(DETACHED_RUNS_DIRECTORY));
         if !self.watch_lost.swap(false, Ordering::AcqRel)
             && identity != WatchedDirectoryIdentity::Unavailable
             && identity == self.identity
@@ -1218,7 +1227,7 @@ impl RunRecords {
     pub(super) fn for_test() -> Self {
         Self {
             install_watch: |session, _, _| {
-                if session.join("mesh_runs").is_dir() {
+                if session.join(DETACHED_RUNS_DIRECTORY).is_dir() {
                     RunWatchBackend::Controlled
                 } else {
                     RunWatchBackend::Unavailable
@@ -1289,7 +1298,7 @@ impl RunRecords {
             .or_insert_with(|| RunDirectoryWatch::new(session, now, self.install_watch));
         let events = watch.take_changes(session, now);
         let records = self.sessions.entry(session.to_owned()).or_default();
-        let directory = session.join("mesh_runs");
+        let directory = session.join(DETACHED_RUNS_DIRECTORY);
         let changed = match events {
             RunChanges::Unchanged => HashSet::new(),
             RunChanges::Records(names) => names,

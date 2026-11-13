@@ -75,3 +75,15 @@ pub(super) const GIT_UNTRACKED_STATUS_CODE: &str = "??";
 pub(super) const GIT_SUBMODULE_BRANCH_KEY: &str = "branch";
 pub(super) const GIT_SUBMODULE_PATH_KEY: &str = "path";
 pub(super) const GIT_SUBMODULE_URL_KEY: &str = "url";
+
+// `GitEventVisibilityCache` reads tracked paths and configuration sources.
+pub(super) const GIT_LS_FILES_COMMAND: &str = "ls-files";
+pub(super) const GIT_CACHED_ARG: &str = "--cached";
+pub(super) const GIT_NULL_ARG: &str = "-z";
+pub(super) const GIT_TYPE_BOOL_ARG: &str = "--type=bool";
+pub(super) const GIT_GET_ARG: &str = "--get";
+pub(super) const GIT_PATH_ARG: &str = "--path";
+pub(super) const GIT_SHOW_ORIGIN_ARG: &str = "--show-origin";
+pub(super) const GIT_LIST_ARG: &str = "--list";
+pub(super) const GIT_CORE_IGNORECASE_KEY: &str = "core.ignorecase";
+pub(super) const GIT_CORE_EXCLUDESFILE_KEY: &str = "core.excludesfile";

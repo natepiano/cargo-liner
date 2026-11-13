@@ -50,7 +50,7 @@ pub(super) enum PaintedSurfaceContent {
 }
 
 impl PaintedSurface {
-    pub(super) fn surface(&self) -> SelectionSurface {
+    pub(crate) fn surface(&self) -> SelectionSurface {
         match &self.content {
             PaintedSurfaceContent::Tree { key, .. } => SelectionSurface::Tile(key.clone()),
             PaintedSurfaceContent::Summary { .. } => SelectionSurface::Summary,
@@ -111,6 +111,7 @@ fn tree_pressed(
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
     .with_expansion(&app.expansion);
     let TileLookup::Current(tile) = cells.tile(id) else {

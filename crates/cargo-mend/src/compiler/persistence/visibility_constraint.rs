@@ -7,7 +7,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::caller_aware;
+use super::caller_aware::CallerEvidence;
 use super::caller_aware::CallerMap;
+use super::schema::DeclarationIdentity;
 use super::schema::PubUseNarrowingSite;
 use super::schema::StoredFinding;
 use super::schema::StoredReport;
@@ -16,6 +18,7 @@ use crate::compiler::visibility::NoFacadeVisibilityRepair;
 use crate::config::DiagnosticCode;
 use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
+use crate::rust_syntax::ParsedSources;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -782,10 +785,14 @@ impl VisibilityConstraintGroup {
         callers: &CallerMap,
         package_root: &str,
         declaration: &StoredVisibilityDeclaration,
+        source_file: &str,
+        parsed: &ParsedSources,
     ) -> Option<StoredFinding> {
         MountVisibility {
             group: self,
             declaration,
+            source_file,
+            parsed,
         }
         .render(callers, package_root)
     }
@@ -795,6 +802,8 @@ impl VisibilityConstraintGroup {
 struct MountVisibility<'a> {
     group:       &'a VisibilityConstraintGroup,
     declaration: &'a StoredVisibilityDeclaration,
+    source_file: &'a str,
+    parsed:      &'a ParsedSources,
 }
 
 impl Deref for MountVisibility<'_> {
@@ -804,6 +813,18 @@ impl Deref for MountVisibility<'_> {
 }
 
 impl MountVisibility<'_> {
+    fn caller_evidence<'a>(
+        &self,
+        callers: &'a CallerMap,
+        package_root: &str,
+    ) -> CallerEvidence<'a> {
+        let declaration = DeclarationIdentity::new(
+            &self.parsed.path_key(std::path::Path::new(self.source_file)),
+            self.declaration.item_def_path.clone(),
+        );
+        caller_aware::callers_for_package(callers, package_root, &declaration)
+    }
+
     fn render(&self, callers: &CallerMap, package_root: &str) -> Option<StoredFinding> {
         let required_reach = self.constraints.required_reach();
         if self.declares_effective_required_boundary(callers, package_root, required_reach.as_ref())
@@ -943,9 +964,11 @@ impl MountVisibility<'_> {
         package_root: &str,
     ) -> Option<StoredVisibilityReach> {
         let declaration = self.declaration;
-        let reaching =
-            &caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)?
-                .reaching;
+        let CallerEvidence::Recorded(item_callers) = self.caller_evidence(callers, package_root)
+        else {
+            return None;
+        };
+        let reaching = &item_callers.reaching;
         if reaching.is_empty() {
             return None;
         }
@@ -982,14 +1005,12 @@ impl MountVisibility<'_> {
     }
 
     fn callers_require_structural_repair(&self, callers: &CallerMap, package_root: &str) -> bool {
-        let reaching_callers = caller_aware::callers_for_package(
-            callers,
-            package_root,
-            &self.declaration.item_def_path,
-        )
-        .map(|item_callers| &item_callers.reaching);
         matches!(
-            caller_repair(self.declaration, reaching_callers),
+            caller_repair(
+                self.declaration,
+                self.caller_evidence(callers, package_root),
+                CallerRequirement::Reaching
+            ),
             NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
         )
     }
@@ -1294,17 +1315,15 @@ impl MountVisibility<'_> {
         {
             return BoundaryDemand::BeyondSignature;
         }
-        let naming_callers = caller_aware::callers_for_package(
-            callers,
-            package_root,
-            &self.declaration.item_def_path,
-        )
-        .map(|item_callers| &item_callers.naming);
         let demanded_beyond_signature = !matches!(
             requirement_repair(self.declaration, required_reach),
             NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
         ) || matches!(
-            caller_repair(self.declaration, naming_callers),
+            caller_repair(
+                self.declaration,
+                self.caller_evidence(callers, package_root),
+                CallerRequirement::Naming
+            ),
             NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
         );
         if demanded_beyond_signature {
@@ -1325,21 +1344,20 @@ impl MountVisibility<'_> {
         } else {
             requirement_repair(self.declaration, required_reach)
         };
-        let reaching_callers = caller_aware::callers_for_package(
-            callers,
-            package_root,
-            &self.declaration.item_def_path,
-        )
-        .map(|item_callers| &item_callers.reaching);
-        repair.most_invasive(caller_repair(self.declaration, reaching_callers))
+        repair.most_invasive(caller_repair(
+            self.declaration,
+            self.caller_evidence(callers, package_root),
+            CallerRequirement::Reaching,
+        ))
     }
 
     fn caller_boundary_path(&self, callers: &CallerMap, package_root: &str) -> String {
         let declaration = self.declaration;
         let no_callers = BTreeSet::new();
-        let reaching_callers =
-            caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)
-                .map_or(&no_callers, |item_callers| &item_callers.reaching);
+        let reaching_callers = match self.caller_evidence(callers, package_root) {
+            CallerEvidence::Recorded(item_callers) => &item_callers.reaching,
+            CallerEvidence::NoneRecorded => &no_callers,
+        };
         visibility::common_ancestor_def_path(&declaration.item_module_def_path, reaching_callers)
             .map_or_else(
                 || String::from("crate"),
@@ -1414,16 +1432,30 @@ fn compiler_boundary_path<'path>(boundary: &'path str, item_module: &str) -> &'p
     }
 }
 
+#[derive(Clone, Copy)]
+enum CallerRequirement {
+    Naming,
+    Reaching,
+}
+
 fn caller_repair(
     declaration: &StoredVisibilityDeclaration,
-    callers: Option<&BTreeSet<String>>,
+    evidence: CallerEvidence<'_>,
+    requirement: CallerRequirement,
 ) -> NoFacadeVisibilityRepair {
     let no_callers = BTreeSet::new();
+    let callers = match evidence {
+        CallerEvidence::Recorded(callers) => match requirement {
+            CallerRequirement::Naming => &callers.naming,
+            CallerRequirement::Reaching => &callers.reaching,
+        },
+        CallerEvidence::NoneRecorded => &no_callers,
+    };
     let item_module = &declaration.item_module_def_path;
     visibility::classify_no_facade_callers(
         item_module,
         visibility::parent_scope_def_path(item_module),
-        callers.unwrap_or(&no_callers),
+        callers,
     )
 }
 
@@ -1472,6 +1504,7 @@ fn group_visibility_constraints(
 }
 
 pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], callers: &CallerMap) {
+    let parsed = ParsedSources::default();
     let inventory = SourceMountInventory::collect(reports);
     let groups = group_visibility_constraints(reports);
 
@@ -1493,7 +1526,13 @@ pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], cal
     }
     for (key, shared) in groups {
         for (mount, group) in shared.mounts {
-            let rendered = group.render(callers, &mount.package_root, &mount.declaration);
+            let rendered = group.render(
+                callers,
+                &mount.package_root,
+                &mount.declaration,
+                &key.source.path,
+                &parsed,
+            );
             // Some scans defer an automatic edit until callers are merged and
             // therefore initially mark it None. An ineligible annotation or a
             // manual rendered outcome instead denotes an actual manual error.
@@ -1586,6 +1625,7 @@ fn common_def_path_ancestor(left: &str, right: &str) -> String {
 )]
 mod tests {
     use super::CallerMap;
+    use super::DeclarationIdentity;
     use super::NoFacadeVisibilityRepair;
     use super::StoredCallerReconciliation;
     use super::StoredConstraintOutcome;
@@ -1615,6 +1655,7 @@ mod tests {
     use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
+    use crate::rust_syntax::ParsedSources;
 
     struct TestMount {
         group:       VisibilityConstraintGroup,
@@ -1642,7 +1683,13 @@ mod tests {
         }
 
         fn render(&self, callers: &CallerMap, package: &str) -> Option<StoredFinding> {
-            self.group.render(callers, package, &self.declaration)
+            self.group.render(
+                callers,
+                package,
+                &self.declaration,
+                "/package/src/lib.rs",
+                &ParsedSources::default(),
+            )
         }
     }
 
@@ -2072,7 +2119,10 @@ mod tests {
             all_features_coverage:      AllFeaturesCoverage::default(),
             compiler_warning_facts:     CompilerWarningFacts::None,
             use_sites:                  vec![UseSite {
-                target_def_path:        item_def_path.to_string(),
+                declaration:            DeclarationIdentity::new(
+                    &ParsedSources::default().path_key(std::path::Path::new("/package/src/lib.rs")),
+                    item_def_path.to_string(),
+                ),
                 caller_module_def_path: caller_module_def_path.to_string(),
                 reference:              UseSiteReference::Named,
             }],
@@ -2188,7 +2238,10 @@ mod tests {
         candidate.narrower_scope_def_path = Some(String::from("crate::b"));
         report.module_mount_facts = ["a", "b"].into_iter().map(mount_fact).collect();
         report.use_sites = vec![UseSite {
-            target_def_path:        String::from("crate::a::item"),
+            declaration:            DeclarationIdentity::new(
+                &ParsedSources::default().path_key(std::path::Path::new("/package/src/lib.rs")),
+                String::from("crate::a::item"),
+            ),
             caller_module_def_path: String::from("crate"),
             reference:              UseSiteReference::Named,
         }];
@@ -2330,7 +2383,10 @@ mod tests {
         })
         .collect();
         report.use_sites.push(UseSite {
-            target_def_path:        String::from("crate::other::nested::hidden::Item"),
+            declaration:            DeclarationIdentity::new(
+                &ParsedSources::default().path_key(std::path::Path::new(child)),
+                String::from("crate::other::nested::hidden::Item"),
+            ),
             caller_module_def_path: String::from("crate"),
             reference:              UseSiteReference::Named,
         });
@@ -2372,7 +2428,11 @@ mod tests {
             source_files:               vec![constraint.source.path.clone()],
             findings:                   vec![candidate],
             use_sites:                  vec![UseSite {
-                target_def_path:        constraint.declaration.item_def_path.clone(),
+                declaration:            DeclarationIdentity::new(
+                    &ParsedSources::default()
+                        .path_key(std::path::Path::new(&constraint.source.path)),
+                    constraint.declaration.item_def_path.clone(),
+                ),
                 caller_module_def_path: caller.to_string(),
                 reference:              UseSiteReference::Named,
             }],

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use super::compiled_report;
 use crate::support::*;
 
 pub(super) fn write(root: &std::path::Path, relative: &str, contents: &str) {
@@ -44,7 +45,7 @@ fn subtree_findings(report: &Report) -> Vec<(String, &Finding)> {
 /// Runs mend on a fixture holding one re-export `--fix` cannot rewrite, and
 /// asserts that one finding stays an error whose help names `reason`.
 fn assert_single_unfixable_finding(root: &std::path::Path, path: &str, reason: &str) {
-    let report = run_mend_json(&root.join("Cargo.toml"));
+    let report = compiled_report(&root.join("Cargo.toml"));
     let findings = subtree_findings(&report);
     let [(relative, finding)] = findings.as_slice() else {
         panic!("expected exactly one finding, full report: {report:#?}");
@@ -168,7 +169,7 @@ fn flags_only_reexports_that_leave_the_module_subtree() {
     let root = temp.path();
     write_fixture(root);
 
-    let report = run_mend_json(&root.join("Cargo.toml"));
+    let report = compiled_report(&root.join("Cargo.toml"));
     let findings = subtree_findings(&report);
     let flagged = findings
         .iter()
@@ -312,7 +313,7 @@ fn reexport_written_by_a_macro_is_not_reported() {
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
     );
 
-    let report = run_mend_json(&root.join("Cargo.toml"));
+    let report = compiled_report(&root.join("Cargo.toml"));
     let flagged = subtree_findings(&report)
         .into_iter()
         .map(|(relative, finding)| (relative, finding.line_start))

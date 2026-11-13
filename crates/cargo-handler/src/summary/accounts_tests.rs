@@ -27,6 +27,7 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::hierarchy::HierarchyError;
 use crate::census::scan::ScanStage;
 use crate::footer_colors::FooterColor;
@@ -38,7 +39,7 @@ use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
 const RESET: &str = "2026-10-19T06:00:00Z";
-const COMPLETE_ACCOUNTS_WIDTH: u16 = 90;
+const COMPLETE_ACCOUNTS_WIDTH: u16 = 109;
 
 #[test]
 fn board_count_headers_keep_the_accounts_board_order() {
@@ -46,7 +47,12 @@ fn board_count_headers_keep_the_accounts_board_order() {
         .into_iter()
         .map(AccountsColumn::header)
         .collect();
-    assert_eq!(headers, ["busy", "idle", "paused", "exited", "total"]);
+    assert_eq!(
+        headers,
+        [
+            "busy", "starting", "waiting", "idle", "paused", "exited", "total"
+        ]
+    );
 }
 
 #[test]
@@ -60,8 +66,8 @@ fn board_role_rows_and_total_draw_all_five_source_counts() {
         0,
     );
     account["role_counts"] = serde_json::json!([
-        {"busy":2,"idle":3,"paused":5,"exited":7,"total":17},
-        {"busy":11,"idle":13,"paused":17,"exited":19,"total":60}
+        {"busy":2,"starting":23,"waiting":29,"idle":3,"paused":5,"exited":7,"total":69},
+        {"busy":11,"starting":31,"waiting":37,"idle":13,"paused":17,"exited":19,"total":128}
     ]);
     let table = contract_table(&[account]);
     let buffer = contract_draw(&table, tui_pane::pane_background(false));
@@ -74,10 +80,12 @@ fn board_role_rows_and_total_draw_all_five_source_counts() {
         .expect("board total row");
     for (name, expected) in [
         ("busy", ["2", "11", "13"]),
+        ("starting", ["23", "31", "54"]),
+        ("waiting", ["29", "37", "66"]),
         ("idle", ["3", "13", "16"]),
         ("paused", ["5", "17", "22"]),
         ("exited", ["7", "19", "26"]),
-        ("total", ["17", "60", "77"]),
+        ("total", ["69", "128", "197"]),
     ] {
         let column = AccountsColumn::ALL
             .into_iter()
@@ -166,7 +174,7 @@ impl Drop for SummaryAppearanceGuard {
 
 fn redraw_account_summary(table: &AccountsTable, colors: &FooterColors) -> Buffer {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let area = Rect::new(0, 0, 200, 20);
     let mut buffer = Buffer::empty(area);
@@ -317,7 +325,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let frame = SummaryFrame {
         accounts_sort:  AccountsSort::SourceOrder,
@@ -390,8 +398,8 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "one blank line separates the tables"
     );
     for header in [
-        "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
-        "credits", "enabled",
+        "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
+        "total", "resets", "credits", "enabled",
     ] {
         let header_y = accounts_y + 1;
         assert!(
@@ -436,7 +444,7 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "both tables share the header style"
     );
     assert!(
-        !lines
+        lines
             .iter()
             .any(|line| line.split_whitespace().any(|word| word == "status")),
         "{joined}"
@@ -648,7 +656,8 @@ fn accounts_contrast_fresh_stale_and_unread_labels_remain_readable_on_every_them
 
 #[test]
 fn accounts_table_every_state_preserves_agents_and_failure_retains_the_last_reading() {
-    let ready = reading();
+    let mut ready = reading();
+    ready.received_at = NOW - 14 * 60;
     let failure = AccountsFailure::Command(HierarchyError::ExitedUnsuccessfully);
     let mut table = AccountsTable::AwaitingFirstReading;
     assert_eq!(
@@ -657,6 +666,7 @@ fn accounts_table_every_state_preserves_agents_and_failure_retains_the_last_read
     );
     assert!(table.apply(Ok(ready.clone())));
     assert!(table.apply(Err(failure)));
+    assert!(!table.apply(Err(failure)));
     for current in [
         AccountsTable::NotConfigured,
         AccountsTable::AwaitingFirstReading,
@@ -689,7 +699,9 @@ fn accounts_table_every_state_preserves_agents_and_failure_retains_the_last_read
             },
             AccountsTable::FailedKeepingLast { .. } => {
                 assert!(
-                    joined.contains("codex2") && joined.contains("accounts: command failed"),
+                    joined.contains("codex2")
+                        && joined.contains("accounts: command failed")
+                        && joined.contains("showing the reading from 14 min ago"),
                     "{joined}"
                 );
                 assert!(
@@ -705,6 +717,7 @@ fn accounts_table_every_state_preserves_agents_and_failure_retains_the_last_read
 #[test]
 fn accounts_table_wide_problem_and_failure_notes_fit_the_measured_width() {
     let mut source = reading();
+    source.received_at = NOW - 14 * 60;
     let problem = "stored role cache unavailable: the producer could not locate the source's last known role map on the fixture machine";
     source.problems = vec![problem.to_owned()];
     let table = AccountsTable::FailedKeepingLast {
@@ -720,7 +733,7 @@ fn accounts_table_wide_problem_and_failure_notes_fit_the_measured_width() {
             .find(|line| line.contains("invalid JSON"))
             .expect("failure note")
             .trim(),
-        "accounts: invalid JSON reading"
+        "accounts: invalid JSON reading; showing the reading from 14 min ago"
     );
 }
 
@@ -754,7 +767,7 @@ fn account_credit_policy_from_wire_controls_balance_emphasis() {
 #[test]
 fn accounts_only_summary_demand_includes_rows_and_all_notes() {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = [];
     let colors = FooterColors::default();
     let mut source = reading();
@@ -823,7 +836,7 @@ fn accounts_only_summary_demand_includes_rows_and_all_notes() {
                         .find(|line| line.contains("invalid JSON"))
                         .expect("failure")
                         .trim(),
-                    "accounts: invalid JSON reading"
+                    "accounts: invalid JSON reading; showing the reading from 0 min ago"
                 );
             },
             AccountsTable::Failed(_) => {
@@ -954,8 +967,8 @@ fn board_columns_draw_lowercase_in_order_with_names_and_credit_states() {
     assert_eq!(
         header.split_whitespace().collect::<Vec<_>>(),
         [
-            "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
-            "credits", "enabled"
+            "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
+            "total", "resets", "credits", "enabled"
         ]
     );
     let ranges = contract_ranges(&buffer);
@@ -968,13 +981,15 @@ fn board_columns_draw_lowercase_in_order_with_names_and_credit_states() {
         for (index, expected) in [
             (0, label),
             (1, left),
-            (9, credits),
-            (10, enabled),
+            (AccountsColumn::Credits.index(), credits),
+            (AccountsColumn::Enabled.index(), enabled),
             (3, ""),
             (4, ""),
             (5, ""),
             (6, ""),
             (7, ""),
+            (8, ""),
+            (9, ""),
         ] {
             assert_eq!(
                 contract_cell(&buffer, y, &ranges[index]),
@@ -1303,7 +1318,7 @@ fn narrow_accounts() -> AccountsTable {
 
 fn narrow_draw(table: &AccountsTable, width: u16, height: u16) -> Buffer {
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = [];
     let colors = FooterColors::default();
     let frame = SummaryFrame {
@@ -1389,9 +1404,9 @@ fn assert_complete_account_values(buffer: &Buffer) {
 #[test]
 fn complete_five_count_summary_keeps_every_account_value_whole() {
     let table = narrow_accounts();
-    for width in [80, COMPLETE_ACCOUNTS_WIDTH] {
+    for width in [99, COMPLETE_ACCOUNTS_WIDTH] {
         let buffer = narrow_draw(&table, width, 40);
-        if width == 80 {
+        if width == 99 {
             let lines = text(&buffer);
             let output = lines.join("\n");
             for value in [
@@ -1402,6 +1417,8 @@ fn complete_five_count_summary_keeps_every_account_value_whole() {
                 "60%",
                 "24%",
                 "busy",
+                "starting",
+                "waiting",
                 "idle",
                 "paused",
                 "exited",
@@ -1443,7 +1460,7 @@ fn complete_five_count_summary_keeps_every_account_value_whole() {
 fn two_line_accounts_align_resets_after_optional_columns_drop() {
     let table = narrow_accounts();
     // Roles may now shrink to six cells before the kept columns wrap.
-    let buffer = narrow_draw(&table, 60, 40);
+    let buffer = narrow_draw(&table, 79, 40);
     let lines = text(&buffer);
     let (_, header_y) = at(&buffer, "role");
     let (reset_x, reset_y) = at(&buffer, "resets");
@@ -1623,7 +1640,7 @@ fn summary_height_matches_every_drawn_row_in_full_two_line_and_stacked_layouts()
     let full = accounts::sorted_width(&table, NOW, AccountsSort::SourceOrder);
     let stacked = 23;
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let mut heights = Vec::new();
     for width in [full, 80, 60, stacked] {
         let generous = narrow_draw(&table, width, 40);
@@ -1691,6 +1708,8 @@ fn stacked_accounts_omit_unavailable_facts_and_disabled_credit_flags() {
             "— left",
             "total",
             "busy 0",
+            "starting 0",
+            "waiting 0",
             "idle 0",
             "paused 0",
             "exited 0",
@@ -1855,13 +1874,13 @@ fn live_accounts_at_40_columns_keep_complete_role_groups_and_the_error_before_ti
         expected_row = row + role_rows;
     }
     assert_eq!(
-        lines[expected_row + 3].trim(),
+        lines[expected_row + 4].trim(),
         COMPACT_ACCOUNT_ERROR,
         "the error follows the final account without a gap: {lines:#?}"
     );
     assert!(
-        // `AccountsColumn::COUNTS` adds one line to the stacked total.
-        needed == 28,
+        // `AccountsColumn::COUNTS` adds three lines to the stacked total.
+        needed == 29,
         "main budget: {area:?}, needed={needed}: {lines:#?}"
     );
     assert!(
@@ -1919,12 +1938,16 @@ fn compact_accounts_keep_role_rows_at_200_80_and_50_columns() {
         let lines = text(&buffer);
         assert_eq!(
             accounts::height_at_width(&table, NOW, AccountsSort::SourceOrder, width),
-            if width == 50 { 16 } else { 12 },
+            if width == 200 { 12 } else { 17 },
             "section, headers, eight role rows and error at {width}: {lines:#?}"
         );
         for (index, label) in COMPACT_ACCOUNT_LABELS.iter().enumerate() {
-            let stride = if width == 50 { 3 } else { 2 };
-            let first = if width == 50 { 1 } else { 2 };
+            let stride = if width == 200 { 2 } else { 3 };
+            let first = match width {
+                50 => 1,
+                80 => 3,
+                _ => 2,
+            };
             let expected_row = first + index * stride;
             assert_eq!(
                 usize::from(at(&buffer, label).1 - buffer.area.y),
@@ -1934,7 +1957,7 @@ fn compact_accounts_keep_role_rows_at_200_80_and_50_columns() {
             assert!(lines[expected_row].contains(label), "{width}: {lines:#?}");
         }
         assert_eq!(
-            lines[if width == 50 { 15 } else { 11 }].trim(),
+            lines[if width == 200 { 11 } else { 16 }].trim(),
             COMPACT_ACCOUNT_ERROR,
             "{width}: {lines:#?}"
         );
@@ -2036,6 +2059,8 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
             AccountsColumn::WeeklyLeft,
             AccountsColumn::Resets,
             AccountsColumn::Busy,
+            AccountsColumn::Starting,
+            AccountsColumn::Waiting,
             AccountsColumn::Idle,
             AccountsColumn::Paused,
             AccountsColumn::Exited,
@@ -2057,7 +2082,7 @@ fn compact_summary_marks_a_cut_machine_title_with_an_ellipsis() {
         name:  "natedev",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let table = AccountsTable::NotConfigured;
@@ -2125,7 +2150,7 @@ fn narrow_review_machine_heading_never_cuts_the_count() {
         name:  "abcdef",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let frame = SummaryFrame {
         machines:       &machines,
         placement:      &placement,
@@ -2183,8 +2208,11 @@ fn accounts_total_row_sums_every_recorded_board_state() {
         {"busy":7,"idle":1,"paused":0,"exited":0,"total":8}
     ]);
     for (rows, expected) in [
-        (vec![claude, codex.clone()], ["10", "10", "3", "0", "23"]),
-        (vec![codex], ["7", "1", "0", "0", "8"]),
+        (
+            vec![claude, codex.clone()],
+            ["10", "0", "0", "10", "3", "0", "23"],
+        ),
+        (vec![codex], ["7", "0", "0", "1", "0", "0", "8"]),
     ] {
         let table = contract_table(&rows);
         let buffer = contract_draw(&table, tui_pane::pane_background(false));
@@ -2210,7 +2238,7 @@ fn accounts_total_row_sums_every_recorded_board_state() {
         for (column, value) in AccountsColumn::COUNTS.into_iter().zip(expected) {
             assert_eq!(contract_cell(&buffer, row, &ranges[column.index()]), value);
         }
-        for column in [1, 2, 8, 9, 10] {
+        for column in [1, 2, 10, 11, 12] {
             assert_eq!(contract_cell(&buffer, row, &ranges[column]), "");
         }
     }
@@ -2257,7 +2285,15 @@ fn accounts_board_count_cells_draw_source_values() {
     let buffer = contract_draw(&table, tui_pane::pane_background(false));
     let ranges = contract_ranges(&buffer);
     let row = at(&buffer, "codex2").1;
-    for (column, expected) in [(3, "1"), (4, "2"), (5, "0"), (6, "0"), (7, "3")] {
+    for (column, expected) in [
+        (3, "1"),
+        (4, "0"),
+        (5, "0"),
+        (6, "2"),
+        (7, "0"),
+        (8, "0"),
+        (9, "3"),
+    ] {
         assert_eq!(contract_cell(&buffer, row, &ranges[column]), expected);
     }
     assert_eq!(
@@ -2290,7 +2326,7 @@ fn accounts_role_rows_draw_only_each_roles_counts_and_share_account_selection() 
             (index + 3).to_string()
         );
         if index > 0 {
-            for column in [0, 1, 8, 9, 10] {
+            for column in [0, 1, 10, 11, 12] {
                 assert_eq!(contract_cell(&buffer, row, &ranges[column]), "");
             }
         }
@@ -2407,7 +2443,10 @@ fn count_sort_and_total_skip_unknown_roles_and_preserve_board_states() {
         let mut sort = AccountsSort::SourceOrder;
         sort.select(column);
         let lines = accounts::build_lines(&table, NOW, &FooterColors::default(), sort, 200);
-        let expected = if column == AccountsColumn::Exited {
+        let expected = if matches!(
+            column,
+            AccountsColumn::Starting | AccountsColumn::Waiting | AccountsColumn::Exited
+        ) {
             ["mixed", "unknown"]
         } else {
             ["unknown", "mixed"]
@@ -2444,7 +2483,7 @@ fn count_sort_and_total_skip_unknown_roles_and_preserve_board_states() {
         .expect("total row");
     for (column, expected) in AccountsColumn::COUNTS
         .into_iter()
-        .zip(["2", "4", "3", "0", "9"])
+        .zip(["2", "0", "0", "4", "3", "0", "9"])
     {
         assert_eq!(
             contract_cell(&buffer, row, &ranges[column.index()]),
@@ -2494,7 +2533,7 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
         row
     });
     let table = contract_table(&rows);
-    for width in [56, 64] {
+    for width in [75, 83] {
         let buffer = narrow_draw(&table, width, 16);
         let lines = text(&buffer);
         let reset = DateTime::parse_from_rfc3339(RESET)
@@ -2502,7 +2541,7 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
             .with_timezone(&Local)
             .format("%a %H:%M")
             .to_string();
-        if width == 56 {
+        if width == 75 {
             let built = accounts::build_lines(
                 &table,
                 NOW,
@@ -2542,11 +2581,13 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
             assert_eq!(first, 3 + index * 3, "{lines:#?}");
             assert_eq!(
                 lines[first].split_whitespace().collect::<Vec<_>>(),
-                ["●", label, "50%", "units", "1", "3", "2", "0", "6"]
+                [
+                    "●", label, "50%", "units", "1", "0", "0", "3", "2", "0", "6"
+                ]
             );
             assert_eq!(
                 lines[first + 1].split_whitespace().collect::<Vec<_>>(),
-                ["spare", "4", "6", "5", "0", "15"]
+                ["spare", "4", "0", "0", "6", "5", "0", "15"]
             );
             assert_eq!(lines[first + 2].trim(), reset);
         }

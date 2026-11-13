@@ -27,6 +27,7 @@ use super::refresh;
 use super::roots;
 use super::roots::WatchRegistration;
 use super::runtime;
+use super::runtime::GitRefreshDemand;
 use super::runtime::ProjectEntry;
 use crate::channel;
 use crate::channel::Sender;
@@ -270,7 +271,7 @@ fn resolved_custom_target_is_skipped_at_registration_and_creation() {
 }
 
 #[test]
-fn target_size_reaches_project_without_filesystem_events() {
+fn target_size_reaches_project_after_explicit_refresh() {
     let scratch = tempfile::tempdir().expect("scratch root");
     std::fs::write(scratch.path().join("Cargo.toml"), "[workspace]\n").expect("manifest");
     let target = scratch.path().join("target/debug");
@@ -280,11 +281,15 @@ fn target_size_reaches_project_without_filesystem_events() {
     let projects = HashMap::from([(
         project_path.clone(),
         ProjectEntry {
-            label:          "scratch-project".to_string(),
-            abs_path:       project_path.clone(),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "scratch-project".to_string(),
+            abs_path:             project_path.clone(),
+            repo_root:            None,
+            git_dir:              None,
+            common_git_dir:       None,
         },
     )]);
     let (background_tx, background_rx) = channel::unbounded();
@@ -301,7 +306,12 @@ fn target_size_reaches_project_without_filesystem_events() {
         &mut pending_disk,
     );
     assert!(pending_disk.is_empty(), "slow poll ran before its interval");
-    refresh::schedule_disk_poll(now, &mut last_poll, &projects, &mut pending_disk);
+    refresh::schedule_disk_refresh(
+        &mut pending_disk,
+        "scratch-project",
+        last_poll,
+        &crate::config::WatcherConfig::default(),
+    );
     refresh::fire_disk_updates(
         runtime.handle(),
         &Arc::new(tokio::sync::Semaphore::new(1)),
@@ -314,7 +324,7 @@ fn target_size_reaches_project_without_filesystem_events() {
 
     let message = background_rx
         .recv_timeout(Duration::from_millis(250))
-        .expect("poll publishes project disk usage without an event");
+        .expect("explicit refresh publishes project disk usage");
     assert!(
         matches!(message, BackgroundMsg::DiskUsageBatch { root_path, entries }
             if root_path == project_path && entries.len() == 1 && entries[0].0 == project_path

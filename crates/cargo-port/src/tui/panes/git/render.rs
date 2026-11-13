@@ -768,9 +768,9 @@ fn push_section_overlays(
         // The first content row sits under the top border or under the description
         // divider, so the section names itself in text there and draws no second rule.
         if abs_y == inner_area.y {
-            let width = inner_area.width.saturating_sub(1);
+            let width = outer_area.width.saturating_sub(2);
             chrome.labels.push(PaneFrameLabel {
-                area:  Rect::new(inner_area.x.saturating_add(1), abs_y, width, 1),
+                area:  Rect::new(outer_area.x.saturating_add(1), abs_y, width, 1),
                 text:  section_title_with_count(&rule.title, usize::from(width)),
                 style: title_style,
             });

@@ -16,6 +16,7 @@ use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::accounts::Reading;
 use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::footer_colors::FooterRole;
@@ -30,7 +31,9 @@ fn draw_account_roles(
     area: Rect,
 ) -> Buffer {
     let table = AccountsTable::Ready(AccountsReading {
-        accounts: vec![AccountUsage {
+        received_at: NOW,
+        sessions:    crate::census::accounts::SessionStates::default(),
+        accounts:    vec![AccountUsage {
             label: "fixture-account".into(),
             roles: vec![
                 accounts_gradient_tests::role_usage(AccountRole::Units),
@@ -45,10 +48,10 @@ fn draw_account_roles(
             read_status: AccountReadStatus::Ok,
             read_at,
         }],
-        problems: Vec::new(),
+        problems:    Vec::new(),
     });
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let frame = SummaryFrame {
         machines:       &machines,
         placement:      &placement,

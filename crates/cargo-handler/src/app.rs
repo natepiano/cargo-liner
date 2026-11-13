@@ -23,6 +23,7 @@ use tui_pane::AttractMode;
 use tui_pane::CellPointer;
 use tui_pane::CellPress;
 use tui_pane::ColorMode;
+use tui_pane::ConfigError;
 use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
@@ -59,7 +60,10 @@ use crate::census::accounts::AccountsMonitor;
 use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
+use crate::config_watch::WordHighlightUpdate;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::details::DetailsOverlay;
+use crate::details::DetailsPane;
 use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
@@ -91,12 +95,13 @@ pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 5] = [
+const APP_PANE_DISPLAY_ORDER: [AppPaneId; 6] = [
     AppPaneId::Main,
     AppPaneId::Attract(AttractMode::MovingBand),
     AppPaneId::Attract(AttractMode::MovingText),
     AppPaneId::Attract(AttractMode::Pixelate),
     AppPaneId::Favorites,
+    AppPaneId::Details,
 ];
 
 /// The panes this app supplies to the framework; one variant per
@@ -112,6 +117,7 @@ pub(crate) enum AppPaneId {
     Attract(AttractMode),
     /// The favorites modal and its local keymap scope.
     Favorites,
+    Details,
 }
 
 /// Only a clock request may reuse a body from an earlier frame.
@@ -147,64 +153,73 @@ enum PaintedWordLookup {
     Hit(WordHit),
 }
 
+/// `WordHighlightConfigStatus` retains a configuration error until the reader accepts a valid file.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) enum WordHighlightConfigStatus {
+    #[default]
+    Current,
+    Rejected(String),
+}
+
 /// Top-level application state.
 pub(crate) struct App {
-    frame_request:                FrameRequest,
-    painted_frame:                PaintedFrame,
+    pub(crate) details_overlay:              DetailsOverlay,
+    frame_request:                           FrameRequest,
+    painted_frame:                           PaintedFrame,
     #[cfg(test)]
-    full_frames:                  usize,
+    full_frames:                             usize,
     /// Framework state — overlays, panes, toasts, settings pane.
-    pub(crate) framework:         Framework<Self>,
+    pub(crate) framework:                    Framework<Self>,
     /// Resolved bindings.
     ///
     /// Behind an [`Rc`] because dispatch needs `&Keymap<App>` and
     /// `&mut App` at once, and because rebinding a key in the keymap
     /// overlay replaces this whole map mid-dispatch.
-    pub(crate) keymap:            Rc<Keymap<Self>>,
-    /// Parsed `config.toml` and any parse error, surfaced in the
-    /// settings overlay.
-    pub(crate) loaded_config:     LoadedConfig,
+    pub(crate) keymap:                       Rc<Keymap<Self>>,
+    /// `App::loaded_config` holds the active configuration and any save error.
+    pub(crate) loaded_config:                LoadedConfig,
+    pub(crate) word_highlight_config_status: WordHighlightConfigStatus,
     /// Installation failures and the latest appearance diagnostic, shown in settings.
-    pub(crate) startup_note:      StartupThemeNotes,
+    pub(crate) startup_note:                 StartupThemeNotes,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
-    pub(crate) tiles:             TileGrid,
+    pub(crate) tiles:                        TileGrid,
     /// Per-root preferences, discarded when that root leaves the census.
-    pub(crate) selection_area:    Rect,
-    pub(crate) selections:        Selections,
-    pub(crate) word_highlight:    WordHighlight,
-    pub(crate) painted_words:     PaintedWords,
-    pub(crate) match_inks:        MatchInkCache,
-    pub(crate) expansion:         HandlerExpansion,
-    pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
-    pub(crate) painted_surfaces:  Vec<PaintedSurface>,
+    pub(crate) selection_area:               Rect,
+    pub(crate) selections:                   Selections,
+    pub(crate) word_highlight:               WordHighlight,
+    pub(crate) painted_words:                PaintedWords,
+    pub(crate) match_inks:                   MatchInkCache,
+    pub(crate) expansion:                    HandlerExpansion,
+    pub(crate) tree_sorts:                   HashMap<TileKey, TreeSort>,
+    pub(crate) painted_surfaces:             Vec<PaintedSurface>,
     /// The summary allocation retained for header clicks until the next paint.
-    pub(crate) painted_summary:   RefCell<PaintedSummary>,
+    pub(crate) painted_summary:              RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
-    pub(crate) summary_sort:      SummarySort,
+    pub(crate) summary_sort:                 SummarySort,
     /// Account ordering is independent of the machine-group agent ordering.
-    pub(crate) accounts_sort:     AccountsSort,
+    pub(crate) accounts_sort:                AccountsSort,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
-    inline_error:                 Option<String>,
+    inline_error:                            Option<String>,
     /// When the app started, for the status line's uptime segment.
-    pub(crate) started:           Instant,
+    pub(crate) started:                      Instant,
     /// The attract screen, which comes on over the grid after a quiet
     /// spell and on `a`.
-    pub(crate) attract:           Attract,
+    pub(crate) attract:                      Attract,
     /// Modal for browsing attract-screen favorites.
-    pub(crate) favorites_overlay: FavoritesOverlay,
+    pub(crate) favorites_overlay:            FavoritesOverlay,
     /// The agents on this machine and each remote, as of each one's
     /// latest answer.
-    pub(crate) census:            Census,
+    pub(crate) census:                       Census,
     /// Account readings refreshed independently of the frame and census scan.
-    pub(crate) accounts:          AccountsMonitor,
+    pub(crate) accounts:                     AccountsMonitor,
     /// Footer colors cached between census scans.
-    pub(crate) footer_colors:     FooterColorFile,
+    pub(crate) footer_colors:                FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
-    pub(crate) remote_machines:   RemoteMachines,
+    pub(crate) remote_machines:              RemoteMachines,
     /// `census.staff_file` as the census scheduler reads it.
-    pub(crate) staff_file:        StaffFileSetting,
+    pub(crate) staff_file:                   StaffFileSetting,
 }
 
 impl App {
@@ -246,7 +261,8 @@ impl App {
         let machines = self
             .census
             .machines(&self.loaded_config.config.machines.remote);
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement =
+            AgentPlacement::from_machines(&machines, self.accounts.table.session_states());
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
         self.expansion.retain(&placement);
@@ -276,15 +292,41 @@ impl App {
                 .into();
     }
 
+    /// `App::apply_word_highlight_update` retains the last valid emphasis and invalidates the
+    /// retained body.
+    pub(crate) fn apply_word_highlight_update(&mut self, update: WordHighlightUpdate) -> Repaint {
+        let previous = self.loaded_config.config.word_highlight.emphasis;
+        let status = match update {
+            WordHighlightUpdate::Valid(emphasis) => {
+                self.loaded_config.config.word_highlight.emphasis = emphasis;
+                WordHighlightConfigStatus::Current
+            },
+            WordHighlightUpdate::Invalid(error) => WordHighlightConfigStatus::Rejected(error),
+        };
+        if previous == self.loaded_config.config.word_highlight.emphasis
+            && status == self.word_highlight_config_status
+        {
+            return Repaint::NotNeeded;
+        }
+        self.word_highlight_config_status = status;
+        self.invalidate_body();
+        Repaint::Needed
+    }
+
     /// Build the app with the keymap read from `keymap_path`, or from
     /// the defaults alone when there is none, starting from `census`.
     fn new_with_keymap_path(
-        loaded_config: LoadedConfig,
+        mut loaded_config: LoadedConfig,
         startup_note: StartupThemeNotes,
         keymap_path: Option<PathBuf>,
         census: Census,
         color_mode: ColorMode,
     ) -> Result<Self, KeymapError> {
+        let (word_highlight_config_status, error) = match loaded_config.error {
+            Some(ConfigError::Parse(error)) => (WordHighlightConfigStatus::Rejected(error), None),
+            error => (WordHighlightConfigStatus::Current, error),
+        };
+        loaded_config.error = error;
         let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
         let staff_file = StaffFileSetting::new(HierarchySource::from(
             loaded_config.config.census.staff_file.0.clone(),
@@ -294,8 +336,10 @@ impl App {
         );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         framework.color_mode = color_mode;
+        framework.register_copy_selection::<DetailsPane>();
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
+            details_overlay: DetailsOverlay::default(),
             #[cfg(test)]
             full_frames: 0,
             frame_request: FrameRequest::Full,
@@ -303,6 +347,7 @@ impl App {
             framework,
             keymap: Rc::new(keymap),
             loaded_config,
+            word_highlight_config_status,
             startup_note,
             tiles: TileGrid::new(),
             selections: crate::interaction::Selections::default(),
@@ -425,6 +470,7 @@ impl TerminalApp for App {
         let toast_change = self.framework.toasts.next_visual_change_deadline(now);
         let stable_layers = !self.attract.showing()
             && !self.favorites_overlay.is_open()
+            && matches!(self.details_overlay, DetailsOverlay::Closed)
             && self.framework.overlay().is_none();
         if matches!(self.frame_request, FrameRequest::StatusClock)
             && stable_layers
@@ -469,10 +515,17 @@ impl TerminalApp for App {
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
         self.invalidate_body();
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            self.details_overlay.scroll(direction);
+            return;
+        }
         tui_pane::handle_tile_scroll(self, position, direction);
     }
 
     fn click(&mut self, position: Position) {
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            return;
+        }
         tui_pane::handle_tile_click(self, position);
         self.invalidate_body();
     }
@@ -497,6 +550,10 @@ impl TerminalApp for App {
     /// delete rather than reaching a global.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         self.invalidate_body();
+        if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
+            keymap.dispatch_app_pane(AppPaneId::Details, bind, self);
+            return KeyOutcome::Consumed;
+        }
         tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
 

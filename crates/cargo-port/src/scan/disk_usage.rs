@@ -100,7 +100,7 @@ pub(super) fn spawn_initial_disk_usage(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct DiskUsageTree {
     pub(crate) root_abs_path: AbsolutePath,
     pub(crate) entries:       Vec<AbsolutePath>,
@@ -136,6 +136,13 @@ pub(super) fn group_disk_usage_trees(
 }
 
 fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
+    let tracker = scan_context
+        .metadata_store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .disk_usage
+        .for_tree(tree.clone());
+    tracker.request_rescan();
     let handle = scan_context.client.handle.clone();
     let sender = scan_context.sender.clone();
     let disk_limit = Arc::clone(&scan_context.disk_limit);
@@ -154,9 +161,10 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             "tokio_disk_queue_wait"
         );
         let run_started = std::time::Instant::now();
-        let tree_for_walk = tree.clone();
-        let Ok(results) =
-            tokio::task::spawn_blocking(move || dir_sizes_for_tree(&tree_for_walk)).await
+        let Ok(results) = tokio::task::spawn_blocking(move || {
+            background_workers::measure_files(|| tracker.refresh().entries)
+        })
+        .await
         else {
             return;
         };
@@ -202,7 +210,7 @@ pub(crate) struct DirSizes {
 }
 
 impl DirSizes {
-    fn add_file(&mut self, bytes: u64, file_path: &Path, modified: Option<SystemTime>) {
+    pub(super) fn add_file(&mut self, bytes: u64, file_path: &Path, modified: Option<SystemTime>) {
         self.total += bytes;
         if file_lives_under_target(file_path) {
             self.in_project_target += bytes;
@@ -248,14 +256,54 @@ pub(crate) fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, Dir
     background_workers::measure_files(|| measure_dir_sizes_for_tree(tree))
 }
 
-fn measure_dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
-    let mut totals: HashMap<AbsolutePath, DirSizes> = tree
-        .entries
-        .iter()
-        .map(|abs_path| (abs_path.clone(), DirSizes::default()))
-        .collect();
-    let mut hard_links = HardLinks::default();
+/// `DiskSizeAggregation` combines measurements from the full disk walk.
+pub(super) struct DiskSizeAggregation<'tree> {
+    tree:   &'tree DiskUsageTree,
+    totals: HashMap<AbsolutePath, DirSizes>,
+}
 
+impl<'tree> DiskSizeAggregation<'tree> {
+    pub(super) fn new(tree: &'tree DiskUsageTree) -> Self {
+        Self {
+            tree,
+            totals: tree
+                .entries
+                .iter()
+                .map(|path| (path.clone(), DirSizes::default()))
+                .collect(),
+        }
+    }
+
+    pub(super) fn add_file(&mut self, bytes: u64, path: &Path, modified: Option<SystemTime>) {
+        let mut current = path.parent();
+        while let Some(directory) = current {
+            if let Some(sizes) = self.totals.get_mut(directory) {
+                sizes.add_file(bytes, path, modified);
+            }
+            if directory == self.tree.root_abs_path.as_path() {
+                break;
+            }
+            current = directory.parent();
+        }
+    }
+
+    pub(super) fn finish(self) -> Vec<(AbsolutePath, DirSizes)> {
+        self.tree
+            .entries
+            .iter()
+            .map(|path| {
+                (
+                    path.clone(),
+                    self.totals.get(path).copied().unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn measure_dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
+    let mut totals = DiskSizeAggregation::new(tree);
+    let mut hard_links = HardLinks::default();
     for entry in WalkDir::new(&tree.root_abs_path).into_iter().flatten() {
         if !entry.file_type().is_file() {
             continue;
@@ -263,28 +311,13 @@ fn measure_dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSiz
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        let bytes = hard_links.unseen_bytes(&metadata);
-        let modified = metadata.modified().ok();
-        let file_path = entry.path();
-        let mut current = file_path.parent();
-        while let Some(dir) = current {
-            if let Some(sizes) = totals.get_mut(dir) {
-                sizes.add_file(bytes, file_path, modified);
-            }
-            if dir == tree.root_abs_path.as_path() {
-                break;
-            }
-            current = dir.parent();
-        }
+        totals.add_file(
+            hard_links.unseen_bytes(&metadata),
+            entry.path(),
+            metadata.modified().ok(),
+        );
     }
-
-    tree.entries
-        .iter()
-        .map(|abs_path| {
-            let sizes = totals.get(abs_path.as_path()).copied().unwrap_or_default();
-            (abs_path.clone(), sizes)
-        })
-        .collect()
+    totals.finish()
 }
 
 pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, DirSizes)> {

@@ -31,6 +31,7 @@ use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::accounts::Reading;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_HC_DARK_THEME;
@@ -78,6 +79,8 @@ pub(super) fn account(label: &str, resets_at: Reading<DateTime<Utc>>) -> Account
 pub(super) fn app_with_accounts(accounts: Vec<AccountUsage>) -> App {
     let mut app = App::new_for_test().expect("test app");
     app.accounts.table = AccountsTable::Ready(AccountsReading {
+        received_at: NOW,
+        sessions: crate::census::accounts::SessionStates::default(),
         accounts,
         problems: Vec::new(),
     });
@@ -88,7 +91,7 @@ pub(super) fn drawn(app: &App) -> Buffer { drawn_in(app, SUMMARY_AREA) }
 
 fn drawn_in(app: &App, area: Rect) -> Buffer {
     let machines = app.census.machines(&[]);
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     let frame = SummaryFrame {
         accounts:       &app.accounts.table,

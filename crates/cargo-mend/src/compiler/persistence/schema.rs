@@ -10,6 +10,7 @@ use crate::reporting::FixSupport;
 use crate::reporting::ModuleForm;
 use crate::reporting::ReexportVisibility;
 use crate::reporting::Severity;
+use crate::rust_syntax::SourcePathKey;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredReport {
@@ -61,11 +62,25 @@ pub(in crate::compiler) enum UseSiteReference {
     DeclarationInterface,
 }
 
+/// Callers from different targets share a declaration only when its file and definition path match.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::compiler) struct DeclarationIdentity {
+    pub source_file: String,
+    pub def_path:    String,
+}
+
+impl DeclarationIdentity {
+    pub(in crate::compiler) fn new(source_file: &SourcePathKey, def_path: String) -> Self {
+        Self {
+            source_file: source_file.as_path().to_string_lossy().into_owned(),
+            def_path,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(in crate::compiler) struct UseSite {
-    /// Canonical def-path of the referenced item, e.g.
-    /// `crate::tui::panes::cpu::cpu_required_pane_height`.
-    pub target_def_path:        String,
+    pub declaration:            DeclarationIdentity,
     /// Canonical def-path of the module containing the call site, e.g.
     /// `crate::tui::render::tests`.
     pub caller_module_def_path: String,

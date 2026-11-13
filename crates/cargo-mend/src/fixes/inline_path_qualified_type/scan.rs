@@ -64,7 +64,7 @@ pub(crate) fn scan_selection(
     all_findings.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
     Ok(InlinePathScan {
         findings: all_findings,
-        fixes:    ValidatedFixSet::try_from(all_fixes)?,
+        fixes:    ValidatedFixSet::try_from((all_fixes, parsed_sources))?,
     })
 }
 
@@ -153,10 +153,22 @@ fn scan_file(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::anyhow;
+    use std::fs;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::process::Output;
 
+    use anyhow::anyhow;
+    use tempfile::TempDir;
+
+    use crate::config::DiagnosticCode;
+    use crate::fixes::imports;
     use crate::fixes::imports::ImportSource;
+    use crate::reporting::Report;
     use crate::rust_syntax::ParsedSources;
+    use crate::selection::Selection;
+    use crate::selection::SelectionScope;
 
     const ABSOLUTE_SHADOWED_SOURCE: &str = "use other::std;\nfn f(_: ::std::time::Duration) {}\n";
     const ABSOLUTE_DURATION_PATH: &str = "::std::time::Duration";
@@ -263,6 +275,1170 @@ mod tests {
         assert_eq!(rewrites.len(), 1);
         assert_eq!(&text[rewrites[0].start..rewrites[0].end], "ext::Widget");
         assert_eq!(rewrites[0].replacement, "Widget");
+        Ok(())
+    }
+    struct InlinePathBatch {
+        root:    TempDir,
+        modules: Vec<String>,
+    }
+
+    impl InlinePathBatch {
+        fn new() -> anyhow::Result<Self> {
+            let root = tempfile::tempdir()?;
+            fs::create_dir(root.path().join("src"))?;
+            Ok(Self {
+                root,
+                modules: Vec::new(),
+            })
+        }
+
+        fn add_module(&mut self, name: &str, files: &[(&str, &str)]) -> anyhow::Result<PathBuf> {
+            let root = self.root.path().join("src").join(name);
+            for (file, source) in files {
+                let destination = root.join(file);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(destination, source)?;
+            }
+            self.modules.push(name.to_string());
+            let declarations = format!("mod {};", self.modules.join(";\nmod "));
+            fs::write(self.root.path().join("src/lib.rs"), declarations)?;
+            Ok(root)
+        }
+
+        fn selection(&self) -> Selection {
+            let root = self.root.path();
+            Selection {
+                manifest_path:    root.join("Cargo.toml"),
+                manifest_dir:     root.to_path_buf(),
+                workspace_root:   root.to_path_buf(),
+                target_directory: root.join("target"),
+                analysis_root:    root.to_path_buf(),
+                scope:            SelectionScope::SinglePackage,
+                package_roots:    vec![root.to_path_buf()],
+                packages:         Vec::new(),
+            }
+        }
+
+        fn scan(&self) -> anyhow::Result<super::InlinePathScan> {
+            super::scan_selection(&self.selection(), &ParsedSources::default())
+        }
+
+        fn compile(&self) -> std::io::Result<Output> {
+            Command::new("rustc")
+                .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+                .arg(self.root.path().join("src/lib.rs"))
+                .arg("-o")
+                .arg(self.root.path().join("fixture.rmeta"))
+                .output()
+        }
+    }
+
+    fn member_report(report: &Report, member: &str) -> Report {
+        Report {
+            findings: report
+                .findings
+                .iter()
+                .filter(|finding| Path::new(&finding.path).starts_with(member))
+                .cloned()
+                .collect(),
+            ..Report::default()
+        }
+    }
+
+    fn name_collision_skips_both(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("name_collision_skips_both", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent/mod_a"))?;
+        fs::create_dir_all(root.join("parent/mod_b"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(
+            root.join("parent.rs"),
+            "mod mod_a;\nmod mod_b;\nmod consumer;\n",
+        )?;
+        fs::write(root.join("parent/mod_a.rs"), "pub struct Foo;\n")?;
+        fs::write(root.join("parent/mod_b.rs"), "pub struct Foo;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn example(_a: crate::name_collision_skips_both::parent::mod_a::Foo, _b: crate::name_collision_skips_both::parent::mod_b::Foo) {}
+",
+        )?;
+
+        Ok(move |_: &Report| {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            // Both Foo types have a name collision, so neither should be fixed
+            assert!(
+                consumer.contains("crate::name_collision_skips_both::parent::mod_a::Foo")
+                    || consumer.contains("super::mod_a::Foo"),
+                "collision should leave inline paths unchanged, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn skips_use_statements(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("skips_use_statements", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(root.join("parent/types.rs"), "pub struct MyType;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            "use crate::skips_use_statements::parent::types::MyType;\n\nfn example(_x: MyType) {}\n",
+        )?;
+
+        Ok(move |report: &Report| {
+            let report = member_report(report, "src/skips_use_statements");
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|f| f.diagnostic_code == DiagnosticCode::InlinePathQualifiedType),
+                "use statements should not be flagged as inline path types"
+            );
+            Ok(())
+        })
+    }
+
+    fn conflicting_private_import_keeps_qualified_type(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "conflicting_private_import_keeps_qualified_type",
+            &[("mod.rs", "")],
+        )?;
+        let source = r#"use std::error::Error;
+use std::io;
+
+fn completed_capture() -> Result<(), io::Error> {
+    Err(io::Error::other("capture failed"))
+}
+
+fn boxed_error(error: io::Error) -> Box<dyn Error> {
+    Box::new(error)
+}
+
+fn main() {}
+"#;
+        fs::write(root.join("mod.rs"), source)?;
+
+        Ok(move |report: &Report| {
+            let report = member_report(
+                report,
+                "src/conflicting_private_import_keeps_qualified_type",
+            );
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.diagnostic_code
+                        == DiagnosticCode::InlinePathQualifiedType),
+                "conflicting private import should suppress the inline-type finding"
+            );
+
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert_eq!(
+                main_rs,
+                source.replacen(
+                    "    pub trait CaptureError",
+                    "    pub(crate) trait CaptureError",
+                    1
+                )
+            );
+            Ok(())
+        })
+    }
+
+    fn grouped_private_import_keeps_qualified_type(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "grouped_private_import_keeps_qualified_type",
+            &[("mod.rs", "")],
+        )?;
+        let source = r#"use std::{error::Error, io};
+
+fn completed_capture() -> Result<(), io::Error> {
+    Err(io::Error::other("capture failed"))
+}
+
+fn boxed_error(error: io::Error) -> Box<dyn Error> {
+    Box::new(error)
+}
+
+fn main() {}
+"#;
+        fs::write(root.join("mod.rs"), source)?;
+
+        Ok(move |_: &Report| {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert_eq!(main_rs, source);
+            Ok(())
+        })
+    }
+
+    fn bare_name_shadowing_skipped(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("bare_name_shadowing_skipped", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("error"))?;
+        fs::write(
+            root.join("mod.rs"),
+            "mod error;\nmod consumer;\nfn main() {}\n",
+        )?;
+        fs::write(
+            root.join("error.rs"),
+            "pub type Result<T> = core::result::Result<T, String>;\n",
+        )?;
+        // consumer uses both prelude Result<T, E> and
+        // crate::bare_name_shadowing_skipped::error::Result<T> inline
+        fs::write(
+            root.join("consumer.rs"),
+            r#"fn uses_prelude() -> Result<String, String> {
+    Ok("hello".to_string())
+}
+fn uses_inline() -> crate::bare_name_shadowing_skipped::error::Result<String> {
+    Ok("hello".to_string())
+}
+"#,
+        )?;
+
+        Ok(move |_: &Report| {
+            let consumer = fs::read_to_string(root.join("consumer.rs"))?;
+            // The inline path should NOT be replaced because doing so would
+            // add `use crate::bare_name_shadowing_skipped::error::Result;` which shadows prelude
+            // `Result<T, E>`
+            assert!(
+                consumer.contains("crate::bare_name_shadowing_skipped::error::Result<String>"),
+                "inline path should be left alone to avoid shadowing prelude Result, got:\n{consumer}"
+            );
+            // Prelude usage should remain unchanged
+            assert!(
+                consumer.contains("Result<String, String>"),
+                "prelude Result should be unchanged, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "multi_segment_path_with_pascal_first_segment_blocks_shadowing_import",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r#"use std::io;
+
+pub fn open(path: &str) -> io::Result<String> {
+    let _ = [Ok::<_, io::Error>(())].into_iter().filter_map(Result::ok);
+    std::fs::read_to_string(path)
+}
+
+fn main() {
+    let _ = open("x");
+}
+"#,
+        )?;
+
+        Ok(move |_: &Report| {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                !main_rs.contains("use io::Result;") && !main_rs.contains("use std::io::Result;"),
+                "must not import a name that would shadow prelude `Result`, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn does_not_import_prelude_names(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("does_not_import_prelude_names", &[("mod.rs", "")])?;
+        fs::write(
+            root.join("mod.rs"),
+            // `std::fmt::Result` is the type alias for `Result<(), fmt::Error>`.
+            // Bringing it in as plain `Result` would shadow the prelude generic.
+            r#"use std::fmt;
+
+pub struct Marker;
+
+impl fmt::Display for Marker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("marker")
+    }
+}
+
+fn main() {}
+"#,
+        )?;
+
+        Ok(move |_: &Report| {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                !main_rs.contains("use fmt::Result;") && !main_rs.contains("use std::fmt::Result;"),
+                "must not import a name that shadows prelude `Result`, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn generic_type_param_associated_items_are_not_flagged(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "generic_type_param_associated_items_are_not_flagged",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r#"pub trait Sink {
+    type Ok;
+    type Error;
+    fn finish(self) -> Result<Self::Ok, Self::Error>;
+}
+
+pub fn run<S: Sink>(s: S) -> Result<S::Ok, S::Error> {
+    s.finish()
+}
+
+pub trait Bucket {
+    type Item;
+}
+
+pub fn first<B: Bucket>(_b: &B) -> Option<B::Item> {
+    None
+}
+
+// PascalCase generic name — already covered by the PascalCase-first-segment
+// filter, but exercise the generics-tracker path too.
+pub fn next_idx<Idx: Iterator>(it: &mut Idx) -> Option<Idx::Item> {
+    it.next()
+}
+
+// Non-idiomatic lowercase generic. `non_camel_case_types` warns, but this
+// verifies generic tracking comes from syntax, not naming convention.
+#[allow(
+    non_camel_case_types,
+    reason = "fixture intentionally covers lowercase generic parameters"
+)]
+pub fn lower<t: Bucket>(_b: &t) -> Option<t::Item> {
+    None
+}
+
+// `syn::Generics::params` on an impl block remains in scope while visiting
+// `ImplItemFn` bodies; the method's own signature can add generics.
+pub struct Wrap<T>(pub T);
+impl<T: Bucket> Wrap<T> {
+    pub fn nested<R: Sink>(_r: R) -> Option<(T::Item, R::Ok, R::Error)> {
+        None
+    }
+}
+
+fn main() {}
+"#,
+        )?;
+
+        Ok(move |report: &Report| {
+            let report = member_report(
+                report,
+                "src/generic_type_param_associated_items_are_not_flagged",
+            );
+            let inline_findings: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|f| f.diagnostic_code == DiagnosticCode::InlinePathQualifiedType)
+                .collect();
+            assert!(
+                inline_findings.is_empty(),
+                "associated items on generic params must not be flagged, got: \
+                 {inline_findings:?}"
+            );
+            Ok(())
+        })
+    }
+
+    fn generic_type_param_in_fn_body_is_not_flagged(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "generic_type_param_in_fn_body_is_not_flagged",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r"pub trait Bucket {
+    type Item;
+}
+
+// Closure parameter type uses the fn's generic — used to be flagged because
+// the generic was popped before the body was visited.
+pub fn drive<A: Bucket>(_items: &[A::Item]) -> usize {
+    let _count = |_x: &A::Item, acc: &mut usize| {
+        *acc += 1;
+    };
+    0
+}
+
+// Same situation inside an impl method.
+pub struct Wrap<T>(pub T);
+impl<T: Bucket> Wrap<T> {
+    pub fn run(&self, _items: &[T::Item]) -> usize {
+        let _take = |_x: &T::Item| {};
+        0
+    }
+}
+
+// Trait method body referencing the impl's generic.
+pub trait Driver<T: Bucket> {
+    fn drive(&self, items: &[T::Item]) -> usize {
+        let _take = |_x: &T::Item| {};
+        items.len()
+    }
+}
+
+fn main() {}
+",
+        )?;
+
+        Ok(move |report: &Report| {
+            let report = member_report(report, "src/generic_type_param_in_fn_body_is_not_flagged");
+            let inline_findings: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|f| f.diagnostic_code == DiagnosticCode::InlinePathQualifiedType)
+                .collect();
+            assert!(
+                inline_findings.is_empty(),
+                "generic-param associated items in fn bodies must not be flagged, got: \
+                 {inline_findings:?}"
+            );
+            Ok(())
+        })
+    }
+
+    fn enum_variant_two_segment_path_is_not_flagged(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce(&Report) -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "enum_variant_two_segment_path_is_not_flagged",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r"pub struct Package;
+
+pub enum RustProject {
+    Package(Package),
+}
+
+pub fn unwrap(item: RustProject) -> Option<Package> {
+    let RustProject::Package(pkg) = item else {
+        return None;
+    };
+    Some(pkg)
+}
+
+fn main() {}
+",
+        )?;
+
+        Ok(move |report: &Report| {
+            let report = member_report(report, "src/enum_variant_two_segment_path_is_not_flagged");
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|f| f.diagnostic_code == DiagnosticCode::InlinePathQualifiedType),
+                "`Type::Variant` patterns must not be flagged, got findings: {:?}",
+                report
+                    .findings
+                    .iter()
+                    .filter(|f| f.diagnostic_code == DiagnosticCode::InlinePathQualifiedType)
+                    .collect::<Vec<_>>()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn preserves_colliding_and_non_type_paths_in_independent_modules() -> anyhow::Result<()> {
+        let mut batch = InlinePathBatch::new()?;
+        let name_collision_skips_both = name_collision_skips_both(&mut batch)?;
+        let skips_use_statements = skips_use_statements(&mut batch)?;
+        let conflicting_private_import_keeps_qualified_type =
+            conflicting_private_import_keeps_qualified_type(&mut batch)?;
+        let grouped_private_import_keeps_qualified_type =
+            grouped_private_import_keeps_qualified_type(&mut batch)?;
+        let bare_name_shadowing_skipped = bare_name_shadowing_skipped(&mut batch)?;
+        let multi_segment_path_with_pascal_first_segment_blocks_shadowing_import =
+            multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&mut batch)?;
+        let does_not_import_prelude_names = does_not_import_prelude_names(&mut batch)?;
+        let generic_type_param_associated_items_are_not_flagged =
+            generic_type_param_associated_items_are_not_flagged(&mut batch)?;
+        let generic_type_param_in_fn_body_is_not_flagged =
+            generic_type_param_in_fn_body_is_not_flagged(&mut batch)?;
+        let enum_variant_two_segment_path_is_not_flagged =
+            enum_variant_two_segment_path_is_not_flagged(&mut batch)?;
+        let scanned = batch.scan()?;
+        let report = Report {
+            findings: scanned.findings,
+            ..Report::default()
+        };
+        imports::apply_fixes(&scanned.fixes)?;
+        let output = batch.compile()?;
+        assert!(
+            output.status.success(),
+            "batch fix failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        name_collision_skips_both(&report)?;
+        skips_use_statements(&report)?;
+        conflicting_private_import_keeps_qualified_type(&report)?;
+        grouped_private_import_keeps_qualified_type(&report)?;
+        bare_name_shadowing_skipped(&report)?;
+        multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&report)?;
+        does_not_import_prelude_names(&report)?;
+        generic_type_param_associated_items_are_not_flagged(&report)?;
+        generic_type_param_in_fn_body_is_not_flagged(&report)?;
+        enum_variant_two_segment_path_is_not_flagged(&report)?;
+        Ok(())
+    }
+    fn basic_inline_type_adds_use(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("basic_inline_type_adds_use", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(root.join("parent/types.rs"), "pub struct MyType;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn example(_x: crate::basic_inline_type_adds_use::parent::types::MyType) {}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            assert!(
+                consumer.contains("use") && consumer.contains("MyType;"),
+                "expected use import for MyType, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("_x: MyType"),
+                "expected bare type name in signature, got:\n{consumer}"
+            );
+
+            assert!(
+                consumer.contains("_x: MyType)"),
+                "inline path should be replaced with bare type, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn function_return_type(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("function_return_type", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(
+            root.join("parent/types.rs"),
+            "pub struct MyType;\nimpl MyType { pub fn new() -> Self { Self } }\n",
+        )?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn example() -> crate::function_return_type::parent::types::MyType {
+    crate::function_return_type::parent::types::MyType::new()
+}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            assert!(
+                consumer.contains("-> MyType"),
+                "expected bare return type, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("MyType::new()"),
+                "expected bare constructor call, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn multiple_occurrences_one_use(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("multiple_occurrences", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(root.join("parent/types.rs"), "pub struct MyType;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn first(_x: crate::multiple_occurrences::parent::types::MyType) {}
+fn second(_x: crate::multiple_occurrences::parent::types::MyType) {}
+fn third(_x: crate::multiple_occurrences::parent::types::MyType) {}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+
+            let use_count = consumer.matches("use").count();
+            assert_eq!(
+                use_count, 1,
+                "expected exactly one use import, got:\n{consumer}"
+            );
+
+            let bare_count = consumer.matches("_x: MyType").count();
+            assert_eq!(bare_count, 3, "expected 3 bare type refs, got:\n{consumer}");
+            Ok(())
+        })
+    }
+
+    fn two_types_same_module(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("two_types_same_module", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(
+            root.join("parent/types.rs"),
+            "pub struct TypeA;\npub struct TypeB;\n",
+        )?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn example(_a: crate::two_types_same_module::parent::types::TypeA, _b: crate::two_types_same_module::parent::types::TypeB) {}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            assert!(
+                consumer.contains("TypeA;") && consumer.contains("TypeB;"),
+                "expected use imports for both types, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("_a: TypeA") && consumer.contains("_b: TypeB"),
+                "expected bare type names, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn super_path(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("super_path", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(root.join("parent/types.rs"), "pub struct MyType;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            "fn example(_x: super::types::MyType) {}\n",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            assert!(
+                consumer.contains("use super::types::MyType;"),
+                "expected use import for super path type, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("_x: MyType"),
+                "expected bare type name, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn existing_use_no_duplicate(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("existing_use_no_duplicate", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(root.join("parent/types.rs"), "pub struct MyType;\n")?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"use crate::existing_use_no_duplicate::parent::types::MyType;
+
+fn example(_x: MyType, _y: crate::existing_use_no_duplicate::parent::types::MyType) {}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+
+            let use_count = consumer
+                .lines()
+                .filter(|line| line.starts_with("use ") && line.contains("MyType"))
+                .count();
+            assert_eq!(
+                use_count, 1,
+                "should not duplicate existing use import, got:\n{consumer}"
+            );
+            assert!(
+                !consumer.contains("crate::existing_use_no_duplicate::parent::types::MyType"),
+                "inline path should be replaced, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn renamed_import_does_not_hide_required_bare_import(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "renamed_import_does_not_hide_required_bare_import",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r"mod types {
+    pub struct Imported;
+}
+
+use types::Imported as Alias;
+
+fn aliased(_: Alias) {}
+
+fn inline(_: crate::renamed_import_does_not_hide_required_bare_import::types::Imported) {}
+
+fn main() {}
+",
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("use types::Imported;"),
+                "expected the bare import alongside its alias, got:\n{main_rs}"
+            );
+            assert!(
+                main_rs.contains("fn inline(_: Imported)"),
+                "expected the inline path to use the bare import, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn sibling_scope_import_does_not_block_fix(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root =
+            batch.add_module("sibling_scope_import_does_not_block_fix", &[("mod.rs", "")])?;
+        fs::write(
+            root.join("mod.rs"),
+            r#"mod error_consumer {
+    use std::error::Error;
+
+    fn boxed_error<T: Error + 'static>(error: T) -> Box<dyn Error> {
+        Box::new(error)
+    }
+}
+
+mod capture {
+    use std::io;
+
+    fn completed_capture() -> Result<(), io::Error> {
+        Err(io::Error::other("capture failed"))
+    }
+}
+
+fn main() {}
+"#,
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("mod capture {\n    use std::io;\n    use std::io::Error;\n"),
+                "expected a new import inside capture, got:\n{main_rs}"
+            );
+            assert!(
+                main_rs.contains("fn completed_capture() -> Result<(), Error>"),
+                "expected the capture return type to use the new binding, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn generic_type_params_preserved(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("generic_type_params_preserved", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(
+            root.join("parent/types.rs"),
+            "pub struct Container<T>(pub T);\n",
+        )?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"fn example(_x: crate::generic_type_params_preserved::parent::types::Container<String>) {}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+            assert!(
+                consumer.contains("Container<String>"),
+                "generic params should be preserved, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("_x: Container<String>"),
+                "expected bare type with generics, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("_x: Container<String>") && !consumer.contains("_x: crate::"),
+                "inline path should be replaced with bare type, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn struct_literal_and_pattern_paths_get_rewritten(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "struct_literal_and_pattern_paths_get_rewritten",
+            &[("mod.rs", "")],
+        )?;
+        fs::create_dir_all(root.join("parent"))?;
+        fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n")?;
+        fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n")?;
+        fs::write(
+            root.join("parent/types.rs"),
+            r"pub struct MyType { pub x: i32 }
+pub struct TupleType(pub i32);
+",
+        )?;
+        fs::write(
+            root.join("parent/consumer.rs"),
+            r"pub fn make() -> i32 {
+    let value = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x: 1 };
+    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x } = value;
+    let tup = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(42);
+    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(y) = tup;
+    x + y
+}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("parent/consumer.rs"))?;
+
+            assert!(
+            consumer.contains(
+                "use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType;"
+            ) || consumer.contains("use super::types::MyType;"),
+            "expected MyType import, got:\n{consumer}"
+        );
+            assert!(
+            consumer.contains("use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType;")
+                || consumer.contains("use super::types::TupleType;"),
+            "expected TupleType import, got:\n{consumer}"
+        );
+
+            let body = consumer
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("use "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !body.contains(
+                    "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType"
+                ),
+                "struct literal / pattern should be rewritten, got body:\n{body}"
+            );
+            assert!(
+            !body.contains(
+                "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType"
+            ),
+            "tuple-struct literal / pattern should be rewritten, got body:\n{body}"
+        );
+            assert!(
+                consumer.contains("MyType { x: 1 }"),
+                "expected bare struct literal, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("let MyType { x } = value;"),
+                "expected bare struct pattern, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("TupleType(42)"),
+                "expected bare tuple-struct literal, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("let TupleType(y) = tup;"),
+                "expected bare tuple-struct pattern, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn multi_byte_chars_do_not_corrupt_replacement_span(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "multi_byte_chars_do_not_corrupt_replacement_span",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            "pub fn align(_s: &str) -> std::cmp::Ordering {\n    let _ = \"—\";\n    \
+         std::cmp::Ordering::Equal\n}\n\nfn main() {}\n",
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("use std::cmp::Ordering;"),
+                "expected `use std::cmp::Ordering;` insertion, got:\n{main_rs}"
+            );
+
+            let body = main_rs
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("use "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                body.contains("Ordering::Equal"),
+                "expected clean `Ordering::Equal` in body, got body:\n{body}"
+            );
+            assert!(
+                !body.contains("std::cmp::Ordering"),
+                "body should not retain fully-qualified path, got body:\n{body}"
+            );
+            Ok(())
+        })
+    }
+
+    fn impl_trait_path_is_rewritten(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module("impl_trait_path_is_rewritten", &[("mod.rs", "")])?;
+        fs::create_dir_all(root.join("pane"))?;
+        fs::write(
+            root.join("mod.rs"),
+            "mod pane;\nmod consumer;\nfn main() {}\n",
+        )?;
+        fs::write(
+            root.join("pane/mod.rs"),
+            "pub trait Hittable {\n    fn hit(&self) -> bool;\n}\n",
+        )?;
+        fs::write(
+            root.join("consumer.rs"),
+            r"pub struct Manager;
+
+impl crate::impl_trait_path_is_rewritten::pane::Hittable for Manager {
+    fn hit(&self) -> bool { false }
+}
+",
+        )?;
+
+        Ok(move || {
+            let consumer = fs::read_to_string(root.join("consumer.rs"))?;
+            assert!(
+                consumer.contains("use super::pane::Hittable;"),
+                "expected `use super::pane::Hittable;` insertion, got:\n{consumer}"
+            );
+            assert!(
+                consumer.contains("impl Hittable for Manager"),
+                "expected `impl Hittable for Manager`, got:\n{consumer}"
+            );
+            assert!(
+                !consumer.contains("impl crate::impl_trait_path_is_rewritten::pane::Hittable"),
+                "fully-qualified trait path should be rewritten, got:\n{consumer}"
+            );
+            Ok(())
+        })
+    }
+
+    fn partial_path_import_is_resolved_to_absolute(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "partial_path_import_is_resolved_to_absolute",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r"use std::sync::mpsc;
+
+pub fn make() -> mpsc::Sender<i32> {
+    let (tx, _) = mpsc::channel();
+    tx
+}
+
+fn main() {
+    let _ = make();
+}
+",
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("use std::sync::mpsc::Sender;"),
+                "expected absolute `use std::sync::mpsc::Sender;`, got:\n{main_rs}"
+            );
+            assert!(
+                !main_rs.contains("use mpsc::Sender;"),
+                "partial-path import is brittle — must be absolute, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn external_crate_enum_variant_path_is_rewritten(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "external_crate_enum_variant_path_is_rewritten",
+            &[("mod.rs", "")],
+        )?;
+
+        fs::write(
+            root.join("mod.rs"),
+            r"mod notify {
+    pub enum WatcherKind {
+        NullWatcher,
+    }
+}
+
+fn pick() -> notify::WatcherKind {
+    notify::WatcherKind::NullWatcher
+}
+
+fn main() {
+    let _ = pick();
+}
+",
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("use notify::WatcherKind;"),
+                "expected `use notify::WatcherKind;` insertion, got:\n{main_rs}"
+            );
+            assert!(
+                main_rs.contains("WatcherKind::NullWatcher"),
+                "expected rewrite to `WatcherKind::NullWatcher`, got:\n{main_rs}"
+            );
+            assert!(
+                !main_rs.contains("notify::WatcherKind::NullWatcher"),
+                "fully-qualified variant should be rewritten, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    fn external_crate_path_in_argument_is_rewritten(
+        batch: &mut InlinePathBatch,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()> + use<>> {
+        let root = batch.add_module(
+            "external_crate_path_in_argument_is_rewritten",
+            &[("mod.rs", "")],
+        )?;
+        fs::write(
+            root.join("mod.rs"),
+            r"pub struct Frame;
+
+pub fn take(_frame: &mut std::collections::BTreeMap<String, i32>) {}
+
+fn main() {}
+",
+        )?;
+
+        Ok(move || {
+            let main_rs = fs::read_to_string(root.join("mod.rs"))?;
+            assert!(
+                main_rs.contains("use std::collections::BTreeMap;"),
+                "expected `use std::collections::BTreeMap;` insertion, got:\n{main_rs}"
+            );
+            assert!(
+                main_rs.contains("&mut BTreeMap<String, i32>"),
+                "expected bare type with generics, got:\n{main_rs}"
+            );
+            assert!(
+                !main_rs.contains("std::collections::BTreeMap<"),
+                "fully-qualified path should be rewritten, got:\n{main_rs}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn rewrites_inline_paths_in_independent_modules() -> anyhow::Result<()> {
+        let mut batch = InlinePathBatch::new()?;
+        let basic_inline_type_adds_use = basic_inline_type_adds_use(&mut batch)?;
+        let function_return_type = function_return_type(&mut batch)?;
+        let multiple_occurrences_one_use = multiple_occurrences_one_use(&mut batch)?;
+        let two_types_same_module = two_types_same_module(&mut batch)?;
+        let super_path = super_path(&mut batch)?;
+        let existing_use_no_duplicate = existing_use_no_duplicate(&mut batch)?;
+        let renamed_import_does_not_hide_required_bare_import =
+            renamed_import_does_not_hide_required_bare_import(&mut batch)?;
+        let sibling_scope_import_does_not_block_fix =
+            sibling_scope_import_does_not_block_fix(&mut batch)?;
+        let generic_type_params_preserved = generic_type_params_preserved(&mut batch)?;
+        let struct_literal_and_pattern_paths_get_rewritten =
+            struct_literal_and_pattern_paths_get_rewritten(&mut batch)?;
+        let multi_byte_chars_do_not_corrupt_replacement_span =
+            multi_byte_chars_do_not_corrupt_replacement_span(&mut batch)?;
+        let impl_trait_path_is_rewritten = impl_trait_path_is_rewritten(&mut batch)?;
+        let partial_path_import_is_resolved_to_absolute =
+            partial_path_import_is_resolved_to_absolute(&mut batch)?;
+        let external_crate_enum_variant_path_is_rewritten =
+            external_crate_enum_variant_path_is_rewritten(&mut batch)?;
+        let external_crate_path_in_argument_is_rewritten =
+            external_crate_path_in_argument_is_rewritten(&mut batch)?;
+        let scanned = batch.scan()?;
+        imports::apply_fixes(&scanned.fixes)?;
+        let shortened = imports::scan_selection(&batch.selection(), &ParsedSources::default())?;
+        imports::apply_fixes(&shortened.fixes)?;
+        let output = batch.compile()?;
+        assert!(
+            output.status.success(),
+            "rewritten sources failed to compile: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        basic_inline_type_adds_use()?;
+        function_return_type()?;
+        multiple_occurrences_one_use()?;
+        two_types_same_module()?;
+        super_path()?;
+        existing_use_no_duplicate()?;
+        renamed_import_does_not_hide_required_bare_import()?;
+        sibling_scope_import_does_not_block_fix()?;
+        generic_type_params_preserved()?;
+        struct_literal_and_pattern_paths_get_rewritten()?;
+        multi_byte_chars_do_not_corrupt_replacement_span()?;
+        impl_trait_path_is_rewritten()?;
+        partial_path_import_is_resolved_to_absolute()?;
+        external_crate_enum_variant_path_is_rewritten()?;
+        external_crate_path_in_argument_is_rewritten()?;
         Ok(())
     }
 }
