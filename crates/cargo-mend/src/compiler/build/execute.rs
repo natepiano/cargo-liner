@@ -6,6 +6,7 @@ use std::env::consts::EXE_SUFFIX;
 use std::ffi::OsString;
 use std::fs;
 use std::fs::File;
+use std::fs::Metadata;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io;
@@ -74,6 +75,7 @@ use crate::compiler::constants::WRAPPER_ALIAS_STAGING_EXTENSION;
 use crate::compiler::constants::WRAPPER_CACHE_DIRECTORY_PREFIX;
 use crate::compiler::constants::WRAPPER_CACHE_PUBLICATION_LOCK_FILE;
 use crate::compiler::constants::WRAPPER_CACHE_RETENTION_LOCK_FILE;
+use crate::compiler::constants::WRAPPER_CACHE_SOURCE_LINK;
 use crate::compiler::constants::WRAPPER_DIR_NAME;
 use crate::compiler::constants::WRAPPER_RETAINED_STAGING_PREFIX;
 use crate::compiler::persistence;
@@ -133,7 +135,9 @@ enum WrapperAliasResolution {
 
 /// The open executable inode retained before the run resolves Cargo metadata.
 pub(crate) struct RunningExecutable {
-    file: File,
+    file:              File,
+    #[cfg(unix)]
+    installation_path: PathBuf,
 }
 
 impl RunningExecutable {
@@ -152,7 +156,11 @@ impl RunningExecutable {
                 source.display()
             )
         })?;
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            #[cfg(unix)]
+            installation_path: fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf()),
+        })
     }
 }
 
@@ -221,18 +229,9 @@ fn retained_wrapper_alias(
 ) -> Result<RunWrapper> {
     let target_alias = wrapper_alias_path(target_directory, executable)?;
     let metadata = executable.file.metadata()?;
-    let mut identity = DefaultHasher::new();
-    #[cfg(unix)]
-    {
-        metadata.dev().hash(&mut identity);
-        metadata.ino().hash(&mut identity);
-    }
-    metadata.len().hash(&mut identity);
-    metadata.modified()?.hash(&mut identity);
-    let cache = cache_root.join(env!("CARGO_PKG_NAME")).join(format!(
-        "{WRAPPER_CACHE_DIRECTORY_PREFIX}{:x}",
-        identity.finish()
-    ));
+    let cache = cache_root
+        .join(env!("CARGO_PKG_NAME"))
+        .join(wrapper_cache_directory_name(&metadata)?);
     let mut cached = || -> Result<RunWrapper> {
         fs::create_dir_all(&cache)?;
         #[cfg(target_os = "linux")]
@@ -260,6 +259,11 @@ fn retained_wrapper_alias(
             publication.unlock()?;
             remove_unused_wrapper_caches(&cache);
         }
+        #[cfg(unix)]
+        retained_wrapper_link(
+            &cache.join(WRAPPER_CACHE_SOURCE_LINK),
+            &executable.installation_path,
+        )?;
         let path = retained_wrapper_link(&target_alias, &alias)?;
         Ok(RunWrapper {
             path,
@@ -296,7 +300,34 @@ fn require_current_cache_lock(cache: &Path, lock: &File) -> Result<()> {
     Ok(())
 }
 
-/// A failed removal leaves the other cache entries available for collection.
+/// The source inode and revision identify a cached executable copy.
+fn wrapper_cache_directory_name(metadata: &Metadata) -> io::Result<String> {
+    let mut identity = DefaultHasher::new();
+    #[cfg(unix)]
+    {
+        metadata.dev().hash(&mut identity);
+        metadata.ino().hash(&mut identity);
+    }
+    metadata.len().hash(&mut identity);
+    metadata.modified()?.hash(&mut identity);
+    Ok(format!(
+        "{WRAPPER_CACHE_DIRECTORY_PREFIX}{:x}",
+        identity.finish()
+    ))
+}
+
+/// Keep an installed build warm while other installations publish their copies.
+fn wrapper_source_is_installed(cache: &Path) -> bool {
+    fs::metadata(cache.join(WRAPPER_CACHE_SOURCE_LINK))
+        .and_then(|metadata| wrapper_cache_directory_name(&metadata))
+        .is_ok_and(|name| {
+            cache
+                .file_name()
+                .is_some_and(|entry| entry == name.as_str())
+        })
+}
+
+/// Remove stale copies without deleting another installed build's warm cache.
 fn remove_unused_wrapper_caches(current: &Path) {
     let Some(parent) = current.parent() else {
         return;
@@ -324,7 +355,10 @@ fn remove_unused_wrapper_caches(current: &Path) {
         else {
             continue;
         };
-        if lock.try_lock().is_ok() && require_current_cache_lock(&path, &lock).is_ok() {
+        if lock.try_lock().is_ok()
+            && require_current_cache_lock(&path, &lock).is_ok()
+            && !wrapper_source_is_installed(&path)
+        {
             drop(fs::remove_dir_all(path));
         }
     }
@@ -696,6 +730,11 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
         hasher.finish(),
         width = FINGERPRINT_HEX_WIDTH
     )
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_scope_fingerprint(cargo_plan: &CargoCheckPlan) -> String {
+    scope_fingerprint_for(cargo_plan)
 }
 
 pub(crate) struct CompilerFixOutcome {
@@ -1214,7 +1253,11 @@ mod tests {
         )
         .context("create copy")?;
         let file = fs::OpenOptions::new().write(true).open(&source)?;
-        let mut executable = super::RunningExecutable { file };
+        let mut executable = super::RunningExecutable {
+            file,
+            #[cfg(unix)]
+            installation_path: source,
+        };
         assert!(super::replace_wrapper_alias(&mut executable, &alias).is_err());
         assert_eq!(fs::read(&alias)?, b"retained build");
         let staging = alias.with_extension(format!(
@@ -1426,6 +1469,25 @@ mod tests {
         assert!(!live_path.try_exists()?);
         assert_eq!(fs::read(&published.path)?, b"published build");
         assert_eq!(fs::read(&next.path)?, b"last published build");
+        #[cfg(unix)]
+        {
+            let mut installations = Vec::new();
+            for name in ["first-installed", "second-installed"] {
+                let source = directory.path().join(name);
+                fs::write(&source, name)?;
+                let wrapper = super::retained_wrapper_alias(
+                    &directory.path().join(format!("{name}-target")),
+                    &mut super::RunningExecutable::open_path(&source)?,
+                    &cache_root,
+                )?;
+                let path = wrapper.path.canonicalize()?;
+                drop(wrapper);
+                installations.push((source, path));
+            }
+            for (source, path) in installations {
+                assert_eq!(fs::read(path)?, fs::read(source)?);
+            }
+        }
         Ok(())
     }
 

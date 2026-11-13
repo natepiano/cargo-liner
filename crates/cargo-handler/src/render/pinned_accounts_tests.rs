@@ -280,9 +280,9 @@ fn pinned_accounts_continuation_click_uses_the_drawn_body_offset() {
     let complete = paint(&mut app, 60, 64);
     let expected = headers(&complete);
     select_first(&mut app, &complete);
-    paint(&mut app, 60, 16);
+    paint(&mut app, 60, 20);
     accounts_grid_tests::account_key(&mut app, KeyCode::End);
-    let end = paint(&mut app, 60, 16);
+    let end = paint(&mut app, 60, 20);
     assert_pinned(&end, &expected);
     let preceding = accounts_grid_tests::locate(&end, "account-4");
     app.click(Position::new(preceding.column, preceding.row + 1));
@@ -526,13 +526,13 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
 
 #[test]
 fn pinned_accounts_keep_header_and_continuation_targets_after_a_reading_changes() {
-    for width in [60, 64] {
+    for width in [60, 83] {
         let mut app = fixture();
         let complete = paint(&mut app, width, 64);
         select_first(&mut app, &complete);
-        paint(&mut app, width, 16);
+        paint(&mut app, width, 20);
         accounts_grid_tests::account_key(&mut app, KeyCode::End);
-        let end = paint(&mut app, width, 16);
+        let end = paint(&mut app, width, 20);
         let account = accounts_grid_tests::locate(&end, "account-4");
         if width == 60 {
             assert_eq!(
@@ -572,7 +572,7 @@ fn pinned_accounts_keep_header_and_continuation_targets_after_a_reading_changes(
 
 #[test]
 fn moving_pinned_accounts_keep_their_header_and_continuation_targets() {
-    for (width, height) in [(60, 128), (84, 48)] {
+    for (width, height) in [(60, 128), (122, 48)] {
         let mut app = fixture();
         app.loaded_config.config.tiles.view = TileView::Cells;
         app.loaded_config.config.tiles.widen_summary = false;

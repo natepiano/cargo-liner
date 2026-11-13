@@ -30,6 +30,16 @@ const SOURCE_ORDER: [&str; 4] = ["gamma", "alpha", "beta", "delta"];
 fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
     for (name, ascending, descending) in [
         (
+            "starting",
+            ["alpha", "beta", "gamma"],
+            ["gamma", "beta", "alpha"],
+        ),
+        (
+            "waiting",
+            ["gamma", "beta", "alpha"],
+            ["alpha", "beta", "gamma"],
+        ),
+        (
             "paused",
             ["alpha", "beta", "gamma"],
             ["gamma", "beta", "alpha"],
@@ -41,7 +51,7 @@ fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
         ),
     ] {
         let rows: Vec<_> = [("gamma",5,1), ("alpha",1,8), ("beta",3,4)].into_iter().map(|(label,paused,exited)| serde_json::json!({
-            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"idle":3,"paused":paused,"exited":exited,"total":5+paused+exited},null],
+            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"starting":paused,"waiting":exited,"idle":3,"paused":paused,"exited":exited,"total":5+2*paused+2*exited},null],
             "weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null
         })).collect();
         let reading = AccountsReading::parse(

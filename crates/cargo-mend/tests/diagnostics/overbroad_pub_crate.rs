@@ -1,3 +1,4 @@
+use super::compiled_report;
 use crate::support::*;
 
 // `pub(crate)` is accepted at any depth when the crate root is the narrowest
@@ -150,7 +151,7 @@ bench = false
     )
     .expect("write foo/bar.rs");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden: Vec<_> = report
         .findings
         .iter()
@@ -198,7 +199,7 @@ bench = false
     )
     .expect("write foo/bar/baz.rs");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden_count = report
         .findings
         .iter()
@@ -445,7 +446,7 @@ bench = false
     )
     .expect("write c");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
@@ -633,7 +634,7 @@ bench = false
     )
     .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
@@ -702,7 +703,7 @@ pub(crate) struct Storage {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.code != DiagnosticCode::OverbroadPubCrate
@@ -738,7 +739,7 @@ bench = false
     )
     .expect("write foo");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden_count = report
         .findings
         .iter()
@@ -822,7 +823,7 @@ pub struct Beta {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.code != DiagnosticCode::OverbroadPubCrate
@@ -885,7 +886,7 @@ impl Saved {
     .expect("write caller module");
 
     let manifest_path = temp.path().join("Cargo.toml");
-    let report = run_mend_json(&manifest_path);
+    let report = compiled_report(&manifest_path);
     let finding = report
         .findings
         .iter()
@@ -948,7 +949,7 @@ fn named_fields_are_rewritten_to_their_caller_boundaries() {
     let original = write_named_field_fixture(temp.path());
 
     let manifest_path = temp.path().join("Cargo.toml");
-    let report = run_mend_json(&manifest_path);
+    let report = compiled_report(&manifest_path);
     assert_named_field_findings(&report);
 
     assert_human_report_advertises_warning_fix(&manifest_path);
@@ -975,7 +976,7 @@ fn named_fields_are_rewritten_to_their_caller_boundaries() {
         "each field must receive only its required visibility",
     );
 
-    let fixed_report = run_mend_json(&manifest_path);
+    let fixed_report = compiled_report(&manifest_path);
     assert!(
         fixed_report.findings.iter().all(|finding| {
             !finding
@@ -1032,7 +1033,7 @@ edition = "2024"
     .expect("write managed module");
 
     let manifest_path = temp.path().join("Cargo.toml");
-    let report = run_mend_json(&manifest_path);
+    let report = compiled_report(&manifest_path);
     assert!(
         report.findings.iter().all(|finding| {
             !finding
@@ -1202,7 +1203,7 @@ bench = false
     .expect("write c module");
 
     let manifest_path = temp.path().join("Cargo.toml");
-    let report = run_mend_json(&manifest_path);
+    let report = compiled_report(&manifest_path);
     let finding = report
         .findings
         .iter()
@@ -1243,7 +1244,7 @@ bench = false
         "the tuple struct and field must receive only their required visibility",
     );
 
-    let fixed_report = run_mend_json(&manifest_path);
+    let fixed_report = compiled_report(&manifest_path);
     assert!(
         fixed_report.findings.iter().all(|finding| {
             !finding.path.ends_with("src/a/b/c/mod.rs")
@@ -1291,7 +1292,7 @@ bench = false
     )
     .expect("write values");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
             finding.code != DiagnosticCode::OverbroadPubCrate
@@ -1463,7 +1464,7 @@ pub(crate) fn unreferenced() -> u32 { 4 }
     )
     .expect("write helpers");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     // `overbroad-pub-crate` leaves `item` unset, so the findings are keyed by
     // the line they sit on: `helpers.rs` declares `gated_only`,
     // `file_gated_only`, `local_only`, and `unreferenced` on lines 1 to 4.
@@ -1556,7 +1557,7 @@ pub(crate) fn local() -> i32 {
     )
     .expect("write compiled stream");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     // `overbroad-pub-crate` leaves `item` unset, so the findings are keyed by
     // line: `decisions.rs` declares the `pub(crate)` fields of `Constructed`,
     // `Indexed`, and `Pair` on lines 2, 5, and 9.
@@ -1623,7 +1624,7 @@ pub fn entry() -> u32 { present::call() }
     )
     .expect("write present module");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let review_pub_mod_items: Vec<_> = report
         .findings
         .iter()

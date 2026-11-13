@@ -65,6 +65,8 @@ impl AccountRole {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum SessionState {
     Busy,
+    Starting,
+    Waiting,
     Idle,
     Paused,
     Exited,
@@ -74,6 +76,8 @@ impl SessionState {
     pub(crate) const fn text(self) -> &'static str {
         match self {
             Self::Busy => "busy",
+            Self::Starting => "starting",
+            Self::Waiting => "waiting",
             Self::Idle => "idle",
             Self::Paused => "paused",
             Self::Exited => "exited",
@@ -99,7 +103,7 @@ impl ReportedSessionState {
 
     pub(crate) const fn color_role(self) -> Role {
         match self {
-            Self::Reported(SessionState::Busy) => Role::Busy,
+            Self::Reported(SessionState::Busy | SessionState::Starting) => Role::Busy,
             Self::Unavailable | Self::Reported(_) => Role::Idle,
         }
     }
@@ -147,11 +151,13 @@ struct SessionStateWire {
 /// Source counts for one role across the reported machines.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoleSessionCounts {
-    pub(crate) busy:   u64,
-    pub(crate) idle:   u64,
-    pub(crate) paused: u64,
-    pub(crate) exited: u64,
-    pub(crate) total:  u64,
+    pub(crate) busy:     u64,
+    pub(crate) starting: u64,
+    pub(crate) waiting:  u64,
+    pub(crate) idle:     u64,
+    pub(crate) paused:   u64,
+    pub(crate) exited:   u64,
+    pub(crate) total:    u64,
 }
 
 /// One source count exceeds the range of a combined count.
@@ -168,20 +174,28 @@ impl From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionC
 }
 
 impl RoleSessionCounts {
-    /// `RoleSessionCounts::checked_add` sums all five source counts without overflow.
+    /// `RoleSessionCounts::checked_add` sums all seven source counts without overflow.
     pub(crate) fn checked_add(self, other: &Self) -> Result<Self, RoleCountOverflow> {
         Ok(Self {
-            busy:   self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
-            idle:   self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
-            paused: self
+            busy:     self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
+            starting: self
+                .starting
+                .checked_add(other.starting)
+                .ok_or(RoleCountOverflow)?,
+            waiting:  self
+                .waiting
+                .checked_add(other.waiting)
+                .ok_or(RoleCountOverflow)?,
+            idle:     self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
+            paused:   self
                 .paused
                 .checked_add(other.paused)
                 .ok_or(RoleCountOverflow)?,
-            exited: self
+            exited:   self
                 .exited
                 .checked_add(other.exited)
                 .ok_or(RoleCountOverflow)?,
-            total:  self
+            total:    self
                 .total
                 .checked_add(other.total)
                 .ok_or(RoleCountOverflow)?,
@@ -238,9 +252,10 @@ pub(crate) struct AccountUsage {
 /// A complete source answer; Rust does not infer its roles or filter its rows.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AccountsReading {
-    pub(crate) sessions: SessionStates,
-    pub(crate) accounts: Vec<AccountUsage>,
-    pub(crate) problems: Vec<String>,
+    pub(crate) received_at: u64,
+    pub(crate) sessions:    SessionStates,
+    pub(crate) accounts:    Vec<AccountUsage>,
+    pub(crate) problems:    Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -282,6 +297,10 @@ impl<'de> Deserialize<'de> for RetiredShellAbsent {
 #[derive(Deserialize)]
 struct RoleCountsWire {
     busy:          u64,
+    #[serde(default)]
+    starting:      u64,
+    #[serde(default)]
+    waiting:       u64,
     idle:          u64,
     paused:        u64,
     exited:        u64,
@@ -294,6 +313,8 @@ impl From<RoleCountsWire> for RoleSessionCounts {
     fn from(counts: RoleCountsWire) -> Self {
         let RoleCountsWire {
             busy,
+            starting,
+            waiting,
             idle,
             paused,
             exited,
@@ -302,6 +323,8 @@ impl From<RoleCountsWire> for RoleSessionCounts {
         } = counts;
         Self {
             busy,
+            starting,
+            waiting,
             idle,
             paused,
             exited,
@@ -357,8 +380,9 @@ impl AccountsReading {
         }
         sessions.retain(|session, _| !conflicts.contains(session));
         Ok(Self {
-            sessions: SessionStates(sessions),
-            accounts: report
+            received_at: u64::try_from(Utc::now().timestamp()).unwrap_or_default(),
+            sessions:    SessionStates(sessions),
+            accounts:    report
                 .accounts
                 .into_iter()
                 .map(|row| {
@@ -387,7 +411,7 @@ impl AccountsReading {
                     })
                 })
                 .collect::<Result<_, AccountsFailure>>()?,
-            problems: report.problems,
+            problems:    report.problems,
         })
     }
 }

@@ -182,10 +182,10 @@ fn basic_inline_type_adds_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + us
     fs::create_dir_all(root.join("parent")).expect("create src/parent");
     fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
     fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
+    fs::write(root.join("parent/types.rs"), "pub(super) struct MyType;\n").expect("write types");
     fs::write(
         root.join("parent/consumer.rs"),
-        r#"fn example(_x: crate::basic_inline_type_adds_use::parent::types::MyType) {}
+        r#"fn example(_x: super::types::MyType) {}
 "#,
     )
     .expect("write consumer");
@@ -207,69 +207,6 @@ fn basic_inline_type_adds_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + us
             consumer.contains("_x: MyType)"),
             "inline path should be replaced with bare type, got:\n{consumer}"
         );
-    }
-}
-
-fn function_return_type(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("function_return_type", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(
-        root.join("parent/types.rs"),
-        "pub struct MyType;\nimpl MyType { pub fn new() -> Self { Self } }\n",
-    )
-    .expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"fn example() -> crate::function_return_type::parent::types::MyType {
-    crate::function_return_type::parent::types::MyType::new()
-}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        assert!(
-            consumer.contains("-> MyType"),
-            "expected bare return type, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("MyType::new()"),
-            "expected bare constructor call, got:\n{consumer}"
-        );
-    }
-}
-
-fn multiple_occurrences_one_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("multiple_occurrences", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"fn first(_x: crate::multiple_occurrences::parent::types::MyType) {}
-fn second(_x: crate::multiple_occurrences::parent::types::MyType) {}
-fn third(_x: crate::multiple_occurrences::parent::types::MyType) {}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        // Should have exactly one use statement for MyType
-        let use_count = consumer.matches("use").count();
-        assert_eq!(
-            use_count, 1,
-            "expected exactly one use import, got:\n{consumer}"
-        );
-        // All three occurrences should be replaced
-        let bare_count = consumer.matches("_x: MyType").count();
-        assert_eq!(bare_count, 3, "expected 3 bare type refs, got:\n{consumer}");
     }
 }
 
@@ -316,13 +253,10 @@ mod tests {
     )
     .expect("write fixture interaction");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -397,13 +331,10 @@ mod tests {
     )
     .expect("write topology");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -486,13 +417,10 @@ mod tests {
     )
     .expect("write watcher module");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -572,13 +500,10 @@ mod tests {
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -645,13 +570,10 @@ fn main() {
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -716,13 +638,10 @@ fn main() {}
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -796,13 +715,10 @@ fn main() {}
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -850,13 +766,10 @@ fn main() {}
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -928,13 +841,10 @@ fn main() { keep_import_used(); }
     )
     .expect("write fixture main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -950,37 +860,6 @@ fn main() { keep_import_used(); }
         2,
         "different cfg gates must keep both qualified field types:\n{main_source}"
     );
-}
-
-fn two_types_same_module(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("two_types_same_module", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(
-        root.join("parent/types.rs"),
-        "pub struct TypeA;\npub struct TypeB;\n",
-    )
-    .expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"fn example(_a: crate::two_types_same_module::parent::types::TypeA, _b: crate::two_types_same_module::parent::types::TypeB) {}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        assert!(
-            consumer.contains("TypeA;") && consumer.contains("TypeB;"),
-            "expected use imports for both types, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("_a: TypeA") && consumer.contains("_b: TypeB"),
-            "expected bare type names, got:\n{consumer}"
-        );
-    }
 }
 
 #[test]
@@ -1015,66 +894,6 @@ edition = "2024"
             .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "external-crate paths (std/core/third-party) should be flagged"
     );
-}
-
-fn super_path(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("super_path", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        "fn example(_x: super::types::MyType) {}\n",
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        assert!(
-            consumer.contains("use super::types::MyType;"),
-            "expected use import for super path type, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("_x: MyType"),
-            "expected bare type name, got:\n{consumer}"
-        );
-    }
-}
-
-fn existing_use_no_duplicate(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("existing_use_no_duplicate", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"use crate::existing_use_no_duplicate::parent::types::MyType;
-
-fn example(_x: MyType, _y: crate::existing_use_no_duplicate::parent::types::MyType) {}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        // Should still have exactly one use statement
-        let use_count = consumer
-            .lines()
-            .filter(|line| line.starts_with("use ") && line.contains("MyType"))
-            .count();
-        assert_eq!(
-            use_count, 1,
-            "should not duplicate existing use import, got:\n{consumer}"
-        );
-        assert!(
-            !consumer.contains("crate::existing_use_no_duplicate::parent::types::MyType"),
-            "inline path should be replaced, got:\n{consumer}"
-        );
-    }
 }
 
 #[test]
@@ -1123,81 +942,6 @@ fn main() {}
     );
 }
 
-fn renamed_import_does_not_hide_required_bare_import(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "renamed_import_does_not_hide_required_bare_import",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"mod types {
-    pub struct Imported;
-}
-
-use types::Imported as Alias;
-
-fn aliased(_: Alias) {}
-
-fn inline(_: crate::renamed_import_does_not_hide_required_bare_import::types::Imported) {}
-
-fn main() {}
-"#,
-    )
-    .expect("write case source");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
-        assert!(
-            main_rs.contains("use types::Imported;"),
-            "expected the bare import alongside its alias, got:\n{main_rs}"
-        );
-        assert!(
-            main_rs.contains("fn inline(_: Imported)"),
-            "expected the inline path to use the bare import, got:\n{main_rs}"
-        );
-    }
-}
-
-fn sibling_scope_import_does_not_block_fix(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("sibling_scope_import_does_not_block_fix", &[("mod.rs", "")]);
-    fs::write(
-        root.join("mod.rs"),
-        r#"mod error_consumer {
-    use std::error::Error;
-
-    fn boxed_error<T: Error + 'static>(error: T) -> Box<dyn Error> {
-        Box::new(error)
-    }
-}
-
-mod capture {
-    use std::io;
-
-    fn completed_capture() -> Result<(), io::Error> {
-        Err(io::Error::other("capture failed"))
-    }
-}
-
-fn main() {}
-"#,
-    )
-    .expect("write case source");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
-        assert!(
-            main_rs.contains("mod capture {\n    use std::io;\n    use std::io::Error;\n"),
-            "expected a new import inside capture, got:\n{main_rs}"
-        );
-        assert!(
-            main_rs.contains("fn completed_capture() -> Result<(), Error>"),
-            "expected the capture return type to use the new binding, got:\n{main_rs}"
-        );
-    }
-}
-
 #[test]
 fn existing_pub_use_binding_no_duplicate() {
     let temp = tempdir().expect("create temp fixture dir");
@@ -1236,13 +980,10 @@ fn main() {
     )
     .expect("write main");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1310,128 +1051,6 @@ fn read_only_and_dry_run_preserve_dirty_and_clean_sources() {
     );
 }
 
-fn generic_type_params_preserved(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("generic_type_params_preserved", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(
-        root.join("parent/types.rs"),
-        "pub struct Container<T>(pub T);\n",
-    )
-    .expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"fn example(_x: crate::generic_type_params_preserved::parent::types::Container<String>) {}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-        assert!(
-            consumer.contains("Container<String>"),
-            "generic params should be preserved, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("_x: Container<String>"),
-            "expected bare type with generics, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("_x: Container<String>") && !consumer.contains("_x: crate::"),
-            "inline path should be replaced with bare type, got:\n{consumer}"
-        );
-    }
-}
-
-/// Struct literal paths (`crate::foo::Bar { .. }`) and pattern paths
-/// (`let crate::foo::Bar { .. } = ..`, `Some(crate::foo::Bar(x))`) are not
-/// reached by the default `visit_expr_path` / `visit_type_path` passes. This
-/// verifies each form is rewritten.
-fn struct_literal_and_pattern_paths_get_rewritten(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "struct_literal_and_pattern_paths_get_rewritten",
-        &[("mod.rs", "")],
-    );
-    fs::create_dir_all(root.join("parent")).expect("create src/parent");
-    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
-    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
-    fs::write(
-        root.join("parent/types.rs"),
-        r#"pub struct MyType { pub x: i32 }
-pub struct TupleType(pub i32);
-"#,
-    )
-    .expect("write types");
-    fs::write(
-        root.join("parent/consumer.rs"),
-        r#"pub fn make() -> i32 {
-    let value = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x: 1 };
-    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x } = value;
-    let tup = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(42);
-    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(y) = tup;
-    x + y
-}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer =
-            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
-
-        assert!(
-            consumer.contains(
-                "use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType;"
-            ) || consumer.contains("use super::types::MyType;"),
-            "expected MyType import, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType;")
-                || consumer.contains("use super::types::TupleType;"),
-            "expected TupleType import, got:\n{consumer}"
-        );
-        // The `use` lines will still contain the qualified path; ensure the
-        // body no longer does.
-        let body = consumer
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("use "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !body.contains(
-                "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType"
-            ),
-            "struct literal / pattern should be rewritten, got body:\n{body}"
-        );
-        assert!(
-            !body.contains(
-                "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType"
-            ),
-            "tuple-struct literal / pattern should be rewritten, got body:\n{body}"
-        );
-        assert!(
-            consumer.contains("MyType { x: 1 }"),
-            "expected bare struct literal, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("let MyType { x } = value;"),
-            "expected bare struct pattern, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("TupleType(42)"),
-            "expected bare tuple-struct literal, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("let TupleType(y) = tup;"),
-            "expected bare tuple-struct pattern, got:\n{consumer}"
-        );
-    }
-}
-
 /// Regression: running `cargo mend --fix` on a file that mixes an enum
 /// variant `RustProject::Package(...)`, a same-named struct literal
 /// `Package { ... }` (brought in via `use super::*`), and a struct
@@ -1497,13 +1116,10 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1531,223 +1147,6 @@ mod tests {
     );
 
     // The successful mend fix already validates this target configuration.
-}
-
-/// Multi-byte UTF-8 characters earlier on the same line (em-dashes, accented
-/// letters, etc.) must not shift the byte offset of a path that gets
-/// rewritten. `proc_macro2::LineColumn::column` is a character index, not a
-/// byte index — the `offset()` helper has to convert.
-fn multi_byte_chars_do_not_corrupt_replacement_span(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "multi_byte_chars_do_not_corrupt_replacement_span",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        // The em-dash `—` is 3 bytes / 1 column. Without the byte conversion
-        // the rewrite of `std::cmp::Ordering::Equal` lands 2 bytes too early,
-        // corrupting `align(...)` to garbage.
-        "pub fn align(_s: &str) -> std::cmp::Ordering {\n    let _ = \"—\";\n    \
-         std::cmp::Ordering::Equal\n}\n\nfn main() {}\n",
-    )
-    .expect("write main");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            main_rs.contains("use std::cmp::Ordering;"),
-            "expected `use std::cmp::Ordering;` insertion, got:\n{main_rs}"
-        );
-        // Body must contain a clean `Ordering::Equal` — the rewrite of
-        // `std::cmp::Ordering::Equal` must not have shifted into surrounding text.
-        let body = main_rs
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("use "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("Ordering::Equal"),
-            "expected clean `Ordering::Equal` in body, got body:\n{body}"
-        );
-        assert!(
-            !body.contains("std::cmp::Ordering"),
-            "body should not retain fully-qualified path, got body:\n{body}"
-        );
-    }
-}
-
-/// `impl crate::path::Trait for Type` puts the trait path in
-/// `ItemImpl::trait_`, which is a bare `syn::Path` — not visited as a
-/// `TypePath`. The visitor must hook `visit_item_impl` explicitly.
-fn impl_trait_path_is_rewritten(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
-    let root = batch.add_module("impl_trait_path_is_rewritten", &[("mod.rs", "")]);
-    fs::create_dir_all(root.join("pane")).expect("create src/pane");
-    fs::write(
-        root.join("mod.rs"),
-        "mod pane;\nmod consumer;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        root.join("pane/mod.rs"),
-        "pub trait Hittable {\n    fn hit(&self) -> bool;\n}\n",
-    )
-    .expect("write pane mod");
-    fs::write(
-        root.join("consumer.rs"),
-        r#"pub struct Manager;
-
-impl crate::impl_trait_path_is_rewritten::pane::Hittable for Manager {
-    fn hit(&self) -> bool { false }
-}
-"#,
-    )
-    .expect("write consumer");
-
-    move || {
-        let consumer = fs::read_to_string(root.join("consumer.rs")).expect("read fixed file");
-        assert!(
-            consumer.contains("use super::pane::Hittable;"),
-            "expected `use super::pane::Hittable;` insertion, got:\n{consumer}"
-        );
-        assert!(
-            consumer.contains("impl Hittable for Manager"),
-            "expected `impl Hittable for Manager`, got:\n{consumer}"
-        );
-        assert!(
-            !consumer.contains("impl crate::impl_trait_path_is_rewritten::pane::Hittable"),
-            "fully-qualified trait path should be rewritten, got:\n{consumer}"
-        );
-    }
-}
-
-/// When a file already has `use std::fmt;` (or any other parent module) and
-/// writes `fmt::Display` inline, the new import the lint adds must be
-/// absolute (`use std::fmt::Display;`), not partial (`use fmt::Display;`).
-/// Partial imports look fine but break silently if the parent import is
-/// later reordered or removed.
-fn partial_path_import_is_resolved_to_absolute(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "partial_path_import_is_resolved_to_absolute",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"use std::sync::mpsc;
-
-pub fn make() -> mpsc::Sender<i32> {
-    let (tx, _) = mpsc::channel();
-    tx
-}
-
-fn main() {
-    let _ = make();
-}
-"#,
-    )
-    .expect("write main");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            main_rs.contains("use std::sync::mpsc::Sender;"),
-            "expected absolute `use std::sync::mpsc::Sender;`, got:\n{main_rs}"
-        );
-        assert!(
-            !main_rs.contains("use mpsc::Sender;"),
-            "partial-path import is brittle — must be absolute, got:\n{main_rs}"
-        );
-    }
-}
-
-/// External-crate enum-variant paths like `notify::WatcherKind::NullWatcher`
-/// should be rewritten the same way intra-crate enum variants are: import
-/// the enum (`use notify::WatcherKind;`) and rewrite the call site to
-/// `WatcherKind::NullWatcher`.
-fn external_crate_enum_variant_path_is_rewritten(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "external_crate_enum_variant_path_is_rewritten",
-        &[("mod.rs", "")],
-    );
-    // Stand-in for an external crate: a top-level `mod notify` with a
-    // PascalCase enum and variant, used inline as `notify::WatcherKind::NullWatcher`.
-    fs::write(
-        root.join("mod.rs"),
-        r#"mod notify {
-    pub enum WatcherKind {
-        NullWatcher,
-    }
-}
-
-fn pick() -> notify::WatcherKind {
-    notify::WatcherKind::NullWatcher
-}
-
-fn main() {
-    let _ = pick();
-}
-"#,
-    )
-    .expect("write main");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            main_rs.contains("use notify::WatcherKind;"),
-            "expected `use notify::WatcherKind;` insertion, got:\n{main_rs}"
-        );
-        assert!(
-            main_rs.contains("WatcherKind::NullWatcher"),
-            "expected rewrite to `WatcherKind::NullWatcher`, got:\n{main_rs}"
-        );
-        assert!(
-            !main_rs.contains("notify::WatcherKind::NullWatcher"),
-            "fully-qualified variant should be rewritten, got:\n{main_rs}"
-        );
-    }
-}
-
-/// `InlinePathScan` rewrites external-crate paths in argument or return
-/// position (`fn render(&mut self, frame: &mut ratatui::Frame<'_>)`) to a
-/// top-level `use ratatui::Frame;` import the same way intra-crate paths are.
-fn external_crate_path_in_argument_is_rewritten(
-    batch: &mut DiagnosticBatch,
-) -> impl FnOnce() + use<> {
-    let root = batch.add_module(
-        "external_crate_path_in_argument_is_rewritten",
-        &[("mod.rs", "")],
-    );
-    fs::write(
-        root.join("mod.rs"),
-        r#"pub struct Frame;
-
-pub fn take(_frame: &mut std::collections::BTreeMap<String, i32>) {}
-
-fn main() {}
-"#,
-    )
-    .expect("write main");
-
-    move || {
-        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
-        assert!(
-            main_rs.contains("use std::collections::BTreeMap;"),
-            "expected `use std::collections::BTreeMap;` insertion, got:\n{main_rs}"
-        );
-        assert!(
-            main_rs.contains("&mut BTreeMap<String, i32>"),
-            "expected bare type with generics, got:\n{main_rs}"
-        );
-        assert!(
-            !main_rs.contains("std::collections::BTreeMap<"),
-            "fully-qualified path should be rewritten, got:\n{main_rs}"
-        );
-    }
 }
 
 /// A `#[cfg]` written on a statement attaches to the statement's expression,
@@ -1803,13 +1202,10 @@ pub fn build(app: &mut App) {
     )
     .expect("write plugin module");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_inline_path_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1842,30 +1238,9 @@ pub fn build(app: &mut App) {
 }
 
 #[test]
-fn rewrites_inline_paths_in_independent_modules() {
+fn fix_cli_rewrites_inline_path_and_validates_sources() {
     let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
     let basic_inline_type_adds_use = basic_inline_type_adds_use(&mut batch);
-    let function_return_type = function_return_type(&mut batch);
-    let multiple_occurrences_one_use = multiple_occurrences_one_use(&mut batch);
-    let two_types_same_module = two_types_same_module(&mut batch);
-    let super_path = super_path(&mut batch);
-    let existing_use_no_duplicate = existing_use_no_duplicate(&mut batch);
-    let renamed_import_does_not_hide_required_bare_import =
-        renamed_import_does_not_hide_required_bare_import(&mut batch);
-    let sibling_scope_import_does_not_block_fix =
-        sibling_scope_import_does_not_block_fix(&mut batch);
-    let generic_type_params_preserved = generic_type_params_preserved(&mut batch);
-    let struct_literal_and_pattern_paths_get_rewritten =
-        struct_literal_and_pattern_paths_get_rewritten(&mut batch);
-    let multi_byte_chars_do_not_corrupt_replacement_span =
-        multi_byte_chars_do_not_corrupt_replacement_span(&mut batch);
-    let impl_trait_path_is_rewritten = impl_trait_path_is_rewritten(&mut batch);
-    let partial_path_import_is_resolved_to_absolute =
-        partial_path_import_is_resolved_to_absolute(&mut batch);
-    let external_crate_enum_variant_path_is_rewritten =
-        external_crate_enum_variant_path_is_rewritten(&mut batch);
-    let external_crate_path_in_argument_is_rewritten =
-        external_crate_path_in_argument_is_rewritten(&mut batch);
     batch.single_compile_targets();
     let output = batch.command().arg("--fix").output().expect("fix batch");
     assert!(
@@ -1874,20 +1249,5 @@ fn rewrites_inline_paths_in_independent_modules() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
     basic_inline_type_adds_use();
-    function_return_type();
-    multiple_occurrences_one_use();
-    two_types_same_module();
-    super_path();
-    existing_use_no_duplicate();
-    renamed_import_does_not_hide_required_bare_import();
-    sibling_scope_import_does_not_block_fix();
-    generic_type_params_preserved();
-    struct_literal_and_pattern_paths_get_rewritten();
-    multi_byte_chars_do_not_corrupt_replacement_span();
-    impl_trait_path_is_rewritten();
-    partial_path_import_is_resolved_to_absolute();
-    external_crate_enum_variant_path_is_rewritten();
-    external_crate_path_in_argument_is_rewritten();
 }

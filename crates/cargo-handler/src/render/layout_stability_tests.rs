@@ -349,7 +349,7 @@ fn waiting_clippy_mac_waiting_keeps_two_columns_at_80_by_45() -> TestResult {
 #[test]
 fn gained_and_lost_work_rows_change_the_tile_allocation() -> TestResult {
     let mut source = SourceFrameState::new()?;
-    let before = paint(&mut source.app, 80, 45)?;
+    let before = paint(&mut source.app, 80, 60)?;
     let original = source.rows.clone();
     let liner = source
         .rows
@@ -363,7 +363,7 @@ fn gained_and_lost_work_rows_change_the_tile_allocation() -> TestResult {
         }))?);
     }
     source.publish();
-    let gained = paint(&mut source.app, 80, 45)?;
+    let gained = paint(&mut source.app, 80, 60)?;
     assert_ne!(
         before.requested, gained.requested,
         "new work increases requested rows"
@@ -376,7 +376,7 @@ fn gained_and_lost_work_rows_change_the_tile_allocation() -> TestResult {
     );
     source.rows = original;
     source.publish();
-    let lost = paint(&mut source.app, 80, 45)?;
+    let lost = paint(&mut source.app, 80, 60)?;
     assert_eq!(before.requested, lost.requested);
     assert_eq!(
         before.groups, lost.groups,
