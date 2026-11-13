@@ -159,127 +159,50 @@
 
 ### Phase 6 — The details view shows activity and status, drops family, and uses the tile colors  · status: done
 
-**Depends on:** Phase 5 (the `waiting` ink, `agent_cell.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** the `d` view shows what an agent does now and its status, with no repeated word, and each value has the color it has in the tile.
-
-**Source:** the user, via the showrunner, 2026-11-13, returning C330 (the Phase 3 details sections, merged 77ce4eec): "we can remove the family - the account tells us the family by convention / i'm looking at one that has a status and a state - both are idle - that's not helpful - we should show activity and status - messaging just shows status and state as a unit director - i see a worker that shows activity status and state - but can't a unit director also have an activity possibility? / the waiting color should be a brightrer yellow / colors we use on the main screen should match with the detailed screen". The showrunner put the four items in one phase. Phase 5 takes the waiting yellow, because it owns the `waiting` ink.
-
-**Spec:**
-
-Director decisions:
-1. Remove `DetailProperty::Family` and its line. The `agent` section keeps account, model, effort and type.
-2. Remove `DetailProperty::State` and its line. The `now` section shows `activity:`, `status:` and `age:`, in that order.
-3. `activity:` joins two parts with `HEADING_SEPARATOR`: the job text from `TreeLine::activity_text`, then the live word from `AgentActivity::text` (`thinking`, `clippy`, `compacting` and the others). Examples: a worker shows `impl · clippy`; a unit director shows `thinking`. When both parts are the same word, the line shows it once: `TreeLine::activity_text` already returns `compacting` for a compacting row, so a compacting row shows `activity: compacting`, never `compacting · compacting`.
-4. The live word is left out when it is `idle` or `—`, because it then gives no fact that the status does not give. A row with no job and no live word shows `—` (`MISSING_VALUE`).
-5. `status:` keeps its value: the accounts-board word from `session_status`.
-6. The tile activity cell does not change. Only the `d` view joins the live word.
-7. Each `d` value with a tile cell for the same row draws in that cell's ink: account, session name, role, activity, status (the `waiting` ink included), type, model, effort, branch and directory. Use the function the tile cell uses for its ink; do not copy the ink rules. Values with no tile cell (pid, desktop, age, the hierarchy names) keep the default text ink.
-8. A selected line keeps the selection background. Its value ink goes through `footer_colors::SelectedGroundInk::resolve` after the cell ink, as the tile row does in `render/mod.rs`. Use that resolver; do not copy it.
-9. A left click on a `d` value line selects that line, as the arrow keys do. A click on a heading line, a blank line or outside the overlay changes nothing. The wheel keeps its arrow-key behavior. Source: the user, returning C331: "you need to make the details tab accept mouse clicking a row as well as navigating with the arrows - i shouldn't have to ask this".
-10. The click uses the `tui_pane` mouse path that cargo-port uses (`TerminalApp::click`, the `Viewport` hit test, `table_row_at`). Add no second hit-test geometry.
-11. Every cargo-handler view has mouse and keyboard parity: each list a key moves through, a left click selects and the wheel scrolls. Audit the tiles, the `d` view, the favorites overlay and each other overlay. Fix each gap in this phase, and name each view and its result in the reply.
-
-Tests (red first, each under one second):
-1. No row's `d` view has a `family:` line or a `state:` line, read from the rendered overlay. The `agent` and `now` sections keep their other lines in order.
-2. A worker with job `impl` and live `clippy` shows `activity: impl · clippy`. A unit director with live `thinking` shows `activity: thinking`. An idle unit director with no job shows `activity: —`. A compacting row shows `activity: compacting`. Each shows its accounts word in `status:`.
-3. For each value in decision 7, the `d` view value draws the same foreground as the tile cell of the same row, read from both rendered buffers. Include a row with a waiting status, selected and not selected, on the dark and the light default themes, in a focused and a remembered selection.
-4. The Phase 3 tests `details_navigation_skips_headings_and_y_copies_only_the_value` and `assert_full_frame_copy_notice` stay green. `y` copies the value text only, with no ink.
-5. A click on the second value line of an open `d` view selects it; `y` then copies that value. A click on a heading line keeps the selection. Drive the click through `TerminalApp::click`.
-6. For each view that decision 11 fixes, a click on a row selects the row that the arrow keys reach.
-
-**Constraints from prior phases:**
-- Phase 3: the four sections, the heading lines, the value column and `y` stay. The `DetailsOverlay` copy target stays.
-- Phase 5: the `waiting` status ink is keyed on `ReportedSessionState::Reported(SessionState::Waiting)` through `color_role`.
-- Phase 2: `MatchInk::resolve` can change a foreground after selection. A `d` value keeps 4.5:1 at every emphasis the overlay draws.
-
-**Live check (director):** before the checkpoint, open the `d` view on a unit director row and on a worker row, from a build of this branch, on the dark and the light default themes, under the safety rule. No `family:` or `state:` line shows; `activity:` shows the job and the live word; each value has its tile color.
-
-**Change-Review line:** The details view drops family and state, shows activity and status, and colors each value as the tile does | On natedev, press d on a unit director row and on a worker row | No family or state line; activity shows the job and what the agent does now; each value has the color it has in the tile
-**Change-Review line:** A click on a details row selects it, as the arrows do, and each view accepts the mouse and the keys the same way | On natedev, press d on a row, click a value line, then press y | The clicked line is selected and y copies its value; clicks select rows in every list
+- The `d` view has four sections. `agent` shows account, model, effort and type; it has no family line. `now` shows `activity:`, `status:` and `age:`, in that order; it has no state line.
+- `activity:` joins the job text (`TreeLine::activity_text`) and the live word (`AgentActivity::text`) with `HEADING_SEPARATOR`, for example `impl · clippy`. Equal parts show once (`compacting`). The live word is left out when it is `idle` or `—`. No job and no live word gives `—`. The tile activity cell does not join the live word.
+- `row_details_with_inks` (`agent_cell.rs`) draws each value with a tile cell through `tree_value_line` and the tile column, so a `d` value has its tile ink, the `waiting` ink included. A selected line goes through `footer_colors::SelectedGroundInk::resolve`. Values with no tile cell (pid, desktop, age, hierarchy names) keep the default ink.
+- `DetailsOverlay::click` (`details.rs`) selects a value line through `tui_pane::table_row_at` on the rendered viewport and the painted value rows. A click on a heading, a blank line, a border or outside the overlay changes nothing. `y` copies the value text only.
+- `FavoritesOverlay::click` and `scroll` (`tui_pane` `favorites_overlay/mod.rs`) select and scroll rows as the arrow keys do. `App::click` and `App::scroll` route to the details view, then the favorites overlay, then the tiles. Tiles, summary agents and accounts, settings and keymap already used the shared mouse path.
 
 **Files:**
-- `crates/cargo-handler/src/details.rs` — the properties, the `now` order and the value inks
-- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/tui_pane/src/favorites_overlay/mod.rs` — the `d` view click, and each view that the parity audit fixes
-- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details` and the shared cell inks
-- `crates/cargo-handler/src/render/mod.rs` — the selected-row ink path the `d` view shares
-- `crates/cargo-handler/src/render/details_tests.rs`, `crates/cargo-handler/src/render/favorites_tests.rs` — the `d` view tests and the favorites click tests
-- `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs`, `crates/cargo-handler/src/summary/age_layout_tests.rs` — tests that read the removed lines
-- `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/interaction.md` — the `d` lines and inks
-- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — tests that read the removed `state:` line
-- `crates/cargo-handler/src/summary/mod.rs` — `status_text`, which loses its last caller
-- `crates/cargo-handler/src/census/codex_session_tests.rs`, `crates/cargo-handler/src/census/subagent_activity_tests.rs`, `crates/cargo-handler/src/render/layout_stability_tests.rs` — tests that read the removed `state:` line
+- `crates/cargo-handler/src/details.rs` — the properties, the `now` order, the click and the painted rows
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details`, `row_details_with_inks`
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/interaction.rs` — click and wheel routing; an open details view is modal
+- `crates/tui_pane/src/favorites_overlay/mod.rs` — favorites click and scroll
+- `crates/cargo-handler/src/render/details_tests.rs`, `crates/cargo-handler/src/render/favorites_tests.rs` — the `d` view, ink and click tests
+- `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/interaction.md` — the `d` lines, inks and mouse parity
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** the full-screen tile keeps the overlay order for clicks and the wheel: the details view, then the favorites overlay, then the tiles. `census --json` prints the tile activity text, not the joined `d` view text.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the new `d` lines and the tile colors on both default themes.
+**Gotchas:** `table_row_at` treats the details table's top border as its header row. The details tests read non-ASCII cells (`·`), so a buffer helper compares symbols, never bytes.
 
 ### Phase 7 — The census keeps each worker's current run, pane state, run states and activity start, and names what it cannot read  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** the census holds every fact that `census --json` (Phase 8) prints, for the TUI and the command alike, and a unit's tile shows only the workers of its current run.
-
-**Source:** the user, via the showrunner, 2026-11-13: "the /showrunner:units skill and cargo handler tui app should all be using the same informaton sources to find out what workers are working on - so we have consistency - eventually i might merge /showrunner:units into cargo handler but not now - so i want to make sure we prepare the way". The current-run rule: the showrunner, 2026-11-13, after sdlc confirmed unit-board's Workers fix uses it. The architect review after Phase 5 found the census facts that the command needs and does not have; the director split them into this phase.
-
-**Spec:**
-
-Director decisions:
-1. The staff reader keeps the staff row's run pointer. `StaffFields` (`census/hierarchy.rs`) reads it into a semantic type, `StaffRunPointer::{Current(RunId), NoRun}`, never a bare `Option`.
-2. A unit's workers and runs come from its staff row's current run only, never from every open run. Old open runs (astra-review, proof, stopped) do not show, in the tile or in the command. A current run without a live supervisor still counts: its runs show with the `missing` state.
-3. The run reader keeps each run record of the current run with its state: running, finished with a queued result, or missing (no live supervisor). Today `RunRecord` (`census/activity.rs`) keeps running records only. The tile activity text still comes only from validated running records.
-4. The pane reader keeps open, stopped, closed and unknown apart. Today `PaneWork` (`census/herdr.rs`) folds stopped and exited panes into `Busy`. The tile status draws as it does today; the new observation is a separate value.
-5. `ActivityRead` (`census/activity.rs`) keeps the start time of the fact that gives the tile activity text: the running detached run's start, else the open pass's start. With neither, the start is unknown. A scan with the same activity keeps the same start. A changed activity takes the start of its new fact. Times are epoch seconds.
-6. A source that cannot be read is never an empty source. The staff reader (`StaffFileReader`, `census/hierarchy.rs`) and the accounts read return typed outcomes: loaded, absent (a valid empty source), or unreadable with its reason. The TUI draws what it has, as today; the census keeps the reason.
-7. A fact the census cannot read is a domain variant with its reason, for example `Observed<T>::{Known(T), Unknown(UnknownReason)}`. Phase 8 converts it to a nullable JSON field and an `unknown` object at the JSON boundary only.
-8. The probe report (`census/probe.rs`) carries the new facts as fields with serde defaults. An older remote whose probe omits them gives its rows, with each missing fact `Unknown("remote probe has no <fact>")`.
-
-Tests (red first, each under one second):
-1. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs in the rendered tile. A current run with no live supervisor lists its runs as missing.
-2. Fixtures for a running run, a finished run with a queued result, and a run with no supervisor give the three run states. The tile activity text still comes from the running run only.
-3. Fixtures give each pane state: open, stopped, closed and unknown. The tile status cell text and ink do not change for any of them.
-4. The activity start: a cold scan sets it, a scan with the same activity keeps it, and a changed activity resets it.
-5. An absent staff file gives an empty roster. An unreadable staff file gives the unreadable outcome with its reason. A failed accounts command gives the unreadable outcome with its reason.
-6. An old-probe fixture without the new fields parses. Its rows stay, and each new fact is unknown with its reason.
-
-**Constraints from prior phases:**
-- Phase 5: `ReportedSessionState::color_role` maps a waiting status to `Role::Waiting`. The status word stays the accounts-board word.
-- The Delegation Context Status source: cargo-handler never makes a status word of its own.
-- Census reads stay off the UI thread, with the configured probe and read timeouts.
-
-**Live check (director):** on natedev, capture the cargo-liner tile from a build of this branch while a unit has an older open run, under the safety rule. Each unit lists only the workers of its staff row's current run.
-
-**Change-Review line:** A unit's tile lists only the workers of its current run | On natedev, run cargo-handler while a unit has an older open run | Workers and runs from the older run do not show
+- `StaffFields` (`census/hierarchy.rs`) reads the staff row's run pointer as `StaffRunPointer::{Current(RunId), NoRun}`. A unit lists only the workers of its current run. The run's pass map (`progress_history_state.json`, `PROGRESS_HISTORY_STATE_FILE`) names them: a pass object with `instance_id` is one record, else its values are the records. The newest active pass gives a worker's start.
+- `DetachedRunFact` (`census/activity.rs`) keeps each current-run record with `DetachedRunState::{Running, FinishedQueued, Missing}`. The tile activity text comes only from validated running records. One malformed record does not hide its siblings; the runs fact is unknown with the first failure.
+- `PaneState::{Open, Stopped, Closed}` (`census/herdr.rs`) keeps the pane lifecycle apart from the tile status; an unread pane is `Observed::Unknown`.
+- `Observed<T>::{Known(T), Unknown(UnknownReason)}` and `SourceRead<T>::{Loaded, Absent, Unreadable}` (`census/mod.rs`) keep failure apart from empty. `CensusFacts` on `HierarchySnapshot.facts` holds `staff` and `accounts` as `Observed<SourceHealth>` and `workers` as a map of `WorkerFacts` (`current_run`, `pane`, `runs`, `activity_started`, epoch seconds).
+- The probe report carries the facts with serde defaults. An older remote gives its rows, with each fact unknown as "remote probe has no ...". A local snapshot built before its read says "this snapshot has no ...".
+- `terminal.rs` passes the accounts monitor's table to `Census::record_local_accounts`; until then the accounts fact reads "the accounts monitor has not answered".
 
 **Files:**
-- `crates/cargo-handler/src/census/hierarchy.rs` — the staff run pointer, the current-run rule and the typed staff read
-- `crates/cargo-handler/src/census/activity.rs` — the run states and the activity start
-- `crates/cargo-handler/src/census/herdr.rs` — the pane states
-- `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/mod.rs` — the probe fields and the shared scan
-- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/remote.rs`, `crates/cargo-handler/src/census/probe/hierarchy_transport_tests.rs` — the census facts on the hierarchy answer
-- `crates/cargo-handler/src/render/drawn_frame_tests.rs`, `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — fixtures that build the hierarchy snapshot, and the current-run row
-- `crates/cargo-handler/src/census/activity_regression_tests.rs`, `crates/cargo-handler/src/census/astra_role_tests.rs` — staff fixtures with a current-run pointer, and the `activity:` label
-- `crates/cargo-handler/src/census/model.rs`, `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `MetadataFixture::new` and the placement fixture, with a unit run pointer and an active worker pass
-- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/accounts_source_tests.rs` — the typed accounts read and its source outcomes
-- `crates/cargo-handler/src/constants.rs` — the delivery prefixes and the progress history file name
-- `crates/cargo-handler/src/terminal.rs` — puts the accounts monitor's read outcome into the local census facts
-- `crates/cargo-handler/src/census/worker_dispatch/` — run facts the dispatch reader holds
-- `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/census/scan/current_run_repair_tests.rs` — the tests
-- `docs/cargo-handler/as-built/hierarchy.md` — the current-run rule and the new facts
+- `crates/cargo-handler/src/census/hierarchy.rs` — `StaffRunPointer`, the typed staff read
+- `crates/cargo-handler/src/census/activity.rs` — run states, the activity start, run record ownership
+- `crates/cargo-handler/src/census/herdr.rs` — pane states
+- `crates/cargo-handler/src/census/scan.rs` — `CurrentRunObservations`, the pass map, the current-run rule
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs` — `Observed`, `CensusFacts`, the probe fields, `record_local_accounts`
+- `crates/cargo-handler/src/census/accounts.rs` — the typed accounts read
+- `crates/cargo-handler/src/terminal.rs` — records the accounts outcome
+- `docs/cargo-handler/as-built/hierarchy.md` — the current-run rule, the pass map and the facts
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `census --json` reads `CensusFacts` and `WorkerFacts` inside `census`, calls `record_local_accounts` with its own accounts read, and prints each unknown reason. The accounts `login ends` value goes into `AccountsReading`.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows only current-run workers.
+**Gotchas:** a missing or unreadable pass map gives a director no workers and an unknown start with the reason; it never restores workers from older runs. Remote snapshots expect `CensusFacts::older_probe()` reasons, local ones the `Default` reasons.
 
 ### Phase 8 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: todo
 
@@ -321,6 +244,10 @@ Tests (red first, each under one second):
 - Phase 5: a waiting status reads `waiting`, from `ReportedSessionState`. The JSON gives the word; ink does not apply.
 - Phase 6: the tile activity cell does not join the live word; only the `d` view does. The JSON `activity` is the tile cell text.
 - Phase 7: the census keeps the staff run pointer (`StaffRunPointer`), the current-run rule, the run and pane states, the activity start, the typed source outcomes and the `Observed<T>` unknowns. The command reads them; it does not read the files again.
+- Phase 7: `CensusFacts` (`census/mod.rs`, on `HierarchySnapshot.facts`) holds `staff` and `accounts` as `Observed<SourceHealth>`, and `workers` as `Observed<BTreeMap<session id, WorkerFacts>>`. `WorkerFacts` holds `current_run`, `pane` (`PaneState::{Open, Stopped, Closed}`; unknown is `Observed::Unknown`), `runs` (`DetachedRunFact` with `DetachedRunState::{Running, FinishedQueued, Missing}`) and `activity_started`. These types are private to `census`; put `report.rs` inside `census` so it reads them without new public API.
+- Phase 7: the TUI writes the local `accounts` fact through `Census::record_local_accounts(&AccountsTable)`, called from `terminal.rs` after the accounts monitor reads. The command has no monitor. It runs the configured accounts read once and passes its table to `record_local_accounts`. Without that call, the fact stays unknown with the reason "the accounts monitor has not answered".
+- Phase 7: a unit's current workers come from its current run's pass map (`progress_history_state.json`). A missing or unreadable pass map gives the director no workers and an unknown activity start with the reason; the JSON prints that reason in the director's `unknown`, never an empty worker list as a fact. A malformed run record gives `runs` an unknown with the first failure; the valid sibling runs still give the activity text.
+- Phase 7: unknown reasons read "this snapshot has no ..." for a local snapshot built before its read, and "remote probe has no ..." for an older remote probe.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
 
 **Live check (director):** on natedev, run the release build's `cargo-handler census --json` while this unit's workers run. Compare it with the TUI tile for the cargo-liner production: the same unit directors, workers, statuses, activities and runs. Measure the run time over five runs and name it in the phase report.
@@ -377,7 +304,7 @@ Tests (red first, each under one second):
 5. On a narrow pane, `enabled` drops first, then `login ends`, then `credits`.
 
 **Constraints from prior phases:**
-- Phase 7: the accounts read returns a typed outcome: loaded, absent or unreadable. The new field goes into the loaded reading.
+- Phase 7: the accounts monitor keeps `AccountsTable::{NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast}` (`census/accounts.rs`). The census keeps only its health, through `Census::record_local_accounts`. The new field goes into `AccountsReading`; the health does not change.
 - The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
 
 **Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
@@ -475,6 +402,7 @@ Director decisions:
 - Shared boundary (director decision, 2026-11-13): cargo-tile's `draw_cell_view` reads its roster and prepared tables, and `ExpandedCell` uses app row and header measures. A generic tile identity alone cannot move them. tui_pane owns the expanded identity, the motion clock, and the motion and clipping geometry. Each app supplies its content measures and draws its content into the rect that tui_pane gives, through one tui_pane trait. cargo-tile's roster and table reads stay in cargo-tile, behind its trait implementation.
 - cargo-handler `Cells` owns row selection, the tree viewport, the painted headers and the Phase 3 shared column fitting. The full-screen tile uses that selection and viewport; it does not use cargo-tile's scroll state, so there is one viewport owner. The expanded tile fits its columns as a `TreeSizing::Local` tile at the full pane width. On collapse, the grid fits the shared columns again, and the blank slots of Phase 3 come back.
 - Phase 3 registers the details view as its own copy target and draws the copy notice above a details view that fills the frame (`render/mod.rs`). Keep both paths with the full-screen layer under the details view.
+- Phase 6: `App::click` (`app.rs`) sends a click to an open details view first (`DetailsOverlay::click`, a `tui_pane::table_row_at` hit test on its rendered viewport), then to the favorites overlay, then to the tiles. `App::scroll` follows the same order: the details view, then the favorites overlay, then the tiles. `interaction.rs` `app_modal_overlay_hit` treats an open details view as modal. Keep this order with the full-screen layer under the overlays, and give the full-screen tile the same click and wheel parity as a grid tile.
 - Phase 4: `TileGrid` holds the column placement state (`ColumnRanks`, `crates/tui_pane/src/tiles/grid/column_order.rs`), and the app selects the rule with `TileCells::column_order`. cargo-handler returns `TileColumnOrder::LongestWithShortest` from each tile's full tree rows; cargo-tile keeps the default source order. Expand and collapse change no tile membership, so they keep the ranks. When the pane size and the ranking do not change, a collapse puts every tile back in the column it held before Enter. Do not clear or rebuild the ranks for the full-screen tile.
 
 Tests (red first, each under one second):
