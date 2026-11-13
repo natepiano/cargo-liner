@@ -332,15 +332,28 @@ impl LedgerTemplate {
         let embedded = fs::canonicalize(repository.path().join(".git/fixture-worktrees"))
             .expect("embedded worktree parent should resolve");
         let destination = fs::canonicalize(worktrees).expect("worktree parent should resolve");
-        let mut main = DirectorySnapshot::capture(repository.path());
-        let mut linked = DirectorySnapshot::capture(&embedded);
-        for snapshot in [&mut main, &mut linked] {
-            let _ =
-                snapshot.replace_text(&embedded.to_string_lossy(), &destination.to_string_lossy());
-        }
-        main.restore(repository.path());
-        linked.restore(&destination);
-        fs::remove_dir_all(embedded).expect("embedded checkout copies should remove");
+        crate::relocate_tree(
+            repository.path(),
+            &[(
+                embedded.to_string_lossy().into_owned(),
+                destination.to_string_lossy().into_owned(),
+            )],
+        );
+        fs::rename(&embedded, &destination)
+            .or_else(|error| {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::CrossesDevices
+                        | std::io::ErrorKind::DirectoryNotEmpty
+                        | std::io::ErrorKind::AlreadyExists
+                ) {
+                    DirectorySnapshot::capture(&embedded).restore(&destination);
+                    fs::remove_dir_all(&embedded)
+                } else {
+                    Err(error)
+                }
+            })
+            .expect("linked checkout directory should move or copy across filesystems");
         repository
     }
 
@@ -418,6 +431,10 @@ mod tests {
     use crate::git_driver;
 
     const RESTORE_PROBE_GIT: &str = "CARGO_BERTH_RESTORE_PROBE_GIT";
+    const UNCHANGED_TEMPLATE_FILES: [(&str, &str); 2] = [
+        ("formatted.json", "{\n  \"unchanged\": true\n}\n"),
+        ("malformed.json", "{ malformed fixture JSON\n"),
+    ];
 
     #[test]
     fn template_restore_needs_no_git_and_preserves_clean_and_dirty_indexes() {
@@ -525,6 +542,11 @@ mod tests {
                 build:            |root| {
                     fs::write(root.join("history"), "the required setup")
                         .expect("setup should write");
+                    fs::create_dir_all(root.join(".git/fixture-worktrees"))
+                        .expect("embedded worktree parent should exist");
+                    for (name, content) in UNCHANGED_TEMPLATE_FILES {
+                        fs::write(root.join(name), content).expect("template file should write");
+                    }
                 },
             },
             ledger:       LedgerFixture::Empty,
@@ -550,5 +572,14 @@ mod tests {
             fs::read_to_string(root.join("history")).expect("setup should exist"),
             "the required setup"
         );
+        let worktrees = tempdir().expect("external worktree parent should exist");
+        let repository = template.instantiate_with_external_worktrees(worktrees.path());
+        for (name, content) in UNCHANGED_TEMPLATE_FILES {
+            assert_eq!(
+                fs::read(repository.path().join(name)).expect("template file should read"),
+                content.as_bytes(),
+                "relocation must preserve the exact bytes of {name}"
+            );
+        }
     }
 }

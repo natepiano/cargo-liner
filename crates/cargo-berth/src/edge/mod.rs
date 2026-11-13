@@ -379,6 +379,9 @@ impl OrderingEdge {
                     | ReleaseDisposition::RewrittenIntegration(_) => EdgeReadiness::Fulfilled,
                 });
             },
+            RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint { .. } => {
+                return Ok(EdgeReadiness::Fulfilled);
+            },
         }
         let predecessor = repository_snapshot.reservation(self.before)?;
         match &predecessor.evidence {
@@ -406,6 +409,10 @@ impl OrderingEdge {
             }
             | RepositoryReservationEvidence::Released {
                 integration_status, ..
+            }
+            | RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                integration_status,
+                ..
             } => self.checkpoint_readiness(repository_snapshot, integration_status),
             RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
                 Ok(EdgeReadiness::Cancelled)

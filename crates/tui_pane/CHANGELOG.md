@@ -41,6 +41,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ### Changed
 
 - **Breaking:** Rename `CellClick` to `CellPointer` for press and wheel input.
+- **Breaking:** `ExpansionAction::key_bindings` takes no argument and binds row expand and collapse to plain Right and Left.
 
 - Choose tile columns from the demand at each candidate width, and reuse the selected layout while its inputs stay equal.
 - Titled rules keep their title when the rule has four more cells than the title.

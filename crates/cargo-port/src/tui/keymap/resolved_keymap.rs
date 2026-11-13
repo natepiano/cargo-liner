@@ -1,7 +1,6 @@
 use std::fmt::Write as _;
 
 use crossterm::event::KeyCode;
-use crossterm::event::KeyModifiers;
 use tui_pane::Action;
 
 use super::KeyBind;
@@ -27,10 +26,10 @@ pub(crate) struct ResolvedKeymap {
 }
 
 impl ResolvedKeymap {
-    /// The built-in default keymap matching the current hardcoded bindings.
+    /// Return the default keymap with the shared project row bindings.
     pub(crate) fn defaults() -> Self {
         Self {
-            project_list: ScopeMap::from(ProjectListAction::key_bindings(KeyModifiers::SHIFT)),
+            project_list: ScopeMap::from(ProjectListAction::key_bindings()),
             package:      ScopeMap::from([(
                 KeyBind::from(KeyCode::Enter),
                 PackageAction::Activate,
@@ -164,6 +163,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_list_defaults_match_framework_bindings() {
+        let defaults = ResolvedKeymap::defaults();
+        let framework = ProjectListAction::bindings().into_scope_map();
+        for &action in <ProjectListAction as Action>::ALL {
+            assert_eq!(
+                defaults.project_list.key_for(action).copied(),
+                framework
+                    .key_for(action)
+                    .and_then(tui_pane::KeySequence::single_key),
+                "default binding differs for {action:?}"
+            );
+        }
+    }
+
+    #[test]
     fn defaults_scope_map_consistency() {
         fn check<A: Copy + Eq + std::hash::Hash>(scope: &ScopeMap<A>, actions: &[A]) {
             for &action in actions {
@@ -201,5 +215,8 @@ mod tests {
         assert!(table.contains_key("targets"));
         assert!(table.contains_key("ci_runs"));
         assert!(table.contains_key("lints"));
+        for (action, key) in [("expand_row", "right"), ("collapse_row", "left")] {
+            assert_eq!(table["project_list"][action].as_str(), Some(key));
+        }
     }
 }

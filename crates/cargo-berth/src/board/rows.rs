@@ -1098,6 +1098,10 @@ fn board_reservation_snapshots(
             }
             | RepositoryReservationEvidence::Released {
                 integration_status, ..
+            }
+            | RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+                integration_status,
+                ..
             } => BoardIntegrationEvidence::Current {
                 status: integration_status.clone(),
             },
