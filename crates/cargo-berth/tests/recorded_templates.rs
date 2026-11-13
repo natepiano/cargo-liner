@@ -8,6 +8,9 @@
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
+#[path = "support/proof_subject_templates.rs"]
+mod proof_subject_templates;
+
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -203,6 +206,8 @@ fn main() {
     let templates: Vec<_> = recorded_populations()
         .into_iter()
         .chain([
+            proof_subject_templates::EQUIVALENT_TARGET,
+            proof_subject_templates::DIFFERENT_TARGET,
             gate_fixtures::THREE_COMMIT_REBASE,
             compaction_fixture::PREPARED_COMPACTION,
             answers_fixtures::HOLDER_LIFECYCLE_START,
