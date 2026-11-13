@@ -510,7 +510,7 @@ fn assert_constrained_width(width: u16) {
             if width == 40 {
                 assert_eq!(
                     header.split_whitespace().collect::<Vec<_>>(),
-                    ["session", "role", "status"],
+                    ["session", "role", "activity", "status"],
                     "{text:?}"
                 );
             }
@@ -526,9 +526,9 @@ fn assert_constrained_width(width: u16) {
             assert_eq!(
                 session,
                 if width == 40 {
-                    format!("▼ long-session-{}-wi…", index + 1)
-                } else {
                     "▼ long-se…".to_owned()
+                } else {
+                    format!("▼ long-session-{}-wi…", index + 1)
                 },
                 "{text:?}"
             );
@@ -1128,12 +1128,29 @@ fn assert_astra_compression(
             "Astra hierarchy remains drawn at width {width}"
         );
         if width == core {
-            let text = lines(&compressed, compressed.area).join("\n");
-            assert!(
-                text.lines().any(|line| line.contains("session")
-                    && line.contains("role")
-                    && line.contains("status")),
-                "whole Astra core headers at width {width}: {text}"
+            let tile = placements
+                .iter()
+                .find(|tile| {
+                    selection_surface(&tile.content) == SelectableSurface::Surface(surface.clone())
+                })
+                .expect("Astra tile");
+            let text = lines(
+                &compressed,
+                tile.frame.inner().intersection(tile.frame.clip()),
+            )
+            .join("\n");
+            let header = text
+                .lines()
+                .find(|line| line.contains("session") && line.contains("status"))
+                .expect("Astra core header");
+            assert_eq!(
+                header
+                    .trim_matches('│')
+                    .split_whitespace()
+                    .filter(|word| !matches!(*word, "▲" | "▼"))
+                    .collect::<Vec<_>>(),
+                ["session", "activity", "status"],
+                "width {width}: {text}"
             );
         }
         paint(app, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT);

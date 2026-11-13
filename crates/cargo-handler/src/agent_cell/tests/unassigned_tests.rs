@@ -176,9 +176,9 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let buffer = draw_pool(pool(&tiles, "natedev"), 220);
     for (name, prefix) in [
-        ("ups", "— ups"),
-        ("postmaster", "— postmaster"),
-        ("opened-session", "— opened-session"),
+        ("ups", "ups —"),
+        ("postmaster", "postmaster —"),
+        ("opened-session", "opened-session —"),
     ] {
         assert!(
             row_text(&buffer, name).starts_with(prefix),

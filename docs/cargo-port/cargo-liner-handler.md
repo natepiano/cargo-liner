@@ -84,7 +84,7 @@
 - A symlinked `config.toml` whose target is outside the config directory gets no live update.
 - A reader setup failure shows its cause and ends the reader. Recovery needs a restart.
 
-### Phase 3 — Tile columns read session, account, role, activity, status, branch; a long session name is cut before those columns drop; the details view groups its lines into sections, aligns them and copies a value with y  · status: todo
+### Phase 3 — Tile columns read session, account, role, activity, status, branch; a long session name is cut before those columns drop; the details view groups its lines into sections, aligns them and copies a value with y  · status: done
 
 **Depends on:** Phase 1 (it changes the Phase 1 column order and drop order)
 

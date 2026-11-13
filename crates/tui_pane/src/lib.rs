@@ -233,6 +233,7 @@ pub use copy::CopyPayload;
 pub use copy::CopySelection;
 pub use copy::CopySelectionResult;
 pub use copy::SystemClipboard;
+pub use copy::show_copy_outcome;
 pub use diagnostics::CPU_SMOOTHING_WINDOW_POLLS;
 #[cfg(target_os = "macos")]
 pub use diagnostics::CoreCluster;
