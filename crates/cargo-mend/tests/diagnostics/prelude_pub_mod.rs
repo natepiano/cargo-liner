@@ -1,3 +1,4 @@
+use super::compiled_report;
 use crate::support::*;
 
 fn write_manifest(temp: &std::path::Path, name: &str) {
@@ -31,7 +32,7 @@ fn crate_root_prelude_is_not_flagged_when_project_allows_it() {
     .expect("write main");
     fs::write(temp.path().join("src/prelude.rs"), "pub use super::run;\n").expect("write prelude");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/main.rs"
@@ -58,7 +59,7 @@ fn crate_root_prelude_is_flagged_when_project_requires_review() {
     .expect("write main");
     fs::write(temp.path().join("src/prelude.rs"), "pub use super::run;\n").expect("write prelude");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/main.rs"
@@ -86,7 +87,7 @@ fn nested_prelude_is_still_flagged() {
     )
     .expect("write nested prelude");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/inner/mod.rs"
@@ -109,7 +110,7 @@ fn crate_root_non_prelude_pub_mod_is_still_flagged() {
     .expect("write main");
     fs::write(temp.path().join("src/helpers.rs"), "pub fn run() {}\n").expect("write helpers");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/main.rs"

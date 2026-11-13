@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -8,10 +10,12 @@ use super::CARGO_TARGET_KIND_LIB;
 use super::CARGO_TARGET_KIND_TEST;
 use super::PackageMetadata;
 use super::TargetMetadata;
-use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::CargoCheckCli;
 use crate::config::TargetSelection;
 use crate::reporting::Report;
+use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourcePathKey;
 
 /// Filters mend findings based on the user's target-selection flags.
 ///
@@ -22,13 +26,10 @@ use crate::reporting::Report;
 /// reported.
 pub(crate) enum DisplayFilter {
     AllowAll,
-    AllowDirs {
-        allowed:       Vec<PathBuf>,
-        /// Other-target roots inside `src/`. Used to subtract files owned
-        /// by other targets when the lib target is included (e.g. exclude
-        /// `src/bin/foo.rs` from a `--lib` filter).
-        excluded_dirs: Vec<PathBuf>,
-        package_root:  PathBuf,
+    SelectedSources {
+        sources:       OnceCell<BTreeSet<SourcePathKey>>,
+        crate_roots:   BTreeSet<SourcePathKey>,
+        package_roots: Vec<PathBuf>,
     },
 }
 
@@ -44,108 +45,96 @@ impl DisplayFilter {
             return Self::AllowAll;
         }
 
-        let mut allowed = Vec::new();
-        let mut excluded_dirs = Vec::new();
-        let mut package_root = PathBuf::new();
-        let mut library_target_selection = LibraryTargetSelection::Omitted;
+        let parsed = ParsedSources::default();
+        let mut crate_roots = BTreeSet::new();
         for package in packages {
-            package_root.clone_from(&package.root);
-            let targets: Vec<_> = package
-                .targets
-                .iter()
-                .map(|target| (target, TargetRole::from(target)))
-                .collect();
-            for (target, role) in &targets {
-                let dir = target_directory(target);
-                if cli_includes_target(cli, target) == TargetInclusion::Included {
-                    allowed.push(dir.clone());
-                    match role {
-                        TargetRole::Library => {
-                            library_target_selection = LibraryTargetSelection::Included;
-                        },
-                        TargetRole::NonLibrary => {},
-                    }
+            for target in &package.targets {
+                if cli_includes_target(cli, target) == TargetInclusion::Omitted {
+                    continue;
                 }
-            }
-            // When `library_target_selection` is `LibraryTargetSelection::Included`, subtract every
-            // other target directory under `package.root` via `excluded_dirs`, so
-            // `src/bin/foo.rs` and similar files stay out of the library's allow set.
-            if matches!(library_target_selection, LibraryTargetSelection::Included) {
-                for (target, role) in &targets {
-                    match role {
-                        TargetRole::Library => {},
-                        TargetRole::NonLibrary => {
-                            let dir = target_directory(target);
-                            if dir.starts_with(&package.root) {
-                                excluded_dirs.push(dir);
-                            }
-                        },
-                    }
-                }
+                crate_roots.insert(parsed.path_key(&target.src_path));
             }
         }
-
-        if allowed.is_empty() {
-            // `allowed.is_empty()` means filtering was requested but no targets matched;
-            // return empty `DisplayFilter::AllowDirs` to show nothing rather than misreport.
-            Self::AllowDirs {
-                allowed:       Vec::new(),
-                excluded_dirs: Vec::new(),
-                package_root:  PathBuf::new(),
-            }
-        } else {
-            Self::AllowDirs {
-                allowed,
-                excluded_dirs,
-                package_root,
-            }
+        Self::SelectedSources {
+            sources: OnceCell::new(),
+            crate_roots,
+            package_roots: packages
+                .iter()
+                .map(|package| package.root.clone())
+                .collect(),
         }
     }
 
     pub(crate) fn allows(&self, finding_path: &Path) -> FindingDisplay {
         match self {
             Self::AllowAll => FindingDisplay::Included,
-            Self::AllowDirs {
-                allowed,
-                excluded_dirs,
-                package_root,
+            Self::SelectedSources {
+                sources,
+                package_roots,
+                crate_roots,
             } => {
-                let absolute = if finding_path.is_absolute() {
-                    finding_path.to_path_buf()
+                let parsed = ParsedSources::default();
+                let sources = sources.get_or_init(|| {
+                    // Cargo lists target roots, but only source text identifies their modules and
+                    // includes.
+                    let mut sources = BTreeSet::new();
+                    for root in crate_roots {
+                        let modules = ModuleMap::for_crate_root(root.as_path(), &parsed);
+                        sources.extend(
+                            modules
+                                .declared_files()
+                                .map(|(file, _)| parsed.path_key(file)),
+                        );
+                        if let Ok(included) =
+                            ModuleMap::reachable_sources([root.as_path().to_path_buf()], &parsed)
+                        {
+                            sources.extend(included.iter().map(|file| parsed.path_key(file)));
+                        }
+                    }
+                    sources
+                });
+                let included = if finding_path.is_absolute() {
+                    sources.contains(&parsed.path_key(finding_path))
                 } else {
-                    package_root.join(finding_path)
-                };
-                let in_allowed = allowed.iter().any(|dir| absolute.starts_with(dir));
-                if !in_allowed {
-                    return FindingDisplay::Excluded;
-                }
-                // `in_excluded_dir` means the finding belongs to a narrower target.
-                // Exclude it unless that target was explicitly included too:
-                // its directory must be in `allowed`.
-                let in_excluded_dir = excluded_dirs.iter().any(|dir| absolute.starts_with(dir));
-                if in_excluded_dir {
-                    let lib_dir = package_root.join(SOURCE_DIR_SRC);
-                    return if allowed
+                    package_roots
                         .iter()
-                        .any(|dir| absolute.starts_with(dir) && *dir != lib_dir)
-                    {
-                        FindingDisplay::Included
-                    } else {
-                        FindingDisplay::Excluded
-                    };
+                        .any(|root| sources.contains(&parsed.path_key(&root.join(finding_path))))
+                };
+                if included {
+                    FindingDisplay::Included
+                } else {
+                    FindingDisplay::Excluded
                 }
-                FindingDisplay::Included
             },
         }
     }
 
     pub(crate) fn apply(&self, report: &mut Report) {
-        if matches!(self, Self::AllowAll) {
+        let Self::SelectedSources { crate_roots, .. } = self else {
             return;
-        }
-        report
-            .findings
-            .retain(|finding| self.allows(Path::new(&finding.path)) == FindingDisplay::Included);
+        };
+        let parsed = ParsedSources::default();
+        let root = Path::new(&report.root);
+        // Compiler records identify active sources, including generated sources and nonliteral
+        // includes.
+        let compiled_sources: BTreeSet<_> = report
+            .facts
+            .module_mount_facts
+            .iter()
+            .filter(|mount| {
+                crate_roots.contains(&parsed.path_key(&root.join(&mount.crate_root_file)))
+            })
+            .map(|mount| parsed.path_key(&root.join(&mount.file)))
+            .collect();
+        let has_compiler_mounts = report.facts.module_mount_facts.iter().next().is_some();
+        report.findings.retain(|finding| {
+            let file = root.join(&finding.path);
+            if has_compiler_mounts {
+                compiled_sources.contains(&parsed.path_key(&file))
+            } else {
+                self.allows(&file) == FindingDisplay::Included
+            }
+        });
         report.refresh_summary();
     }
 }
@@ -162,35 +151,6 @@ pub(crate) enum FindingDisplay {
 enum TargetInclusion {
     Included,
     Omitted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetRole {
-    Library,
-    NonLibrary,
-}
-
-impl From<&TargetMetadata> for TargetRole {
-    fn from(target: &TargetMetadata) -> Self {
-        if target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_LIB) {
-            Self::Library
-        } else {
-            Self::NonLibrary
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LibraryTargetSelection {
-    Included,
-    Omitted,
-}
-
-fn target_directory(target: &TargetMetadata) -> PathBuf {
-    target
-        .src_path
-        .parent()
-        .map_or_else(|| target.src_path.clone(), Path::to_path_buf)
 }
 
 fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> TargetInclusion {
@@ -224,9 +184,14 @@ fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> TargetIn
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::fs;
+    use std::io;
+
+    use tempfile::TempDir;
 
     use super::*;
     use crate::config::TargetSelection;
+    use crate::reporting::ReportFacts;
     use crate::selection::CARGO_TARGET_KIND_BIN;
     use crate::selection::CARGO_TARGET_KIND_EXAMPLE;
     use crate::selection::CARGO_TARGET_KIND_LIB;
@@ -234,12 +199,12 @@ mod tests {
     use crate::selection::TargetMetadata;
     use crate::selection::TargetSupport;
 
-    fn target(kind: &str, name: &str, src_path: &str) -> TargetMetadata {
+    fn target(kind: &str, name: &str, src_path: &Path) -> TargetMetadata {
         TargetMetadata {
             kind:              vec![kind.to_string()],
             crate_types:       Vec::new(),
             name:              name.to_string(),
-            src_path:          PathBuf::from(src_path),
+            src_path:          src_path.to_path_buf(),
             edition:           "2024".to_string(),
             required_features: Vec::new(),
             doc:               TargetSupport::Disabled,
@@ -248,26 +213,78 @@ mod tests {
         }
     }
 
-    fn package_with_lib_and_example() -> PackageMetadata {
-        PackageMetadata {
+    fn package_with_lib_and_example() -> io::Result<(TempDir, PackageMetadata)> {
+        let temp = tempfile::tempdir()?;
+        for directory in ["src/bin", "examples/demo"] {
+            fs::create_dir_all(temp.path().join(directory))?;
+        }
+        for (file, source) in [
+            (
+                "src/lib.rs",
+                "mod helpers; mod helper; mod lib_helpers; mod anywhere;",
+            ),
+            ("src/helpers.rs", ""),
+            ("src/helper.rs", ""),
+            ("src/lib_helpers.rs", ""),
+            ("src/anywhere.rs", ""),
+            ("src/bin/tool.rs", "fn main() {}"),
+            ("examples/demo/main.rs", "mod helper; fn main() {}"),
+            ("examples/demo/helper.rs", ""),
+        ] {
+            fs::write(temp.path().join(file), source)?;
+        }
+        let root = temp.path();
+        let package = PackageMetadata {
             id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj").join("Cargo.toml"),
-            root:          PathBuf::from("/proj"),
+            manifest_path: root.join("Cargo.toml"),
+            root:          root.to_path_buf(),
             targets:       vec![
-                target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),
+                target(CARGO_TARGET_KIND_LIB, "pkg", &root.join("src/lib.rs")),
                 target(
                     CARGO_TARGET_KIND_EXAMPLE,
                     "demo",
-                    "/proj/examples/demo/main.rs",
+                    &root.join("examples/demo/main.rs"),
                 ),
             ],
-        }
+        };
+        Ok((temp, package))
     }
 
     #[test]
-    fn no_target_flags_allows_everything() {
-        let filter =
-            DisplayFilter::from_cli(&CargoCheckCli::default(), &[package_with_lib_and_example()]);
+    fn compiler_mounts_filter_without_reading_sources() -> io::Result<()> {
+        let (temp, package) = package_with_lib_and_example()?;
+        let cli = CargoCheckCli {
+            target_selections: BTreeSet::from([TargetSelection::Library]),
+            ..CargoCheckCli::default()
+        };
+        let reads_before = ParsedSources::source_read_attempts();
+        let filter = DisplayFilter::from_cli(&cli, &[package]);
+        let mut report = Report {
+            root: temp.path().to_string_lossy().into_owned(),
+            facts: ReportFacts {
+                module_mount_facts: vec![crate::reporting::ModuleMountFact {
+                    crate_root_file: String::from("src/lib.rs"),
+                    file:            String::from("generated.rs"),
+                    module_path:     vec![String::from("generated")],
+                }]
+                .into(),
+                ..crate::reporting::ReportFacts::default()
+            },
+            ..Report::default()
+        };
+        filter.apply(&mut report);
+        assert_eq!(
+            ParsedSources::source_read_attempts() - reads_before,
+            0,
+            "compiler mounts must select sources without reading source text"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_target_flags_allows_everything() -> io::Result<()> {
+        let fixture = package_with_lib_and_example()?;
+        let filter = DisplayFilter::from_cli(&CargoCheckCli::default(), &[fixture.1]);
         assert!(matches!(filter, DisplayFilter::AllowAll));
         assert_eq!(
             filter.allows(Path::new("src/anywhere.rs")),
@@ -277,86 +294,106 @@ mod tests {
             filter.allows(Path::new("examples/demo/helper.rs")),
             FindingDisplay::Included
         );
+        Ok(())
     }
 
     #[test]
-    fn all_targets_flag_allows_everything() {
+    fn all_targets_flag_allows_everything() -> io::Result<()> {
         let cli = CargoCheckCli {
             target_selections: BTreeSet::from([TargetSelection::All]),
             ..CargoCheckCli::default()
         };
-        let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
+        let fixture = package_with_lib_and_example()?;
+        let filter = DisplayFilter::from_cli(&cli, &[fixture.1]);
         assert!(matches!(filter, DisplayFilter::AllowAll));
+        Ok(())
     }
 
     #[test]
-    fn lib_flag_allows_lib_and_excludes_examples() {
+    fn lib_flag_allows_lib_and_excludes_examples() -> io::Result<()> {
         let cli = CargoCheckCli {
             target_selections: BTreeSet::from([TargetSelection::Library]),
             ..CargoCheckCli::default()
         };
-        let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
+        let (temp, package) = package_with_lib_and_example()?;
+        let filter = DisplayFilter::from_cli(&cli, &[package]);
         assert_eq!(
-            filter.allows(Path::new("/proj/src/helpers.rs")),
+            filter.allows(&temp.path().join("src/helpers.rs")),
             FindingDisplay::Included
         );
         assert_eq!(
-            filter.allows(Path::new("/proj/examples/demo/helper.rs")),
+            filter.allows(&temp.path().join("examples/demo/helper.rs")),
             FindingDisplay::Excluded
         );
+        Ok(())
     }
 
     #[test]
-    fn lib_flag_excludes_src_bin_subdirectory() {
-        let pkg = PackageMetadata {
-            id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj").join("Cargo.toml"),
-            root:          PathBuf::from("/proj"),
-            targets:       vec![
-                target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),
-                target(CARGO_TARGET_KIND_BIN, "tool", "/proj/src/bin/tool.rs"),
-            ],
-        };
+    fn lib_flag_excludes_src_bin_subdirectory() -> io::Result<()> {
+        let (temp, mut pkg) = package_with_lib_and_example()?;
+        pkg.targets = vec![
+            target(
+                CARGO_TARGET_KIND_LIB,
+                "pkg",
+                &temp.path().join("src/lib.rs"),
+            ),
+            target(
+                CARGO_TARGET_KIND_BIN,
+                "tool",
+                &temp.path().join("src/bin/tool.rs"),
+            ),
+        ];
         let cli = CargoCheckCli {
             target_selections: BTreeSet::from([TargetSelection::Library]),
             ..CargoCheckCli::default()
         };
         let filter = DisplayFilter::from_cli(&cli, &[pkg]);
         assert_eq!(
-            filter.allows(Path::new("/proj/src/lib_helpers.rs")),
+            filter.allows(&temp.path().join("src/lib_helpers.rs")),
             FindingDisplay::Included
         );
         assert_eq!(
-            filter.allows(Path::new("/proj/src/bin/tool.rs")),
+            filter.allows(&temp.path().join("src/bin/tool.rs")),
             FindingDisplay::Excluded,
             "src/bin/tool.rs belongs to the bin, not the lib",
         );
+        Ok(())
     }
 
     #[test]
-    fn named_example_allows_only_that_example_directory() {
+    fn named_example_allows_only_that_example_directory() -> io::Result<()> {
         let cli = CargoCheckCli {
             example: vec!["demo".to_string()],
             ..CargoCheckCli::default()
         };
-        let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
+        let (temp, package) = package_with_lib_and_example()?;
+        let filter = DisplayFilter::from_cli(&cli, &[package]);
         assert_eq!(
-            filter.allows(Path::new("/proj/examples/demo/helper.rs")),
+            filter.allows(&temp.path().join("examples/demo/helper.rs")),
             FindingDisplay::Included
         );
         assert_eq!(
-            filter.allows(Path::new("/proj/src/anywhere.rs")),
+            filter.allows(&temp.path().join("src/anywhere.rs")),
             FindingDisplay::Excluded
         );
+        Ok(())
     }
     #[test]
-    fn library_role_uses_every_kind_and_preserves_explicit_binary_selection() {
-        let mut library = target(CARGO_TARGET_KIND_BIN, "pkg", "/proj/src/lib.rs");
+    fn library_role_uses_every_kind_and_preserves_explicit_binary_selection() -> io::Result<()> {
+        let (temp, mut package) = package_with_lib_and_example()?;
+        let mut library = target(
+            CARGO_TARGET_KIND_BIN,
+            "pkg",
+            &temp.path().join("src/lib.rs"),
+        );
         library.kind.push(CARGO_TARGET_KIND_LIB.to_string());
-        let mut package = package_with_lib_and_example();
         package.targets = vec![
             library,
-            target(CARGO_TARGET_KIND_BIN, "tool", "/proj/src/bin/tool.rs"),
+            target(
+                CARGO_TARGET_KIND_BIN,
+                "tool",
+                &temp.path().join("src/bin/tool.rs"),
+            ),
         ];
         let mut cli = CargoCheckCli {
             target_selections: BTreeSet::from([TargetSelection::Binaries]),
@@ -381,5 +418,6 @@ mod tests {
             filter.allows(Path::new("src/bin/tool.rs")),
             FindingDisplay::Excluded
         );
+        Ok(())
     }
 }

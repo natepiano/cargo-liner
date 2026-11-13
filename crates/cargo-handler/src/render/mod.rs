@@ -33,6 +33,7 @@ use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
+use tui_pane::TileColumnOrder;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::TileWidthFloor;
@@ -65,6 +66,7 @@ use crate::constants::HEADING_SEPARATOR;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::UNASSIGNED_CELL_TITLE;
+use crate::details::DetailsOverlay;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
@@ -102,9 +104,9 @@ use crate::census::AgentRow;
 #[cfg(test)]
 use crate::census::HierarchyEdges;
 
-/// Draw one frame: the grid fills the body above the status line, and
-/// toasts are drawn inside the grid's outer frame. The favorites modal
-/// and any framework overlay float above both.
+/// Draw the grid above the status line.
+/// Draw the toasts inside the grid frame and above the details overlay.
+/// The favorites modal and framework overlays cover ordinary toasts.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
@@ -133,11 +135,16 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         |frame, app, contents| draw_panes(frame, app, body, contents),
     );
     draw_status_line(frame, app, keymap, status);
-    tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
+    if matches!(app.details_overlay, DetailsOverlay::Closed) {
+        tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
+    }
     app.favorites_overlay
         .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
     app.details_overlay.render(frame, app.framework.color_mode);
+    if matches!(app.details_overlay, DetailsOverlay::Open { .. }) {
+        tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
+    }
 }
 
 /// Paint the production grid with one controlled frame clock.
@@ -410,6 +417,8 @@ struct Cells<'a> {
     placement:         AgentPlacement<'a>,
     /// Grouped tiles, apart from the per-session summary hue lookup.
     tiles:             Vec<AgentTile<'a>>,
+    /// Full tree counts remain independent of the visible tree rows.
+    full_tree_rows:    Vec<(TileKey, usize)>,
     /// The unix second the ages are measured to.
     now:               u64,
     /// Footer colors already loaded by the app.
@@ -540,6 +549,10 @@ impl<'a> Cells<'a> {
         let placement = AgentPlacement::from_machines(&machines, accounts.session_states());
         let agents = agent_cell::cell_order_placed(&placement);
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
+        let full_tree_rows = tiles
+            .iter()
+            .map(|tile| (tile.key(), tile.full_tree_rows()))
+            .collect();
         let account_column = agent_cell::account_column(&agents);
         Self {
             color_mode: ColorMode::Colored,
@@ -555,6 +568,7 @@ impl<'a> Cells<'a> {
             account_column,
             placement,
             tiles,
+            full_tree_rows,
             now,
             footer_colors,
             summary_sort,
@@ -696,23 +710,16 @@ impl<'a> Cells<'a> {
     /// `record_painted_surface` retains the headers and rows used by this source allocation.
     fn record_painted_surface(&self, content: &TileContent, inner: Rect) {
         if let SelectableSurface::Surface(surface) = selection_surface(content) {
-            let (painted_content, detail_order) = match content {
+            let painted_content = match content {
                 TileContent::Group(key) => match self.tile(key) {
                     TileLookup::Current(tile) => {
                         let spans =
                             self.header_spans(tile, Rect::new(0, 0, inner.width, inner.height));
-                        let order = spans
-                            .iter()
-                            .map(|span| span.column.detail_property())
-                            .collect();
-                        (
-                            PaintedSurfaceContent::Tree {
-                                key: key.clone(),
-                                spans,
-                                default: tile.default_sort(),
-                            },
-                            order,
-                        )
+                        PaintedSurfaceContent::Tree {
+                            key: key.clone(),
+                            spans,
+                            default: tile.default_sort(),
+                        }
                     },
                     TileLookup::Retired => return,
                 },
@@ -728,17 +735,10 @@ impl<'a> Cells<'a> {
                         u16::try_from(layout.height()).unwrap_or(u16::MAX),
                     );
                     let agents = layout.header_spans(area);
-                    let order = agents
-                        .iter()
-                        .map(|span| span.column.detail_property(self.account_column))
-                        .collect();
-                    (
-                        PaintedSurfaceContent::Summary {
-                            agents,
-                            accounts: layout.accounts_header_spans(area),
-                        },
-                        order,
-                    )
+                    PaintedSurfaceContent::Summary {
+                        agents,
+                        accounts: layout.accounts_header_spans(area),
+                    }
                 },
                 TileContent::Empty(_) => return,
             };
@@ -754,7 +754,6 @@ impl<'a> Cells<'a> {
                 area: inner,
                 rows,
                 content: painted_content,
-                detail_order,
             });
         }
     }
@@ -854,6 +853,10 @@ impl TileCells<TileKey> for Cells<'_> {
     }
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn column_order(&self) -> TileColumnOrder<TileKey> {
+        TileColumnOrder::LongestWithShortest(self.full_tree_rows.clone())
+    }
 
     /// Measure each tile at its allocated content width. Account rows choose
     /// their full, two-line or stacked layout from the summary's width.
@@ -2395,6 +2398,9 @@ mod drawn_frame_tests;
 
 #[cfg(test)]
 mod layout_stability_tests;
+
+#[cfg(test)]
+mod ranked_column_tests;
 
 /// Draw the complete frame for census placement tests, including tile titles.
 #[cfg(test)]

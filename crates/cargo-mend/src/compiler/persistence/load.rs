@@ -790,6 +790,27 @@ mod tests {
             1,
         )]);
         wrong_config.config_fingerprint = "old-config".to_string();
+        let mut legacy = serde_json::to_value(fixture.report_with_findings(vec![stored_finding(
+            DiagnosticCode::OverbroadPubCrate,
+            &fixture.crate_root,
+            "legacy",
+            1,
+        )]))
+        .expect("serialize the legacy report fixture");
+        legacy["version"] = serde_json::json!(36);
+        legacy["use_sites"] = serde_json::json!([{
+            "target_def_path": "crate::legacy",
+            "caller_module_def_path": "crate",
+            "reference": "named"
+        }]);
+        let legacy_path = fixture
+            .reports_dir
+            .join(format!("legacy.{REPORT_FILE_EXTENSION}"));
+        fs::write(
+            &legacy_path,
+            to_vec_pretty(&legacy).expect("serialize the old caller format"),
+        )
+        .expect("write the old saved report");
         let report_paths = [
             fixture.write_report(&format!("schema.{REPORT_FILE_EXTENSION}"), &wrong_schema),
             fixture.write_report(
@@ -797,6 +818,7 @@ mod tests {
                 &wrong_analysis,
             ),
             fixture.write_report(&format!("config.{REPORT_FILE_EXTENSION}"), &wrong_config),
+            legacy_path,
         ];
 
         let loaded_report = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);

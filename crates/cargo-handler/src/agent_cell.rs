@@ -181,7 +181,7 @@ enum LineSubject<'a> {
     /// A top-level session in the flat unassigned pool.
     UnassignedSession,
     /// A Codex thread held by a manager, with its stated responsibility.
-    ManagedThread(&'a ChildRow, HierarchyRole),
+    ManagedThread(&'a ChildRow, HierarchyRole, RowIdentity<'a>),
     /// Work not represented by another member line.
     Work(Work<'a>),
 }
@@ -383,15 +383,15 @@ struct WorkBranch<'a> {
 /// A column in the single tree table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TreeColumn {
-    Account,
     Session,
+    Account,
     Role,
     Activity,
     Status,
+    Branch,
     Type,
     Model,
     Effort,
-    Branch,
     Directory,
     Age,
 }
@@ -435,7 +435,7 @@ impl TreeColumn {
     }
 
     /// The details property uses the visible column's value.
-    pub(crate) const fn detail_property(self) -> DetailProperty {
+    const fn detail_property(self) -> DetailProperty {
         match self {
             Self::Account => DetailProperty::Account,
             Self::Session => DetailProperty::Name,
@@ -530,11 +530,9 @@ impl TreeColumns {
 }
 
 /// `TreeColumnPopulation::populated` counts recorded values in each column.
-/// `TreeColumnPopulation::rows` counts the measured tile rows.
 #[derive(Clone, Debug)]
 struct TreeColumnPopulation {
     populated: [usize; TreeColumn::COUNT],
-    rows:      usize,
 }
 
 impl TreeColumnPopulation {
@@ -549,7 +547,6 @@ impl TreeColumnPopulation {
                     })
                     .count()
             }),
-            rows:      lines.len(),
         }
     }
 
@@ -565,22 +562,6 @@ impl TreeColumnPopulation {
                 ) || self.populated[index] > 0)
         }))
     }
-
-    const fn density(&self, column: TreeColumn) -> ColumnDensity {
-        let populated = self.populated[column as usize];
-        if populated < self.rows.saturating_sub(populated) {
-            ColumnDensity::Sparse
-        } else {
-            ColumnDensity::Dense
-        }
-    }
-}
-
-/// The fraction of tile rows with a recorded column value.
-#[derive(Clone, Copy)]
-enum ColumnDensity {
-    Sparse,
-    Dense,
 }
 
 /// Populated columns allowed by the account decision, with optional columns
@@ -609,35 +590,41 @@ impl PermittedTreeColumns {
 /// `ColumnDrop::ORDER` defines the order for removing optional columns.
 #[derive(Clone, Copy)]
 enum ColumnDrop {
-    Directory,
-    Branch,
     Effort,
     Model,
+    Directory,
     Type,
-    Activity,
+    Branch,
     Account,
+    Role,
+    Activity,
+    Status,
 }
 
 impl ColumnDrop {
-    const ORDER: [Self; 7] = [
+    const ORDER: [Self; 9] = [
         Self::Effort,
         Self::Model,
         Self::Directory,
-        Self::Branch,
         Self::Type,
-        Self::Activity,
+        Self::Branch,
         Self::Account,
+        Self::Role,
+        Self::Activity,
+        Self::Status,
     ];
 
     const fn column(self) -> TreeColumn {
         match self {
-            Self::Directory => TreeColumn::Directory,
-            Self::Branch => TreeColumn::Branch,
             Self::Effort => TreeColumn::Effort,
             Self::Model => TreeColumn::Model,
+            Self::Directory => TreeColumn::Directory,
             Self::Type => TreeColumn::Type,
-            Self::Activity => TreeColumn::Activity,
+            Self::Branch => TreeColumn::Branch,
             Self::Account => TreeColumn::Account,
+            Self::Role => TreeColumn::Role,
+            Self::Activity => TreeColumn::Activity,
+            Self::Status => TreeColumn::Status,
         }
     }
 }
@@ -650,18 +637,29 @@ enum TreePresentation {
     Compressed,
 }
 
-/// Shared positions for tiles with the same fitted columns in one screen column.
+/// Shared widths for tiles in one screen column.
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMetrics {
     widths:              [u16; TreeColumn::COUNT],
     heading_width:       u16,
     session_label_width: u16,
     session_guide_width: u16,
-    population:          TreeColumnPopulation,
     session_header_lead: SessionHeaderLead,
     ages:                AgeLayout,
     columns:             PermittedTreeColumns,
     presentation:        TreePresentation,
+    alignment:           TreeColumnAlignment,
+}
+
+/// Measured widths determine demand; fitted widths determine drawing positions.
+#[derive(Clone, Copy, Debug)]
+enum TreeColumnAlignment {
+    Measured,
+    Fitted {
+        widths:  [u16; TreeColumn::COUNT],
+        spacing: u16,
+        slots:   PermittedTreeColumns,
+    },
 }
 
 /// Direct draws measure their source; a prepared grid supplies its screen-column layout.
@@ -698,63 +696,65 @@ impl TreeMetrics {
         };
     }
 
+    fn minimum_session_width(&self) -> u16 {
+        self.session_label_width
+            .saturating_add(SessionHeaderLead::Flush.width())
+            .max(self.session_guide_width.saturating_add(1))
+    }
+
     fn drop_step(&mut self, step: ColumnDrop, width: u16) {
-        let columns = self.columns.columns();
-        let widths: Vec<_> = columns
-            .iter()
-            .map(|column| self.widths[*column as usize])
-            .collect();
-        let full_fits = table_width(&widths) <= usize::from(width);
+        if matches!(
+            step,
+            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status
+        ) {
+            self.cut_session(width);
+        }
+        let spacing = match step {
+            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status => 1,
+            ColumnDrop::Effort
+            | ColumnDrop::Model
+            | ColumnDrop::Directory
+            | ColumnDrop::Type
+            | ColumnDrop::Branch => TABLE_COLUMN_SPACING,
+        };
+        let full_fits = self.occupied_width(spacing) <= usize::from(width);
         if !full_fits || header_width(self.heading_width) > width {
             self.presentation = TreePresentation::Compressed;
         }
-        let mut minimum_widths = widths;
-        let session = columns
-            .iter()
-            .position(|column| *column == TreeColumn::Session)
-            .unwrap_or(0);
-        minimum_widths[session] = self
-            .session_label_width
-            .saturating_add(SessionHeaderLead::Flush.width())
-            .max(self.session_guide_width.saturating_add(1));
-        let session_width = minimum_widths[session];
-        let role_width = columns
-            .iter()
-            .position(|column| *column == TreeColumn::Role)
-            .map(|index| (index, minimum_widths[index]));
-        let spacing = fit_tree_names(
-            &columns,
-            &mut minimum_widths,
-            self.session_guide_width,
-            width,
-        )
-        .max(1);
-        let minimum = minimum_widths
-            .iter()
-            .copied()
-            .map(usize::from)
-            .sum::<usize>()
-            + columns.len().saturating_sub(1) * usize::from(spacing);
-        let session_clipped = minimum_widths[session] < session_width;
-        let role_clipped =
-            role_width.is_some_and(|(index, original)| minimum_widths[index] < original);
-        let drop = match step {
-            ColumnDrop::Effort | ColumnDrop::Model | ColumnDrop::Directory | ColumnDrop::Branch => {
-                !full_fits
-            },
-            ColumnDrop::Type | ColumnDrop::Activity | ColumnDrop::Account => {
-                minimum > usize::from(width)
-                    || session_clipped
-                    || role_clipped
-                    || (!full_fits
-                        && matches!(
-                            self.population.density(step.column()),
-                            ColumnDensity::Sparse
-                        ))
-            },
-        };
-        if drop {
+        if !full_fits {
             self.columns.remove(step);
+        }
+    }
+
+    fn occupied_width(&self, spacing: u16) -> usize {
+        let (cells, columns) = FULL_ACCOUNTS
+            .iter()
+            .filter(|column| self.columns.0.0[**column as usize])
+            .fold((0usize, 0usize), |(cells, columns), column| {
+                (
+                    cells + usize::from(self.widths[*column as usize]),
+                    columns + 1,
+                )
+            });
+        cells + columns.saturating_sub(1) * usize::from(spacing)
+    }
+
+    fn cut_session(&mut self, width: u16) {
+        let session = TreeColumn::Session as usize;
+        let others = self
+            .occupied_width(TABLE_COLUMN_SPACING)
+            .saturating_sub(usize::from(self.widths[session]));
+        let budget = usize::from(width).saturating_sub(others);
+        self.widths[session] = self.widths[session]
+            .min(u16::try_from(budget).unwrap_or(u16::MAX))
+            .max(self.minimum_session_width());
+    }
+
+    fn fit_step(&mut self, step: &GroupFitStep, width: u16) {
+        match step {
+            GroupFitStep::Drop(column) => self.drop_step(*column, width),
+            GroupFitStep::CutSession => self.cut_session(width),
+            GroupFitStep::FinalMerge => {},
         }
     }
 }
@@ -907,11 +907,11 @@ impl TreeMeasurement {
                     .map(|line| summary::cell_width(&line.lead()))
                     .max()
                     .unwrap_or(0),
-                population,
                 session_header_lead: lead,
                 ages: AgeLayout::from_ages(ages.iter().copied()),
                 columns,
                 presentation: TreePresentation::Full,
+                alignment: TreeColumnAlignment::Measured,
             },
             ages,
             role_widths,
@@ -1117,18 +1117,22 @@ impl AgentTile<'_> {
 /// Every fitting pass either drops its named column or merges the final sets.
 enum GroupFitStep {
     Drop(ColumnDrop),
+    CutSession,
     FinalMerge,
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 8] = [
-        Self::Drop(ColumnDrop::Effort),
-        Self::Drop(ColumnDrop::Model),
-        Self::Drop(ColumnDrop::Directory),
-        Self::Drop(ColumnDrop::Branch),
-        Self::Drop(ColumnDrop::Type),
-        Self::Drop(ColumnDrop::Activity),
-        Self::Drop(ColumnDrop::Account),
+    const ORDER: [Self; 11] = [
+        Self::Drop(ColumnDrop::ORDER[0]),
+        Self::Drop(ColumnDrop::ORDER[1]),
+        Self::Drop(ColumnDrop::ORDER[2]),
+        Self::Drop(ColumnDrop::ORDER[3]),
+        Self::Drop(ColumnDrop::ORDER[4]),
+        Self::CutSession,
+        Self::Drop(ColumnDrop::ORDER[5]),
+        Self::Drop(ColumnDrop::ORDER[6]),
+        Self::Drop(ColumnDrop::ORDER[7]),
+        Self::Drop(ColumnDrop::ORDER[8]),
         Self::FinalMerge,
     ];
 }
@@ -1188,13 +1192,12 @@ impl MeasuredTreeGroup {
         group.metrics.widths[TreeColumn::Status as usize] =
             status_width(group.metrics.presentation);
         match step {
-            GroupFitStep::Drop(step) => group
+            GroupFitStep::Drop(_) | GroupFitStep::CutSession => group
                 .members
                 .iter()
                 .map(|&index| {
                     let mut metrics = group.metrics.clone();
-                    metrics.population = measurements[index].metrics.population.clone();
-                    metrics.drop_step(*step, group.width);
+                    metrics.fit_step(step, group.width);
                     metrics.widths[TreeColumn::Status as usize] =
                         status_width(metrics.presentation);
                     metrics.widths[TreeColumn::Role as usize] = role_width(metrics.presentation);
@@ -1213,7 +1216,7 @@ impl MeasuredTreeGroup {
     }
 }
 
-/// Merge equal fitted sets before each of the three possible column drops.
+/// Merge equal fitted sets before each fitting step.
 /// The array, rather than a convergence condition, bounds the entire pass.
 pub(crate) fn shared_tree_metrics(
     measurements: impl IntoIterator<Item = TreeMeasurement>,
@@ -1249,6 +1252,7 @@ pub(crate) fn shared_tree_metrics(
             .flat_map(|group| group.fit_tiles(&measurements, &step))
             .collect();
     }
+    align_screen_columns(&mut groups);
     let mut result: Vec<_> = measurements
         .iter()
         .map(|measurement| measurement.metrics.clone())
@@ -1259,6 +1263,82 @@ pub(crate) fn shared_tree_metrics(
         }
     }
     result
+}
+
+/// Fit the union of columns at each x and reserve slots for absent columns.
+fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
+    let mut shared: HashMap<u16, (TreeMetrics, u16)> = HashMap::new();
+    for group in groups.iter() {
+        let (common, width) = shared.entry(group.x).or_insert_with(|| {
+            let mut metrics = group.metrics.clone();
+            metrics.widths.fill(0);
+            metrics.columns.0.0.fill(false);
+            (metrics, group.width)
+        });
+        *width = (*width).min(group.width);
+        common.heading_width = common.heading_width.max(group.metrics.heading_width);
+        common.session_label_width = common
+            .session_label_width
+            .max(group.metrics.session_label_width);
+        common.session_guide_width = common
+            .session_guide_width
+            .max(group.metrics.session_guide_width);
+        if matches!(
+            group.metrics.session_header_lead,
+            SessionHeaderLead::OverBranch
+        ) {
+            common.session_header_lead = SessionHeaderLead::OverBranch;
+        }
+        for (index, width) in group.metrics.widths.iter().enumerate() {
+            if group.metrics.columns.0.0[index] {
+                common.columns.0.0[index] = true;
+                common.widths[index] = common.widths[index].max(*width);
+            }
+        }
+    }
+    for (common, width) in shared.values_mut() {
+        for step in GroupFitStep::ORDER {
+            common.fit_step(&step, *width);
+        }
+        let columns = common.columns.columns();
+        let mut widths: Vec<_> = columns
+            .iter()
+            .map(|column| common.widths[*column as usize])
+            .collect();
+        let spacing = fit_tree_names(
+            &columns,
+            &mut widths,
+            common.minimum_session_width(),
+            *width,
+        );
+        fill_tree_width(&columns, &mut widths, *width, spacing);
+        let mut slot_widths = common.widths;
+        for (&column, &width) in columns.iter().zip(&widths) {
+            slot_widths[column as usize] = width;
+        }
+        common.alignment = TreeColumnAlignment::Fitted {
+            widths: slot_widths,
+            spacing,
+            slots: common.columns,
+        };
+    }
+    for group in groups {
+        let (common, _) = &shared[&group.x];
+        group.metrics.widths = common.widths;
+        group.metrics.session_label_width = common.session_label_width;
+        group.metrics.session_guide_width = common.session_guide_width;
+        for (present, &permitted) in group
+            .metrics
+            .columns
+            .0
+            .0
+            .iter_mut()
+            .zip(&common.columns.0.0)
+        {
+            *present &= permitted;
+        }
+        group.metrics.alignment = common.alignment;
+    }
 }
 
 impl TreeLineContent<'_> {
@@ -1274,7 +1354,7 @@ impl TreeLineContent<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 return SelectedRow::session(self.machine, self.row);
             },
-            LineSubject::ManagedThread(child, _) => child,
+            LineSubject::ManagedThread(child, _, _) => child,
             LineSubject::Work(work) => work.child,
         };
         work_selection_identity(self.machine, self.row, child, self.dispatch_label, ordinal)
@@ -1407,7 +1487,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 &self.row.name
             },
-            LineSubject::ManagedThread(child, _) => &child.name,
+            LineSubject::ManagedThread(child, _, _) => &child.name,
             LineSubject::Work(work) => &work.child.name,
         };
         let staff_name = match self.subject {
@@ -1417,7 +1497,7 @@ impl TreeLine<'_> {
                     StaffRowName::Unlisted => None,
                 }
             },
-            LineSubject::ManagedThread(child, _) => match &child.thread_id {
+            LineSubject::ManagedThread(child, _, _) => match &child.thread_id {
                 CodexThreadId::Recorded(thread) => self.row.staff_names.threads.get(thread),
                 CodexThreadId::Unrecorded => None,
             },
@@ -1429,7 +1509,7 @@ impl TreeLine<'_> {
         let name = staff_name.map_or_else(
             || match self.dispatch_label {
                 DispatchLabel::Original => match self.subject {
-                    LineSubject::ManagedThread(child, role) => child.worker_task.label(
+                    LineSubject::ManagedThread(child, role, _) => child.worker_task.label(
                         WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)),
                         original,
                     ),
@@ -1478,7 +1558,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 self.content.row.started
             },
-            LineSubject::ManagedThread(child, _) => child.started,
+            LineSubject::ManagedThread(child, _, _) => child.started,
             LineSubject::Work(work) => work.child.started,
         }
     }
@@ -1489,7 +1569,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 &self.content.row.account
             },
-            LineSubject::ManagedThread(child, _) => &child.account,
+            LineSubject::ManagedThread(child, _, _) => &child.account,
             LineSubject::Work(work) => work.account(&self.content.row.account),
         }
     }
@@ -1500,7 +1580,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 self.content.row.service_tier
             },
-            LineSubject::ManagedThread(child, _)
+            LineSubject::ManagedThread(child, _, _)
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread,
@@ -1520,7 +1600,7 @@ impl TreeLine<'_> {
                 kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
             }) => self.content.row.agent,
-            LineSubject::ManagedThread(_, _)
+            LineSubject::ManagedThread(_, _, _)
             | LineSubject::Work(Work {
                 kind: WorkKind::Thread,
                 ..
@@ -1545,6 +1625,7 @@ impl TreeLine<'_> {
                     ..
                 },
                 _,
+                _,
             )
             | LineSubject::Work(Work {
                 child:
@@ -1555,7 +1636,7 @@ impl TreeLine<'_> {
                 kind: WorkKind::Thread,
                 ..
             }) => LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::ReviewerLease)),
-            LineSubject::ManagedThread(_, role) => {
+            LineSubject::ManagedThread(_, role, _) => {
                 LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)))
             },
             LineSubject::Work(Work {
@@ -1589,7 +1670,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 self.row.activity
             },
-            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 child.activity
             },
         };
@@ -1623,7 +1704,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 states.for_row(self.row)
             },
-            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 match &child.thread_id {
                     CodexThreadId::Recorded(id) => states.get(id),
                     CodexThreadId::Unrecorded => {
@@ -1706,7 +1787,7 @@ impl TreeLine<'_> {
                 LineSubject::TileRoot(_)
                 | LineSubject::Agent(_)
                 | LineSubject::UnassignedSession
-                | LineSubject::ManagedThread(_, _)
+                | LineSubject::ManagedThread(_, _, _)
                 | LineSubject::Work(Work {
                     kind: WorkKind::Thread,
                     ..
@@ -1745,7 +1826,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 &self.row.model
             },
-            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 &child.model
             },
         }
@@ -1757,7 +1838,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 self.row.effort
             },
-            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 child.effort
             },
         }
@@ -1806,7 +1887,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 summary::status_text(self.row).to_owned()
             },
-            LineSubject::ManagedThread(child, _)
+            LineSubject::ManagedThread(child, _, _)
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread | WorkKind::Subagent(_),
@@ -1967,6 +2048,14 @@ pub(crate) enum AgentTile<'a> {
 }
 
 impl AgentTile<'_> {
+    /// Count the full tree before expansion removes hidden rows.
+    pub(crate) const fn full_tree_rows(&self) -> usize {
+        match self {
+            Self::Agent(entry) => entry.lines.len().saturating_add(1),
+            Self::Unassigned(entry) => entry.lines.len(),
+        }
+    }
+
     /// Stable identity independent of the current sessions in a pool.
     pub(crate) fn key(&self) -> TileKey {
         match self {
@@ -2213,7 +2302,7 @@ impl<'a> TreeBuild<'_, 'a> {
                 LineSubject::TileRoot(_)
                 | LineSubject::Agent(_)
                 | LineSubject::UnassignedSession => self.placement.row_dispatch_label(identity),
-                LineSubject::ManagedThread(child, _) => self.placement.dispatch_label(child),
+                LineSubject::ManagedThread(child, _, _) => self.placement.dispatch_label(child),
                 LineSubject::Work(work) => self.placement.dispatch_label(work.child),
             },
             machine: identity.machine,
@@ -2339,7 +2428,7 @@ fn lines_of<'a>(
                     (
                         thread.owner,
                         thread.owner_row,
-                        LineSubject::ManagedThread(child, thread.role),
+                        LineSubject::ManagedThread(child, thread.role, thread.manager),
                         Vec::new(),
                         context.identities.work(thread.owner, thread.child_index),
                     )
@@ -2408,7 +2497,7 @@ fn lines_of<'a>(
             LineSubject::Work(_) => {
                 append_work(context, branches, row, identity.machine, rails, hue, lines);
             },
-            LineSubject::ManagedThread(_, _) => {},
+            LineSubject::ManagedThread(_, _, _) => {},
         }
         rails.pop();
     }
@@ -2424,7 +2513,9 @@ fn line_order<'a>(
         LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
             (row.started, row.pid)
         },
-        LineSubject::ManagedThread(child, _) => (child.started, child.pid.unwrap_or(identity.pid)),
+        LineSubject::ManagedThread(child, _, _) => {
+            (child.started, child.pid.unwrap_or(identity.pid))
+        },
         LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
     };
     (started, identity.machine, pid)
@@ -2575,15 +2666,15 @@ fn append_work<'a>(
 
 /// Active full columns when accounts distinguish rows.
 const FULL_ACCOUNTS: &[TreeColumn] = &[
-    TreeColumn::Account,
     TreeColumn::Session,
+    TreeColumn::Account,
     TreeColumn::Role,
     TreeColumn::Activity,
     TreeColumn::Status,
+    TreeColumn::Branch,
     TreeColumn::Type,
     TreeColumn::Model,
     TreeColumn::Effort,
-    TreeColumn::Branch,
     TreeColumn::Directory,
     TreeColumn::Age,
 ];
@@ -2925,7 +3016,7 @@ fn tree_widths(
         .map(|&column| {
             if matches!(
                 column,
-                TreeColumn::Role | TreeColumn::Activity | TreeColumn::Status
+                TreeColumn::Session | TreeColumn::Role | TreeColumn::Activity | TreeColumn::Status
             ) && let TreeSizing::Shared(metrics) = sizing
             {
                 return metrics.widths[column as usize];
@@ -2977,6 +3068,8 @@ struct TreeHeader {
     lead:    SessionHeaderLead,
     /// Columns selected by the fitted view.
     columns: Vec<TreeColumn>,
+    /// Columns with headers and values in this tile.
+    visible: PermittedTreeColumns,
     /// Widths shared with the table renderer.
     widths:  Vec<u16>,
     /// Gap between the resolved columns.
@@ -3025,7 +3118,7 @@ fn local_tree_metrics(
     measurement.metrics.widths[TreeColumn::Age as usize] = measurement.metrics.widths
         [TreeColumn::Age as usize]
         .max(u16::try_from(measurement.metrics.ages.width()).unwrap_or(u16::MAX));
-    for step in ColumnDrop::ORDER {
+    for step in GroupFitStep::ORDER {
         measurement.metrics.widths[TreeColumn::Activity as usize] = measurement
             .activity_widths
             .get(measurement.metrics.presentation);
@@ -3035,7 +3128,7 @@ fn local_tree_metrics(
         measurement.metrics.widths[TreeColumn::Status as usize] = measurement
             .status_widths
             .get(measurement.metrics.presentation);
-        measurement.metrics.drop_step(step, tree.width);
+        measurement.metrics.fit_step(&step, tree.width);
     }
     measurement.metrics.widths[TreeColumn::Activity as usize] = measurement
         .activity_widths
@@ -3047,11 +3140,14 @@ fn local_tree_metrics(
     measurement.metrics
 }
 
-/// Reserve the tree guides before fitting the session name.
-/// It reduces column spacing and Role width before it clips Status.
-fn fit_tree_names(columns: &[TreeColumn], widths: &mut [u16], guide_width: u16, width: u16) -> u16 {
+/// Keep the session header and tree guides before reducing the final gaps.
+fn fit_tree_names(
+    columns: &[TreeColumn],
+    widths: &mut [u16],
+    minimum_session: u16,
+    width: u16,
+) -> u16 {
     let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let minimum_session = guide_width.saturating_add(1).min(width);
     let session = columns
         .iter()
         .position(|column| *column == TreeColumn::Session)
@@ -3065,17 +3161,8 @@ fn fit_tree_names(columns: &[TreeColumn], widths: &mut [u16], guide_width: u16, 
     let fixed = u16::try_from(fixed).unwrap_or(u16::MAX);
     let spacing = TABLE_COLUMN_SPACING
         .min(width.saturating_sub(minimum_session.saturating_add(fixed)) / gaps.max(1));
-    let session_budget = width.saturating_sub(fixed.saturating_add(spacing.saturating_mul(gaps)));
-    widths[session] = widths[session].min(session_budget).max(minimum_session);
-    if let Some(role) = columns
-        .iter()
-        .position(|column| *column == TreeColumn::Role)
-    {
-        let occupied = widths.iter().copied().map(usize::from).sum::<usize>()
-            + usize::from(spacing) * usize::from(gaps);
-        let deficit = occupied.saturating_sub(usize::from(width));
-        widths[role] = widths[role].saturating_sub(u16::try_from(deficit).unwrap_or(u16::MAX));
-    }
+    let budget = width.saturating_sub(fixed.saturating_add(spacing.saturating_mul(gaps)));
+    widths[session] = widths[session].min(budget).max(minimum_session);
     spacing
 }
 
@@ -3097,22 +3184,31 @@ fn tree_header(
             &local_metrics
         },
     };
-    let columns = metrics.columns.columns();
+    let columns = match metrics.alignment {
+        TreeColumnAlignment::Measured => metrics.columns.columns(),
+        TreeColumnAlignment::Fitted { slots, .. } => slots.columns(),
+    };
     let mut widths: Vec<_> = columns
         .iter()
-        .map(|column| metrics.widths[*column as usize])
+        .map(|column| match metrics.alignment {
+            TreeColumnAlignment::Measured => metrics.widths[*column as usize],
+            TreeColumnAlignment::Fitted { widths, .. } => widths[*column as usize],
+        })
         .collect();
-    let spacing = fit_tree_names(
-        &columns,
-        &mut widths,
-        metrics.session_guide_width,
-        tree.width,
-    );
-    // The header can use the guide cells when its indented label does not fit.
     let session = columns
         .iter()
         .position(|column| *column == TreeColumn::Session)
         .unwrap_or(0);
+    let spacing = match metrics.alignment {
+        TreeColumnAlignment::Fitted { spacing, .. } => spacing,
+        TreeColumnAlignment::Measured => fit_tree_names(
+            &columns,
+            &mut widths,
+            metrics.minimum_session_width(),
+            tree.width,
+        ),
+    };
+    // The header can use the guide cells when its indented label does not fit.
     let lead = if widths[session] < metrics.session_header_width() {
         SessionHeaderLead::Flush
     } else {
@@ -3134,7 +3230,9 @@ fn tree_header(
             ))
             .max(metrics.widths[TreeColumn::Age as usize]);
     }
-    fill_tree_width(&columns, &mut widths, tree.width, spacing);
+    if matches!(sizing, TreeSizing::Local) {
+        fill_tree_width(&columns, &mut widths, tree.width, spacing);
+    }
     let mut x = tree.x;
     let rects: Vec<_> = widths
         .iter()
@@ -3148,11 +3246,15 @@ fn tree_header(
         Vec::new()
     } else {
         sort::column_spans(&columns, &rects, tree.y)
+            .into_iter()
+            .filter(|span| metrics.columns.0.0[span.column as usize])
+            .collect()
     };
     TreeHeader {
         ages,
         lead,
         columns,
+        visible: metrics.columns,
         widths,
         spacing,
         spans,
@@ -3294,6 +3396,7 @@ fn draw_tree(
         ages,
         lead,
         columns,
+        visible,
         widths,
         spacing,
         spans,
@@ -3304,7 +3407,7 @@ fn draw_tree(
         let width = widths[index];
         let column_area = Rect::new(x, area.y, width, area.height).intersection(area);
         x = x.saturating_add(width).saturating_add(spacing);
-        if column_area.is_empty() {
+        if column_area.is_empty() || !visible.0.0[column as usize] {
             continue;
         }
         let heading =
@@ -3594,7 +3697,7 @@ fn expansion_tree(lines: &[TreeLine<'_>]) -> HandlerTree {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 ExpansionKey::process(line.machine, line.row.pid)
             },
-            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 child.pid.map_or_else(
                     || ExpansionKey::Work(line.identity.clone()),
                     |pid| ExpansionKey::process(line.machine, pid),
@@ -3634,13 +3737,98 @@ pub(crate) fn row_details(
             if &line.identity != selected {
                 continue;
             }
-            return RowDetailsLookup::Found(line.details(now));
+            let mut details = line.details(now);
+            line.hierarchy_details(placement, &mut details.properties);
+            details.properties.retain(|(property, value)| {
+                *property == DetailProperty::Effort || (!value.is_empty() && value != MISSING_VALUE)
+            });
+            details.properties.sort_by_key(|(property, _)| *property);
+            return RowDetailsLookup::Found(details);
         }
     }
     RowDetailsLookup::Unavailable
 }
 
 impl TreeLine<'_> {
+    /// Read hierarchy names from the accepted placement chain.
+    fn hierarchy_details(
+        &self,
+        placement: &AgentPlacement<'_>,
+        properties: &mut Vec<(DetailProperty, String)>,
+    ) {
+        if matches!(
+            self.subject,
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(_),
+                ..
+            })
+        ) {
+            return;
+        }
+        let mut named = Vec::new();
+        if matches!(
+            self.subject,
+            LineSubject::ManagedThread(_, _, _) | LineSubject::Work(_)
+        ) {
+            named.push((DetailProperty::Worker, self.name()));
+        }
+        let mut identity = match self.subject {
+            LineSubject::ManagedThread(_, _, manager) => manager,
+            LineSubject::TileRoot(_)
+            | LineSubject::Agent(_)
+            | LineSubject::UnassignedSession
+            | LineSubject::Work(_) => RowIdentity {
+                machine: self.machine,
+                pid:     self.row.pid,
+            },
+        };
+        while let Some(agent) = placement
+            .rows
+            .iter()
+            .find(|agent| agent.identity == identity)
+        {
+            let role = match agent.placement {
+                Placement::Managed { role, .. } => RowRole::from_hierarchy(role),
+                Placement::Root | Placement::Launched(_) => match placement.role_label(identity) {
+                    RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
+                        RowRole::from_hierarchy(role)
+                    },
+                    RoleLabel::Unlabeled | RoleLabel::ReviewFallback => RowRole::Unlabeled,
+                },
+            };
+            let property = match role {
+                RowRole::Showrunner => Some(DetailProperty::Showrunner),
+                RowRole::Unit => Some(DetailProperty::Unit),
+                RowRole::Worker => Some(DetailProperty::Worker),
+                RowRole::Unlabeled | RowRole::Producer => None,
+            };
+            if let Some(property) = property
+                && !named.iter().any(|(existing, _)| *existing == property)
+            {
+                let name = if identity
+                    == (RowIdentity {
+                        machine: self.machine,
+                        pid:     self.row.pid,
+                    })
+                    && named.is_empty()
+                {
+                    self.name()
+                } else {
+                    agent.row.name.clone()
+                };
+                named.push((property, name));
+            }
+            match agent.placement {
+                Placement::Managed { manager, .. } => identity = manager,
+                Placement::Root | Placement::Launched(_) => break,
+            }
+        }
+        if !named.is_empty() {
+            properties.retain(|(property, _)| *property != DetailProperty::Name);
+            properties.extend(named);
+        }
+    }
+
     fn details(&self, now: u64) -> RowDetails {
         let mut properties = vec![
             (
@@ -3665,19 +3853,26 @@ impl TreeLine<'_> {
             if matches!(column, TreeColumn::Branch | TreeColumn::Directory)
                 && matches!(
                     self.subject,
-                    LineSubject::Work(_) | LineSubject::ManagedThread(_, _)
+                    LineSubject::Work(_) | LineSubject::ManagedThread(_, _, _)
                 )
             {
                 continue;
             }
             let value = self.value(column, now);
-            if !value.is_empty() && value != MISSING_VALUE {
-                properties.push((column.detail_property(), value));
+            if column == TreeColumn::Effort || (!value.is_empty() && value != MISSING_VALUE) {
+                properties.push((
+                    column.detail_property(),
+                    if value.is_empty() {
+                        MISSING_VALUE.to_owned()
+                    } else {
+                        value
+                    },
+                ));
             }
         }
         let pid = match self.subject {
             LineSubject::Work(work) => work.child.pid,
-            LineSubject::ManagedThread(child, _) => child.pid,
+            LineSubject::ManagedThread(child, _, _) => child.pid,
             _ => Some(self.row.pid),
         };
         if let Some(pid) = pid {
@@ -3703,10 +3898,10 @@ impl TreeLine<'_> {
                     properties.push((DetailProperty::Desktop, desktop.clone()));
                 }
             },
-            LineSubject::Work(_) | LineSubject::ManagedThread(_, _) => {},
+            LineSubject::Work(_) | LineSubject::ManagedThread(_, _, _) => {},
         }
         properties.push((
-            DetailProperty::Program,
+            DetailProperty::Family,
             self.service_tier()
                 .mark(self.program().label())
                 .into_owned(),
@@ -3748,6 +3943,8 @@ pub(crate) fn detail_property_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::error::Error;
+
     use ratatui::style::Color;
 
     use super::*;
@@ -4802,7 +4999,7 @@ mod tests {
         assert!(!rendered[0].contains("pid"));
         assert!(!rendered[0].contains("age"), "{rendered:?}");
         assert!(rendered[0].contains("session"), "{rendered:?}");
-        assert!(rendered[0].contains("role"), "{rendered:?}");
+        assert!(rendered[0].contains("activity"), "{rendered:?}");
         assert!(rendered[0].contains("status"), "{rendered:?}");
         assert_eq!(
             detail_value(boss, "tool-based-ui-trunk", "state", NOW),
@@ -5277,7 +5474,7 @@ mod tests {
                         | LineSubject::Agent(_)
                         | LineSubject::UnassignedSession => line.row.name.as_str(),
                         LineSubject::Work(work) => work.child.name.as_str(),
-                        LineSubject::ManagedThread(child, _) => child.name.as_str(),
+                        LineSubject::ManagedThread(child, _, _) => child.name.as_str(),
                     },
                     u8::try_from(line.rails.len()).expect("depth"),
                 )
@@ -5382,7 +5579,7 @@ mod tests {
                         | LineSubject::Agent(_)
                         | LineSubject::UnassignedSession => line.row.name.as_str(),
                         LineSubject::Work(work) => work.child.name.as_str(),
-                        LineSubject::ManagedThread(child, _) => child.name.as_str(),
+                        LineSubject::ManagedThread(child, _, _) => child.name.as_str(),
                     },
                     u8::try_from(line.rails.len()).expect("depth")
                 ))
@@ -5417,7 +5614,10 @@ mod tests {
         let cells = natedev_and_mac_cells(&natedev, &mac);
         assert_eq!(cells.len(), 2);
         let session = &cells[0].lines[0];
-        assert!(matches!(session.subject, LineSubject::ManagedThread(_, _)));
+        assert!(matches!(
+            session.subject,
+            LineSubject::ManagedThread(_, _, _)
+        ));
         assert_eq!(session.name(), "implementation worker · mac");
         assert_eq!(session.started(), NOW - MINUTE);
         assert!(
@@ -5561,7 +5761,8 @@ mod tests {
 
     /// A worker discovered on a transport-only mesh server renders under its remote unit.
     #[test]
-    fn a_mesh_worker_from_production_classification_renders_without_an_app_server_cell() {
+    fn a_mesh_worker_from_production_classification_renders_without_an_app_server_cell()
+    -> Result<(), Box<dyn Error>> {
         let (manager, worker) = crate::census::mesh_worker_fixture();
         let mut cells = natedev_and_mac_cells(&manager, &worker);
         cells[0].lines[0].source_state = ReportedSessionState::Reported(SessionState::Idle);
@@ -5594,6 +5795,41 @@ mod tests {
             assert_eq!(buffer[at].fg, text_default());
             assert!(workers[0].contains("idle"));
         }
+        for include_showrunner in [false, true] {
+            let (manager_state, _) = crate::census::mesh_worker_fixture();
+            let mut rows = manager_state.rows().to_vec();
+            let mut edges = HierarchyEdges::default();
+            if include_showrunner {
+                rows.push(identified(11, "showrunner", 2 * HOUR, None));
+                edges.0.push(HierarchyEdge {
+                    manager: "showrunner".into(),
+                    member:  "unit".into(),
+                    role:    HierarchyRole::Unit,
+                });
+            }
+            let managers = MachineState::Answered(rows, edges.into());
+            let machines = [
+                Machine {
+                    name:  "natedev",
+                    state: &managers,
+                },
+                Machine {
+                    name:  "mac",
+                    state: &worker,
+                },
+            ];
+            let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+            let selected = &cells[0].lines[0].identity;
+            let RowDetailsLookup::Found(details) = row_details(&placement, selected, NOW) else {
+                return Err("mesh details".into());
+            };
+            assert_eq!(details.value("unit"), "unit");
+            assert_eq!(details.value("worker"), "mesh worker · mac");
+            if include_showrunner {
+                assert_eq!(details.value("showrunner"), "showrunner");
+            }
+        }
+        Ok(())
     }
 
     /// Missing managers fall back to a listed launcher; missing launchers leave visible roots.

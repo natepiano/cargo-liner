@@ -233,6 +233,7 @@ pub use copy::CopyPayload;
 pub use copy::CopySelection;
 pub use copy::CopySelectionResult;
 pub use copy::SystemClipboard;
+pub use copy::show_copy_outcome;
 pub use diagnostics::CPU_SMOOTHING_WINDOW_POLLS;
 #[cfg(target_os = "macos")]
 pub use diagnostics::CoreCluster;
@@ -595,6 +596,7 @@ pub use tiles::TABLE_CELL;
 pub use tiles::TILE_ROWS_CONTENT_LABEL;
 pub use tiles::TileAction;
 pub use tiles::TileCells;
+pub use tiles::TileColumnOrder;
 pub use tiles::TileContent;
 pub use tiles::TileDemand;
 pub use tiles::TileDemands;

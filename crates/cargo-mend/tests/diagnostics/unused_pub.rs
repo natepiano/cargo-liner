@@ -1,3 +1,4 @@
+use super::compiled_report;
 use crate::support::*;
 
 #[test]
@@ -31,7 +32,7 @@ bench = false
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let unused_findings: Vec<_> = report
         .findings
         .iter()
@@ -85,7 +86,7 @@ bench = false
     .expect("write lib");
     fs::write(temp.path().join("src/helpers.rs"), "pub fn shared() {}\n").expect("write helpers");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -126,7 +127,7 @@ bench = false
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(temp.path().join("src/lib.rs"), "pub fn external_api() {}\n").expect("write lib");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.is_empty(),
         "library root public API should be left alone: {:?}",
@@ -209,7 +210,7 @@ pub(crate) fn make() -> Alias {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
 
     let unused_items: Vec<_> = report
         .findings
@@ -390,7 +391,7 @@ pub(crate) fn make() -> Returned {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
 
     let unused_items: Vec<_> = report
         .findings
@@ -657,7 +658,7 @@ impl Iterator for Extension {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
 
     let unused_items: Vec<_> = report
         .findings

@@ -163,6 +163,8 @@ fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
          u32 {\n    2\n}\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -1479,6 +1481,7 @@ fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
                 "mod platform;\n{declaration}\npub fn run() -> u8 {{ {owner}::discover(){local_call} }}\n"
             ),
         );
+        single_compile_target(&root.join(package));
     }
     pub_use_outside_subtree::write(root, "shared.rs", "pub use crate::platform::discover;\n");
     temp

@@ -151,15 +151,15 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "z-account ├── zeta worker fix idle z-branch /z-directory",
+            "├── zeta z-account worker fix idle z-branch /z-directory",
         ),
-        ("nested", "— │ └── nested — ~/rust/nested"),
-        ("z-thread", "— │ └── z-thread worker exited — —"),
+        ("nested", "│ └── nested — — ~/rust/nested"),
+        ("z-thread", "│ └── z-thread — worker exited — —"),
         (
             "alpha",
-            "a-account └── alpha worker impl busy a-branch /a-directory",
+            "└── alpha a-account worker impl busy a-branch /a-directory",
         ),
-        ("a-shell", "a-account └── a-shell busy shell — —"),
+        ("a-shell", "└── a-shell a-account busy — shell —"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(

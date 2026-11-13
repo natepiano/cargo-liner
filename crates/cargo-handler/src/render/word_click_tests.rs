@@ -430,7 +430,7 @@ fn an_overlay_receives_the_press_and_escape_before_the_word_state() -> TestResul
 fn account_continuation_words_and_pinned_headers_use_the_painted_line() -> TestResult {
     let mut app = application()?;
     app.loaded_config.config.tiles.view = TileView::Summary;
-    let mut renderer = Renderer::new(&mut app, 80, HEIGHT)?;
+    let mut renderer = Renderer::new(&mut app, 99, HEIGHT)?;
     let before = renderer.paint(&mut app)?;
     let point = locate(&before, "units")?;
     let account = locate(&before, ACCOUNT)?;
@@ -746,7 +746,7 @@ fn pinned_account_headers_mark_words_without_breaking_the_sort_or_selection() ->
         )?)
         .map_err(|error| error.to_string())?,
     );
-    let mut renderer = Renderer::new(&mut app, 80, 16)?;
+    let mut renderer = Renderer::new(&mut app, 99, 16)?;
     let before = renderer.paint(&mut app)?;
     app.click(locate(&before, "pinned-account-0")?);
     key(&mut app, KeyCode::End);

@@ -8,9 +8,7 @@ use ratatui::layout::Rect;
 use tui_pane::CellPoint;
 
 use crate::agent_cell::TreeColumn;
-use crate::census::AccountColumn;
 use crate::constants::SUMMARY_HEADERS;
-use crate::details::DetailProperty;
 
 /// Alphabetical session order, with original spelling breaking case-insensitive ties.
 pub(crate) fn compare_names(left: &str, right: &str) -> Ordering {
@@ -126,21 +124,6 @@ pub(crate) enum SummaryColumn {
 }
 
 impl SummaryColumn {
-    pub(crate) const fn detail_property(self, account_column: AccountColumn) -> DetailProperty {
-        match self {
-            Self::Pid => DetailProperty::Pid,
-            Self::Agent => match account_column {
-                AccountColumn::Shown => DetailProperty::Account,
-                AccountColumn::Hidden => DetailProperty::Program,
-            },
-            Self::Name => DetailProperty::Name,
-            Self::Status => DetailProperty::Status,
-            Self::Age => DetailProperty::Age,
-            Self::Desktop => DetailProperty::Desktop,
-            Self::Directory => DetailProperty::Directory,
-        }
-    }
-
     /// All columns in their table order.
     pub(crate) const ALL: [Self; 7] = [
         Self::Pid,
@@ -192,6 +175,8 @@ pub(crate) enum AccountsColumn {
     WeeklyLeft,
     Roles,
     Busy,
+    Starting,
+    Waiting,
     Idle,
     Paused,
     Exited,
@@ -203,11 +188,13 @@ pub(crate) enum AccountsColumn {
 
 impl AccountsColumn {
     /// The read mark has no header or sort key.
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Account,
         Self::WeeklyLeft,
         Self::Roles,
         Self::Busy,
+        Self::Starting,
+        Self::Waiting,
         Self::Idle,
         Self::Paused,
         Self::Exited,
@@ -218,8 +205,10 @@ impl AccountsColumn {
     ];
 
     /// Count columns share their drawing and sum rules.
-    pub(crate) const COUNTS: [Self; 5] = [
+    pub(crate) const COUNTS: [Self; 7] = [
         Self::Busy,
+        Self::Starting,
+        Self::Waiting,
         Self::Idle,
         Self::Paused,
         Self::Exited,
@@ -231,6 +220,8 @@ impl AccountsColumn {
         match self {
             Self::WeeklyLeft
             | Self::Busy
+            | Self::Starting
+            | Self::Waiting
             | Self::Idle
             | Self::Paused
             | Self::Exited
@@ -248,21 +239,23 @@ impl AccountsColumn {
             Self::WeeklyLeft => 1,
             Self::Roles => 2,
             Self::Busy => 3,
-            Self::Idle => 4,
-            Self::Paused => 5,
-            Self::Exited => 6,
-            Self::Total => 7,
-            Self::Resets => 8,
-            Self::Credits => 9,
-            Self::Enabled => 10,
+            Self::Starting => 4,
+            Self::Waiting => 5,
+            Self::Idle => 6,
+            Self::Paused => 7,
+            Self::Exited => 8,
+            Self::Total => 9,
+            Self::Resets => 10,
+            Self::Credits => 11,
+            Self::Enabled => 12,
         }
     }
 
     /// The label before a sort is selected.
     pub(crate) const fn header(self) -> &'static str {
         const HEADERS: [&str; AccountsColumn::ALL.len()] = [
-            "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
-            "credits", "enabled",
+            "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
+            "total", "resets", "credits", "enabled",
         ];
         HEADERS[self.index()]
     }

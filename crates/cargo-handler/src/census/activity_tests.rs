@@ -339,7 +339,14 @@ fn activity_newest_live_run_wins_then_reveals_the_older_run_when_it_finishes() {
 
 #[test]
 fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
-    let rows = [Some("busy"), Some("idle"), None].map(|status| {
+    let rows = [
+        Some("busy"),
+        Some("idle"),
+        None,
+        Some("waiting"),
+        Some("starting"),
+    ]
+    .map(|status| {
         serde_json::json!({
             "agent":"claude", "name":"legacy-session", "status":status,
             "started":100, "pid":42, "desktop":null, "directory":"/fixture",
@@ -352,7 +359,16 @@ fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
     .expect("legacy report encodes");
     let (decoded, _) = probe::parse_report(&encoded).expect("older schema-three report reads");
     let words: Vec<_> = decoded.iter().map(summary::status_text).collect();
-    assert_eq!(words, ["thinking", "idle", crate::constants::MISSING_VALUE]);
+    assert_eq!(
+        words,
+        [
+            "thinking",
+            "idle",
+            crate::constants::MISSING_VALUE,
+            "waiting",
+            "starting"
+        ]
+    );
     assert!(decoded.iter().all(|row| row.process_started == row.started));
 }
 

@@ -228,7 +228,14 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
             hue:            SessionHue::First,
             rails:          Vec::new(),
             branch:         Branch::Last,
-            subject:        LineSubject::ManagedThread(&worker, role),
+            subject:        LineSubject::ManagedThread(
+                &worker,
+                role,
+                RowIdentity {
+                    machine: "natedev",
+                    pid:     root.pid,
+                },
+            ),
         }));
         let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
         assert_color(&buffer, label, text_default());
@@ -298,6 +305,10 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
             children: vec![worker.clone()],
             ..agent(10, "root", HOUR, None)
         };
+        let manager = RowIdentity {
+            machine: "natedev",
+            pid:     root.pid,
+        };
         let mut cells = vec![(entry(&root, None), false)];
         for role in [
             HierarchyRole::Impl,
@@ -316,7 +327,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 hue:            SessionHue::First,
                 rails:          Vec::new(),
                 branch:         Branch::Last,
-                subject:        LineSubject::ManagedThread(&worker, role),
+                subject:        LineSubject::ManagedThread(&worker, role, manager),
             }));
             cells.push((cell, true));
         }
@@ -332,11 +343,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                     for header in ["account", "role", "activity", "status"] {
                         let (x, y) = find(&buffer, header).expect("full tree column header");
                         assert_eq!(y, header_y, "{header} remains in the full header");
-                        assert_eq!(
-                            x < session_x,
-                            header == "account",
-                            "{header} remains its own column"
-                        );
+                        assert!(x > session_x, "{header} remains its own column");
                     }
                 }
                 for header in ["type", "branch"] {

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stop the timed full walks of every project and target tree in an idle session; file events update disk sizes from the changed paths.
 - Keep the Worktrees title count at the top of each Git page.
 - Keep matched finder letters readable in High Contrast Dark. Preserve readable ink and every theme's match background.
 

@@ -274,7 +274,7 @@ fn sparse_type_columns_give_space_to_distinct_session_names() {
 
 const GUIDE_TEST_WIDTHS: [u16; 4] = [24, 32, 50, 120];
 const SPARSE_TEST_WIDTHS: [u16; 4] = [36, 40, 50, 120];
-const COMPLETE_NAME_WIDTH: u16 = 40;
+const COMPLETE_NAME_WIDTH: u16 = 50;
 const MEASUREMENT_WIDTH: u16 = 120;
 const STACKED_TILE_WIDTH: u16 = 44;
 const REPAIR_TILE_HEIGHT: u16 = 40;
@@ -346,9 +346,10 @@ fn stacked_sparse_tiles_keep_name_space_beside_dense_tiles() {
         "the sparse tile gives Type space to names"
     );
     assert!(
-        find(&dense_buffer, "type").is_some(),
-        "the dense tile keeps Type"
+        find(&dense_buffer, "type").is_none(),
+        "the dense tile removes Type before cutting names"
     );
+    assert!(find(&dense_buffer, "resources").is_some());
 }
 
 #[test]

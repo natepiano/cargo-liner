@@ -124,8 +124,23 @@ The status-clock path reuses a body only while Reusable.
 
 `d` opens details for the selected row in the focused tree or top-level agents table.
 The modal retains a snapshot of the row's values.
-It lists the drawn properties first and the remaining recorded properties next.
-It retains the program and the source account as separate properties.
+The modal groups its values into four sections:
+
+1. The `agent` section contains account, family, model, effort, and type.
+2. The `hierarchy` section contains showrunner, unit, worker, and role.
+3. The `location` section contains directory, branch, desktop, and pid.
+4. The `now` section contains activity, status, state, and age.
+
+An unassigned session or shell uses `name:` in the hierarchy section.
+The hierarchy values use names from the accepted placement chain.
+The family value retains the previous program value.
+Effort always appears; an unknown effort shows `—`.
+Other empty values and empty sections do not appear.
+Each section starts with a title-style heading.
+One blank line separates sections.
+All values start one cell after the longest label and its colon.
+The modal reserves one space before labels and headings, and one space after the longest value.
+The name remains complete when the tree cuts its displayed name.
 `state:` retains the detailed activity word.
 `age:` appears last in days, hours, and minutes.
 The age omits leading zero units.
@@ -133,7 +148,15 @@ An age under one minute shows `0 minutes`.
 
 The details pane uses the shared `PopupFrame` and its own keymap scope.
 Esc closes the modal.
-Up, Down, and the wheel scroll wrapped properties in a small terminal.
+Up, Down, and the wheel select value lines and skip headings and blank lines.
+The selected line uses the shared selection style.
+The viewport follows the selected value when the terminal is small.
+Navigation moves through a wrapped value before it selects another value.
+A newly selected wrapped value starts at its first display row.
+`y` copies the selected value without its label.
+The details pane supplies its own copy target because the framework retains Main focus.
+The shared `tui_pane` clipboard path shows the copy notice used by cargo-port.
+The copy notice appears above the details modal, including when the modal fills the terminal.
 The modal consumes other keys and pointer presses.
 These events cannot change the underlying row selection.
 The shortcuts overlay lists the global `d` binding.

@@ -66,6 +66,7 @@ pub(crate) enum Activity {
     Running,
     Asking,
     Waiting,
+    Starting,
     /// The gate and the machine executing it.
     Verify {
         step:     VerifyStep,
@@ -117,6 +118,7 @@ impl AgentActivity {
                 Activity::Running => "running",
                 Activity::Asking => "asking",
                 Activity::Waiting => "waiting",
+                Activity::Starting => "starting",
                 Activity::Verify { step, location } => match (step, location) {
                     (VerifyStep::Fmt, RunLocation::Local) => "fmt",
                     (VerifyStep::Clippy, RunLocation::Local) => "clippy",
@@ -164,6 +166,7 @@ impl From<Option<&str>> for AgentActivity {
             Some("web") => Self::Active(Activity::Web),
             Some("asking") => Self::Active(Activity::Asking),
             Some("waiting") => Self::Active(Activity::Waiting),
+            Some("starting") => Self::Active(Activity::Starting),
             _ => Self::Unreported,
         }
     }

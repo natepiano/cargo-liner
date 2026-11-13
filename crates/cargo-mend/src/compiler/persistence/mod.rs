@@ -12,6 +12,7 @@ pub(super) use cache::ReportCacheState;
 pub(super) use load::AnalysisEvidence;
 pub(super) use load::load_report;
 pub(super) use report_path::report_path_for_metadata;
+pub(super) use schema::DeclarationIdentity;
 pub(super) use schema::StoredAncestorReexport;
 pub(super) use schema::StoredAncestorReexportInsertion;
 pub(super) use schema::StoredFinding;
