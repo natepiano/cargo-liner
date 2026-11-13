@@ -313,7 +313,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
-**Depends on:** Phase 8 (its idle-read repairs) and Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`).
+**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), and Phase 13b (both edit the watcher and the CHANGELOG).
 
 #### Work Order
 
@@ -327,6 +327,8 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Constraints from prior phases:**
 - Phase 8 added Git event visibility (`crates/cargo-port/src/project/git/event_visibility.rs`), measured Git output (`project/git/measured_output.rs`), disk read observation (`process_observation/disk_reads.rs`) and `scan/disk_totals.rs`. Keep their tests green.
 - Phase 7: `DiskUsageTracker` in `scan/disk_measurements.rs` measures only changed paths; `request_rescan` is the one full walk.
+- Phase 13: a hard-link alias group in `DiskUsageIndex` is a sorted set; a new link updates only its own and the counted link's totals. Keep `hard_link_group_scan_reads_each_alias_a_few_times` green.
+- Phase 13b drops watcher events outside the project roots at the source. Idle reads against the `bd55fde2d` baseline then include that change; name its share apart from this phase's repairs.
 - A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
 - Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
@@ -350,34 +352,20 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Acceptance gate:** a 10-minute idle acceptance run on natedev at load under 8 reads almost nothing apart from swap-in that per-process evidence proves. Each remaining read has a file change that the app shows as its cause, and unexplained bytes are listed. Compare with the `bd55fde2d` binary in 3 alternating pairs at similar load and on the same workload. When the phase changes code: each new test fails before its repair, `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
 
-### Phase 13 — cargo-port finishes its startup disk usage step  · status: todo
+### Phase 13 — cargo-port finishes its startup disk usage step  · status: done
 
-**Depends on:** Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`). Runs before Phase 12, in its own worktree.
+#### As-built
 
-#### Work Order
-
-**Goal:** at startup, the Disk usage row completes for every project. It does not show "Disk usage failed".
-
-**Source:** the showrunner, 2026-11-13. On natedev the installed cargo-port from main `13182d0dc` (Phase 8) showed "Disk usage failed" in its startup panel. `include_dirs` were `/etc`, `/tmp`, `~/.claude`, `~/rust` and `~/worktrees`. Load was about 198. The director traced the failure condition:
-1. `sweep_startup_timeouts` in `tui/app/async_tasks/startup_phase/tracker.rs:397` marks the Disk usage row failed when the row stays visible past `STARTUP_ROW_TIMEOUT` (2 minutes, `tui/constants.rs:67`) without completing.
-2. The row completes when `startup.disk.seen` holds every expected path. `tui/app/async_tasks/disk_handlers.rs:114` and `:126-133` insert into `seen`. `maybe_complete_startup_disk` (`tracker.rs:502`) logs `seen` and `expected` on completion.
-3. No perf log from that startup exists, so the cause is not proven. Two causes are possible: the startup walk took longer than 2 minutes at that load, or some expected path never reaches `seen`. Phase 8 changed disk totals to update from changed files and hard-link aliases (`scan/disk_totals.rs`).
-
-**Spec:**
-1. **Cause.** Reproduce on natedev with the same `include_dirs`, in a terminal you start yourself, with the perf log on. Record `seen`, `expected`, the paths that never reach `seen`, the walk time and the load. Compare with the `596c2c75a` binary (before Phase 8) once. Post the cause on the board as soon as you know it.
-2. **Fix.** When an expected path never reaches `seen`, make each startup disk result insert its paths. When the walk is slow, find the slow part and remove the waste. Do not hide the defect with a longer timeout only.
-3. **Test.** Add a test that fails before the fix: a startup disk pass whose expected paths all reach `seen`, for the input that the cause names. It runs under 1 s and does not depend on the timing of the real disk.
-4. **Changelog.** Add a cargo-port fix entry.
+- Cause: cargo-berth templates under `target/tmp/cargo-berth-templates` hard-link Git hooks 524 and 827 times. Phase 8's `DiskUsageIndex::replace_file` reapplied every alias of a group for each new link and took the smallest path per alias. The startup walks took 129 s and 135 s, and the Disk usage row timed out at 120 s.
+- `DiskUsageIndex` keeps each alias group as a `BTreeSet`; the first path counts the group's bytes. A new link updates only its own, the counted link's and the next link's totals (`removal_contributors`). Alias records change only when the file metadata changes (`alias_record`).
+- Proof on natedev, paired starts at the same load: Disk usage done at 115.6 s with no timeout, against 120.8 s for `596c2c75a` (before Phase 8). The cargo-liner walk fell from 129.3 s to 10.6 s.
+- Test: `hard_link_group_scan_reads_each_alias_a_few_times` (64 aliases, at most 3 record reads per alias; 4096 before the fix).
 
 **Files:**
-- `crates/cargo-port/src/` — the startup disk path that the cause names
-- `crates/cargo-port/CHANGELOG.md` — entry
+- `crates/cargo-port/src/scan/disk_measurements.rs` — alias groups, `alias_record`, `removal_contributors`, the test
+- `crates/cargo-port/CHANGELOG.md` — fix entry
 
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.
+**Gotchas:** the remaining startup time under high load is the main loop's background apply (one frame took 18.5 s for 50 results), older than Phase 8. Phase 13b owns it.
 
 ### Phase 13b — cargo-port applies startup results fast under high load  · status: todo
 
