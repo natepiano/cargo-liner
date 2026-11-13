@@ -61,6 +61,8 @@ mod rendering;
 mod shared_source_visibility;
 #[path = "../tests/diagnostics/suspicious_pub_fixes.rs"]
 mod suspicious_pub_fixes;
+#[path = "../tests/diagnostics/target_identity.rs"]
+mod target_identity;
 #[path = "../tests/diagnostics/unused_pub.rs"]
 mod unused_pub;
 

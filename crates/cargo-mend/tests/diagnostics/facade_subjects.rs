@@ -1634,25 +1634,31 @@ fn write_macro_consumed_facade_fixture(temp: &TempDir) {
         ),
         (
             "app/src/consumer.rs",
-            "macros_fixture::make_widget!();\n\npub(crate) fn run() {\n    crate::tool::touch();\n    let _ = make();\n}\n",
+            "macros_fixture::make_widget!();\n\npub(crate) fn run() {\n    crate::tool::touch();\n    let _ = make();\n    let _ = cross();\n}\n",
         ),
         (
             "app/src/tool/mod.rs",
-            "mod inner;\nmod local_only;\nmod widget;\n\npub use local_only::LocalOnly;\npub use widget::Widget;\n\npub(crate) fn touch() {\n    inner::use_both();\n}\n",
+            "mod inner;\nmod local_only;\nmod widget;\nmod also_widget;\nmod types;\nmod values;\n\npub use widget::Widget; pub use local_only::LocalOnly; pub use also_widget::AlsoWidget; pub use types::CrossWidget; pub use values::CrossWidget;\n\npub(crate) fn touch() {\n    inner::use_both();\n}\n",
         ),
         (
             "app/src/tool/inner.rs",
-            "use super::LocalOnly;\nuse super::Widget;\n\npub(super) fn use_both() {\n    let _ = LocalOnly;\n    let _ = Widget;\n}\n",
+            "use super::LocalOnly;\nuse super::Widget;\nuse super::AlsoWidget;\nuse super::CrossWidget;\n\npub(super) fn use_both() {\n    let _ = LocalOnly;\n    let _ = Widget;\n    let _ = AlsoWidget;\n    let _: CrossWidget = CrossWidget {};\n    CrossWidget();\n}\n",
         ),
         ("app/src/tool/local_only.rs", "pub struct LocalOnly;\n"),
         ("app/src/tool/widget.rs", "pub struct Widget;\n"),
+        ("app/src/tool/also_widget.rs", "pub struct AlsoWidget;\n"),
+        ("app/src/tool/types.rs", "pub struct CrossWidget {}\n"),
+        (
+            "app/src/tool/values.rs",
+            "#[allow(non_snake_case)] pub fn CrossWidget() {}\n",
+        ),
         (
             "macros/Cargo.toml",
             "[package]\nname = \"macros_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nproc-macro = true\n",
         ),
         (
             "macros/src/lib.rs",
-            "use proc_macro::TokenStream;\n\n#[proc_macro]\npub fn make_widget(_: TokenStream) -> TokenStream {\n    \"fn make() -> crate::tool::Widget { crate::tool::Widget }\"\n        .parse()\n        .expect(\"parse generated widget factory\")\n}\n",
+            "use proc_macro::TokenStream;\n\n#[proc_macro]\npub fn make_widget(_: TokenStream) -> TokenStream {\n    \"fn make() -> (crate::tool::Widget, crate::tool::AlsoWidget) { (crate::tool::Widget, crate::tool::AlsoWidget) } fn cross() -> crate::tool::CrossWidget { crate::tool::CrossWidget(); crate::tool::CrossWidget {} }\"\n        .parse()\n        .expect(\"parse generated widget factory\")\n}\n",
         ),
     ] {
         let path = temp.path().join(relative_path);
@@ -1661,6 +1667,21 @@ fn write_macro_consumed_facade_fixture(temp: &TempDir) {
         }
         fs::write(path, source).expect("write fixture source");
     }
+}
+
+#[test]
+fn same_line_facades_in_separate_namespaces_keep_macro_callers() {
+    let temp = tempdir().expect("create facade namespace fixture");
+    write_macro_consumed_facade_fixture(&temp);
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::InternalParentPubUseFacade
+                && finding.path == "app/src/tool/mod.rs"
+                && finding.item.as_deref() == Some("pub use CrossWidget")
+        }),
+        "both namespaces serve macro callers outside the subtree: {report:#?}"
+    );
 }
 
 // `a_facade_a_proc_macro_reaches_is_not_reported_as_internal` checks the
@@ -1692,6 +1713,11 @@ fn a_facade_a_proc_macro_reaches_is_not_reported_as_internal() {
         facade_finding("pub use Widget"),
         InternalFacadeFinding::Absent,
         "a facade reached by macro-generated code must not be reported as internal: {report:#?}"
+    );
+    assert_eq!(
+        facade_finding("pub use AlsoWidget"),
+        InternalFacadeFinding::Absent,
+        "the other macro-consumed facade on the same line must not be reported: {report:#?}"
     );
     assert_eq!(
         facade_finding("pub use LocalOnly"),
@@ -1726,6 +1752,10 @@ fn facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place() {
     assert!(
         parent.contains("pub use widget::Widget;"),
         "the fixer removed a facade a proc macro reaches: {parent}"
+    );
+    assert!(
+        parent.contains("pub use also_widget::AlsoWidget;"),
+        "the fixer removed the other macro-consumed facade on the same line: {parent}"
     );
     assert!(
         !parent.contains("pub use local_only::LocalOnly;"),

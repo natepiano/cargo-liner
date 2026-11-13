@@ -240,9 +240,13 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - Not every slow test is a CLI test: `inline_path_fixes::synthesized_import_keeps_only_mixed_cfg_attr_gate` (1.018 s, Mac run `20261112T164244-3431635-f6bd`) uses the in-process rewrite helper and four Cargo checks. Attribute every slow test.
 - Record the actual nextest thread count and the cache state (warm or cold driver cache, target dir) with each timing. Hold both constant within each alternating pair.
 - An Astra review of this goal ran at the Phase 3 close: `/tmp/claude/astra/20261112T225040Z-351564/review.md`. Read it first and follow its ranking.
+- Phase 10 (checkpoint `00d23f5c3`) Mac run: 1,034 of 1,034 pass at load 16.22, 49 tests at 1 s or more, all on the Phase 3 final slow list. Do not claim a gain that Phase 10 already shipped.
+- Phase 10 keys callers by `DeclarationIdentity` (source file and definition path, `compiler/persistence/schema.rs`) and keeps the caller union for one physical declaration. Suppression and the visibility reconciler read `CallerEvidence::{Recorded, NoneRecorded}`. Keep both.
+- The saved report is at `FINDINGS_SCHEMA_VERSION` 37 (`compiler/constants.rs:95`), and `UseSite` carries `declaration: DeclarationIdentity`. A warm-cache fixture must write this format, or the automatic rebuild changes its timing and cache assertions.
+- `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply` (`selection/display_filter.rs:112`). An in-process CLI entry must still run it. `DisplayFilter` parses sources only when target facts are incomplete.
 
 **Spec:**
-1. **Baseline.** Measure `cba42a650` on both machines. Record per-test times, the suite time, the thread count, Cargo jobs, compiler version, cache state and other load.
+1. **Baseline.** Measure `00d23f5c3` (the Phase 10 checkpoint) on both machines. Use `cba42a650` only for the natedev rise in step 2. Record per-test times, the suite time, the thread count, Cargo jobs, compiler version, cache state and other load.
 2. **Natedev rise.** Find why natedev went from 3 to 32 slow tests between Phase 3 rounds 2 and 3. Compare matching tests on the two trees under matched conditions. Load average alone does not explain it.
 3. **Trace.** Trace the 10 slowest Mac tests and the slow syntax cases. Split each into startup, Cargo work, compiler queries, compilation, formatting and wait. Count a child's time once. Measure acceptance without the tracer.
 4. **Classify.** Give each slow test its cost pattern, with helper calls and fixture loops. `pub_use_outside_subtree_fixes::package_filtered_reexport_used_through_raw_include_stays_manual` runs two independent fixtures. Split independent cases into separate tests. Keep dependent sequences, such as rollback and repeated-run cache tests, in one test.
@@ -263,49 +267,65 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs under matched conditions, with process counts, per-test times and the suite time. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
+**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. These tests keep their assertions: the five `target_identity_*` tests in `tests/diagnostics/target_identity.rs`, `same_line_facades_in_separate_namespaces_keep_macro_callers`, `compiler_mounts_filter_without_reading_sources`, and `wrong_schema_or_fingerprint_reports_are_rejected`. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs under matched conditions, with process counts, per-test times and the suite time. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
 
-### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: todo
+### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: done
 
-**Depends on:** Phase 3.
+#### As-built
+
+- Callers are keyed by `DeclarationIdentity` (`compiler/persistence/schema.rs`): the declaration's source file as a `SourcePathKey` and its definition path. `DeclarationIdentity::new(source_file: &SourcePathKey, def_path: String)`. Callers of one physical declaration are unioned across compilations. A library item and a binary item with the same definition path in separate files keep separate caller sets.
+- `UseSite` carries `declaration: DeclarationIdentity`. `FINDINGS_SCHEMA_VERSION` is 37 (`compiler/constants.rs`); a report in an older schema is rejected and rebuilt.
+- Caller lookup returns `CallerEvidence::{Recorded, NoneRecorded}`. Suppression in `caller_aware.rs` and `caller_repair(declaration, evidence, requirement)` in `visibility_constraint.rs` read it; `CallerRequirement::{Naming, Reaching}` names what the caller must do. `DeclarationCallers` is defined before `UseSiteIndex` in `sink.rs`.
+- Same-line facades key on `(parent_path, line, child_item_name)` with a set of child paths, so facades in separate namespaces keep their own macro callers.
+- `DisplayFilter` (`selection/display_filter.rs`) selects findings by target source membership, not by source folder. `--lib`, named binaries and named examples in one folder each keep their own findings. Its source set is a `OnceCell<BTreeSet<SourcePathKey>>`, parsed only when the compiler target facts are incomplete.
+- `rust_syntax/parsed_sources.rs` has a `#[cfg(test)]` thread-local source read counter, `source_read_attempts()`.
+- The cargo-mend changelog has a fix entry for each defect.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/persistence/caller_aware.rs` — caller suppression with `CallerEvidence` and the facade key
+- `crates/cargo-mend/src/compiler/persistence/schema.rs` — `DeclarationIdentity` and `UseSite.declaration`
+- `crates/cargo-mend/src/compiler/persistence/sink.rs` — `DeclarationCallers` and `UseSiteIndex`
+- `crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs` — `caller_repair` with `CallerEvidence` and `CallerRequirement`
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs` — use-site producer with declaration identity
+- `crates/cargo-mend/src/selection/display_filter.rs` — source-membership selection with a lazy parse
+- `crates/cargo-mend/src/rust_syntax/parsed_sources.rs` — test-only source read counter
+- `crates/cargo-mend/tests/diagnostics/target_identity.rs` — caller identity and CLI target-selection tests
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs` — same-line facade namespace test
+
+**Binds later work:** cargo-mend test-time work keeps `DeclarationIdentity`, the caller union, `CallerEvidence`, schema 37 and the `DisplayFilter::apply` stage in any in-process CLI entry. The five `target_identity_*` tests, `same_line_facades_in_separate_namespaces_keep_macro_callers`, `compiler_mounts_filter_without_reading_sources` and `wrong_schema_or_fingerprint_reports_are_rejected` keep their assertions.
+
+**Gotchas:** `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply`, so target-selection behavior needs CLI tests. `caller_aware.rs` skips caller suppression for `OverbroadPubCrate` and `ForbiddenPubInCrate`.
+
+### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: todo
+
+**Depends on:** Phase 8 (both edit `crates/cargo-port/CHANGELOG.md`).
 
 #### Work Order
 
-**Goal:** when a package has a library and a binary with the same name or in the same source folder, cargo-mend reports and fixes each target's findings correctly. A finding in one target does not hide or remove a finding in the other.
+**Goal:** cargo-port has one source for the default project-list row bindings. The keymap file that cargo-port writes, the help, and the key dispatch all agree: Right expands a row and Left collapses it, with no modifier.
 
-**Source:** an Astra review during Phase 3 repair round 4 (2026-11-12, `/tmp/claude/astra/20261112T220344Z-864733/review.md`) found two production defects. Phase 3 did not cause them, so they come here. Neither is reproduced yet.
-1. `crates/cargo-mend/src/compiler/persistence/caller_aware.rs:34`: `CallerKey` is `(package_root, target_def_path)`. A library item and a binary item with the same definition path share one caller set. A binary caller can then hide a valid library finding. The visibility reconciler (`compiler/persistence/visibility_constraint.rs:947`) reads the same merged set.
-2. `crates/cargo-mend/src/selection/display_filter.rs:189`: `target_directory` reduces a target to its source folder. `src/lib.rs` and `src/main.rs` both become `src`. With `--lib`, `src` is in both the allowed and the excluded folders, and the check near line 125 can exclude library findings. Named binaries or examples in one folder share one boundary too.
-
-**Constraints:**
-- `compiler/persistence/caller_aware.rs:123` skips caller suppression for `OverbroadPubCrate` and `ForbiddenPubInCrate`. Those diagnostics cannot show the caller defect.
-- `compiler::analyze_fixture_json` does not apply `DisplayFilter`. The display defect needs CLI tests.
-- `UseSite` (`compiler/visibility/use_sites.rs`) has no declaration source identity. The caller repair starts at that producer and reaches `persistence/sink.rs` and `persistence/schema.rs`.
-- Keep `--all-targets` analysis, and keep target selection display-only, as `main.rs:243` states.
-- Phase 9 also edits `crates/cargo-mend/tests/support/` and `crates/cargo-mend/CHANGELOG.md`. This phase merges before Phase 9's final measurements.
+**Source:** the style unit found the mismatch (ticket 1462); the showrunner sent it on 2026-11-13. The director traced it:
+1. `crates/cargo-port/src/tui/keymap/resolved.rs:33`: `ResolvedKeymap::defaults()` binds `ExpandRow` and `CollapseRow` to Shift+Right and Shift+Left.
+2. `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs:36`: the framework keymap, which dispatches the keys, uses `ProjectListAction::bindings()`, with no modifier.
+3. The Shift choice is older than Phase 2q. A comment, removed in 04a516486, gave its reason: the legacy pane-scope match in `handle_normal_key` had to avoid the plain-arrow `NavAction` bindings. That match is gone. The framework now binds plain arrows in the project-list scope.
+4. `crates/cargo-port/src/tui/keymap/load.rs:205` writes `ResolvedKeymap::default_toml()` when no keymap file exists. The framework then loads that file (`tui/app/construct.rs:287`). A new install therefore gets `expand_row = "Shift+Right"`, and the help shows that binding.
+5. `ResolvedKeymap.project_list` has no dispatch reader. `load.rs` uses it for the default file text, Vim conflict checks and load results.
 
 **Spec:**
-1. **Reproduce first.** For each defect, write a failing test with a fixture project.
-   1. Callers: a library and a binary with the same item path in separate files, with a caller-sensitive diagnostic.
-   2. Display: CLI runs with `--lib` that show library findings, hide excluded binary findings, separate named targets in one folder, and handle shared sources.
-   If a test passes on the unrepaired code, trace the branch it covers before you drop the defect. Report the trace.
-2. **Callers.** Add a declaration identity type with the canonical source identity. Use it in the caller key. Keep the union of callers for one physical declaration across compilations.
-3. **Caller result.** Replace `callers_for_package(...) -> Option<&ItemCallers>` with an enum such as `CallerEvidence::{Recorded, NoneRecorded}`. Use the same identity and result in suppression and in the visibility reconciler.
-4. **Reports.** If the report schema changes, add a test that an old report is read or rebuilt correctly.
-5. **Display filter.** Select findings by target ownership or source membership, not by folder.
-6. **Changelog.** Add a fix entry for each defect that a user sees.
+1. **Reproduce first.** Write a test that compares each `ProjectListAction` default in `ResolvedKeymap::defaults()` with `ProjectListAction::bindings()`. It must fail on the current code.
+2. **One source.** Build the `project_list` defaults in `ResolvedKeymap` from the same function that the framework uses. Remove the `KeyModifiers` argument from `ExpansionAction::key_bindings` if no caller then needs it. Correct its doc comment if it stays.
+3. **Written file.** A test reads the default keymap text and finds `expand_row` and `collapse_row` bound to plain Right and Left.
+4. **User file.** Do not rewrite an existing keymap file. A file that already binds Shift+Right keeps its binding.
+5. **Comments.** Correct the doc comments that name the removed `handle_normal_key` (for example `tui/app/mod.rs:3797`). Change only comments in `tui/app/mod.rs`.
+6. **Changelog.** Add a fix entry: a new keymap file binds row expand and collapse to plain Right and Left.
 
 **Files:**
-- `crates/cargo-mend/src/compiler/persistence/`
-- `crates/cargo-mend/src/compiler/visibility/use_sites.rs`
-- `crates/cargo-mend/src/compiler/constants.rs`
-- `crates/cargo-mend/src/diagnostic_tests.rs`
-- `crates/cargo-mend/src/selection/`
-- `crates/cargo-mend/tests/`
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-port/src/tui/keymap/`
+- `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`
+- `crates/cargo-port/src/tui/app/mod.rs`
+- `crates/tui_pane/src/keymap/expansion_action.rs`
+- `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
-**State:** the saved mend report, when the caller key changes its schema (`compiler/persistence/schema.rs`).
-
-**Acceptance gate:** each new test fails before its repair and passes after. `verify.sh test cargo-mend` passes on natedev and on the Mac. No new or changed test takes 1 s or more, and no other test is newly at 1 s or more against the Phase 3 final slow lists (`phases/3/port-test-final-mac-slow-tests.json` and `port-test-final-natedev-slow-tests.json` in the unit session folder) at similar load. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: the tests show the result.
+**Acceptance gate:** the comparison test fails before the repair and passes after. `verify.sh test cargo-port` and `verify.sh test tui_pane` pass on the Mac. No new test takes 1 s or more. `verify.sh lint cargo-port` is clean. The checkpoint carries a `Change-Review:` line: on a new install, Right expands a project row and Left collapses it, and the help shows the plain arrows.

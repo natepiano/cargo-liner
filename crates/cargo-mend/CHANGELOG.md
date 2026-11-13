@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostic rule tests call production scans and compiler callbacks directly. CLI tests retain actual Cargo fix and validation calls.
 
 ### Fixed
+- Caller analysis reuses resolved source paths. Facades in separate namespaces keep their callers when exports share a line.
+- Target display filters read source text only when compiler source records are absent.
+- Caller analysis keeps separate library and binary declarations apart when their item paths match. Shared declarations retain callers from every target.
+- Target selection uses source membership. `--lib` and named targets retain shared sources and exclude sources owned only by other targets in the same folder.
 - Function-length checks format proposed sources in batches with the same edition and formatter configuration. Generated sources retain the previous measurement behavior.
 - `--fix` redirects `extern crate self` alias callers on macOS. Source caches, module maps, and import planning share path identity keys. Custom library paths and declared symlink modules retain their module context. Relative includes keep their declared directories. Diagnostics keep relative paths under linked roots. Source snapshots reuse resolved path keys.
 - Keep a cached driver copy while its installed executable still matches. Other installed builds no longer evict that copy between runs. Removed and replaced builds remain eligible for cleanup.
