@@ -2638,41 +2638,24 @@ The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth test
 
 **Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, each of the 16 tests under 1 s; one loaded natedev workspace suite at 32 threads with each of the 16 tests under 1 s.
 
-### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
+### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
 
-**Depends on:** Phase 58g (order only; flaky tests stop other units' style tickets, so 58g runs first).
+**Depends on:** Phase 58g (order only).
 
-On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main (4a6d4d3b7, 5c0778b96) and their worktrees were removed. `cargo-berth resolve <id> --integrated-as <full oid>` refused with exit 5: "the reservation must have a protected checkpoint first; cargo-berth release records one". Release runs only from the holder worktree, and `--rehome` needs a worktree at the recorded path. Both were retired with `--retire-orphan`, which records no integration.
+On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main and their worktrees were removed. `resolve --integrated-as` refused: "the reservation must have a protected checkpoint first". They were retired with `--retire-orphan`, which records no integration.
 
-#### Work Order
+#### As-built
 
-**Goal:** when the holder worktree is gone and the reservation head is an ancestor of the trunk, `resolve --integrated-as` records the integration with no checkpoint.
+- `resolve --integrated-as` records an integration with no checkpoint when two facts hold. The registry proves the holder identity absent, and the reservation's work head is an ancestor of the given trunk target. `AbsentHolder` owns that check and its construction (`reservation/absent_holder.rs:52`).
+- The work head is the last journaled work, not the claim head. An ancestry check, not head equality, tests the claim branch (`recovery.rs:677`). A branch switch after the claim does not refuse a valid recovery. A claim branch that holds a commit the target lacks is refused.
+- Live, moved and unverifiable holders keep the refusal.
+- The journal records the actor, the reason, and the verified integration (work head and trunk witness). The new evidence state holds that integration, so replay reads the journaled work head, not the current merge extent (`reservation/record.rs:500`).
+- Release paths share one status and proof operation (`reservation/retention.rs:1641`) and one retention decision (`reconcile.rs:4789`).
+- Tests in `tests/liveness.rs` on recorded templates (`tests/support/absent_holder_templates.rs`): the accepted case, also after the journal is opened again; a head not reachable from the target; a later commit not merged; a branch switch; live, moved and unverifiable holders; a replay and a board case that change the merge extent. The replay and board cases fail on the old replay. Each new test takes under 0.3 s.
+- Gate: lint and 1,381 cargo-berth tests on natedev. Three interleaved timing pairs found no phase slowdown; the 1 s and slower tests under load belong to Phase 58j.
+- Checkpoint: d50b8033d on `tile-phase-58f`.
 
-**Spec:**
-
-1. Quote the line that refuses `--integrated-as` without a checkpoint.
-2. Accept it only when both are true. Otherwise keep the current refusal.
-   - The registry proves the holder identity absent: `HolderIdentityPresence::Absent` (`src/worktree/liveness.rs:63`). `Live` and `Unverifiable` keep the refusal. `WorktreeLiveness::Unavailable` alone is not proof: it includes locked registrations.
-   - The reservation's work-bearing head is an ancestor of the given target, which is on the trunk. `Reservation::head_snapshot` is a `ClaimHeadSnapshot` from the claim, and replay does not move it after later commits. So it is not that head. Name the head that holds the reservation's last work and the journal evidence it comes from, before a change.
-3. Record the actor and the reason in the journal, as the Phase 58c rehome does.
-4. Give the result a named evidence state: integration verified with no checkpoint. Today `recovery.rs:763` rejects active reservations, and `reservation/retention.rs:1652` and `Reservation::evidence_state` require checkpoint evidence for an integration release. Make each one accept the new state: the lifecycle transition, journal replay, evidence output and later revalidation.
-5. Tests, each under 1 s, with a recorded template:
-   - the accepted case, also after the journal is opened again;
-   - a head not reachable from the target is refused;
-   - a claim head already on the trunk with a later commit not merged is refused;
-   - a live holder worktree, a live holder at a moved path, and an unverifiable registration each keep the current refusal.
-
-**Files:**
-
-- `crates/cargo-berth/src/` — the resolve path
-- `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/reservation/retention.rs` — the evidence state of item 4
-- `crates/cargo-berth/tests/` — item 5
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev.
+**Files:** `crates/cargo-berth/src/reservation/absent_holder.rs`, `recovery.rs`, `reconcile.rs`, `reservation/{record,retention,lifecycle,mod}.rs`, `ledger/{journal,history,record_size}.rs`, `edge/*`, `board/rows.rs`, `alert.rs`, `session/mod.rs`, `verb/release.rs`, `crates/cargo-berth/tests/{liveness,recorded_templates}.rs`, `tests/support/absent_holder_templates.rs`.
 
 ### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: todo
 
