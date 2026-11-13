@@ -13,6 +13,7 @@
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
+use tui_pane::ConfigError;
 use tui_pane::LIST_SEPARATOR;
 use tui_pane::SettingStep;
 use tui_pane::SettingTarget;
@@ -293,7 +294,7 @@ fn notices(app: &App) -> Vec<(&'static str, &str)> {
             notices.push(("capture", failures.as_str()));
         },
     }
-    if let Some(error) = &app.loaded_config.error {
+    if let Some(ConfigError::Parse(error) | ConfigError::Write(error)) = &app.loaded_config.error {
         notices.push(("config", error.as_str()));
     }
     notices
@@ -1216,6 +1217,7 @@ mod layout_tests {
     use ratatui::backend::TestBackend;
     use toml::Value;
     use tui_pane::AppIdentity;
+    use tui_pane::ConfigError;
     use tui_pane::GlobalAction;
     use tui_pane::SECTION_ITEM_INDENT;
     use tui_pane::SettingsRow;
@@ -1339,7 +1341,7 @@ mod layout_tests {
             kept:     "kept note".to_string(),
             failures: "failure note".to_string(),
         };
-        app.loaded_config.error = Some("config error".to_string());
+        app.loaded_config.error = Some(ConfigError::Write("config error".to_string()));
         let mut expected = BODY.to_vec();
         expected.extend([
             "[Notices]",

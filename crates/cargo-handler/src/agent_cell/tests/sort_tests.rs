@@ -5,15 +5,17 @@ use tui_pane::CellPoint;
 use super::*;
 use crate::census::Activity;
 use crate::census::RoleFallback;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
 
-const COLUMNS: [TreeColumn; 7] = [
+const COLUMNS: [TreeColumn; 8] = [
     TreeColumn::Session,
     TreeColumn::Role,
+    TreeColumn::Activity,
     TreeColumn::Status,
     TreeColumn::Account,
     TreeColumn::Branch,
@@ -83,7 +85,15 @@ fn sorting_forest() -> MachineState {
 
 /// The adapter is the only test helper coupled to the frame API.
 fn sorted_buffer(machines: &[Machine<'_>], width: u16, sort: TreeSort) -> Buffer {
-    let placement = AgentPlacement::from_machines(machines);
+    let report = crate::census::accounts::AccountsReading::parse(
+        br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+        {"session":"older-id","state":"idle"},{"session":"younger-id","state":"busy"},
+        {"session":"id-20","state":"idle"},{"session":"id-30","state":"paused"},
+        {"session":"id-40","state":"busy"},{"session":"id-50","state":"exited"}
+    ]}],"problems":[]}"#,
+    )
+    .expect("source statuses");
+    let placement = AgentPlacement::from_machines(machines, &report.sessions);
     let defaults = cell_order_placed(&placement);
     let sorts = defaults
         .iter()
@@ -141,18 +151,15 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "├── zeta fix idle z-account z-branch /z-directory 8:00",
+            "├── zeta z-account worker fix idle z-branch /z-directory",
         ),
-        (
-            "nested",
-            "│ └── nested session thinking — — ~/rust/nested 5:00",
-        ),
-        ("z-thread", "│ └── z-thread worker idle — — — 3:00"),
+        ("nested", "│ └── nested — — ~/rust/nested"),
+        ("z-thread", "│ └── z-thread — worker exited — —"),
         (
             "alpha",
-            "└── alpha impl thinking a-account a-branch /a-directory 4:00",
+            "└── alpha a-account worker impl busy a-branch /a-directory",
         ),
-        ("a-shell", "└── a-shell shell running a-account — — 2:00"),
+        ("a-shell", "└── a-shell a-account busy — shell —"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -197,8 +204,9 @@ fn assert_column_keeps_subtrees_and_hues(column: TreeColumn) {
     let baseline = sorted_buffer(&machines, 220, TreeSort::default());
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
-        let alpha_first = matches!(direction, SortDirection::Ascending)
-            != matches!(column, TreeColumn::Role | TreeColumn::Status);
+        let alpha_first = column != TreeColumn::Role
+            && (matches!(direction, SortDirection::Ascending)
+                != matches!(column, TreeColumn::Activity));
         let expected = if alpha_first {
             vec!["alpha", "a-shell", "zeta", "nested", "z-thread"]
         } else {
@@ -341,7 +349,14 @@ fn only_the_selected_tree_header_has_a_direction_arrow() {
         ] {
             let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
             let header = &lines(&buffer)[usize::from(find(&buffer, "session").expect("header").1)];
-            assert_eq!(header.matches('▲').count() + header.matches('▼').count(), 1);
+            assert_eq!(
+                header.matches('▲').count() + header.matches('▼').count(),
+                usize::from(column != TreeColumn::Age)
+            );
+            if column == TreeColumn::Age {
+                assert!(!header.contains("age"));
+                continue;
+            }
             assert!(
                 header.contains(&format!("{} {arrow}", column.header())),
                 "{header}"
@@ -438,12 +453,13 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
         for direction in [SortDirection::Ascending, SortDirection::Descending] {
             let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
             let alpha_first = match column {
-                TreeColumn::Status => direction == SortDirection::Descending,
                 TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
                     direction == SortDirection::Ascending
                 },
                 // Both values are blank, so both directions keep the census order.
-                TreeColumn::Model
+                TreeColumn::Status
+                | TreeColumn::Activity
+                | TreeColumn::Model
                 | TreeColumn::Effort
                 | TreeColumn::Type
                 | TreeColumn::Role
@@ -502,7 +518,7 @@ fn equal_tree_keys_keep_the_default_start_and_pid_tie_break_in_both_directions()
             &machines,
             220,
             TreeSort {
-                column: TreeColumn::Status,
+                column: TreeColumn::Role,
                 direction,
             },
         );
@@ -630,7 +646,8 @@ fn each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order() {
     for (column, ascending) in [
         (TreeColumn::Session, ["ant", "bee", "cat", "dog"]),
         (TreeColumn::Role, ["bee", "ant", "dog", "cat"]),
-        (TreeColumn::Status, ["dog", "bee", "cat", "ant"]),
+        (TreeColumn::Activity, ["bee", "ant", "dog", "cat"]),
+        (TreeColumn::Status, ["dog", "cat", "bee", "ant"]),
         (TreeColumn::Account, ["dog", "cat", "bee", "ant"]),
         (TreeColumn::Branch, ["dog", "cat", "ant", "bee"]),
         (TreeColumn::Directory, ["cat", "ant", "dog", "bee"]),
@@ -639,7 +656,7 @@ fn each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order() {
         for direction in [SortDirection::Ascending, SortDirection::Descending] {
             let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
             let mut expected = ascending;
-            if direction == SortDirection::Descending {
+            if direction == SortDirection::Descending && column != TreeColumn::Role {
                 expected.reverse();
             }
             assert_eq!(
@@ -706,7 +723,7 @@ fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let original = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let director = original
         .iter()
@@ -748,13 +765,14 @@ fn unassigned_session_sort_ignores_case_and_breaks_ties_by_original_name() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let original = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let tile = original
         .iter()
         .find(|tile| matches!(tile, AgentTile::Unassigned(_)))
         .expect("pool");
-    let mut sort = tile.default_sort();
+    let mut sort = TreeSort::default();
+    sort.select(TreeColumn::Session);
     for reverse in [false, true] {
         let sorts = HashMap::from([(tile.key(), sort)]);
         let tiles = tile_order_sorted(&placement, &sorts, NOW);

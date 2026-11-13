@@ -1,3 +1,4 @@
+use super::compiled_report;
 use crate::support::*;
 
 #[test]
@@ -31,7 +32,7 @@ bench = false
     )
     .expect("write field declarations");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let forbidden = report
         .findings
         .iter()
@@ -70,7 +71,7 @@ bench = false
     )
     .expect("write inner");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()
@@ -111,7 +112,7 @@ bench = false
     )
     .expect("write inner");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()
@@ -158,7 +159,7 @@ bench = false
     )
     .expect("write lib");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()
@@ -198,7 +199,7 @@ bench = false
     )
     .expect("write inner");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()
@@ -238,7 +239,7 @@ bench = false
     )
     .expect("write inner");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()
@@ -275,7 +276,7 @@ bench = false
     )
     .expect("write lib");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = compiled_report(&temp.path().join("Cargo.toml"));
     let findings: Vec<_> = report
         .findings
         .iter()

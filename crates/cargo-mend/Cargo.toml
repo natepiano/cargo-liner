@@ -11,10 +11,6 @@ readme               = "README.md"
 repository.workspace = true
 version              = "0.23.0-dev"
 
-[[test]]
-name = "diagnostics"
-path = "tests/diagnostics/mod.rs"
-
 [features]
 test-counters = []
 

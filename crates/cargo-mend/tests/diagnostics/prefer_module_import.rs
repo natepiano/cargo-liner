@@ -288,13 +288,10 @@ fn third() -> i32 { do_thing() }
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -344,13 +341,10 @@ fn example() -> i32 { do_thing() }
     )
     .expect("write sibling");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -367,7 +361,7 @@ fn example() -> i32 { do_thing() }
     );
 
     // Idempotency: running again should produce zero findings
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -423,13 +417,10 @@ fn example() -> i32 { func_a() + func_b() }
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -462,32 +453,50 @@ fn negative_imports_in_independent_members() {
     let skips_constant_imports = skips_constant_imports(&mut batch);
     let skips_grouped_imports = skips_grouped_imports(&mut batch);
     let skips_renamed_imports = skips_renamed_imports(&mut batch);
+    let report = super::compiled_report(&batch.path().join("Cargo.toml"));
+    skips_type_imports(&report);
+    skips_constant_imports(&report);
+    skips_grouped_imports(&report);
+    skips_renamed_imports(&report);
+}
+
+#[test]
+fn standard_and_parent_imports_are_not_function_imports() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     let skips_std_imports = skips_std_imports(&mut batch);
     let two_segment_super_module_import_not_flagged =
         two_segment_super_module_import_not_flagged(&mut batch);
     let skips_super_super_module_import = skips_super_super_module_import(&mut batch);
     let skips_function_import_when_mod_declared_in_same_file =
         skips_function_import_when_mod_declared_in_same_file(&mut batch);
+    let report = super::compiled_report(&batch.path().join("Cargo.toml"));
+    skips_std_imports(&report);
+    two_segment_super_module_import_not_flagged(&report);
+    skips_super_super_module_import(&report);
+    skips_function_import_when_mod_declared_in_same_file(&report);
+}
+
+#[test]
+fn declared_and_reexported_modules_are_not_function_imports() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     let skips_crate_path_module_import = skips_crate_path_module_import(&mut batch);
     let skips_module_reached_through_pub_use_reexports =
         skips_module_reached_through_pub_use_reexports(&mut batch);
     let inline_call_skipped_when_mod_declared_same_file =
         inline_call_skipped_when_mod_declared_same_file(&mut batch);
-    let skips_import_of_inline_mod_in_parent_file =
-        skips_import_of_inline_mod_in_parent_file(&mut batch);
-    let skips_functions_named_by_an_attribute = skips_functions_named_by_an_attribute(&mut batch);
-    let report = batch.report();
-    skips_type_imports(&report);
-    skips_constant_imports(&report);
-    skips_grouped_imports(&report);
-    skips_renamed_imports(&report);
-    skips_std_imports(&report);
-    two_segment_super_module_import_not_flagged(&report);
-    skips_super_super_module_import(&report);
-    skips_function_import_when_mod_declared_in_same_file(&report);
+    let report = super::compiled_report(&batch.path().join("Cargo.toml"));
     skips_crate_path_module_import(&report);
     skips_module_reached_through_pub_use_reexports(&report);
     inline_call_skipped_when_mod_declared_same_file(&report);
+}
+
+#[test]
+fn inline_modules_and_attribute_functions_are_not_function_imports() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let skips_import_of_inline_mod_in_parent_file =
+        skips_import_of_inline_mod_in_parent_file(&mut batch);
+    let skips_functions_named_by_an_attribute = skips_functions_named_by_an_attribute(&mut batch);
+    let report = super::compiled_report(&batch.path().join("Cargo.toml"));
     skips_import_of_inline_mod_in_parent_file(&report);
     skips_functions_named_by_an_attribute(&report);
 }
@@ -1092,13 +1101,10 @@ fn example() -> i32 {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1162,13 +1168,10 @@ fn example(obs: &[Obstacle]) -> bool {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1257,7 +1260,7 @@ fn example() -> i32 { do_thing() }
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -1313,13 +1316,10 @@ fn example() -> bool {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1384,13 +1384,10 @@ fn example() -> String {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1464,7 +1461,7 @@ fn example() -> (Edge, i32) {
             ),
         ],
     );
-    let reports = batch.member_reports();
+    let reports = batch.partition_report(super::compiled_report(&batch.path().join("Cargo.toml")));
     let report = &reports["leaf_collision"];
     assert!(
         !report
@@ -1476,14 +1473,10 @@ fn example() -> (Edge, i32) {
 
     let installation = batch.path().join("leaf_collision/src/installation.rs");
     let before = fs::read_to_string(&installation).expect("read installation");
-    let output = batch
-        .command()
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&batch.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1552,13 +1545,10 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1584,7 +1574,7 @@ edition = "2024"
     );
 
     // Idempotency: a second run should report no inline-call findings
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -1636,13 +1626,10 @@ fn example() {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1713,7 +1700,7 @@ mod tests {
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -1723,13 +1710,10 @@ mod tests {
          scope would break if the use were inserted at file top"
     );
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1800,13 +1784,10 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1880,13 +1861,10 @@ fn example(font_size: f32, scale: f32) -> f32 {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed (rollback expected when bug is present): {}\n{}",
+        "scan, fix and cargo check failed (rollback expected when bug is present): {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1971,13 +1949,10 @@ fn build(font_size: f32, scale: f32, origin_y: f32) -> ArrowGeometry {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed (rollback expected when bug is present): {}\n{}",
+        "scan, fix and cargo check failed (rollback expected when bug is present): {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2040,13 +2015,10 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2070,7 +2042,7 @@ edition = "2024"
         "fully-qualified call should be rewritten, got:\n{child}"
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -2123,13 +2095,10 @@ fn second() -> i32 { do_thing() + 1 }
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2153,7 +2122,7 @@ fn second() -> i32 { do_thing() + 1 }
         "both references should be rewritten, got:\n{child}"
     );
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let report = super::compiled_report(&temp.path().join("Cargo.toml"));
     assert!(
         !report
             .findings
@@ -2213,13 +2182,10 @@ mod tests {
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2281,20 +2247,17 @@ edition = "2024"
     .expect("write tests");
     let manifest_path = temp.path().join("Cargo.toml");
 
-    let output = mend_command_for(&manifest_path)
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&manifest_path);
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let fixed = fs::read_to_string(temp.path().join("src/scene.rs")).expect("read scene");
     assert_eq!(fixed, scene, "the glob-reached import must stay as written");
-    let report = run_mend_json(&manifest_path);
+    let report = super::compiled_report(&manifest_path);
     assert!(
         !report
             .findings
@@ -2347,13 +2310,10 @@ fn example() -> i32 { do_thing() + other_thing() }
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2422,13 +2382,10 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2509,13 +2466,10 @@ pub_in_path = "permitted"
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2581,13 +2535,10 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2659,13 +2610,10 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2737,13 +2685,10 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2806,13 +2751,10 @@ test = []
     )
     .expect("write plugin module");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -3064,13 +3006,10 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command_for(&temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "scan, fix and cargo check failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

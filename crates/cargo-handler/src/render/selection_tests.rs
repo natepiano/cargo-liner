@@ -383,16 +383,18 @@ fn tree_header(buffer: &Buffer) -> String {
 }
 
 fn assert_age_at_header_edge(buffer: &Buffer, label: &str, header: &str, expected: &str) -> u16 {
-    let age = header.find("age ▼").expect("age sort header");
-    let end = buffer.area.x + summary::cell_width(&header[..age]) + summary::cell_width("age ▼");
+    assert!(!header.contains("age"));
+    let status = header.find("status").expect("status header");
+    let end =
+        buffer.area.x + summary::cell_width(&header[..status]) + summary::cell_width("status");
     let y = locate(buffer, label).y;
-    let through_age: String = (buffer.area.x..end)
+    let text: String = (buffer.area.x..buffer.area.right())
         .map(|x| buffer[(x, y)].symbol())
         .collect();
-    let (_, actual) = through_age
-        .rsplit_once(char::is_whitespace)
-        .expect("age follows another column");
-    assert_eq!(actual, expected, "{label}: age ends at the header edge");
+    assert!(
+        !text.split_whitespace().any(|value| value == expected),
+        "{label}: age stays hidden"
+    );
     end
 }
 
@@ -419,21 +421,39 @@ fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
     let before = paint_at(&mut app, now);
     assert_selected(&before, "task-00");
     let before_header = tree_header(&before);
-    assert!(before_header.contains("age"));
-    let role_x = before_header.find("role").expect("role header");
+    assert!(!before_header.contains("age"));
+    let role_x = before_header.find("activity").expect("activity header");
     let status_x = before_header.find("status").expect("status header");
     assert_eq!(status_x - role_x, 12, "showrunner plus two-cell gap");
     press(&mut app, KeyCode::End);
     let after = paint_at(&mut app, now);
     assert_selected(&after, "task-69");
     let after_header = tree_header(&after);
-    let role_x = after_header.find("role").expect("retained role header");
+    let role_x = after_header
+        .find("activity")
+        .expect("retained activity header");
     let status_x = after_header.find("status").expect("status header");
     assert_eq!(status_x - role_x, 10, "reviewer plus two-cell gap");
-    for word in ["status", "age"] {
+    {
+        let word = "status";
         assert_eq!(before_header.find(word), after_header.find(word), "{word}");
     }
+    assert_eq!(
+        after_header.find("role"),
+        before_header.find("role").map(|x| x + 2)
+    );
     assert_age_at_header_edge(&before, "task-00", &before_header, "6:17:00");
+    let machines = app.census.machines(&[]);
+    for (name, expected) in [
+        ("task-00", "6 days, 17 hours, 0 minutes"),
+        ("task-01", "1 hour, 9 minutes"),
+        ("task-69", "1 minute"),
+    ] {
+        assert_eq!(
+            crate::agent_cell::detail_property_for_test(&machines, name, "age", now),
+            expected
+        );
+    }
     assert_eq!(
         assert_age_at_header_edge(&before, "task-01", &before_header, "1:09"),
         assert_age_at_header_edge(&after, "task-69", &after_header, "1"),
@@ -441,33 +461,35 @@ fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
     );
 }
 
+fn grouped_scroll_owner(pid: u32, now: u64) -> AgentRow {
+    let mut owner = with_shell(session(pid, &format!("group-owner-{pid}")));
+    owner.children = (0..40)
+        .map(|index| {
+            let role = if index == 0 {
+                SubagentRole::Reviewer
+            } else {
+                SubagentRole::Unrecorded
+            };
+            let age = if pid == 10 && index == 0 {
+                6 * 24 * 3600 + 17 * 3600
+            } else {
+                (40 - index) * 60
+            };
+            serde_json::from_value(serde_json::json!({
+                "kind":"subagent", "depth":0,
+                "name":format!("group-{pid}-task-{index:02}"),
+                "started":now-age, "subagent_role":role
+            }))
+            .expect("grouped scroll child")
+        })
+        .collect();
+    owner
+}
+
 #[test]
 fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
     let now = census::unix_now();
-    let owners = [10, 20].map(|pid| {
-        let mut owner = with_shell(session(pid, &format!("group-owner-{pid}")));
-        owner.children = (0..40)
-            .map(|index| {
-                let role = if index == 0 {
-                    SubagentRole::Reviewer
-                } else {
-                    SubagentRole::Unrecorded
-                };
-                let age = if pid == 10 && index == 0 {
-                    6 * 24 * 3600 + 17 * 3600
-                } else {
-                    (40 - index) * 60
-                };
-                serde_json::from_value(serde_json::json!({
-                    "kind":"subagent", "depth":0,
-                    "name":format!("group-{pid}-task-{index:02}"),
-                    "started":now-age, "subagent_role":role
-                }))
-                .expect("grouped scroll child")
-            })
-            .collect();
-        owner
-    });
+    let owners = [10, 20].map(|pid| grouped_scroll_owner(pid, now));
     let mut app = application(owners.into());
     let before = paint_at(&mut app, now);
     let header_for = |buffer: &Buffer, label: &str| {
@@ -480,7 +502,7 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
                     .collect();
                 (text.contains("session")
                     && text.contains("role")
-                    && text.contains("age")
+                    && text.contains("status")
                     && !text.contains("pid"))
                 .then_some(text)
             })
@@ -488,6 +510,19 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
     };
     let before_headers = [10, 20].map(|pid| header_for(&before, &format!("group-{pid}-task-01")));
     assert_age_at_header_edge(&before, "group-10-task-00", &before_headers[0], "6:17:00");
+    let machines = app.census.machines(&[]);
+    for (name, expected) in [
+        ("group-10-task-00", "6 days, 17 hours, 0 minutes"),
+        ("group-10-task-01", "39 minutes"),
+        ("group-20-task-01", "39 minutes"),
+        ("group-10-task-39", "1 minute"),
+        ("group-20-task-39", "1 minute"),
+    ] {
+        assert_eq!(
+            crate::agent_cell::detail_property_for_test(&machines, name, "age", now),
+            expected
+        );
+    }
     let before_edges = [0, 1].map(|index| {
         let pid = [10, 20][index];
         assert_age_at_header_edge(
@@ -509,7 +544,7 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
     for (index, pid) in [10, 20].into_iter().enumerate() {
         let label = format!("group-{pid}-task-39");
         let after_header = &after_headers[index];
-        for word in ["role", "status", "age"] {
+        for word in ["role", "activity", "status"] {
             let column = before_headers[index]
                 .find(word)
                 .expect("complete-row column");
@@ -520,7 +555,7 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
                 "shared scrolled {word}"
             );
             assert!(after_header.contains(word), "retained {word}");
-            if word != "role" {
+            if word != "activity" {
                 assert_eq!(after_header.find(word), Some(column), "scrolled {word}");
             }
         }
@@ -584,8 +619,14 @@ fn recorded_subagent_ids_keep_selection_when_duplicate_descriptions_change_order
     .expect("identified subagents");
     let mut app = application(vec![owner.clone()]);
     let before = paint(&mut app);
-    app.click(locate(&before, "waiting"));
-    assert_selected(&paint(&mut app), "waiting");
+    let first = locate(&before, "same-task");
+    let second = Position::new(first.x, first.y + 1);
+    app.click(second);
+    let selected = paint(&mut app);
+    assert_eq!(
+        selected[(second.x, second.y)].bg,
+        tui_pane::active_focus_color()
+    );
     owner.children[0].started = 300;
     owner.children[0].name = "renamed-first-work".into();
     owner.children[1].name = "renamed-selected-work".into();

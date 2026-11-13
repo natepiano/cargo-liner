@@ -28,6 +28,7 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::scan::ScanStage;
 use crate::interaction::SelectionSurface;
 use crate::sort::AccountsSort;
@@ -38,7 +39,8 @@ const NOW: u64 = 1_792_166_400;
 const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
 // Optional columns leave before layout selection. These widths force the kept
 // columns onto two lines or into stacked facts, including the pane frame.
-const TWO_LINE_ACCOUNTS_WIDTH: u16 = 64;
+const TWO_LINE_ACCOUNTS_WIDTH: u16 = 83;
+const COMPLETE_ACCOUNTS_HEIGHT: u16 = 160;
 const STACKED_ACCOUNTS_WIDTH: u16 = 18;
 // The final account and its heading must fit the five-row viewport together.
 const COMPLETE_STACKED_ACCOUNT_WIDTH: u16 = 26;
@@ -69,15 +71,15 @@ fn draw_grid(app: &mut App) -> Buffer {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+        &app.accounts.table,
     )
-    .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
     let demand = cells.demands(&[]);
     let area = Rect::new(
         0,
         0,
-        // An 80-cell terminal must retain all rows even when a sort arrow adds demand.
-        80,
+        // The terminal includes room for both new count columns and the sort arrow.
+        99,
         u16::try_from(demand.summary + 3).expect("small summary"),
     );
     let mut buffer = Buffer::empty(area);
@@ -141,9 +143,8 @@ fn press_summary_header(app: &mut App, buffer: &Buffer, header: CellPoint) {
 #[test]
 fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_order() {
     let mut app = App::new_for_test().expect("test app");
-    // Keep the three fixture tiles in one screen column: a 39-cell summary
-    // intentionally omits session names and stacks accounts without headers.
-    // The terminal remains 80 cells, so this still exercises narrow demand.
+    // Keep the three fixture tiles in one screen column.
+    // The wider count headers need a 99-cell terminal for header sorting.
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("single screen column");
     app.loaded_config.config.tiles.widen_summary = false;
@@ -380,7 +381,7 @@ fn assert_tail_at_end(buffer: &Buffer, tail: &[String]) {
 
 fn assert_account_tail_reachable(width: u16, continuation: &str) {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, width, 128);
+    let complete = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
     let final_heading = locate(&complete, "account-5");
     let last_y = final_account_y(&complete);
     assert!(last_y > final_heading.row, "fixture has a continuation");
@@ -412,7 +413,7 @@ fn assert_account_tail_reachable(width: u16, continuation: &str) {
 
 fn assert_account_continuations_select(width: u16) {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, width, 128);
+    let complete = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
     let heading = locate(&complete, "account-1");
     let next = locate(&complete, "account-2");
     assert!(
@@ -423,16 +424,16 @@ fn assert_account_continuations_select(width: u16) {
         let line = account_line(&complete, y);
         assert!(!line.trim().is_empty(), "each continuation carries a fact");
         account_key(&mut app, KeyCode::Home);
-        let home = paint_accounts_viewport(&mut app, width, 128);
+        let home = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
         let first = locate(&home, "account-0");
         app.click(Position::new(first.column, first.row));
-        let before = paint_accounts_viewport(&mut app, width, 128);
+        let before = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
         assert_account_selected(&app, &before, "account-0");
         let x = (before.area.x..before.area.right())
             .find(|&x| !before[(x, y)].symbol().trim().is_empty())
             .expect("painted continuation cell");
         app.click(Position::new(x, y));
-        let after = paint_accounts_viewport(&mut app, width, 128);
+        let after = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
         assert_account_selected(&app, &after, "account-1");
     }
 }
@@ -467,7 +468,7 @@ fn stacked_account_fact_clicks_select_the_account() {
 fn full_accounts_keep_all_role_rows_in_one_selectable_account() {
     let mut app = interactive_accounts();
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let width = summary::width(
         &machines,
         &placement,
@@ -505,7 +506,7 @@ fn full_accounts_keep_all_role_rows_in_one_selectable_account() {
 fn stacked_account_taller_than_viewport_exposes_every_fact_with_arrows_and_end() {
     let mut app = interactive_accounts();
     let width = STACKED_ACCOUNTS_WIDTH;
-    let complete = paint_accounts_viewport(&mut app, width, 128);
+    let complete = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
     let first = locate(&complete, "account-0");
     let second = locate(&complete, "account-1");
     let facts: Vec<_> = (first.row + 1..second.row)
@@ -573,13 +574,13 @@ fn assert_account_band(buffer: &Buffer, lines: Range<u16>) {
 
 fn assert_middle_account_band(width: u16) -> u16 {
     let mut app = interactive_accounts();
-    let before = paint_accounts_viewport(&mut app, width, 128);
+    let before = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
     let selected = locate(&before, "account-2");
     let next = locate(&before, "account-3");
     assert!(selected.row > before.area.y, "preceding row is visible");
     assert!(next.row < before.area.bottom(), "following row is visible");
     app.click(Position::new(selected.column, selected.row));
-    let after = paint_accounts_viewport(&mut app, width, 128);
+    let after = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
     assert_account_selected(&app, &after, "account-2");
     assert_account_band(&after, selected.row..next.row);
     next.row - selected.row
@@ -587,7 +588,7 @@ fn assert_middle_account_band(width: u16) -> u16 {
 
 #[test]
 fn two_line_account_selection_bands_cover_both_lines_and_stop_at_neighbors() {
-    for (width, rows) in [(60, 5), (TWO_LINE_ACCOUNTS_WIDTH, 3)] {
+    for (width, rows) in [(60, 6), (TWO_LINE_ACCOUNTS_WIDTH, 3)] {
         assert_eq!(assert_middle_account_band(width), rows);
     }
 }
@@ -601,7 +602,7 @@ fn stacked_account_selection_bands_cover_every_fact_and_stop_at_neighbors() {
 fn full_account_selection_bands_cover_all_role_rows() {
     let app = interactive_accounts();
     let machines = [];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let width = summary::width(
         &machines,
         &placement,
@@ -617,7 +618,8 @@ fn full_account_selection_bands_cover_all_role_rows() {
 #[test]
 fn clipped_stacked_account_selection_bands_cover_facts_without_the_heading() {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 128);
+    let complete =
+        paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, COMPLETE_ACCOUNTS_HEIGHT);
     let heading = locate(&complete, "account-5");
     let last = final_account_y(&complete);
     let facts: Vec<_> = (heading.row + 1..=last)
@@ -671,16 +673,18 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
                 let name = locate(&buffer, &format!("account-{index}"));
                 assert_eq!(
                     name.row,
-                    first.row + index * 5,
-                    "five fitted rows per account"
+                    first.row + index * 6,
+                    "six fitted rows per account"
                 );
-                let account = (name.row..name.row + 5)
+                let account = (name.row..name.row + 6)
                     .map(|row| account_line(&buffer, row))
                     .collect::<Vec<_>>()
                     .join(" ");
                 for fact in [
                     "60% left",
                     "busy 1",
+                    "starting 0",
+                    "waiting 0",
                     "idle 3",
                     "paused 2",
                     "exited 0",
@@ -916,7 +920,7 @@ fn accounts_summary_first_in_stacked_layout() {
 fn end_reveals_total_after_six_two_role_accounts_without_selecting_it() {
     for width in [60, TWO_LINE_ACCOUNTS_WIDTH] {
         let mut app = interactive_accounts();
-        let complete = paint_accounts_viewport(&mut app, width, 128);
+        let complete = paint_accounts_viewport(&mut app, width, COMPLETE_ACCOUNTS_HEIGHT);
         let final_account = final_account_y(&complete);
         let total_start = final_account + 1;
         let total_end = {

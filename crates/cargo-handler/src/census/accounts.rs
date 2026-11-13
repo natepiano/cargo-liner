@@ -1,5 +1,7 @@
 //! Stored account readings and their independent background refresh.
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -17,10 +19,14 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::de::Error;
 
+use super::Agent;
+use super::AgentRow;
+use super::SessionIdentity;
 use super::hierarchy;
 use super::hierarchy::HierarchyError;
 use crate::constants::ACCOUNTS_REFRESH_INTERVAL;
 use crate::constants::HIERARCHY_TIMEOUT;
+use crate::theme::Role;
 
 /// A nullable reading is unavailable rather than zero.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,14 +60,104 @@ impl AccountRole {
     }
 }
 
+/// The accounts producer classifies each session once.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionState {
+    Busy,
+    Starting,
+    Waiting,
+    Idle,
+    Paused,
+    Exited,
+}
+
+impl SessionState {
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Starting => "starting",
+            Self::Waiting => "waiting",
+            Self::Idle => "idle",
+            Self::Paused => "paused",
+            Self::Exited => "exited",
+        }
+    }
+}
+
+/// A missing source entry never implies an idle session.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ReportedSessionState {
+    #[default]
+    Unavailable,
+    Reported(SessionState),
+}
+
+impl ReportedSessionState {
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Unavailable => "",
+            Self::Reported(state) => state.text(),
+        }
+    }
+
+    pub(crate) const fn color_role(self) -> Role {
+        match self {
+            Self::Reported(SessionState::Busy | SessionState::Starting) => Role::Busy,
+            Self::Unavailable | Self::Reported(_) => Role::Idle,
+        }
+    }
+}
+
+/// Source states use the same session identities as the census.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SessionStates(BTreeMap<String, SessionState>);
+
+pub(crate) static EMPTY_SESSION_STATES: SessionStates = SessionStates(BTreeMap::new());
+
+impl SessionStates {
+    pub(crate) fn get(&self, session: &str) -> ReportedSessionState {
+        self.0.get(session).copied().map_or(
+            ReportedSessionState::Unavailable,
+            ReportedSessionState::Reported,
+        )
+    }
+
+    fn for_session(&self, identity: &super::SessionIdentity) -> ReportedSessionState {
+        identity
+            .ids()
+            .map(|session| self.get(session))
+            .find(|state| !matches!(state, ReportedSessionState::Unavailable))
+            .unwrap_or_default()
+    }
+
+    /// A listed Codex process remains live before its thread is recorded.
+    pub(crate) fn for_row(&self, row: &AgentRow) -> ReportedSessionState {
+        match (&row.session_id, row.agent) {
+            (SessionIdentity::Unrecorded, Agent::Codex) => {
+                ReportedSessionState::Reported(SessionState::Idle)
+            },
+            _ => self.for_session(&row.session_id),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionStateWire {
+    session: String,
+    state:   SessionState,
+}
+
 /// Source counts for one role across the reported machines.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoleSessionCounts {
-    pub(crate) busy:   u64,
-    pub(crate) idle:   u64,
-    pub(crate) paused: u64,
-    pub(crate) exited: u64,
-    pub(crate) total:  u64,
+    pub(crate) busy:     u64,
+    pub(crate) starting: u64,
+    pub(crate) waiting:  u64,
+    pub(crate) idle:     u64,
+    pub(crate) paused:   u64,
+    pub(crate) exited:   u64,
+    pub(crate) total:    u64,
 }
 
 /// One source count exceeds the range of a combined count.
@@ -78,20 +174,28 @@ impl From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionC
 }
 
 impl RoleSessionCounts {
-    /// `RoleSessionCounts::checked_add` sums all five source counts without overflow.
+    /// `RoleSessionCounts::checked_add` sums all seven source counts without overflow.
     pub(crate) fn checked_add(self, other: &Self) -> Result<Self, RoleCountOverflow> {
         Ok(Self {
-            busy:   self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
-            idle:   self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
-            paused: self
+            busy:     self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
+            starting: self
+                .starting
+                .checked_add(other.starting)
+                .ok_or(RoleCountOverflow)?,
+            waiting:  self
+                .waiting
+                .checked_add(other.waiting)
+                .ok_or(RoleCountOverflow)?,
+            idle:     self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
+            paused:   self
                 .paused
                 .checked_add(other.paused)
                 .ok_or(RoleCountOverflow)?,
-            exited: self
+            exited:   self
                 .exited
                 .checked_add(other.exited)
                 .ok_or(RoleCountOverflow)?,
-            total:  self
+            total:    self
                 .total
                 .checked_add(other.total)
                 .ok_or(RoleCountOverflow)?,
@@ -148,8 +252,10 @@ pub(crate) struct AccountUsage {
 /// A complete source answer; Rust does not infer its roles or filter its rows.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AccountsReading {
-    pub(crate) accounts: Vec<AccountUsage>,
-    pub(crate) problems: Vec<String>,
+    pub(crate) received_at: u64,
+    pub(crate) sessions:    SessionStates,
+    pub(crate) accounts:    Vec<AccountUsage>,
+    pub(crate) problems:    Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -160,6 +266,8 @@ struct AccountsReport {
 
 #[derive(Deserialize)]
 struct AccountWire {
+    #[serde(default)]
+    sessions:            Vec<SessionStateWire>,
     label:               String,
     roles:               Vec<AccountRole>,
     #[serde(default)]
@@ -189,6 +297,10 @@ impl<'de> Deserialize<'de> for RetiredShellAbsent {
 #[derive(Deserialize)]
 struct RoleCountsWire {
     busy:          u64,
+    #[serde(default)]
+    starting:      u64,
+    #[serde(default)]
+    waiting:       u64,
     idle:          u64,
     paused:        u64,
     exited:        u64,
@@ -201,6 +313,8 @@ impl From<RoleCountsWire> for RoleSessionCounts {
     fn from(counts: RoleCountsWire) -> Self {
         let RoleCountsWire {
             busy,
+            starting,
+            waiting,
             idle,
             paused,
             exited,
@@ -209,6 +323,8 @@ impl From<RoleCountsWire> for RoleSessionCounts {
         } = counts;
         Self {
             busy,
+            starting,
+            waiting,
             idle,
             paused,
             exited,
@@ -250,8 +366,23 @@ impl AccountsReading {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, AccountsFailure> {
         let report: AccountsReport =
             serde_json::from_slice(bytes).map_err(|_| AccountsFailure::InvalidReading)?;
+        let mut sessions = BTreeMap::new();
+        let mut conflicts = BTreeSet::new();
+        for state in report.accounts.iter().flat_map(|account| &account.sessions) {
+            if state.session.is_empty() {
+                return Err(AccountsFailure::InvalidReading);
+            }
+            if let Some(previous) = sessions.insert(state.session.clone(), state.state)
+                && previous != state.state
+            {
+                conflicts.insert(state.session.clone());
+            }
+        }
+        sessions.retain(|session, _| !conflicts.contains(session));
         Ok(Self {
-            accounts: report
+            received_at: u64::try_from(Utc::now().timestamp()).unwrap_or_default(),
+            sessions:    SessionStates(sessions),
+            accounts:    report
                 .accounts
                 .into_iter()
                 .map(|row| {
@@ -280,7 +411,7 @@ impl AccountsReading {
                     })
                 })
                 .collect::<Result<_, AccountsFailure>>()?,
-            problems: report.problems,
+            problems:    report.problems,
         })
     }
 }
@@ -328,6 +459,17 @@ pub(crate) enum AccountsTable {
 }
 
 impl AccountsTable {
+    pub(crate) fn session_states(&self) -> &SessionStates {
+        match self {
+            Self::Ready(reading) | Self::FailedKeepingLast { last: reading, .. } => {
+                &reading.sessions
+            },
+            Self::NotConfigured | Self::AwaitingFirstReading | Self::Failed(_) => {
+                &EMPTY_SESSION_STATES
+            },
+        }
+    }
+
     /// Visible account content keeps the summary present even without agents.
     pub(crate) const fn is_visible(&self) -> bool {
         matches!(

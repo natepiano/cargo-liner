@@ -109,7 +109,7 @@ pub(crate) fn scan_selection(
         &analysis.supported_plans,
         parsed_sources,
     )?);
-    let fixes = ValidatedFixSet::try_from(fixes)?;
+    let fixes = ValidatedFixSet::try_from((fixes, parsed_sources))?;
 
     Ok(PubUseFixScan {
         fixes,

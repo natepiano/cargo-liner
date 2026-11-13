@@ -3,6 +3,7 @@
 use ratatui::style::Color;
 use tui_pane::Appearance;
 
+use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::word_highlight::MatchInk;
@@ -93,7 +94,7 @@ pub(crate) struct WordMatchGrounds {
 }
 
 impl WordMatchGrounds {
-    pub(crate) fn new(plain: Color) -> Self {
+    pub(crate) fn new(plain: Color, emphasis: WordHighlightEmphasis) -> Self {
         let active = tui_pane::theme();
         let registry = tui_pane::registry();
         let appearance = registry
@@ -107,15 +108,20 @@ impl WordMatchGrounds {
                     .map(|variant| variant.appearance)
             })
             .unwrap_or(Appearance::Dark);
-        Self::for_appearance(plain, appearance)
+        Self::for_appearance(plain, appearance, emphasis)
     }
 
     /// Use the variant's declared appearance, including custom mid-gray variants.
-    pub(crate) fn for_appearance(plain: Color, appearance: Appearance) -> Self {
+    pub(crate) fn for_appearance(
+        plain: Color,
+        appearance: Appearance,
+        emphasis: WordHighlightEmphasis,
+    ) -> Self {
         let focused_selection = tui_pane::active_focus_color();
         let unfocused_selection = tui_pane::remembered_focus_color();
-        let bound = visibility_bound(plain);
         let direction = SelectionLightnessDirection::from(appearance);
+        let plain = emphasized_ground(plain, direction, emphasis);
+        let bound = visibility_bound(plain);
         Self {
             plain,
             focused_selection,
@@ -185,6 +191,23 @@ impl WordMatchGrounds {
             SelectedWordMatchGround::VisibilityFloor { .. } => WordMatchLimit::VisibilityFloor,
         }
     }
+}
+
+/// `emphasized_ground` doubles the theme's plain match distance for clear and strong emphasis.
+fn emphasized_ground(
+    plain: Color,
+    direction: SelectionLightnessDirection,
+    emphasis: WordHighlightEmphasis,
+) -> Color {
+    if emphasis == WordHighlightEmphasis::Subtle {
+        return plain;
+    }
+    let pane = tui_pane::theme().text.bg_focus.color;
+    let distance = footer_colors::perceptual_distance(plain, pane).max(MINIMUM_VISIBLE_DISTANCE);
+    (u8::MIN..=u8::MAX)
+        .map(|step| direction.at(plain, step))
+        .find(|&ground| footer_colors::perceptual_distance(ground, pane) >= distance + distance)
+        .unwrap_or_else(|| direction.at(plain, u8::MAX))
 }
 
 fn visibility_bound(plain: Color) -> f64 {

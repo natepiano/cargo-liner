@@ -8,6 +8,9 @@
 mod accounts;
 
 #[cfg(test)]
+use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::census::accounts::SessionStates;
+#[cfg(test)]
 use crate::census::scan::ScanStage;
 
 pub(crate) mod age;
@@ -313,7 +316,15 @@ impl SummaryMachines {
                 ));
             }
             let mut rows: Vec<_> = root_rows(*machine, frame.placement).collect();
-            rows.sort_by(|left, right| compare_rows(left, right, frame.sort, frame.account_column));
+            rows.sort_by(|left, right| {
+                compare_rows(
+                    left,
+                    right,
+                    frame.sort,
+                    frame.account_column,
+                    frame.accounts.session_states(),
+                )
+            });
             result.selections.push((
                 RowIdentity::SummaryGroup {
                     machine: machine.name.to_owned(),
@@ -361,9 +372,7 @@ impl SummaryMachines {
                     let fields = agent_fields(
                         row,
                         agent_cell::name_style(frame.cells, machine.name, row.pid),
-                        frame.now,
-                        frame.account_column,
-                        frame.footer_colors,
+                        frame,
                         &ages,
                         columns,
                     );
@@ -604,12 +613,16 @@ fn compare_rows(
     right: &AgentRow,
     sort: SummarySort,
     accounts: AccountColumn,
+    states: &SessionStates,
 ) -> Ordering {
     let primary = match sort.column {
         SummaryColumn::Pid => left.pid.cmp(&right.pid),
         SummaryColumn::Agent => left.agent_label(accounts).cmp(&right.agent_label(accounts)),
         SummaryColumn::Name => sort::compare_names(&left.name, &right.name),
-        SummaryColumn::Status => status_text(left).cmp(status_text(right)),
+        SummaryColumn::Status => states
+            .for_row(left)
+            .text()
+            .cmp(states.for_row(right).text()),
         SummaryColumn::Age => right.started.cmp(&left.started),
         SummaryColumn::Desktop => desktop_text(left).cmp(desktop_text(right)),
         SummaryColumn::Directory => left.directory.cmp(&right.directory),
@@ -720,26 +733,34 @@ impl SummaryColumn {
 fn agent_fields(
     row: &AgentRow,
     name_style: Style,
-    now: u64,
-    account_column: AccountColumn,
-    footer_colors: &FooterColors,
+    frame: &SummaryFrame<'_, '_>,
     ages: &AgeLayout,
     visible: &[SummaryColumn],
 ) -> Vec<Line<'static>> {
     let text = Style::default().fg(text_default());
     [
         Line::from(Span::styled(row.pid.to_string(), text)),
-        agent_label(row, account_column, footer_colors),
+        agent_label(row, frame.account_column, frame.footer_colors),
         Line::from(Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
         )),
         Line::from(Span::styled(
-            status_text(row).to_string(),
-            status_role(row).style(),
+            frame
+                .accounts
+                .session_states()
+                .for_row(row)
+                .text()
+                .to_owned(),
+            frame
+                .accounts
+                .session_states()
+                .for_row(row)
+                .color_role()
+                .style(),
         )),
         Line::from(Span::styled(
-            ages.format(now.saturating_sub(row.started)),
+            ages.format(frame.now.saturating_sub(row.started)),
             text,
         )),
         Line::from(Span::styled(desktop_text(row).to_string(), text)),
@@ -782,9 +803,6 @@ const fn agent_role(agent: Agent) -> Role {
         Agent::Codex | Agent::CodexThreadHost => Role::Codex,
     }
 }
-
-/// The role an agent's status is drawn in.
-pub(crate) const fn status_role(row: &AgentRow) -> Role { row.activity.color_role() }
 
 /// The status cell: the status, or [`MISSING_VALUE`].
 pub(crate) const fn status_text(row: &AgentRow) -> &str { row.activity.text() }
@@ -887,7 +905,8 @@ fn populated_columns(
         .filter(|column| {
             rows.iter().any(|row| {
                 let value = match column {
-                    SummaryColumn::Pid | SummaryColumn::Age => return true,
+                    SummaryColumn::Age => return false,
+                    SummaryColumn::Pid | SummaryColumn::Status => return true,
                     SummaryColumn::Agent => match (accounts, &row.account) {
                         _ if matches!(row.service_tier, crate::census::ServiceTier::Fast) => {
                             return true;
@@ -896,7 +915,6 @@ fn populated_columns(
                         _ => return true,
                     },
                     SummaryColumn::Name => row.name.as_str(),
-                    SummaryColumn::Status => status_text(row),
                     SummaryColumn::Desktop => desktop_text(row),
                     SummaryColumn::Directory => row.directory.as_str(),
                 };
@@ -954,10 +972,7 @@ fn column_widths(
             SummaryColumn::Name.index(),
             usize::from(cell_width(&row.name)),
         );
-        widths.observe_cell_usize(
-            SummaryColumn::Status.index(),
-            usize::from(cell_width(status_text(row))),
-        );
+
         let age = age_label(now.saturating_sub(row.started));
         widths.observe_cell_usize(SummaryColumn::Age.index(), usize::from(cell_width(&age)));
         widths.observe_cell_usize(
@@ -1158,7 +1173,7 @@ mod tests {
     /// Check actual rendered table membership against both the expected
     /// roots and the grid's cell identities, including machine-qualified pids.
     fn assert_summary_roots(machines: &[Machine<'_>], expected: &[(&str, u32)]) -> Vec<String> {
-        let placement = AgentPlacement::from_machines(machines);
+        let placement = AgentPlacement::from_machines(machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
         let area = Rect::new(
             0,
@@ -1328,7 +1343,7 @@ mod tests {
         }];
         let root_width = width(
             &machines,
-            &AgentPlacement::from_machines(&machines),
+            &AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES),
             NOW,
             AccountColumn::Hidden,
             SummarySort::default(),
@@ -1364,7 +1379,7 @@ mod tests {
             assert_eq!(drawn[0], format!(" natedev · {count}"));
             let measured = width(
                 &machines,
-                &AgentPlacement::from_machines(&machines),
+                &AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES),
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
@@ -1427,7 +1442,20 @@ mod tests {
     /// the launched session nested under the first root.
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
-        let natedev = natedev();
+        let mut natedev = natedev();
+        if let MachineState::Answered(rows, _) = &mut natedev {
+            for row in rows {
+                row.session_id = format!("fixture-{}", row.pid).into();
+            }
+        }
+        let mut reading = crate::census::accounts::AccountsReading::parse(
+            br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
+            {"session":"fixture-428044","state":"busy"},{"session":"fixture-4039085","state":"idle"}
+        ]}],"problems":[]}"#,
+        )
+        .expect("summary source statuses");
+        reading.accounts.clear();
+        let accounts = AccountsTable::Ready(reading);
         let mac = MachineState::Answered(
             vec![row(
                 12_055,
@@ -1448,8 +1476,8 @@ mod tests {
             ("pi", &pi),
         ]
         .map(|(name, state)| Machine { name, state });
-        let placement = AgentPlacement::from_machines(&machines);
-        let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+        let height = u16::try_from(height(&machines, &placement, &accounts))
             .expect("the height should fit a u16");
         let area = Rect::new(
             0,
@@ -1460,7 +1488,7 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured,
+                &accounts,
                 AccountsSort::SourceOrder,
             ),
             height,
@@ -1473,7 +1501,7 @@ mod tests {
             area,
             &SummaryFrame {
                 accounts_sort:  AccountsSort::SourceOrder,
-                accounts:       &AccountsTable::NotConfigured,
+                accounts:       &accounts,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &cells,
@@ -1488,19 +1516,22 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 top-level agents",
-                "     pid  account  session                               status    age ▼  desktop        directory",
-                " 1579022  claude   boss of bosses                        idle      21:00  boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude   tmp cleanup then merge to berth and…  running    2:29  berth_fix      ~/rust/cargo-handler",
-                "  428044  claude   enh/handler                           thinking   1:36  cargo handler  ~/rust/handler",
-                " 4039085  codex    --model gpt-5                         —            12  —              ~/rust/handler",
+                "     pid  account  session                               status  desktop        directory",
+                " 1579022  claude   boss of bosses                                boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude   tmp cleanup then merge to berth and…          berth_fix      ~/rust/cargo-handler",
+                "  428044  claude   enh/handler                           busy    cargo handler  ~/rust/handler",
+                " 4039085  codex    --model gpt-5                         idle    —              ~/rust/handler",
                 "",
                 " mac · 1 top-level agent",
-                "     pid  account  session                               status    age ▼  desktop        directory",
-                "   12055  claude   natemccoy-30                          idle      23:00  —              ~",
+                "     pid  account  session                               status  desktop        directory",
+                "   12055  claude   natemccoy-30                                  —              ~",
                 "",
                 " studio · unreachable",
                 "",
                 " pi · scanning",
+                "",
+                " accounts",
+                "    account  left  role  busy  starting  waiting  idle  paused  exited  total  resets  credits  enabled",
             ]
         );
         assert_summary_label_and_session_colors(&buffer);
@@ -1588,7 +1619,7 @@ mod tests {
             name:  "natedev",
             state: &natedev,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
             .expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
@@ -1614,9 +1645,9 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                "     pid  account     session        status    age ▼  directory",
-                "  428044  claude      enh/handler    thinking   1:00  ~/rust/handler",
-                " 4039085  codex fast  --model gpt-5  —            12  ~/rust/handler",
+                "     pid  account     session        status  directory",
+                "  428044  claude      enh/handler            ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  idle    ~/rust/handler",
             ]
         );
         for x in [10, 19] {
@@ -1641,7 +1672,7 @@ mod tests {
             name:  "natedev",
             state: &natedev,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let fitted = width(
             &machines,
             &placement,
@@ -1699,7 +1730,7 @@ mod tests {
         assert_eq!(
             usize::from(width(
                 &machines,
-                &AgentPlacement::from_machines(&machines),
+                &AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES),
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
@@ -1726,7 +1757,7 @@ mod tests {
         assert_eq!(
             usize::from(width(
                 &machines,
-                &AgentPlacement::from_machines(&machines),
+                &AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES),
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),

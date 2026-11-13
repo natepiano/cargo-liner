@@ -10,9 +10,10 @@ use crate::census::AccountColumn;
 use crate::census::AgentActivity;
 use crate::census::RoleFallback;
 use crate::census::accounts::AccountsTable;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
-use crate::constants::TREE_AGE_HEADER;
+use crate::constants::TREE_ACTIVITY_HEADER;
 use crate::constants::TREE_BRANCH_HEADER;
 use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
@@ -89,12 +90,24 @@ fn rendered(
     width: u16,
     account_column: AccountColumn,
 ) -> Buffer {
-    let rect = area(width, height(cell, width, NOW, account_column));
+    let mut cell = cell.clone();
+    for line in &mut cell.lines {
+        use crate::census::accounts::ReportedSessionState;
+        use crate::census::accounts::SessionState;
+        line.source_state = match line.name().as_str() {
+            "dashboard" => ReportedSessionState::Reported(SessionState::Busy),
+            "hanadocs-dashboard-impl" | "diagrams" => {
+                ReportedSessionState::Reported(SessionState::Idle)
+            },
+            _ => ReportedSessionState::Unavailable,
+        };
+    }
+    let rect = area(width, height(&cell, width, NOW, account_column));
     let mut buffer = Buffer::empty(rect);
     draw(
         &mut buffer,
         rect,
-        cell,
+        &cell,
         cells,
         NOW,
         account_column,
@@ -105,28 +118,6 @@ fn rendered(
 
 /// Read a value between the column starts in the header, rather than by spacing.
 fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> String {
-    // Read the last age from drawn cells: right alignment puts its values before
-    // the header start, so that start cannot delimit the preceding directory.
-    let mut age_end = buffer.area.right();
-    while age_end > buffer.area.x && buffer[(age_end - 1, row)].symbol() == " " {
-        age_end -= 1;
-    }
-    let mut age_start = age_end;
-    while age_start > buffer.area.x {
-        let symbol = buffer[(age_start - 1, row)].symbol();
-        if !symbol
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b':')
-        {
-            break;
-        }
-        age_start -= 1;
-    }
-    if header == TREE_AGE_HEADER {
-        return (age_start..age_end)
-            .map(|x| buffer[(x, row)].symbol())
-            .collect();
-    }
     let header_at = |label| {
         find_all(buffer, label)
             .into_iter()
@@ -140,16 +131,19 @@ fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> St
         .map(|(x, _)| x)
         .min()
         .unwrap_or(buffer.area.width);
-    let end = if header == TREE_DIRECTORY_HEADER {
-        end.min(age_start)
-    } else {
-        end
-    };
-    (start..end)
+    let value = (start..end)
         .map(|x| buffer[(x, row)].symbol())
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect::<String>();
+    if header == "account" {
+        value
+            .trim()
+            .split("  ")
+            .next()
+            .expect("account field")
+            .to_owned()
+    } else {
+        value.trim().to_owned()
+    }
 }
 
 /// All tree header names, including the columns absent from a compressed view.
@@ -161,7 +155,7 @@ const HEADERS: [&str; 8] = [
     TREE_ACCOUNT_HEADER,
     TREE_BRANCH_HEADER,
     TREE_DIRECTORY_HEADER,
-    TREE_AGE_HEADER,
+    TREE_ACTIVITY_HEADER,
 ];
 
 /// The row containing a named tree line.
@@ -182,17 +176,23 @@ fn assert_shell_role(name: &str, observation: ShellTimerObservation, role: &str)
         ..agent(10, "shell owner", HOUR, None)
     };
     let cell = entry(&row, None);
-    assert_eq!(cell.lines[0].value(TreeColumn::Role, NOW), role);
+    assert_eq!(cell.lines[0].value(TreeColumn::Role, NOW), "");
+    let activity = if role.is_empty() { "" } else { "timer 5:00" };
+    assert_eq!(cell.lines[0].value(TreeColumn::Activity, NOW), activity);
     let buffer = rendered(&cell, &[], 200, AccountColumn::Hidden);
     let shell_row = row_of(&buffer, name);
-    if role.is_empty() {
-        assert!(find(&buffer, TREE_ROLE_HEADER).is_none());
-    } else {
-        assert_eq!(
-            column_value(&buffer, TREE_ROLE_HEADER, shell_row, &HEADERS),
-            role
-        );
-    }
+    assert_eq!(
+        column_value(&buffer, TREE_ROLE_HEADER, shell_row, &HEADERS),
+        ""
+    );
+    assert_eq!(
+        column_value(&buffer, TREE_ACTIVITY_HEADER, shell_row, &HEADERS),
+        activity
+    );
+    assert_eq!(
+        column_value(&buffer, TREE_STATUS_HEADER, shell_row, &HEADERS),
+        "busy"
+    );
 }
 
 #[test]
@@ -241,19 +241,11 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["session", "role", "status", "account", "branch", "age", "▼"]
+        ["session", "account", "role", "activity", "status", "branch"]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        [
-            "├──",
-            "dashboard",
-            "unit",
-            "thinking",
-            "claude1",
-            "dashboard",
-            "6:00"
-        ]
+        ["├──", "dashboard", "claude1", "unit", "busy", "dashboard"]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -261,32 +253,38 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "│",
             "└──",
             "hanadocs-dashboard-impl",
+            "codex1",
+            "worker",
             "impl",
             "idle",
-            "codex1",
-            "dashboard",
-            "5:00"
+            "dashboard"
         ]
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└──", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
+        ["└──", "diagrams", "claude3", "unit", "idle", "—"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
         find(&buffer, "dashboard").expect("name").0
     );
-    for (name, role, status, account, age) in [
-        ("dashboard", "unit", "thinking", "claude1", "6:00"),
-        ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5:00"),
-        ("diagrams", "unit", "idle", "claude3", "4:00"),
+    for (name, role, activity, status, account) in [
+        ("dashboard", "unit", "", "busy", "claude1"),
+        (
+            "hanadocs-dashboard-impl",
+            "worker",
+            "impl",
+            "idle",
+            "codex1",
+        ),
+        ("diagrams", "unit", "", "idle", "claude3"),
     ] {
         let row = row_of(&buffer, name);
         for (header, expected) in [
             ("role", role),
             ("status", status),
             ("account", account),
-            ("age", age),
+            ("activity", activity),
         ] {
             assert_eq!(
                 column_value(&buffer, header, row, &HEADERS),
@@ -315,19 +313,18 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
     let buffer = rendered(&cells[0], &cells, 220, account_column(&cells));
     let text = lines(&buffer);
 
-    assert!(text[0].contains(" · claude2 · thinking · "));
+    assert!(text[0].contains(" · claude2 · "));
     assert_eq!(text[1], " main · ~/rust/showrunner");
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
             "session",
-            "role",
-            "status",
             "account",
+            "role",
+            "activity",
+            "status",
             "branch",
-            "directory",
-            "age",
-            "▼"
+            "directory"
         ]
     );
     assert_eq!(text.len(), 6);
@@ -392,14 +389,18 @@ fn one_account_per_program_hides_accounts_and_keeps_the_program_heading() {
         assert_eq!(frame_account_column, expected);
         for width in [80, 220] {
             let buffer = rendered(&cells[0], &cells, width, frame_account_column);
-            let text = lines(&buffer).join("\n");
-            match expected {
-                AccountColumn::Hidden => {
-                    assert!(find(&buffer, "account").is_none());
-                    assert!(!text.contains("claude2"));
-                    assert!(!text.contains("codex1"));
-                },
-                AccountColumn::Shown => assert!(find(&buffer, "account").is_some()),
+            assert!(find(&buffer, "account").is_some());
+            for name in ["dashboard", "hanadocs-dashboard-impl", "diagrams"] {
+                let row = row_of(&buffer, name);
+                let line = cells[0]
+                    .lines
+                    .iter()
+                    .find(|line| line.name() == name)
+                    .expect("account row");
+                assert_eq!(
+                    column_value(&buffer, "account", row, &HEADERS),
+                    line.value(TreeColumn::Account, NOW)
+                );
             }
             if width == 220 {
                 let heading = &lines(&buffer)[0];
@@ -551,13 +552,13 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     ] {
         assert!(!text.contains(hidden), "{hidden} is not a tree line");
     }
-    for (name, role, status, account, age) in [
-        ("unit-member", "session", "thinking", "claude1", "2:00"),
-        ("clock job", "timer", "1:00", "claude1", "10"),
-        ("unheld worker", "worker", "idle", "codex1", "9"),
-        ("review worker", "", "idle", "claude1", "8"),
-        ("nested command", "", "running", "claude1", "7"),
-        ("root command", "", "running", "claude2", "1:00"),
+    for (name, role, activity, status, account) in [
+        ("unit-member", "", "", "", "claude1"),
+        ("clock job", "", "timer 1:00", "busy", "claude1"),
+        ("unheld worker", "worker", "", "", "codex1"),
+        ("review worker", "worker", "", "busy", "claude1"),
+        ("nested command", "", "", "busy", "claude1"),
+        ("root command", "", "", "busy", "claude2"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -565,7 +566,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             ("role", role),
             ("status", status),
             ("account", account),
-            ("age", age),
+            ("activity", activity),
         ] {
             assert_eq!(
                 column_value(&buffer, header, y, &HEADERS),
@@ -573,7 +574,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
                 "{name} {header}"
             );
         }
-        if role != "session" {
+        if name != "unit-member" {
             assert!(
                 find(&buffer, "branch").is_none(),
                 "the missing branch has no column"
@@ -581,7 +582,9 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             assert_eq!(column_value(&buffer, "directory", y, &HEADERS), "—");
             let at = find(&buffer, name).expect("work name");
             let expected_color = match role {
-                "worker" => buffer[find(&buffer, "unit-member").expect("parent session")].fg,
+                "worker" if name == "unheld worker" => {
+                    buffer[find(&buffer, "unit-member").expect("parent session")].fg
+                },
                 _ => text_default(),
             };
             assert_eq!(
@@ -602,16 +605,24 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             .expect("last work line")
             .contains("└── root command")
     );
+    let activity_x = find(&buffer, "activity").expect("activity column").0;
+    assert_eq!(
+        Some(buffer[(activity_x, row_of(&buffer, "clock job"))].fg),
+        Role::Shell.style().fg
+    );
     let status_x = find(&buffer, "status").expect("status column").0;
-    for (name, role) in [
-        ("clock job", Role::Shell),
-        ("unheld worker", Role::Idle),
-        ("review worker", Role::Idle),
-    ] {
+    for name in ["clock job", "nested command", "root command"] {
         assert_eq!(
             Some(buffer[(status_x, row_of(&buffer, name))].fg),
-            role.style().fg
+            Role::Busy.style().fg
         );
+    }
+    for (name, status) in [("unheld worker", ""), ("review worker", "busy")] {
+        assert_eq!(
+            column_value(&buffer, "status", row_of(&buffer, name), &HEADERS),
+            status
+        );
+        assert_eq!(detail_value(&cells[0], name, "state", NOW), "idle");
     }
 }
 
@@ -708,10 +719,10 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
                         "tree row {y} at width {width} keeps its right margin"
                     );
                 }
-                let age_x = find(&buffer, "age").expect("age header").0;
+                let status_x = find(&buffer, "status").expect("status header").0;
                 assert!(
-                    (age_x..inner.right() - indent).any(|x| buffer[(x, y)].symbol() != " "),
-                    "the header and each age remain visible before the margin"
+                    (status_x..inner.right() - indent).any(|x| buffer[(x, y)].symbol() != " "),
+                    "the header and each status remain visible before the margin"
                 );
             }
         }
@@ -745,7 +756,7 @@ const TESTED_WIDTHS: RangeInclusive<usize> = 10..=140;
 /// Layout transitions and their neighbors, including the tested range's ends.
 fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeSet<u16> {
     let indent = usize::from(summary::cell_width(SECTION_HEADER_INDENT));
-    let mut full = header_line(cell.row, cell.machine, NOW, account_column)
+    let mut full = header_line(cell, account_column)
         .width()
         .max(place_line(cell.row).width());
     if !cell.lines.is_empty() {
@@ -913,7 +924,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             name:  "natedev",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = cell_order_placed(&placement);
         assert_eq!(account_column(&cells), frame_account_column);
         let width = summary::width(
@@ -1053,7 +1064,7 @@ fn a_selected_staff_worker_keeps_selection_after_rename_and_sort() {
             name:  "natedev",
             state: &state,
         }];
-        let placement = AgentPlacement::from_machines(&machines);
+        let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let defaults = cell_order_placed(&placement);
         let sorts = HashMap::from([(
             defaults[0].id.clone(),

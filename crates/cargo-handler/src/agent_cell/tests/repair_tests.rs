@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::census::ShellTimerObservation;
+use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::transcript::SubagentRole;
 use crate::footer_colors::FooterRole;
 use crate::sort::SortDirection;
@@ -98,7 +99,7 @@ fn specialist_management_roles_use_footer_ink_and_other_roles_stay_plain() {
                 AccountColumn::Shown,
                 &colors,
             );
-            let x = find(&buffer, "role").expect("role header").0;
+            let x = find(&buffer, "activity").expect("activity header").0;
             let y = find(&buffer, "specialist job").expect("specialist row").1;
             let expected = role
                 .map_or(FooterTint::Plain, |role| colors.role(role))
@@ -122,7 +123,7 @@ fn unassigned_sessions_without_a_role_draw_no_role_column() {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let pool = tiles
         .iter()
@@ -146,8 +147,8 @@ fn unassigned_sessions_without_a_role_draw_no_role_column() {
         "the unassigned row stays visible"
     );
     assert!(
-        find(&buffer, "role").is_none(),
-        "the missing role has no column"
+        find(&buffer, "role").is_some(),
+        "an unlabeled row retains an empty role cell"
     );
     assert!(
         find(&buffer, "type").is_none(),
@@ -195,8 +196,16 @@ fn older_tiles_measure_their_own_age_labels_beside_younger_tiles() {
         };
     }
     for (index, labels, expected) in [
-        (0, ["week-old", "twenty-days"], [" 7:21:00", "20:00:00"]),
-        (1, ["minutes-old", "hours-old"], ["   2", "5:16"]),
+        (
+            0,
+            ["week-old", "twenty-days"],
+            ["7 days, 21 hours, 0 minutes", "20 days, 0 hours, 0 minutes"],
+        ),
+        (
+            1,
+            ["minutes-old", "hours-old"],
+            ["2 minutes", "5 hours, 16 minutes"],
+        ),
     ] {
         let rect = area(220, 20);
         let mut buffer = Buffer::empty(rect);
@@ -209,14 +218,10 @@ fn older_tiles_measure_their_own_age_labels_beside_younger_tiles() {
             AccountColumn::Shown,
             &FooterColors::default(),
         );
-        let (header_x, _) = find(&buffer, "age").expect("age header");
-        let end = header_x + 3;
+        assert!(find(&buffer, "age").is_none());
         for (label, expected) in labels.into_iter().zip(expected) {
-            let (_, y) = find(&buffer, label).expect("age row");
-            let start = end - summary::cell_width(expected);
-            let actual: String = (start..end).map(|x| buffer[(x, y)].symbol()).collect();
-            assert_eq!(actual, expected, "{label}: header ends at the last digit");
-            assert_eq!(buffer[(start - 1, y)].symbol(), " ", "age has a column gap");
+            assert_eq!(detail_value(&cells[index], label, "age", NOW), expected);
+            assert!(find(&buffer, label).is_some());
         }
     }
 }
@@ -269,7 +274,7 @@ fn sparse_type_columns_give_space_to_distinct_session_names() {
 
 const GUIDE_TEST_WIDTHS: [u16; 4] = [24, 32, 50, 120];
 const SPARSE_TEST_WIDTHS: [u16; 4] = [36, 40, 50, 120];
-const COMPLETE_NAME_WIDTH: u16 = 40;
+const COMPLETE_NAME_WIDTH: u16 = 50;
 const MEASUREMENT_WIDTH: u16 = 120;
 const STACKED_TILE_WIDTH: u16 = 44;
 const REPAIR_TILE_HEIGHT: u16 = 40;
@@ -341,9 +346,10 @@ fn stacked_sparse_tiles_keep_name_space_beside_dense_tiles() {
         "the sparse tile gives Type space to names"
     );
     assert!(
-        find(&dense_buffer, "type").is_some(),
-        "the dense tile keeps Type"
+        find(&dense_buffer, "type").is_none(),
+        "the dense tile removes Type before cutting names"
     );
+    assert!(find(&dense_buffer, "resources").is_some());
 }
 
 #[test]
@@ -385,5 +391,9 @@ fn minimum_tile_width_reserves_depth_three_guides_and_status() {
     let buffer = drawn_into(&deep_cell, &[], minimum, usize::from(REPAIR_TILE_HEIGHT));
     let text = lines(&buffer).join("\n");
     assert!(text.contains(&deep_cell.lines[0].lead()), "{text}");
-    assert!(find(&buffer, "idle").is_some(), "{text}");
+    assert!(find(&buffer, "status").is_some(), "{text}");
+    assert_eq!(
+        detail_value(&deep_cell, "Dispatch-worker", "state", NOW),
+        "idle"
+    );
 }
