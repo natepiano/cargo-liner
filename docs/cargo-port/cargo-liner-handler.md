@@ -149,7 +149,7 @@
 Director decisions:
 1. A new theme role, `waiting`, sits under `[variants.roles]` in each built-in theme file (`default_dark.toml`, `default_light.toml`, `high_contrast.toml`, `starter.toml`). Its value is a bright yellow. On a light theme it is the brightest yellow that keeps the 4.5:1 floor. No color value goes in code.
 2. A custom theme without `waiting` takes the value from the built-in theme it extends, as the other roles do today.
-3. Every tile cell that draws the word `waiting` draws it in the `waiting` ink, in every tile kind. The status cell is the one path: the accounts unit's C324 change (merged into main as ce37d0e40, Phase 11) adds `SessionState::Waiting`, and the status cell draws its text `waiting`. This is the word in the user's screenshot. `TreeLine::activity_text` cannot return `waiting`: the role enums (`RoleLabel`, `HierarchyRole`, `WorkerRoleSource`, `SubagentRole`) have no waiting variant, and a raw `Activity::Waiting` is not drawn. This phase adds no activity text and no exact-text ink rule. Key the ink on `ReportedSessionState::Reported(SessionState::Waiting)`. Keep the status text as it is, and change only its ink. All other words keep their inks. Director ruling, 2026-11-13, after the worker found the mismatch.
+3. Every tile cell that draws the word `waiting` draws it in the `waiting` ink, in every tile kind. The status cell is the one path: the accounts unit's C324 change (merged into main as ce37d0e40, Phase 12) adds `SessionState::Waiting`, and the status cell draws its text `waiting`. This is the word in the user's screenshot. `TreeLine::activity_text` cannot return `waiting`: the role enums (`RoleLabel`, `HierarchyRole`, `WorkerRoleSource`, `SubagentRole`) have no waiting variant, and a raw `Activity::Waiting` is not drawn. This phase adds no activity text and no exact-text ink rule. Key the ink on `ReportedSessionState::Reported(SessionState::Waiting)`. Keep the status text as it is, and change only its ink. All other words keep their inks. Director ruling, 2026-11-13, after the worker found the mismatch.
 4. `waiting` is at least 4.5:1 against its drawn ground in every built-in theme, with the pane tint on and off and on a selected row. It differs from the `busy`, `idle` and `unreachable` inks, so `waiting` does not read as an unreachable account.
 
 Tests (red first, each under one second):
@@ -234,7 +234,66 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the new `d` lines and the tile colors on both default themes.
 
-### Phase 7 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
+### Phase 7 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: todo
+
+**Depends on:** Phase 6 (it changes `agent_cell.rs`, whose activity text this command prints)
+
+#### Work Order
+
+**Goal:** one command prints, as JSON, the unit directors and workers the TUI shows, with the same status, activity and run facts, so `/showrunner:units` and cargo-handler give one answer.
+
+**Source:** the user, via the showrunner, 2026-11-13: "the /showrunner:units skill and cargo handler tui app should all be using the same informaton sources to find out what workers are working on - so we have consistency - eventually i might merge /showrunner:units into cargo handler but not now - so i want to make sure we prepare the way". Showrunner context: two readers exist today and gave different answers: the cargo-handler Rust census, and `~/.claude/scripts/direct/worker_runs.py` behind `/showrunner:units`. The showrunner's call: the cargo-handler census is the one source. unit-board in sdlc consumes the JSON.
+
+**Spec:**
+
+Director decisions:
+1. Add a visible subcommand, `cargo-handler census --json`, in `cli.rs` beside the hidden `probe`. It scans once, prints one JSON document on stdout, and exits 0. It opens no terminal and draws nothing. Diagnostics go to stderr, as `probe` does.
+2. The command builds its answer through the functions the TUI uses: the local scan, the configured remote probes, the hierarchy, the staff source and the accounts session states. The status word and the activity text come from the functions that fill the tile status and activity cells. Add no second reader and no copy of a rule.
+3. A fact the JSON needs that the census does not have today, such as a detached run's label or start time, goes into the census, so that the TUI and the command have it. It does not go into the command alone.
+4. The JSON has a top-level `schema` integer, starting at 1, and `machines`, then one entry for each unit director and each worker:
+   - `staff_id`, `name`, `parent_staff_id`, `machine`;
+   - `role` (`showrunner`, `unit`, `worker` or `producer`), `status` (the tile status word, or null with no accounts entry), `activity` (the tile activity text);
+   - `runs`: each detached run, with its `label` and `started_at` (ISO 8601 with offset).
+   A field with no value is null, never a missing key.
+5. The serde types are the contract. Document each field in the type's doc comments and in a `census --json` section of `crates/cargo-handler/README.md`, with one example document. A field rename or removal increments `schema`.
+6. A remote machine that does not answer gives a `machines` entry with its error text and no rows. The command still exits 0. A bad configuration or a failed local scan exits non-zero with the error on stderr.
+7. The command reads no file on a UI thread, because it has none. It uses the configured probe and read timeouts.
+8. A unit's workers and runs come from its staff row's current run only, never from every open run. Old open runs (astra-review, proof, stopped) do not show. The TUI follows the same rule. Source: the showrunner, 2026-11-13, after sdlc confirmed unit-board's Workers fix uses this rule.
+
+Tests (red first, each under one second):
+1. With a fixture census of one showrunner, one unit director and two workers, one with a detached run, the command's JSON lists each with every field in decision 4. The status and activity equal the tile cell text for the same rows, read from the rendered tile.
+2. A row with no accounts entry has `"status": null`. A worker with no run has `"runs": []`.
+3. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs, in the JSON and in the tile.
+4. An unreachable remote machine gives its `machines` entry with the error, and the command exits 0.
+5. The JSON parses against the README example's field set: the same keys, the same types.
+
+**Constraints from prior phases:**
+- Phase 5: a waiting status reads `waiting`, from `ReportedSessionState`. The JSON gives the word; ink does not apply.
+- Phase 6: the tile activity cell does not join the live word; only the `d` view does. The JSON `activity` is the tile cell text.
+- The Delegation Context Status source: cargo-handler never makes a status word of its own.
+
+**Live check (director):** on natedev, run the release build's `cargo-handler census --json` while this unit's workers run. Compare it with the TUI tile for the cargo-liner production: the same unit directors, workers, statuses, activities and runs. Measure the run time over five runs and name it in the phase report.
+
+**Change-Review line:** cargo-handler census --json prints the workers the TUI shows | On natedev, run cargo-handler census --json while a unit works, and open cargo-handler | The JSON lists the same unit directors and workers, with the same status, activity and runs, as the tiles
+
+**Files:**
+- `crates/cargo-handler/src/cli.rs`, `crates/cargo-handler/src/constants.rs` — the subcommand
+- `crates/cargo-handler/src/census/report.rs` — new: the JSON types and the shared build
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/scan.rs` — the shared scan and any run fact the census lacks
+- `crates/cargo-handler/src/census/worker_dispatch/` — run facts, if decision 3 applies
+- `crates/cargo-handler/src/agent_cell.rs` — the shared status and activity text
+- `crates/cargo-handler/src/census/report_tests.rs` — new: the tests
+- `crates/cargo-handler/README.md` — the schema section
+- `docs/cargo-handler/as-built/hierarchy.md` — the command and its source
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check output matches the TUI, and the phase report names the measured run time.
+
+### Phase 8 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
 
 **Depends on:** Phase 3 (both change the handler key handling)
 
@@ -289,7 +348,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the full-screen tile and the return to the grid.
 
-### Phase 8 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 9 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -311,7 +370,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
-- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 7 full-screen tile with its selection, expansion and `y` copy.
+- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 8 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
@@ -350,7 +409,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 9 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 10 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -408,7 +467,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 10 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 11 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -462,13 +521,13 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 11 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 12 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` red ink for the status word is in Phase 5.
 
-### Phase 12 — Five slow tests run in under one second  · status: todo
+### Phase 13 — Five slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 10 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 11 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
@@ -492,7 +551,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 10 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 11 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 
 **Change-Review line:** none (test code only)
 
