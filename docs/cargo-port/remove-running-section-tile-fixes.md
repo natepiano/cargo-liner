@@ -2657,39 +2657,22 @@ On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed 
 
 **Files:** `crates/cargo-berth/src/reservation/absent_holder.rs`, `recovery.rs`, `reconcile.rs`, `reservation/{record,retention,lifecycle,mod}.rs`, `ledger/{journal,history,record_size}.rs`, `edge/*`, `board/rows.rs`, `alert.rs`, `session/mod.rs`, `verb/release.rs`, `crates/cargo-berth/tests/{liveness,recorded_templates}.rs`, `tests/support/absent_holder_templates.rs`.
 
-### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: todo
+### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: done
 
-**Depends on:** none. It goes first among the cargo-berth phases: the CI point stays red until it lands (showrunner, 2026-11-13).
+**Depends on:** none (showrunner, 2026-11-13).
 
-The showrunner's CI point validation ran in a gate checkout (`/tmp/claude/session/4dbdb78e-.../cargo-liner-gate-*/checkout`). Two `cargo-berth::board` tests failed there. Both pass on main in `/home/natepiano/rust/cargo-liner`. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 2000-2054.
+The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` (claim: "target `other-target` does not resolve to a local branch") and `board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker` (the board from main listed only `refs/heads/main`). Both pass in every other checkout. CI failed the same way again on main fc01c2b01.
 
-1. `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` failed after 1.333 s. It panicked at `crates/cargo-berth-test-support/src/integration_repository.rs:872`: the claim answered "target `other-target` does not resolve to a local branch".
-2. `board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker` failed after 0.370 s. It panicked at `crates/cargo-berth/tests/board.rs:463`: the board listed only `refs/heads/main`, without the `refs/heads/integration` entry.
+#### As-built
 
-#### Work Order
+- The failure did not reproduce in six attempts: separate clones, the CI Git config, the gate's command shape (new target directory, `--all-features`, 32 threads, a 125-character path), and a read of the lint wrapper's extra steps.
+- The reservation test now reads two recorded templates that the setup script builds (`tests/support/integration_parent_reservations.rs`). Each template makes the held claim, the retarget and the lane claim. The test checks the cover count, the source kind and the lane release, as before.
+- A failed claim prints the fixture's `git for-each-ref refs/heads` and `git worktree list --porcelain` (`IntegrationRepository::assert_success`, `git_state`). The invoker test prints the same state when the board targets differ. The next failure names its cause. No assertion changed.
+- Gate: lint and 1,372 cargo-berth tests on natedev. The two tests take 0.27 s and 0.30 s.
+- Not done: the trigger is unknown. A new failure reopens this work with its cause named.
+- Checkpoint: 75eabafec on `tile-phase-58h`. It merges after Phase 58f; both change `tests/recorded_templates.rs`.
 
-**Goal:** both tests pass in any checkout, with every assertion, and each runs under 1 s.
-
-**Spec:**
-
-1. Find what each test reads from the invoking checkout and not from its fixture. Examples: the current directory, a Git variable, the user's Git config, the invoking repository's refs or a cargo-berth state path. Quote the line that reads it.
-2. Make each test read only its own fixture. If cargo-berth itself reads the invoking checkout where it must read the fixture, fix it in cargo-berth.
-3. Show each failure before the change: run the test from a checkout that is not the main worktree, as the gate does.
-4. Keep every assertion. Add no retry, sleep or longer wait.
-5. Make test 1 run under 1 s (it took 1.333 s).
-
-**Files:**
-
-- `crates/cargo-berth/tests/board.rs`
-- `crates/cargo-berth-test-support/src/integration_repository.rs`
-- `crates/cargo-berth-test-support/src/` — shared fixture setup, when the cause is there
-- `crates/cargo-berth/src/` — only under spec item 2
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; both tests pass from a checkout that is not the main worktree.
+**Files:** `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/{board,recorded_templates}.rs`, `crates/cargo-berth/tests/support/integration_parent_reservations.rs`.
 
 ### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: done
 
