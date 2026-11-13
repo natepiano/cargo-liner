@@ -2565,12 +2565,16 @@ The refusal comes from `validate_session_mapping` (`crates/cargo-berth/src/coord
 
 **Spec:**
 
-1. First, find how cargo-berth records which session owns a reservation. Quote the record and the lines that write it. If no record proves ownership, report that to the director before a product change. Never treat the `--reservation` argument alone as proof.
-2. Make each verb that takes `--reservation` accept a reservation that the caller's session owns in another worktree. The verb reads and writes the holder worktree, not the issuing worktree. Name each verb that changes.
-3. Keep every refusal for a reservation that the session does not own, for an inactive reservation and for a stale mapping. A command without `--reservation` keeps its current worktree rules.
-4. Add a regression test: one session owns reservations in two worktrees. From the first worktree, `drift --reservation <second id>` succeeds and reports the second worktree. Add a test that a reservation owned by another session is still refused from the same place.
-5. Update each `session_worktree_mismatch` test whose case this change makes valid. Keep each test whose case stays a refusal. Report each test that changed and why.
-6. Each new or changed test runs under 1 s.
+1. Ownership record (showrunner, 2026-11-13). Today the session store keeps one selection per session (`session/mod.rs:350`), and each claim or widen replaces it (`:451`, `:509`). The journal's environment values (`ledger/journal.rs:207`) do not prove the resolved session, because hook payloads override them (`session/mod.rs:55`). The approved rule:
+   1. For each session, the store keeps the set of reservations that the session claimed. The claim writes it from the resolved session.
+   2. A reservation leaves the set when it is released, resolved or retired. The set holds only active reservations.
+   3. The current selection stays for commands without `--reservation`.
+2. A command with `--reservation <id>` is accepted when `<id>` is in the caller's set and active. It acts on that reservation's holder worktree. Any other id is refused as now. Name each verb that changes.
+3. A command with `--reservation <id>` writes the resolved session and the chosen holder worktree to the journal.
+4. Keep every refusal for an inactive reservation and for a stale mapping. A command without `--reservation` keeps its current worktree rules.
+5. Regression tests: the owner session acts on both of its reservations from either worktree; another session's id stays refused; a released id is refused. Each test fails on the code before the change.
+6. Update each `session_worktree_mismatch` test whose case this change makes valid. Keep each test whose case stays a refusal. Report each test that changed and why.
+7. Each new or changed test runs under 1 s.
 
 **Files:**
 
