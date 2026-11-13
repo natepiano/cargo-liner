@@ -241,19 +241,19 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["account", "session", "role", "activity", "status", "branch"]
+        ["session", "account", "role", "activity", "status", "branch"]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        ["claude1", "├──", "dashboard", "unit", "busy", "dashboard"]
+        ["├──", "dashboard", "claude1", "unit", "busy", "dashboard"]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
-            "codex1",
             "│",
             "└──",
             "hanadocs-dashboard-impl",
+            "codex1",
             "worker",
             "impl",
             "idle",
@@ -262,7 +262,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["claude3", "└──", "diagrams", "unit", "idle", "—"]
+        ["└──", "diagrams", "claude3", "unit", "idle", "—"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
@@ -318,8 +318,8 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
-            "account",
             "session",
+            "account",
             "role",
             "activity",
             "status",

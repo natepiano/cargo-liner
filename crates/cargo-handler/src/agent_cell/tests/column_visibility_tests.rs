@@ -57,6 +57,180 @@ fn column_forest() -> MachineState {
 }
 
 #[test]
+fn long_sessions_keep_the_four_core_columns_before_their_names() {
+    let mut rows = column_rows();
+    rows[0].name = "natedev-showrunner-with-a-very-long-session-name-that-must-yield-space-to-the-activity-column".into();
+    rows[0].branch = Some("feature/long-branch-name".into());
+    rows[1].branch = rows[0].branch.clone();
+    rows[0].session_id = SessionIdentity::Claude("showrunner-session".into());
+    rows[1].session_id = SessionIdentity::Claude("unit-session".into());
+    rows[0].model = ModelName::Opus;
+    rows[0].effort = ReasoningEffort::High;
+    rows[0].account = serde_json::from_value(serde_json::json!({
+        "home":"~/.claude1", "label":"claude1"
+    }))
+    .expect("account");
+    let state = MachineState::Answered(
+        rows,
+        HierarchyEdges(vec![crate::census::HierarchyEdge {
+            manager: "showrunner-session".into(),
+            member:  "unit-session".into(),
+            role:    HierarchyRole::Unit,
+        }])
+        .into(),
+    );
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+    let cells: Vec<_> = tile_order_sorted(&placement, &HashMap::new(), NOW)
+        .into_iter()
+        .map(|mut tile| {
+            tile.apply_expansion(&HandlerExpansion::default());
+            tile
+        })
+        .filter_map(|tile| match tile {
+            AgentTile::Agent(entry) => Some(entry),
+            AgentTile::Unassigned(_) => None,
+        })
+        .collect();
+    let owner = cells.iter().find(|cell| cell.row.pid == 10).expect("owner");
+    for width in [60, 70, 90, 92] {
+        let buffer = drawn_into(owner, &cells, width, 12);
+        let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
+        let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
+        assert_eq!(
+            columns,
+            [
+                TreeColumn::Session,
+                TreeColumn::Account,
+                TreeColumn::Role,
+                TreeColumn::Activity,
+                TreeColumn::Status
+            ],
+            "{}",
+            lines(&buffer).join("\n")
+        );
+        assert!(
+            lines(&buffer)
+                .iter()
+                .any(|row| row.contains("natedev-") && row.contains('…')),
+            "{}",
+            lines(&buffer).join("\n")
+        );
+    }
+    assert_column_drop_sequence(owner, &cells);
+}
+
+#[test]
+fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
+    let mut row = agent(
+        10,
+        "unassigned-session-with-a-very-long-name-that-must-yield-space-to-the-activity-column",
+        HOUR,
+        None,
+    );
+    row.account =
+        serde_json::from_value(serde_json::json!({"home":"~/.claude1","label":"claude1"}))
+            .expect("account");
+    row.branch = Some("feature/long-branch".into());
+    let state = MachineState::Answered(vec![row], HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+    let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
+    let pool = tiles
+        .iter()
+        .find_map(|tile| match tile {
+            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Agent(_) => None,
+        })
+        .expect("unassigned pool");
+    let rect = area(90, 12);
+    let mut buffer = Buffer::empty(rect);
+    draw_unassigned(
+        &mut buffer,
+        rect,
+        pool,
+        NOW,
+        AccountColumn::Shown,
+        &FooterColors::default(),
+    );
+    let columns: Vec<_> = unassigned_header_spans(pool, rect, NOW, AccountColumn::Shown)
+        .into_iter()
+        .map(|span| span.column)
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            TreeColumn::Session,
+            TreeColumn::Account,
+            TreeColumn::Role,
+            TreeColumn::Activity,
+            TreeColumn::Status
+        ]
+    );
+    assert!(
+        lines(&buffer)
+            .iter()
+            .any(|line| line.contains("unassigned-session") && line.contains('…'))
+    );
+}
+
+fn assert_column_drop_sequence(owner: &AgentEntry<'_>, cells: &[AgentEntry<'_>]) {
+    let full = vec![
+        TreeColumn::Session,
+        TreeColumn::Account,
+        TreeColumn::Role,
+        TreeColumn::Activity,
+        TreeColumn::Status,
+        TreeColumn::Branch,
+        TreeColumn::Type,
+        TreeColumn::Model,
+        TreeColumn::Effort,
+        TreeColumn::Directory,
+    ];
+    let mut previous = full.clone();
+    let mut dropped = Vec::new();
+    for width in (10..=260).rev() {
+        let buffer = drawn_into(owner, cells, width, 12);
+        let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
+        let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
+        if width == 260 {
+            assert_eq!(columns, full);
+        }
+        for column in &previous {
+            if !columns.contains(column) {
+                dropped.push(*column);
+            }
+        }
+        assert!(
+            columns.iter().all(|column| previous.contains(column)),
+            "columns return at width {width}: {}",
+            lines(&buffer).join("\n")
+        );
+        previous = columns;
+    }
+    assert_eq!(
+        dropped,
+        [
+            TreeColumn::Effort,
+            TreeColumn::Model,
+            TreeColumn::Directory,
+            TreeColumn::Type,
+            TreeColumn::Branch,
+            TreeColumn::Account,
+            TreeColumn::Role,
+            TreeColumn::Activity,
+            TreeColumn::Status
+        ]
+    );
+}
+
+#[test]
 fn unassigned_tiles_omit_headers_for_columns_without_values() {
     let state = column_forest();
     let machines = [Machine {
@@ -156,7 +330,7 @@ fn draw_grid(app: &mut App) -> Buffer {
 }
 
 #[test]
-fn different_tile_columns_fit_independently_and_click_the_drawn_headers() {
+fn different_tile_columns_share_core_positions_and_click_the_drawn_headers() {
     let mut app = App::new_for_test().expect("test app");
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("one screen column");
@@ -201,9 +375,9 @@ fn different_tile_columns_fit_independently_and_click_the_drawn_headers() {
         assert_eq!(selected.column, TreeColumn::Status, "{line}");
         keys.push(key.clone());
     }
-    assert_ne!(
+    assert_eq!(
         status_positions[0], status_positions[1],
-        "different column sets must fit independently"
+        "different column sets share the core positions"
     );
 }
 
@@ -592,6 +766,84 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
 
 #[test]
 fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
+    for (width, different_columns) in [(90, false), (50, false), (90, true), (50, true)] {
+        assert_converging_columns(width, different_columns);
+    }
+    assert_converging_account_columns();
+}
+
+fn assert_converging_account_columns() {
+    let mut first = agent(10, "recorded-owner", HOUR, None);
+    first.directory.clear();
+    first.account = serde_json::from_value(serde_json::json!({
+        "home":"~/.claude1", "label":"claude1"
+    }))
+    .expect("recorded account");
+    let mut second = agent(20, "unrecorded-owner", HOUR, None);
+    second.directory.clear();
+    for (owner, pid) in [(&mut first, 11), (&mut second, 21)] {
+        owner.children.push(child(
+            0,
+            ChildKind::Shell(ShellTimerObservation::Untimed),
+            Some(pid),
+            &"s".repeat(100),
+            MINUTE,
+        ));
+    }
+    let areas = [Rect::new(0, 0, 90, 12), Rect::new(0, 14, 90, 12)];
+    let buffer = allocated_tiles(vec![first, second], &[(10, areas[0]), (20, areas[1])]);
+    let headers: Vec<_> = areas
+        .iter()
+        .map(|&area| {
+            allocation_text(&buffer, area)
+                .into_iter()
+                .find(|line| line.contains("session") && line.contains("status"))
+                .expect("core headers")
+        })
+        .collect();
+    assert!(headers[0].contains("account"), "{headers:?}");
+    assert!(!headers[1].contains("account"), "{headers:?}");
+    for column in ["role", "activity", "status"] {
+        assert_eq!(
+            headers[0].find(column),
+            headers[1].find(column),
+            "{headers:?}"
+        );
+    }
+    let session_ends: Vec<_> = areas
+        .iter()
+        .enumerate()
+        .map(|(index, &area)| {
+            let rows = allocation_text(&buffer, area);
+            let shell = rows
+                .iter()
+                .find(|line| line.contains("ssss"))
+                .expect("shell row");
+            assert_eq!(shell.contains("claude1"), index == 0, "{shell}");
+            summary::cell_width(&shell[..shell.find('…').expect("cut shell name")])
+        })
+        .collect();
+    assert_eq!(session_ends[0], session_ends[1], "shared session width");
+    let account =
+        summary::cell_width(&headers[0][..headers[0].find("account").expect("account slot")]);
+    assert_eq!(
+        session_ends[0] + summary::cell_width("…") + TABLE_COLUMN_SPACING,
+        account
+    );
+    let role = summary::cell_width(&headers[1][..headers[1].find("role").expect("role column")]);
+    let lower = allocation_text(&buffer, areas[1]);
+    let shell_y = areas[1].y
+        + u16::try_from(
+            lower
+                .iter()
+                .position(|row| row.contains("ssss"))
+                .expect("shell row"),
+        )
+        .expect("shell row fits");
+    assert!((account..role).all(|x| buffer[(x, shell_y)].symbol() == " "));
+}
+
+fn assert_converging_columns(width: u16, different_columns: bool) {
     let mut first = agent(10, "first-owner", HOUR, None);
     first.children.push(child(
         0,
@@ -616,8 +868,13 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
     let mut second_member = agent(22, "second-member", 5 * HOUR + 16 * MINUTE, Some(20));
     second_member.branch = first_member.branch.clone();
     second_member.directory.clear();
-    let upper = Rect::new(0, 0, 90, 12);
-    let lower = Rect::new(0, 14, 90, 12);
+    if different_columns {
+        first_member.branch = Some("main".into());
+        second_member.branch = None;
+        second.children[0].name = "run-the-project-build-with-a-name".into();
+    }
+    let upper = Rect::new(0, 0, width, 12);
+    let lower = Rect::new(0, 14, width, 12);
     let state = MachineState::Answered(
         vec![
             first.clone(),
@@ -637,10 +894,41 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
         vec![first, second, first_member, second_member],
         &[(10, upper), (20, lower)],
     );
-    let headers: Vec<_> = [upper, lower]
+    if width == 50 {
+        assert!(
+            allocation_text(&buffer, lower)
+                .iter()
+                .any(|line| line.contains('…'))
+        );
+    }
+    assert_shared_headers(&buffer, [upper, lower], different_columns);
+    for (owner, name, expected) in [
+        (10, "first-member", "8 days, 20 hours, 0 minutes"),
+        (20, "second-member", "5 hours, 16 minutes"),
+        (10, "build", "14 days, 0 hours, 0 minutes"),
+        (
+            20,
+            if different_columns {
+                "run-the-project-build-with-a-name"
+            } else {
+                "run-the-project-build"
+            },
+            "2 minutes",
+        ),
+    ] {
+        let cell = cells
+            .iter()
+            .find(|cell| cell.row.pid == owner)
+            .expect("age owner");
+        assert_eq!(detail_value(cell, name, "age", NOW), expected);
+    }
+}
+
+fn assert_shared_headers(buffer: &Buffer, areas: [Rect; 2], different_columns: bool) {
+    let headers: Vec<_> = areas
         .into_iter()
         .map(|rect| {
-            allocation_text(&buffer, rect)
+            allocation_text(buffer, rect)
                 .into_iter()
                 .find(|line| line.contains("session") && line.contains("status"))
                 .expect("tree header")
@@ -652,12 +940,25 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        words(&headers[0]),
-        words(&headers[1]),
-        "both fitted sets: {headers:?}"
-    );
-    for word in words(&headers[0]) {
+    if !different_columns {
+        assert_eq!(
+            words(&headers[0]),
+            words(&headers[1]),
+            "both fitted sets: {headers:?}"
+        );
+    } else if areas[0].width == 90 {
+        assert_eq!(
+            words(&headers[0]),
+            ["session", "role", "activity", "status", "branch", "type"]
+        );
+        assert_eq!(
+            words(&headers[1]),
+            ["session", "role", "activity", "status", "type"]
+        );
+    }
+    for word in words(&headers[0]).into_iter().filter(|word| {
+        !different_columns || matches!(word.as_str(), "session" | "role" | "activity" | "status")
+    }) {
         assert_eq!(
             headers[0].find(&word),
             headers[1].find(&word),
@@ -669,18 +970,6 @@ fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
             .iter()
             .any(|header| header.split_whitespace().any(|word| word == "age"))
     );
-    for (owner, name, expected) in [
-        (10, "first-member", "8 days, 20 hours, 0 minutes"),
-        (20, "second-member", "5 hours, 16 minutes"),
-        (10, "build", "14 days, 0 hours, 0 minutes"),
-        (20, "run-the-project-build", "2 minutes"),
-    ] {
-        let cell = cells
-            .iter()
-            .find(|cell| cell.row.pid == owner)
-            .expect("age owner");
-        assert_eq!(detail_value(cell, name, "age", NOW), expected);
-    }
 }
 
 fn narrow_core_owner() -> AgentRow {
@@ -710,11 +999,19 @@ fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
             .iter()
             .find(|line| line.contains("session") && line.contains("status"))
             .expect("whole session and status headers at core width");
-        assert!(
-            header.contains("role"),
-            "role cannot drop: width={width}: {text:?}"
+        let expected = if width < 40 {
+            vec!["session", "activity", "status"]
+        } else {
+            vec!["session", "role", "activity", "status"]
+        };
+        assert_eq!(
+            header.split_whitespace().collect::<Vec<_>>(),
+            expected,
+            "{text:?}"
         );
-        let role = header.find("role").expect("role header");
+        let role = header
+            .find(if width < 40 { "activity" } else { "role" })
+            .expect("last core header");
         let status = header.find("status").expect("status header");
         assert!(
             status >= role + 5,
@@ -743,8 +1040,8 @@ fn narrow_below_core_cuts_names_before_role_and_never_cuts_status() {
         "whole status below core: {text:?}"
     );
     assert!(
-        text.iter().any(|line| line.contains("worker")),
-        "eight-cell role still fits after cutting session: {text:?}"
+        text[0].split_whitespace().collect::<Vec<_>>() == ["session", "status"],
+        "role and activity leave before status: {text:?}"
     );
     assert!(
         text.iter().any(|line| line.contains('…')),

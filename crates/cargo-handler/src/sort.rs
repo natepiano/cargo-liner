@@ -8,9 +8,7 @@ use ratatui::layout::Rect;
 use tui_pane::CellPoint;
 
 use crate::agent_cell::TreeColumn;
-use crate::census::AccountColumn;
 use crate::constants::SUMMARY_HEADERS;
-use crate::details::DetailProperty;
 
 /// Alphabetical session order, with original spelling breaking case-insensitive ties.
 pub(crate) fn compare_names(left: &str, right: &str) -> Ordering {
@@ -126,21 +124,6 @@ pub(crate) enum SummaryColumn {
 }
 
 impl SummaryColumn {
-    pub(crate) const fn detail_property(self, account_column: AccountColumn) -> DetailProperty {
-        match self {
-            Self::Pid => DetailProperty::Pid,
-            Self::Agent => match account_column {
-                AccountColumn::Shown => DetailProperty::Account,
-                AccountColumn::Hidden => DetailProperty::Program,
-            },
-            Self::Name => DetailProperty::Name,
-            Self::Status => DetailProperty::Status,
-            Self::Age => DetailProperty::Age,
-            Self::Desktop => DetailProperty::Desktop,
-            Self::Directory => DetailProperty::Directory,
-        }
-    }
-
     /// All columns in their table order.
     pub(crate) const ALL: [Self; 7] = [
         Self::Pid,

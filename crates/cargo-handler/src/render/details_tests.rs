@@ -1,8 +1,14 @@
 //! Row columns and details use the same source values.
 
+use census::RoleFallback;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use ratatui::layout::Position;
+use tui_pane::ClipboardBackend;
+use tui_pane::ClipboardError;
+use tui_pane::CopySelectionResult;
+use tui_pane::ScrollDirection;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
@@ -14,6 +20,7 @@ use crate::census::Activity;
 use crate::census::AgentActivity;
 use crate::census::CensusUpdate;
 use crate::census::ChildRow;
+use crate::census::HierarchyRole;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::accounts::Reading;
@@ -50,6 +57,185 @@ fn application(now: u64, age: u64) -> TestResult<App> {
     Ok(app)
 }
 
+#[test]
+fn details_sections_align_values_and_keep_effort() -> TestResult {
+    let now = census::unix_now();
+    let mut app = application(now, 86400)?;
+    let machine = app.census.machines(&[])[0];
+    let mut rows = machine.state.rows().to_vec();
+    rows.push(serde_json::from_value(serde_json::json!({
+        "agent":"claude", "pid":40, "name":"unassigned-name", "session_id":"unassigned",
+        "started":now-60, "directory":"/fixture", "children":[]
+    }))?);
+    rows.push(serde_json::from_value(serde_json::json!({
+        "agent":"claude", "pid":50, "name":"review-name", "session_id":"review",
+        "role_fallback":"review", "started":now-60, "directory":"/fixture", "children":[]
+    }))?);
+    rows[2].name = "worker-with-a-very-long-session-name-that-stays-complete".into();
+    let mut edges = HierarchyEdges(machine.state.edges().to_vec());
+    edges.0[1].manager = "unit".into();
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: edges.into(),
+        stage: ScanStage::Completed,
+    });
+    let mut renderer = Renderer::new(&mut app, 160, 70)?;
+    for (name, hierarchy) in [
+        (
+            "worker-with-a-very-long-session-name-that-stays-complete",
+            vec![
+                ("showrunner", "director-name"),
+                ("unit", "unit-name"),
+                (
+                    "worker",
+                    "worker-with-a-very-long-session-name-that-stays-complete",
+                ),
+                ("role", "worker"),
+            ],
+        ),
+        (
+            "director-name",
+            vec![("showrunner", "director-name"), ("role", "showrunner")],
+        ),
+        ("unassigned-name", vec![("name", "unassigned-name")]),
+        (
+            "review-name",
+            vec![("name", "review-name"), ("role", "worker")],
+        ),
+        (
+            "fix · repair the seat",
+            vec![("worker", "fix · repair the seat"), ("role", "worker")],
+        ),
+    ] {
+        if name == "fix · repair the seat" {
+            let machine = app.census.machines(&[])[0];
+            let mut rows = machine.state.rows().to_vec();
+            rows[2].name = name.into();
+            rows[2].role_fallback = RoleFallback::Worker(HierarchyRole::Fix);
+            rows[2].launched_by = Some(10);
+            let mut edges = HierarchyEdges(machine.state.edges().to_vec());
+            edges.0.retain(|edge| edge.member != "worker");
+            app.census.apply(CensusUpdate::Local {
+                rows,
+                hierarchy: edges.into(),
+                stage: ScanStage::Completed,
+            });
+        }
+        tui_pane::dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE),
+        );
+        let buffer = renderer.paint(&mut app)?;
+        app.click(
+            word_click_tests::positions(&buffer, name)
+                .into_iter()
+                .last()
+                .ok_or_else(|| {
+                    format!("missing row {name}: {}", drawn_details(&buffer).join("\n"))
+                })?,
+        );
+        if name.starts_with("worker-") {
+            let mut narrow = Renderer::new(&mut app, 60, 70)?;
+            let cut = narrow.paint(&mut app)?;
+            let text = drawn_details(&cut).join("\n");
+            assert!(text.contains("worker-w…"), "{text}");
+            assert!(!text.contains(name));
+        }
+        tui_pane::dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+        let buffer = renderer.paint(&mut app)?;
+        assert_details_sections(&buffer, &hierarchy)?;
+        tui_pane::dispatch_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+    Ok(())
+}
+
+fn assert_details_sections(buffer: &Buffer, hierarchy: &[(&str, &str)]) -> TestResult {
+    let text = drawn_details(buffer);
+    let mut headings = Vec::new();
+    for section in ["agent", "hierarchy", "location", "now"] {
+        let point = word_click_tests::positions(buffer, section)
+            .into_iter()
+            .find(|point| {
+                buffer[(point.x, point.y)].fg == tui_pane::title_color()
+                    && buffer[(point.x.saturating_sub(1), point.y)].symbol() == " "
+                    && buffer[(point.x.saturating_sub(2), point.y)].symbol() == "│"
+            })
+            .ok_or_else(|| format!("missing section {section}: {text:?}"))?;
+        headings.push(point);
+    }
+    assert!(headings.windows(2).all(|pair| pair[0].y < pair[1].y));
+    let left = headings[0].x;
+    assert!(headings.iter().all(|heading| heading.x == left));
+    let right = (left..buffer.area.right())
+        .find(|&x| buffer[(x, headings[0].y)].symbol() == "│")
+        .ok_or("right border")?;
+    let mut value_ends = Vec::new();
+    let mut values = Vec::new();
+    let mut drawn_hierarchy = Vec::new();
+    for y in buffer.area.y..buffer.area.bottom() {
+        let content: String = (left..right).map(|x| buffer[(x, y)].symbol()).collect();
+        let Some((label, rest)) = content.split_once(':') else {
+            continue;
+        };
+        let label = label.trim();
+        if ![
+            "account",
+            "family",
+            "model",
+            "effort",
+            "type",
+            "showrunner",
+            "unit",
+            "worker",
+            "name",
+            "role",
+            "directory",
+            "branch",
+            "desktop",
+            "pid",
+            "activity",
+            "status",
+            "state",
+            "age",
+        ]
+        .contains(&label)
+        {
+            continue;
+        }
+        let label_x = usize::from(left) + content.find(label).ok_or("label position")?;
+        assert_eq!(u16::try_from(label_x)?, left);
+        assert_eq!(buffer[(left - 1, y)].symbol(), " ");
+        let value = rest.trim().trim_end_matches('│').trim_end();
+        let x = usize::from(left) + content.find(':').ok_or("colon")? + 1 + rest.len()
+            - rest.trim_start().len();
+        values.push(x);
+        value_ends.push(x + unicode_width::UnicodeWidthStr::width(value));
+        if y > headings[1].y && y < headings[2].y {
+            drawn_hierarchy.push((label.to_owned(), value.to_owned()));
+        }
+    }
+    assert!(values.windows(2).all(|pair| pair[0] == pair[1]), "{text:?}");
+    assert_eq!(
+        value_ends.into_iter().max().ok_or("value end")?,
+        usize::from(right - 1)
+    );
+    assert_eq!(
+        drawn_hierarchy,
+        hierarchy
+            .iter()
+            .map(|(label, value)| (label.to_string(), value.to_string()))
+            .collect::<Vec<_>>()
+    );
+    let effort = word_click_tests::locate(buffer, "effort:")?;
+    assert!(text[usize::from(effort.y)].contains('—'));
+    word_click_tests::locate(buffer, "family:")?;
+    assert!(!text.iter().any(|line| line.contains("program:")));
+    Ok(())
+}
+
 fn field(buffer: &Buffer, name: &str, column: &str) -> TestResult<String> {
     let row = word_click_tests::positions(buffer, name)
         .into_iter()
@@ -76,7 +262,7 @@ fn field(buffer: &Buffer, name: &str, column: &str) -> TestResult<String> {
 }
 
 #[test]
-fn row_columns_put_account_first_and_separate_role_activity_and_timer() -> TestResult {
+fn row_columns_put_session_first_and_separate_role_activity_and_timer() -> TestResult {
     let now = census::unix_now();
     let mut app = application(now, 86400)?;
     let mut renderer = Renderer::with_fixed_time(&mut app, 200, 70, now)?;
@@ -100,7 +286,7 @@ fn row_columns_put_account_first_and_separate_role_activity_and_timer() -> TestR
         .collect();
     assert_eq!(
         &columns[..5],
-        ["account", "session", "role", "activity", "status"]
+        ["session", "account", "role", "activity", "status"]
     );
     assert!(!columns.contains(&"age"));
     for (name, role, activity, status) in [
@@ -266,19 +452,15 @@ fn row_details_key_shows_properties_and_long_age_then_escape_closes() -> TestRes
                 hierarchy: hierarchy.clone().into(),
                 stage:     ScanStage::Completed,
             });
-            assert_selected_details(&mut app, &mut renderer, view, expected)?;
+            assert_selected_details(&mut app, &mut renderer, expected)?;
         }
     }
     assert_child_details_use_own_values()?;
+    assert_wrapped_details_navigation()?;
     Ok(())
 }
 
-fn assert_selected_details(
-    app: &mut App,
-    renderer: &mut Renderer,
-    view: TileView,
-    expected: &str,
-) -> TestResult {
+fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &str) -> TestResult {
     let buffer = renderer.paint(app)?;
     assert_eq!(
         word_click_tests::positions(&buffer, "waiting"),
@@ -296,36 +478,20 @@ fn assert_selected_details(
         .collect();
     assert_eq!(
         properties,
-        match view {
-            TileView::Cells => [
-                "account",
-                "name",
-                "role",
-                "activity",
-                "status",
-                "directory",
-                "pid",
-                "branch",
-                "program",
-                "desktop",
-                "state",
-                "age"
-            ],
-            TileView::Summary => [
-                "pid",
-                "program",
-                "name",
-                "status",
-                "desktop",
-                "directory",
-                "branch",
-                "account",
-                "role",
-                "activity",
-                "state",
-                "age"
-            ],
-        }
+        [
+            "account",
+            "family",
+            "effort",
+            "showrunner",
+            "role",
+            "directory",
+            "branch",
+            "desktop",
+            "pid",
+            "status",
+            "state",
+            "age"
+        ]
     );
     let details = renderer.paint(app)?;
     let drawn = drawn_details(&details);
@@ -342,7 +508,9 @@ fn assert_selected_details(
     }
     for property in [
         "pid: 10",
-        "program: claude",
+        "family: claude",
+        "effort: —",
+        "showrunner: director-name",
         "account: claude1",
         "directory: /fixture/two  spaces",
         "branch: feature/two  spaces",
@@ -350,10 +518,8 @@ fn assert_selected_details(
         "state: waiting",
         &format!("age: {expected}"),
     ] {
-        assert!(
-            drawn.iter().any(|line| line.contains(property)),
-            "{property}"
-        );
+        let (label, value) = property.split_once(": ").ok_or("property pair")?;
+        assert_eq!(drawn_property(&drawn, label)?, value, "{label}");
     }
     tui_pane::dispatch_key(app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let closed = renderer.paint(app)?;
@@ -362,6 +528,15 @@ fn assert_selected_details(
         [] as [ratatui::prelude::Position; 0]
     );
     Ok(())
+}
+
+fn drawn_property(lines: &[String], label: &str) -> TestResult<String> {
+    let marker = format!("{label}:");
+    let rest = lines
+        .iter()
+        .find_map(|line| line.split_once(&marker).map(|(_, value)| value))
+        .ok_or_else(|| format!("missing {marker}"))?;
+    Ok(rest.split('│').next().ok_or("value")?.trim().to_owned())
 }
 
 fn drawn_details(buffer: &Buffer) -> Vec<String> {
@@ -404,13 +579,9 @@ fn assert_child_details_use_own_values() -> TestResult {
         );
         let buffer = renderer.paint(&mut app)?;
         let drawn = drawn_details(&buffer);
-        assert!(
-            drawn
-                .iter()
-                .any(|line| line.contains(&format!("program: {program}")))
-        );
+        assert_eq!(drawn_property(&drawn, "family")?, program);
         if name == "timer-name" {
-            assert!(drawn.iter().any(|line| line.contains("pid: 11")));
+            assert_eq!(drawn_property(&drawn, "pid")?, "11");
         }
         for label in ["directory:", "branch:", "desktop:"] {
             assert!(
@@ -458,5 +629,197 @@ fn compacting_sessions_replace_each_role_job_with_compacting() -> TestResult {
         assert_eq!(field(&buffer, name, "activity")?, "compacting", "{name}");
         assert_eq!(field(&buffer, name, "role")?, role, "{name}");
     }
+    Ok(())
+}
+
+/// Record the clipboard boundary without writing to the test terminal.
+#[derive(Default)]
+struct CopiedValues(Vec<String>);
+
+impl ClipboardBackend for CopiedValues {
+    fn write_clipboard(&mut self, text: &str) -> Result<(), ClipboardError> {
+        self.0.push(text.to_owned());
+        Ok(())
+    }
+}
+
+#[test]
+fn details_navigation_skips_headings_and_y_copies_only_the_value() -> TestResult {
+    use tui_pane::Shortcuts;
+
+    use crate::details::DetailsPane;
+    let now = census::unix_now();
+    let mut app = application(now, 86400)?;
+    let mut renderer = Renderer::new(&mut app, 160, 60)?;
+    let buffer = renderer.paint(&mut app)?;
+    app.click(
+        word_click_tests::positions(&buffer, "director-name")
+            .into_iter()
+            .last()
+            .ok_or("director")?,
+    );
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    let actions = DetailsPane::defaults().into_scope_map();
+    let yank = actions
+        .action_for(&tui_pane::KeyBind::from('y'))
+        .ok_or("y binding")?;
+    let mut clipboard = CopiedValues::default();
+    for (key, value, label) in [
+        (KeyCode::Down, "claude", "family:"),
+        (KeyCode::Down, "—", "effort:"),
+        (KeyCode::Down, "director-name", "showrunner:"),
+        (KeyCode::Up, "—", "effort:"),
+    ] {
+        tui_pane::dispatch_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+        let buffer = renderer.paint(&mut app)?;
+        let point = word_click_tests::locate(&buffer, label)?;
+        assert_eq!(
+            buffer[(point.x, point.y)].bg,
+            tui_pane::active_focus_color()
+        );
+        yank.apply(&mut app, &mut clipboard);
+        assert_eq!(clipboard.0.last().ok_or("copied value")?, value);
+    }
+    let buffer = renderer.paint(&mut app)?;
+    let text = drawn_details(&buffer).join("\n");
+    assert!(text.contains("Copied value"), "{text}");
+    assert_full_frame_copy_notice()?;
+    Ok(())
+}
+
+fn assert_wrapped_details_navigation() -> TestResult {
+    use tui_pane::CopySelection;
+
+    use crate::details::DetailsPane;
+    let now = census::unix_now();
+    let mut app = application(now, 86400)?;
+    let machine = app.census.machines(&[])[0];
+    let mut rows = machine.state.rows().to_vec();
+    let directory = format!("/first-{}-last", "x".repeat(288));
+    rows[0].directory = directory.clone();
+    let hierarchy = HierarchyEdges(machine.state.edges().to_vec());
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: hierarchy.into(),
+        stage: ScanStage::Completed,
+    });
+    let mut renderer = Renderer::new(&mut app, 160, 60)?;
+    let buffer = renderer.paint(&mut app)?;
+    app.click(
+        word_click_tests::positions(&buffer, "director-name")
+            .into_iter()
+            .last()
+            .ok_or("director")?,
+    );
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    let mut renderer = Renderer::new(&mut app, 40, 12)?;
+    for _ in 0..5 {
+        tui_pane::dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        renderer.paint(&mut app)?;
+    }
+    let buffer = renderer.paint(&mut app)?;
+    assert!(drawn_details(&buffer).join("\n").contains("/first-"));
+    for wheel in [false, true] {
+        let last = (0..30)
+            .find_map(|_| {
+                if wheel {
+                    app.scroll(Position::new(1, 1), ScrollDirection::Down);
+                } else {
+                    tui_pane::dispatch_key(
+                        &mut app,
+                        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                    );
+                }
+                match renderer.paint(&mut app) {
+                    Ok(buffer) => drawn_details(&buffer)
+                        .join("\n")
+                        .contains("-last")
+                        .then_some(Ok(buffer)),
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()?;
+        assert!(last.is_some(), "the end of the directory must be reachable");
+        let CopySelectionResult::Payload(payload) = DetailsPane::copy_selection(&app) else {
+            return Err("directory copy target".into());
+        };
+        assert_eq!(payload.text, directory);
+        let first = (0..30)
+            .find_map(|_| {
+                tui_pane::dispatch_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                match renderer.paint(&mut app) {
+                    Ok(buffer) => drawn_details(&buffer)
+                        .join("\n")
+                        .contains("/first-")
+                        .then_some(Ok(buffer)),
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()?;
+        assert!(
+            first.is_some(),
+            "the start of the directory must be reachable"
+        );
+    }
+    Ok(())
+}
+
+/// Exercise the failed clipboard boundary without writing to the terminal.
+struct FailedClipboard;
+
+impl ClipboardBackend for FailedClipboard {
+    fn write_clipboard(&mut self, _: &str) -> Result<(), ClipboardError> {
+        Err(ClipboardError::WriteFailed("clipboard write error".into()))
+    }
+}
+
+fn assert_full_frame_copy_notice() -> TestResult {
+    use crate::details::DetailsAction;
+    let now = census::unix_now();
+    let mut app = application(now, 86400)?;
+    let machine = app.census.machines(&[])[0];
+    let mut rows = machine.state.rows().to_vec();
+    let directory = format!("/{}", "x".repeat(299));
+    rows[0].directory = directory.clone();
+    let hierarchy = HierarchyEdges(machine.state.edges().to_vec());
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: hierarchy.into(),
+        stage: ScanStage::Completed,
+    });
+    let mut renderer = Renderer::new(&mut app, 160, 60)?;
+    let buffer = renderer.paint(&mut app)?;
+    app.click(
+        word_click_tests::positions(&buffer, "director-name")
+            .into_iter()
+            .last()
+            .ok_or("director")?,
+    );
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    let mut renderer = Renderer::new(&mut app, 40, 12)?;
+    for _ in 0..5 {
+        DetailsAction::Down.apply(&mut app, &mut CopiedValues::default());
+        renderer.paint(&mut app)?;
+    }
+    let mut clipboard = CopiedValues::default();
+    DetailsAction::Copy.apply(&mut app, &mut clipboard);
+    assert_eq!(clipboard.0, [directory]);
+    let buffer = renderer.paint(&mut app)?;
+    let text = drawn_details(&buffer).join("\n");
+    assert!(text.contains("Copied value"), "{text}");
+    DetailsAction::Copy.apply(&mut app, &mut FailedClipboard);
+    let buffer = renderer.paint(&mut app)?;
+    let text = drawn_details(&buffer).join("\n");
+    assert!(text.contains("Copy failed"), "{text}");
+    assert!(text.contains("clipboard write error"), "{text}");
     Ok(())
 }

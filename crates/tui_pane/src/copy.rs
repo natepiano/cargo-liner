@@ -15,6 +15,7 @@ use crossterm::execute;
 
 use crate::AppContext;
 use crate::Pane;
+use crate::Toasts;
 
 /// Kind of value a pane copied, used for user feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +157,43 @@ impl ClipboardBackend for SystemClipboard {
     }
 }
 
+/// Optional pane trait for framework-owned copy support.
+pub trait CopySelection<Ctx: AppContext>: Pane<Ctx> {
+    /// Return the payload for the pane's current selection.
+    fn copy_selection(ctx: &Ctx) -> CopySelectionResult;
+}
+
+/// Copy a resolved pane value through the supplied clipboard backend.
+pub(crate) fn copy_payload<B: ClipboardBackend>(
+    selection: CopySelectionResult,
+    backend: &mut B,
+) -> CopyOutcome {
+    match selection {
+        CopySelectionResult::Nothing => CopyOutcome::NothingToCopy,
+        CopySelectionResult::Payload(payload) if payload.text.is_empty() => {
+            CopyOutcome::NothingToCopy
+        },
+        CopySelectionResult::Payload(payload) => match backend.write_clipboard(&payload.text) {
+            Ok(()) => CopyOutcome::Copied {
+                label: payload.label,
+            },
+            Err(reason) if reason.is_unavailable() => CopyOutcome::Unavailable { reason },
+            Err(reason) => CopyOutcome::Failed { reason },
+        },
+    }
+}
+
+/// Show the shared clipboard result notice.
+pub fn show_copy_outcome<Ctx: AppContext>(toasts: &mut Toasts<Ctx>, outcome: CopyOutcome) {
+    let (title, body) = match outcome {
+        CopyOutcome::Copied { label } => ("Copy", format!("Copied {}", label.noun())),
+        CopyOutcome::NothingToCopy => ("Copy", "Nothing to copy".to_owned()),
+        CopyOutcome::Unavailable { reason } => ("Clipboard unavailable", reason.to_string()),
+        CopyOutcome::Failed { reason } => ("Copy failed", reason.to_string()),
+    };
+    toasts.push_status(title, body);
+}
+
 #[cfg(feature = "clipboard")]
 fn write_system_clipboard(text: &str) -> Result<(), ClipboardError> {
     let mut stdout = std::io::stdout();
@@ -167,10 +205,4 @@ fn write_system_clipboard(text: &str) -> Result<(), ClipboardError> {
 #[cfg(not(feature = "clipboard"))]
 const fn write_system_clipboard(_: &str) -> Result<(), ClipboardError> {
     Err(ClipboardError::Unavailable)
-}
-
-/// Optional pane trait for framework-owned copy support.
-pub trait CopySelection<Ctx: AppContext>: Pane<Ctx> {
-    /// Return the payload for the pane's current selection.
-    fn copy_selection(ctx: &Ctx) -> CopySelectionResult;
 }

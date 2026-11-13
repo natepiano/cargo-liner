@@ -13,7 +13,6 @@ use crate::app::App;
 use crate::app::expansion;
 use crate::app::expansion::HandlerExpansionAction;
 use crate::census;
-use crate::details::DetailProperty;
 use crate::interaction::RowClick;
 use crate::interaction::SelectableSurface;
 use crate::interaction::SelectionSurface;
@@ -31,10 +30,9 @@ use crate::tiles::TileKey;
 /// `PaintedSurface` retains the rows and headers used by its source allocation.
 #[derive(Clone)]
 pub(crate) struct PaintedSurface {
-    pub(crate) detail_order: Vec<DetailProperty>,
-    pub(super) area:         Rect,
-    pub(super) rows:         SurfaceSelection,
-    pub(super) content:      PaintedSurfaceContent,
+    pub(super) area:    Rect,
+    pub(super) rows:    SurfaceSelection,
+    pub(super) content: PaintedSurfaceContent,
 }
 
 /// `PaintedSurfaceContent` binds each surface identity to its header domain.
