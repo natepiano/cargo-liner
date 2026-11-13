@@ -19,6 +19,7 @@ use crate::scan::DiskUsageTree;
 use crate::watcher::ProjectEntry;
 use crate::watcher::events;
 use crate::watcher::events::EventContext;
+use crate::watcher::runtime::GitRefreshDemand;
 use crate::watcher::watch_test_support;
 
 #[test]
@@ -29,11 +30,15 @@ fn idle_disk_ticks_do_not_schedule_existing_project_walks() -> std::io::Result<(
     let projects = HashMap::from([(
         root.clone(),
         ProjectEntry {
-            label:          "idle-project".to_string(),
-            abs_path:       root,
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "idle-project".to_string(),
+            abs_path:             root,
+            repo_root:            None,
+            git_dir:              None,
+            common_git_dir:       None,
         },
     )]);
     let started = Instant::now();
@@ -73,6 +78,9 @@ fn disk_event_bursts_keep_one_pending_entry_and_publish_the_final_size() -> std:
     let root = AbsolutePath::from(directory.path());
     let file = directory.path().join("source.rs");
     fs::write(&file, "initial")?;
+    for name in ["unchanged-first", "unchanged-second"] {
+        fs::write(root.join(name), "")?;
+    }
     let (sender, receiver) = channel::unbounded();
     drop(receiver);
     let dispatch = watch_test_support::target_metadata(
@@ -95,11 +103,15 @@ fn disk_event_bursts_keep_one_pending_entry_and_publish_the_final_size() -> std:
     let projects = HashMap::from([(
         root.clone(),
         ProjectEntry {
-            label:          "project".to_string(),
-            abs_path:       root.clone(),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
+            git_event_visibility: std::sync::Mutex::new(
+                crate::project::GitEventVisibilityCache::default(),
+            ),
+            git_refresh_demand:   GitRefreshDemand::default(),
+            label:                "project".to_string(),
+            abs_path:             root.clone(),
+            repo_root:            None,
+            git_dir:              None,
+            common_git_dir:       None,
         },
     )]);
     let context = EventContext {
@@ -128,9 +140,12 @@ fn disk_event_bursts_keep_one_pending_entry_and_publish_the_final_size() -> std:
     handle_disk_completion(&mut pending, "project", &WatcherConfig::default());
     assert!(matches!(pending["project"], WatchState::Pending { .. }));
     pending.insert("project".to_string(), WatchState::Running);
-    let final_size = DiskUpdateInputs::new(&dispatch, &root).measure().entries[0]
-        .1
-        .total;
+    let final_update = DiskUpdateInputs::new(&dispatch, &root).measure();
+    assert!(
+        final_update.aggregation_entries_examined <= 2,
+        "a file change rebuilt totals from unchanged file records"
+    );
+    let final_size = final_update.entries[0].1.total;
     assert_ne!(before, final_size);
     assert_eq!(final_size, fs::metadata(file)?.len());
     handle_disk_completion(&mut pending, "project", &WatcherConfig::default());
@@ -193,11 +208,15 @@ fn shared_disk_changes_publish_every_project() -> Result<(), Box<dyn std::error:
             (
                 path.clone(),
                 ProjectEntry {
-                    label:          path.display().to_string(),
-                    abs_path:       path,
-                    repo_root:      None,
-                    git_dir:        None,
-                    common_git_dir: None,
+                    git_event_visibility: std::sync::Mutex::new(
+                        crate::project::GitEventVisibilityCache::default(),
+                    ),
+                    git_refresh_demand:   GitRefreshDemand::default(),
+                    label:                path.display().to_string(),
+                    abs_path:             path,
+                    repo_root:            None,
+                    git_dir:              None,
+                    common_git_dir:       None,
                 },
             )
         })
@@ -290,6 +309,10 @@ fn grouped_deletion_checks_keep_root_and_child_changes() -> Result<(), Box<dyn s
             (
                 path.clone(),
                 ProjectEntry {
+                    git_event_visibility: std::sync::Mutex::new(
+                        crate::project::GitEventVisibilityCache::default(),
+                    ),
+                    git_refresh_demand: GitRefreshDemand::default(),
                     label,
                     abs_path: path,
                     repo_root: None,

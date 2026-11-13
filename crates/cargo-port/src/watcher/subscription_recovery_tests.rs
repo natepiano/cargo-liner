@@ -16,6 +16,7 @@ use super::roots;
 use super::roots::CandidateProbeResult;
 use super::roots::Subscription;
 use super::roots::WatchedFolderRole;
+use super::runtime::GitRefreshDemand;
 use super::runtime::WatcherRegistrationPhase;
 use super::skip::WatchSkipSet;
 use super::watch_test_support::RecordedFolderWatches;
@@ -184,11 +185,15 @@ fn assert_external_git_refresh(file: &str, layout: GitLayout) -> Result<(), Box<
     let path = git_dir.join(file);
     std::fs::write(&path, "changed\n")?;
     let entry = ProjectEntry {
-        label:          project.to_string(),
-        abs_path:       project.clone(),
-        repo_root:      Some(repo),
-        git_dir:        Some(git_dir),
-        common_git_dir: Some(common.clone()),
+        git_event_visibility: std::sync::Mutex::new(
+            crate::project::GitEventVisibilityCache::default(),
+        ),
+        git_refresh_demand:   GitRefreshDemand::default(),
+        label:                project.to_string(),
+        abs_path:             project.clone(),
+        repo_root:            Some(repo),
+        git_dir:              Some(git_dir),
+        common_git_dir:       Some(common.clone()),
     };
     let mut watcher = RecordedFolderWatches::default();
     let (mut registered, failures) = roots::register_discovery_roots(
