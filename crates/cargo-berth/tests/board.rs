@@ -7,6 +7,8 @@
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+#[path = "support/integration_parent_reservations.rs"]
+mod integration_parent_reservations;
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
@@ -238,70 +240,40 @@ fn deleted_target_uses_main_without_an_uncovered_alert() {
 
 #[test]
 fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    repo.git(repo.root(), &["branch", "other-target", "main"]);
-    let baseline = repo.capture();
-    for unrelated_target in [false, true] {
-        repo.restore(&baseline);
-        let initial_target = if unrelated_target {
-            "main"
-        } else {
-            "other-target"
-        };
-        let held = repo.claim(
-            &repo.integration,
-            "file:integration.txt",
-            FIRST_RUN,
-            Some(initial_target),
-        );
-        assert_success(&held);
-        let held_id = json(&held)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("integration reservation ID")
-            .to_owned();
-        let selected_target = if unrelated_target {
-            "other-target"
-        } else {
-            "main"
-        };
-        let retargeted = repo.run(
-            &repo.integration,
-            &["retarget", &held_id, "--target", selected_target, "--json"],
-        );
-        assert_success(&retargeted);
-        let lane = repo.lane("covered-by-ordinary-lane", "integration");
-        let claimed = repo.claim(
-            &lane,
-            "file:lane.txt",
-            &uuid::Uuid::now_v7().to_string(),
-            None,
-        );
-        assert_success(&claimed);
-        let _ = repo.board();
+    for (template, unrelated_target) in [
+        (integration_parent_reservations::PARENT_RESERVATION, false),
+        (integration_parent_reservations::UNRELATED_RESERVATION, true),
+    ] {
+        let repo = IntegrationRepository::from_recorded_template(template);
+        let reservations: integration_parent_reservations::IntegrationParentReservations =
+            serde_json::from_slice(
+                &fs::read(
+                    repo.root()
+                        .join(integration_parent_reservations::RESERVATION_IDS_PATH),
+                )
+                .expect("prepared reservation ids should read"),
+            )
+            .expect("prepared reservation ids should decode");
+        let board = repo.board();
         assert_eq!(
             repo.cover_claims().len(),
             usize::from(unrelated_target),
             "only a reservation targeting main can cover integration"
         );
-        let board = repo.board();
-        let row = reservation_row(&board, &held_id);
+        let row = reservation_row(&board, &reservations.held_id);
         assert_eq!(row["source"]["kind"], "explicit", "{board}");
         if !unrelated_target {
-            let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
-                .as_str()
-                .expect("lane ID")
-                .to_owned();
-            repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
             repo.merge_fast_forward("covered-by-ordinary-lane");
             let landed = repo.board();
             assert_eq!(
-                reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
+                reservation_row(&landed, &reservations.lane_id)["lifecycle"]["stage"],
                 "released",
                 "{landed}"
             );
         }
     }
 }
+
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
@@ -460,7 +432,12 @@ fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker()
     let from_integration = board_data(&repo.integration);
     let from_main = board_data(repo.root());
     for observed in [&from_integration, &from_main] {
-        assert_eq!(observed["targets"], from_a["targets"]);
+        assert_eq!(
+            observed["targets"],
+            from_a["targets"],
+            "{}",
+            repo.git_state()
+        );
         assert_eq!(observed["alerts"]["entries"], from_a["alerts"]["entries"]);
         let actual = board_reservation_snapshot(observed, &id);
         let expected = board_reservation_snapshot(&from_a, &id);
