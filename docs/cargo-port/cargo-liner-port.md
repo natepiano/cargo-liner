@@ -296,7 +296,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply`, so target-selection behavior needs CLI tests. `caller_aware.rs` skips caller suppression for `OverbroadPubCrate` and `ForbiddenPubInCrate`.
 
-### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: todo
+### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: done
 
 **Depends on:** Phase 8 (both edit `crates/cargo-port/CHANGELOG.md`).
 
