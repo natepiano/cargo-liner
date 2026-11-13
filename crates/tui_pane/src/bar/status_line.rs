@@ -17,6 +17,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::BarPalette;
+use super::constants::CPU_LABEL;
+use super::constants::DISK_READ_LABEL;
 use super::constants::STATUS_NOTE_MIN_GAP;
 use super::render as render_bar_regions;
 use super::support;
@@ -245,6 +247,7 @@ pub struct StatusLine<'a, A: Action> {
 
 struct StatusLineItems {
     uptime:     Vec<Span<'static>>,
+    disk_reads: Vec<Span<'static>>,
     navigation: Vec<Span<'static>>,
     center:     Vec<Span<'static>>,
     notes:      Vec<Vec<Span<'static>>>,
@@ -321,11 +324,19 @@ pub fn render<Ctx, G>(
         palette.status_value_style,
     ));
 
-    uptime_spans.push(Span::styled("CPU: ", palette.status_label_style));
+    uptime_spans.push(Span::styled(CPU_LABEL, palette.status_label_style));
     uptime_spans.push(Span::styled(
         format!("{} ", framework.status_cpu_reading().label()),
         palette.status_value_style,
     ));
+
+    let disk_read_spans = vec![
+        Span::styled(DISK_READ_LABEL, palette.status_label_style),
+        Span::styled(
+            format!("{} ", framework.status_disk_read_rate().label()),
+            palette.status_value_style,
+        ),
+    ];
 
     let navigation_spans = bar.nav;
     let center_spans = bar.pane_action;
@@ -361,6 +372,7 @@ pub fn render<Ctx, G>(
 
     let items = StatusLineItems {
         uptime: uptime_spans,
+        disk_reads: disk_read_spans,
         navigation: navigation_spans,
         center: center_spans,
         notes: note_items,
@@ -561,6 +573,12 @@ fn fitted_left_spans(
     if uptime_width > room {
         return Vec::new();
     }
+    let navigation_width = items.navigation.iter().map(Span::width).sum::<usize>();
+    let disk_read_width = items.disk_reads.iter().map(Span::width).sum::<usize>();
+    if uptime_width + navigation_width + disk_read_width <= room {
+        items.uptime.append(&mut items.disk_reads);
+    }
+    let uptime_width = items.uptime.iter().map(Span::width).sum::<usize>();
     let navigation_room = room.saturating_sub(uptime_width);
     if hint_fit == HintFit::IndividualHints {
         fit_hint_prefix(&mut items.navigation, navigation_room);
@@ -624,9 +642,11 @@ mod tests {
 
     use super::*;
     use crate::KeyBind;
+    use crate::bar::disk_reads::DiskReadRate;
 
     const FULL_ROW_EXTRA: usize = 3;
     const TEST_HEIGHT: u16 = 1;
+    const DISK_READ_TEXT: &str = "Reads/s: 70 MB ";
 
     fn slot(label: &'static str, key: char, palette: &BarPalette) -> Vec<Span<'static>> {
         let rendered = RenderedSlot {
@@ -664,6 +684,11 @@ mod tests {
         };
         let result = terminal.draw(|frame| {
             let items = StatusLineItems {
+                disk_reads: if uptime.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![Span::raw(DISK_READ_TEXT)]
+                },
                 uptime,
                 navigation,
                 center,
@@ -685,8 +710,63 @@ mod tests {
             .collect()
     }
 
+    fn check_disk_read_priority_at_every_width() {
+        let palette = BarPalette::default();
+        let uptime = vec![
+            Span::styled(" Uptime: 10s ", palette.status_label_style),
+            Span::styled(CPU_LABEL, palette.status_label_style),
+            Span::styled("— ", palette.status_value_style),
+        ];
+        let disk_label = DiskReadRate::Measured(70_000_000.0).label();
+        let disk_reads = vec![
+            Span::styled(DISK_READ_LABEL, palette.status_label_style),
+            Span::styled(format!("{disk_label} "), palette.status_value_style),
+        ];
+        let mut navigation = Vec::new();
+        for (key, label) in [("↑/↓", "nav"), ("=/-", "all"), ("tab", "pane")] {
+            support::push_hint(
+                &mut navigation,
+                key,
+                label,
+                ShortcutState::Enabled,
+                &palette,
+            );
+        }
+        for hint_fit in [HintFit::WholeGroups, HintFit::IndividualHints] {
+            let mut disk_dropped = false;
+            for width in (0..=100).rev() {
+                let mut items = StatusLineItems {
+                    uptime: uptime.clone(),
+                    disk_reads: disk_reads.clone(),
+                    navigation: navigation.clone(),
+                    center: Vec::new(),
+                    notes: Vec::new(),
+                    globals: Vec::new(),
+                    with_hints: Vec::new(),
+                    hint_fit,
+                };
+                let row = text(&fitted_left_spans(width, &mut items, hint_fit));
+                if row.contains(DISK_READ_LABEL) {
+                    assert!(!disk_dropped, "{hint_fit:?}, width {width}: {row:?}");
+                    assert!(row.ends_with(&text(&navigation)), "{row:?}");
+                } else {
+                    disk_dropped = true;
+                }
+                for (room, expected_navigation) in [
+                    (48, " ↑/↓ nav   =/- all"),
+                    (49, " ↑/↓ nav   =/- all   tab pane"),
+                ] {
+                    if width == room && hint_fit == HintFit::IndividualHints {
+                        assert_eq!(row, format!("{}{}", text(&uptime), expected_navigation));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_status_line_item_is_whole_or_absent_at_every_width() {
+        check_disk_read_priority_at_every_width();
         let palette = BarPalette::default();
         let uptime = status_line_note_spans(
             &[StatusLineNote {
@@ -715,6 +795,7 @@ mod tests {
             (text(&notes[0]), 'A'),
             (text(&notes[1]), 'F'),
             (text(&globals), 'G'),
+            (DISK_READ_TEXT.to_string(), 'R'),
         ];
         let right_width = notes
             .iter()
@@ -729,6 +810,7 @@ mod tests {
             .saturating_add(navigation.iter().map(Span::width).sum::<usize>())
             .saturating_add(center.iter().map(Span::width).sum::<usize>())
             .saturating_add(right_width)
+            .saturating_add(DISK_READ_TEXT.len())
             .saturating_add(FULL_ROW_EXTRA);
         for width in 0..=u16::try_from(natural).unwrap_or(u16::MAX) {
             let row = drawn(

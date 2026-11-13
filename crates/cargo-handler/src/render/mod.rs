@@ -1134,7 +1134,7 @@ mod tests {
     const BODY_ROWS: usize = 23;
 
     /// The status line's left end over the grid: the uptime and the CPU reading.
-    const GRID_STATUS: &str = " Uptime: 0s CPU: —";
+    const GRID_STATUS: &str = " Uptime: 0s CPU: — Reads/s: —";
     /// An overlay status line draws uptime before navigation and omits the
     /// centre action when it has no whole space before the right-side notes.
     const OVERLAY_STATUS: &str = " Uptime: 0s CPU: —  ↑/↓ nav   tab pane";
