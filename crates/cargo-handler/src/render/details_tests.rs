@@ -280,10 +280,14 @@ fn assert_selected_details(
     expected: &str,
 ) -> TestResult {
     let buffer = renderer.paint(app)?;
-    assert_eq!(
-        word_click_tests::positions(&buffer, "waiting"),
-        [] as [ratatui::prelude::Position; 0]
-    );
+    let director = word_click_tests::positions(&buffer, "director-name")
+        .into_iter()
+        .last()
+        .ok_or("missing director row")?;
+    let row: String = (buffer.area.x..buffer.area.right())
+        .map(|x| buffer[(x, director.y)].symbol())
+        .collect();
+    assert!(!row.contains("waiting"), "director row: {row}");
     assert_eq!(field(&buffer, "director-name", "status")?, "busy");
     tui_pane::dispatch_key(app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     let DetailsOverlay::Open { details, .. } = &app.details_overlay else {

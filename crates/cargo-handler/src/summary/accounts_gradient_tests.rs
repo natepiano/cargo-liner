@@ -79,6 +79,7 @@ pub(super) fn account(label: &str, resets_at: Reading<DateTime<Utc>>) -> Account
 pub(super) fn app_with_accounts(accounts: Vec<AccountUsage>) -> App {
     let mut app = App::new_for_test().expect("test app");
     app.accounts.table = AccountsTable::Ready(AccountsReading {
+        received_at: NOW,
         sessions: crate::census::accounts::SessionStates::default(),
         accounts,
         problems: Vec::new(),
