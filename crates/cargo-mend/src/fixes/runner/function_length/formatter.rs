@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -40,6 +42,19 @@ enum NightlyExecutable {
     Rustup,
 }
 
+/// Files in this group use the same parser edition and formatter configuration.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct FormattingGroup {
+    edition:       String,
+    configuration: FormatterConfiguration,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum FormatterConfiguration {
+    Default,
+    File(PathBuf),
+}
+
 impl Formatter {
     pub(super) fn detect() -> Self {
         static DETECTED: OnceLock<Formatter> = OnceLock::new();
@@ -64,6 +79,81 @@ impl Formatter {
                 }
             },
         }
+    }
+
+    /// Format proposed sources without changing the source files.
+    pub(super) fn formatted_batch(
+        &self,
+        sources: &BTreeMap<PathBuf, String>,
+        workspace: &Path,
+    ) -> Result<BTreeMap<PathBuf, String>> {
+        let mut groups = BTreeMap::<FormattingGroup, Vec<(&PathBuf, &String)>>::new();
+        for (path, text) in sources {
+            let directory = path.parent().context("source has no parent directory")?;
+            groups
+                .entry(FormattingGroup {
+                    edition:       edition(directory, workspace)?,
+                    configuration: formatter_configuration(directory)?,
+                })
+                .or_default()
+                .push((path, text));
+        }
+        let mut formatted = BTreeMap::new();
+        for (group, members) in groups {
+            // File input applies ignore rules that stdin does not apply.
+            // Preserve stdin behavior when a configuration supplies those rules.
+            let stdin_required = match &group.configuration {
+                FormatterConfiguration::Default => false,
+                FormatterConfiguration::File(path) => {
+                    let configuration: Value = toml::from_str(&fs::read_to_string(path)?)?;
+                    configuration.get("ignore").is_some()
+                },
+            };
+            if !matches!(self, Self::Nightly) || stdin_required {
+                for (path, text) in members {
+                    formatted.insert(path.clone(), self.formatted(text, path, workspace)?);
+                }
+                continue;
+            }
+            let temporary =
+                tempfile::tempdir().context("create formatter measurement directory")?;
+            let configuration = match &group.configuration {
+                FormatterConfiguration::File(path) => path.clone(),
+                FormatterConfiguration::Default => {
+                    let path = temporary.path().join("rustfmt.toml");
+                    fs::write(&path, "")?;
+                    path
+                },
+            };
+            let mut command = nightly_command();
+            command
+                .args(["--emit", "files", "--quiet", "--edition"])
+                .arg(&group.edition)
+                .arg("--config-path")
+                .arg(configuration)
+                // Stdin formats generated sources. File input must do the same.
+                .args(["--config", "skip_children=true,format_generated_files=true"])
+                .current_dir(temporary.path());
+            let mut staged = Vec::new();
+            for (index, (path, text)) in members.into_iter().enumerate() {
+                let staging = temporary.path().join(format!("measurement_{index}.rs"));
+                fs::write(&staging, text)?;
+                command.arg(&staging);
+                staged.push((path, staging));
+            }
+            let output = command
+                .output()
+                .context("start rustfmt for function measurements")?;
+            ensure!(
+                output.status.success(),
+                "rustfmt could not measure the source group: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for (path, staging) in staged {
+                formatted.insert(path.clone(), fs::read_to_string(staging)?);
+            }
+        }
+        Ok(formatted)
     }
 
     pub(super) fn formatted(&self, text: &str, path: &Path, workspace: &Path) -> Result<String> {
@@ -98,6 +188,35 @@ impl Formatter {
         );
         String::from_utf8(output.stdout).context("rustfmt output is not UTF-8")
     }
+}
+
+fn formatter_configuration(directory: &Path) -> Result<FormatterConfiguration> {
+    let directory = directory.canonicalize()?;
+    let user_directories = [
+        dirs::home_dir(),
+        dirs::config_dir().map(|path| path.join("rustfmt")),
+    ];
+    for directory in directory
+        .ancestors()
+        .chain(user_directories.iter().flatten().map(PathBuf::as_path))
+    {
+        for name in [".rustfmt.toml", "rustfmt.toml"] {
+            let path = directory.join(name);
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => {
+                    return Ok(FormatterConfiguration::File(path.canonicalize()?));
+                },
+                Ok(_) => {},
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {},
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(FormatterConfiguration::Default)
 }
 
 fn nightly_command() -> Command {
@@ -219,8 +338,82 @@ fn edition(directory: &Path, workspace: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+
     use super::Formatter;
     use super::FormatterProbe;
+
+    #[test]
+    fn batch_measurements_keep_configuration_edition_and_source_bytes() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut sources = BTreeMap::new();
+        let mut expected = BTreeMap::new();
+        for (name, edition, configuration, indentation) in [
+            (
+                "spaces",
+                "2024",
+                "hard_tabs = false\nformat_generated_files = false\n",
+                "    ",
+            ),
+            (
+                "tabs",
+                "2015",
+                "hard_tabs = true\nformat_generated_files = false\n",
+                "\t",
+            ),
+        ] {
+            let root = temporary.path().join(name);
+            fs::create_dir(&root)?;
+            fs::write(root.join("rustfmt.toml"), configuration)?;
+            fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = {edition:?}\n"),
+            )?;
+            for (filename, source, result) in [
+                (
+                    "ordinary.rs",
+                    if edition == "2024" {
+                        "async fn alpha() { let value = 1; }\n"
+                    } else {
+                        "fn async() { let value = 1; }\n"
+                    },
+                    format!(
+                        "{}() {{\n{indentation}let value = 1;\n}}\n",
+                        if edition == "2024" {
+                            "async fn alpha"
+                        } else {
+                            "fn async"
+                        }
+                    ),
+                ),
+                (
+                    "generated.rs",
+                    "// @generated\nfn beta() { let value = 2; }\n",
+                    format!("// @generated\nfn beta() {{\n{indentation}let value = 2;\n}}\n"),
+                ),
+                (
+                    "skipped.rs",
+                    "#![rustfmt::skip]\nfn gamma( ){let value=3;}\n",
+                    "#![rustfmt::skip]\nfn gamma( ){let value=3;}\n".to_owned(),
+                ),
+            ] {
+                let path = root.join(filename);
+                fs::write(&path, "source bytes must stay unchanged\n")?;
+                sources.insert(path.clone(), source.to_owned());
+                expected.insert(path, result);
+            }
+        }
+        let formatted = Formatter::Nightly.formatted_batch(&sources, temporary.path())?;
+        assert_eq!(formatted, expected);
+        for path in sources.keys() {
+            assert_eq!(
+                fs::read_to_string(path)?,
+                "source bytes must stay unchanged\n"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn formatter_choice_prefers_nightly_with_workspace_options() {

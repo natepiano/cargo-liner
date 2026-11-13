@@ -31,8 +31,9 @@ fn draw_account_roles(
     area: Rect,
 ) -> Buffer {
     let table = AccountsTable::Ready(AccountsReading {
-        sessions: crate::census::accounts::SessionStates::default(),
-        accounts: vec![AccountUsage {
+        received_at: NOW,
+        sessions:    crate::census::accounts::SessionStates::default(),
+        accounts:    vec![AccountUsage {
             label: "fixture-account".into(),
             roles: vec![
                 accounts_gradient_tests::role_usage(AccountRole::Units),
@@ -47,7 +48,7 @@ fn draw_account_roles(
             read_status: AccountReadStatus::Ok,
             read_at,
         }],
-        problems: Vec::new(),
+        problems:    Vec::new(),
     });
     let machines = [];
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);

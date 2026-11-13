@@ -658,9 +658,9 @@ fn a_narrow_tile_keeps_its_body_click_target() {
         {"depth":1,"kind":"shell","pid":201,"name":"opened-work","started":120}
     ]));
     let before = paint_buffer(&mut app, 32, 24);
-    let point = marker(&before, "a-long");
+    let point = marker(&before, "a-lon…");
     assert_eq!(before[(point.x, point.y)].symbol(), "▶");
-    app.click(locate(&before, "a-long"));
+    app.click(locate(&before, "a-lon…"));
     assert!(paint(&mut app).contains("opened-work"));
 }
 

@@ -91,8 +91,8 @@ pub(super) const METADATA_FILE_EXTENSION: &str = "rmeta";
 pub(super) const REPORT_FILE_EXTENSION: &str = "mend.json";
 
 // `FINDINGS_SCHEMA_VERSION` versions the persisted findings format.
-// Version 36 requires a complete source-mount inventory, even for clean mounts.
-pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 36;
+// Version 37 records the source identity of each caller's target declaration.
+pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 37;
 
 // `PROGRESS_BAR_FILL`, `PROGRESS_BAR_HEAD`, `PROGRESS_BAR_WIDTH`, `PROGRESS_FRAMES`
 // and `PROGRESS_INTERVAL` control the progress indicator's rendering and timing.
@@ -124,6 +124,8 @@ pub(super) const WRAPPER_ALIAS_STAGING_EXTENSION: &str = "staging";
 pub(super) const WRAPPER_CACHE_DIRECTORY_PREFIX: &str = "driver-";
 // `WRAPPER_CACHE_RETENTION_LOCK_FILE` protects live driver copies from removal.
 pub(super) const WRAPPER_CACHE_RETENTION_LOCK_FILE: &str = "retention.lock";
+// The source link lets cache collection recognize another installed build.
+pub(super) const WRAPPER_CACHE_SOURCE_LINK: &str = "source";
 // `WRAPPER_CACHE_PUBLICATION_LOCK_FILE` serializes publication of a driver copy.
 pub(super) const WRAPPER_CACHE_PUBLICATION_LOCK_FILE: &str = "publication.lock";
 // `WRAPPER_DIR_NAME` names the wrapper alias directory.

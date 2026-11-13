@@ -1779,7 +1779,7 @@ pub_in_path = "permitted"
 }
 
 #[test]
-fn renamed_facade_shares_dry_run_and_apply_with_import_cleanup() {
+fn renamed_facade_dry_run_preserves_sources() {
     let mut batch = DiagnosticBatch::new(
         r#"[visibility]
 pub_in_path = "permitted"
@@ -1814,12 +1814,20 @@ pub_in_path = "permitted"
             path.display()
         );
     }
+}
 
-    // Removing Other leaves the unused Thing-as-RenamedThing re-export, so
-    // this apply chains cargo fix, whose localhost server requires networking.
+#[test]
+fn renamed_facade_apply_keeps_import_cleanup() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let root = write_rename_facade(&mut batch);
+    // Cargo fix removes the unused alias through its local server.
     if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
         eprintln!(
-            "skipping renamed_facade_shares_dry_run_and_apply_with_import_cleanup apply: \
+            "skipping renamed_facade_apply_keeps_import_cleanup: \
              CARGO_MEND_SKIP_NETWORK_TESTS is set"
         );
         return;

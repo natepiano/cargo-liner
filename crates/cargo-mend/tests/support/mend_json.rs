@@ -1,5 +1,4 @@
 use std::env;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,15 +17,21 @@ use super::report::ExpectedFinding;
 use super::report::Report;
 use super::report::Summary;
 
-/// Names the `CARGO_HOME` every harness cargo runs under: a directory under the
-/// target's test scratch space that holds no `config.toml`, so a developer's
-/// `build.rustc-wrapper` (sccache) or other cargo settings never reach a
-/// fixture build. Fixture dependencies are path-only, so cargo needs nothing
-/// from a real home.
+/// Fixture assertions inspect code and diagnostics rather than debug symbols.
+const FIXTURE_DEBUG_INFO: &str = "0";
+
+/// Tiny fixture crates do not need incremental cache files.
+const FIXTURE_INCREMENTAL: &str = "0";
+
+/// Each test thread owns an empty Cargo home.
+/// Cargo holds cache locks during compilation.
+/// Separate homes prevent unrelated fixtures from waiting on those locks.
 fn empty_cargo_home() -> PathBuf {
-    let cargo_home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cargo-mend-empty-cargo-home");
-    fs::create_dir_all(&cargo_home).expect("create empty CARGO_HOME for fixture builds");
-    cargo_home
+    thread_local! {
+        static FIXTURE_CARGO_HOME: tempfile::TempDir =
+            tempfile::tempdir().expect("create empty Cargo home for fixture builds");
+    }
+    FIXTURE_CARGO_HOME.with(|home| home.path().to_path_buf())
 }
 
 /// Keeps the developer's cargo setup out of a fixture build while leaving
@@ -49,6 +54,8 @@ fn isolate_cargo(command: &mut Command) -> &mut Command {
         .env_remove("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env("CARGO_PROFILE_DEV_DEBUG", FIXTURE_DEBUG_INFO)
+        .env("CARGO_INCREMENTAL", FIXTURE_INCREMENTAL)
         .env("CARGO_HOME", empty_cargo_home())
         .current_dir(env::temp_dir())
 }
@@ -71,7 +78,20 @@ pub(crate) fn mend_command() -> Command {
 
 fn mend_bin() -> PathBuf {
     env::var_os("CARGO_MEND_TEST_EXECUTABLE").map_or_else(
-        || PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")),
+        || {
+            option_env!("CARGO_BIN_EXE_cargo-mend").map_or_else(
+                || {
+                    env::current_exe()
+                        .expect("find the compiler test executable")
+                        .parent()
+                        .expect("compiler test executable has a directory")
+                        .parent()
+                        .expect("compiler test directory has a profile directory")
+                        .join(format!("cargo-mend{}", env::consts::EXE_SUFFIX))
+                },
+                PathBuf::from,
+            )
+        },
         PathBuf::from,
     )
 }

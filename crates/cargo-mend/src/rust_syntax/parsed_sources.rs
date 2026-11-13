@@ -17,6 +17,11 @@ use super::source_path_key::SourcePathKeys;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::selection::Selection;
 
+#[cfg(test)]
+thread_local! {
+    static SOURCE_READ_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One source file's text, parsed on the first request for its syntax.
 pub(crate) struct ParsedSource {
     text:   String,
@@ -72,6 +77,9 @@ impl From<&BTreeMap<PathBuf, String>> for ParsedSources {
 }
 
 impl ParsedSources {
+    #[cfg(test)]
+    pub(crate) fn source_read_attempts() -> usize { SOURCE_READ_ATTEMPTS.get() }
+
     /// Reuse the identity of a file or root throughout this source snapshot.
     pub(crate) fn path_key(&self, path: &Path) -> SourcePathKey { self.path_keys.key(path) }
 
@@ -113,6 +121,8 @@ impl ParsedSources {
         if let Some(source) = self.sources.borrow().get(&key) {
             return Ok(Rc::clone(source));
         }
+        #[cfg(test)]
+        SOURCE_READ_ATTEMPTS.set(SOURCE_READ_ATTEMPTS.get() + 1);
         let source = Rc::new(ParsedSource {
             text:   fs::read_to_string(path)?,
             syntax: OnceCell::new(),

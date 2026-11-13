@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use super::StoredReport;
+use super::schema::DeclarationIdentity;
 use super::schema::UseSiteReference;
 use crate::compiler::visibility;
 use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
+use crate::rust_syntax::ParsedSources;
 
 pub(super) type CallerMap = BTreeMap<CallerKey, ItemCallers>;
 
@@ -32,15 +35,15 @@ pub(super) struct ItemCallers {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct CallerKey {
-    package_root:    String,
-    target_def_path: String,
+    package_root: String,
+    declaration:  DeclarationIdentity,
 }
 
 impl CallerKey {
-    fn for_package(package_root: &str, target_def_path: &str) -> Self {
+    fn for_package(package_root: &str, declaration: &DeclarationIdentity) -> Self {
         Self {
-            package_root:    package_root.to_string(),
-            target_def_path: target_def_path.to_string(),
+            package_root: package_root.to_string(),
+            declaration:  declaration.clone(),
         }
     }
 }
@@ -60,7 +63,7 @@ fn collect_callers(reports: &[StoredReport]) -> CallerMap {
             let item_callers = caller_map
                 .entry(CallerKey::for_package(
                     &stored_report.package_root,
-                    &use_site.target_def_path,
+                    &use_site.declaration,
                 ))
                 .or_default();
             item_callers
@@ -120,6 +123,23 @@ fn suppress_invalid_narrowings(report: &mut StoredReport, caller_map: &CallerMap
             )
         })
         .collect::<BTreeSet<_>>();
+    let parsed = ParsedSources::default();
+    let declaration_sources: BTreeMap<_, _> = report
+        .use_sites
+        .iter()
+        .map(|site| (site.declaration.def_path.as_str(), &site.declaration))
+        .collect();
+    let mut facade_sources: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for fact in &report.pub_use_fix_facts {
+        facade_sources
+            .entry((
+                fact.parent_path.as_str(),
+                fact.parent_line,
+                fact.child_item_name.as_str(),
+            ))
+            .or_default()
+            .insert(fact.child_path.as_str());
+    }
     report.findings.retain_mut(|finding| {
         if matches!(
             finding.diagnostic_code,
@@ -132,23 +152,65 @@ fn suppress_invalid_narrowings(report: &mut StoredReport, caller_map: &CallerMap
         )) {
             true
         } else {
-            retain_narrowing_finding(finding, caller_map, &package_root)
+            let evidence =
+                finding
+                    .item_def_path
+                    .as_ref()
+                    .map_or(CallerEvidence::NoneRecorded, |item_path| {
+                        if let Some(declaration) = declaration_sources.get(item_path.as_str()) {
+                            return callers_for_package(caller_map, &package_root, declaration);
+                        }
+                        if finding.diagnostic_code == DiagnosticCode::InternalParentPubUseFacade {
+                            let sources = finding.item.as_deref().and_then(|item| {
+                                facade_sources.get(&(
+                                    finding.path.as_str(),
+                                    finding.line,
+                                    super::StoredFinding::item_name(item),
+                                ))
+                            });
+                            // Separate namespaces can export the same name from different files.
+                            // Match each file with the definition path before selecting its
+                            // callers.
+                            return sources
+                                .into_iter()
+                                .flatten()
+                                .find_map(|source| {
+                                    let declaration = DeclarationIdentity::new(
+                                        &parsed.path_key(Path::new(source)),
+                                        item_path.clone(),
+                                    );
+                                    match callers_for_package(
+                                        caller_map,
+                                        &package_root,
+                                        &declaration,
+                                    ) {
+                                        CallerEvidence::Recorded(callers) => {
+                                            Some(CallerEvidence::Recorded(callers))
+                                        },
+                                        CallerEvidence::NoneRecorded => None,
+                                    }
+                                })
+                                .unwrap_or(CallerEvidence::NoneRecorded);
+                        }
+                        let declaration = DeclarationIdentity::new(
+                            &parsed.path_key(Path::new(&finding.path)),
+                            item_path.clone(),
+                        );
+                        callers_for_package(caller_map, &package_root, &declaration)
+                    });
+            retain_narrowing_finding(finding, evidence)
         }
     });
 }
 
 fn retain_narrowing_finding(
     finding: &mut super::StoredFinding,
-    caller_map: &CallerMap,
-    package_root: &str,
+    evidence: CallerEvidence<'_>,
 ) -> bool {
-    let Some(item_path) = finding.item_def_path.as_deref() else {
-        return true;
-    };
     let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
         return true;
     };
-    let Some(item_callers) = callers_for_package(caller_map, package_root, item_path) else {
+    let CallerEvidence::Recorded(item_callers) = evidence else {
         return true;
     };
     if finding.diagnostic_code == DiagnosticCode::InternalParentPubUseFacade {
@@ -205,12 +267,21 @@ fn facade_serves_only_its_subtree(item_callers: &ItemCallers, subtree: &str) -> 
         .all(|caller| visibility::def_path_is_descendant(caller, subtree))
 }
 
+/// An absent record does not prove that an item has no callers.
+#[derive(Clone, Copy)]
+pub(super) enum CallerEvidence<'a> {
+    Recorded(&'a ItemCallers),
+    NoneRecorded,
+}
+
 pub(super) fn callers_for_package<'a>(
     caller_map: &'a CallerMap,
     package_root: &str,
-    item_def_path: &str,
-) -> Option<&'a ItemCallers> {
-    caller_map.get(&CallerKey::for_package(package_root, item_def_path))
+    declaration: &DeclarationIdentity,
+) -> CallerEvidence<'a> {
+    caller_map
+        .get(&CallerKey::for_package(package_root, declaration))
+        .map_or(CallerEvidence::NoneRecorded, CallerEvidence::Recorded)
 }
 
 #[cfg(test)]
@@ -221,6 +292,7 @@ mod tests {
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredReport;
+    use crate::compiler::persistence::schema::DeclarationIdentity;
     use crate::compiler::persistence::schema::UseSite;
     use crate::compiler::persistence::schema::UseSiteReference;
     use crate::compiler::settings;
@@ -230,6 +302,7 @@ mod tests {
     use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
+    use crate::rust_syntax::ParsedSources;
 
     const CONFIG_FINGERPRINT: &str = "config-fingerprint";
     const CRATE_ROOT_FILE: &str = "/package/src/lib.rs";
@@ -254,7 +327,10 @@ mod tests {
                 narrower_scope,
             )],
             use_sites: vec![UseSite {
-                target_def_path:        item_path.to_string(),
+                declaration:            DeclarationIdentity::new(
+                    &ParsedSources::default().path_key(Path::new(CRATE_ROOT_FILE)),
+                    item_path.to_string(),
+                ),
                 caller_module_def_path: OUTSIDE_CALLER_MODULE_DEF_PATH.to_string(),
                 reference:              UseSiteReference::Named,
             }],
@@ -278,7 +354,10 @@ mod tests {
         let mut reports = vec![StoredReport {
             findings: vec![finding],
             use_sites: vec![UseSite {
-                target_def_path:        item_path.to_string(),
+                declaration:            DeclarationIdentity::new(
+                    &ParsedSources::default().path_key(Path::new(CRATE_ROOT_FILE)),
+                    item_path.to_string(),
+                ),
                 caller_module_def_path: OUTSIDE_CALLER_MODULE_DEF_PATH.to_string(),
                 reference:              UseSiteReference::PrivateImport,
             }],
@@ -311,7 +390,10 @@ mod tests {
         let mut reports = vec![StoredReport {
             findings: vec![direct, cleanup],
             use_sites: vec![UseSite {
-                target_def_path:        item_path.to_string(),
+                declaration:            DeclarationIdentity::new(
+                    &ParsedSources::default().path_key(Path::new(CRATE_ROOT_FILE)),
+                    item_path.to_string(),
+                ),
                 caller_module_def_path: "crate".to_string(),
                 reference:              UseSiteReference::RestrictedImport,
             }],

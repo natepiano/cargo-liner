@@ -28,6 +28,9 @@ tui_pane      = { workspace = true }
 unicode-width = { workspace = true }
 uuid          = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 cargo-berth-test-support = { workspace = true }
 tempfile                 = { workspace = true }

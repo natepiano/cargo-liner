@@ -49,7 +49,7 @@ A managed session or thread leaves its former owner's work list.
 Cross-machine descendants retain their machine label.
 Pool roots use flat branches; their descendants keep ordinary tree guides.
 
-`TreeColumn` draws Account, Session, Role, Activity, Status, Type, Model, Effort, Branch, and Directory.
+`TreeColumn` draws Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, and Directory.
 Age remains a sort key and appears in the details view.
 Type identifies shells and subagents; session and worker rows leave it blank.
 Role shows unit, showrunner, producer, or worker.
@@ -76,35 +76,45 @@ It does not reserve the widest changing status value.
 This prevents activity text from changing the number of tile columns.
 
 `TreeColumnPopulation` counts values per tile.
-`PermittedTreeColumns` and `ColumnDensity::{Sparse, Dense}` prevent sparse metadata from consuming name space during compression.
-Population remains per tile when groups merge.
+`PermittedTreeColumns` retains columns with values.
+Role, activity, status, and session retain their headers before width fitting.
 `shared_tree_metrics` groups tiles by screen x and permitted columns.
 `TreeMetrics` shares widths and `AgeLayout` among matching groups.
+A final pass fits the union of column sets across all tiles at the same x.
+Each tile at that x uses the same session width, column slots, and gaps.
+A tile without a column reserves its slot but draws no header or values there.
+A tile alone at its x keeps its local layout.
 `PresentationValues` measures role and status widths for each presentation.
 Those widths follow rows that the allocation paints.
 Population and ages still consider complete rows.
 
-`GroupFitStep` and `ColumnDrop` remove optional columns in this order:
+`GroupFitStep` and `ColumnDrop` fit columns in this order:
 
-1. Effort.
-2. Model.
-3. Directory.
-4. Branch.
-5. Type.
-6. Activity.
-7. Account.
+1. Remove effort.
+2. Remove model.
+3. Remove directory.
+4. Remove type.
+5. Remove branch.
+6. Cut session names to the remaining width.
+7. Remove account only below the session minimum.
+8. Remove role.
+9. Remove activity.
+10. Remove status.
 
+Each step acts only when the current columns exceed the available width.
+The session minimum holds the session header and the deepest tree guides.
 Matching fitted groups merge after each step.
+Trees in one screen column share the fitted session width.
 `FittedTreeColumns` supplies headers, values, and painted header spans together.
-Session, role, and status form the core.
-Below the core width, names shorten before roles; status remains whole.
-`fit_tree_names` shares the reduced-gap name budget between header, rows, and minimum-width calculation.
+`fit_tree_names` retains the session minimum before it reduces the final gaps.
 Tree guides remain intact before the shortened name.
+The details view retains the full name and the values of removed columns.
 
 `summary::truncated_line` measures terminal cells and preserves grapheme boundaries and span styles.
 Cut text ends with `…`.
 Numbers and status words remain whole.
-Unused width goes to directory when present, otherwise session names.
+Unused width goes to directory when present.
+The column union uses the smallest tile width at the same x.
 A summary session table with no drawable columns uses `SummarySessionTable::OmittedForWidth` and requests no rows.
 
 `CellView::requested_at_width` determines row demand at the candidate width.
@@ -114,6 +124,33 @@ Motion preparation measures at the taller source or destination height.
 Selection areas are installed only after shared metrics resolve.
 
 ### Grid admission and stable layout
+
+cargo-handler selects `TileColumnOrder::LongestWithShortest` through `TileCells::column_order`.
+The shared grid keeps source order by default, including cargo-tile.
+`Cells` records each full tree count before expansion removes hidden rows.
+The count includes the root and every descendant.
+It excludes headings, wrapped text, and the tile readout.
+Collapse, scrolling, and viewport height do not change these counts.
+
+The grid ranks detail tiles by full tree count, longest first.
+Equal counts retain their previous ranking.
+The first ranking uses source order for equal counts.
+It assigns ranks across columns in snake order: left to right, then right to left.
+A full column receives no further rank in that pass.
+Each column retains source order among its assigned tiles.
+The summary and empty slots keep their positions.
+The placement retains the selected column capacities, summary depth, and summary span.
+With four detail slots in two columns, counts `42, 42, 11, 3` produce pairs `42, 3` and `42, 11`.
+
+`ColumnRanks` stores identities in rank order rather than changing row counts.
+A count change that preserves the ranking and grid geometry does not change assignment.
+Grid geometry includes pane size, column count, and summary depth.
+A summary depth change assigns the same ranks over the new column capacities.
+A rank, membership, or column-count change invalidates the selected placement.
+The existing grid motion animates each reassignment.
+Frame preparation recomputes the column union after assignment.
+Measured widths remain separate from fitted drawing widths.
+The next painted frame records the new header positions for clicks.
 
 cargo-handler selects `TileWidthFloor::CompressSingleColumn`.
 It retains one compressed tile column below the core width.
@@ -131,7 +168,8 @@ Excess tiles remain demanded without receiving an invalid allocation.
 `LayoutSelection` retains selected widths, demands, and depth.
 Equal inputs avoid another candidate search.
 An unchanged draw makes two provider demand calls.
-Preparation runs once before those calls.
+Source-order preparation runs once before those calls.
+Ranked placement prepares the new column memberships before painting.
 
 `LayoutDemandMeasurement` equality compares widths and requested rows, while ignoring preferred summary width alone.
 A new summary width remeasures cached candidates before reuse.

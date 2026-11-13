@@ -152,7 +152,10 @@ Showrunner and unassigned tiles start in session name order.
 Other trees and the top-level agents table keep their age defaults.
 Neither table draws an age column or an age sort marker.
 A name default retains its session header arrow.
-The details view shows the long age after every other property.
+The details view groups values into agent, hierarchy, location, and now sections.
+Its hierarchy section shows the accepted showrunner, unit, and worker names.
+Unassigned sessions and shells show their full name instead.
+The details view shows the long age last in the now section.
 Detailed state words, such as `thinking` and `clippy`, appear as `state:` in details.
 
 ### Dispatch pairing and names
