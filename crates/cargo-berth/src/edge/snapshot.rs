@@ -10,6 +10,7 @@ use std::fmt::Formatter;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::IntegrationTarget;
+use crate::reservation::AbsentHolderIntegration;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -154,6 +155,13 @@ pub(crate) enum RepositoryReservationEvidence {
         /// The recorded user or git-backed disposition.
         disposition:        ReleaseDisposition,
         /// What the one current trunk observation proves now.
+        integration_status: IntegrationEvidenceStatus,
+    },
+    /// An absent holder's work was verified without a checkpoint.
+    IntegrationVerifiedWithoutCheckpoint {
+        /// The journaled work head and verified trunk witness.
+        integration:        AbsentHolderIntegration,
+        /// What the current trunk observation proves about the witness.
         integration_status: IntegrationEvidenceStatus,
     },
     /// A user-confirmed retirement occurred before any checkpoint.

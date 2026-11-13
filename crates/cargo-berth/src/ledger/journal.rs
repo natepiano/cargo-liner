@@ -551,6 +551,13 @@ pub(crate) enum JournalOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source:         Option<ReleaseSource>,
     },
+    /// Release an absent holder after verifying its recorded head on the trunk.
+    IntegrateAbsentHolder {
+        /// The active reservation whose holder identity is absent.
+        reservation_id: ReservationId,
+        /// The verified work head, trunk witness, and audit reason.
+        evidence: crate::reservation::AbsentHolderIntegration,
+    },
     /// Replace a released reservation's disposition after its git evidence was invalidated.
     ///
     /// The replacement is a verified `RewrittenIntegration`, or a user-confirmed `RetiredOrphan`
@@ -840,6 +847,7 @@ impl JournalOperation {
             | Self::UnrecordedTargetsPinned { .. }
             | Self::Renew { .. }
             | Self::Release { .. }
+            | Self::IntegrateAbsentHolder { .. }
             | Self::ReplaceReleaseDisposition { .. }
             | Self::EvidenceRevalidated { .. }
             | Self::ScopedPatchEquivalenceChecked { .. }

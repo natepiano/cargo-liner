@@ -596,7 +596,8 @@ fn operation_for_state(
             &disposition,
             &integration_status,
         ),
-        ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
+        ReservationEvidenceState::ReleasedWithoutCheckpoint { .. }
+        | ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { .. } => {
             Err(ReleaseRejection::AlreadyReleased)
         },
     }

@@ -467,6 +467,7 @@ impl From<&RepositoryReservationEvidence> for OrphanIntegrationEvidence {
             RepositoryReservationEvidence::Active
             | RepositoryReservationEvidence::Outstanding { .. }
             | RepositoryReservationEvidence::Released { .. }
+            | RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint { .. }
             | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => Self::Unproven,
         }
     }

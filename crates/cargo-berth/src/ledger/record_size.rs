@@ -128,6 +128,7 @@ impl<'input> From<&'input JournalOperation> for CallerJournalInput<'input> {
                 ..
             }
             | JournalOperation::Checkpoint { .. }
+            | JournalOperation::IntegrateAbsentHolder { .. }
             | JournalOperation::Resnapshot { .. }
             | JournalOperation::UnrecordedTargetsPinned { .. }
             | JournalOperation::Renew { .. }

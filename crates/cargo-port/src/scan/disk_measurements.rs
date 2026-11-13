@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::fs::Metadata;
 use std::io::ErrorKind;
@@ -12,12 +14,16 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use totals::ContributionChange;
+use totals::DiskTreeTotals;
 use walkdir::WalkDir;
 
 use super::DirSizes;
 use super::DiskUsageTree;
-use super::disk_usage::DiskSizeAggregation;
 use crate::project::AbsolutePath;
+
+#[path = "disk_totals.rs"]
+mod totals;
 
 /// `DiskUsageMeasurements` shares `DiskUsageTracker` values between startup scans and watcher
 /// updates.
@@ -98,7 +104,7 @@ impl DiskUsageMeasurements {
 enum DiskSnapshotState {
     #[default]
     Unmeasured,
-    Measured(DiskUsageIndex),
+    Measured(Box<DiskUsageIndex>),
 }
 
 #[derive(Debug, Default)]
@@ -124,10 +130,11 @@ pub(crate) enum DiskUpdateScope {
 }
 
 pub(crate) struct DiskUsageUpdate {
-    pub(crate) entries:                   Vec<(AbsolutePath, DirSizes)>,
-    pub(crate) visited_entries:           usize,
-    pub(crate) identity_entries_examined: usize,
-    pub(crate) scope:                     DiskUpdateScope,
+    pub(crate) entries:                      Vec<(AbsolutePath, DirSizes)>,
+    pub(crate) visited_entries:              usize,
+    pub(crate) identity_entries_examined:    usize,
+    pub(crate) aggregation_entries_examined: usize,
+    pub(crate) scope:                        DiskUpdateScope,
 }
 
 impl DiskUsageTracker {
@@ -160,14 +167,15 @@ impl DiskUsageTracker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let update = match (&mut *snapshot, changes) {
             (DiskSnapshotState::Unmeasured, _) | (_, DiskChanges::Rescan) => {
-                let index = DiskUsageIndex::scan(&self.tree.root_abs_path);
+                let index = DiskUsageIndex::scan(&self.tree);
                 let update = index.update(&self.tree, DiskUpdateScope::WholeTree);
-                *snapshot = DiskSnapshotState::Measured(index);
+                *snapshot = DiskSnapshotState::Measured(Box::new(index));
                 update
             },
             (DiskSnapshotState::Measured(index), changes) => {
                 index.visited_entries = 0;
                 index.identity_entries_examined = 0;
+                index.aggregation_entries_examined = 0;
                 if let DiskChanges::Paths(paths) = changes {
                     for path in paths {
                         index.refresh_path(&path);
@@ -217,20 +225,33 @@ struct DiskFile {
 }
 
 /// `DiskUsageIndex` retains file metadata for `DiskUsageTracker` path updates.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DiskUsageIndex {
-    files:                     BTreeMap<PathBuf, DiskFile>,
-    directories:               HashSet<PathBuf>,
+    files:                        BTreeMap<PathBuf, DiskFile>,
+    directories:                  BTreeSet<PathBuf>,
+    directory_children:           BTreeMap<PathBuf, HashSet<OsString>>,
     #[cfg(unix)]
-    identities:                HashMap<DiskFileIdentity, HashSet<PathBuf>>,
-    visited_entries:           usize,
-    identity_entries_examined: usize,
+    identities:                   HashMap<DiskFileIdentity, HashSet<PathBuf>>,
+    visited_entries:              usize,
+    identity_entries_examined:    usize,
+    aggregation_entries_examined: usize,
+    totals:                       DiskTreeTotals,
 }
 
 impl DiskUsageIndex {
-    fn scan(root: &Path) -> Self {
-        let mut index = Self::default();
-        index.scan_subtree(root);
+    fn scan(tree: &DiskUsageTree) -> Self {
+        let mut index = Self {
+            files:                        BTreeMap::new(),
+            directories:                  BTreeSet::new(),
+            directory_children:           BTreeMap::new(),
+            #[cfg(unix)]
+            identities:                   HashMap::new(),
+            visited_entries:              0,
+            identity_entries_examined:    0,
+            aggregation_entries_examined: 0,
+            totals:                       DiskTreeTotals::new(tree),
+        };
+        index.scan_subtree(&tree.root_abs_path);
         index
     }
 
@@ -238,7 +259,9 @@ impl DiskUsageIndex {
         for entry in WalkDir::new(root).into_iter().flatten() {
             self.visited_entries += 1;
             if entry.file_type().is_dir() {
-                self.directories.insert(entry.into_path());
+                let directory = entry.into_path();
+                self.remember_child(&directory);
+                self.directories.insert(directory);
             } else if entry.file_type().is_file()
                 && let Ok(metadata) = entry.metadata()
             {
@@ -257,8 +280,25 @@ impl DiskUsageIndex {
         for file in removed {
             self.remove_file(&file);
         }
-        self.directories
-            .retain(|directory| !directory.starts_with(path));
+        let directories: Vec<_> = self
+            .directories
+            .range(path.to_path_buf()..)
+            .take_while(|directory| directory.starts_with(path))
+            .cloned()
+            .collect();
+        for directory in directories {
+            self.directories.remove(&directory);
+        }
+        let parents: Vec<_> = self
+            .directory_children
+            .range(path.to_path_buf()..)
+            .take_while(|(parent, _)| parent.starts_with(path))
+            .map(|(parent, _)| parent.clone())
+            .collect();
+        for parent in parents {
+            self.directory_children.remove(&parent);
+        }
+        self.forget_child(path);
     }
 
     fn refresh_path(&mut self, path: &Path) {
@@ -283,11 +323,12 @@ impl DiskUsageIndex {
         };
         let children: HashSet<_> = entries.flatten().map(|entry| entry.path()).collect();
         let removed: Vec<_> = self
-            .files
-            .keys()
-            .chain(&self.directories)
-            .filter(|child| child.parent() == Some(path) && !children.contains(*child))
-            .cloned()
+            .directory_children
+            .get(path)
+            .into_iter()
+            .flat_map(|names| names.iter())
+            .map(|name| path.join(Path::new(name)))
+            .filter(|child| !children.contains(child))
             .collect();
         for child in removed {
             self.forget_path(&child);
@@ -314,6 +355,21 @@ impl DiskUsageIndex {
         }
         let file = DiskFile::from(metadata);
         #[cfg(unix)]
+        let affected = self
+            .file_aliases(&path)
+            .into_iter()
+            .chain(
+                self.identities
+                    .get(&file.identity)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            )
+            .collect();
+        #[cfg(not(unix))]
+        let affected = HashSet::from([path.clone()]);
+        self.change_contributions(&affected, ContributionChange::Removed);
+        #[cfg(unix)]
         if let Some(paths) = self.identities.get(&file.identity) {
             for path in paths {
                 self.identity_entries_examined += 1;
@@ -322,16 +378,61 @@ impl DiskUsageIndex {
                 }
             }
         }
-        self.remove_file(&path);
+        self.remove_file_index(&path);
         #[cfg(unix)]
         self.identities
             .entry(file.identity)
             .or_default()
             .insert(path.clone());
+        self.remember_child(&path);
         self.files.insert(path, file);
+        self.change_contributions(&affected, ContributionChange::Added);
+    }
+
+    #[cfg(unix)]
+    fn file_aliases(&self, path: &Path) -> HashSet<PathBuf> {
+        self.files
+            .get(path)
+            .and_then(|file| self.identities.get(&file.identity))
+            .cloned()
+            .unwrap_or_else(|| HashSet::from([path.to_path_buf()]))
+    }
+
+    fn change_contributions(&mut self, paths: &HashSet<PathBuf>, change: ContributionChange) {
+        for path in paths {
+            let Some(file) = self.files.get(path).copied() else {
+                continue;
+            };
+            self.aggregation_entries_examined += 1;
+            #[cfg(unix)]
+            let bytes = if self
+                .identities
+                .get(&file.identity)
+                .and_then(|aliases| aliases.iter().min())
+                == Some(path)
+            {
+                file.bytes
+            } else {
+                0
+            };
+            #[cfg(not(unix))]
+            let bytes = file.bytes;
+            self.totals.change_file(path, bytes, file.modified, change);
+        }
     }
 
     fn remove_file(&mut self, path: &Path) {
+        #[cfg(unix)]
+        let affected = self.file_aliases(path);
+        #[cfg(not(unix))]
+        let affected = HashSet::from([path.to_path_buf()]);
+        self.change_contributions(&affected, ContributionChange::Removed);
+        self.remove_file_index(path);
+        self.change_contributions(&affected, ContributionChange::Added);
+    }
+
+    fn remove_file_index(&mut self, path: &Path) {
+        self.forget_child(path);
         #[cfg(unix)]
         if let Some(file) = self.files.remove(path)
             && let Some(paths) = self.identities.get_mut(&file.identity)
@@ -345,35 +446,38 @@ impl DiskUsageIndex {
         self.files.remove(path);
     }
 
+    fn remember_child(&mut self, path: &Path) {
+        if let Some(parent) = path.parent()
+            && let Some(name) = path.file_name()
+        {
+            self.directory_children
+                .entry(parent.to_path_buf())
+                .or_default()
+                .insert(name.to_os_string());
+        }
+    }
+
+    fn forget_child(&mut self, path: &Path) {
+        if let Some(parent) = path.parent()
+            && let Some(name) = path.file_name()
+            && let Some(children) = self.directory_children.get_mut(parent)
+        {
+            children.remove(name);
+        }
+    }
+
     fn update(&self, tree: &DiskUsageTree, scope: DiskUpdateScope) -> DiskUsageUpdate {
         DiskUsageUpdate {
             entries: self.sizes(tree),
             visited_entries: self.visited_entries,
             identity_entries_examined: self.identity_entries_examined,
+            aggregation_entries_examined: self.aggregation_entries_examined,
             scope,
         }
     }
 
     fn sizes(&self, tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
-        let mut totals = DiskSizeAggregation::new(tree);
-        #[cfg(unix)]
-        let mut identities = HashSet::new();
-        for (path, metadata) in &self.files {
-            #[cfg(unix)]
-            let bytes = if identities.insert(metadata.identity) {
-                metadata.bytes
-            } else {
-                0
-            };
-            #[cfg(not(unix))]
-            let bytes = metadata.bytes;
-            let modified = match metadata.modified {
-                DiskModificationTime::Available(time) => Some(time),
-                DiskModificationTime::Unavailable => None,
-            };
-            totals.add_file(bytes, path, modified);
-        }
-        totals.finish()
+        self.totals.sizes(tree)
     }
 }
 
@@ -434,6 +538,7 @@ mod tests {
             );
             assert_eq!(update.entries[0].1.in_project_target, 0);
         }
+        assert_source_time_changes(root, &tracker)?;
         #[cfg(unix)]
         {
             let alias = root.join("session-alias.log");
@@ -453,6 +558,8 @@ mod tests {
             tracker.record_change(&alias);
             assert_eq!(tracker.refresh().entries[0].1.total, 8192 + 12);
         }
+        #[cfg(unix)]
+        assert_canonical_alias_removal(root, &tracker)?;
         let added = root.join("new-session");
         fs::create_dir(&added)?;
         fs::write(added.join("output.log"), "child")?;
@@ -466,6 +573,55 @@ mod tests {
         assert_eq!(update.visited_entries, 1);
         assert_eq!(update.entries[0].1.total, 8192 + 12);
 
+        Ok(())
+    }
+
+    fn assert_source_time_changes(
+        root: &AbsolutePath,
+        tracker: &DiskUsageTracker,
+    ) -> std::io::Result<()> {
+        let manifest = root.join("Cargo.toml");
+        for seconds in [1_700_000_090, 1_700_000_000] {
+            let modified = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            fs::File::open(&manifest)?.set_times(fs::FileTimes::new().set_modified(modified))?;
+            tracker.record_change(&manifest);
+            let update = tracker.refresh();
+            assert_eq!(update.entries[0].1.max_source_mtime, Some(modified));
+            assert!(
+                update.aggregation_entries_examined <= 2,
+                "a source time change read unrelated file records"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn assert_canonical_alias_removal(
+        root: &AbsolutePath,
+        tracker: &DiskUsageTracker,
+    ) -> std::io::Result<()> {
+        let original = root.join("linked.bin");
+        let target = root.join("target");
+        fs::create_dir(&target)?;
+        fs::write(&original, [0_u8; 11])?;
+        fs::hard_link(&original, target.join("linked.bin"))?;
+        tracker.record_change(&original);
+        tracker.record_change(&target);
+        let before = tracker.refresh().entries[0].1;
+        assert_eq!(before.in_project_target, 0);
+        fs::remove_file(&original)?;
+        tracker.record_change(&original);
+        let update = tracker.refresh();
+        assert_eq!(update.entries[0].1.total, before.total);
+        assert_eq!(update.entries[0].1.in_project_target, 11);
+        assert_eq!(update.entries[0].1.in_project_non_target, before.total - 11);
+        assert!(
+            update.aggregation_entries_examined <= 3,
+            "an alias removal read unrelated file records"
+        );
+        fs::remove_dir_all(&target)?;
+        tracker.record_change(&target);
+        assert_eq!(tracker.refresh().entries[0].1.total, before.total - 11);
         Ok(())
     }
 

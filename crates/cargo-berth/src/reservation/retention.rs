@@ -12,13 +12,14 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::absent_holder::AbsentHolderIntegration;
+use super::absent_holder::AbsentHolderIntegrationRecord;
+use super::absent_holder::RecordedWorkHead;
 use super::conflict::ReservationConflict;
 use super::containment::ActingHeadContainment;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
-use super::lifecycle::IntegrationProof;
-use super::lifecycle::IntegrationWitness;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
@@ -1055,6 +1056,7 @@ impl RetainedReservationSet {
             | JournalOperation::Widen { .. }
             | JournalOperation::Renew { .. }
             | JournalOperation::Release { .. }
+            | JournalOperation::IntegrateAbsentHolder { .. }
             | JournalOperation::ReplaceReleaseDisposition { .. } => {
                 self.apply_holder_lifecycle_journal_event(event)
             },
@@ -1167,6 +1169,10 @@ impl RetainedReservationSet {
                 disposition,
                 ..
             } => self.apply_release(*reservation_id, disposition),
+            JournalOperation::IntegrateAbsentHolder {
+                reservation_id,
+                evidence,
+            } => self.apply_absent_holder_integration(*reservation_id, evidence),
             JournalOperation::ReplaceReleaseDisposition {
                 reservation_id,
                 superseded,
@@ -1450,6 +1456,8 @@ impl RetainedReservationSet {
             coordination_identity_provenance:                  replayed_claim
                 .coordination_identity_provenance,
             lifecycle:                                         ReservationLifecycle::Active,
+            absent_holder_integration:
+                AbsentHolderIntegrationRecord::NotRecorded,
             retained_protected_tip:
                 RetainedProtectedTip::NotCheckpointed,
             integration_trunk_snapshot:                        IntegrationTrunkSnapshot::AtClaim(
@@ -1630,14 +1638,9 @@ impl RetainedReservationSet {
                 reservation.integration_status,
                 IntegrationEvidenceStatus::Integrated { .. }
             ) {
-                reservation.integration_status = IntegrationEvidenceStatus::Integrated {
-                    trunk_oid: trunk_commit.as_ref().clone(),
-                    proof:     IntegrationProof::RewrittenWitnessAncestor,
-                    witness:   IntegrationWitness::Historical(trunk_commit.clone()),
-                };
+                reservation.integration_status = trunk_commit.integration_status();
             }
-            reservation.retain_target_proof(&reservation.integration_status.clone());
-            reservation.advance_integration_proof_subject_revision()?;
+            reservation.retain_integration_proof()?;
         }
         match disposition {
             ReleaseDisposition::Abandoned(_)
@@ -1658,6 +1661,31 @@ impl RetainedReservationSet {
                     })?;
             },
         }
+        reservation.advance_revision()
+    }
+
+    fn apply_absent_holder_integration(
+        &mut self,
+        reservation_id: ReservationId,
+        evidence: &AbsentHolderIntegration,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        if !matches!(reservation.recorded_work_head(), RecordedWorkHead::Clean(head) if *head == evidence.work_head)
+        {
+            return Err(ReservationReplayError::IntegratedReleaseWithoutEvidence(
+                reservation_id,
+            ));
+        }
+        reservation
+            .lifecycle
+            .integrate_absent_holder(evidence.target.clone())
+            .map_err(|error| {
+                ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+            })?;
+        reservation.absent_holder_integration =
+            AbsentHolderIntegrationRecord::Verified(evidence.clone());
+        reservation.integration_status = evidence.target.integration_status();
+        reservation.retain_integration_proof()?;
         reservation.advance_revision()
     }
 
@@ -1818,14 +1846,18 @@ impl RetainedReservationSet {
                 ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
             })?;
         if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = replacement {
-            reservation.integration_status = IntegrationEvidenceStatus::Integrated {
-                trunk_oid: trunk_commit.as_ref().clone(),
-                proof:     IntegrationProof::RewrittenWitnessAncestor,
-                witness:   IntegrationWitness::Historical(trunk_commit.clone()),
-            };
-            reservation.retain_target_proof(&reservation.integration_status.clone());
+            reservation.integration_status = trunk_commit.integration_status();
+            if let AbsentHolderIntegrationRecord::Verified(integration) =
+                &mut reservation.absent_holder_integration
+            {
+                integration.target = trunk_commit.clone();
+            }
         }
-        reservation.advance_integration_proof_subject_revision()?;
+        if matches!(replacement, ReleaseDisposition::RewrittenIntegration(_)) {
+            reservation.retain_integration_proof()?;
+        } else {
+            reservation.advance_integration_proof_subject_revision()?;
+        }
         reservation.advance_revision()
     }
 
@@ -2132,7 +2164,6 @@ mod tests {
     use super::IncursionIncidentStatus;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
-    use super::IntegrationWitness;
     use super::KeyedConflictProtection;
     use super::ProtectedConflictHolder;
     use super::Reservation;
@@ -2162,6 +2193,7 @@ mod tests {
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
+    use crate::reservation::IntegrationWitness;
     use crate::reservation::RecordedTarget;
     use crate::reservation::SuccessorScopedPatchEquivalenceVerdict as Verdict;
     use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability as Availability;
@@ -2321,6 +2353,54 @@ mod tests {
             after
                 .reservation(reservation_id)?
                 .integration_proof_subject_revision()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_free_replay_keeps_journaled_head_after_extent_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let observation = |head: &str| {
+            json!({
+                "op": "merge_extent_observed", "reservation_id": RESERVATION_ID,
+                "extent": {"status": "empty", "key": {
+                    "trunk": TRUNK_OID, "head": head,
+                    "working_tree": {"tracked_paths": [], "untracked_paths": []},
+                }},
+                "run_status": "ended",
+            })
+        };
+        let events = [
+            claim_event("presented")?,
+            journal_event(2, &observation(PROTECTED_TIP))?,
+            journal_event(
+                3,
+                &json!({
+                    "op": "integrate_absent_holder", "reservation_id": RESERVATION_ID,
+                    "evidence": {
+                        "work_head": PROTECTED_TIP, "target": TRUNK_OID,
+                        "reason": "holder_absent_and_head_integrated",
+                    },
+                }),
+            )?,
+            journal_event(4, &observation(SECOND_TRUNK_OID))?,
+        ];
+        let replayed = RetainedReservationSet::replay(&events)?;
+        let reservation = replayed.reservation(RESERVATION_ID.parse()?)?;
+        let changed_head = SECOND_TRUNK_OID.parse::<GitObjectId>()?;
+        assert!(matches!(
+            reservation.recorded_work_head(),
+            super::RecordedWorkHead::Clean(head) if *head == changed_head
+        ));
+        let ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { integration, .. } =
+            reservation.evidence_state()?
+        else {
+            return Err("replay should retain the checkpoint-free integration".into());
+        };
+        assert_eq!(integration.work_head, PROTECTED_TIP.parse::<GitObjectId>()?);
+        assert_eq!(
+            integration.target.as_ref(),
+            &TRUNK_OID.parse::<GitObjectId>()?
         );
         Ok(())
     }

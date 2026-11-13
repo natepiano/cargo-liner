@@ -21,6 +21,10 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use absent_holder_templates::CLEAN_MERGED_HOLDER;
+use absent_holder_templates::LATER_UNMERGED_HOLDER;
+use absent_holder_templates::MERGED_ACTIVE_HOLDER;
+use absent_holder_templates::SWITCHED_BRANCH_HOLDER;
 use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -175,6 +179,8 @@ mod edges_fixtures;
 #[path = "support/overlap_fixtures.rs"]
 mod overlap_fixtures;
 
+#[path = "support/absent_holder_templates.rs"]
+mod absent_holder_templates;
 #[path = "support/liveness_fixtures.rs"]
 mod liveness_fixtures;
 
@@ -228,6 +234,10 @@ fn main() {
             MERGED_TRUNK_WITH_OWN_WORK,
             PENDING_TRUNK_MERGE,
             NEWER_TRUNK,
+            MERGED_ACTIVE_HOLDER,
+            LATER_UNMERGED_HOLDER,
+            SWITCHED_BRANCH_HOLDER,
+            CLEAN_MERGED_HOLDER,
         ])
         .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
