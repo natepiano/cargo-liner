@@ -204,7 +204,7 @@
 
 **Gotchas:** a missing or unreadable pass map gives a director no workers and an unknown start with the reason; it never restores workers from older runs. Remote snapshots expect `CensusFacts::older_probe()` reasons, local ones the `Default` reasons.
 
-### Phase 8 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: todo
+### Phase 8 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: done
 
 **Depends on:** Phase 6 (it changes `agent_cell.rs`, whose activity text this command prints); Phase 7 (the census facts this command prints)
 
@@ -262,6 +262,9 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/report_tests.rs` — new: the tests
 - `crates/cargo-handler/README.md` — the schema section
 - `docs/cargo-handler/as-built/hierarchy.md` — the command and its source
+- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/worker_dispatch/sessions.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — the staff listing and open pass facts the report reads
+- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/accounts_source_tests.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/schedule.rs` — the single accounts read, the local scan and the remote answer that the probe, the TUI and the command share
+- `crates/cargo-handler/src/census/session_identity.rs`, `crates/cargo-handler/src/census/probe/hierarchy_transport_tests.rs` — the session ids the tile cells use, and the new facts in the probe fixture
 
 **Workers:** 1 writer.
 - `impl` — every file above, and the tests.
@@ -305,6 +308,7 @@ Tests (red first, each under one second):
 
 **Constraints from prior phases:**
 - Phase 7: the accounts monitor keeps `AccountsTable::{NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast}` (`census/accounts.rs`). The census keeps only its health, through `Census::record_local_accounts`. The new field goes into `AccountsReading`; the health does not change.
+- Phase 8: `AccountsTable::read_once` runs the configured accounts command once for `census --json`, and the monitor uses the same parse. The new field reaches both through `AccountsReading`. `census --json` does not print it.
 - The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
 
 **Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
@@ -343,7 +347,7 @@ Tests (red first, each under one second):
 
 Director decisions:
 1. The status cell shows only `busy`, `idle`, `paused` or `exited`, from the accounts report. `starting` and `waiting` leave the status.
-2. A busy row's activity cell shows its activity word from the census. `census --json` prints each session as `{session, status, activity}`, with `activity` null on a row that is not busy.
+2. A busy row's activity cell shows its activity word from the census. `census --json` gets a top-level `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, with `activity` null on a row that is not busy. The new key increments `schema` to 2. The `directors` and `workers` lists keep their fields.
 3. The accounts table drops its `starting` and `waiting` columns.
 4. Director call: the `waiting` bright yellow ink (Phase 5) moves from the status word to the activity word `waiting`. The other activity words keep their inks.
 
@@ -355,6 +359,7 @@ Tests (red first, each under one second):
 
 **Constraints from prior phases:**
 - Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Add no second reader.
+- Phase 8: `census --json` (`census/report.rs`) lists only unit directors and workers, by staff id, from `StaffListing` facts. Showrunners, producers and unlisted sessions are not in it, so the accounts board needs the new `sessions` list. `agent_cell::session_cells` gives each tile-shown session its `SessionCells { machine, name, status, activity }`; build `sessions` from it. The README `census` section and its example document, checked by `census_json_matches_the_readme_example_keys_and_types`, change with the schema.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
 
 **Live check (director):** on natedev, compare the accounts board with cargo-handler while a unit starts, waits and works. Both show the same status and the same activity for each row.
@@ -365,7 +370,8 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/accounts.rs` — the four status values
 - `crates/cargo-handler/src/agent_cell.rs` — the activity word and its ink
 - `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/summary/accounts.rs` — the removed columns
-- `crates/cargo-handler/src/census/report.rs` — the `census --json` activity
+- `crates/cargo-handler/src/census/report.rs` — the `census --json` `sessions` list and schema 2
+- `crates/cargo-handler/README.md` — the `census` section and its example document
 - `crates/cargo-handler/src/census/accounts_wire_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/census/report_tests.rs` — the tests
 - `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/colors.md` — status, activity and ink
 
@@ -456,6 +462,7 @@ Director decisions:
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
 - Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 11 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
+- Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. A producer line in the new tile must still reach it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
 Tests (red first, each under one second):
@@ -514,6 +521,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 shows the recorded model and effort in the `d` view. Use `ModelName` and `ReasoningEffort::Unrecorded`. JSON `Option` values stay inside the decode step; add no optional effort field.
 - `TreeLine::name` feeds both the drawn cell and the `d` view `name:` line. Keep the full command for the `d` view and for selection identity. Use a separate display text for the short shell form.
+- Phase 8: `agent_cell::session_cells` copies the line name into `census --json`. Shell lines have no session and are not in it; agent names stay full.
 - Leave shell text out of the preferred session width before the shared metrics and layout demand run. The minimum width still holds the tree guides and the session header. Cut on grapheme boundaries and keep span styles.
 - Phase 3 keeps the measured demand widths (`TreeMetrics.widths`) apart from the drawn widths (`TreeColumnAlignment::Fitted`), and fills shared tiles in `align_screen_columns`. The shell rule changes only the measured session width. Keep the shared slots and the fill space that the fitter gives; a shell row can draw into session width that the fill gives.
 - The cut keeps quotes, spaces, redirections and arguments that are not paths.

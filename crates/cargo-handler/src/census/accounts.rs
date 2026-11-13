@@ -24,7 +24,6 @@ use super::AgentRow;
 use super::Observed;
 use super::SessionIdentity;
 use super::SourceHealth;
-use super::SourceRead;
 use super::hierarchy;
 use super::hierarchy::HierarchyError;
 use crate::constants::ACCOUNTS_REFRESH_INTERVAL;
@@ -488,6 +487,16 @@ impl AccountsTable {
         }
     }
 
+    /// One read of `command` for a process with no monitor; an empty command is not configured.
+    pub(super) fn read_once(command: &str) -> Self {
+        if command.trim().is_empty() {
+            return Self::NotConfigured;
+        }
+        let mut table = Self::AwaitingFirstReading;
+        table.apply(read_accounts(command));
+        table
+    }
+
     /// Visible account content keeps the summary present even without agents.
     pub(crate) const fn is_visible(&self) -> bool {
         matches!(
@@ -525,17 +534,6 @@ pub(crate) fn read_accounts(command: &str) -> Result<AccountsReading, AccountsFa
     let bytes =
         hierarchy::run_output(command, HIERARCHY_TIMEOUT).map_err(AccountsFailure::Command)?;
     AccountsReading::parse(&bytes)
-}
-
-/// A missing command is a valid empty source rather than a failed command.
-pub(super) fn read_accounts_source(command: &str) -> super::SourceRead<AccountsReading> {
-    if command.trim().is_empty() {
-        return SourceRead::Absent;
-    }
-    read_accounts(command).map_or_else(
-        |error| SourceRead::Unreadable(super::UnknownReason(error.to_string())),
-        SourceRead::Loaded,
-    )
 }
 
 #[cfg(test)]

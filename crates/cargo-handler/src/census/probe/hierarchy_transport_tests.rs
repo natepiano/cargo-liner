@@ -55,10 +55,11 @@ fn probe_census_facts_preserve_observations_and_name_missing_remote_fields()
         workers:  Observed::Known(std::collections::BTreeMap::from([(
             "unit".into(),
             WorkerFacts {
-                current_run:      Observed::Known(StaffRunPointer::NoRun),
-                pane:             Observed::Known(PaneState::Stopped),
-                runs:             Observed::Known(Vec::new()),
+                current_run: Observed::Known(StaffRunPointer::NoRun),
+                pane: Observed::Known(PaneState::Stopped),
+                runs: Observed::Known(Vec::new()),
                 activity_started: Observed::Known(123),
+                ..WorkerFacts::older_probe()
             },
         )])),
     };

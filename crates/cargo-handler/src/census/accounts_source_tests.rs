@@ -18,8 +18,8 @@ fn accounts_source_retains_absence_loaded_rows_and_command_failure_reason() {
         ),
     ] {
         assert_eq!(
-            read_accounts_source(command).health(),
-            expected,
+            AccountsTable::read_once(command).health(),
+            Observed::Known(expected),
             "{command}"
         );
     }

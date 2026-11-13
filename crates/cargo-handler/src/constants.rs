@@ -483,6 +483,16 @@ pub(crate) const RUN_WATCH_RECOVERY: Duration = Duration::from_secs(30);
 /// Retry an unavailable run watch at the local census interval.
 pub(crate) const RUN_WATCH_RETRY: Duration = Duration::from_secs(2);
 
+// census report
+/// The subcommand that prints the census as JSON for other tools.
+pub(crate) const CENSUS_COMMAND: &str = "census";
+/// The separator between unknown reasons in one census report object.
+pub(crate) const CENSUS_REASON_SEPARATOR: &str = "; ";
+/// Version of the census report's JSON. A field rename or removal increments it.
+pub(crate) const CENSUS_SCHEMA: u32 = 1;
+/// The machine error of a remote whose probe gave no answer.
+pub(crate) const CENSUS_UNANSWERED_REASON: &str = "the machine has not answered";
+
 // census run sources
 /// The recorder file that holds a unit run's passes and its owner.
 pub(crate) const PROGRESS_HISTORY_STATE_FILE: &str = "progress_history_state.json";
