@@ -1709,11 +1709,23 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 7. The Phase 32 round 1 Mac suite (2026-11-09, `phases/32/repair_summary_round1.txt`) had twelve `shim_registration::installed` tests at 1.458-1.570 s, all finishing together, and one leaky test, `cli_lifecycle::tests::uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`. Phase 32 does not touch these files. Measure them in a loaded Mac full suite. Fix the shared cost at its cause, and stop the process that outlives the leaky test. Do not raise a limit.
 8. `shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group` took 3.349 s in the Phase 59 Mac gate (`phases/59/mac_gate_r3.log`). The four ownership tests took 0.57-0.69 s in the same suite. Measure startup and cleanup apart, then fix the largest cost at its cause. Keep every assertion at `reader_scenario_cases.py:2024-2065`.
 9. The Phase 32i round 3 natedev gate suite (2026-11-11, run `20261111T011717-1578511-7053`) had three reader scenarios over 1 s. Phase 32i does not touch these tests. The source-switch test took 1.088 s. `reader_accepts_live_writer_under_different_locale_and_timezone` took 1.103 s. `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.592 s. Measure both new tests with the item 2 timeline. Fix each cost at its cause.
+10. A natedev cargo-tile full suite on the handler branch (no cargo-tile edits, heavy load; showrunner, 2026-11-13) passed 1292 tests. Nine existing tests took more than 1 s:
+    - `reader_keeps_parent_family_across_its_only_childs_source_switch` — 1.757 s
+    - `reader_excludes_a_live_command_without_sweeping_its_capture` — 1.673 s
+    - `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` — 1.507 s
+    - `darwin_membership_beyond_the_credential_limit_keeps_account_children_running` (`shim_registration/shared_capture.rs`) — 1.313 s
+    - `reader_scenario_sigkill_removes_its_processes_and_folder` — 1.137 s
+    - `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` — 1.103 s
+    - `installing_repairs_a_runner_missing_group_and_other_execution` (`hook.rs`) — 1.071 s
+    - `reader_scenario_timeout_removes_its_processes_and_folder` — 1.066 s
+    - `unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` — 1.013 s
+    Apply item 2 to each, and fix each cost at its cause. A test over 1 s is a defect, also under load.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/installed.rs` — item 7, test module only.
 - `crates/cargo-tile/tests/cli_lifecycle.rs` — item 7, the leaky test.
-- `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
+- `crates/cargo-tile/src/hook.rs` — only `fixture_runner`, the native capture entry's startup and the item 10 test.
+- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 10, the darwin membership test.
 - `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
 - `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — items 6 and 8, the named-shell preparation and the SIGKILL scenario.
@@ -1723,7 +1735,7 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 
 **Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it. Phase 59: a reader scenario runs under an owner process that holds a lifetime pipe (`reader_scenarios.rs:180-222`). A group registers before its session is created, and the owner ends the groups before it removes the folder. Keep this order and the four ownership tests (`reader_scenarios.rs:265-286`).
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s, and no leaky test; lint.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests, of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) and of each item 10 test below 1 s, and no leaky test; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -3478,6 +3490,37 @@ Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside i
 **Acceptance gate:**
 - `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
 - Change-Review: the cargo-tile, cargo-port and cargo-handler status lines show `Reads/s:` with the app's own disk read rate after `CPU:`, and the value changes once each second.
+
+### Phase 63 — Two shim mode tests pass under load  · status: todo
+
+**Depends on:** none (showrunner, 2026-11-13).
+
+On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits), two `cargo-tile` tests failed beside two other package suites. Each passes alone. Both fail in `assert_mode` (`crates/cargo-tile/tests/shim_modes.rs:604`) with "read observed artifact mode: NotFound".
+
+#### Work Order
+
+**Goal:** both tests pass in a full package run under load, with every current assertion.
+
+**Spec:**
+
+1. Find which path `assert_mode` reads when each test fails:
+   - `caller_descriptors_reach_captured_cargo` (`shim_modes.rs:925`)
+   - `unset_home_does_not_abort_either_capture_path` (`shim_modes.rs:1197`)
+2. Find the cause before a change. The test can read the artifact before the shim or the fake cargo writes it. The shim or the test can also use a time limit. Quote the line that makes the artifact.
+3. Make the test read the artifact only after the process that writes it ends or signals that it is written. Do not add a retry, a sleep or a longer wait.
+4. If the cause is in the shim, fix it in the shim.
+5. Keep every assertion as it is.
+6. Show the failure before the change: run both tests under load until one fails, or force the order that the cause names.
+
+**Files:**
+- `crates/cargo-tile/tests/shim_modes.rs`
+- `crates/cargo-tile/src/` — the shim capture paths, only if item 4 applies
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. A test that fails under load is a defect.
+
+**Acceptance gate:** `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Both tests run under 1 s.
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
