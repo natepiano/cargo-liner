@@ -3581,11 +3581,8 @@ mod tests {
 
         // ── Base-pane navigation routed through framework keymap ──────────
 
-        /// `Ctrl-f` / `Ctrl-b` page the project list when vim mode is on. They
-        /// are vim-only motions (not keymappable), so the test enables
-        /// `ArrowsAndVim`; with vim off these keys do nothing. Validates that
-        /// `handle_normal_key` consults the framework keymap's navigation scope
-        /// after the legacy pane-scope match.
+        /// `Ctrl-f` and `Ctrl-b` page the project list through the framework navigation scope.
+        /// These motions require `ArrowsAndVim` and cannot be rebound.
         #[test]
         fn ctrl_b_and_ctrl_f_page_the_project_list() {
             let projects: Vec<_> = (0..40)
@@ -3778,10 +3775,9 @@ mod tests {
             assert_eq!(app.project_list.cursor(), 2);
         }
 
-        /// Rebinding `ProjectListAction::ExpandRow` to `Tab` (with
-        /// `GlobalAction::NextPane` rebound away) expands the current row.
-        /// Validates that the legacy pane-scope match in `handle_normal_key`
-        /// drives `ExpandRow` through its match arm.
+        /// The framework dispatches `ProjectListAction::ExpandRow` through its project list scope.
+        /// Binding it to `Tab` expands the current row when `GlobalAction::NextPane` uses another
+        /// key.
         #[test]
         fn project_list_action_expand_row_rebound_to_tab_expands() {
             let tmp = tempfile::tempdir().expect("tempdir");

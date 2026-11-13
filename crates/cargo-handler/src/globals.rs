@@ -116,7 +116,7 @@ impl Globals<App> for AppGlobalAction {
             '8' => Self::Depth8,
             '9' => Self::Depth9,
         };
-        for (key, action) in ExpansionAction::key_bindings(crossterm::event::KeyModifiers::NONE) {
+        for (key, action) in ExpansionAction::key_bindings() {
             let action = match action {
                 ExpansionAction::ExpandAll => Self::ExpandAll,
                 ExpansionAction::CollapseAll => Self::CollapseAll,
