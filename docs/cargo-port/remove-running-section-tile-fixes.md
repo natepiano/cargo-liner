@@ -3550,37 +3550,23 @@ On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests
 - `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
 - `verify.sh test cargo-tile --mac` reports neither test as LEAK.
 
-### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: todo
+### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: done
 
-**Depends on:** Phase 61 (order only).
+**Depends on:** Phase 61 (order only). Handler Phase 6 merges first; Phase 62 then merges main and adapts its one `GRID_STATUS` test string (showrunner, 2026-11-13).
 
-Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside its uptime on the status line. The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
+The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
 
-#### Work Order
+#### As-built
 
-**Goal:** the status line of cargo-tile, cargo-port and cargo-handler shows the app's own disk reads per second after CPU, for example `Uptime: 12s CPU: 3.1% Reads/s: 64 KB`. Port's Phase 7 fixes an idle cargo-port that read about 70 MB/s from disk; this value shows that kind of fault at once (showrunner, 2026-11-12).
+- The status line of cargo-tile, cargo-port and cargo-handler shows `Reads/s: <rate>` after `CPU:`, for example `CPU: 3.1% Reads/s: 64 KB` (`bar/status_line.rs:334`, label `DISK_READ_LABEL`).
+- `DiskReadSampler` (`bar/disk_reads.rs:45`) reads `Process::disk_usage().total_read_bytes` through sysinfo after a refresh of this process alone, with only disk usage. It runs on the CPU status tick (`framework/mod.rs:102`). No subprocess, no per-platform reader, no unsafe code.
+- CPU and disk reads share one sampler, `CounterRateSampler<C>` (`bar/counter_rate.rs:44`), and one label rule, `rate_label` (`bar/rate_label.rs:6`): one decimal below 10, none at 10 or more. Before two samples the value is `—`.
+- The byte change goes from `u64` to `f64` under one `#[allow(clippy::cast_precision_loss, reason = ...)]` (`bar/counter_rate.rs:16-20`). No lossless conversion covers the full `u64` range. The user reviews this allow.
+- On a narrow row, `Reads/s` is added only after every navigation hint fits (`bar/status_line.rs:578`).
+- Limit: sysinfo keeps the old disk counter when its read of `/proc/<pid>/io` fails (`sysinfo-0.39.6/src/unix/linux/process.rs:370-374`). A failed read then shows a rate of `0 B`, not `—` (showrunner ruling A, 2026-11-13).
+- Gate: lint for tui_pane (natedev and Mac), cargo-tile and cargo-handler; 1,389 tui_pane and 1,202 cargo-handler tests. Three cargo-handler tests that this phase does not edit took 1.04-1.15 s; the showrunner routes them.
 
-**Spec:**
-
-1. Read the current process's own bytes read from storage through sysinfo, which `tui_pane` already uses: `Process::disk_usage().total_read_bytes` after a refresh of this process alone (`ProcessesToUpdate::Some(&[own pid])`, `ProcessRefreshKind::nothing().with_disk_usage()`). sysinfo 0.39.6 reads `/proc/<pid>/io` on Linux and `proc_pid_rusage` (`ri_diskio_bytesread`) on macOS, so one path serves both platforms. Add no per-platform reader and no `unsafe` code (showrunner, 2026-11-12). Start no subprocess. The read runs on the same once-a-second status tick as the CPU sample, so the value changes once each second, as CPU does.
-2. Sample it the same way as `CpuSampler` (`crates/tui_pane/src/bar/cpu.rs`): the rate is the byte change over the wall time between two samples. Before two samples, and when a read fails, show `—`. Share one sampling shape with CPU; make no second copy of the sample logic.
-3. Draw `Reads/s: <value>` after the CPU value in `crates/tui_pane/src/bar/status_line.rs`, with the same label and value styles. The value is a short byte rate in decimal units: `0 B`, `512 B`, `12 KB`, `3.4 MB`, `70 MB` (one decimal below 10, none at 10 or more, the CPU label's rule). The label `Reads/s` carries the per-second unit.
-4. The status-line gap tests keep their behavior at narrow widths: the new segment drops or shortens by the same rules as the CPU segment.
-
-**Tests:** a table row per rate in the sampler test (pending, zero, KB and MB values); a label table like `the_process_cpu_label_formats_pending_and_both_precisions`; a status-line row that shows the segment after `CPU:`.
-
-**Files:**
-- `crates/tui_pane/src/bar/cpu.rs` (or a sibling `disk_reads.rs` that shares its sample shape)
-- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/constants.rs`
-- `crates/tui_pane/src/framework/mod.rs` (the sampler on the status tick)
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. CPU work ranks first: the new read adds no subprocess, and each status tick refreshes only this process, with only disk usage.
-
-**Acceptance gate:**
-- `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
-- Change-Review: the cargo-tile, cargo-port and cargo-handler status lines show `Reads/s:` with the app's own disk read rate after `CPU:`, and the value changes once each second.
+**Files:** `crates/tui_pane/src/bar/{counter_rate,disk_reads,rate_label,cpu,constants,mod,status_line,status_line_gap_tests,status_bar_contrast_tests}.rs`, `crates/tui_pane/src/framework/mod.rs`, `crates/cargo-handler/src/render/mod.rs` (the `GRID_STATUS` test string).
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 
