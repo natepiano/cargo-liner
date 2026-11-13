@@ -148,6 +148,8 @@ struct ObservedCells<'a> {
 impl TileCells<TileKey> for ObservedCells<'_> {
     fn summary_title(&self) -> &str { self.cells.summary_title() }
 
+    fn column_order(&self) -> TileColumnOrder<TileKey> { self.cells.column_order() }
+
     fn prepare_moving_frame(
         &self,
         _: impl FnOnce() -> Vec<(TileContent, Rect)>,

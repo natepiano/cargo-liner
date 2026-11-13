@@ -111,7 +111,7 @@
 
 **Ruled out:** an alphabetical `d` order (the user replaced it with sections); a cargo-handler copy of cargo-port's yank code; one shared session width without union slots (it misaligned tiles with different column sets).
 
-### Phase 4 — Long and short tiles share a column, so the long ones show more rows  · status: todo
+### Phase 4 — Long and short tiles share a column, so the long ones show more rows  · status: done
 
 **Depends on:** Phase 3 (it uses the Phase 3 row measures and column widths)
 
@@ -128,7 +128,7 @@ Director decisions:
 2. The column assignment is a function of the rank order only. Rank the detail tiles by full content-row count, longest first. Deal the ranks to the columns in snake order: left to right, then right to left, and so on. With two tiles in each column, column j holds rank j and rank 2c−1−j: the longest with the shortest, the next longest with the next shortest.
 3. The summary tile keeps its place. Only the detail tiles move. The grid keeps its current slot shape: the number of detail slots in each column, the summary depth and span, and any empty cell the user opened. The rule changes only which detail tile fills which detail slot. Empty cells are not ranked and keep their slots.
 4. Unequal capacities: the snake skips a column that has no free detail slot and continues in the same direction. With an odd tile count, the last rank goes to the next column in snake order that has a free slot.
-5. Ties keep the current order. Because the assignment uses only the rank order, a row change that keeps the ranking moves no tile. With the same tile membership and the same grid geometry (pane size and column count), a tile moves only when the ranking changes. A resize, a column-count change or a membership change can move tiles. The existing grid motion animates each move.
+5. Ties keep the current order. Because the assignment uses only the rank order, a row change that keeps the ranking moves no tile. With the same tile membership and the same grid geometry (pane size, column count and summary depth), a tile moves only when the ranking changes. A resize, a column-count change, a summary depth change or a membership change can move tiles; after one, the columns are the snake deal of the unchanged ranks over the new slot shape. The existing grid motion animates each move.
 6. The ranking input is a new full-tree row count that `Cells::demands` (`crates/cargo-handler/src/render/mod.rs`) supplies apart from `TileDemand.rows`. `TileDemand.rows` counts headings and width-dependent rows, so it is not the ranking input. `TileGrid::sync_measured_demands` applies the placement. A ranking change and a column membership change each invalidate the cached placement and header positions. The private `flow_layout.rs` packer has no production caller and is not this rule.
 7. The column assignment lives in the shared tui_pane grid (`crates/tui_pane/src/tiles/grid/`), as a placement rule that an app selects. cargo-handler selects the balanced rule. cargo-tile keeps its current order, because no one asked for a change there.
 8. Within a column, the tiles keep their current relative order (hierarchy order, then unassigned).

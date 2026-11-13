@@ -47,6 +47,7 @@
 mod allocation;
 mod arrangement;
 mod bands;
+mod column_order;
 mod demands;
 mod heights;
 mod layout;
@@ -130,6 +131,8 @@ use bands::moving_cell;
 #[cfg(test)]
 use bands::piece_frame;
 use bands::place_band_pieces;
+use column_order::ColumnRanks;
+pub use column_order::TileColumnOrder;
 pub use demands::TileDemand;
 pub use demands::TileDemands;
 use heights::DestinationHeightBounds;
@@ -191,6 +194,7 @@ use rows::measure_frame_row_use;
 use rows::measured_filled_span;
 use selection::CandidateDepthSelection;
 use selection::CandidateMeasurementFreshness;
+pub(super) use selection::ColumnPreparation;
 use selection::LayoutDemandMeasurement;
 use selection::LayoutSelection;
 use selection::LayoutSelectionInputs;
