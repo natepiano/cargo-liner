@@ -69,6 +69,7 @@ use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::DeclaredReservationScopeSetError;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
+use crate::session;
 use crate::verb::claim;
 use crate::verb::claim::ClaimCapacityRecovery;
 use crate::verb::claim::ClaimError;
@@ -131,7 +132,7 @@ pub(crate) fn execute(
     request: DriftRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
-    let invocation_directory = match std::env::current_dir() {
+    let invocation_directory = match session::command_directory() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string());

@@ -2551,75 +2551,128 @@ On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ti
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
 
-### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
+### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: todo
 
-**Depends on:** Phase 58g (order only; flaky tests stop other units' style tickets, so 58g runs first).
+**Depends on:** Phase 58g (order only; showrunner, 2026-11-13).
 
-On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main (4a6d4d3b7, 5c0778b96) and their worktrees were removed. `cargo-berth resolve <id> --integrated-as <full oid>` refused with exit 5: "the reservation must have a protected checkpoint first; cargo-berth release records one". Release runs only from the holder worktree, and `--rehome` needs a worktree at the recorded path. Both were retired with `--retire-orphan`, which records no integration.
+On 2026-11-13 the port unit director ran two phases in two worktrees: its home worktree and `cargo-liner-port-8`. cargo-berth maps the director's `CLAUDE_CODE_SESSION_ID` to the home worktree. A plain `cargo-berth drift --reservation <phase 8 id>` was refused with `session_worktree_mismatch`. The only way through was an `env -C` or `-u CLAUDE_CODE_SESSION_ID` prefix, and `~/.claude/docs/direct/berth_decisions.md` forbids an env-var prefix: every cargo-berth call is one plain command in the director's working directory.
 
-#### Work Order
-
-**Goal:** when the holder worktree is gone and the reservation head is an ancestor of the trunk, `resolve --integrated-as` records the integration with no checkpoint.
-
-**Spec:**
-
-1. Quote the line that refuses `--integrated-as` without a checkpoint.
-2. Accept it only when both are true. Otherwise keep the current refusal.
-   - The registry proves the holder identity absent: `HolderIdentityPresence::Absent` (`src/worktree/liveness.rs:63`). `Live` and `Unverifiable` keep the refusal. `WorktreeLiveness::Unavailable` alone is not proof: it includes locked registrations.
-   - The reservation's work-bearing head is an ancestor of the given target, which is on the trunk. `Reservation::head_snapshot` is a `ClaimHeadSnapshot` from the claim, and replay does not move it after later commits. So it is not that head. Name the head that holds the reservation's last work and the journal evidence it comes from, before a change.
-3. Record the actor and the reason in the journal, as the Phase 58c rehome does.
-4. Give the result a named evidence state: integration verified with no checkpoint. Today `recovery.rs:763` rejects active reservations, and `reservation/retention.rs:1652` and `Reservation::evidence_state` require checkpoint evidence for an integration release. Make each one accept the new state: the lifecycle transition, journal replay, evidence output and later revalidation.
-5. Tests, each under 1 s, with a recorded template:
-   - the accepted case, also after the journal is opened again;
-   - a head not reachable from the target is refused;
-   - a claim head already on the trunk with a later commit not merged is refused;
-   - a live holder worktree, a live holder at a moved path, and an unverifiable registration each keep the current refusal.
-
-**Files:**
-
-- `crates/cargo-berth/src/` — the resolve path
-- `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/reservation/retention.rs` — the evidence state of item 4
-- `crates/cargo-berth/tests/` — item 5
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: no cargo-berth test at 1 s or more. Phase 58c: recover a stranded reservation with `resolve --rehome`, never by a new claim.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`, then `verify.sh test cargo-berth` green on natedev.
-
-### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: todo
-
-**Depends on:** none. It goes first among the cargo-berth phases: the CI point stays red until it lands (showrunner, 2026-11-13).
-
-The showrunner's CI point validation ran in a gate checkout (`/tmp/claude/session/4dbdb78e-.../cargo-liner-gate-*/checkout`). Two `cargo-berth::board` tests failed there. Both pass on main in `/home/natepiano/rust/cargo-liner`. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 2000-2054.
-
-1. `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` failed after 1.333 s. It panicked at `crates/cargo-berth-test-support/src/integration_repository.rs:872`: the claim answered "target `other-target` does not resolve to a local branch".
-2. `board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker` failed after 0.370 s. It panicked at `crates/cargo-berth/tests/board.rs:463`: the board listed only `refs/heads/main`, without the `refs/heads/integration` entry.
+The refusal comes from `validate_session_mapping` (`crates/cargo-berth/src/coordination_identity.rs:817-882`): when the named reservation's holder worktree differs from the issuing worktree, it returns `SessionWorktreeMismatch` (`:851-881`).
 
 #### Work Order
 
-**Goal:** both tests pass in any checkout, with every assertion, and each runs under 1 s.
+**Goal:** a plain `cargo-berth <verb> --reservation <id>` works for every reservation that the caller's session owns, whatever worktree holds it. The verb acts on the reservation's holder worktree. A reservation that the session does not own is still refused.
 
 **Spec:**
 
-1. Find what each test reads from the invoking checkout and not from its fixture. Examples: the current directory, a Git variable, the user's Git config, the invoking repository's refs or a cargo-berth state path. Quote the line that reads it.
-2. Make each test read only its own fixture. If cargo-berth itself reads the invoking checkout where it must read the fixture, fix it in cargo-berth.
-3. Show each failure before the change: run the test from a checkout that is not the main worktree, as the gate does.
-4. Keep every assertion. Add no retry, sleep or longer wait.
-5. Make test 1 run under 1 s (it took 1.333 s).
+1. Ownership record (showrunner, 2026-11-13). Today the session store keeps one selection per session (`session/mod.rs:350`), and each claim or widen replaces it (`:451`, `:509`). The journal's environment values (`ledger/journal.rs:207`) do not prove the resolved session, because hook payloads override them (`session/mod.rs:55`). The approved rule:
+   1. For each session, the store keeps the set of reservations that the session claimed. The claim writes it from the resolved session.
+   2. A reservation leaves the set when it is released, resolved or retired. The set holds only active reservations.
+   3. The current selection stays for commands without `--reservation`.
+2. A command with `--reservation <id>` is accepted when `<id>` is in the caller's set and active. It acts on that reservation's holder worktree. Any other id is refused as now. Name each verb that changes.
+3. A command with `--reservation <id>` writes the resolved session and the chosen holder worktree to the journal.
+4. Keep every refusal for an inactive reservation and for a stale mapping. A command without `--reservation` keeps its current worktree rules.
+5. Regression tests: the owner session acts on both of its reservations from either worktree; another session's id stays refused; a released id is refused. Each test fails on the code before the change.
+6. Update each `session_worktree_mismatch` test whose case this change makes valid. Keep each test whose case stays a refusal. Report each test that changed and why.
+7. Each new or changed test runs under 1 s.
 
 **Files:**
 
-- `crates/cargo-berth/tests/board.rs`
-- `crates/cargo-berth-test-support/src/integration_repository.rs`
-- `crates/cargo-berth-test-support/src/` — shared fixture setup, when the cause is there
-- `crates/cargo-berth/src/` — only under spec item 2
+- `crates/cargo-berth/src/coordination_identity.rs` — the mismatch rule
+- `crates/cargo-berth/src/` — verb dispatch and session mapping, when the change is there
+- `crates/cargo-berth/tests/drift.rs` — the regression test
+- `crates/cargo-berth/tests/` — the existing `session_worktree_mismatch` tests (`edges.rs`, `answers.rs`, `gate.rs`, `liveness.rs`, `hooks.rs`, `front_end_corpus.rs`, `fixtures/front_end_corpus.json`, `support/gate_fixtures.rs`)
+- `crates/cargo-berth-test-support/src/` — a two-worktree fixture, when one is needed
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load.
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; both tests pass from a checkout that is not the main worktree.
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; the regression test fails on the code before the change.
+
+### Phase 58j — Sixteen cargo-berth drift, phase and presentation tests run under 1 s  · status: todo
+
+**Depends on:** none. Phase 58h moves board test setup to a recorded template; use that pattern when it applies.
+
+The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth tests at 1.0-1.62 s (`phases/58f/repair1-gate-fixed-slow-tests.json`). Three interleaved timing pairs (Phase 58f tree against base 644f8c3, run `20261113T135730-3586069-916b`) show that Phase 58f does not cause them. In each pair the tree at the lower load was faster. In pair 3 (load 61 base, 69 phase) the phase median was 0.56 of the base. The showrunner ruled that these tests are defects whatever the pairs show (2026-11-13).
+
+1. `drift` (14 tests):
+   - `a_rebase_reanchors_the_phase_so_the_new_base_is_not_read_as_its_work` — 1.620 s
+   - `a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition` — 1.578 s
+   - `a_claim_taken_before_a_commit_is_entered_by_it` — 1.487 s
+   - `a_committed_incursion_names_the_commits_that_introduced_its_paths` — 1.462 s
+   - `a_claim_taken_after_a_commit_is_not_entered_by_it` — 1.436 s
+   - `a_merge_keeps_the_units_own_committed_paths` — 1.433 s
+   - `a_cheap_comparison_without_a_baseline_claims_nothing_and_still_catches_the_next_write` — 1.371 s
+   - `a_refused_merge_head_reports_the_path_it_introduced` — 1.279 s
+   - `an_answered_incursion_covers_a_sibling_claimed_after_the_answer` — 1.216 s
+   - `a_working_tree_edit_after_an_integrated_fast_forward_still_counts` — 1.178 s
+   - `a_resolution_in_an_unrecorded_merge_branch_merge_still_enters_the_held_path` — 1.138 s
+   - `ambiguous_post_commit_keeps_changes_for_an_explicit_cheap_retry` — 1.093 s
+   - `a_second_run_that_read_an_unoccupied_worktree_is_refused_under_the_lock` — 1.089 s
+   - `an_integrated_fast_forward_is_not_a_post_write` — 1.086 s
+2. `parallel_phases::a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths` — 1.007 s
+3. `presentation::successful_integrate_presentation_is_engine_considered` — 1.118 s
+
+#### Work Order
+
+**Goal:** each of the 16 tests runs under 1 s in a loaded natedev full suite at 32 threads, with every assertion.
+
+**Spec:**
+
+1. Measure first. For each test, split its time into fixture setup, Git process starts, cargo-berth process starts, disk sync and assertions. Use one shared timeline for the 14 drift tests; they likely share one setup cost.
+2. Fix the largest shared cost at its cause. Prefer a recorded template (Phase 58b, `crates/cargo-berth/tests/recorded_templates.rs`) over live setup.
+3. Keep every assertion. Add no retry, sleep or longer wait. Do not raise a limit or a timeout.
+4. Report each test's time before and after, at the same load band.
+
+**Files:**
+
+- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/presentation.rs`
+- `crates/cargo-berth/tests/recorded_templates.rs` — template registration
+- `crates/cargo-berth-test-support/src/` — shared fixture setup and templates
+- `crates/cargo-berth/src/` — only when the measured cost is in the product
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, each of the 16 tests under 1 s; one loaded natedev workspace suite at 32 threads with each of the 16 tests under 1 s.
+
+### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
+
+**Depends on:** Phase 58g (order only).
+
+On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed active after their work merged to main and their worktrees were removed. `resolve --integrated-as` refused: "the reservation must have a protected checkpoint first". They were retired with `--retire-orphan`, which records no integration.
+
+#### As-built
+
+- `resolve --integrated-as` records an integration with no checkpoint when two facts hold. The registry proves the holder identity absent, and the reservation's work head is an ancestor of the given trunk target. `AbsentHolder` owns that check and its construction (`reservation/absent_holder.rs:52`).
+- The work head is the last journaled work, not the claim head. An ancestry check, not head equality, tests the claim branch (`recovery.rs:677`). A branch switch after the claim does not refuse a valid recovery. A claim branch that holds a commit the target lacks is refused.
+- Live, moved and unverifiable holders keep the refusal.
+- The journal records the actor, the reason, and the verified integration (work head and trunk witness). The new evidence state holds that integration, so replay reads the journaled work head, not the current merge extent (`reservation/record.rs:500`).
+- Release paths share one status and proof operation (`reservation/retention.rs:1641`) and one retention decision (`reconcile.rs:4789`).
+- Tests in `tests/liveness.rs` on recorded templates (`tests/support/absent_holder_templates.rs`): the accepted case, also after the journal is opened again; a head not reachable from the target; a later commit not merged; a branch switch; live, moved and unverifiable holders; a replay and a board case that change the merge extent. The replay and board cases fail on the old replay. Each new test takes under 0.3 s.
+- Gate: lint and 1,381 cargo-berth tests on natedev. Three interleaved timing pairs found no phase slowdown; the 1 s and slower tests under load belong to Phase 58j.
+- Checkpoint: d50b8033d on `tile-phase-58f`.
+
+**Files:** `crates/cargo-berth/src/reservation/absent_holder.rs`, `recovery.rs`, `reconcile.rs`, `reservation/{record,retention,lifecycle,mod}.rs`, `ledger/{journal,history,record_size}.rs`, `edge/*`, `board/rows.rs`, `alert.rs`, `session/mod.rs`, `verb/release.rs`, `crates/cargo-berth/tests/{liveness,recorded_templates}.rs`, `tests/support/absent_holder_templates.rs`.
+
+### Phase 58h — Two cargo-berth board tests pass in any checkout  · status: done
+
+**Depends on:** none (showrunner, 2026-11-13).
+
+The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` (claim: "target `other-target` does not resolve to a local branch") and `board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker` (the board from main listed only `refs/heads/main`). Both pass in every other checkout. CI failed the same way again on main fc01c2b01.
+
+#### As-built
+
+- The failure did not reproduce in six attempts: separate clones, the CI Git config, the gate's command shape (new target directory, `--all-features`, 32 threads, a 125-character path), and a read of the lint wrapper's extra steps.
+- The reservation test now reads two recorded templates that the setup script builds (`tests/support/integration_parent_reservations.rs`). Each template makes the held claim, the retarget and the lane claim. The test checks the cover count, the source kind and the lane release, as before.
+- A failed claim prints the fixture's `git for-each-ref refs/heads` and `git worktree list --porcelain` (`IntegrationRepository::assert_success`, `git_state`). The invoker test prints the same state when the board targets differ. The next failure names its cause. No assertion changed.
+- Gate: lint and 1,372 cargo-berth tests on natedev. The two tests take 0.27 s and 0.30 s.
+- Not done: the trigger is unknown. A new failure reopens this work with its cause named.
+- Checkpoint: 75eabafec on `tile-phase-58h`. It merges after Phase 58f; both change `tests/recorded_templates.rs`.
+
+**Files:** `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/{board,recorded_templates}.rs`, `crates/cargo-berth/tests/support/integration_parent_reservations.rs`.
 
 ### Phase 58e — A reservation's merge extent holds only the branch's own changes  · status: done
 
@@ -3467,37 +3520,23 @@ On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests
 - `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
 - `verify.sh test cargo-tile --mac` reports neither test as LEAK.
 
-### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: todo
+### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: done
 
-**Depends on:** Phase 61 (order only).
+**Depends on:** Phase 61 (order only). Handler Phase 6 merges first; Phase 62 then merges main and adapts its one `GRID_STATUS` test string (showrunner, 2026-11-13).
 
-Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside its uptime on the status line. The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
+The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
 
-#### Work Order
+#### As-built
 
-**Goal:** the status line of cargo-tile, cargo-port and cargo-handler shows the app's own disk reads per second after CPU, for example `Uptime: 12s CPU: 3.1% Reads/s: 64 KB`. Port's Phase 7 fixes an idle cargo-port that read about 70 MB/s from disk; this value shows that kind of fault at once (showrunner, 2026-11-12).
+- The status line of cargo-tile, cargo-port and cargo-handler shows `Reads/s: <rate>` after `CPU:`, for example `CPU: 3.1% Reads/s: 64 KB` (`bar/status_line.rs:334`, label `DISK_READ_LABEL`).
+- `DiskReadSampler` (`bar/disk_reads.rs:45`) reads `Process::disk_usage().total_read_bytes` through sysinfo after a refresh of this process alone, with only disk usage. It runs on the CPU status tick (`framework/mod.rs:102`). No subprocess, no per-platform reader, no unsafe code.
+- CPU and disk reads share one sampler, `CounterRateSampler<C>` (`bar/counter_rate.rs:44`), and one label rule, `rate_label` (`bar/rate_label.rs:6`): one decimal below 10, none at 10 or more. Before two samples the value is `—`.
+- The byte change goes from `u64` to `f64` under one `#[allow(clippy::cast_precision_loss, reason = ...)]` (`bar/counter_rate.rs:16-20`). No lossless conversion covers the full `u64` range. The user reviews this allow.
+- On a narrow row, `Reads/s` is added only after every navigation hint fits (`bar/status_line.rs:578`).
+- Limit: sysinfo keeps the old disk counter when its read of `/proc/<pid>/io` fails (`sysinfo-0.39.6/src/unix/linux/process.rs:370-374`). A failed read then shows a rate of `0 B`, not `—` (showrunner ruling A, 2026-11-13).
+- Gate: lint for tui_pane (natedev and Mac), cargo-tile and cargo-handler; 1,389 tui_pane and 1,202 cargo-handler tests. Three cargo-handler tests that this phase does not edit took 1.04-1.15 s; the showrunner routes them.
 
-**Spec:**
-
-1. Read the current process's own bytes read from storage through sysinfo, which `tui_pane` already uses: `Process::disk_usage().total_read_bytes` after a refresh of this process alone (`ProcessesToUpdate::Some(&[own pid])`, `ProcessRefreshKind::nothing().with_disk_usage()`). sysinfo 0.39.6 reads `/proc/<pid>/io` on Linux and `proc_pid_rusage` (`ri_diskio_bytesread`) on macOS, so one path serves both platforms. Add no per-platform reader and no `unsafe` code (showrunner, 2026-11-12). Start no subprocess. The read runs on the same once-a-second status tick as the CPU sample, so the value changes once each second, as CPU does.
-2. Sample it the same way as `CpuSampler` (`crates/tui_pane/src/bar/cpu.rs`): the rate is the byte change over the wall time between two samples. Before two samples, and when a read fails, show `—`. Share one sampling shape with CPU; make no second copy of the sample logic.
-3. Draw `Reads/s: <value>` after the CPU value in `crates/tui_pane/src/bar/status_line.rs`, with the same label and value styles. The value is a short byte rate in decimal units: `0 B`, `512 B`, `12 KB`, `3.4 MB`, `70 MB` (one decimal below 10, none at 10 or more, the CPU label's rule). The label `Reads/s` carries the per-second unit.
-4. The status-line gap tests keep their behavior at narrow widths: the new segment drops or shortens by the same rules as the CPU segment.
-
-**Tests:** a table row per rate in the sampler test (pending, zero, KB and MB values); a label table like `the_process_cpu_label_formats_pending_and_both_precisions`; a status-line row that shows the segment after `CPU:`.
-
-**Files:**
-- `crates/tui_pane/src/bar/cpu.rs` (or a sibling `disk_reads.rs` that shares its sample shape)
-- `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/constants.rs`
-- `crates/tui_pane/src/framework/mod.rs` (the sampler on the status tick)
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. CPU work ranks first: the new read adds no subprocess, and each status tick refreshes only this process, with only disk usage.
-
-**Acceptance gate:**
-- `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
-- Change-Review: the cargo-tile, cargo-port and cargo-handler status lines show `Reads/s:` with the app's own disk read rate after `CPU:`, and the value changes once each second.
+**Files:** `crates/tui_pane/src/bar/{counter_rate,disk_reads,rate_label,cpu,constants,mod,status_line,status_line_gap_tests,status_bar_contrast_tests}.rs`, `crates/tui_pane/src/framework/mod.rs`, `crates/cargo-handler/src/render/mod.rs` (the `GRID_STATUS` test string).
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 

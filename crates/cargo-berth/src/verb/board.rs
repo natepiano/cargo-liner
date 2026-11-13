@@ -28,6 +28,7 @@ use crate::reconcile::ReconciledSettlement;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationReplayError;
+use crate::session;
 
 /// Repository invocation retained for live terminal-board refreshes.
 struct ReconciledBoardSource {
@@ -112,7 +113,7 @@ pub(crate) fn execute(
     output_selection: BoardOutputSelection,
     output_format: CliOutputFormat,
 ) -> BoardDisplayOutcome {
-    let invocation_directory = match std::env::current_dir() {
+    let invocation_directory = match session::command_directory() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
             return BoardDisplayOutcome::FactsUnavailable(OutputEnvelope::ledger_unreadable(

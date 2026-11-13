@@ -40,6 +40,7 @@ use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
+use crate::session;
 
 /// A parsed edit check with lexically valid requested paths.
 pub(crate) struct CheckRequest {
@@ -130,7 +131,7 @@ fn execute_with_capacity_recovery(
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> OutputEnvelope {
-    let invocation_directory = match std::env::current_dir() {
+    let invocation_directory = match session::command_directory() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
