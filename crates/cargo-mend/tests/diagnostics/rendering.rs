@@ -728,7 +728,8 @@ fn prepare_fresh_cache_units(root: &Path) -> Vec<PathBuf> {
         option_env!("MEND_GIT_HASH").unwrap_or("nogit"),
         option_env!("MEND_BUILD_ID").unwrap_or("nobuild"),
     );
-    let binary = Path::new(env!("CARGO_BIN_EXE_cargo-mend"));
+    let installed_mend = mend_command();
+    let binary = Path::new(installed_mend.get_program());
     let metadata = fs::metadata(binary).expect("read mend executable metadata");
     let modified = metadata
         .modified()

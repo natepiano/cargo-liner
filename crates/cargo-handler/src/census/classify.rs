@@ -48,11 +48,14 @@ use super::StaffRowNames;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+#[cfg(test)]
+use super::accounts::EMPTY_SESSION_STATES;
 use super::codex;
 use super::codex::CodexLogs;
 use super::codex::CodexThread;
 use super::codex::ResumeRequest;
 use super::codex::ThreadRows;
+use super::hierarchy::ProducerMembership;
 use super::hierarchy::StaffName;
 use super::hierarchy::StaffRoster;
 use super::model::ModelName;
@@ -218,7 +221,18 @@ impl SessionRecord {
 pub(super) fn attach_staff_names(rows: &mut [AgentRow], staff: &StaffRoster) {
     for row in rows {
         row.staff_names = StaffRowNames::default();
+        if row.role_fallback == super::RoleFallback::Producer {
+            row.role_fallback = super::RoleFallback::None;
+        }
         let session = row.session_id.ids().next();
+        if let Some(session) = session
+            && matches!(
+                staff.producer_membership(session),
+                ProducerMembership::Producer
+            )
+        {
+            row.role_fallback = super::RoleFallback::Producer;
+        }
         if let Some(session) = session
             && let StaffName::Named(name) = staff.name(session)
         {
@@ -1147,10 +1161,13 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].agent, Agent::CodexThreadHost);
         let state = MachineState::Answered(rows, super::super::HierarchyEdges::default().into());
-        let placement = super::super::AgentPlacement::from_machines(&[Machine {
-            name:  "local",
-            state: &state,
-        }]);
+        let placement = super::super::AgentPlacement::from_machines(
+            &[Machine {
+                name:  "local",
+                state: &state,
+            }],
+            &EMPTY_SESSION_STATES,
+        );
         assert_eq!(
             placement
                 .roots()

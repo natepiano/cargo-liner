@@ -34,15 +34,19 @@ fn run(pid: u32, started_at: f64, status: &str, thread: &str) -> RunRecord {
         "cwd":"/fixture", "log":"/fixture/run.log", "started_at":started_at,
         "pid":pid, "director_dir":"/fixture/director", "done_message_file":"/fixture/done"
     }))
-    .expect("real mesh-run record shape parses");
+    .expect("real detached-run record shape parses");
     record.at_file(&std::path::PathBuf::from(format!(
-        "/fixture/session/mesh_runs/run-{pid}.json"
+        "/fixture/session/detached_runs/run-{pid}.json"
     )))
 }
 
 fn supervisor(pid: u32) -> ProcessEntry {
-    let record = format!("/fixture/session/mesh_runs/run-{pid}.json");
-    process(pid, 1, &["python3", "mesh_runs.py", "supervise", &record])
+    let record = format!("/fixture/session/detached_runs/run-{pid}.json");
+    process(
+        pid,
+        1,
+        &["python3", "detached_runs.py", "supervise", &record],
+    )
 }
 
 #[test]
@@ -241,7 +245,7 @@ fn activity_verify_steps_come_from_the_runs_descendants_including_mac_and_waitin
         "fmt", "clippy", "nextest", "build", "check", "doc", "mend", "taplo",
     ] {
         let mut processes = vec![
-            process(100, 1, &["python3", "mesh_runs.py"]),
+            process(100, 1, &["python3", "detached_runs.py"]),
             process(101, 100, &["bash", "verify.sh"]),
         ];
         let arguments = if step == "taplo" {
@@ -255,7 +259,7 @@ fn activity_verify_steps_come_from_the_runs_descendants_including_mac_and_waitin
         assert_eq!(activity::verify_activity(&processes, 100).text(), step);
     }
     let processes = [
-        process(100, 1, &["python3", "mesh_runs.py"]),
+        process(100, 1, &["python3", "detached_runs.py"]),
         process(101, 100, &["ssh", "mac", "cargo nextest run"]),
     ];
     assert_eq!(
@@ -335,7 +339,14 @@ fn activity_newest_live_run_wins_then_reveals_the_older_run_when_it_finishes() {
 
 #[test]
 fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
-    let rows = [Some("busy"), Some("idle"), None].map(|status| {
+    let rows = [
+        Some("busy"),
+        Some("idle"),
+        None,
+        Some("waiting"),
+        Some("starting"),
+    ]
+    .map(|status| {
         serde_json::json!({
             "agent":"claude", "name":"legacy-session", "status":status,
             "started":100, "pid":42, "desktop":null, "directory":"/fixture",
@@ -348,7 +359,16 @@ fn activity_older_probe_statuses_convert_at_the_wire_boundary() {
     .expect("legacy report encodes");
     let (decoded, _) = probe::parse_report(&encoded).expect("older schema-three report reads");
     let words: Vec<_> = decoded.iter().map(summary::status_text).collect();
-    assert_eq!(words, ["thinking", "idle", crate::constants::MISSING_VALUE]);
+    assert_eq!(
+        words,
+        [
+            "thinking",
+            "idle",
+            crate::constants::MISSING_VALUE,
+            "waiting",
+            "starting"
+        ]
+    );
     assert!(decoded.iter().all(|row| row.process_started == row.started));
 }
 
@@ -381,15 +401,15 @@ fn a_reused_supervisor_pid_does_not_keep_a_finished_worker_waiting() {
         vec!["python3", "unrelated.py"],
         vec![
             "python3",
-            "mesh_runs.py",
+            "detached_runs.py",
             "supervise",
-            "/fixture/session/mesh_runs/another.json",
+            "/fixture/session/detached_runs/another.json",
         ],
         vec![
             "echo",
-            "mesh_runs.py",
+            "detached_runs.py",
             "start",
-            "/fixture/session/mesh_runs/run-100.json",
+            "/fixture/session/detached_runs/run-100.json",
         ],
     ] {
         let processes = [process(100, 1, &arguments)];

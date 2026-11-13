@@ -61,6 +61,7 @@ use crate::VisualDeadline;
 use crate::bar::cpu::CpuReading;
 use crate::bar::cpu::CpuSampler;
 use crate::bar::cpu::ProcessCpuTime;
+use crate::copy;
 use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
 use crate::runner::StatusDeadline;
@@ -336,30 +337,24 @@ impl<Ctx: AppContext> Framework<Ctx> {
         if matches!(self.focused_pane_mode(ctx), Some(crate::Mode::TextInput(_))) {
             return CopyOutcome::NothingToCopy;
         }
-        let Some(resolver) = self.copy_resolvers.get(&id) else {
-            return CopyOutcome::NothingToCopy;
-        };
-        match resolver(ctx) {
-            CopySelectionResult::Nothing => CopyOutcome::NothingToCopy,
-            CopySelectionResult::Payload(payload) => {
-                if payload.text.is_empty() {
-                    return CopyOutcome::NothingToCopy;
-                }
-                match backend.write_clipboard(&payload.text) {
-                    Ok(()) => CopyOutcome::Copied {
-                        label: payload.label,
-                    },
-                    Err(clipboard_error) if clipboard_error.is_unavailable() => {
-                        CopyOutcome::Unavailable {
-                            reason: clipboard_error,
-                        }
-                    },
-                    Err(clipboard_error) => CopyOutcome::Failed {
-                        reason: clipboard_error,
-                    },
-                }
-            },
-        }
+        self.copy_pane_selection(id, ctx, backend)
+    }
+
+    /// Copy a registered pane target without changing the focused pane.
+    pub fn copy_pane_selection<B>(
+        &self,
+        id: Ctx::AppPaneId,
+        ctx: &Ctx,
+        backend: &mut B,
+    ) -> CopyOutcome
+    where
+        B: ClipboardBackend,
+    {
+        let selection = self
+            .copy_resolvers
+            .get(&id)
+            .map_or(CopySelectionResult::Nothing, |resolve| resolve(ctx));
+        copy::copy_payload(selection, backend)
     }
 
     /// Resolved mode for the focused pane.

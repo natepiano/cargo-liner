@@ -7,9 +7,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use tui_pane::Theme;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::theme::WordMatchGrounds;
@@ -187,7 +189,13 @@ impl PaintedWords {
 
     #[cfg(test)]
     fn apply(&self, highlight: &WordHighlight, buffer: &mut Buffer, background: Color) {
-        self.apply_with_inks(highlight, buffer, background, &mut MatchInkCache::default());
+        self.apply_with_inks(
+            highlight,
+            buffer,
+            background,
+            WordHighlightEmphasis::Subtle,
+            &mut MatchInkCache::default(),
+        );
     }
 
     /// Apply the match background and the cached ink for each original cell ground.
@@ -196,9 +204,10 @@ impl PaintedWords {
         highlight: &WordHighlight,
         buffer: &mut Buffer,
         background: Color,
+        emphasis: WordHighlightEmphasis,
         cache: &mut MatchInkCache,
     ) {
-        cache.prepare(highlight, background);
+        cache.prepare(highlight, background, emphasis);
         if let (WordHighlight::Word(selected), MatchPaletteState::Active(palette)) =
             (highlight, &mut cache.state)
         {
@@ -214,6 +223,9 @@ impl PaintedWords {
                             .entry((cell.fg, cell.bg))
                             .or_insert_with(|| MatchInk::resolve(cell.fg, cell.bg, match_ground));
                         cell.set_fg(ink.foreground()).set_bg(match_ground);
+                        if emphasis == WordHighlightEmphasis::Strong {
+                            cell.modifier.insert(Modifier::BOLD);
+                        }
                     }
                 }
             }
@@ -291,26 +303,35 @@ enum MatchGroundsCache {
     Ready {
         theme:      Arc<Theme>,
         background: Color,
+        emphasis:   WordHighlightEmphasis,
         grounds:    Arc<WordMatchGrounds>,
     },
 }
 
 impl MatchGroundsCache {
-    fn current(&mut self, theme: &Arc<Theme>, background: Color) -> Arc<WordMatchGrounds> {
+    fn current(
+        &mut self,
+        theme: &Arc<Theme>,
+        background: Color,
+        emphasis: WordHighlightEmphasis,
+    ) -> Arc<WordMatchGrounds> {
         if let Self::Ready {
             theme: cached,
             background: previous,
+            emphasis: previous_emphasis,
             grounds,
         } = self
             && Arc::ptr_eq(cached, theme)
             && *previous == background
+            && *previous_emphasis == emphasis
         {
             return Arc::clone(grounds);
         }
-        let grounds = Arc::new(crate::theme::WordMatchGrounds::new(background));
+        let grounds = Arc::new(crate::theme::WordMatchGrounds::new(background, emphasis));
         *self = Self::Ready {
             theme: Arc::clone(theme),
             background,
+            emphasis,
             grounds: Arc::clone(&grounds),
         };
         grounds
@@ -321,12 +342,18 @@ struct MatchPalette {
     theme:      Arc<Theme>,
     word:       HighlightWord,
     background: Color,
+    emphasis:   WordHighlightEmphasis,
     grounds:    Arc<WordMatchGrounds>,
     inks:       HashMap<(Color, Color), MatchInk>,
 }
 
 impl MatchInkCache {
-    fn prepare(&mut self, highlight: &WordHighlight, background: Color) {
+    fn prepare(
+        &mut self,
+        highlight: &WordHighlight,
+        background: Color,
+        emphasis: WordHighlightEmphasis,
+    ) {
         let WordHighlight::Word(word) = highlight else {
             self.state = MatchPaletteState::Off;
             return;
@@ -336,14 +363,16 @@ impl MatchInkCache {
             && Arc::ptr_eq(&palette.theme, &theme)
             && palette.word == *word
             && palette.background == background
+            && palette.emphasis == emphasis
         {
             return;
         }
-        let grounds = self.grounds.current(&theme, background);
+        let grounds = self.grounds.current(&theme, background, emphasis);
         self.state = MatchPaletteState::Active(MatchPalette {
             theme,
             word: word.clone(),
             background,
+            emphasis,
             grounds,
             inks: HashMap::new(),
         });

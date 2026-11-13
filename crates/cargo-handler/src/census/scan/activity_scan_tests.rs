@@ -2,13 +2,25 @@
 
 #![expect(clippy::expect_used, reason = "isolated scan fixture files must parse")]
 
+use std::error::Error;
 use std::io::Write;
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 use serde_json::Value;
 use tempfile::TempDir;
+use tui_pane::TerminalApp;
 
 use super::*;
+use crate::app::App;
+use crate::census::CensusUpdate;
 use crate::census::ChildRow;
+use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::HierarchySource;
 use crate::census::ProvenCodexThread;
@@ -16,6 +28,8 @@ use crate::census::RoleFallback;
 use crate::census::RowIdentity;
 use crate::census::StaffFileSetting;
 use crate::census::account::ConfigHome;
+use crate::census::accounts::AccountsReading;
+use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::WorkerReference;
 use crate::census::placement::DispatchWorker;
 use crate::census::tier::ThreadWorktree;
@@ -35,7 +49,7 @@ impl DetachedWorkerFixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("session root");
         let session = root.path().join("unit");
-        fs::create_dir_all(session.join("mesh_runs")).expect("run directory");
+        fs::create_dir_all(session.join("detached_runs")).expect("run directory");
         fs::write(session.join(DIRECTOR_FILE), "director-id\n").expect("director identity");
         worker_dispatch::write_worker_fixture(
             &session,
@@ -159,7 +173,7 @@ fn detached_worker_run_reuses_an_existing_thread_row() {
 /// Current producers record stable staff IDs without a thread copy.
 fn write_staff_run(fixture: &DetachedWorkerFixture, status: &str) {
     fs::write(
-        fixture.session.join("mesh_runs/gate.json"),
+        fixture.session.join("detached_runs/gate.json"),
         serde_json::json!({
             "command": ["bash", "verify.sh", "check", "cargo-handler"],
             "delivery": "", "director_dir": fixture.session,
@@ -212,39 +226,140 @@ fn current_staff_fixture(thread: &str) -> DetachedWorkerFixture {
     fixture
 }
 
-#[test]
-fn staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread() -> Result<(), &'static str>
-{
-    let mut fixture = current_staff_fixture(THREAD);
-    let processes = [claude(), fixture.supervisor()];
-    let waiting = fixture.scan(&processes);
-    assert_eq!(waiting[0].activity, AgentActivity::Idle);
-    assert_eq!(waiting[0].children.len(), 1);
-    let worker = &waiting[0].children[0];
-    assert_eq!(worker.thread_id, CodexThreadId::Recorded(THREAD.to_owned()));
-    assert_eq!(worker.activity.text(), "waiting");
-    let WorkerDispatch::Worker(dispatch) = &worker.dispatch else {
-        return Err("the staff roster must supply the worker role");
-    };
-    assert_eq!(
-        dispatch.fallback(),
-        RoleFallback::Worker(HierarchyRole::Test)
+fn drawn_rows(buffer: &Buffer) -> Vec<String> {
+    buffer
+        .content
+        .chunks(usize::from(buffer.area.width))
+        .map(|cells| cells.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .collect()
+}
+
+fn assert_drawn_worker_details(rows: Vec<AgentRow>, expected: &str) -> Result<(), Box<dyn Error>> {
+    let mut app = App::new_for_test()?;
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: HierarchyEdges::default().into(),
+        stage: ScanStage::Completed,
+    });
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(&serde_json::to_vec(
+            &serde_json::json!({"accounts":[{"label":"fixture","roles":[],"use_credits":false,
+            "sessions":[{"session":THREAD,"state":"idle"}]}],"problems":[]}),
+        )?)
+        .map_err(|error| error.to_string())?,
     );
-    let checking = [
-        claude(),
-        fixture.supervisor(),
-        process(101, 100, &["cargo", "check"]),
-    ];
-    let active = fixture.scan(&checking);
-    assert_eq!(active[0].children.len(), 1);
-    assert_eq!(active[0].children[0].activity.text(), "check");
-    assert_eq!(active[0].activity, AgentActivity::Idle);
-    write_staff_run(&fixture, "finished");
-    fixture
-        .scanner
-        .run_records
-        .record_changed(&fixture.session, "gate.json".into());
-    assert_eq!(fixture.scan(&processes)[0].children, []);
+    let mut terminal = Terminal::new(TestBackend::new(180, 45))?;
+    let keymap = app.keymap();
+    terminal.draw(|frame| app.draw(frame, &keymap))?;
+    app.tiles.settle_for_test();
+    terminal.draw(|frame| app.draw(frame, &keymap))?;
+    let before = drawn_rows(terminal.backend().buffer());
+    let (y, line) = before
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.contains("fixture-test"))
+        .ok_or("the detached run must draw its worker row")?;
+    let x = line
+        .find("fixture-test")
+        .ok_or("the worker name must have a column")?;
+    let x = u16::try_from(line[..x].chars().count())?;
+    let status_x = before[..y]
+        .iter()
+        .rev()
+        .find_map(|header| header.find("status").map(|x| header[..x].chars().count()))
+        .ok_or("the worker row must have a status column")?;
+    let status: String = line.chars().skip(status_x).collect();
+    assert_eq!(status.split_whitespace().next(), Some("idle"));
+    assert!(
+        !line.contains(expected),
+        "the detailed step belongs in the details view"
+    );
+    app.click(Position::new(x, u16::try_from(y)?));
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    terminal.draw(|frame| app.draw(frame, &keymap))?;
+    let details = drawn_rows(terminal.backend().buffer());
+    for (label, value) in [("state", expected), ("status", "idle")] {
+        let marker = format!("{label}:");
+        let actual = details
+            .iter()
+            .find_map(|line| line.split_once(&marker))
+            .map(|(_, rest)| rest.split('│').next().unwrap_or_default().trim())
+            .ok_or("missing aligned property")?;
+        assert_eq!(actual, value, "{label}: {details:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread()
+-> Result<(), Box<dyn Error>> {
+    for use_staff_id in [true, false] {
+        let mut fixture = current_staff_fixture(THREAD);
+        if !use_staff_id {
+            let path = fixture.session.join("detached_runs/gate.json");
+            let mut record: Value = serde_json::from_slice(&fs::read(&path)?)?;
+            record
+                .as_object_mut()
+                .expect("run record object")
+                .remove("staff_id");
+            fs::write(path, serde_json::to_vec(&record)?)?;
+        }
+        assert_eq!(fixture.scan(&[claude()])[0].children, []);
+        let processes = [claude(), fixture.supervisor()];
+        let waiting = fixture.scan(&processes);
+        assert_eq!(waiting[0].activity, AgentActivity::Idle);
+        assert_eq!(waiting[0].children.len(), 1);
+        let worker = &waiting[0].children[0];
+        assert_eq!(worker.thread_id, CodexThreadId::Recorded(THREAD.to_owned()));
+        assert_eq!(worker.activity.text(), "waiting");
+        let WorkerDispatch::Worker(dispatch) = &worker.dispatch else {
+            return Err("the staff roster must supply the worker role".into());
+        };
+        assert_eq!(
+            dispatch.fallback(),
+            RoleFallback::Worker(HierarchyRole::Test)
+        );
+        assert_drawn_worker_details(waiting.clone(), "waiting")?;
+        let checking = [
+            claude(),
+            fixture.supervisor(),
+            process(101, 100, &["cargo", "check"]),
+        ];
+        let active = fixture.scan(&checking);
+        assert_eq!(active[0].children.len(), 1);
+        assert_eq!(active[0].children[0].activity.text(), "check");
+        assert_eq!(active[0].activity, AgentActivity::Idle);
+        assert_drawn_worker_details(active, "check")?;
+        for (command, cargo_step, expected) in
+            [("lint", "clippy", "clippy"), ("test", "nextest", "nextest")]
+        {
+            let path = fixture.session.join("detached_runs/gate.json");
+            let mut record: Value = serde_json::from_slice(&fs::read(&path)?)?;
+            record["command"] = serde_json::json!(["bash", "verify.sh", command, "cargo-handler"]);
+            fs::write(path, serde_json::to_vec(&record)?)?;
+            fixture
+                .scanner
+                .run_records
+                .record_changed(&fixture.session, "gate.json".into());
+            let active = fixture.scan(&[
+                claude(),
+                fixture.supervisor(),
+                process(101, 100, &["cargo", cargo_step]),
+            ]);
+            assert_eq!(active[0].children.len(), 1);
+            assert_eq!(active[0].children[0].activity.text(), expected);
+            assert_drawn_worker_details(active, expected)?;
+        }
+        write_staff_run(&fixture, "finished");
+        fixture
+            .scanner
+            .run_records
+            .record_changed(&fixture.session, "gate.json".into());
+        assert_eq!(fixture.scan(&processes)[0].children, []);
+    }
     Ok(())
 }
 
@@ -283,7 +398,7 @@ fn staff_handoff_moves_run_activity_without_changing_run_records() {
         &staff,
         &fixture.scanner.worker_names.staff_snapshot()
     ));
-    let run = fs::read(fixture.session.join("mesh_runs/gate.json")).expect("run bytes");
+    let run = fs::read(fixture.session.join("detached_runs/gate.json")).expect("run bytes");
     write_staff_membership(&fixture, "replacement-thread");
     let changed = fixture.scan(&processes);
     assert_eq!(changed[0].children.len(), 1);
@@ -298,7 +413,7 @@ fn staff_handoff_moves_run_activity_without_changing_run_records() {
         &fixture.scanner.worker_names.staff_snapshot()
     ));
     assert_eq!(
-        fs::read(fixture.session.join("mesh_runs/gate.json")).expect("run bytes"),
+        fs::read(fixture.session.join("detached_runs/gate.json")).expect("run bytes"),
         run
     );
     assert_eq!(
@@ -445,7 +560,7 @@ fn detached_worker_launcher_and_run_share_one_visible_thread() {
 
 fn write_run(session: &Path, status: &str) {
     fs::write(
-        session.join("mesh_runs/gate.json"),
+        session.join("detached_runs/gate.json"),
         serde_json::json!({
             "thread_id": THREAD, "pid": 100, "started_at": 100.0,
             "command": ["bash", VERIFY_SCRIPT, "test", "cargo-handler"], "status": status
@@ -456,13 +571,13 @@ fn write_run(session: &Path, status: &str) {
 }
 
 fn supervisor(session: &Path) -> ProcessEntry {
-    let record = session.join("mesh_runs/gate.json");
+    let record = session.join("detached_runs/gate.json");
     process(
         100,
         1,
         &[
             "python3",
-            "mesh_runs.py",
+            "/fixture/.claude/scripts/agents/detached_runs.py",
             "supervise",
             record.to_str().expect("record path"),
         ],
@@ -503,7 +618,7 @@ fn activity_scan_detached_gate_overrides_tool_then_finished_run_reveals_the_tool
         .prefix("handler-activity-")
         .tempdir_in(root.path())
         .expect("isolated session");
-    let run_dir = directory.path().join("mesh_runs");
+    let run_dir = directory.path().join("detached_runs");
     fs::create_dir(&run_dir).expect("run directory");
     write_run(directory.path(), "running");
     let rollout = directory.path().join(format!("rollout-{THREAD}.jsonl"));
@@ -652,7 +767,7 @@ fn the_latest_worker_run_does_not_depend_on_child_order() {
     const OTHER: &str = "01a1437d-1234-5678-9abc-0123456789ac";
     let mut fixture = DetachedWorkerFixture::new();
     let session = fixture.root.path().join("other");
-    fs::create_dir_all(session.join("mesh_runs")).expect("other run directory");
+    fs::create_dir_all(session.join("detached_runs")).expect("other run directory");
     write_run(&session, "running");
     for (id, prompt) in [
         (THREAD, "Work without a session path".to_owned()),
@@ -709,7 +824,7 @@ fn an_open_thread_without_a_prompt_dispatch_does_not_keep_a_launcher_label() {
 fn a_run_only_worker_uses_the_same_short_seat_as_its_rollout() {
     let mut fixture = DetachedWorkerFixture::new();
     fixture.write_run("running");
-    let path = fixture.session.join("mesh_runs/gate.json");
+    let path = fixture.session.join("detached_runs/gate.json");
     let mut record: Value =
         serde_json::from_slice(&fs::read(&path).expect("run record")).expect("run JSON");
     record["cwd"] = serde_json::json!("/work/fixture");

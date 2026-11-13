@@ -321,7 +321,7 @@ mod tests {
                 files:   &files,
                 sources: &sources,
             },
-            &crate_files::canonical(&owner_dir.join("mod.rs")),
+            &crate_files::canonical(&owner_dir.join("mod.rs"), &sources),
         )
         .expect("read crate files")
     }

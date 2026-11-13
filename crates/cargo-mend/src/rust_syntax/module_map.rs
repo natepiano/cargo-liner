@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -25,9 +26,11 @@ use syn::visit::Visit;
 
 use super::AttributeTestGate;
 use super::ParsedSources;
+use super::SourcePathKey;
 use super::attribute_test_gate;
 use super::file_module_path;
 use super::parse_meta_list;
+use super::source_path_key::SourcePathKeys;
 
 /// Where a source file sits in its crate's module tree.
 #[derive(Debug, PartialEq, Eq)]
@@ -259,7 +262,8 @@ impl ModuleDirectories {
 /// layout instead, it names a module that does not exist and the crate stops
 /// compiling.
 pub(crate) struct ModuleMap {
-    declarations: FxHashMap<PathBuf, DeclaredFile>,
+    path_keys:    Rc<SourcePathKeys>,
+    declarations: FxHashMap<SourcePathKey, DeclaredFile>,
 }
 
 impl ModuleMap {
@@ -272,12 +276,16 @@ impl ModuleMap {
     ) -> Result<BTreeSet<PathBuf>> {
         let mut pending: Vec<_> = roots.into_iter().collect();
         let mut reached = BTreeSet::new();
+        let mut visited = BTreeSet::new();
         while let Some(root) = pending.pop() {
             let modules = Self::for_crate_root(&root, sources);
             for (file, _) in modules.declared_files() {
-                if !reached.insert(fs::canonicalize(file)?) {
+                let key = sources.path_key(file);
+                let parent = file.parent().context("included source has no directory")?;
+                if !visited.insert((key.clone(), sources.path_key(parent))) {
                     continue;
                 }
+                reached.insert(key.into_path_buf());
                 let source = sources.source(file)?;
                 let mut includes = SourceReachEdges::default();
                 includes.visit_file(source.syntax()?);
@@ -291,11 +299,7 @@ impl ModuleMap {
                             bail!("block-local module has no placeable mount")
                         },
                     };
-                    pending.push(
-                        file.parent()
-                            .context("included source has no directory")?
-                            .join(literal),
-                    );
+                    pending.push(parent.join(literal));
                 }
             }
         }
@@ -313,6 +317,7 @@ impl ModuleMap {
     /// single module path suitable for relative rewrites.
     pub(super) fn for_crate_roots(crate_roots: &[PathBuf], sources: &ParsedSources) -> Self {
         let mut merged = Self {
+            path_keys:    Rc::clone(&sources.path_keys),
             declarations: FxHashMap::default(),
         };
         for crate_root in crate_roots {
@@ -340,6 +345,7 @@ impl ModuleMap {
             &ModuleDirectories::for_crate_root(crate_root),
         );
         Self {
+            path_keys:    Rc::clone(&sources.path_keys),
             declarations: walk.declarations,
         }
     }
@@ -373,12 +379,14 @@ impl ModuleMap {
         }
     }
 
-    /// Every file the walk declared, with the module path it occupies. Paths
-    /// are lexically normalized, not canonicalized.
+    /// Declared paths retain the directories used by relative source resolution.
     pub(crate) fn declared_files(&self) -> impl Iterator<Item = (&Path, FileModulePath)> {
-        self.declarations
-            .iter()
-            .map(|(file, declared)| (file.as_path(), declared.mounts.module_path()))
+        self.declarations.values().flat_map(|declared| {
+            declared
+                .paths
+                .iter()
+                .map(|path| (path.as_path(), declared.mounts.module_path()))
+        })
     }
 
     /// Files that declare an ancestor of `module_path`, with each declared mount.
@@ -398,7 +406,7 @@ impl ModuleMap {
     /// `#[cfg(test)]` on the file's own declaration or an ancestor's, so the
     /// file compiles only under test. `false` for a file no chain declares.
     pub(crate) fn is_test_only(&self, file: &Path) -> bool {
-        let file = lexically_normalized(file);
+        let file = self.path_keys.key(file);
         self.declarations
             .get(&file)
             .is_some_and(|declared| matches!(declared.builds, DeclaredBuilds::TestOnly))
@@ -416,10 +424,14 @@ impl ModuleMap {
         source_root: &Path,
         file: &Path,
     ) -> Option<FileModulePath> {
+        let file = self.path_keys.key(file);
         self.declarations
-            .get(&lexically_normalized(file))
+            .get(&file)
             .map(|declared| declared.mounts.module_path())
-            .or_else(|| file_module_path(source_root, file).map(FileModulePath::Known))
+            .or_else(|| {
+                file_module_path(self.path_keys.key(source_root).as_path(), file.as_path())
+                    .map(FileModulePath::Known)
+            })
     }
 }
 
@@ -465,12 +477,14 @@ impl DeclaredBuilds {
 }
 
 struct DeclaredFile {
+    paths:  BTreeSet<PathBuf>,
     mounts: DeclaredMounts,
     builds: DeclaredBuilds,
 }
 
 impl DeclaredFile {
     fn merge(&mut self, other: Self) {
+        self.paths.extend(other.paths);
         self.builds = self.builds.merge(other.builds);
         self.mounts.insert(other.mounts.first);
         for module_path in other.mounts.additional {
@@ -488,18 +502,19 @@ struct Declared {
 
 struct ModuleWalk<'a> {
     sources:      &'a ParsedSources,
-    declarations: FxHashMap<PathBuf, DeclaredFile>,
+    declarations: FxHashMap<SourcePathKey, DeclaredFile>,
     /// The `(file, module path)` pairs already being walked, so a `#[path]`
     /// cycle terminates while a file declared at two paths still records both.
-    visiting:     FxHashSet<(PathBuf, Vec<String>)>,
+    visiting:     FxHashSet<(SourcePathKey, Vec<String>)>,
 }
 
 impl ModuleWalk<'_> {
     fn declare(&mut self, file: &Path, module: &Declared) {
-        let file = lexically_normalized(file);
-        match self.declarations.entry(file) {
+        let key = self.sources.path_key(file);
+        match self.declarations.entry(key) {
             Entry::Vacant(entry) => {
                 entry.insert(DeclaredFile {
+                    paths:  BTreeSet::from([file.to_path_buf()]),
                     mounts: DeclaredMounts {
                         first:      module.module_path.clone(),
                         additional: Vec::new(),
@@ -509,6 +524,7 @@ impl ModuleWalk<'_> {
             },
             Entry::Occupied(mut entry) => {
                 let declared = entry.get_mut();
+                declared.paths.insert(file.to_path_buf());
                 declared.builds = declared.builds.merge(module.builds);
                 if module.module_path != declared.mounts.first
                     && !declared.mounts.additional.contains(&module.module_path)
@@ -525,7 +541,7 @@ impl ModuleWalk<'_> {
         module: &Declared,
         module_directories: &ModuleDirectories,
     ) {
-        let visit = (lexically_normalized(file), module.module_path.clone());
+        let visit = (self.sources.path_key(file), module.module_path.clone());
         if !self.visiting.insert(visit.clone()) {
             return;
         }
@@ -647,9 +663,8 @@ fn crate_root_files(source_root: &Path) -> Vec<PathBuf> {
 ///
 /// A `#[path]` reaching out of its directory produces
 /// `src/platform/../screen/capture_stream.rs`, which names the same file as
-/// `src/screen/capture_stream.rs` but does not compare equal to it. Canonicalizing
-/// would also resolve symlinks, and the callers' paths come from a directory walk
-/// that does not.
+/// `src/screen/capture_stream.rs` but does not compare equal to it.
+/// `SourcePathKey` uses this spelling when the full path does not exist.
 pub(super) fn lexically_normalized(path: &Path) -> PathBuf {
     path.components()
         .fold(PathBuf::new(), |mut normalized_path, component| {
@@ -726,6 +741,7 @@ mod tests {
         walk.declare(file, &root);
         walk.declare(file, &root);
         let mut map = ModuleMap {
+            path_keys:    std::rc::Rc::clone(&sources.path_keys),
             declarations: walk.declarations,
         };
         assert!(map.is_test_only(file));
@@ -738,7 +754,10 @@ mod tests {
             map.file_module_path(Path::new("/repo/src"), file),
             Some(FileModulePath::Known(Vec::new())),
         );
-        let declared = map.declarations.get_mut(file).expect("declared root");
+        let declared = map
+            .declarations
+            .get_mut(&sources.path_key(file))
+            .expect("declared root");
         declared.mounts.insert(vec!["second".to_string()]);
         declared.mounts.insert(vec!["second".to_string()]);
         assert_eq!(declared.mounts.additional.len(), 1);
@@ -773,7 +792,13 @@ mod tests {
                 map.file_module_path(source_root, &shared),
                 Some(FileModulePath::Known(vec!["shared".to_string()])),
             );
-            assert_eq!(map.declarations[&shared].mounts.additional.len(), 0);
+            assert_eq!(
+                map.declarations[&sources.path_key(&shared)]
+                    .mounts
+                    .additional
+                    .len(),
+                0
+            );
         }
     }
 

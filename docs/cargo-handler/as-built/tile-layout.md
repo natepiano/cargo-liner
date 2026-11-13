@@ -38,6 +38,10 @@ Count text uses `top-level agent` or `top-level agents`.
 The unassigned count follows the current pooled rows.
 
 `cell_order_placed` constructs agent entries and tree lines from `AgentPlacement`.
+Root headings show the reported status in the same ink as the tree status cell.
+An unavailable status has no heading segment or separator.
+Headings omit age and detailed state words.
+Expansion actions and redraw deadlines use the same account status source as the frame.
 `ChildLine` classifies work, carriers, and separate sessions exhaustively.
 Shells, subagents, and worker threads draw once as work lines.
 Carrier processes contribute kept descendants without drawing another line.
@@ -45,9 +49,13 @@ A managed session or thread leaves its former owner's work list.
 Cross-machine descendants retain their machine label.
 Pool roots use flat branches; their descendants keep ordinary tree guides.
 
-`TreeColumn` includes Session, Type, Role, Model, Effort, Status, Account, Branch, Directory, and Age.
+`TreeColumn` draws Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, and Directory.
+Age remains a sort key and appears in the details view.
 Type identifies shells and subagents; session and worker rows leave it blank.
-Role uses the accepted hierarchy role, subagent role, or observed timer purpose.
+Role shows unit, showrunner, producer, or worker.
+Activity shows the assigned work or `timer <countdown>`.
+An expired timer shows `timer` and keeps status `busy`.
+A subagent shows role `worker` and its source role word in Activity.
 Model and effort come from the conversation's own census fields.
 Unknown values and shell metadata remain blank.
 See [activity](activity.md) for status and role details.
@@ -55,7 +63,8 @@ See [activity](activity.md) for status and role details.
 `AccountColumn::of` makes one frame-wide decision across all rows and machines.
 Two labels for one program make accounts visible everywhere.
 Unrecorded accounts do not count as a second label.
-Header program labels, summary labels, and tree account columns use that same decision.
+Header program labels and summary labels use that decision.
+Tree account columns retain recorded accounts.
 
 ### Measurement and column fit
 
@@ -67,35 +76,45 @@ It does not reserve the widest changing status value.
 This prevents activity text from changing the number of tile columns.
 
 `TreeColumnPopulation` counts values per tile.
-`PermittedTreeColumns` and `ColumnDensity::{Sparse, Dense}` prevent sparse metadata from consuming name space during compression.
-Population remains per tile when groups merge.
+`PermittedTreeColumns` retains columns with values.
+Role, activity, status, and session retain their headers before width fitting.
 `shared_tree_metrics` groups tiles by screen x and permitted columns.
 `TreeMetrics` shares widths and `AgeLayout` among matching groups.
+A final pass fits the union of column sets across all tiles at the same x.
+Each tile at that x uses the same session width, column slots, and gaps.
+A tile without a column reserves its slot but draws no header or values there.
+A tile alone at its x keeps its local layout.
 `PresentationValues` measures role and status widths for each presentation.
 Those widths follow rows that the allocation paints.
 Population and ages still consider complete rows.
 
-`GroupFitStep` and `ColumnDrop` remove optional columns in this order:
+`GroupFitStep` and `ColumnDrop` fit columns in this order:
 
-1. Effort.
-2. Model.
-3. Directory.
-4. Branch.
-5. Type.
-6. Age.
-7. Account.
+1. Remove effort.
+2. Remove model.
+3. Remove directory.
+4. Remove type.
+5. Remove branch.
+6. Cut session names to the remaining width.
+7. Remove account only below the session minimum.
+8. Remove role.
+9. Remove activity.
+10. Remove status.
 
+Each step acts only when the current columns exceed the available width.
+The session minimum holds the session header and the deepest tree guides.
 Matching fitted groups merge after each step.
+Trees in one screen column share the fitted session width.
 `FittedTreeColumns` supplies headers, values, and painted header spans together.
-Session, role, and status form the core.
-Below the core width, names shorten before roles; status remains whole.
-`fit_tree_names` shares the reduced-gap name budget between header, rows, and minimum-width calculation.
+`fit_tree_names` retains the session minimum before it reduces the final gaps.
 Tree guides remain intact before the shortened name.
+The details view retains the full name and the values of removed columns.
 
 `summary::truncated_line` measures terminal cells and preserves grapheme boundaries and span styles.
 Cut text ends with `…`.
 Numbers and status words remain whole.
-Unused width goes to directory when present, otherwise session names.
+Unused width goes to directory when present.
+The column union uses the smallest tile width at the same x.
 A summary session table with no drawable columns uses `SummarySessionTable::OmittedForWidth` and requests no rows.
 
 `CellView::requested_at_width` determines row demand at the candidate width.

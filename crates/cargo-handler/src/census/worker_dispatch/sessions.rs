@@ -15,6 +15,7 @@ use crate::census::activity::RunDirector;
 use crate::census::classify::ProcessEntry;
 use crate::census::hierarchy::FileRevision;
 use crate::census::hierarchy::StaffRoster;
+use crate::constants::DETACHED_RUNS_DIRECTORY;
 use crate::constants::SESSION_ROOTS;
 
 /// The configured roots used to validate worker-owned session paths.
@@ -110,7 +111,7 @@ impl SessionRoots {
             .filter_map(activity::supervisor_record)
             .filter_map(|record| {
                 let runs = record.parent()?;
-                if runs.file_name()? != "mesh_runs" {
+                if runs.file_name()? != DETACHED_RUNS_DIRECTORY {
                     return None;
                 }
                 let session = runs.parent()?;
@@ -207,7 +208,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let active = root.path().join("active");
         let idle = root.path().join("idle");
-        fs::create_dir_all(active.join("mesh_runs"))?;
+        fs::create_dir_all(active.join("detached_runs"))?;
         fs::create_dir_all(&idle)?;
         fs::write(active.join(DIRECTOR_FILE), "live-director")?;
         fs::write(idle.join(DIRECTOR_FILE), "live-director")?;
@@ -218,10 +219,10 @@ mod tests {
             name:        "python3".into(),
             arguments:   vec![
                 "python3".into(),
-                "mesh_runs.py".into(),
+                "detached_runs.py".into(),
                 "supervise".into(),
                 active
-                    .join("mesh_runs/gate.json")
+                    .join("detached_runs/gate.json")
                     .to_string_lossy()
                     .into_owned(),
             ],

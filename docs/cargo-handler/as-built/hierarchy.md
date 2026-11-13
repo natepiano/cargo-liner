@@ -39,15 +39,15 @@ Each `StaffSnapshot` binds that roster to its `HierarchySource`.
 Names and links in one scan therefore use the same revision.
 
 The reader accepts schema 2.
-Known kinds are `showrunner`, `unit`, `worker`, and `agent`.
+Known kinds are `producer`, `showrunner`, `unit`, `worker`, and `agent`.
 Each known row supplies `id`, `name`, `parent`, and `current_session`.
 Worker rows can also supply `role` and `home`.
 Unknown kinds contribute no rows.
 
 `ValidatedStaffForest` checks identities, parent kinds, and cycles before publication.
 Staff IDs and session IDs must each be unique and nonempty.
-Only showrunners and agents can be roots.
-A showrunner can manage a showrunner, unit, or worker.
+Producers, showrunners, and agents can be roots.
+A producer or showrunner can manage a showrunner, unit, or worker.
 A unit can manage a worker.
 Missing parents and invalid parent chains reject the whole forest.
 
@@ -113,6 +113,50 @@ A thread claimed by placement leaves the owner's ordinary work list.
 `RoleLabel` distinguishes stated roles, inferred manager roles, `ReviewFallback`, and unlabeled sessions.
 Accepted incoming roles take precedence over inference.
 Plan-mode Claude processes use `ReviewFallback` only without a stronger mapping.
+
+### Row columns and details
+
+The tile tree draws account, session, role, activity, and status in that order.
+Optional type, model, effort, branch, and directory columns follow.
+The session column retains its tree guides.
+Recorded accounts remain visible when one account supplies every row.
+Narrow tiles remove optional columns before they truncate session names.
+Directory, branch, activity, and account leave in that relative order.
+
+`RowRole` limits named roles to `unit`, `showrunner`, `worker`, and `producer`.
+Subagents and threads show `worker`.
+Shells and unlabeled sessions show an empty role.
+Only a producer record in the staff source supplies the producer role.
+Activity names the assigned work, including `impl`, `test`, `fix`, and `reviewer`.
+A timer shows `timer` and its countdown in Activity.
+A compacting session shows `compacting` instead of its assigned job.
+The existing census compaction detector supplies that state for every session role.
+
+Each account row supplies `sessions: [{session, state}]` beside its `role_counts`.
+The reader merges these lists into one session map.
+`SessionState` accepts `busy`, `idle`, `paused`, and `exited`.
+The external accounts classifier owns these meanings.
+Rust reads its result without repeating its classification rules.
+Claude rows use their `session_id` string as the lookup key.
+Codex and Astra rows use their proven thread ID.
+Hosted Codex threads use `ChildRow::thread_id`.
+A missing top-level session entry produces `ReportedSessionState::Unavailable` and an empty status cell.
+A running Claude subagent shows `busy`.
+A Codex row without a thread ID shows `idle` with a live process, or `exited` without one.
+Conflicting account entries remove only that session status.
+Retained account readings retain their session states after a refresh failure.
+A live shell shows `busy` independently of its countdown.
+
+Age remains a computed sort value.
+Showrunner and unassigned tiles start in session name order.
+Other trees and the top-level agents table keep their age defaults.
+Neither table draws an age column or an age sort marker.
+A name default retains its session header arrow.
+The details view groups values into agent, hierarchy, location, and now sections.
+Its hierarchy section shows the accepted showrunner, unit, and worker names.
+Unassigned sessions and shells show their full name instead.
+The details view shows the long age last in the now section.
+Detailed state words, such as `thinking` and `clippy`, appear as `state:` in details.
 
 ### Dispatch pairing and names
 

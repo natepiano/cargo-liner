@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 use worker_dispatch::JobText;
 use worker_dispatch::WorkerTask;
 
+use super::accounts::EMPTY_SESSION_STATES;
 use super::tier::RolloutStart;
 use super::tier::Rollouts;
 use super::*;
@@ -72,7 +73,7 @@ fn reviewer_role(text: &str) -> String {
         .filter(|line| line.contains("session") && line.contains("status"))
         .last()
         .expect("the reviewer owner's tree header");
-    let column = header[..header.find("role").expect("role column")]
+    let column = header[..header.find("activity").expect("activity column")]
         .chars()
         .count();
     text.lines()
@@ -88,7 +89,7 @@ fn reviewer_role(text: &str) -> String {
 fn reviewer_lease_draws_review_under_a_visible_agent_without_a_hierarchy_edge() {
     let text = drawn(leased_rows(), HierarchyEdges::default().into());
     assert!(text.contains(&format!("code3 · {SECOND_TASK}")), "{text}");
-    assert_eq!(reviewer_role(&text), "review", "{text}");
+    assert_eq!(reviewer_role(&text), "reviewer", "{text}");
 }
 
 #[test]
@@ -130,7 +131,7 @@ fn drawn(rows: Vec<AgentRow>, hierarchy: HierarchySnapshot) -> String {
         name:  "fixture",
         state: &state,
     }];
-    let placement = AgentPlacement::from_machines(&machines);
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
     agent_cell::group_tiles(&placement, &cells, &HashMap::new(), START + 1000)
         .iter()

@@ -33,6 +33,7 @@ use tui_pane::SettingsNavigation;
 use tui_pane::TileGridPane;
 
 use crate::app::App;
+use crate::details::DetailsPane;
 use crate::globals::AppGlobalAction;
 
 /// Which framework globals the `?` overlay lists. `x` dismisses
@@ -82,6 +83,7 @@ pub(crate) fn build_keymap(
         .register(MovingTextPane::<App>::default())
         .register(PixelatePane::<App>::default())
         .register(FavoritesOverlayPane::<App>::default())
+        .register(DetailsPane)
         .build_into(framework)
 }
 
@@ -207,7 +209,7 @@ mod tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED_OVERLAY_ROWS: [&str; 111] = [
+    const EXPECTED_OVERLAY_ROWS: [&str; 117] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
@@ -250,6 +252,7 @@ mod tests {
         "global.depth_9 = 9",
         "global.open_global_shortcuts = ?",
         "global.attract = a",
+        "global.open_details = d",
         "global.toggle_row = enter",
         "global.undo_attract_replacement = u",
         "[Navigation] navigation",
@@ -316,6 +319,11 @@ mod tests {
         "favorites.select_previous = up",
         "favorites.page_columns_right = right",
         "favorites.page_columns_left = left",
+        "[Row details] details",
+        "details.close = escape",
+        "details.copy = y",
+        "details.down = down",
+        "details.up = up",
         "[Overlay] overlay",
         "overlay.cancel = escape",
         "overlay.start_edit = enter",

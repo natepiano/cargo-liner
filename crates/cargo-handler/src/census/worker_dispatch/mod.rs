@@ -259,12 +259,22 @@ impl WorkerRoleSource {
     }
 
     /// Every Codex row is a worker, including one with no recorded responsibility.
-    pub(crate) const fn text(self) -> &'static str {
+    const fn text(self) -> &'static str {
         match self {
             Self::ReviewerLease => WorkerRole::Review.text(),
             Self::Hierarchy(role) => role.text(),
             Self::Dispatch(role) => role.text(),
             Self::Unroled => WORKER_LABEL,
+        }
+    }
+
+    /// The activity cell uses the responsibility's display word.
+    pub(crate) const fn activity_text(self) -> &'static str {
+        match self {
+            Self::ReviewerLease => "reviewer",
+            Self::Hierarchy(role) => role.activity_text(),
+            Self::Dispatch(role) => role.hierarchy().activity_text(),
+            Self::Unroled => "",
         }
     }
 }
