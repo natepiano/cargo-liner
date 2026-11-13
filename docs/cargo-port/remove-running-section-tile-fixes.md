@@ -2620,32 +2620,17 @@ On 2026-11-11, reservations 01a1c689 (Phase 58b) and 01a1c6cd (Phase 33) stayed 
 
 **Ruled out:** protecting a trunk-only path restored to HEAD during a pending merge — it was unprotected before this change too, and the merge commit closes the window; protecting fewer paths for octopus merges — keeping every dirty path protects more.
 
-### Phase 60 — The toast first-sentence test fails when a word breaks across rows  · status: todo
+### Phase 60 — The toast first-sentence test fails when a word breaks across rows  · status: done
 
-**Depends on:** Phase 58f (order only; showrunner, 2026-11-11).
+#### As-built
 
-Port Phase 4z (f84dc83d2) changed `an_opening_error_toast_keeps_its_first_sentence_on_one_page` in `crates/tui_pane/src/toasts/render/sentence_tests.rs` to compare `body.join(" ").replace("… ", "") == sentence`. The long-word row needs the replace. But the replace also lets the first sentence pass when one of its words breaks across rows.
-
-#### Work Order
-
-**Goal:** the first-sentence case fails when any word of the sentence breaks across rows; the long-word case keeps its current checks.
-
-**Spec:**
-
-1. Give each case its own expected rows. For the first sentence ("Crate metadata is unavailable until crates.io recovers."), assert each drawn body row equals its expected text, with no `…` replace. A word broken across rows then fails the test.
-2. Keep the long-word case ("abcdefghijklmnopqr.") asserts as they are: the last row is "qr.", and the body has 5 rows.
-3. Keep every other assertion in the test. Change no product code.
-4. Before the change, show that the strict check fails on a body that breaks a word across rows (for example, by a narrower pane in a scratch run). Do not commit that scratch change.
+- `an_opening_error_toast_keeps_its_first_sentence_on_one_page` (`crates/tui_pane/src/toasts/render/sentence_tests.rs`) gives each case its own expected rows and asserts `body == expected` with no `…` replace.
+- The first-sentence case expects "Crate metadata is", "unavailable until" and "crates.io recovers.". A word broken across rows fails the test.
+- The long-word case expects "abcd…" to "qr.". It keeps its rebuilt-text, row-count and last-row checks.
+- A scratch run at an 18-column pane broke "unavailable" across rows, and the strict check failed. The scratch change is not in the commit. No product code changed.
 
 **Files:**
-
-- `crates/tui_pane/src/toasts/render/sentence_tests.rs`
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect.
-
-**Acceptance gate:** `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; the test runs under 1 s.
+- `crates/tui_pane/src/toasts/render/sentence_tests.rs` — the expected rows for each case
 
 ### Phase 32c — All arguments keep the crate name, and status words match the key names  · status: done
 
@@ -3468,15 +3453,13 @@ On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests
 
 Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside its uptime on the status line. The user, 2026-11-12: "i would like to see disk reads / second (abbreviated somehow - maybe just Reads/S: after the CPU% also".
 
-**Pending decision:** macOS gives a process's disk read bytes only through `proc_pid_rusage` (`ri_diskio_bytesread`), an unsafe FFI call. `tui_pane` denies `unsafe_code`, and the user reviews every `#[allow]`. The question to the user: approve one reasoned `#[allow(unsafe_code)]` item in `tui_pane` for this read (precedent: `crates/tui_pane/src/diagnostics/cpu/platform.rs:78`)? Declined means macOS shows `—` for the value.
-
 #### Work Order
 
 **Goal:** the status line of cargo-tile, cargo-port and cargo-handler shows the app's own disk reads per second after CPU, for example `Uptime: 12s CPU: 3.1% Reads/s: 64 KB`. Port's Phase 7 fixes an idle cargo-port that read about 70 MB/s from disk; this value shows that kind of fault at once (showrunner, 2026-11-12).
 
 **Spec:**
 
-1. Read the current process's own bytes read from storage. Linux: `read_bytes` from `/proc/self/io`. macOS: `ri_diskio_bytesread` from `proc_pid_rusage(getpid(), RUSAGE_INFO_V2, …)`, per the Pending decision. Start no subprocess. The read runs on the same once-a-second status tick as the CPU sample, so the value changes once each second, as CPU does.
+1. Read the current process's own bytes read from storage through sysinfo, which `tui_pane` already uses: `Process::disk_usage().total_read_bytes` after a refresh of this process alone (`ProcessesToUpdate::Some(&[own pid])`, `ProcessRefreshKind::nothing().with_disk_usage()`). sysinfo 0.39.6 reads `/proc/<pid>/io` on Linux and `proc_pid_rusage` (`ri_diskio_bytesread`) on macOS, so one path serves both platforms. Add no per-platform reader and no `unsafe` code (showrunner, 2026-11-12). Start no subprocess. The read runs on the same once-a-second status tick as the CPU sample, so the value changes once each second, as CPU does.
 2. Sample it the same way as `CpuSampler` (`crates/tui_pane/src/bar/cpu.rs`): the rate is the byte change over the wall time between two samples. Before two samples, and when a read fails, show `—`. Share one sampling shape with CPU; make no second copy of the sample logic.
 3. Draw `Reads/s: <value>` after the CPU value in `crates/tui_pane/src/bar/status_line.rs`, with the same label and value styles. The value is a short byte rate in decimal units: `0 B`, `512 B`, `12 KB`, `3.4 MB`, `70 MB` (one decimal below 10, none at 10 or more, the CPU label's rule). The label `Reads/s` carries the per-second unit.
 4. The status-line gap tests keep their behavior at narrow widths: the new segment drops or shortens by the same rules as the CPU segment.
@@ -3490,7 +3473,7 @@ Change review C307 (merged 2026-11-10, 395dbb1a) put each app's own CPU beside i
 
 **Workers:** 1 writer, a Codex worker through `assign.sh`.
 
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. CPU work ranks first: the new read adds no subprocess and no file read beyond `/proc/self/io` on each status tick.
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. CPU work ranks first: the new read adds no subprocess, and each status tick refreshes only this process, with only disk usage.
 
 **Acceptance gate:**
 - `verify.sh lint tui_pane`, then `verify.sh test tui_pane` green on natedev; `verify.sh lint tui_pane --mac` green.
