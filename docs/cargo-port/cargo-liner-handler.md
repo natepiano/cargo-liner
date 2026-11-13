@@ -134,26 +134,26 @@
 
 **Gotchas:** the summary depth is part of the grid geometry. A collapse that changes the summary depth changes the column capacities, so tiles can move with unchanged ranks.
 
-### Phase 5 — The word "waiting" draws in red in every tile  · status: todo
+### Phase 5 — The word "waiting" draws in bright yellow in every tile  · status: done
 
 **Depends on:** none
 
 #### Work Order
 
-**Goal:** the word `waiting` draws in its own red ink in every tile, so a waiting row stands out from busy rows.
+**Goal:** the word `waiting` draws in its own bright yellow ink in every tile, so a waiting row stands out from busy rows.
 
-**Source:** the user, via the showrunner, 2026-11-12: "waiting should show in some waiting color like red". Showrunner context: in the user's screenshot of the cargo-liner tile, the handler and tile unit rows read `waiting` in the same orange as the other unit words. Required: a red or near-red ink in every tile, readable on dark and light themes, with the color in the theme config and no color value in code.
+**Source:** the user, via the showrunner, 2026-11-12: "waiting should show in some waiting color like red". Showrunner context: in the user's screenshot of the cargo-liner tile, the handler and tile unit rows read `waiting` in the same orange as the other unit words. Required: a red or near-red ink in every tile, readable on dark and light themes, with the color in the theme config and no color value in code. Then the user, via the showrunner, 2026-11-13, on C330: "the waiting color should be a brightrer yellow". The newer word replaces red.
 
 **Spec:**
 
 Director decisions:
-1. A new theme role, `waiting`, sits under `[variants.roles]` in each built-in theme file (`default_dark.toml`, `default_light.toml`, `high_contrast.toml`, `starter.toml`). Its value is red or near red. No color value goes in code.
+1. A new theme role, `waiting`, sits under `[variants.roles]` in each built-in theme file (`default_dark.toml`, `default_light.toml`, `high_contrast.toml`, `starter.toml`). Its value is a bright yellow. On a light theme it is the brightest yellow that keeps the 4.5:1 floor. No color value goes in code.
 2. A custom theme without `waiting` takes the value from the built-in theme it extends, as the other roles do today.
-3. Every tile cell that draws the word `waiting` draws it in the `waiting` ink, in every tile kind. The worker first lists each path that draws the word today. `TreeLine::activity_text` draws the hierarchy job text, which is the word in the user's screenshot. `TreeLine::activity_text` does not draw a raw `Activity::Waiting` today; this phase does not add that text. The accounts unit's C324 change (merged into main as ce37d0e40, Phase 10) adds `SessionState::Waiting`; the status cell draws its text `waiting` in the default status ink. Draw that status word in the `waiting` ink too. Keep the hierarchy job text and the status text as they are, and change only their ink. All other words keep their inks.
+3. Every tile cell that draws the word `waiting` draws it in the `waiting` ink, in every tile kind. The status cell is the one path: the accounts unit's C324 change (merged into main as ce37d0e40, Phase 12) adds `SessionState::Waiting`, and the status cell draws its text `waiting`. This is the word in the user's screenshot. `TreeLine::activity_text` cannot return `waiting`: the role enums (`RoleLabel`, `HierarchyRole`, `WorkerRoleSource`, `SubagentRole`) have no waiting variant, and a raw `Activity::Waiting` is not drawn. This phase adds no activity text and no exact-text ink rule. Key the ink on `ReportedSessionState::Reported(SessionState::Waiting)`. Keep the status text as it is, and change only its ink. All other words keep their inks. Director ruling, 2026-11-13, after the worker found the mismatch.
 4. `waiting` is at least 4.5:1 against its drawn ground in every built-in theme, with the pane tint on and off and on a selected row. It differs from the `busy`, `idle` and `unreachable` inks, so `waiting` does not read as an unreachable account.
 
 Tests (red first, each under one second):
-1. A row that draws `waiting` draws that word in the `waiting` ink, in a showrunner tile and in a unit tile, for each path the worker lists, read from the rendered buffer.
+1. A row with a waiting status draws that word in the `waiting` ink, in a showrunner tile and in a unit tile, read from the rendered buffer.
 2. A row with any other activity keeps its current ink.
 3. `waiting` is at least 4.5:1 on its ground in every built-in theme, tint on and off, selected and not selected.
 4. Each built-in theme file sets `waiting`, and the value differs from `busy`, `idle` and `unreachable`. A custom theme without it takes the built-in value.
@@ -163,9 +163,9 @@ Tests (red first, each under one second):
 - The theme constructors load only `mauve` and `astra_reviewer` from the bundled TOML today; Rust `RolePalette` supplies the other roles. Load `waiting` from the bundled theme files, with inheritance and custom-override tests.
 - Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. `waiting` keeps 4.5:1 and its difference from `busy`, `idle` and `unreachable` at every emphasis; add these cases to `render/word_contrast_tests.rs`.
 
-**Live check (director):** before the checkpoint, capture the cargo-liner tile from a build of this branch, on the dark and the light default themes, under the safety rule. A unit row that reads `waiting` draws it in red.
+**Live check (director):** before the checkpoint, capture the cargo-liner tile from a build of this branch, on the dark and the light default themes, under the safety rule. A unit row that reads `waiting` draws it in bright yellow.
 
-**Change-Review line:** The word waiting draws in red in every tile | On natedev, run cargo-handler while a unit waits, on the dark and the light theme | Each waiting row shows the word waiting in red; the other words keep their colors
+**Change-Review line:** The word waiting draws in bright yellow in every tile | On natedev, run cargo-handler while a unit waits, on the dark and the light theme | Each waiting row shows the word waiting in bright yellow; the other words keep their colors
 
 **Files:**
 - `crates/cargo-handler/themes/*.toml` — the `waiting` role
@@ -181,9 +181,123 @@ Tests (red first, each under one second):
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `waiting` in red on both default themes.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `waiting` in bright yellow on both default themes.
 
-### Phase 6 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
+### Phase 6 — The details view shows activity and status, drops family, and uses the tile colors  · status: todo
+
+**Depends on:** Phase 5 (the `waiting` ink, `agent_cell.rs`)
+
+#### Work Order
+
+**Goal:** the `d` view shows what an agent does now and its status, with no repeated word, and each value has the color it has in the tile.
+
+**Source:** the user, via the showrunner, 2026-11-13, returning C330 (the Phase 3 details sections, merged 77ce4eec): "we can remove the family - the account tells us the family by convention / i'm looking at one that has a status and a state - both are idle - that's not helpful - we should show activity and status - messaging just shows status and state as a unit director - i see a worker that shows activity status and state - but can't a unit director also have an activity possibility? / the waiting color should be a brightrer yellow / colors we use on the main screen should match with the detailed screen". The showrunner put the four items in one phase. Phase 5 takes the waiting yellow, because it owns the `waiting` ink.
+
+**Spec:**
+
+Director decisions:
+1. Remove `DetailProperty::Family` and its line. The `agent` section keeps account, model, effort and type.
+2. Remove `DetailProperty::State` and its line. The `now` section shows `activity:`, `status:` and `age:`, in that order.
+3. `activity:` joins two parts with `HEADING_SEPARATOR`: the job text from `TreeLine::activity_text`, then the live word from `AgentActivity::text` (`thinking`, `clippy`, `compacting` and the others). Examples: a worker shows `impl · clippy`; a unit director shows `thinking`.
+4. The live word is left out when it is `idle` or `—`, because it then gives no fact that the status does not give. A row with no job and no live word shows `—` (`MISSING_VALUE`).
+5. `status:` keeps its value: the accounts-board word from `session_status`.
+6. The tile activity cell does not change. Only the `d` view joins the live word.
+7. Each `d` value with a tile cell for the same row draws in that cell's ink: account, session name, role, activity, status (the `waiting` ink included), type, model, effort, branch and directory. Use the function the tile cell uses for its ink; do not copy the ink rules. Values with no tile cell (pid, desktop, age, the hierarchy names) keep the default text ink.
+8. A selected line keeps the selection background. Its value ink follows the tile's selected-row rule, with the same contrast floors.
+
+Tests (red first, each under one second):
+1. No row's `d` view has a `family:` line or a `state:` line, read from the rendered overlay. The `agent` and `now` sections keep their other lines in order.
+2. A worker with job `impl` and live `clippy` shows `activity: impl · clippy`. A unit director with live `thinking` shows `activity: thinking`. An idle unit director with no job shows `activity: —`. Each shows its accounts word in `status:`.
+3. For each value in decision 7, the `d` view value draws the same foreground as the tile cell of the same row, read from both rendered buffers. Include a row with a waiting status.
+4. The Phase 3 tests `details_navigation_skips_headings_and_y_copies_only_the_value` and `assert_full_frame_copy_notice` stay green. `y` copies the value text only, with no ink.
+
+**Constraints from prior phases:**
+- Phase 3: the four sections, the heading lines, the value column and `y` stay. The `DetailsOverlay` copy target stays.
+- Phase 5: the `waiting` status ink is keyed on `ReportedSessionState::Reported(SessionState::Waiting)` through `color_role`.
+- Phase 2: `MatchInk::resolve` can change a foreground after selection. A `d` value keeps 4.5:1 at every emphasis the overlay draws.
+
+**Live check (director):** before the checkpoint, open the `d` view on a unit director row and on a worker row, from a build of this branch, on the dark and the light default themes, under the safety rule. No `family:` or `state:` line shows; `activity:` shows the job and the live word; each value has its tile color.
+
+**Change-Review line:** The details view drops family and state, shows activity and status, and colors each value as the tile does | On natedev, press d on a unit director row and on a worker row | No family or state line; activity shows the job and what the agent does now; each value has the color it has in the tile
+
+**Files:**
+- `crates/cargo-handler/src/details.rs` — the properties, the `now` order and the value inks
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::details` and the shared cell inks
+- `crates/cargo-handler/src/render/details_tests.rs` — the `d` view tests
+- `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs`, `crates/cargo-handler/src/summary/age_layout_tests.rs` — tests that read the removed lines
+- `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/interaction.md` — the `d` lines and inks
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the new `d` lines and the tile colors on both default themes.
+
+### Phase 7 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: todo
+
+**Depends on:** Phase 6 (it changes `agent_cell.rs`, whose activity text this command prints)
+
+#### Work Order
+
+**Goal:** one command prints, as JSON, the unit directors and workers the TUI shows, with the same status, activity and run facts, so `/showrunner:units` and cargo-handler give one answer.
+
+**Source:** the user, via the showrunner, 2026-11-13: "the /showrunner:units skill and cargo handler tui app should all be using the same informaton sources to find out what workers are working on - so we have consistency - eventually i might merge /showrunner:units into cargo handler but not now - so i want to make sure we prepare the way". Showrunner context: two readers exist today and gave different answers: the cargo-handler Rust census, and `~/.claude/scripts/direct/worker_runs.py` behind `/showrunner:units`. The showrunner's call: the cargo-handler census is the one source. unit-board in sdlc consumes the JSON.
+
+**Spec:**
+
+Director decisions:
+1. Add a visible subcommand, `cargo-handler census --json`, in `cli.rs` beside the hidden `probe`. It scans once, prints one JSON document on stdout, and exits 0. It opens no terminal and draws nothing. Diagnostics go to stderr, as `probe` does.
+2. The command builds its answer through the functions the TUI uses: the local scan, the configured remote probes, the hierarchy, the staff source and the accounts session states. The status word and the activity text come from the functions that fill the tile status and activity cells. Add no second reader and no copy of a rule.
+3. A fact the JSON needs that the census does not have today, such as a detached run's label or start time, goes into the census, so that the TUI and the command have it. It does not go into the command alone.
+4. The JSON has a top-level `schema` integer, starting at 1, `machines`, `directors` and `workers`. The field set is unit-board's, sent by the showrunner 2026-11-13. Times are epoch seconds. A field with no value is null, never a missing key.
+   - Each director: `staff_id`, `name`, `machine`, `current_run_id` (the staff run pointer), `status` (the tile status word, or null with no accounts entry), `activity` (the tile activity text), `activity_started_at`.
+   - Each worker: `staff_id`, `name` (the display name), `parent_staff_id` (its unit), `machine`, `status`, `activity`, `activity_started_at` (the start of the current activity or wait).
+   - Each worker's `pass`: `role` (`impl`, `test`, `fix` or `review`) and `phase` (the phase instance id), or null with no open pass.
+   - Each worker's `pane`: `open`, `stopped`, `closed` or `unknown`.
+   - Each worker's `runs`: each detached run, with `label`, `started_at` and `state` (`running`, `finished_queued` for a finished run with a queued result, or `missing`).
+   - `unknown`: on a director, worker or run that the census cannot read, an object with `reason` text; null otherwise. A pane or run the census cannot read never reads as an empty list.
+   Wait holders and wait reasons stay in the run records; the JSON does not carry them.
+5. The serde types are the contract. Document each field in the type's doc comments and in a `census --json` section of `crates/cargo-handler/README.md`, with one example document. A field rename or removal increments `schema`.
+6. A remote machine that does not answer gives a `machines` entry with its error text and no rows. The command still exits 0. A bad configuration or a failed local scan exits non-zero with the error on stderr.
+7. The command reads no file on a UI thread, because it has none. It uses the configured probe and read timeouts.
+8. A unit's workers and runs come from its staff row's current run only, never from every open run. Old open runs (astra-review, proof, stopped) do not show. The TUI follows the same rule. Source: the showrunner, 2026-11-13, after sdlc confirmed unit-board's Workers fix uses this rule.
+
+Tests (red first, each under one second):
+1. With a fixture census of one showrunner, one unit director and two workers, one with a detached run, the command's JSON lists each with every field in decision 4. The status and activity equal the tile cell text for the same rows, read from the rendered tile.
+2. Each run `state` value and each `pane` value comes out of a fixture that holds it. A pane or run the census cannot read gives `unknown` with its reason.
+3. A row with no accounts entry has `"status": null`. A worker with no run has `"runs": []`.
+4. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs, in the JSON and in the tile.
+5. An unreachable remote machine gives its `machines` entry with the error, and the command exits 0.
+6. The JSON parses against the README example's field set: the same keys, the same types.
+
+**Constraints from prior phases:**
+- Phase 5: a waiting status reads `waiting`, from `ReportedSessionState`. The JSON gives the word; ink does not apply.
+- Phase 6: the tile activity cell does not join the live word; only the `d` view does. The JSON `activity` is the tile cell text.
+- The Delegation Context Status source: cargo-handler never makes a status word of its own.
+
+**Live check (director):** on natedev, run the release build's `cargo-handler census --json` while this unit's workers run. Compare it with the TUI tile for the cargo-liner production: the same unit directors, workers, statuses, activities and runs. Measure the run time over five runs and name it in the phase report.
+
+**Change-Review line:** cargo-handler census --json prints the workers the TUI shows | On natedev, run cargo-handler census --json while a unit works, and open cargo-handler | The JSON lists the same unit directors and workers, with the same status, activity and runs, as the tiles
+
+**Files:**
+- `crates/cargo-handler/src/cli.rs`, `crates/cargo-handler/src/constants.rs` — the subcommand
+- `crates/cargo-handler/src/census/report.rs` — new: the JSON types and the shared build
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/scan.rs` — the shared scan and any run fact the census lacks
+- `crates/cargo-handler/src/census/worker_dispatch/` — run facts, if decision 3 applies
+- `crates/cargo-handler/src/agent_cell.rs` — the shared status and activity text
+- `crates/cargo-handler/src/census/report_tests.rs` — new: the tests
+- `crates/cargo-handler/README.md` — the schema section
+- `docs/cargo-handler/as-built/hierarchy.md` — the command and its source
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check output matches the TUI, and the phase report names the measured run time.
+
+### Phase 8 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
 
 **Depends on:** Phase 3 (both change the handler key handling)
 
@@ -238,7 +352,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the full-screen tile and the return to the grid.
 
-### Phase 7 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 9 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -260,7 +374,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
-- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 6 full-screen tile with its selection, expansion and `y` copy.
+- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 8 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
@@ -299,7 +413,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 8 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 10 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -357,7 +471,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 9 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 11 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -411,13 +525,13 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 10 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 12 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` red ink for the status word is in Phase 5.
 
-### Phase 11 — Five slow tests run in under one second  · status: todo
+### Phase 13 — Five slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 9 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 11 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
@@ -441,7 +555,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 9 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 11 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 
 **Change-Review line:** none (test code only)
 

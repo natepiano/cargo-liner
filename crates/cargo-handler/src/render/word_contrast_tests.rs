@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use ratatui::buffer::Cell;
 use ratatui::layout::Position;
+use tui_pane::ExpansionAction;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
@@ -14,6 +15,8 @@ use super::word_click_tests;
 use super::word_click_tests::Renderer;
 use super::word_click_tests::TestResult;
 use super::*;
+use crate::app::expansion;
+use crate::app::expansion::HandlerExpansionAction;
 use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::theme;
@@ -27,6 +30,7 @@ use crate::word_highlight::WordHighlight;
 use crate::word_highlight::WordHit;
 
 const MINIMUM_CONTRAST: f64 = 4.5;
+const WAITING_HUE_TOLERANCE: f64 = 0.25;
 // The `palette_application` sessions set `started` to 100; at `BEFORE_AGE_STEP`, their age is four
 // minutes.
 const BEFORE_AGE_STEP: u64 = 399;
@@ -2238,4 +2242,190 @@ fn emphasis_grounds_and_modifiers_in_high_contrast_dark() -> TestResult {
 #[test]
 fn emphasis_grounds_and_modifiers_in_high_contrast_light() -> TestResult {
     check_emphasized_theme("High Contrast Light")
+}
+
+fn waiting_status_application() -> TestResult<App> {
+    use crate::census::accounts::AccountsReading;
+    use crate::census::accounts::AccountsTable;
+
+    let mut app = word_click_tests::application()?;
+    let mut owner = word_click_tests::session(10, "waiting-owner", "")?;
+    owner.children = vec![serde_json::from_value(serde_json::json!({
+        "kind":"thread", "depth":0, "name":"waiting-worker", "started":101,
+        "thread_id":"waiting-thread", "activity":{"active":"waiting"}
+    }))?];
+    word_click_tests::apply_rows(
+        &mut app,
+        vec![
+            owner,
+            word_click_tests::session(20, "busy-control", "")?,
+            word_click_tests::session(30, "idle-control", "")?,
+        ],
+    );
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(
+            br#"{
+        "accounts":[{"label":"claude1","roles":[],"use_credits":false,"read_ok":true,"sessions":[
+            {"session":"word-session-10","state":"waiting"},
+            {"session":"waiting-thread","state":"waiting"},
+            {"session":"word-session-20","state":"busy"},
+            {"session":"word-session-30","state":"idle"}
+        ]}],"problems":[]
+    }"#,
+        )
+        .map_err(|error| error.to_string())?,
+    );
+    expansion::dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
+    Ok(app)
+}
+
+fn assert_waiting_word_ink(cell: &Cell, other_inks: &[Color]) -> TestResult {
+    let ratio = glyph_contrast(cell.fg, cell.bg)?;
+    assert!(
+        ratio >= MINIMUM_CONTRAST,
+        "waiting: {cell:?}, covered contrast={ratio}"
+    );
+    for ink in other_inks {
+        assert_ne!(cell.fg, *ink, "waiting keeps a distinct ink: {cell:?}");
+    }
+    Ok(())
+}
+
+fn waiting_fixture_status(buffer: &Buffer, label: &str, word: &str) -> TestResult<Position> {
+    let row = word_click_tests::locate(buffer, label)?;
+    word_click_tests::positions(buffer, word)
+        .into_iter()
+        .find(|point| point.y == row.y && point.x > row.x)
+        .ok_or_else(|| format!("missing {word} status for {label}").into())
+}
+
+#[test]
+fn waiting_summary_status_uses_the_waiting_theme_ink() -> TestResult {
+    let reset = ResetThemeFixture::install();
+    tui_pane::set_transparent_background(false);
+    let mut app = waiting_status_application()?;
+    app.loaded_config.config.tiles.view = TileView::Summary;
+    let mut renderer = Renderer::new(&mut app, 100, 20)?;
+    let buffer = renderer.paint(&mut app)?;
+    let point = waiting_fixture_status(&buffer, "waiting-owner", "waiting")?;
+    let expected = Role::Waiting.style().fg.ok_or("waiting ink")?;
+    for x in point.x..point.x + 7 {
+        assert_eq!(buffer[(x, point.y)].fg, expected);
+    }
+    assert_eq!(
+        (point.x..point.x + 7)
+            .map(|x| buffer[(x, point.y)].symbol())
+            .collect::<String>(),
+        "waiting"
+    );
+    drop(reset);
+    Ok(())
+}
+
+fn check_waiting_status_matches(name: &str) -> TestResult {
+    let builtin = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("theme")?;
+    let reset = ResetThemeFixture::with_theme(builtin.theme);
+    tui_pane::set_transparent_background(false);
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let mut app = waiting_status_application()?;
+        let mut renderer = Renderer::new(&mut app, 100, 35)?;
+        let initial = renderer.paint(&mut app)?;
+        let worker = word_click_tests::locate(&initial, "waiting-worker")?;
+        let away = word_click_tests::locate(&initial, "busy-control")?;
+        let waiting = waiting_fixture_status(&initial, "waiting-worker", "waiting")?;
+        for ground in [
+            MatchGround::Base,
+            MatchGround::SelectedFocused,
+            MatchGround::SelectedUnfocused,
+        ] {
+            app.click(away);
+            if !matches!(ground, MatchGround::Base) {
+                app.click(worker);
+            }
+            if matches!(ground, MatchGround::SelectedUnfocused) {
+                app.click(away);
+            }
+            app.word_highlight.clear();
+            let baseline = renderer.paint(&mut app)?;
+            let before = &baseline[waiting];
+            match ground {
+                MatchGround::Base => {
+                    assert_ne!(before.bg, tui_pane::active_focus_color());
+                    assert_ne!(before.bg, tui_pane::remembered_focus_color());
+                },
+                MatchGround::SelectedFocused => {
+                    assert_eq!(before.bg, tui_pane::active_focus_color());
+                },
+                MatchGround::SelectedUnfocused => {
+                    assert_eq!(before.bg, tui_pane::remembered_focus_color());
+                },
+            }
+            let other_inks = [
+                baseline[waiting_fixture_status(&baseline, "busy-control", "busy")?].fg,
+                baseline[waiting_fixture_status(&baseline, "idle-control", "idle")?].fg,
+                Role::Unreachable.style().fg.ok_or("unreachable ink")?,
+            ];
+            assert_waiting_word_ink(before, &other_inks)?;
+            let [red, green, blue] = rgb(before.fg)?;
+            assert!(
+                red > blue
+                    && green > blue
+                    && (red - green).abs() <= red.max(green) * WAITING_HUE_TOLERANCE,
+                "unmatched waiting retains its yellow hue: {before:?}"
+            );
+            let painted = PaintedWords::capture(&baseline, app.tiles.pointer_regions());
+            let WordHit::Word(token) = HighlightWord::from_token("waiting") else {
+                return Err("waiting token".into());
+            };
+            for emphasis in [
+                WordHighlightEmphasis::Subtle,
+                WordHighlightEmphasis::Clear,
+                WordHighlightEmphasis::Strong,
+            ] {
+                let mut matched = baseline.clone();
+                painted.apply_with_inks(
+                    &WordHighlight::Word(token.clone()),
+                    &mut matched,
+                    word_click_tests::match_background()?,
+                    emphasis,
+                    &mut app.match_inks,
+                );
+                for x in waiting.x..waiting.x + 7 {
+                    let after = &matched[(x, waiting.y)];
+                    assert_ne!(after.bg, before.bg, "{name} {ground:?} {emphasis:?}");
+                    assert_waiting_word_ink(after, &other_inks)?;
+                    assert_matched_ink(before, after, "waiting", Position::new(x, waiting.y))?;
+                }
+            }
+        }
+    }
+    drop(reset);
+    Ok(())
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_default_dark() -> TestResult {
+    check_waiting_status_matches("Default Dark")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_default_light() -> TestResult {
+    check_waiting_status_matches("Default Light")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_dark() -> TestResult {
+    check_waiting_status_matches("High Contrast Dark")
+}
+
+#[test]
+fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_light() -> TestResult {
+    check_waiting_status_matches("High Contrast Light")
 }
