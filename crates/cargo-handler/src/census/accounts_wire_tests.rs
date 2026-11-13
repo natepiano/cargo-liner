@@ -300,7 +300,7 @@ fn stored_accounts_parse_starting_and_waiting_sessions_with_their_role_counts() 
     }"#).expect("stored account report");
     for (session, text, role) in [
         ("fake-starting", "starting", Role::Busy),
-        ("fake-waiting", "waiting", Role::Idle),
+        ("fake-waiting", "waiting", Role::Waiting),
     ] {
         let state = reading.sessions.get(session);
         assert_eq!(state.text(), text);

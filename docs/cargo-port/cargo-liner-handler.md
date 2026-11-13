@@ -134,7 +134,7 @@
 
 **Gotchas:** the summary depth is part of the grid geometry. A collapse that changes the summary depth changes the column capacities, so tiles can move with unchanged ranks.
 
-### Phase 5 — The word "waiting" draws in bright yellow in every tile  · status: todo
+### Phase 5 — The word "waiting" draws in bright yellow in every tile  · status: done
 
 **Depends on:** none
 
@@ -165,7 +165,7 @@ Tests (red first, each under one second):
 
 **Live check (director):** before the checkpoint, capture the cargo-liner tile from a build of this branch, on the dark and the light default themes, under the safety rule. A unit row that reads `waiting` draws it in bright yellow.
 
-**Change-Review line:** The word waiting draws in red in every tile | On natedev, run cargo-handler while a unit waits, on the dark and the light theme | Each waiting row shows the word waiting in bright yellow; the other words keep their colors
+**Change-Review line:** The word waiting draws in bright yellow in every tile | On natedev, run cargo-handler while a unit waits, on the dark and the light theme | Each waiting row shows the word waiting in bright yellow; the other words keep their colors
 
 **Files:**
 - `crates/cargo-handler/themes/*.toml` — the `waiting` role
