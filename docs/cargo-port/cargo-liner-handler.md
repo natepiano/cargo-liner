@@ -157,7 +157,7 @@
 
 **Ruled out:** an activity-text or exact-text `waiting` ink rule. The role enums have no waiting variant, so the status cell is the one path.
 
-### Phase 6 — The details view shows activity and status, drops family, and uses the tile colors  · status: todo
+### Phase 6 — The details view shows activity and status, drops family, and uses the tile colors  · status: done
 
 **Depends on:** Phase 5 (the `waiting` ink, `agent_cell.rs`)
 
