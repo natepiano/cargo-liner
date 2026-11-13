@@ -2551,6 +2551,41 @@ On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ti
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
 
+### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: todo
+
+**Depends on:** Phase 58g (order only; showrunner, 2026-11-13).
+
+On 2026-11-13 the port unit director ran two phases in two worktrees: its home worktree and `cargo-liner-port-8`. cargo-berth maps the director's `CLAUDE_CODE_SESSION_ID` to the home worktree. A plain `cargo-berth drift --reservation <phase 8 id>` was refused with `session_worktree_mismatch`. The only way through was an `env -C` or `-u CLAUDE_CODE_SESSION_ID` prefix, and `~/.claude/docs/direct/berth_decisions.md` forbids an env-var prefix: every cargo-berth call is one plain command in the director's working directory.
+
+The refusal comes from `validate_session_mapping` (`crates/cargo-berth/src/coordination_identity.rs:817-882`): when the named reservation's holder worktree differs from the issuing worktree, it returns `SessionWorktreeMismatch` (`:851-881`).
+
+#### Work Order
+
+**Goal:** a plain `cargo-berth <verb> --reservation <id>` works for every reservation that the caller's session owns, whatever worktree holds it. The verb acts on the reservation's holder worktree. A reservation that the session does not own is still refused.
+
+**Spec:**
+
+1. First, find how cargo-berth records which session owns a reservation. Quote the record and the lines that write it. If no record proves ownership, report that to the director before a product change. Never treat the `--reservation` argument alone as proof.
+2. Make each verb that takes `--reservation` accept a reservation that the caller's session owns in another worktree. The verb reads and writes the holder worktree, not the issuing worktree. Name each verb that changes.
+3. Keep every refusal for a reservation that the session does not own, for an inactive reservation and for a stale mapping. A command without `--reservation` keeps its current worktree rules.
+4. Add a regression test: one session owns reservations in two worktrees. From the first worktree, `drift --reservation <second id>` succeeds and reports the second worktree. Add a test that a reservation owned by another session is still refused from the same place.
+5. Update each `session_worktree_mismatch` test whose case this change makes valid. Keep each test whose case stays a refusal. Report each test that changed and why.
+6. Each new or changed test runs under 1 s.
+
+**Files:**
+
+- `crates/cargo-berth/src/coordination_identity.rs` — the mismatch rule
+- `crates/cargo-berth/src/` — verb dispatch and session mapping, when the change is there
+- `crates/cargo-berth/tests/drift.rs` — the regression test
+- `crates/cargo-berth/tests/` — the existing `session_worktree_mismatch` tests (`edges.rs`, `answers.rs`, `gate.rs`, `liveness.rs`, `hooks.rs`, `front_end_corpus.rs`, `fixtures/front_end_corpus.json`, `support/gate_fixtures.rs`)
+- `crates/cargo-berth-test-support/src/` — a two-worktree fixture, when one is needed
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`.
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev; the regression test fails on the code before the change.
+
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: todo
 
 **Depends on:** Phase 58g (order only; flaky tests stop other units' style tickets, so 58g runs first).
