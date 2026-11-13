@@ -294,37 +294,22 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 11 — cargo-port has one default binding for project row expand and collapse  · status: done
 
-**Depends on:** Phase 8 (both edit `crates/cargo-port/CHANGELOG.md`).
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-port has one source for the default project-list row bindings. The keymap file that cargo-port writes, the help, and the key dispatch all agree: Right expands a row and Left collapses it, with no modifier.
-
-**Source:** the style unit found the mismatch (ticket 1462, style finding 62184661ee2e187f); the showrunner sent it on 2026-11-13. Main 65f961a24 renames `tui/keymap/resolved.rs` to `tui/keymap/resolved_keymap.rs`, with no content change. The director traced it:
-1. `crates/cargo-port/src/tui/keymap/resolved_keymap.rs:33`: `ResolvedKeymap::defaults()` binds `ExpandRow` and `CollapseRow` to Shift+Right and Shift+Left.
-2. `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs:36`: the framework keymap, which dispatches the keys, uses `ProjectListAction::bindings()`, with no modifier.
-3. The Shift choice is older than Phase 2q. A comment, removed in 04a516486, gave its reason: the legacy pane-scope match in `handle_normal_key` had to avoid the plain-arrow `NavAction` bindings. That match is gone. The framework now binds plain arrows in the project-list scope.
-4. `crates/cargo-port/src/tui/keymap/load.rs:205` writes `ResolvedKeymap::default_toml()` when no keymap file exists. The framework then loads that file (`tui/app/construct.rs:287`). A new install therefore gets `expand_row = "Shift+Right"`, and the help shows that binding.
-5. `ResolvedKeymap.project_list` has no dispatch reader. `load.rs` uses it for the default file text, Vim conflict checks and load results.
-
-**Spec:**
-1. **Reproduce first.** Write a test that compares each `ProjectListAction` default in `ResolvedKeymap::defaults()` with `ProjectListAction::bindings()`. It compares the binding values, not only the presence of each action. It must fail on the current code.
-2. **One source.** Build the `project_list` defaults in `ResolvedKeymap` from the same function that the framework uses. Remove the `KeyModifiers` argument from `ExpansionAction::key_bindings` if no caller then needs it. Correct its doc comment if it stays.
-3. **Written file.** A test reads the default keymap text and finds `expand_row` and `collapse_row` bound to plain Right and Left.
-4. **User file.** Do not rewrite an existing keymap file. A file that already binds Shift+Right keeps its binding.
-5. **Comments.** Correct the doc comments that name the removed `handle_normal_key` (for example `tui/app/mod.rs:3587` and `:3783`). Change only comments in `tui/app/mod.rs`.
-6. **Changelog.** Add a fix entry: a new keymap file binds row expand and collapse to plain Right and Left.
+- `ExpansionAction::key_bindings()` in tui_pane takes no argument. It binds `ExpandRow` to plain Right and `CollapseRow` to plain Left.
+- `ResolvedKeymap::defaults()` builds `project_list` from `ProjectListAction::key_bindings()`, the same source as the framework keymap. cargo-handler `globals.rs` uses the same call.
+- A new keymap file binds `expand_row = "right"` and `collapse_row = "left"`. An existing keymap file keeps its bindings and its bytes.
+- Doc comments in `tui/app/mod.rs` no longer name the removed `handle_normal_key`.
+- Tests: `project_list_defaults_match_framework_bindings` and the default-text test in `resolved_keymap.rs`; `existing_shift_arrow_keymap_keeps_its_bindings_and_file` in `load.rs`.
 
 **Files:**
-- `crates/cargo-port/src/tui/keymap/`
-- `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`
-- `crates/cargo-port/src/tui/app/mod.rs`
-- `crates/tui_pane/src/keymap/expansion_action.rs`
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/tui_pane/src/keymap/expansion_action.rs` — `ExpansionAction::key_bindings`
+- `crates/cargo-port/src/tui/keymap/resolved_keymap.rs` — `ResolvedKeymap::defaults`, comparison and default-text tests
+- `crates/cargo-port/src/tui/keymap/load.rs` — the existing-file test
+- `crates/cargo-handler/src/globals.rs` — the third caller
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — entries; the tui_pane entry is marked Breaking
 
-**Workers:** 1 writer.
-
-**Acceptance gate:** the comparison test fails before the repair and passes after. `verify.sh test cargo-port` and `verify.sh test tui_pane` pass on the Mac. No new test takes 1 s or more. `verify.sh lint cargo-port` is clean. The checkpoint carries a `Change-Review:` line: on a new install, Right expands a project row and Left collapses it, and the help shows the plain arrows.
+**Gotchas:** `ResolvedKeymap.project_list` has no dispatch reader. It sets only the default file text, Vim conflict checks and load results.
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
@@ -364,3 +349,68 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **State:** none.
 
 **Acceptance gate:** a 10-minute idle acceptance run on natedev at load under 8 reads almost nothing apart from swap-in that per-process evidence proves. Each remaining read has a file change that the app shows as its cause, and unexplained bytes are listed. Compare with the `bd55fde2d` binary in 3 alternating pairs at similar load and on the same workload. When the phase changes code: each new test fails before its repair, `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+
+### Phase 13 — cargo-port finishes its startup disk usage step  · status: done
+
+**Depends on:** Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`). Runs before Phase 12, in its own worktree.
+
+#### Work Order
+
+**Goal:** at startup, the Disk usage row completes for every project. It does not show "Disk usage failed".
+
+**Source:** the showrunner, 2026-11-13. On natedev the installed cargo-port from main `13182d0dc` (Phase 8) showed "Disk usage failed" in its startup panel. `include_dirs` were `/etc`, `/tmp`, `~/.claude`, `~/rust` and `~/worktrees`. Load was about 198. The director traced the failure condition:
+1. `sweep_startup_timeouts` in `tui/app/async_tasks/startup_phase/tracker.rs:397` marks the Disk usage row failed when the row stays visible past `STARTUP_ROW_TIMEOUT` (2 minutes, `tui/constants.rs:67`) without completing.
+2. The row completes when `startup.disk.seen` holds every expected path. `tui/app/async_tasks/disk_handlers.rs:114` and `:126-133` insert into `seen`. `maybe_complete_startup_disk` (`tracker.rs:502`) logs `seen` and `expected` on completion.
+3. No perf log from that startup exists, so the cause is not proven. Two causes are possible: the startup walk took longer than 2 minutes at that load, or some expected path never reaches `seen`. Phase 8 changed disk totals to update from changed files and hard-link aliases (`scan/disk_totals.rs`).
+
+**Spec:**
+1. **Cause.** Reproduce on natedev with the same `include_dirs`, in a terminal you start yourself, with the perf log on. Record `seen`, `expected`, the paths that never reach `seen`, the walk time and the load. Compare with the `596c2c75a` binary (before Phase 8) once. Post the cause on the board as soon as you know it.
+2. **Fix.** When an expected path never reaches `seen`, make each startup disk result insert its paths. When the walk is slow, find the slow part and remove the waste. Do not hide the defect with a longer timeout only.
+3. **Test.** Add a test that fails before the fix: a startup disk pass whose expected paths all reach `seen`, for the input that the cause names. It runs under 1 s and does not depend on the timing of the real disk.
+4. **Changelog.** Add a cargo-port fix entry.
+
+**Files:**
+- `crates/cargo-port/src/` — the startup disk path that the cause names
+- `crates/cargo-port/CHANGELOG.md` — entry
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.
+
+### Phase 13b — cargo-port applies startup results fast under high load  · status: todo
+
+**Depends on:** Phase 13 (both edit the startup disk path and `crates/cargo-port/CHANGELOG.md`). Runs next, before Phase 12, in its own worktree.
+
+#### Work Order
+
+**Goal:** at startup under high load, the Disk usage row completes well under the 2 minute limit. Each background result applies to the app in little time.
+
+**Source:** the showrunner, 2026-11-13, add-on ruling on the Phase 13 proof. Paired natedev starts at the same load (about 53 to 145) gave these results:
+1. Before Phase 8 (`596c2c75a`): Disk usage done at 120.8 s.
+2. Phase 13 fix: done at 115.6 s. The cargo-liner walk took 10.6 s.
+3. In both builds the main loop applies at most `MAX_MSGS_PER_FRAME` (50, `tui/app/async_tasks/constants.rs:28`) results per frame in `tui/app/async_tasks/poll.rs`. One frame took 18.5 s to apply 50 results. The apply time per run sums to 111-132 s.
+4. In 100 s the perf log held 2461 `watcher_git_event_probes` and 901 `watcher_project_event` lines (`watcher/events.rs`). Many came from files under `/tmp` and `~/.claude` that are not project files, for example Claude session `.jsonl` files.
+5. At load 128 the Disk usage row timed out in both builds.
+
+**Spec:**
+1. **Slow apply.** Find which result kinds make one frame apply 50 results in 18.5 s. Use the perf log and add perf fields where the log cannot tell. Make each apply cheap; remove the waste, not the work the screen needs.
+2. **Watcher events.** Find why watcher events from `/tmp` and `~/.claude` that are not project files reach cargo-port's queue. Drop events outside the watched project roots at the source, in the watcher, before they cost a Git probe or a queue message.
+3. **Test.** Add tests that fail before each fix and pass after. They run under 1 s and do not depend on real disk timing or load.
+4. **Changelog.** Add a cargo-port fix entry.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/` — the background apply path that the cause names
+- `crates/cargo-port/src/watcher/` — event filtering at the source
+- `crates/cargo-port/CHANGELOG.md` — entry
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:**
+1. The tests fail before the repair and pass after.
+2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
+3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13 build, then this build. The Disk usage row in this build completes well under the 120 s limit.
+4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the Disk usage row completes with no failure.
