@@ -338,7 +338,53 @@ In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pan
 - While the tile is expanded, `TileGrid::prepare_covered` keeps the grid geometry without a paint; `redraw_grid` resets the pane before the grid draws again.
 - Word-click tests need `Renderer::new`: the fixed-time renderer does not keep `painted_frame`.
 
-### Phase 14 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 14 — The cargo-handler status bar shows `enter expand` and `esc collapse`, as cargo-tile does  · status: todo
+
+**Depends on:** Phase 13 (it adds the full-screen tile and `global.expand`)
+
+#### Work Order
+
+**Goal:** the status bar tells the user that Enter shows the focused tile on the full screen, and that Esc returns it. The tile-fixes as-built names the shared full-screen state.
+
+**Source:** the showrunner, 2026-11-14, on the Phase 13 add-on: "Add-on 'enter expand' status bar hint: current. Put it with the doc fix in one small follow-up checkpoint before Phase 14 work." That Phase 14 is the producers phase, now Phase 15. The doc fix: "You can now edit the stale as-built lines in remove-running-section-tile-fixes.md for your follow-up checkpoint."
+
+**Spec:**
+
+Director decisions:
+1. In the grid, the status bar shows `enter expand`, from the `global.expand` keymap binding. While the full-screen view is open, it shows `esc collapse`. Both hints give way before the uptime at a narrow width, as in cargo-tile.
+2. `tui_pane::FullScreenView::status_hint(expand)` gives that slot. It owns the `esc collapse` key and label. cargo-tile and cargo-handler both call it, so the rule has one source. cargo-tile drops its `COLLAPSE_HINT_KEY` and `COLLAPSE_HINT_LABEL` constants. Its status bar does not change.
+3. `docs/cargo-port/remove-running-section-tile-fixes.md` names `tui_pane::FullScreenView` where it names the old `GridView` states: the Phase 46 as-built state and status-bar lines, its `grid_view.rs` Files line, and the Phase 34 pause clock line.
+
+**Constraints from prior phases:**
+- Phase 13: `App::full_screen` is a `tui_pane::FullScreenView<TileKey, ()>`; cargo-tile's `GridView` is `FullScreenView<InvocationId, CellScroll>`. `is_open()` is false only in `Grid`.
+- Keep cargo-tile's status tests green: `the_expand_hint_yields_to_uptime_at_a_narrow_width` and the `enter expand` / `esc collapse` tests in `render.rs`.
+
+Tests (red first, each under one second):
+1. The cargo-handler status bar shows `enter expand` in the grid, and `esc collapse` while the full-screen tile shows.
+2. At a narrow width, the cargo-handler hint gives way before the uptime.
+
+**Live check (director):** none. The look change is one status-bar hint. The status tests read the drawn buffer.
+
+**Change-Review line:** The cargo-handler status bar names Enter and Esc for the full-screen tile | On natedev, run cargo-handler, then press Enter and Esc | The status bar reads enter expand in the grid and esc collapse on the full screen
+
+**Files:**
+- `crates/tui_pane/src/tiles/full_screen.rs` — `FullScreenView::status_hint`
+- `crates/tui_pane/CHANGELOG.md` — one Added line
+- `crates/cargo-tile/src/render.rs` — the status line calls `status_hint`
+- `crates/cargo-tile/src/constants.rs` — drop the two collapse constants
+- `crates/cargo-handler/src/render/mod.rs` — the status line calls `status_hint`
+- `crates/cargo-handler/src/render/full_screen_tests.rs` — tests 1 and 2
+- `docs/cargo-handler/as-built/interaction.md` — the status-bar hints
+- `docs/cargo-port/remove-running-section-tile-fixes.md` — the stale as-built lines
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint` pass.
+
+### Phase 15 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -401,7 +447,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 15 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 16 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -461,7 +507,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 16 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -515,13 +561,15 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 17 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 18 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+
+**Numbering:** this phase was Phase 17 until 2026-11-14, when the new Phase 14 moved Phases 14-18 to 15-19.
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 18 — Twelve slow tests run in under one second  · status: todo
+### Phase 19 — Twelve slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 16 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
@@ -552,7 +600,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 16 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 17 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 
 **Change-Review line:** none (test code only)
