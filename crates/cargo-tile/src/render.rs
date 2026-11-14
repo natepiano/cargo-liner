@@ -4559,14 +4559,15 @@ impl FrameTableColumnGrid {
         })
     }
 
-    /// Choose this table's gap after its column reductions.
+    /// Choose this table's gap after its column reductions; the wide gap
+    /// must leave room for the command and its header.
     fn preferred_column_spacing(&self, width: u16) -> u16 {
         let fitted = self.columns_for_command_name(width);
         table_column_spacing(
             fitted.value_width,
             &fitted.constraints,
             &fitted.columns,
-            self.longest_command_width,
+            self.longest_command_width.max(self.command_title_width),
         )
     }
 
@@ -4582,10 +4583,12 @@ impl FrameTableColumnGrid {
                 continue;
             };
             // Argument tails have already yielded to the subcommand in Short view.
+            // The header must fit too, or it draws cut.
             let command_width = match self.view.arguments {
                 ArgumentDetail::Default => table.short.min(table.subcommand),
                 ArgumentDetail::All => table.full.saturating_sub(TABLE_CONTINUATION_CLEARANCE),
-            };
+            }
+            .max(self.command_title_width);
             let fixed = fitted
                 .constraints
                 .iter()
@@ -20081,7 +20084,9 @@ mod tests {
                 }
             })
             .collect();
-        let mut roster = Roster::new();
+        // The CI macOS runner's size: narrow cpu and mem columns pack the most cells.
+        let mut roster =
+            Roster::for_test(SessionColumnWidths::for_machine(3, 7 * BYTES_PER_GIBIBYTE));
         roster.observe(groups, Instant::now());
         roster
     }
