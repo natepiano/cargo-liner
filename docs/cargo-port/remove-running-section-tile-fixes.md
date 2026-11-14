@@ -2569,53 +2569,126 @@ On 2026-11-13 the port unit director ran two phases in two worktrees. A plain `c
 
 **Files:** `crates/cargo-berth/src/{cli,drift/execution,ledger/journal,verb/board,verb/check,verb/claim/acquisition}.rs`, `crates/cargo-berth/src/session/{mod,reservation_command}.rs`, `crates/cargo-berth/tests/drift.rs`.
 
-### Phase 58j — Sixteen cargo-berth drift, phase and presentation tests run under 1 s  · status: todo
+### Phase 58j — Sixteen cargo-berth drift, phase and presentation tests run under 1 s  · status: done
 
-**Depends on:** none. Phase 58h moves board test setup to a recorded template; use that pattern when it applies.
+**Depends on:** none.
 
-The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth tests at 1.0-1.62 s (`phases/58f/repair1-gate-fixed-slow-tests.json`). Three interleaved timing pairs (Phase 58f tree against base 644f8c3, run `20261113T135730-3586069-916b`) show that Phase 58f does not cause them. In each pair the tree at the lower load was faster. In pair 3 (load 61 base, 69 phase) the phase median was 0.56 of the base. The showrunner ruled that these tests are defects whatever the pairs show (2026-11-13).
+The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth tests at 1.0-1.62 s: 14 `drift` tests, `parallel_phases::a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths` and `presentation::successful_integrate_presentation_is_engine_considered`. The showrunner ruled them defects whatever the timing pairs show.
 
-1. `drift` (14 tests):
-   - `a_rebase_reanchors_the_phase_so_the_new_base_is_not_read_as_its_work` — 1.620 s
-   - `a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition` — 1.578 s
-   - `a_claim_taken_before_a_commit_is_entered_by_it` — 1.487 s
-   - `a_committed_incursion_names_the_commits_that_introduced_its_paths` — 1.462 s
-   - `a_claim_taken_after_a_commit_is_not_entered_by_it` — 1.436 s
-   - `a_merge_keeps_the_units_own_committed_paths` — 1.433 s
-   - `a_cheap_comparison_without_a_baseline_claims_nothing_and_still_catches_the_next_write` — 1.371 s
-   - `a_refused_merge_head_reports_the_path_it_introduced` — 1.279 s
-   - `an_answered_incursion_covers_a_sibling_claimed_after_the_answer` — 1.216 s
-   - `a_working_tree_edit_after_an_integrated_fast_forward_still_counts` — 1.178 s
-   - `a_resolution_in_an_unrecorded_merge_branch_merge_still_enters_the_held_path` — 1.138 s
-   - `ambiguous_post_commit_keeps_changes_for_an_explicit_cheap_retry` — 1.093 s
-   - `a_second_run_that_read_an_unoccupied_worktree_is_refused_under_the_lock` — 1.089 s
-   - `an_integrated_fast_forward_is_not_a_post_write` — 1.086 s
-2. `parallel_phases::a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths` — 1.007 s
-3. `presentation::successful_integrate_presentation_is_engine_considered` — 1.118 s
+#### As-built
+
+- Cause: the drift and parallel starting repositories were built inside the first test, so about 32 first-batch tests waited. The presentation tests built their repository live in each test.
+- `RepositoryTemplate::before_run()` (test-support) gives a template that the nextest setup script builds before tests run. The drift, parallel and presentation starting repositories use it, through `STARTING_REPOSITORIES` in `tests/recorded_templates.rs`.
+- Recorded histories replace live setup: `PHASE_BEFORE_REBASE` and `INTEGRATED_MERGE` (`drift_fixtures.rs`), `INTEGRATION_PHASE` (`presentation_templates.rs`), and `SIBLING_PHASES` with `SIBLING_PHASES_AFTER_DRIFT` (`parallel_templates.rs`).
+- `cargo_berth_test_support::save_recorded_history` saves a recorded history in one call. The presentation test crate denies `expect`, so it records through this call and `TestResult`.
+- The presentation helpers moved from `presentation.rs` to `support/presentation_templates.rs`, so the template and the tests share one copy.
+- The parallel sibling test splits in two at its recorded drift. The new test is `a_siblings_checkpoint_keeps_only_its_own_paths`.
+- Results: crate gate (load 98-142) 1,382 tests, the 17 named tests at 0.13-0.64 s. Loaded natedev workspace suite (load 65-99) 7,832 tests, the 17 named tests at 0.29 s or less. Final gate (load 35-62) 1,382 tests, the named tests at 0.54 s or less.
+- Director review only (no workers). Repaired: a duplicated helper copy, an unused re-export and a dead state reader. Solved in repair round 3 of 3.
+- Checkpoint: b873f73a6 on `tile-phase-58j`.
+
+**Files:** `crates/cargo-berth-test-support/src/{lib,recorded_history,repository_template}.rs`; `crates/cargo-berth/tests/{drift,parallel_phases,presentation,recorded_templates}.rs`; `crates/cargo-berth/tests/support/{drift_fixtures,history_restore,parallel_templates,presentation_templates,recorded_history}.rs`.
+
+**Binds later work:** Phase 58k uses this method: a before-run start, or a recorded history for a test's own setup. A test crate that denies `expect` records through `save_recorded_history`.
+
+**Gotchas:** a recorded setup that makes linked worktrees needs `instantiate_with_external_worktrees(parent)`. A template main in `recorded_templates.rs` stays at 100 lines or fewer (clippy `too_many_lines`).
+
+**Ruled out:** a longer timeout, a retry or a sleep. Phase 58f does not cause the slow times (three timing pairs against base 644f8c3).
+
+### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: done
+
+**Depends on:** Phase 58j (its method and its template helpers). Phase 63a runs first.
+
+The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99) had 15 `cargo-berth::lifecycle` tests, one `cargo-berth::gate` test and two `cargo-tile` reader scenario tests at 1.0-1.6 s.
+
+#### As-built
+
+- `INITIALIZED_REPOSITORY`, `COMMITTED_POLICY_REPOSITORY` and `INITIALIZED_REFTABLE_REPOSITORY` are before-run templates in `tests/support/lifecycle_templates.rs`. The lifecycle tests no longer build them in the first test.
+- The session and nextest environments set `PYTHONDONTWRITEBYTECODE=1`, so each reader scenario process compiled `reader_scenario_cases.py`. `python_cache::cache_python_modules` removes that variable, and the cache folder now fills.
+- The three `split_checkpoint_survives_*` tests ran a split rebase and then its reconciliation. `continue_split` and `drain_split` (`support/reanchoring_templates.rs`) split that work. The new `split_rebase_captures_*` tests run the rebase. The old names drain from the `CONTINUED_SPLIT_RETENTION`, `CONTINUED_SPLIT_SIBLING` and `CONTINUED_SPLIT_SWITCHED` templates.
+- The lanes test is two tests: `lanes_release_when_their_integration_target_receives_a_merge_commit` and `…_receives_a_fast_forward`.
+- `pyrightconfig.json` at the repository root makes basedpyright find the scenario modules.
+- Results, natedev crate gate at load 36: 1,388 tests. Lanes 1.35 s to 0.53 s. Drain halves 0.14-0.20 s. The other named lifecycle tests 0.38-0.70 s. Load 41 workspace suite: reader tests 0.32 s and 0.31 s, the gate test 0.28 s.
+- Still over 1 s, each one real rebase: `split_rebase_captures_stacked_branches_rewritten_with_update_refs` 1.41 s and the two `upper_checkpoint_keeps_the_full_split_interval_*` tests 1.12-1.13 s. Phase 58m takes them.
+- Director review only (no workers). Repair round 1 of 3.
+- Checkpoint: a6851294c on `tile-phase-58k`.
+
+**Files:** `crates/cargo-berth/tests/{lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/{lifecycle_templates,reanchoring,reanchoring_templates}.rs`, `crates/cargo-tile/src/shim_registration/{python_cache.rs,reader_scenario.py,reader_scenario_cases.py}`, `pyrightconfig.json`.
+
+**Gotchas:** a nextest or Claude session environment can carry `PYTHONDONTWRITEBYTECODE`; a test that relies on the bytecode cache must remove it.
+
+### Phase 58n — cargo-liner tests ignore inherited Git command settings  · status: done
+
+**Depends on:** none. It runs before Phase 58m, because its failure holds the main CI point (showrunner, 2026-11-13).
+
+The CI point on main 8e7980d6e failed 6 `cargo-berth::gate` post-commit tests in the gate clone. The post-commit hook started 13 Git processes against a ceiling of 5.
+
+The CI point gives validation three Git settings in `GIT_CONFIG_COUNT`: `url.<push>.pushInsteadOf`, `user.name` and `user.email`. The test processes inherit them. `configuration_overlay` in `crates/cargo-berth/src/git/read.rs` accepts only `maintenance.auto` and `gc.auto` for in-process reads. Any other setting sends every read to a Git child. With these three settings set on natedev, 63 workspace tests fail: 14 gate tests, 47 cargo-berth unit tests and 2 cargo-port unit tests. The gate run stopped at the first failures, so it showed only 6.
+
+#### As-built
+
+- The `[env]` table in `.cargo/config.toml` sets `GIT_CONFIG_COUNT = { value = "0", force = true }`. Git and cargo-berth ignore the inherited entries in every process that cargo starts, nextest tests included.
+- The product route does not change. A Git setting that cargo-berth does not know still goes to Git.
+- Results, natedev: 7,878 workspace tests passed with the three CI settings set (63 failed before). The plain workspace gate passed 7,877 tests.
+- Director review only (no workers). Checkpoint: dbd3f8fb9 on `tile-phase-58n`.
+
+**Files:** `.cargo/config.toml`.
+
+**Gotchas:** a caller's `GIT_CONFIG_COUNT` reaches every test process. A test that counts Git processes or names a read route depends on the `[env]` entry.
+
+### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
+
+**Depends on:** Phase 58k (its split tests and its times).
+
+After Phase 58k, five lifecycle tests still run one real rebase each and stay near or over 1 s on natedev. The showrunner approved this phase on 2026-11-13.
+
+1. `split_rebase_captures_stacked_branches_rewritten_with_update_refs` — 1.409 s (load 36)
+2. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` — 1.127 s (load 36)
+3. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` — 1.116 s (load 36)
+4. `outstanding_rebase_uses_its_integration_target_as_the_new_anchor` — 1.164 s (load 41), 0.379 s (load 36)
+5. `rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint` — 1.002 s (load 41), 0.340-0.361 s (load 36)
+
+Under strace, each commit in a stopped rebase starts a post-commit `cargo-berth drift --full` (0.10-0.36 s each). `rebase --continue` starts about 35 reference-transaction hook processes. A further test split cannot remove that cost.
 
 #### Work Order
 
-**Goal:** each of the 16 tests runs under 1 s in a loaded natedev full suite at 32 threads, with every assertion.
+**Goal:** the cargo-berth rebase hooks do less work, so the five tests run under 1 s on natedev.
 
 **Spec:**
 
-1. Measure first. For each test, split its time into fixture setup, Git process starts, cargo-berth process starts, disk sync and assertions. Use one shared timeline for the 14 drift tests; they likely share one setup cost.
-2. Fix the largest shared cost at its cause. Prefer a recorded template (Phase 58b, `crates/cargo-berth/tests/recorded_templates.rs`) over live setup.
-3. Keep every assertion. Add no retry, sleep or longer wait. Do not raise a limit or a timeout.
-4. Report each test's time before and after, at the same load band.
+1. Measure first. Time each hook start and each `drift --full` in one rebase of each test.
+2. Make the post-commit hook cheaper during a rebase. Each rebased commit runs `drift --full` now.
+3. Make the reference-transaction hook cheaper on `rebase --continue`. It starts about 35 processes now.
+4. Keep every assertion and every recorded hook result. Add no retry, sleep or longer wait.
+5. Report the five tests' times before and after, at the same load band.
+6. Also report the new times of the 21 other cargo-berth tests at 1.0-1.5 s in the Phase 58k crate gate.
 
 **Files:**
 
-- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/presentation.rs`
-- `crates/cargo-berth/tests/recorded_templates.rs` — template registration
-- `crates/cargo-berth-test-support/src/` — shared fixture setup and templates
-- `crates/cargo-berth/src/` — only when the measured cost is in the product
+- `crates/cargo-berth/src/` — the hook entry points, drift and the reference-transaction path
+- `crates/cargo-berth/tests/` — only where a test must name a new hook result
 
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Phase 58k: the split rebase tests start from the `CONTINUED_SPLIT_*` and `SPLIT_LOWER` templates.
 
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, the five tests under 1 s.
 
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, each of the 16 tests under 1 s; one loaded natedev workspace suite at 32 threads with each of the 16 tests under 1 s.
+### Phase 58l — Before-run templates restore at their canonical path  · status: done
+
+**Depends on:** none. It ran before Phase 58k, because its failure held the main CI point (showrunner, 2026-11-13).
+
+The CI point on main e6a75c0fc failed 7 `cargo-berth::board` tests in the gate clone. Each starts from `initial-integration-pair` or a template built from it.
+
+#### As-built
+
+- Cause: the gate reaches its target folder through a path that is not canonical. The setup script built each before-run template at that path. Git records a linked worktree (`.git/worktrees/<name>/gitdir` and the worktree's `.git` file) by its canonical path. `restore_into` replaced only the path as given, so each copy kept the template's worktree paths. The in-test fallback already canonicalized its build folder.
+- `prepare_before_run` (`crates/cargo-berth-test-support/src/repository_template.rs`) builds at the canonical path. `prebuilt_root` reads a complete prebuilt template at its canonical path. `restore_from` holds the restore body that `restore_into` calls.
+- New test `before_run_template_restores_its_linked_worktree_through_a_linked_directory`: it builds a template with a linked worktree through a symbolically linked folder, restores it, and checks that Git lists the worktree at the copy. Without the fix it fails: Git lists the worktree at the template.
+- Gate: lint clean; 10 `cargo-berth-test-support` tests; 1,384 `cargo-berth` tests on natedev (load 64, 6 of 32 threads).
+- Director work only (no workers). Checkpoint: 5f236df23 on `tile-phase-58l`.
+
+**Files:** `crates/cargo-berth-test-support/src/repository_template.rs`.
+
+**Binds later work:** a template fixture that records an absolute path must build and restore at the canonical path.
 
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
 
@@ -3532,6 +3605,25 @@ On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits)
 - Not done: the trigger is unknown. A new failure reopens this work with its cause named (showrunner informed, 2026-11-13).
 
 **Files:** `crates/cargo-tile/tests/shim_modes.rs`.
+
+### Phase 63a — The shim signal tests wait on an event and name their cause  · status: done
+
+**Depends on:** none. It ran before Phase 58k, because its failure held a merge (showrunner, 2026-11-13).
+
+On 2026-11-13 a Mac run of the port 13b merge gate failed `shim_modes::tests::sigint_to_the_shim_alone_waits_for_cargo` at 20.036 s with "cargo did not record cargo-held" (load about 50-70). It passed alone in 0.211 s.
+
+#### As-built
+
+- Cause, found by code reading: when capture setup fails, `run_with_publication` (`crates/cargo-tile/src/hook.rs`) `exec`s the real cargo in the runner's own process. The fake cargo then signals its own pid and dies before it records `cargo-held`. The old wait did not watch the shim, so it ran the full 20 s. Phase 63's `root-absent` comes from the same fallback paths.
+- `wait_for_observation(shim, name)` also watches the shim. A shim that exits first fails the test at once. `observation_failure` names the shim's state, whether cargo ran captured, ran uncaptured or did not start (from the `environment` observation), the observation files and the shim's stderr. `shim_stderr_path` gives the one stderr path.
+- Forced fallback on natedev (`SHIM_TEST_CALLER_REDIRECTIONS` holds 6 of descriptors 3-9): the three signal tests fail in 0.014 s with "the shim exited first (signal: 2 (SIGINT)); cargo ran uncaptured: the shim took a fallback path".
+- Gate: lint on the Mac; 1,292 cargo-tile tests on the Mac (load 10.7 on 12 CPUs); 1,277 on natedev after the merge of main (load 78). The signal tests take 0.03-0.21 s. Every assertion is unchanged; `SHIM_DEADLINE` is unchanged.
+- Not done: the fallback that fires under Mac load did not reproduce. The next failure names it.
+- Director work only (no workers). Checkpoint: 0d68881a3 on `tile-phase-63a`.
+
+**Files:** `crates/cargo-tile/tests/shim_modes.rs`.
+
+**Binds later work:** a new failure of these tests that names "cargo ran uncaptured" points at a capture setup failure in `hook.rs`. The runner does not say which setup step failed.
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 

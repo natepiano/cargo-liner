@@ -489,7 +489,7 @@ pub(crate) const CENSUS_COMMAND: &str = "census";
 /// The separator between unknown reasons in one census report object.
 pub(crate) const CENSUS_REASON_SEPARATOR: &str = "; ";
 /// Version of the census report's JSON. A field rename or removal increments it.
-pub(crate) const CENSUS_SCHEMA: u32 = 1;
+pub(crate) const CENSUS_SCHEMA: u32 = 2;
 /// The machine error of a remote whose probe gave no answer.
 pub(crate) const CENSUS_UNANSWERED_REASON: &str = "the machine has not answered";
 

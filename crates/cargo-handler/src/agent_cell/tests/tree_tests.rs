@@ -245,7 +245,15 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        ["├──", "dashboard", "claude1", "unit", "busy", "dashboard"]
+        [
+            "├──",
+            "dashboard",
+            "claude1",
+            "unit",
+            "thinking",
+            "busy",
+            "dashboard"
+        ]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -269,7 +277,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         find(&buffer, "dashboard").expect("name").0
     );
     for (name, role, activity, status, account) in [
-        ("dashboard", "unit", "", "busy", "claude1"),
+        ("dashboard", "unit", "thinking", "busy", "claude1"),
         (
             "hanadocs-dashboard-impl",
             "worker",

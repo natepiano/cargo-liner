@@ -123,6 +123,12 @@ fn compare_accounts(
         AccountsColumn::Resets => {
             compare_readings(&left.resets_at, &right.resets_at, sort.direction, Ord::cmp)
         },
+        AccountsColumn::LoginEnds => compare_readings(
+            &left.login_ends_at,
+            &right.login_ends_at,
+            sort.direction,
+            Ord::cmp,
+        ),
         AccountsColumn::Credits => compare_credits(&left.credits, &right.credits, sort.direction),
         AccountsColumn::Enabled => match (left.credit_permission, right.credit_permission) {
             (CreditPermission::Enabled, CreditPermission::Disabled) => Ordering::Less,
@@ -130,8 +136,6 @@ fn compare_accounts(
             _ => Ordering::Equal,
         },
         AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -155,13 +159,11 @@ fn summed_counts<'a>(
         })
         .try_fold(
             RoleSessionCounts {
-                busy:     0,
-                starting: 0,
-                waiting:  0,
-                idle:     0,
-                paused:   0,
-                exited:   0,
-                total:    0,
+                busy:   0,
+                idle:   0,
+                paused: 0,
+                exited: 0,
+                total:  0,
             },
             RoleSessionCounts::checked_add,
         )
@@ -181,14 +183,6 @@ const fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn
     match column {
         AccountsColumn::Busy => match counts {
             Reading::Known(counts) => Reading::Known(counts.busy),
-            Reading::Unavailable => Reading::Unavailable,
-        },
-        AccountsColumn::Starting => match counts {
-            Reading::Known(counts) => Reading::Known(counts.starting),
-            Reading::Unavailable => Reading::Unavailable,
-        },
-        AccountsColumn::Waiting => match counts {
-            Reading::Known(counts) => Reading::Known(counts.waiting),
             Reading::Unavailable => Reading::Unavailable,
         },
         AccountsColumn::Idle => match counts {
@@ -211,6 +205,7 @@ const fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn
         | AccountsColumn::WeeklyLeft
         | AccountsColumn::Roles
         | AccountsColumn::Resets
+        | AccountsColumn::LoginEnds
         | AccountsColumn::Credits
         | AccountsColumn::Enabled => Reading::Unavailable,
     }
@@ -389,6 +384,14 @@ impl Freshness {
     }
 }
 
+/// A `resets` or `login ends` cell shows the `reset_label` text, or is empty with no reading.
+fn date_cell(reading: &Reading<DateTime<Utc>>, now: u64) -> String {
+    match reading {
+        Reading::Known(at) => reset_label(*at, now),
+        Reading::Unavailable => String::new(),
+    }
+}
+
 /// A reset uses the same calendar cutoffs as the accounts board, in local time.
 fn reset_label(at: DateTime<Utc>, now: u64) -> String {
     let at = (at + Duration::seconds(RESET_ROUNDING_SECONDS)).with_timezone(&Local);
@@ -433,10 +436,8 @@ fn values(row: &AccountUsage, now: u64) -> [String; AccountsColumn::ALL.len()] {
             Reading::Known(left) => format!("{:.0}%", left.round()),
             Reading::Unavailable => MISSING_VALUE.to_owned(),
         },
-        AccountsColumn::Resets => match row.resets_at {
-            Reading::Known(at) => reset_label(at, now),
-            Reading::Unavailable => String::new(),
-        },
+        AccountsColumn::Resets => date_cell(&row.resets_at, now),
+        AccountsColumn::LoginEnds => date_cell(&row.login_ends_at, now),
         AccountsColumn::Credits => match row.credits {
             Credits::Amount(amount) => credit_amount(amount),
             Credits::Unlimited => UNLIMITED_CREDITS_LABEL.to_owned(),
@@ -456,8 +457,6 @@ fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()
     AccountsColumn::ALL.map(|column| match column {
         AccountsColumn::Account => "total".to_owned(),
         AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -468,6 +467,7 @@ fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()
         AccountsColumn::WeeklyLeft
         | AccountsColumn::Roles
         | AccountsColumn::Resets
+        | AccountsColumn::LoginEnds
         | AccountsColumn::Credits
         | AccountsColumn::Enabled => String::new(),
     })
@@ -533,13 +533,14 @@ const fn on_first_line(column: AccountsColumn) -> bool {
         | AccountsColumn::Roles
         | AccountsColumn::WeeklyLeft
         | AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
         | AccountsColumn::Total => true,
-        AccountsColumn::Resets | AccountsColumn::Credits | AccountsColumn::Enabled => false,
+        AccountsColumn::Resets
+        | AccountsColumn::LoginEnds
+        | AccountsColumn::Credits
+        | AccountsColumn::Enabled => false,
     }
 }
 
@@ -547,15 +548,17 @@ const fn on_first_line(column: AccountsColumn) -> bool {
 #[derive(Clone, Copy)]
 enum AccountsColumnDrop {
     Enabled,
+    LoginEnds,
     Credits,
 }
 
 impl AccountsColumnDrop {
-    const ORDER: [Self; 2] = [Self::Enabled, Self::Credits];
+    const ORDER: [Self; 3] = [Self::Enabled, Self::LoginEnds, Self::Credits];
 
     const fn column(self) -> AccountsColumn {
         match self {
             Self::Enabled => AccountsColumn::Enabled,
+            Self::LoginEnds => AccountsColumn::LoginEnds,
             Self::Credits => AccountsColumn::Credits,
         }
     }
@@ -680,6 +683,7 @@ fn stacked_facts(
         .chain(AccountsColumn::COUNTS.map(|column| (column, format!("{} ", column.header()), "")))
         .chain([
             (AccountsColumn::Resets, "resets ".to_owned(), ""),
+            (AccountsColumn::LoginEnds, "login ends ".to_owned(), ""),
             (AccountsColumn::Credits, "credits ".to_owned(), ""),
             (AccountsColumn::Enabled, String::new(), ""),
         ]);
@@ -917,6 +921,7 @@ fn row_cells(
         Reading::Known(at) => footer_colors::readable_status_style(numeric.fg(palette[&at])),
         Reading::Unavailable => numeric,
     };
+    cells[AccountsColumn::LoginEnds.index()].style = numeric;
     cells[AccountsColumn::Credits.index()].style = match row.credit_permission {
         CreditPermission::Enabled => numeric,
         CreditPermission::Disabled => {

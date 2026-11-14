@@ -63,10 +63,21 @@ mod split_rebase;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
-use cargo_berth_test_support::GitDriver;
+
+#[path = "support/lifecycle_templates.rs"]
+mod lifecycle_templates;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Child;
+use std::process::Output;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
+
 use cargo_berth_test_support::IntegrationRepository;
-use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
@@ -95,76 +106,28 @@ pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
 pub use edges_templates::successor_history_state;
-
-/// The `cargo-berth` a managed hook must run, in place of any installed copy.
-const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-
-/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
-const GIT: GitDriver = GitDriver {
-    executable:          BERTH_EXECUTABLE,
-    optional_locks:      OptionalLocks::Taken,
-    cleared_environment: &[],
-};
-
-/// The repository most tests here start from: one commit tagged `INITIAL_COMMIT_TAG`, then
-/// `cargo-berth init`.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
-    build:            |repository_root| {
-        build_initialized_repository(repository_root, GitReferenceStorage::Loose);
-    },
-};
-
-/// The empty-ledger main checkout with the ignored policy deliberately committed.
-const COMMITTED_POLICY_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    name: "committed-policy",
-    build: |root| {
-        INITIALIZED_REPOSITORY.restore_into(root);
-        GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
-        GIT.run_without_hooks(
-            root,
-            ["commit", "--quiet", "-m", "track berth configuration"],
-        );
-    },
-    ..INITIALIZED_REPOSITORY
-};
-
-/// `INITIALIZED_REPOSITORY` with its references kept in a reftable.
-const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    name: "initialized-reftable",
-    build: |repository_root| {
-        build_initialized_repository(repository_root, GitReferenceStorage::Reftable);
-    },
-    ..INITIALIZED_REPOSITORY
-};
-
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Child;
-use std::process::Output;
-use std::process::Stdio;
-use std::thread;
-use std::time::Duration;
-use std::time::Instant;
-
+use lifecycle_templates::BERTH_EXECUTABLE;
+use lifecycle_templates::COMMITTED_POLICY_REPOSITORY;
+use lifecycle_templates::CONFIGURATION_PATH;
+use lifecycle_templates::GIT;
+use lifecycle_templates::GitReferenceStorage;
+use lifecycle_templates::INITIAL_COMMIT_TAG;
+use lifecycle_templates::INITIALIZED_REFTABLE_REPOSITORY;
+use lifecycle_templates::INITIALIZED_REPOSITORY;
+use lifecycle_templates::RUN_ENVIRONMENT;
+use lifecycle_templates::SESSION_ENVIRONMENT;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
 
-const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FAILED_REFERENCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FAILED_REFERENCE";
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 const GIT_UNSPAWNABLE_DIAGNOSTIC: &str = "The reservation ledger could not be read: could not run git: No such file or directory (os error 2)";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
-const INITIAL_COMMIT_TAG: &str = "initial-state";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
@@ -213,15 +176,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 const REFERENCE_QUERY_COUNT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_QUERY_COUNT";
 const REFERENCE_TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_TRACE";
 const RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
-const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
-const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
-
-#[derive(Clone, Copy)]
-enum GitReferenceStorage {
-    Loose,
-    Reftable,
-}
 
 mod integration_cover {
     use std::fs;
@@ -1089,6 +1044,21 @@ fn transient_old_phase_read_failure_preserves_the_rewrite_for_retry() {
 #[test]
 fn created_commit_read_failure_errors_capture_without_writing_a_marker() {
     reanchoring::created_commit_read_failure_errors_capture_without_writing_a_marker();
+}
+
+#[test]
+fn split_rebase_captures_an_active_phases_rewritten_retention_ref() {
+    reanchoring::split_rebase_captures_an_active_phases_rewritten_retention_ref();
+}
+
+#[test]
+fn split_rebase_captures_stacked_branches_rewritten_with_update_refs() {
+    reanchoring::split_rebase_captures_stacked_branches_rewritten_with_update_refs();
+}
+
+#[test]
+fn split_rebase_captures_switching_the_issuing_checkout_before_board() {
+    reanchoring::split_rebase_captures_switching_the_issuing_checkout_before_board();
 }
 
 #[test]
@@ -2171,34 +2141,6 @@ fn initialized_repository_with_reference_storage(
     }
 }
 
-fn build_initialized_repository(
-    repository_root: &Path,
-    git_reference_storage: GitReferenceStorage,
-) {
-    match git_reference_storage {
-        GitReferenceStorage::Loose => git(
-            repository_root,
-            &["init", "--quiet", "--initial-branch=main"],
-        ),
-        GitReferenceStorage::Reftable => git(
-            repository_root,
-            &[
-                "init",
-                "--quiet",
-                "--initial-branch=main",
-                "--ref-format=reftable",
-            ],
-        ),
-    }
-    git_configuration::append_git_configuration(repository_root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
-    fs::write(repository_root.join("README.md"), "scratch repository\n")
-        .expect("scratch file should write");
-    git(repository_root, &["add", "README.md"]);
-    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
-    git(repository_root, &["tag", INITIAL_COMMIT_TAG]);
-    assert!(run_berth(repository_root, &["init"]).status.success());
-}
-
 fn configure_trunk(repository_root: &Path, trunk: &str) {
     let configuration_path = repository_root.join(CONFIGURATION_PATH);
     let configuration = fs::read_to_string(&configuration_path).expect("configuration should read");
@@ -2583,8 +2525,24 @@ mod merge_extent {
     /// Removing only this cache forces ordinary journal replay on the next command.
     const PROJECTION: &str = ".git/cargo-berth/reservations.json";
 
+    /// How the integration target receives lane A's work.
+    #[derive(Clone, Copy)]
+    enum LaneMerge {
+        MergeCommit,
+        FastForward,
+    }
+
     #[test]
-    fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
+    fn lanes_release_when_their_integration_target_receives_a_merge_commit() {
+        assert_lanes_release_on_merge(LaneMerge::MergeCommit);
+    }
+
+    #[test]
+    fn lanes_release_when_their_integration_target_receives_a_fast_forward() {
+        assert_lanes_release_on_merge(LaneMerge::FastForward);
+    }
+
+    fn assert_lanes_release_on_merge(lane_merge: LaneMerge) {
         let repo = IntegrationRepository::from_recorded_template(MERGE_EXTENT_LANES_READY);
         let b = repo.root().join(".git/fixture-worktrees/lane-b");
         let a_id = fs::read_to_string(repo.root().join(INTEGRATION_STATE))
@@ -2594,46 +2552,43 @@ mod merge_extent {
             snapshot(&before, &a_id)["merge_extent"]["status"],
             "protected"
         );
-        let lane_work = repo.capture();
 
-        for merge_commit in [true, false] {
-            repo.restore(&lane_work);
-            if merge_commit {
-                repo.git(
-                    &repo.integration,
-                    &["merge", "--no-ff", "--no-edit", "lane-a"],
-                );
-            } else {
+        match lane_merge {
+            LaneMerge::MergeCommit => repo.git(
+                &repo.integration,
+                &["merge", "--no-ff", "--no-edit", "lane-a"],
+            ),
+            LaneMerge::FastForward => {
                 repo.git(&repo.integration, &["merge", "--ff-only", "lane-a"]);
-            }
-            let after = repo.board();
-            assert_eq!(
-                snapshot(&after, &a_id)["lifecycle"]["stage"],
-                "released",
-                "{after}"
-            );
-            assert_eq!(
-                snapshot(&after, &a_id)["lifecycle"]["disposition"]["kind"],
-                "integrated"
-            );
-            assert_eq!(
-                merge_extent_at_release(snapshot(&after, &a_id))["status"],
-                "empty"
-            );
-
-            let check = repo.run(&b, &["check", "file:shared.txt", "--json"]);
-            assert_success(&check);
-            assert_eq!(json(&check)["status"], "clear");
-            fs::write(b.join("shared.txt"), "lane B edits landed work\n")
-                .expect("lane B can edit the released path");
-            let edited = repo.board();
-            assert!(
-                edited["payload"]["data"]["unresolved_overlaps"]["entries"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty),
-                "{edited}"
-            );
+            },
         }
+        let after = repo.board();
+        assert_eq!(
+            snapshot(&after, &a_id)["lifecycle"]["stage"],
+            "released",
+            "{after}"
+        );
+        assert_eq!(
+            snapshot(&after, &a_id)["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+        assert_eq!(
+            merge_extent_at_release(snapshot(&after, &a_id))["status"],
+            "empty"
+        );
+
+        let check = repo.run(&b, &["check", "file:shared.txt", "--json"]);
+        assert_success(&check);
+        assert_eq!(json(&check)["status"], "clear");
+        fs::write(b.join("shared.txt"), "lane B edits landed work\n")
+            .expect("lane B can edit the released path");
+        let edited = repo.board();
+        assert!(
+            edited["payload"]["data"]["unresolved_overlaps"]["entries"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "{edited}"
+        );
     }
 
     #[test]

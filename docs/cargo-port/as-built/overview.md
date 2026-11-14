@@ -37,7 +37,7 @@ The backdrop feature is optional and is not enabled by cargo-port itself.
 | `scan/` | Discovers projects and schedules metadata and enrichment jobs. |
 | `watcher/` | Registers subscriptions, filters events, and schedules refreshes. |
 | `enrichment.rs` | Measures disk, source, language, and test data after discovery. |
-| `process_observation/identity.rs` | Binds process signals to verified process lifetimes. |
+| `process_observation/` | Measures disk reads of the current task. |
 | `sccache.rs` | Runs sccache queries and parses their results. |
 | `support.rs` | Supplies operating-system process helpers. |
 | `themes/` | Defines application palettes and user-theme paths. |

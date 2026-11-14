@@ -39,7 +39,7 @@ const NOW: u64 = 1_792_166_400;
 const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
 // Optional columns leave before layout selection. These widths force the kept
 // columns onto two lines or into stacked facts, including the pane frame.
-const TWO_LINE_ACCOUNTS_WIDTH: u16 = 83;
+const TWO_LINE_ACCOUNTS_WIDTH: u16 = 64;
 const COMPLETE_ACCOUNTS_HEIGHT: u16 = 160;
 const STACKED_ACCOUNTS_WIDTH: u16 = 18;
 // The final account and its heading must fit the five-row viewport together.
@@ -588,7 +588,7 @@ fn assert_middle_account_band(width: u16) -> u16 {
 
 #[test]
 fn two_line_account_selection_bands_cover_both_lines_and_stop_at_neighbors() {
-    for (width, rows) in [(60, 6), (TWO_LINE_ACCOUNTS_WIDTH, 3)] {
+    for (width, rows) in [(60, 5), (TWO_LINE_ACCOUNTS_WIDTH, 3)] {
         assert_eq!(assert_middle_account_band(width), rows);
     }
 }
@@ -673,18 +673,16 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
                 let name = locate(&buffer, &format!("account-{index}"));
                 assert_eq!(
                     name.row,
-                    first.row + index * 6,
-                    "six fitted rows per account"
+                    first.row + index * 5,
+                    "five fitted rows per account"
                 );
-                let account = (name.row..name.row + 6)
+                let account = (name.row..name.row + 5)
                     .map(|row| account_line(&buffer, row))
                     .collect::<Vec<_>>()
                     .join(" ");
                 for fact in [
                     "60% left",
                     "busy 1",
-                    "starting 0",
-                    "waiting 0",
                     "idle 3",
                     "paused 2",
                     "exited 0",

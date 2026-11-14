@@ -34,6 +34,8 @@ The table shows an accounts failure note and supplied `problems` below its rows.
 `Reading<T>` distinguishes `Known` from `Unavailable`.
 `Credits` distinguishes an amount, unlimited credit, and no reading.
 `CreditPermission` records whether the account may spend credits.
+`login_ends_at` is optional on the wire; an older report without the key gives `Unavailable`.
+A malformed value fails the reading, as a malformed `resets_at` does.
 `AccountReadStatus` controls the green or red usage-read mark.
 A missing `read_ok` becomes Failed.
 A stale or unread account label uses readable subdued ink.
@@ -53,6 +55,7 @@ It suppresses child stderr and terminates the process group on failure.
 `AccountRoleUsage` associates each supplied role with `Reading<RoleSessionCounts>`.
 `RoleSessionCounts` requires busy, idle, paused, exited, and total as `u64` values.
 `RoleCountsWire` accepts extra fields but rejects the retired `shell` key.
+The reader ignores the old `starting` and `waiting` keys as extra fields.
 Missing or invalid required counts cannot become zero.
 `checked_add` reports `RoleCountOverflow`.
 The conversion into `Reading<RoleSessionCounts>` makes overflow unavailable.
@@ -71,6 +74,7 @@ The columns follow this order:
 | exited | Exited sessions for that role. |
 | total | Total sessions for that role. |
 | resets | The stored reset time. |
+| login ends | The date the stored Claude login ends, in the `resets` date form. Codex rows and rows with no value are empty. |
 | credits | Available credits. |
 | enabled | Credit permission. |
 
@@ -90,7 +94,7 @@ Equal values preserve source order, including positive and negative zero.
 ### Fit, pinning, and reset shades
 
 One `AccountsFit` selects columns, widths, and `AccountsLayout::{Full, TwoLine, Stacked}`.
-It drops enabled, then credits, before shortening role text to a six-cell floor.
+It drops enabled, then login ends, then credits, before shortening role text to a six-cell floor.
 It then chooses TwoLine or Stacked if Full cannot fit.
 The account, quota, role, counts, and reset information remain.
 `AccountLines` supplies the same layout to height, draw, selection, and header lookup.

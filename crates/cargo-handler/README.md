@@ -260,8 +260,8 @@ fills it in; the Mac shows `—`.
 
 ## census
 
-`cargo-handler census --json` scans once and prints the unit directors and
-workers that the tiles show, then exits. It reads the same local scan, staff
+`cargo-handler census --json` scans once and prints the sessions, unit
+directors and workers that the tiles show, then exits. It reads the same local scan, staff
 file, accounts command and remote probes as the TUI. Each `status`, `activity`
 and `name` is the value that the tile draws.
 
@@ -272,7 +272,12 @@ and `name` is the value that the tile draws.
   also must be in its unit's current run.
 - A fact that the census cannot read is null, and `unknown.reason` names why.
   The reasons are joined with `; `.
-- `status` is null when the accounts command has no entry for the session.
+- `status` is `busy`, `idle`, `paused` or `exited`, from the accounts command.
+  It is null when the accounts command has no entry for the session.
+- `activity` is the tile activity text. A busy row joins its job and its live
+  word, as in `impl · thinking`. Other rows show the job.
+- `sessions` has one entry for each session that a tile shows, in session id
+  order. Its `activity` is null when the session is not busy.
 - `pane` is `open`, `stopped`, `closed` or `unknown`. It is separate from
   `status`.
 - Each run `state` is `running`, `finished_queued` or `missing`.
@@ -281,7 +286,7 @@ and `name` is the value that the tile draws.
 <!-- census-json-example: report_tests.rs checks these keys and types -->
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "machines": [
     { "name": "natedev", "reachable": true, "error": null },
     { "name": "mac", "reachable": false, "error": "timed out" }
@@ -318,6 +323,14 @@ and `name` is the value that the tile draws.
         }
       ],
       "unknown": { "reason": "no readable pane observation for this worker" }
+    }
+  ],
+  "sessions": [
+    {
+      "session": "4dbdb78e-a83b-4248-b8f9-ff278dcbc60c",
+      "machine": "natedev",
+      "status": "busy",
+      "activity": "impl · waiting"
     }
   ]
 }

@@ -1,6 +1,7 @@
 //! Recorded starting histories for named parallel phases.
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Output;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
@@ -25,12 +26,14 @@ const GIT: GitDriver = GitDriver {
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &["CARGO_BERTH_RUN", "CARGO_BERTH_SESSION_ID"],
 };
-pub(crate) const INITIALIZED: RepositoryTemplate = RepositoryTemplate {
+const INITIALIZED: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
     name:             "parallel-initialized",
     build:            build_initialized,
 };
+/// The parallel tests' starting repository, built by the setup script before they start.
+pub(crate) const INITIALIZED_BEFORE_RUN: LedgerTemplate = INITIALIZED.before_run();
 pub(crate) const NAMED_SEED: LedgerTemplate = LedgerTemplate {
     repository:   RepositoryTemplate {
         name: "parallel-named-seed",
@@ -226,4 +229,56 @@ pub(super) struct NamedPhaseMetadata {
     pub(super) r16:      String,
     pub(super) baseline: String,
     pub(super) original: serde_json::Value,
+}
+
+/// A unit worktree with phases A and B open, after phase A committed `a.rs`.
+pub(crate) const SIBLING_PHASES: LedgerTemplate =
+    recorded_history::template("parallel-sibling-phases", |destination| {
+        let repository = INITIALIZED.instantiate();
+        let worktree_parent = tempfile::tempdir().expect("unit worktree directory");
+        let phases = open_sibling_phases(repository.path(), worktree_parent.path());
+        recorded_history::save(destination, repository.path(), &phases);
+    });
+/// [`SIBLING_PHASES`] after phase A's checkpoint and phase B's drift over `b-extra.rs`.
+pub(crate) const SIBLING_PHASES_AFTER_DRIFT: LedgerTemplate =
+    recorded_history::template("parallel-sibling-phases-after-drift", |destination| {
+        let repository = INITIALIZED.instantiate();
+        let worktree_parent = tempfile::tempdir().expect("unit worktree directory");
+        let phases = open_sibling_phases(repository.path(), worktree_parent.path());
+        assert_success(&run_berth_with_session(
+            &phases.unit,
+            &["release", &phases.first, "--json"],
+            "dir-sid.phase-1",
+        ));
+        fs::write(phases.unit.join("b-extra.rs"), "// phase B extra work\n")
+            .expect("extra phase B file");
+        assert_success(&run_berth_with_session(
+            &phases.unit,
+            &["drift", "--full", "--reservation", &phases.second, "--json"],
+            "dir-sid.phase-2",
+        ));
+        recorded_history::save(destination, repository.path(), &phases);
+    });
+/// The unit worktree and the reservations of its two phases.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct SiblingPhases {
+    pub(crate) unit:   PathBuf,
+    pub(crate) first:  String,
+    pub(crate) second: String,
+}
+
+fn open_sibling_phases(trunk: &Path, worktree_parent: &Path) -> SiblingPhases {
+    let unit = worktree_parent.join("unit");
+    GIT.add_worktree_without_hooks(trunk, &unit, "unit", "main");
+    let first = open_phase(&unit, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(&unit, "file:b.rs", "dir-sid.phase-2");
+    fs::write(unit.join("a.rs"), "// phase A checkpoint\n").expect("phase A file");
+    fs::write(unit.join("b.rs"), "// phase B work\n").expect("phase B file");
+    GIT.run(&unit, ["add", "a.rs"]);
+    GIT.run_without_hooks(&unit, ["commit", "--quiet", "-m", "phase A checkpoint"]);
+    SiblingPhases {
+        unit,
+        first,
+        second,
+    }
 }

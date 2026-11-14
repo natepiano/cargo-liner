@@ -30,6 +30,7 @@ use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::hierarchy::HierarchyError;
 use crate::census::scan::ScanStage;
+use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::footer_colors::FooterColor;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
@@ -39,7 +40,7 @@ use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
 const RESET: &str = "2026-10-19T06:00:00Z";
-const COMPLETE_ACCOUNTS_WIDTH: u16 = 109;
+const COMPLETE_ACCOUNTS_WIDTH: u16 = 90;
 
 #[test]
 fn board_count_headers_keep_the_accounts_board_order() {
@@ -47,12 +48,7 @@ fn board_count_headers_keep_the_accounts_board_order() {
         .into_iter()
         .map(AccountsColumn::header)
         .collect();
-    assert_eq!(
-        headers,
-        [
-            "busy", "starting", "waiting", "idle", "paused", "exited", "total"
-        ]
-    );
+    assert_eq!(headers, ["busy", "idle", "paused", "exited", "total"]);
 }
 
 #[test]
@@ -66,8 +62,8 @@ fn board_role_rows_and_total_draw_all_five_source_counts() {
         0,
     );
     account["role_counts"] = serde_json::json!([
-        {"busy":2,"starting":23,"waiting":29,"idle":3,"paused":5,"exited":7,"total":69},
-        {"busy":11,"starting":31,"waiting":37,"idle":13,"paused":17,"exited":19,"total":128}
+        {"busy":2,"idle":3,"paused":5,"exited":7,"total":17},
+        {"busy":11,"idle":13,"paused":17,"exited":19,"total":60}
     ]);
     let table = contract_table(&[account]);
     let buffer = contract_draw(&table, tui_pane::pane_background(false));
@@ -80,12 +76,10 @@ fn board_role_rows_and_total_draw_all_five_source_counts() {
         .expect("board total row");
     for (name, expected) in [
         ("busy", ["2", "11", "13"]),
-        ("starting", ["23", "31", "54"]),
-        ("waiting", ["29", "37", "66"]),
         ("idle", ["3", "13", "16"]),
         ("paused", ["5", "17", "22"]),
         ("exited", ["7", "19", "26"]),
-        ("total", ["69", "128", "197"]),
+        ("total", ["17", "60", "77"]),
     ] {
         let column = AccountsColumn::ALL
             .into_iter()
@@ -398,8 +392,18 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "one blank line separates the tables"
     );
     for header in [
-        "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
-        "total", "resets", "credits", "enabled",
+        "account",
+        "left",
+        "role",
+        "busy",
+        "idle",
+        "paused",
+        "exited",
+        "total",
+        "resets",
+        "login ends",
+        "credits",
+        "enabled",
     ] {
         let header_y = accounts_y + 1;
         assert!(
@@ -434,7 +438,9 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "cached role map unavailable for fixture-host"
     );
     assert!(
-        !joined.contains('@') && !joined.contains("login") && !joined.contains("on-credits"),
+        !joined.contains('@')
+            && !joined.replace("login ends", "").contains("login")
+            && !joined.contains("on-credits"),
         "{joined}"
     );
     assert!(!joined.contains("/private/account-home"), "{joined}");
@@ -967,8 +973,8 @@ fn board_columns_draw_lowercase_in_order_with_names_and_credit_states() {
     assert_eq!(
         header.split_whitespace().collect::<Vec<_>>(),
         [
-            "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
-            "total", "resets", "credits", "enabled"
+            "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
+            "login", "ends", "credits", "enabled"
         ]
     );
     let ranges = contract_ranges(&buffer);
@@ -988,8 +994,6 @@ fn board_columns_draw_lowercase_in_order_with_names_and_credit_states() {
             (5, ""),
             (6, ""),
             (7, ""),
-            (8, ""),
-            (9, ""),
         ] {
             assert_eq!(
                 contract_cell(&buffer, y, &ranges[index]),
@@ -1107,7 +1111,7 @@ fn account_numeric_formats_align_their_last_cells() {
             contract_cell(&buffer, y, &ranges[AccountsColumn::Credits.index()]),
             credits
         );
-        for index in [1, 8, 9, 3, 4, 5, 6, 7] {
+        for index in [1, 3, 4, 5, 6, 7] {
             assert!(
                 !buffer[(ranges[index].end - 1, y)]
                     .symbol()
@@ -1297,6 +1301,99 @@ fn account_resets_use_same_day_week_and_later_calendar_formats() {
     }
 }
 
+#[test]
+fn login_ends_draw_the_claude_date_and_leave_codex_and_older_report_cells_empty() {
+    // A stale reading must not dim the date: the column uses the default table ink.
+    let mut claude = contract_row(
+        "claude1",
+        &serde_json::json!(50),
+        &Value::Null,
+        ACCOUNTS_STALE_SECONDS + 60,
+    );
+    claude["login_ends_at"] = serde_json::json!(RESET);
+    let mut codex = contract_row("codex1", &serde_json::json!(50), &Value::Null, 0);
+    codex["login_ends_at"] = Value::Null;
+    let older = contract_row("older", &serde_json::json!(50), &Value::Null, 0);
+    assert!(
+        older.get("login_ends_at").is_none(),
+        "an older report has no key"
+    );
+    let buffer = contract_draw(
+        &contract_table(&[claude, codex, older]),
+        tui_pane::pane_background(false),
+    );
+    let ranges = contract_ranges(&buffer);
+    let claude_y = at(&buffer, "claude1").1;
+    let date = contract_cell(&buffer, claude_y, &ranges[AccountsColumn::Resets.index()]);
+    assert!(!date.is_empty(), "{:?}", text(&buffer));
+    let login_ends = &ranges[AccountsColumn::LoginEnds.index()];
+    assert_eq!(contract_cell(&buffer, claude_y, login_ends), date);
+    let left = &ranges[AccountsColumn::WeeklyLeft.index()];
+    assert_eq!(
+        buffer[(login_ends.end - 1, claude_y)].fg,
+        buffer[(left.end - 1, claude_y)].fg,
+        "login ends uses the default table ink"
+    );
+    for label in ["codex1", "older"] {
+        assert_eq!(
+            contract_cell(
+                &buffer,
+                at(&buffer, label).1,
+                &ranges[AccountsColumn::LoginEnds.index()]
+            ),
+            "",
+            "{label}: {:?}",
+            text(&buffer)
+        );
+    }
+}
+
+#[test]
+fn login_ends_cells_use_the_resets_text_today_within_six_days_and_later() {
+    let now = DateTime::from_timestamp(i64::try_from(NOW).expect("now"), 0)
+        .expect("now UTC")
+        .with_timezone(&Local);
+    let afternoon = now
+        .with_hour(14)
+        .expect("hour")
+        .with_minute(0)
+        .expect("minute")
+        .with_second(0)
+        .expect("second");
+    let dates = [0, 3, 8].map(|days| afternoon + chrono::Duration::days(days));
+    let table = contract_table(
+        &dates
+            .iter()
+            .enumerate()
+            .map(|(i, date)| {
+                let mut row = contract_row(
+                    &format!("calendar-{i}"),
+                    &serde_json::json!(50),
+                    &Value::Null,
+                    0,
+                );
+                row["resets_at"] = serde_json::json!(date.to_rfc3339());
+                row["login_ends_at"] = serde_json::json!(date.to_rfc3339());
+                row
+            })
+            .collect::<Vec<_>>(),
+    );
+    let buffer = contract_draw(&table, tui_pane::pane_background(false));
+    let ranges = contract_ranges(&buffer);
+    let mut labels = BTreeSet::new();
+    for i in 0..dates.len() {
+        let y = at(&buffer, &format!("calendar-{i}")).1;
+        let reset = contract_cell(&buffer, y, &ranges[AccountsColumn::Resets.index()]);
+        assert!(!reset.is_empty(), "{:?}", text(&buffer));
+        assert_eq!(
+            contract_cell(&buffer, y, &ranges[AccountsColumn::LoginEnds.index()]),
+            reset
+        );
+        labels.insert(reset);
+    }
+    assert_eq!(labels.len(), dates.len(), "each case uses its own format");
+}
+
 fn narrow_accounts() -> AccountsTable {
     let mut first = contract_row(
         "first",
@@ -1404,9 +1501,9 @@ fn assert_complete_account_values(buffer: &Buffer) {
 #[test]
 fn complete_five_count_summary_keeps_every_account_value_whole() {
     let table = narrow_accounts();
-    for width in [99, COMPLETE_ACCOUNTS_WIDTH] {
+    for width in [80, COMPLETE_ACCOUNTS_WIDTH] {
         let buffer = narrow_draw(&table, width, 40);
-        if width == 99 {
+        if width == 80 {
             let lines = text(&buffer);
             let output = lines.join("\n");
             for value in [
@@ -1417,8 +1514,6 @@ fn complete_five_count_summary_keeps_every_account_value_whole() {
                 "60%",
                 "24%",
                 "busy",
-                "starting",
-                "waiting",
                 "idle",
                 "paused",
                 "exited",
@@ -1460,7 +1555,7 @@ fn complete_five_count_summary_keeps_every_account_value_whole() {
 fn two_line_accounts_align_resets_after_optional_columns_drop() {
     let table = narrow_accounts();
     // Roles may now shrink to six cells before the kept columns wrap.
-    let buffer = narrow_draw(&table, 79, 40);
+    let buffer = narrow_draw(&table, 60, 40);
     let lines = text(&buffer);
     let (_, header_y) = at(&buffer, "role");
     let (reset_x, reset_y) = at(&buffer, "resets");
@@ -1642,7 +1737,7 @@ fn summary_height_matches_every_drawn_row_in_full_two_line_and_stacked_layouts()
     let machines = [];
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let mut heights = Vec::new();
-    for width in [full, 80, 60, stacked] {
+    for width in [full, 61, 41, stacked] {
         let generous = narrow_draw(&table, width, 40);
         let lines = text(&generous);
         let painted_height = lines
@@ -1708,8 +1803,6 @@ fn stacked_accounts_omit_unavailable_facts_and_disabled_credit_flags() {
             "— left",
             "total",
             "busy 0",
-            "starting 0",
-            "waiting 0",
             "idle 0",
             "paused 0",
             "exited 0",
@@ -1874,13 +1967,13 @@ fn live_accounts_at_40_columns_keep_complete_role_groups_and_the_error_before_ti
         expected_row = row + role_rows;
     }
     assert_eq!(
-        lines[expected_row + 4].trim(),
+        lines[expected_row + 3].trim(),
         COMPACT_ACCOUNT_ERROR,
         "the error follows the final account without a gap: {lines:#?}"
     );
     assert!(
-        // `AccountsColumn::COUNTS` adds three lines to the stacked total.
-        needed == 29,
+        // `AccountsColumn::COUNTS` adds two lines to the stacked total.
+        needed == 28,
         "main budget: {area:?}, needed={needed}: {lines:#?}"
     );
     assert!(
@@ -1913,7 +2006,9 @@ fn compact_accounts() -> AccountsTable {
             7200,
         );
         row["resets_at"] = serde_json::json!("2026-10-17T14:00:00Z");
-
+        if label.starts_with("claude") {
+            row["login_ends_at"] = serde_json::json!("2026-10-20T14:00:00Z");
+        }
         if label == "codex2" {
             row["credits"] = serde_json::json!("unlimited");
         }
@@ -1931,21 +2026,25 @@ fn compact_accounts() -> AccountsTable {
 }
 
 #[test]
-fn compact_accounts_keep_role_rows_at_200_80_and_50_columns() {
+fn compact_accounts_keep_role_rows_at_200_61_and_50_columns() {
     let table = compact_accounts();
-    for width in [200, 80, 50] {
+    for width in [200, 61, 50] {
         let buffer = narrow_draw(&table, width, 30);
         let lines = text(&buffer);
         assert_eq!(
             accounts::height_at_width(&table, NOW, AccountsSort::SourceOrder, width),
-            if width == 200 { 12 } else { 17 },
+            match width {
+                200 => 12,
+                61 => 17,
+                _ => 16,
+            },
             "section, headers, eight role rows and error at {width}: {lines:#?}"
         );
         for (index, label) in COMPACT_ACCOUNT_LABELS.iter().enumerate() {
             let stride = if width == 200 { 2 } else { 3 };
             let first = match width {
                 50 => 1,
-                80 => 3,
+                61 => 3,
                 _ => 2,
             };
             let expected_row = first + index * stride;
@@ -1957,7 +2056,12 @@ fn compact_accounts_keep_role_rows_at_200_80_and_50_columns() {
             assert!(lines[expected_row].contains(label), "{width}: {lines:#?}");
         }
         assert_eq!(
-            lines[if width == 200 { 11 } else { 16 }].trim(),
+            lines[match width {
+                200 => 11,
+                61 => 16,
+                _ => 15,
+            }]
+            .trim(),
             COMPACT_ACCOUNT_ERROR,
             "{width}: {lines:#?}"
         );
@@ -2007,8 +2111,12 @@ fn compact_accounts_keep_every_account_error_and_whole_word_at_40_columns() {
 #[test]
 fn compact_accounts_drop_optional_columns_before_wrapping() {
     let table = compact_accounts();
-    let optional = [AccountsColumn::Enabled, AccountsColumn::Credits];
-    let mut seen = [false; 3];
+    let optional = [
+        AccountsColumn::Enabled,
+        AccountsColumn::LoginEnds,
+        AccountsColumn::Credits,
+    ];
+    let mut seen = [false; 4];
     let mut previous_dropped = 0;
     for width in (50..=140).rev() {
         let headers = accounts::header_spans(
@@ -2032,11 +2140,11 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
                     "{width}: {lines:#?}"
                 );
             }
-            assert!(
-                lines
+            assert!(lines.iter().all(|line| {
+                ["credits", "enabled", "login ends"]
                     .iter()
-                    .all(|line| !line.contains("credits") && !line.contains("enabled"))
-            );
+                    .all(|word| !line.contains(word))
+            }));
             continue;
         }
         let dropped = optional
@@ -2059,8 +2167,6 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
             AccountsColumn::WeeklyLeft,
             AccountsColumn::Resets,
             AccountsColumn::Busy,
-            AccountsColumn::Starting,
-            AccountsColumn::Waiting,
             AccountsColumn::Idle,
             AccountsColumn::Paused,
             AccountsColumn::Exited,
@@ -2072,7 +2178,7 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
             );
         }
     }
-    assert_eq!(seen, [true; 3], "each optional drop has a measured width");
+    assert_eq!(seen, [true; 4], "each optional drop has a measured width");
 }
 
 #[test]
@@ -2208,11 +2314,8 @@ fn accounts_total_row_sums_every_recorded_board_state() {
         {"busy":7,"idle":1,"paused":0,"exited":0,"total":8}
     ]);
     for (rows, expected) in [
-        (
-            vec![claude, codex.clone()],
-            ["10", "0", "0", "10", "3", "0", "23"],
-        ),
-        (vec![codex], ["7", "0", "0", "1", "0", "0", "8"]),
+        (vec![claude, codex.clone()], ["10", "10", "3", "0", "23"]),
+        (vec![codex], ["7", "1", "0", "0", "8"]),
     ] {
         let table = contract_table(&rows);
         let buffer = contract_draw(&table, tui_pane::pane_background(false));
@@ -2238,7 +2341,7 @@ fn accounts_total_row_sums_every_recorded_board_state() {
         for (column, value) in AccountsColumn::COUNTS.into_iter().zip(expected) {
             assert_eq!(contract_cell(&buffer, row, &ranges[column.index()]), value);
         }
-        for column in [1, 2, 10, 11, 12] {
+        for column in [1, 2, 8, 9, 10] {
             assert_eq!(contract_cell(&buffer, row, &ranges[column]), "");
         }
     }
@@ -2285,15 +2388,7 @@ fn accounts_board_count_cells_draw_source_values() {
     let buffer = contract_draw(&table, tui_pane::pane_background(false));
     let ranges = contract_ranges(&buffer);
     let row = at(&buffer, "codex2").1;
-    for (column, expected) in [
-        (3, "1"),
-        (4, "0"),
-        (5, "0"),
-        (6, "2"),
-        (7, "0"),
-        (8, "0"),
-        (9, "3"),
-    ] {
+    for (column, expected) in [(3, "1"), (4, "2"), (5, "0"), (6, "0"), (7, "3")] {
         assert_eq!(contract_cell(&buffer, row, &ranges[column]), expected);
     }
     assert_eq!(
@@ -2326,7 +2421,7 @@ fn accounts_role_rows_draw_only_each_roles_counts_and_share_account_selection() 
             (index + 3).to_string()
         );
         if index > 0 {
-            for column in [0, 1, 10, 11, 12] {
+            for column in [0, 1, 8, 9, 10] {
                 assert_eq!(contract_cell(&buffer, row, &ranges[column]), "");
             }
         }
@@ -2443,10 +2538,7 @@ fn count_sort_and_total_skip_unknown_roles_and_preserve_board_states() {
         let mut sort = AccountsSort::SourceOrder;
         sort.select(column);
         let lines = accounts::build_lines(&table, NOW, &FooterColors::default(), sort, 200);
-        let expected = if matches!(
-            column,
-            AccountsColumn::Starting | AccountsColumn::Waiting | AccountsColumn::Exited
-        ) {
+        let expected = if column == AccountsColumn::Exited {
             ["mixed", "unknown"]
         } else {
             ["unknown", "mixed"]
@@ -2483,7 +2575,7 @@ fn count_sort_and_total_skip_unknown_roles_and_preserve_board_states() {
         .expect("total row");
     for (column, expected) in AccountsColumn::COUNTS
         .into_iter()
-        .zip(["2", "0", "0", "4", "3", "0", "9"])
+        .zip(["2", "4", "3", "0", "9"])
     {
         assert_eq!(
             contract_cell(&buffer, row, &ranges[column.index()]),
@@ -2533,7 +2625,7 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
         row
     });
     let table = contract_table(&rows);
-    for width in [75, 83] {
+    for width in [56, 64] {
         let buffer = narrow_draw(&table, width, 16);
         let lines = text(&buffer);
         let reset = DateTime::parse_from_rfc3339(RESET)
@@ -2541,7 +2633,7 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
             .with_timezone(&Local)
             .format("%a %H:%M")
             .to_string();
-        if width == 75 {
+        if width == 56 {
             let built = accounts::build_lines(
                 &table,
                 NOW,
@@ -2581,13 +2673,11 @@ fn two_line_accounts_keep_role_counts_before_one_account_detail_line() {
             assert_eq!(first, 3 + index * 3, "{lines:#?}");
             assert_eq!(
                 lines[first].split_whitespace().collect::<Vec<_>>(),
-                [
-                    "●", label, "50%", "units", "1", "0", "0", "3", "2", "0", "6"
-                ]
+                ["●", label, "50%", "units", "1", "3", "2", "0", "6"]
             );
             assert_eq!(
                 lines[first + 1].split_whitespace().collect::<Vec<_>>(),
-                ["spare", "4", "0", "0", "6", "5", "0", "15"]
+                ["spare", "4", "6", "5", "0", "15"]
             );
             assert_eq!(lines[first + 2].trim(), reset);
         }

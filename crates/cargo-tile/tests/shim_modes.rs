@@ -368,7 +368,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             after_start: impl FnOnce(&mut Child),
         ) -> DetachedRun {
             let stdout_path = self.directory.path().join("stdout");
-            let stderr_path = self.directory.path().join("stderr");
+            let stderr_path = self.shim_stderr_path();
             command
                 .stdout(fs::File::create(&stdout_path).expect("create stdout file"))
                 .stderr(fs::File::create(&stderr_path).expect("create stderr file"));
@@ -393,18 +393,57 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             }
         }
 
-        /// Wait until cargo records that it reached a test handshake.
-        fn wait_for_observation(&self, name: &str) {
+        /// Wait until cargo records that it reached a test handshake. A shim that exits
+        /// first ends the wait at once, and each failure names what the test saw.
+        fn wait_for_observation(&self, shim: &mut Child, name: &str) {
             let path = self.observations.join(name);
             let started = Instant::now();
             while !path.exists() {
+                if let Some(status) = shim.try_wait().expect("poll installed shim") {
+                    assert!(
+                        path.exists(),
+                        "{}",
+                        self.observation_failure(
+                            name,
+                            &format!("the shim exited first ({status})")
+                        )
+                    );
+                    return;
+                }
                 assert!(
                     started.elapsed() <= SHIM_DEADLINE,
-                    "cargo did not record {name}"
+                    "{}",
+                    self.observation_failure(name, "the shim still runs")
                 );
                 thread::sleep(EXIT_POLL);
             }
         }
+
+        /// Name the shim's state, how cargo ran, the observations present and the shim's stderr.
+        fn observation_failure(&self, name: &str, shim_state: &str) -> String {
+            let cargo = match fs::read(self.observations.join("environment")) {
+                Err(_) => "cargo did not start",
+                Ok(environment) if environment == UNCAPTURED_ENVIRONMENT => {
+                    "cargo ran uncaptured: the shim took a fallback path"
+                },
+                Ok(_) => "cargo ran captured",
+            };
+            let mut observations: Vec<String> = entries(&self.observations)
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|file| file.to_string_lossy().into_owned())
+                .collect();
+            observations.sort();
+            let stderr = fs::read(self.shim_stderr_path()).unwrap_or_default();
+            format!(
+                "cargo did not record {name}: {shim_state}; {cargo}; observations: {}; shim stderr: {:?}",
+                observations.join(", "),
+                String::from_utf8_lossy(&stderr)
+            )
+        }
+
+        /// The file a detached run sends the shim's stderr to.
+        fn shim_stderr_path(&self) -> PathBuf { self.directory.path().join("stderr") }
 
         /// Retain the live log's inode so assertions can read every byte after the pump drains.
         fn retain_capture_log(&self) {
@@ -1035,7 +1074,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             .env("SHIM_TEST_SCENARIO", "signal-shim")
             .env("SHIM_TEST_SIGNAL", signal);
         let run = toolchain.run_detached_after_start(command, |shim| {
-            toolchain.wait_for_observation("cargo-held");
+            toolchain.wait_for_observation(shim, "cargo-held");
             let returned_while_cargo_was_held = shim
                 .try_wait()
                 .expect("inspect shim while cargo is held")
@@ -1087,7 +1126,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             .env("SHIM_TEST_SCENARIO", "interrupt-group")
             .process_group(0);
         let run = toolchain.run_detached_after_start(command, |shim| {
-            toolchain.wait_for_observation("cargo-stopping");
+            toolchain.wait_for_observation(shim, "cargo-stopping");
             let group = rustix::process::Pid::from_raw(shim.id().cast_signed())
                 .expect("the launched shim has a positive process group");
             rustix::process::kill_process_group(group, rustix::process::Signal::INT)

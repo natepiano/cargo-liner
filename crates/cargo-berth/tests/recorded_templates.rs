@@ -63,6 +63,9 @@ use reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
 use reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
 use reanchoring_templates::CHECKPOINT_BEFORE_OTHER_REBASE;
 use reanchoring_templates::CONFLICTING_TWO_HUNK_CHECKPOINT;
+use reanchoring_templates::CONTINUED_SPLIT_RETENTION;
+use reanchoring_templates::CONTINUED_SPLIT_SIBLING;
+use reanchoring_templates::CONTINUED_SPLIT_SWITCHED;
 use reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SWITCHED_CHECKPOINT;
@@ -149,6 +152,8 @@ mod drift_templates;
 mod gate_templates;
 #[path = "support/parallel_templates.rs"]
 mod parallel_templates;
+#[path = "support/presentation_templates.rs"]
+mod presentation_templates;
 pub use gate_templates::CrossTargetLandingWitnesses;
 pub use gate_templates::ENROLLED_PAIR;
 pub use gate_templates::EnrolledPair;
@@ -188,6 +193,9 @@ mod liveness_fixtures;
 
 #[path = "support/drift_fixtures.rs"]
 mod drift_fixtures;
+
+#[path = "support/lifecycle_templates.rs"]
+mod lifecycle_templates;
 
 #[path = "support/recorded_history.rs"]
 mod recorded_history;
@@ -243,6 +251,7 @@ fn main() {
             SWITCHED_BRANCH_HOLDER,
             CLEAN_MERGED_HOLDER,
         ])
+        .chain(STARTING_REPOSITORIES.iter().copied())
         .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
         .chain(GATE_SLOW_HISTORIES.iter().copied())
@@ -337,7 +346,7 @@ const fn round_two_histories() -> [LedgerTemplate; 25] {
     ]
 }
 
-const fn recorded_populations() -> [LedgerTemplate; 34] {
+const fn recorded_populations() -> [LedgerTemplate; 37] {
     [
         edges_templates::RECORDED_PROJECTION,
         edges_templates::MERGE_EXTENT_MAIN,
@@ -368,6 +377,9 @@ const fn recorded_populations() -> [LedgerTemplate; 34] {
         TWO_REBASE_HISTORY,
         SPLIT_ACTIVE_PHASE,
         SPLIT_OUTSTANDING_PHASE,
+        CONTINUED_SPLIT_RETENTION,
+        CONTINUED_SPLIT_SIBLING,
+        CONTINUED_SPLIT_SWITCHED,
         DRAINED_SPLIT_RETENTION_CHECKPOINT,
         DRAINED_SPLIT_SIBLING_CHECKPOINT,
         STACKED_UPPER_CHECKPOINT,
@@ -608,8 +620,25 @@ const OVERLAP_SLOW_HISTORIES: &[LedgerTemplate] = &[
     overlap_fixtures::BEFORE_A_FIRST_TOUCH_HOLDER_BLOCK_NAMES_THE_VERBS_THAT_CLEAR_IT,
 ];
 
+/// The repositories tests start with: each binary's shared start, then single-test setups.
+///
+/// The setup script builds them before tests start, so no test waits for them.
+const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
+    drift_fixtures::INITIALIZED_REPOSITORY,
+    parallel_templates::INITIALIZED_BEFORE_RUN,
+    presentation_templates::INITIALIZED,
+    parallel_templates::SIBLING_PHASES,
+    parallel_templates::SIBLING_PHASES_AFTER_DRIFT,
+    presentation_templates::INTEGRATION_PHASE,
+    lifecycle_templates::INITIALIZED_REPOSITORY,
+    lifecycle_templates::COMMITTED_POLICY_REPOSITORY,
+    lifecycle_templates::INITIALIZED_REFTABLE_REPOSITORY,
+];
+
 const DRIFT_HELPER_HISTORIES: &[LedgerTemplate] = &[
     drift_fixtures::COMMITTED_INCURSION,
+    drift_fixtures::PHASE_BEFORE_REBASE,
+    drift_fixtures::INTEGRATED_MERGE,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN,
