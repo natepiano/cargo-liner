@@ -284,7 +284,7 @@
 - `census --json` waits on the accounts command, so its wall time is at least that command's time.
 - The live word `waiting` comes from `VerificationProgress::Waiting` (a queued verify run) in `census/activity.rs`. The `job · word` form needs a worker, subagent or reviewer line kind.
 
-### Phase 11 — One `cargo-handler census --json` on natedev takes about one second or less  · status: todo
+### Phase 11 — One `cargo-handler census --json` on natedev takes about one second or less  · status: done
 
 **Depends on:** Phase 10 (it changes `census/report.rs` and adds the `sessions` list)
 
