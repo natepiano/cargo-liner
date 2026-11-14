@@ -92,6 +92,8 @@ impl<'a> MendRunner<'a> {
             self.cargo_plan,
             self.color_mode,
             coverage,
+            &self.wrapper,
+            self.toolchain_probes,
             || {
                 let checked = self.build_selection(BuildOutputMode::Validation)?;
                 let planned = self.scan_fixes(

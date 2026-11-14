@@ -21,6 +21,7 @@ use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 use parallel_templates::Phase16InitialCoverage;
+use parallel_templates::SiblingPhases;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -749,19 +750,17 @@ fn a_phase_checkpoint_does_not_adopt_a_released_siblings_committed_paths() {
 
 #[test]
 fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
-    let repository = initialized_repository();
+    let worktree_parent = tempfile::tempdir().expect("unit worktree directory");
+    let repository = parallel_templates::SIBLING_PHASES
+        .instantiate_with_external_worktrees(worktree_parent.path());
     let trunk = repository.path();
-    let unit_directory = tempfile::tempdir().expect("unit worktree directory");
-    let unit = unit_directory.path();
-    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
-    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
-    fs::write(unit.join("a.rs"), "// phase A checkpoint\n").expect("phase A file");
-    fs::write(unit.join("b.rs"), "// phase B work\n").expect("phase B file");
-    GIT.run(unit, ["add", "a.rs"]);
-    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "phase A checkpoint"]);
+    let SiblingPhases {
+        unit,
+        first,
+        second,
+    } = recorded_history::read(trunk);
     let checkpoint =
-        run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
+        run_berth_with_session(&unit, &["release", &first, "--json"], "dir-sid.phase-1");
     assert_success(&checkpoint);
     let checkpoint = json(&checkpoint);
     assert_eq!(
@@ -776,7 +775,7 @@ fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
     fs::write(unit.join("b-extra.rs"), "// phase B extra work\n").expect("extra phase B file");
     let before = journal_events(trunk);
     let drift = run_berth_with_session(
-        unit,
+        &unit,
         &["drift", "--full", "--reservation", &second, "--json"],
         "dir-sid.phase-2",
     );
@@ -802,13 +801,10 @@ fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
         serde_json::json!([{"kind":"file", "path":"b-extra.rs"}]),
         "phase B must not adopt phase A's committed path: {widen}"
     );
-    let expected_scopes = serde_json::json!([
-        {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"b-extra.rs"}
-    ]);
-    let board = phase_board(unit);
+    let board = phase_board(&unit);
     assert_eq!(
         reservation_row(&board, &second)["scopes"],
-        expected_scopes,
+        phase_b_scopes(),
         "phase B must hold only its own files: {board}"
     );
     assert_eq!(
@@ -816,16 +812,24 @@ fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
         "outstanding",
         "phase A must remain outstanding after phase B's drift: {board}"
     );
+}
 
-    GIT.run(unit, ["add", "b.rs", "b-extra.rs"]);
-    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "phase B checkpoint"]);
+#[test]
+fn a_siblings_checkpoint_keeps_only_its_own_paths() {
+    let worktree_parent = tempfile::tempdir().expect("unit worktree directory");
+    let repository = parallel_templates::SIBLING_PHASES_AFTER_DRIFT
+        .instantiate_with_external_worktrees(worktree_parent.path());
+    let trunk = repository.path();
+    let SiblingPhases { unit, second, .. } = recorded_history::read(trunk);
+    GIT.run(&unit, ["add", "b.rs", "b-extra.rs"]);
+    GIT.run_without_hooks(&unit, ["commit", "--quiet", "-m", "phase B checkpoint"]);
     assert_success(&run_berth_with_session(
-        unit,
+        &unit,
         &["drift", "--full", "--reservation", &second, "--json"],
         "dir-sid.phase-2",
     ));
     let checkpoint =
-        run_berth_with_session(unit, &["release", &second, "--json"], "dir-sid.phase-2");
+        run_berth_with_session(&unit, &["release", &second, "--json"], "dir-sid.phase-2");
     assert_success(&checkpoint);
     let checkpoint = json(&checkpoint);
     assert_eq!(
@@ -833,12 +837,19 @@ fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
         "phase B must retain its own checkpoint: {checkpoint}"
     );
     assert_no_widen_adopts_file(&journal_events(trunk), &second, "a.rs");
-    let board = phase_board(unit);
+    let board = phase_board(&unit);
     assert_eq!(
         reservation_row(&board, &second)["scopes"],
-        expected_scopes,
+        phase_b_scopes(),
         "phase B's checkpoint must keep only its own files: {board}"
     );
+}
+
+/// Phase B's scopes once it widened over its own new file.
+fn phase_b_scopes() -> serde_json::Value {
+    serde_json::json!([
+        {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"b-extra.rs"}
+    ])
 }
 
 #[test]
@@ -1848,7 +1859,7 @@ fn session_mappings(root: &Path) -> Value {
     .expect("session mappings should be JSON")
 }
 
-fn initialized_repository() -> TempDir { parallel_templates::INITIALIZED.instantiate() }
+fn initialized_repository() -> TempDir { parallel_templates::INITIALIZED_BEFORE_RUN.instantiate() }
 
 fn run_berth_with_session(root: &Path, arguments: &[&str], session_id: &str) -> Output {
     berth_command(BERTH_EXECUTABLE)

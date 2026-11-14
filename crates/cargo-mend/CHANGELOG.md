@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostic rule tests call production scans and compiler callbacks directly. CLI tests retain actual Cargo fix and validation calls.
 
 ### Fixed
+- Compiler fixes retain the analysis compiler, wrapper, and query cache. Projects with an unusable project compiler can run `--fix-all`.
+- Function-length checks exclude headers from the conservative body bound. Small bodies avoid unnecessary formatter commands.
 - Caller analysis reuses resolved source paths. Facades in separate namespaces keep their callers when exports share a line.
 - Target display filters read source text only when compiler source records are absent.
 - Caller analysis keeps separate library and binary declarations apart when their item paths match. Shared declarations retain callers from every target.

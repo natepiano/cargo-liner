@@ -6,11 +6,14 @@
 //! built repository on disk under the test crate's `CARGO_TARGET_TMPDIR`,
 //! keyed by the test binary and the `cargo-berth` it runs, so the first test
 //! of a build pays for it and every test copies it into a temporary directory
-//! of its own. The copy gets what building in place would have given it: each
-//! absolute path `cargo-berth init` wrote, as in the `reference-transaction`
-//! hook, names the copy; the repository and worktree identities, when the
-//! fixture ran `cargo-berth init`, are new; and git's index matches the copied
-//! files.
+//! of its own. A template built in the first test makes every test that starts
+//! with it wait for that build. The nextest setup script builds a before-run
+//! template before tests start, so no test waits.
+//!
+//! The copy gets what building in place would have given it: each absolute
+//! path `cargo-berth init` wrote, as in the `reference-transaction` hook, names
+//! the copy; the repository and worktree identities, when the fixture ran
+//! `cargo-berth init`, are new; and git's index matches the copied files.
 
 use std::env;
 use std::fs;
@@ -206,6 +209,19 @@ impl RepositoryTemplate {
             build_timing: TemplateBuildTiming::InTest,
         }
         .restore_into(root);
+    }
+
+    /// This template with an empty ledger, built by the nextest setup script.
+    ///
+    /// Register the result in `recorded_templates.rs`. Without that
+    /// registration, the first test that starts with it builds it.
+    #[must_use]
+    pub const fn before_run(self) -> LedgerTemplate {
+        LedgerTemplate {
+            repository:   self,
+            ledger:       LedgerFixture::Empty,
+            build_timing: TemplateBuildTiming::BeforeRun,
+        }
     }
 
     /// Directory shared by every before-run template built by this executable.

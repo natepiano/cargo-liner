@@ -35,6 +35,7 @@ use crate::sccache::SccacheSummary;
 use crate::sccache::StatsResult as SccacheStatsResult;
 
 /// Messages sent from background threads to the main event loop.
+#[derive(strum::IntoStaticStr)]
 pub(crate) enum BackgroundMsg {
     /// Disk usage (bytes) computed for a single project path.
     DiskUsage { path: AbsolutePath, bytes: u64 },
