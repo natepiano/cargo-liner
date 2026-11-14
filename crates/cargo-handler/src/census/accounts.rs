@@ -246,6 +246,8 @@ pub(crate) struct AccountUsage {
     pub(crate) roles:               Vec<AccountRoleUsage>,
     pub(crate) weekly_left_percent: Reading<f64>,
     pub(crate) resets_at:           Reading<DateTime<Utc>>,
+    /// When the stored Claude login ends; Codex rows have none.
+    pub(crate) login_ends_at:       Reading<DateTime<Utc>>,
     pub(crate) credits:             Credits,
     pub(crate) credit_permission:   CreditPermission,
     pub(crate) read_status:         AccountReadStatus,
@@ -277,6 +279,8 @@ struct AccountWire {
     role_counts:         Vec<Option<RoleCountsWire>>,
     weekly_left_percent: Option<f64>,
     resets_at:           Option<String>,
+    #[serde(default)]
+    login_ends_at:       Option<String>,
     credits:             Option<CreditWire>,
     use_credits:         bool,
     #[serde(default)]
@@ -395,6 +399,7 @@ impl AccountsReading {
                         roles,
                         weekly_left_percent: row.weekly_left_percent.into(),
                         resets_at: timestamp(row.resets_at.as_deref())?,
+                        login_ends_at: timestamp(row.login_ends_at.as_deref())?,
                         credits: match row.credits {
                             Some(CreditWire::Amount(amount)) => Credits::Amount(amount),
                             Some(CreditWire::Word(Unlimited::Unlimited)) => Credits::Unlimited,

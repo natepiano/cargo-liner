@@ -234,6 +234,35 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
 }
 
 #[test]
+fn accounts_header_sort_login_ends_orders_by_the_login_date_in_both_directions() {
+    let mut rows: Vec<_> = accounts()
+        .into_iter()
+        .zip([4, 7, 1, 2])
+        .map(|(account, days)| AccountUsage {
+            login_ends_at: accounts_gradient_tests::reset(days * DAY_SECONDS),
+            ..account
+        })
+        .collect();
+    rows.insert(
+        1,
+        accounts_gradient_tests::account("codex-account", accounts_gradient_tests::reset(0)),
+    );
+    let mut app = app_with_accounts(rows);
+    let before = drawn(&mut app);
+    click_header(&mut app, &before, AccountsColumn::LoginEnds);
+    let first = drawn(&mut app);
+    assert_order(
+        &first,
+        &["beta", "delta", "gamma", "alpha", "codex-account"],
+    );
+    click_header(&mut app, &first, AccountsColumn::LoginEnds);
+    assert_order(
+        &drawn(&mut app),
+        &["alpha", "gamma", "delta", "beta", "codex-account"],
+    );
+}
+
+#[test]
 fn accounts_header_sort_signed_zero_values_keep_source_order() {
     for column in [AccountsColumn::WeeklyLeft, AccountsColumn::Credits] {
         let rows = [("A", 0.0), ("B", -0.0)]

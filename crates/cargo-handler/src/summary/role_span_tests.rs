@@ -43,6 +43,7 @@ fn draw_account_roles(
             ],
             weekly_left_percent: Reading::Known(50.0),
             resets_at: Reading::Unavailable,
+            login_ends_at: Reading::Unavailable,
             credits: Credits::Amount(20.0),
             credit_permission: CreditPermission::Enabled,
             read_status: AccountReadStatus::Ok,
