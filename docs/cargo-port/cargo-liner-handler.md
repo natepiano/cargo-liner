@@ -276,6 +276,7 @@ Director decisions:
 2. A busy row's activity cell shows its activity word from the census. `census --json` gets a top-level `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, with `activity` null on a row that is not busy. The new key increments `schema` to 2. The `directors` and `workers` lists keep their fields.
 3. The accounts table drops its `starting` and `waiting` columns.
 4. Director call: the `waiting` bright yellow ink (Phase 5) moves from the status word to the activity word `waiting`. The other activity words keep their inks.
+5. Showrunner, 2026-11-13 (design A): a busy row's activity cell shows the job and the live word joined, as the details view does (`impl · thinking`). Other rows show the job, as today. `census --json` `sessions[].activity` gives the same joined text. On a narrow cell, the job is cut first and the live word stays whole. The `waiting` ink goes on the word `waiting` only.
 
 Tests (red first, each under one second):
 1. Each status value draws in the status cell; no row draws `starting` or `waiting` there.
@@ -310,7 +311,48 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the same words in both tools.
 
-### Phase 11 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
+### Phase 11 — One `cargo-handler census --json` on natedev takes about one second or less  · status: todo
+
+**Depends on:** Phase 10 (it changes `census/report.rs` and adds the `sessions` list)
+
+#### Work Order
+
+**Goal:** one `cargo-handler census --json` on natedev prints the census in about one second or less. Today it takes 3.2 to 4.8 s.
+
+**Source:** the showrunner, 2026-11-13: "one `cargo-handler census --json` on natedev takes about 1 s or less (today 3.2-4.8 s, measured by sdlc). unit-board switches /showrunner:units Status and Workers to the census only at that speed."
+
+**Spec:**
+
+Director decisions:
+1. Measure first. Time each stage of one `census --json` run on natedev, and name each cost with its time.
+2. Remove each cost inside the crate at its cause. The census output stays the same for the same machine state.
+3. `unit_runs.held` is outside the crate: the accounts unit fix `ebe972e19` (2.6 s to 0.13 s; `Path.resolve` calls 117k to 6k) is on `~/.claude` main. Do not count it as this phase's work. Measure the census with it in place.
+4. Do not change `remote = []` in `~/.config/cargo-handler/config.toml`. That question is on the user's list.
+
+Tests (each under one second):
+1. Each removed cost has a test that keeps it removed, where a test can show it (for example, one source read for each census, not one for each row).
+2. The `census --json` tests keep their keys and values.
+
+**Constraints from prior phases:**
+- Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Phase 10 adds the `sessions` list. Add no second reader.
+- The Delegation Context invariant holds: nothing on the UI thread runs a command or reads a file.
+
+**Live check (director):** on natedev, run the branch build of `cargo-handler census --json` five times. Report each time, the median, and the share of each named cost.
+
+**Change-Review line:** `cargo-handler census --json` answers in about one second | On natedev, run `time cargo-handler census --json` | It prints the census in about one second or less
+
+**Files:**
+- `crates/cargo-handler/src/census/report.rs` — the `census --json` path
+- the census readers that the measurement names
+
+**Workers:** 1 writer.
+- `impl` — every file the measurement names, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. The live check median is about one second or less, with `ebe972e19` in place.
+
+### Phase 12 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
 
 **Depends on:** Phase 3 (both change the handler key handling)
 
@@ -366,7 +408,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the full-screen tile and the return to the grid.
 
-### Phase 12 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 13 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -388,7 +430,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
-- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 11 full-screen tile with its selection, expansion and `y` copy.
+- Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 12 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. A producer line in the new tile must still reach it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
@@ -428,7 +470,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 13 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 14 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -487,7 +529,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 14 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 15 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -541,13 +583,13 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 15 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 16 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 16 — Twelve slow tests run in under one second  · status: todo
+### Phase 17 — Twelve slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 14 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 15 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
@@ -578,7 +620,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 14 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 15 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 
 **Change-Review line:** none (test code only)
