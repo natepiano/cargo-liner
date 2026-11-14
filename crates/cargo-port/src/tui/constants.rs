@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use super::interaction::HittableId;
+
 // cargo arguments
 pub(super) const CARGO_BENCH_FLAG: &str = "--bench";
 pub(super) const CARGO_BENCH_SUBCOMMAND: &str = "bench";
@@ -21,6 +23,20 @@ pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 
 // finder
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
+
+// hit testing
+/// Stacking order used for tiled-pane hit-test dispatch: top of stack first.
+pub(super) const HITTABLE_Z_ORDER: [HittableId; 9] = [
+    HittableId::ProjectList,
+    HittableId::Package,
+    HittableId::Lang,
+    HittableId::Cpu,
+    HittableId::Git,
+    HittableId::Targets,
+    HittableId::Lints,
+    HittableId::CiRuns,
+    HittableId::Output,
+];
 
 // performance logs
 pub(super) const PERF_LOG_FILE: &str = "cargo-port-tui-perf.log";

@@ -16,6 +16,29 @@ enum ThemesDirectoryResolutionSource {
     SharedConfigurationRoot,
 }
 
+/// Test-only override for the themes directory.
+#[cfg(test)]
+pub(crate) struct ThemesDirOverrideGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for ThemesDirOverrideGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        THEMES_DIR_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = previous;
+        });
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static THEMES_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const {
+        RefCell::new(None)
+    };
+}
+
 /// Compute the per-user themes directory:
 /// `CARGO_PORT_CONFIG_DIR / "themes"`, or, when unset,
 /// `dirs::config_dir() / "cargo-port" / "themes"`.
@@ -55,29 +78,6 @@ fn resolve_themes_dir(
         ThemesDirectoryResolutionSource::SharedConfigurationRoot => {
             cargo_port_configuration_root.child(THEMES_DIRNAME)
         },
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static THEMES_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const {
-        RefCell::new(None)
-    };
-}
-
-/// Test-only override for the themes directory.
-#[cfg(test)]
-pub(crate) struct ThemesDirOverrideGuard {
-    previous: Option<PathBuf>,
-}
-
-#[cfg(test)]
-impl Drop for ThemesDirOverrideGuard {
-    fn drop(&mut self) {
-        let previous = self.previous.take();
-        THEMES_DIR_OVERRIDE.with(|slot| {
-            *slot.borrow_mut() = previous;
-        });
     }
 }
 

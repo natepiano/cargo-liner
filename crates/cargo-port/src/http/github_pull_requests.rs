@@ -28,9 +28,8 @@ type PullRequestPages = Result<
 >;
 
 #[derive(Deserialize)]
-struct GqlViewerResponse {
-    data:   Option<GqlViewerData>,
-    errors: Option<Vec<Value>>,
+struct GqlViewer {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -39,26 +38,9 @@ struct GqlViewerData {
 }
 
 #[derive(Deserialize)]
-struct GqlViewer {
-    login: String,
-}
-
-#[derive(Deserialize)]
-struct GqlPullRequestsResponse {
-    data:   Option<GqlPullRequestsData>,
+struct GqlViewerResponse {
+    data:   Option<GqlViewerData>,
     errors: Option<Vec<Value>>,
-}
-
-#[derive(Deserialize)]
-struct GqlPullRequestsData {
-    repository: Option<GqlPullRequestRepository>,
-    search:     Option<GqlPullRequestSearch>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlPullRequestRepository {
-    default_branch_ref: Option<GqlBranchRef>,
 }
 
 #[derive(Deserialize)]
@@ -68,9 +50,8 @@ struct GqlBranchRef {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GqlPullRequestSearch {
-    page_info: GqlPageInfo,
-    nodes:     Vec<Option<GqlPullRequestNode>>,
+struct GqlPullRequestRepository {
+    default_branch_ref: Option<GqlBranchRef>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +59,17 @@ struct GqlPullRequestSearch {
 struct GqlPageInfo {
     has_next_page: bool,
     end_cursor:    Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GqlRepositoryOwner {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GqlPullRequestHeadRepository {
+    name:  String,
+    owner: GqlRepositoryOwner,
 }
 
 #[derive(Deserialize)]
@@ -95,31 +87,22 @@ struct GqlPullRequestNode {
 }
 
 #[derive(Deserialize)]
-struct GqlPullRequestHeadRepository {
-    name:  String,
-    owner: GqlRepositoryOwner,
-}
-
-#[derive(Deserialize)]
-struct GqlRepositoryOwner {
-    login: String,
-}
-
-#[derive(Deserialize)]
-struct GqlPullRequestStatusResponse {
-    data:   Option<GqlPullRequestStatusData>,
-    errors: Option<Vec<Value>>,
-}
-
-#[derive(Deserialize)]
-struct GqlPullRequestStatusData {
-    repository: Option<GqlPullRequestStatusRepository>,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GqlPullRequestStatusRepository {
-    pull_request: Option<GqlPullRequestStatusNode>,
+struct GqlPullRequestSearch {
+    page_info: GqlPageInfo,
+    nodes:     Vec<Option<GqlPullRequestNode>>,
+}
+
+#[derive(Deserialize)]
+struct GqlPullRequestsData {
+    repository: Option<GqlPullRequestRepository>,
+    search:     Option<GqlPullRequestSearch>,
+}
+
+#[derive(Deserialize)]
+struct GqlPullRequestsResponse {
+    data:   Option<GqlPullRequestsData>,
+    errors: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize)]
@@ -130,136 +113,21 @@ struct GqlPullRequestStatusNode {
     base_ref_name: String,
 }
 
-const fn unavailable_reason_from_signal(
-    service_signal: Option<ServiceSignal>,
-) -> PullRequestUnavailableReason {
-    match service_signal {
-        Some(ServiceSignal::RateLimited(ServiceKind::GitHub)) => {
-            PullRequestUnavailableReason::RateLimited
-        },
-        Some(ServiceSignal::Unreachable(ServiceKind::GitHub)) => {
-            PullRequestUnavailableReason::Network
-        },
-        _ => PullRequestUnavailableReason::GraphQlError,
-    }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPullRequestStatusRepository {
+    pull_request: Option<GqlPullRequestStatusNode>,
 }
 
-const fn combine_optional_signal(
-    left_service_signal: Option<ServiceSignal>,
-    right_service_signal: Option<ServiceSignal>,
-) -> Option<ServiceSignal> {
-    match (left_service_signal, right_service_signal) {
-        (Some(ServiceSignal::Unreachable(service)), _)
-        | (_, Some(ServiceSignal::Unreachable(service))) => {
-            Some(ServiceSignal::Unreachable(service))
-        },
-        (Some(ServiceSignal::RateLimited(service)), _)
-        | (_, Some(ServiceSignal::RateLimited(service))) => {
-            Some(ServiceSignal::RateLimited(service))
-        },
-        (Some(ServiceSignal::Reachable(service)), _)
-        | (_, Some(ServiceSignal::Reachable(service))) => Some(ServiceSignal::Reachable(service)),
-        (None, None) => None,
-    }
+#[derive(Deserialize)]
+struct GqlPullRequestStatusData {
+    repository: Option<GqlPullRequestStatusRepository>,
 }
 
-fn graphql_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
-}
-
-fn pull_requests_query(
-    owner: &str,
-    repo: &str,
-    search_query: &str,
-    cursor: Option<&str>,
-) -> String {
-    let owner = graphql_string(owner);
-    let repo = graphql_string(repo);
-    let search_query = graphql_string(search_query);
-    let after = cursor.map_or_else(String::new, |cursor| {
-        format!(", after: {}", graphql_string(cursor))
-    });
-    format!(
-        "{{ repository(owner: {owner}, name: {repo}) {{ defaultBranchRef {{ name }} }} \
-         search(type: ISSUE, first: {GITHUB_PR_PAGE_SIZE}{after}, query: {search_query}) \
-         {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number title url \
-         isDraft reviewDecision mergeStateStatus headRefName baseRefName \
-         headRepository {{ name owner {{ login }} }} }} }} }} }}"
-    )
-}
-
-fn pull_request_status_query(owner: &str, repo: &str, number: u32) -> String {
-    let owner = graphql_string(owner);
-    let repo = graphql_string(repo);
-    format!(
-        "{{ repository(owner: {owner}, name: {repo}) {{ pullRequest(number: {number}) \
-         {{ merged closed baseRefName }} }} }}"
-    )
-}
-
-fn build_project_pr_info(
-    owner_repo: OwnerRepo,
-    viewer_login: String,
-    default_branch: String,
-    nodes: Vec<GqlPullRequestNode>,
-    pull_request_completeness: PullRequestCompleteness,
-) -> ProjectPrInfo {
-    ProjectPrInfo {
-        open: nodes.into_iter().map(pull_request_info_from_node).collect(),
-        default_branch,
-        fetched_at: Utc::now().format("%+").to_string(),
-        completeness: pull_request_completeness,
-        viewer_login,
-        owner_repo,
-    }
-}
-
-fn pull_request_info_from_node(node: GqlPullRequestNode) -> PullRequestInfo {
-    let pull_request_state = reduce_pull_request_state(
-        node.is_draft,
-        node.review_decision.as_deref(),
-        node.merge_state_status.as_deref(),
-    );
-    PullRequestInfo {
-        number:     node.number,
-        title:      node.title,
-        url:        node.url,
-        state:      pull_request_state,
-        head:       node.head_ref_name,
-        head_owner: node
-            .head_repository
-            .as_ref()
-            .map(|repo| repo.owner.login.clone()),
-        head_repo:  node.head_repository.map(|repo| repo.name),
-        base:       node.base_ref_name,
-    }
-}
-
-fn reduce_pull_request_state(
-    is_draft: bool,
-    review_decision: Option<&str>,
-    merge_state_status: Option<&str>,
-) -> PullRequestState {
-    if is_draft {
-        return PullRequestState::Draft;
-    }
-    if review_decision == Some("CHANGES_REQUESTED") {
-        return PullRequestState::ChangesRequested;
-    }
-    match merge_state_status {
-        Some("UNSTABLE") => return PullRequestState::ChecksFailing,
-        Some("BLOCKED" | "DIRTY" | "HAS_HOOKS") => return PullRequestState::Blocked,
-        Some("BEHIND") => return PullRequestState::Behind,
-        _ => {},
-    }
-    match review_decision {
-        Some("REVIEW_REQUIRED") => PullRequestState::ReviewRequired,
-        Some("APPROVED") => PullRequestState::Approved,
-        _ => match merge_state_status {
-            Some("CLEAN") | None => PullRequestState::Ready,
-            Some(_) => PullRequestState::Unknown,
-        },
-    }
+#[derive(Deserialize)]
+struct GqlPullRequestStatusResponse {
+    data:   Option<GqlPullRequestStatusData>,
+    errors: Option<Vec<Value>>,
 }
 
 impl HttpClient {
@@ -525,5 +393,137 @@ impl HttpClient {
     ) -> HttpOutcome<PullRequestGoneReason> {
         self.handle
             .block_on(self.fetch_pull_request_gone_reason_async(owner_repo, number))
+    }
+}
+
+const fn unavailable_reason_from_signal(
+    service_signal: Option<ServiceSignal>,
+) -> PullRequestUnavailableReason {
+    match service_signal {
+        Some(ServiceSignal::RateLimited(ServiceKind::GitHub)) => {
+            PullRequestUnavailableReason::RateLimited
+        },
+        Some(ServiceSignal::Unreachable(ServiceKind::GitHub)) => {
+            PullRequestUnavailableReason::Network
+        },
+        _ => PullRequestUnavailableReason::GraphQlError,
+    }
+}
+
+const fn combine_optional_signal(
+    left_service_signal: Option<ServiceSignal>,
+    right_service_signal: Option<ServiceSignal>,
+) -> Option<ServiceSignal> {
+    match (left_service_signal, right_service_signal) {
+        (Some(ServiceSignal::Unreachable(service)), _)
+        | (_, Some(ServiceSignal::Unreachable(service))) => {
+            Some(ServiceSignal::Unreachable(service))
+        },
+        (Some(ServiceSignal::RateLimited(service)), _)
+        | (_, Some(ServiceSignal::RateLimited(service))) => {
+            Some(ServiceSignal::RateLimited(service))
+        },
+        (Some(ServiceSignal::Reachable(service)), _)
+        | (_, Some(ServiceSignal::Reachable(service))) => Some(ServiceSignal::Reachable(service)),
+        (None, None) => None,
+    }
+}
+
+fn graphql_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn pull_requests_query(
+    owner: &str,
+    repo: &str,
+    search_query: &str,
+    cursor: Option<&str>,
+) -> String {
+    let owner = graphql_string(owner);
+    let repo = graphql_string(repo);
+    let search_query = graphql_string(search_query);
+    let after = cursor.map_or_else(String::new, |cursor| {
+        format!(", after: {}", graphql_string(cursor))
+    });
+    format!(
+        "{{ repository(owner: {owner}, name: {repo}) {{ defaultBranchRef {{ name }} }} \
+         search(type: ISSUE, first: {GITHUB_PR_PAGE_SIZE}{after}, query: {search_query}) \
+         {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number title url \
+         isDraft reviewDecision mergeStateStatus headRefName baseRefName \
+         headRepository {{ name owner {{ login }} }} }} }} }} }}"
+    )
+}
+
+fn pull_request_status_query(owner: &str, repo: &str, number: u32) -> String {
+    let owner = graphql_string(owner);
+    let repo = graphql_string(repo);
+    format!(
+        "{{ repository(owner: {owner}, name: {repo}) {{ pullRequest(number: {number}) \
+         {{ merged closed baseRefName }} }} }}"
+    )
+}
+
+fn build_project_pr_info(
+    owner_repo: OwnerRepo,
+    viewer_login: String,
+    default_branch: String,
+    nodes: Vec<GqlPullRequestNode>,
+    pull_request_completeness: PullRequestCompleteness,
+) -> ProjectPrInfo {
+    ProjectPrInfo {
+        open: nodes.into_iter().map(pull_request_info_from_node).collect(),
+        default_branch,
+        fetched_at: Utc::now().format("%+").to_string(),
+        completeness: pull_request_completeness,
+        viewer_login,
+        owner_repo,
+    }
+}
+
+fn pull_request_info_from_node(node: GqlPullRequestNode) -> PullRequestInfo {
+    let pull_request_state = reduce_pull_request_state(
+        node.is_draft,
+        node.review_decision.as_deref(),
+        node.merge_state_status.as_deref(),
+    );
+    PullRequestInfo {
+        number:     node.number,
+        title:      node.title,
+        url:        node.url,
+        state:      pull_request_state,
+        head:       node.head_ref_name,
+        head_owner: node
+            .head_repository
+            .as_ref()
+            .map(|repo| repo.owner.login.clone()),
+        head_repo:  node.head_repository.map(|repo| repo.name),
+        base:       node.base_ref_name,
+    }
+}
+
+fn reduce_pull_request_state(
+    is_draft: bool,
+    review_decision: Option<&str>,
+    merge_state_status: Option<&str>,
+) -> PullRequestState {
+    if is_draft {
+        return PullRequestState::Draft;
+    }
+    if review_decision == Some("CHANGES_REQUESTED") {
+        return PullRequestState::ChangesRequested;
+    }
+    match merge_state_status {
+        Some("UNSTABLE") => return PullRequestState::ChecksFailing,
+        Some("BLOCKED" | "DIRTY" | "HAS_HOOKS") => return PullRequestState::Blocked,
+        Some("BEHIND") => return PullRequestState::Behind,
+        _ => {},
+    }
+    match review_decision {
+        Some("REVIEW_REQUIRED") => PullRequestState::ReviewRequired,
+        Some("APPROVED") => PullRequestState::Approved,
+        _ => match merge_state_status {
+            Some("CLEAN") | None => PullRequestState::Ready,
+            Some(_) => PullRequestState::Unknown,
+        },
     }
 }

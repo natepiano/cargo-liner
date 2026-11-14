@@ -28,10 +28,6 @@ pub(crate) enum RemoteList {
     Unreadable,
 }
 
-impl Default for RemoteList {
-    fn default() -> Self { Self::Listed(Vec::new()) }
-}
-
 impl RemoteList {
     pub(crate) fn listed(&self) -> &[RemoteInfo] {
         match self {
@@ -39,6 +35,10 @@ impl RemoteList {
             Self::Unreadable => &[],
         }
     }
+}
+
+impl Default for RemoteList {
+    fn default() -> Self { Self::Listed(Vec::new()) }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -116,7 +116,7 @@ impl RepoInfo {
             });
 
         let remotes = (|| {
-            let (remote_names, pushurls) = probes::run_independent_probes(
+            let (remote_names, pushurls) = run_independent_probes(
                 || remote::list_remote_names(&repo_root),
                 || push::list_remote_pushurls(&repo_root),
             );
@@ -152,5 +152,52 @@ impl RepoInfo {
             default_branch,
             local_main_branch,
         })
+    }
+}
+
+/// Run local probes on their own threads so network work in rayon cannot delay them.
+fn run_independent_probes<A: Send, B: Send>(
+    left: impl FnOnce() -> A + Send,
+    right: impl FnOnce() -> B + Send,
+) -> (A, B) {
+    std::thread::scope(|scope| {
+        let left = scope.spawn(left);
+        let right = scope.spawn(right);
+        let left = probes::finish_probe(left);
+        let right = probes::finish_probe(right);
+        (left, right)
+    })
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::run_independent_probes;
+
+    const TEST_CALLER_POOL_THREADS: usize = 1;
+    const TEST_CALLER_POOL_CREATION_FAILURE: &str = "create probe caller pool";
+
+    #[test]
+    fn independent_git_probes_run_outside_the_callers_rayon_pool() {
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(TEST_CALLER_POOL_THREADS)
+            .build()
+            .expect(TEST_CALLER_POOL_CREATION_FAILURE);
+        thread_pool.install(|| {
+            assert!(rayon::current_thread_index().is_some());
+            let (left, right) =
+                run_independent_probes(rayon::current_thread_index, rayon::current_thread_index);
+            assert!(
+                left.is_none(),
+                "left probe must not queue behind rayon work"
+            );
+            assert!(
+                right.is_none(),
+                "right probe must not queue behind rayon work"
+            );
+        });
     }
 }

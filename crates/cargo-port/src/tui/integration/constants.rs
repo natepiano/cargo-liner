@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::time::Duration;
+
 use super::config_reload;
 use super::config_reload::ConfigHandler;
 use super::config_reload::ConfigKey;
@@ -109,3 +112,7 @@ pub(super) const OUTPUT_TAB_ORDER: i16 = 8;
 pub(super) const PACKAGE_TAB_ORDER: i16 = 1;
 pub(super) const PROJECT_LIST_TAB_ORDER: i16 = 0;
 pub(super) const TARGETS_TAB_ORDER: i16 = 5;
+
+// `lint_icon` tests sample the activity spinner at `TEST_SPINNER_SAMPLE_ELAPSED`.
+#[cfg(test)]
+pub(super) const TEST_SPINNER_SAMPLE_ELAPSED: Duration = Duration::from_millis(100);

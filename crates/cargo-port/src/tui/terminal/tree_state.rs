@@ -7,19 +7,6 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::project_list::ExpandTarget;
 
-fn last_selected_path_file() -> AbsolutePath { scan::cache_dir().join("last_selected.txt").into() }
-
-/// Read the pre-`tree_state.toml` selection file. Retained only to migrate the
-/// last selection forward on the first launch after the upgrade.
-fn load_last_selected() -> Option<AbsolutePath> {
-    let path = last_selected_path_file();
-    let raw = std::fs::read_to_string(&*path).ok()?;
-    let trimmed = raw.trim();
-    (!trimmed.is_empty() && Path::new(trimmed).is_absolute()).then(|| AbsolutePath::from(trimmed))
-}
-
-fn tree_state_file() -> AbsolutePath { scan::cache_dir().join("tree_state.toml").into() }
-
 /// On-disk form of the project-tree UI state: the selected project and the set
 /// of expanded containers. Each expanded entry is a tab-delimited token
 /// (`kind\tpath[\tgroup]`) — see [`encode_expand_target`].
@@ -31,29 +18,81 @@ struct TreeStateFile {
     expanded: Vec<String>,
 }
 
+/// The saved project-tree selection that startup restores.
+#[derive(Debug)]
+pub(in crate::tui) enum RestoredTreeSelection {
+    /// No saved file holds an absolute selected path.
+    NoRestorableSelection,
+    /// The saved selected path.
+    Restore(AbsolutePath),
+}
+
+impl RestoredTreeSelection {
+    fn from_saved_path(raw: &str) -> Self {
+        if Path::new(raw).is_absolute() {
+            Self::Restore(AbsolutePath::from(raw))
+        } else {
+            Self::NoRestorableSelection
+        }
+    }
+
+    /// The saved path, for the `SelectionPaths::last_selected` field.
+    pub(in crate::tui) fn into_saved_path(self) -> Option<AbsolutePath> {
+        match self {
+            Self::Restore(path) => Some(path),
+            Self::NoRestorableSelection => None,
+        }
+    }
+}
+
+/// The project-tree UI state that startup restores.
+#[derive(Debug)]
+pub(in crate::tui) struct RestoredTreeState {
+    pub(in crate::tui) selection: RestoredTreeSelection,
+    pub(in crate::tui) expanded:  Vec<ExpandTarget>,
+}
+
+fn last_selected_path_file() -> AbsolutePath { scan::cache_dir().join("last_selected.txt").into() }
+
+/// Read the pre-`tree_state.toml` selection file. Retained only to migrate the
+/// last selection forward on the first launch after the upgrade.
+fn load_last_selected() -> RestoredTreeSelection {
+    let Ok(raw) = std::fs::read_to_string(&*last_selected_path_file()) else {
+        return RestoredTreeSelection::NoRestorableSelection;
+    };
+    RestoredTreeSelection::from_saved_path(raw.trim())
+}
+
+fn tree_state_file() -> AbsolutePath { scan::cache_dir().join("tree_state.toml").into() }
+
 /// Load the persisted selection and expansion targets. Falls back to the legacy
 /// `last_selected.txt` for the selection when `tree_state.toml` is absent (the
 /// first launch after the upgrade), so the cursor still lands where it did.
-pub(super) fn load_tree_state() -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
+pub(super) fn load_tree_state() -> RestoredTreeState {
     let Ok(text) = std::fs::read_to_string(&*tree_state_file()) else {
-        return (load_last_selected(), Vec::new());
+        return RestoredTreeState {
+            selection: load_last_selected(),
+            expanded:  Vec::new(),
+        };
     };
     parse_tree_state(&text)
 }
 
-fn parse_tree_state(text: &str) -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
+fn parse_tree_state(text: &str) -> RestoredTreeState {
     let file: TreeStateFile = toml::from_str(text).unwrap_or_default();
-    let selected = file
-        .selected
-        .as_deref()
-        .filter(|raw| Path::new(raw).is_absolute())
-        .map(AbsolutePath::from);
+    let selection = file.selected.as_deref().map_or(
+        RestoredTreeSelection::NoRestorableSelection,
+        RestoredTreeSelection::from_saved_path,
+    );
     let expanded = file
         .expanded
         .iter()
         .filter_map(|token| decode_expand_target(token))
         .collect();
-    (selected, expanded)
+    RestoredTreeState {
+        selection,
+        expanded,
+    }
 }
 
 /// Write the current selection and expanded containers to `tree_state.toml`.
@@ -85,9 +124,7 @@ pub(super) fn serialize_tree_state_for_test(app: &App) -> Result<String, Error> 
 }
 
 #[cfg(test)]
-pub(super) fn parse_tree_state_for_test(text: &str) -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
-    parse_tree_state(text)
-}
+pub(super) fn parse_tree_state_for_test(text: &str) -> RestoredTreeState { parse_tree_state(text) }
 
 /// Tab-delimited token for one expanded container. The leading kind tag keeps a
 /// worktree group's `Worktree` entry distinct from the `Root` at the same path.

@@ -6,6 +6,60 @@ use super::VendoredPackage;
 use super::package_path_dependencies;
 use super::workspace_path_dependencies;
 
+#[derive(Clone, Copy)]
+enum VendoredDestination {
+    Root {
+        node_index: usize,
+    },
+    WorkspaceMember {
+        node_index:   usize,
+        group_index:  usize,
+        member_index: usize,
+    },
+}
+
+impl VendoredDestination {
+    fn adjusted(self, remove_indices: &[usize]) -> Self {
+        let adjust = |node_index| {
+            node_index
+                - remove_indices
+                    .iter()
+                    .filter(|&&removed_index| removed_index < node_index)
+                    .count()
+        };
+        match self {
+            Self::Root { node_index } => Self::Root {
+                node_index: adjust(node_index),
+            },
+            Self::WorkspaceMember {
+                node_index,
+                group_index,
+                member_index,
+            } => Self::WorkspaceMember {
+                node_index: adjust(node_index),
+                group_index,
+                member_index,
+            },
+        }
+    }
+}
+
+/// Vendoring decision from the workspace members whose path dependencies name the item.
+#[derive(Clone, Copy)]
+enum DependencyVendoringDecision {
+    /// Exactly one workspace member consumes the item.
+    UniqueConsumer(VendoredDestination),
+    /// No consumer or more than one: directory containment decides.
+    TryContainment,
+}
+
+/// Vendoring decision from the first other root whose directory contains the item.
+#[derive(Clone, Copy)]
+enum ContainmentVendoringDecision {
+    MoveUnderRoot { node_index: usize },
+    KeepAtRoot,
+}
+
 /// Find standalone items whose path lives inside another item's directory
 /// and move them into that item's `vendored` list.
 pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
@@ -29,13 +83,19 @@ pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
             continue;
         }
 
-        if let Some(destination) = dependency_vendored_destination(items, vi) {
-            vendored_map.push((vi, destination));
-            continue;
+        match dependency_vendored_destination(items, vi) {
+            DependencyVendoringDecision::UniqueConsumer(destination) => {
+                vendored_map.push((vi, destination));
+                continue;
+            },
+            DependencyVendoringDecision::TryContainment => {},
         }
 
-        if let Some(destination) = contained_vendored_destination(vitem, vi, &parent_paths) {
-            vendored_map.push((vi, destination));
+        match contained_vendored_destination(vitem, vi, &parent_paths) {
+            ContainmentVendoringDecision::MoveUnderRoot { node_index } => {
+                vendored_map.push((vi, VendoredDestination::Root { node_index }));
+            },
+            ContainmentVendoringDecision::KeepAtRoot => {},
         }
     }
 
@@ -93,48 +153,10 @@ pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
     }
 }
 
-#[derive(Clone, Copy)]
-enum VendoredDestination {
-    Root {
-        node_index: usize,
-    },
-    WorkspaceMember {
-        node_index:   usize,
-        group_index:  usize,
-        member_index: usize,
-    },
-}
-
-impl VendoredDestination {
-    fn adjusted(self, remove_indices: &[usize]) -> Self {
-        let adjust = |node_index| {
-            node_index
-                - remove_indices
-                    .iter()
-                    .filter(|&&removed_index| removed_index < node_index)
-                    .count()
-        };
-        match self {
-            Self::Root { node_index } => Self::Root {
-                node_index: adjust(node_index),
-            },
-            Self::WorkspaceMember {
-                node_index,
-                group_index,
-                member_index,
-            } => Self::WorkspaceMember {
-                node_index: adjust(node_index),
-                group_index,
-                member_index,
-            },
-        }
-    }
-}
-
 fn dependency_vendored_destination(
     items: &[RootItem],
     vendored_index: usize,
-) -> Option<VendoredDestination> {
+) -> DependencyVendoringDecision {
     let vendored_path = items[vendored_index].path();
     let mut consumers = Vec::new();
 
@@ -163,8 +185,10 @@ fn dependency_vendored_destination(
     }
 
     match consumers.as_slice() {
-        [vendored_destination] => Some(*vendored_destination),
-        _ => None,
+        [vendored_destination] => {
+            DependencyVendoringDecision::UniqueConsumer(*vendored_destination)
+        },
+        _ => DependencyVendoringDecision::TryContainment,
     }
 }
 
@@ -172,7 +196,7 @@ fn contained_vendored_destination(
     vendored_root_item: &RootItem,
     vendored_index: usize,
     parent_paths: &[(usize, AbsolutePath)],
-) -> Option<VendoredDestination> {
+) -> ContainmentVendoringDecision {
     parent_paths
         .iter()
         .find_map(|&(node_index, ref parent_path)| {
@@ -180,12 +204,16 @@ fn contained_vendored_destination(
                 && vendored_root_item.path().starts_with(parent_path)
                 && vendored_root_item.path() != parent_path
             {
-                Some(VendoredDestination::Root { node_index })
+                Some(node_index)
             } else {
                 None
             }
         })
+        .map_or(ContainmentVendoringDecision::KeepAtRoot, |node_index| {
+            ContainmentVendoringDecision::MoveUnderRoot { node_index }
+        })
 }
+
 fn push_vendored_item(
     items: &mut [RootItem],
     vendored_destination: VendoredDestination,
