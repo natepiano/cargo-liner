@@ -284,50 +284,19 @@
 - `census --json` waits on the accounts command, so its wall time is at least that command's time.
 - The live word `waiting` comes from `VerificationProgress::Waiting` (a queued verify run) in `census/activity.rs`. The `job · word` form needs a worker, subagent or reviewer line kind.
 
-### Phase 11 — One `cargo-handler census --json` on natedev takes about one second or less  · status: todo
+### Phase 11 — One `cargo-handler census --json` on natedev takes about one second or less  · status: done
 
-**Depends on:** Phase 10 (it changes `census/report.rs` and adds the `sessions` list)
+#### As-built
 
-#### Work Order
+No crate code changed. On natedev, the crate's own stages of one `cargo-handler census --json` (the local scan and `CensusReport::build`) take 0.19 s median in a release build. The accounts command runs beside the local scan, so the full wall time is the larger of the two. With the devtools accounts command fix on `~/.claude` main, the full median is 1.05 s (five runs: 1.23 1.05 0.96 0.89 1.20 s at load average 68-78), and `accounts.py status --json --stored` takes 0.90 s median.
 
-**Goal:** one `cargo-handler census --json` on natedev prints the census in about one second or less. Today it takes 3.2 to 4.8 s.
+**Files:** none.
 
-**Source:** the showrunner, 2026-11-13: "one `cargo-handler census --json` on natedev takes about 1 s or less (today 3.2-4.8 s, measured by sdlc). unit-board switches /showrunner:units Status and Workers to the census only at that speed."
+**Gotchas:** time the crate stages on a `--release` build; a debug build makes them about seven times slower. A `cat` of a saved accounts answer as `accounts_command` times the crate stages apart from the accounts command.
 
-**Spec:**
+**Ruled out:** crate changes to the detached-run record reads; the scan of about 9500 records is inside the 0.19 s crate median.
 
-Director decisions:
-1. Measure first. Time each stage of one `census --json` run on natedev, and name each cost with its time.
-2. Remove each cost inside the crate at its cause. The census output stays the same for the same machine state.
-3. Costs outside the crate are not this phase's work. The accounts unit fix `ebe972e19` (`unit_runs.held`, 2.6 s to 0.13 s) and the devtools fix `83dac09f2` (`accounts.py status --json --stored`, 6 s to 4.5 s) are on `~/.claude` main. Devtools takes the detached-run scan next. Measure on `~/.claude` main `83dac09f2` or later, and name each outside cost with its time.
-4. Do not change `remote = []` in `~/.config/cargo-handler/config.toml`. That question is on the user's list.
-5. Showrunner, 2026-11-13: the accounts command runs beside the local scan, never after it, so the full median is the larger of the two and not their sum. The accounts command cost goes to sdlc; devtools owns it.
-
-Tests (each under one second):
-1. Each removed cost has a test that keeps it removed, where a test can show it (for example, one source read for each census, not one for each row).
-2. The `census --json` tests keep their keys and values.
-
-**Constraints from prior phases:**
-- Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Phase 10 adds the `sessions` list. Add no second reader.
-- The Delegation Context invariant holds: nothing on the UI thread runs a command or reads a file.
-- Phase 10: `report.rs` `print_to` runs `AccountsTable::read_once(config.census.accounts_command)` on its own thread beside `probe::scan_local`, so the wall time is at least the accounts command time (`accounts.py status --json --stored`, 4.5 s at `83dac09f2`). `CensusReport::build` then places every tile (`agent_cell::session_cells` walks `cell_order_placed`) to fill `sessions`. Time the local scan, the accounts command and the build apart.
-
-**Live check (director):** on natedev, run the branch build of `cargo-handler census --json` five times. Report each time, the median, and the share of each named cost.
-
-**Change-Review line:** `cargo-handler census --json` answers in about one second | On natedev, run `time cargo-handler census --json` | It prints the census in about one second or less
-
-**Files:**
-- `crates/cargo-handler/src/census/report.rs` — the `census --json` path
-- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs` — the local scan; add each other census reader that the measurement names
-
-**Workers:** 1 writer.
-- `impl` — every file the measurement names, and the tests.
-
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. On `~/.claude` main `83dac09f2` or later, the crate's own stages (local scan and build) take about one second or less. The live check names the accounts command time apart and records the full median.
-
-### Phase 12 — Every busy row shows what the session does  · status: todo
+### Phase 12 — Every busy row shows what the session does  · status: done
 
 **Depends on:** Phase 10 (the busy activity cell and the `sessions` list)
 
@@ -351,7 +320,7 @@ Tests (red first, each under one second):
 **Constraints from prior phases:**
 - Phase 10: `TreeLine::activity_parts` (`agent_cell.rs`) joins the live word only for a reported `SessionState::Busy`; `job_and_live_word` takes the job from the line kind and the live word from `live_activity()`. An `AgentActivity::Idle` or `Unreported` live activity gives no word, so a busy row with no job draws an empty cell.
 - Phase 7 holds the run, pane and activity facts; Phase 8 prints them; Phase 10 builds `sessions` from `agent_cell::session_cells`. Add no second reader.
-- Phase 11 changes the census readers for speed. Keep its single reads.
+- Phase 11 changed no census reader: the crate stages take 0.19 s median in release. Add no read per row.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
 
 **Live check (director):** on natedev, capture the tile and run `cargo-handler census --json` from a build of this branch. No busy row has an empty activity cell, and each `sessions` entry with status `busy` has an activity.

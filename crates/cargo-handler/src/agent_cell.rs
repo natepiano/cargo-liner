@@ -1724,11 +1724,28 @@ impl TreeLine<'_> {
     fn live_activity(&self) -> AgentActivity {
         match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                self.row.activity
+                self.conversation_activity(self.row.activity)
             },
-            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
-                child.activity
-            },
+            LineSubject::ManagedThread(child, _, _)
+            | LineSubject::Work(Work {
+                child,
+                kind: WorkKind::Thread,
+                ..
+            }) => self.conversation_activity(child.activity),
+            LineSubject::Work(Work { child, .. }) => child.activity,
+        }
+    }
+
+    /// The accounts report gives `source_state` and can read the session record after the
+    /// census scan, so it can see a new turn first. A `SessionState::Busy` conversation whose
+    /// scanned activity names no work is `Activity::Thinking`.
+    const fn conversation_activity(&self, scanned: AgentActivity) -> AgentActivity {
+        match (self.source_state, scanned) {
+            (
+                ReportedSessionState::Reported(SessionState::Busy),
+                AgentActivity::Idle | AgentActivity::Unreported,
+            ) => AgentActivity::Active(Activity::Thinking),
+            _ => scanned,
         }
     }
 
@@ -4232,6 +4249,35 @@ mod tests {
         let word = narrow.spans.last().expect("live word span");
         assert_eq!(word.content, "waiting");
         assert_eq!(word.style, Role::Waiting.style());
+    }
+
+    #[test]
+    fn a_busy_conversation_with_no_scanned_turn_shows_thinking_and_work_lines_do_not() {
+        let mut owner: AgentRow =
+            serde_json::from_str(include_str!("census/fixtures/restarted_unit_codex.json"))
+                .expect("dispatched worker");
+        owner.children[0].activity = AgentActivity::Idle;
+        let mut cell = entry(&owner, None);
+        cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
+        assert_eq!(
+            cell.lines[0].activity_parts(NOW).live,
+            Some(Activity::Thinking)
+        );
+        let mut owner_with_subagent = owner.clone();
+        owner_with_subagent.children = vec![
+            serde_json::from_value(serde_json::json!(
+                {"depth":0,"kind":"subagent","name":"helper","started":110}
+            ))
+            .expect("subagent child"),
+        ];
+        owner_with_subagent.children[0].activity = AgentActivity::Idle;
+        let cell = entry(&owner_with_subagent, None);
+        let subagent = cell
+            .lines
+            .iter()
+            .find(|line| line.name() == "helper")
+            .expect("subagent line");
+        assert_eq!(subagent.activity_parts(NOW).live, None);
     }
 
     /// Every cell across `machines`, in the order the grid shows them:

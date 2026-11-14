@@ -30,6 +30,12 @@ Paths below are relative to `crates/cargo-handler/src/`.
 Status sorting uses the displayed activity text.
 
 Claude activity comes from its transcript's tool and turn records.
+The Claude session record status says whether the turn is open.
+A record `idle` keeps the row idle, and a record `busy` keeps the turn open after the last answer, while the Stop hooks run.
+In an open turn, the transcript names the work.
+The accounts report reads the session record at a different time than the census scan, so it can see a new turn first.
+`TreeLine::live_activity` gives a busy session, worker, or unassigned line with a scanned `idle` or unreported activity the word `thinking`.
+Shell and subagent work lines take no such word.
 Codex activity comes from rollout function calls and turn records.
 A subagent uses its own transcript.
 An open turn without a later tool word shows `thinking`.
