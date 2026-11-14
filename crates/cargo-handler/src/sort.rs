@@ -182,13 +182,14 @@ pub(crate) enum AccountsColumn {
     Exited,
     Total,
     Resets,
+    LoginEnds,
     Credits,
     Enabled,
 }
 
 impl AccountsColumn {
     /// The read mark has no header or sort key.
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Account,
         Self::WeeklyLeft,
         Self::Roles,
@@ -200,6 +201,7 @@ impl AccountsColumn {
         Self::Exited,
         Self::Total,
         Self::Resets,
+        Self::LoginEnds,
         Self::Credits,
         Self::Enabled,
     ];
@@ -227,6 +229,7 @@ impl AccountsColumn {
             | Self::Exited
             | Self::Total
             | Self::Resets
+            | Self::LoginEnds
             | Self::Credits => Alignment::Right,
             Self::Account | Self::Roles | Self::Enabled => Alignment::Left,
         }
@@ -246,16 +249,29 @@ impl AccountsColumn {
             Self::Exited => 8,
             Self::Total => 9,
             Self::Resets => 10,
-            Self::Credits => 11,
-            Self::Enabled => 12,
+            Self::LoginEnds => 11,
+            Self::Credits => 12,
+            Self::Enabled => 13,
         }
     }
 
     /// The label before a sort is selected.
     pub(crate) const fn header(self) -> &'static str {
         const HEADERS: [&str; AccountsColumn::ALL.len()] = [
-            "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
-            "total", "resets", "credits", "enabled",
+            "account",
+            "left",
+            "role",
+            "busy",
+            "starting",
+            "waiting",
+            "idle",
+            "paused",
+            "exited",
+            "total",
+            "resets",
+            "login ends",
+            "credits",
+            "enabled",
         ];
         HEADERS[self.index()]
     }

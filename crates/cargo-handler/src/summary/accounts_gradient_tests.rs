@@ -69,6 +69,7 @@ pub(super) fn account(label: &str, resets_at: Reading<DateTime<Utc>>) -> Account
         roles: Vec::new(),
         weekly_left_percent: Reading::Known(50.0),
         resets_at,
+        login_ends_at: Reading::Unavailable,
         credits: Credits::Amount(20.0),
         credit_permission: CreditPermission::Enabled,
         read_status: AccountReadStatus::Ok,

@@ -232,63 +232,30 @@
 
 **Ruled out:** a second reader or a copy of a tile rule in the command; wait holders and wait reasons in the JSON (they stay in the run records).
 
-### Phase 9 — The accounts table shows the date each Claude login ends  · status: todo
+### Phase 9 — The accounts table shows the date each Claude login ends  · status: done
 
-**Depends on:** Phase 7 (it changes `census/accounts.rs`, the typed accounts read)
+#### As-built
 
-#### Work Order
-
-**Goal:** the accounts table has a `login ends` column, so the user sees when each Claude account must sign in again.
-
-**Source:** the user, via natedev and the showrunner, 2026-11-13: "yes i want to see this in the accounts table (propagated to cargo handler)". "This" is the date each Claude account's login ends. The wire contract comes from natedev's accounts unit, through the showrunner.
-
-**Spec:**
-
-Wire contract (natedev's accounts unit):
-- cargo-handler already runs `accounts.py status --stored --json` (`census/command_inputs.rs`) and reads `accounts[]`.
-- Each `accounts[]` item gets `login_ends_at`: an ISO 8601 UTC string in the same form as `resets_at`, or null. Codex rows, and Claude rows with no stored value, give null.
-- The value comes from `agent-notes/usage.json`, which cargo-handler already watches. No new input file.
-- The field reaches `~/.claude` main with the accounts phase `login-end-date`. This phase can land first.
-
-Director decisions:
-1. `AccountWire` gets `login_ends_at: Option<String>` with `#[serde(default)]`. An older report without the key parses, and its rows show an empty cell.
-2. `AccountUsage` keeps the value as `Reading<DateTime<Utc>>`, parsed by the function that parses `resets_at`. A malformed value fails the same way as a malformed `resets_at`.
-3. A new `AccountsColumn::LoginEnds` sits after `Resets`. Its header is `login ends`, lower case like the other headers. Its value uses `reset_label`, the date form of the `resets` column. A null value gives an empty cell, as `resets` does.
-4. The column sorts by date, as `resets` does, with an empty value in the place `resets` gives it.
-5. The column draws in the default table ink. It takes no rank color.
-6. On a narrow pane, the column drops after `enabled` and before `credits`. Director call: the date changes once a week, so it gives way before the credit amount.
-
-Tests (red first, each under one second):
-1. A report with `login_ends_at` on a Claude row and null on a Codex row draws the date in the Claude row and an empty cell in the Codex row, read from the rendered accounts table.
-2. A report without the `login_ends_at` key parses, and every `login ends` cell is empty.
-3. The `login ends` cell text equals the `resets` cell text for the same instant, today, within six days and later.
-4. A click on the `login ends` header sorts the rows by that date, in both directions.
-5. On a narrow pane, `enabled` drops first, then `login ends`, then `credits`.
-
-**Constraints from prior phases:**
-- Phase 7: the accounts monitor keeps `AccountsTable::{NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast}` (`census/accounts.rs`). The census keeps only its health, through `Census::record_local_accounts`. The new field goes into `AccountsReading`; the health does not change.
-- Phase 8: `AccountsTable::read_once` runs the configured accounts command once for `census --json`, and the monitor uses the same parse. The new field reaches both through `AccountsReading`. `census --json` does not print it.
-- The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
-
-**Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
-
-**Change-Review line:** The accounts table shows the date each Claude login ends | On natedev, run cargo-handler and look at the accounts table | A `login ends` column shows a date for each Claude account and is empty for Codex accounts
+- `AccountWire::login_ends_at: Option<String>` has `#[serde(default)]`, so an older report without the key parses. `AccountUsage::login_ends_at: Reading<DateTime<Utc>>` uses the `resets_at` timestamp parse; a malformed value fails the reading.
+- `AccountsColumn::LoginEnds` sits after `Resets`, header `login ends`, right aligned. It sorts through `compare_readings`, as `resets` does.
+- The cell text is `reset_label` through `date_cell`, which also serves `resets`. An unavailable reading gives an empty cell. `row_cells` sets the cell to the `numeric` style, the default table ink.
+- Narrow panes drop `enabled`, then `login ends`, then `credits` (`AccountsColumnDrop::ORDER`). The stacked layout shows a `login ends` fact.
+- `terminal.rs` `next_body_change`: the midnight redraw also fires for a known login end date.
+- `census --json` does not print the date.
 
 **Files:**
-- `crates/cargo-handler/src/census/accounts.rs` — `AccountWire::login_ends_at`, `AccountUsage::login_ends_at`
+- `crates/cargo-handler/src/census/accounts.rs` — the wire and usage field
 - `crates/cargo-handler/src/sort.rs` — `AccountsColumn::LoginEnds` and its header
-- `crates/cargo-handler/src/summary/accounts.rs` — the cell value, the sort and the drop order
-- `crates/cargo-handler/src/census/accounts_wire_tests.rs` — tests 1 and 2
-- `crates/cargo-handler/src/summary/accounts_tests.rs` — tests 3 and 5
-- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs` — test 4
-- `docs/cargo-handler/as-built/accounts.md` — the `login ends` column
+- `crates/cargo-handler/src/summary/accounts.rs` — value, sort, ink, drop order, stacked fact
+- `crates/cargo-handler/src/terminal.rs` — the date redraw
+- `crates/cargo-handler/src/census/accounts_wire_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs` — the tests
+- `docs/cargo-handler/as-built/accounts.md` — the column
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** the header lists in `summary/mod.rs` and `summary/accounts_tests.rs` name every column; a column change edits both. `AccountsColumn::index` values follow the column order.
 
-**State:** none
+**Gotchas:** `row_cells` sets each column's style; a new column takes the row freshness ink unless it is set. The accounts report writes `login_ends_at` with fractional seconds and `+00:00`, which the RFC 3339 parse accepts.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the login end dates.
+**Ruled out:** a rank color for the column; a `census --json` field for the date.
 
 ### Phase 10 — Status reads busy, idle, paused or exited; starting and waiting are activities, the same in the accounts board and cargo-handler  · status: todo
 
@@ -320,6 +287,8 @@ Tests (red first, each under one second):
 - Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Add no second reader.
 - Phase 8: `census --json` (`census/report.rs`) lists only unit directors and workers, by staff id, from `StaffListing` facts. Showrunners, producers and unlisted sessions are not in it, so the accounts board needs the new `sessions` list. `agent_cell::session_cells` gives each tile-shown session its `SessionCells { machine, name, status, activity }`; build `sessions` from it. The README `census` section and its example document, checked by `census_json_matches_the_readme_example_keys_and_types`, change with the schema.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
+- Accounts unit, 2026-11-13 (`757df4d92`, branch `move-anomalies`, not on main yet): `sessions[].state` writes only `busy`, `idle`, `paused` or `exited`. `role_counts` drops the `starting` and `waiting` keys. `RoleCountsWire` reads both with `#[serde(default)]`, so the parse needs no change; remove the two fields with the columns. The accounts board activity column waits for the `sessions` list in schema 2.
+- Phase 9: `AccountsColumn::LoginEnds` sits after `Resets`, and `AccountsColumnDrop::ORDER` is `[Enabled, LoginEnds, Credits]`. The header lists in `summary/mod.rs` (`each_machine_lists...` header line) and `summary/accounts_tests.rs` name every column, so removing `starting` and `waiting` edits both. `AccountsColumn::index` values shift.
 
 **Live check (director):** on natedev, compare the accounts board with cargo-handler while a unit starts, waits and works. Both show the same status and the same activity for each row.
 
@@ -576,13 +545,13 @@ Tests (red first, each under one second):
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 16 — Nine slow tests run in under one second  · status: todo
+### Phase 16 — Twelve slow tests run in under one second  · status: todo
 
 **Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 14 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
-**Goal:** nine tests that took one second or more now run in under one second in the full package run, with the same assertions.
+**Goal:** twelve tests that took one second or more now run in under one second in the full package run, with the same assertions.
 
 **Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
 
@@ -601,8 +570,11 @@ The tests and their measured times:
 5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
 6. cargo-handler `row_details_key_shows_properties_and_long_age_then_escape_closes` (`crates/cargo-handler/src/render/details_tests.rs`) — 1.06 to 1.24 s, Phase 5.
 7. cargo-handler `codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec` (`crates/cargo-handler/src/census/codex.rs`) — 1.047 s, tile Phase 62 gate.
-8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate.
+8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate; 1.573 s, tile unit workspace run 2026-11-13.
 9. cargo-handler `an_explicit_resume_id_cannot_name_an_unproven_non_user_thread` (same file) — 1.038 s, tile Phase 62 gate.
+10. cargo-handler `a_running_tui_changes_threads_only_after_its_child_confirms_resume` (same file) — 1.120 s, tile unit workspace run 2026-11-13.
+11. cargo-handler `a_picker_delay_does_not_pair_clients_by_start_order` (same file) — 1.043 s, tile unit workspace run 2026-11-13.
+12. cargo-handler `a_reconnect_does_not_transfer_a_detached_connection_to_a_tui` (same file) — 1.042 s, tile unit workspace run 2026-11-13.
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
@@ -618,11 +590,11 @@ The tests and their measured times:
 - `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
 - `crates/cargo-handler/src/render/details_tests.rs` — test 6
 - `crates/cargo-handler/src/census/codex.rs` — test 7
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 and 9
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 to 12
 
 **Workers:** 1 writer.
 - `impl` — every file above.
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the nine tests runs in under one second in its full package run, with its assertions unchanged.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the twelve tests runs in under one second in its full package run, with its assertions unchanged.

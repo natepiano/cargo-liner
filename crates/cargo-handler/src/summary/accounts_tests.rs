@@ -30,6 +30,7 @@ use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::hierarchy::HierarchyError;
 use crate::census::scan::ScanStage;
+use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::footer_colors::FooterColor;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
@@ -398,8 +399,20 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "one blank line separates the tables"
     );
     for header in [
-        "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
-        "total", "resets", "credits", "enabled",
+        "account",
+        "left",
+        "role",
+        "busy",
+        "starting",
+        "waiting",
+        "idle",
+        "paused",
+        "exited",
+        "total",
+        "resets",
+        "login ends",
+        "credits",
+        "enabled",
     ] {
         let header_y = accounts_y + 1;
         assert!(
@@ -434,7 +447,9 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
         "cached role map unavailable for fixture-host"
     );
     assert!(
-        !joined.contains('@') && !joined.contains("login") && !joined.contains("on-credits"),
+        !joined.contains('@')
+            && !joined.replace("login ends", "").contains("login")
+            && !joined.contains("on-credits"),
         "{joined}"
     );
     assert!(!joined.contains("/private/account-home"), "{joined}");
@@ -968,7 +983,7 @@ fn board_columns_draw_lowercase_in_order_with_names_and_credit_states() {
         header.split_whitespace().collect::<Vec<_>>(),
         [
             "account", "left", "role", "busy", "starting", "waiting", "idle", "paused", "exited",
-            "total", "resets", "credits", "enabled"
+            "total", "resets", "login", "ends", "credits", "enabled"
         ]
     );
     let ranges = contract_ranges(&buffer);
@@ -1295,6 +1310,99 @@ fn account_resets_use_same_day_week_and_later_calendar_formats() {
             date.format(format).to_string()
         );
     }
+}
+
+#[test]
+fn login_ends_draw_the_claude_date_and_leave_codex_and_older_report_cells_empty() {
+    // A stale reading must not dim the date: the column uses the default table ink.
+    let mut claude = contract_row(
+        "claude1",
+        &serde_json::json!(50),
+        &Value::Null,
+        ACCOUNTS_STALE_SECONDS + 60,
+    );
+    claude["login_ends_at"] = serde_json::json!(RESET);
+    let mut codex = contract_row("codex1", &serde_json::json!(50), &Value::Null, 0);
+    codex["login_ends_at"] = Value::Null;
+    let older = contract_row("older", &serde_json::json!(50), &Value::Null, 0);
+    assert!(
+        older.get("login_ends_at").is_none(),
+        "an older report has no key"
+    );
+    let buffer = contract_draw(
+        &contract_table(&[claude, codex, older]),
+        tui_pane::pane_background(false),
+    );
+    let ranges = contract_ranges(&buffer);
+    let claude_y = at(&buffer, "claude1").1;
+    let date = contract_cell(&buffer, claude_y, &ranges[AccountsColumn::Resets.index()]);
+    assert!(!date.is_empty(), "{:?}", text(&buffer));
+    let login_ends = &ranges[AccountsColumn::LoginEnds.index()];
+    assert_eq!(contract_cell(&buffer, claude_y, login_ends), date);
+    let left = &ranges[AccountsColumn::WeeklyLeft.index()];
+    assert_eq!(
+        buffer[(login_ends.end - 1, claude_y)].fg,
+        buffer[(left.end - 1, claude_y)].fg,
+        "login ends uses the default table ink"
+    );
+    for label in ["codex1", "older"] {
+        assert_eq!(
+            contract_cell(
+                &buffer,
+                at(&buffer, label).1,
+                &ranges[AccountsColumn::LoginEnds.index()]
+            ),
+            "",
+            "{label}: {:?}",
+            text(&buffer)
+        );
+    }
+}
+
+#[test]
+fn login_ends_cells_use_the_resets_text_today_within_six_days_and_later() {
+    let now = DateTime::from_timestamp(i64::try_from(NOW).expect("now"), 0)
+        .expect("now UTC")
+        .with_timezone(&Local);
+    let afternoon = now
+        .with_hour(14)
+        .expect("hour")
+        .with_minute(0)
+        .expect("minute")
+        .with_second(0)
+        .expect("second");
+    let dates = [0, 3, 8].map(|days| afternoon + chrono::Duration::days(days));
+    let table = contract_table(
+        &dates
+            .iter()
+            .enumerate()
+            .map(|(i, date)| {
+                let mut row = contract_row(
+                    &format!("calendar-{i}"),
+                    &serde_json::json!(50),
+                    &Value::Null,
+                    0,
+                );
+                row["resets_at"] = serde_json::json!(date.to_rfc3339());
+                row["login_ends_at"] = serde_json::json!(date.to_rfc3339());
+                row
+            })
+            .collect::<Vec<_>>(),
+    );
+    let buffer = contract_draw(&table, tui_pane::pane_background(false));
+    let ranges = contract_ranges(&buffer);
+    let mut labels = BTreeSet::new();
+    for i in 0..dates.len() {
+        let y = at(&buffer, &format!("calendar-{i}")).1;
+        let reset = contract_cell(&buffer, y, &ranges[AccountsColumn::Resets.index()]);
+        assert!(!reset.is_empty(), "{:?}", text(&buffer));
+        assert_eq!(
+            contract_cell(&buffer, y, &ranges[AccountsColumn::LoginEnds.index()]),
+            reset
+        );
+        labels.insert(reset);
+    }
+    assert_eq!(labels.len(), dates.len(), "each case uses its own format");
 }
 
 fn narrow_accounts() -> AccountsTable {
@@ -1913,7 +2021,9 @@ fn compact_accounts() -> AccountsTable {
             7200,
         );
         row["resets_at"] = serde_json::json!("2026-10-17T14:00:00Z");
-
+        if label.starts_with("claude") {
+            row["login_ends_at"] = serde_json::json!("2026-10-20T14:00:00Z");
+        }
         if label == "codex2" {
             row["credits"] = serde_json::json!("unlimited");
         }
@@ -2007,8 +2117,12 @@ fn compact_accounts_keep_every_account_error_and_whole_word_at_40_columns() {
 #[test]
 fn compact_accounts_drop_optional_columns_before_wrapping() {
     let table = compact_accounts();
-    let optional = [AccountsColumn::Enabled, AccountsColumn::Credits];
-    let mut seen = [false; 3];
+    let optional = [
+        AccountsColumn::Enabled,
+        AccountsColumn::LoginEnds,
+        AccountsColumn::Credits,
+    ];
+    let mut seen = [false; 4];
     let mut previous_dropped = 0;
     for width in (50..=140).rev() {
         let headers = accounts::header_spans(
@@ -2032,11 +2146,11 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
                     "{width}: {lines:#?}"
                 );
             }
-            assert!(
-                lines
+            assert!(lines.iter().all(|line| {
+                ["credits", "enabled", "login ends"]
                     .iter()
-                    .all(|line| !line.contains("credits") && !line.contains("enabled"))
-            );
+                    .all(|word| !line.contains(word))
+            }));
             continue;
         }
         let dropped = optional
@@ -2072,7 +2186,7 @@ fn compact_accounts_drop_optional_columns_before_wrapping() {
             );
         }
     }
-    assert_eq!(seen, [true; 3], "each optional drop has a measured width");
+    assert_eq!(seen, [true; 4], "each optional drop has a measured width");
 }
 
 #[test]
