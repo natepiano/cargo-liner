@@ -378,7 +378,7 @@ A session whose staff role is `producer` (`RoleLabel::Stated(Producer)`) draws a
 
 **Gotchas:** the fixed-clock test paint (`ranked_column_tests::paint`) leaves out the details overlay; a `d` test paints through `App::draw` (`word_click_tests::Renderer`).
 
-### Phase 16 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 16 — Claude rows show their effort, and a long shell command does not widen the session column  · status: done
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -392,9 +392,10 @@ A session whose staff role is `producer` (`RoleLabel::Stated(Producer)`) draws a
 
 Director decisions:
 1. Cause of the effort gap: Claude writes `effort` at the top level of each assistant record (`{"type":"assistant","effort":"high","message":{...}}`). `ConversationModel::take_claude` reads effort from `message`, so no Claude row has an effort, and the fitter drops the empty column. Codex rows record effort, so only the unassigned tile drew it. Fix the reader: take the model from `message.model`. Take effort from the top-level record first, then from the nested effort fields that `take_claude` reads today. Keep the system-record metadata and the effort aliases. A later record with no effort keeps the recorded one.
-2. The effort column keeps its place in the drop order. No column-set change. With effort recorded, it draws wherever the tile has room.
+2. The drop order is the priority order. After the drop steps, the fitter adds back each dropped optional column, in the reverse drop order, while it fits. Then the fill gives the rest to the session column. Added-back columns keep their display positions. The column set depends only on the tile width and the row data, so a redraw at one width never changes it. Source: showrunner ruling A, 2026-11-14. The live check showed that effort dropped first and did not come back after directory dropped.
 3. A shell command row's session cell cuts each path argument to its file name: `python3 /tmp/…/scratchpad/watchgates.py 2>&1` draws `python3 watchgates.py 2>&1`.
 4. The session column width comes from the agent rows of the tile. A shell row wider than that width ends in `…` at the column edge. The details view `name:` line keeps the full command.
+5. One way to read a row's `RowIdentity` (the Phase 15 style review). The free function `root_identity` becomes an `AgentEntry` method, and the `lines_of` call uses it. `TreeLineContent::row_identity` serves `TreeLine::order_key` and the details owner walk. Both replace their own `RowIdentity { machine, pid }` literals.
 
 **Constraints from prior phases:**
 - Phase 1 shows the recorded model and effort in the `d` view. Use `ModelName` and `ReasoningEffort::Unrecorded`. JSON `Option` values stay inside the decode step; add no optional effort field.

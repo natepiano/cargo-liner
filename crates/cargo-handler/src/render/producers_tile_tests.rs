@@ -52,7 +52,7 @@ fn rows(producers: &[(u32, &str)]) -> TestResult<Vec<AgentRow>> {
         session(20, "loner", false, None)?,
     ];
     for &(pid, name) in producers {
-        rows.push(session(pid, name, true, Some(&format!("{name}-work")))?);
+        rows.push(session(pid, name, true, Some(&format!("w{pid}")))?);
     }
     Ok(rows)
 }
@@ -163,8 +163,8 @@ fn the_producers_tile_keeps_sort_expansion_and_selection_when_producers_change()
     let ascending = sort.direction == SortDirection::Ascending;
     assert_eq!(row_order(&text, "brain", "dwight")?, ascending, "{text}");
     assert_eq!(row_order(&text, "dwight", "morty")?, ascending, "{text}");
-    assert!(text.contains("dwight-work"), "{text}");
-    assert!(!text.contains("morty-work"), "{text}");
+    assert!(text.contains("w50"), "{text}");
+    assert!(!text.contains("w30"), "{text}");
     tui_pane::dispatch_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),

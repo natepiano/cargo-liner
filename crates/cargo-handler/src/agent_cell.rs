@@ -108,6 +108,7 @@ use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
 use crate::interaction::RowSpan;
 use crate::interaction::SurfaceSelection;
+use crate::shell_command;
 use crate::sort;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
@@ -146,7 +147,15 @@ pub(crate) struct AgentEntry<'a> {
     lines:                 Vec<TreeLine<'a>>,
 }
 
-impl AgentEntry<'_> {
+impl<'a> AgentEntry<'a> {
+    /// The identity of this tile's root session.
+    const fn root_identity(&self) -> RowIdentity<'a> {
+        RowIdentity {
+            machine: self.machine,
+            pid:     self.row.pid,
+        }
+    }
+
     /// The name color of a listed agent in this tile.
     fn hue_of(&self, machine: &str, pid: u32) -> Option<SessionHue> {
         if self.machine == machine && self.row.pid == pid {
@@ -552,7 +561,7 @@ impl TreeColumnPopulation {
 }
 
 /// Populated columns allowed by the account decision, with optional columns
-/// removed only in the fixed fitting order.
+/// removed only in the fixed fitting order and added back in its reverse.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct PermittedTreeColumns(TreeColumns);
 
@@ -572,6 +581,16 @@ impl PermittedTreeColumns {
     fn columns(self) -> Vec<TreeColumn> { self.0.retain(FULL_ACCOUNTS) }
 
     const fn remove(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = false; }
+
+    const fn add(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = true; }
+
+    const fn contains(self, step: ColumnDrop) -> bool { self.0.0[step.column() as usize] }
+
+    fn union(&mut self, other: Self) {
+        for (present, other) in self.0.0.iter_mut().zip(other.0.0) {
+            *present |= other;
+        }
+    }
 }
 
 /// `ColumnDrop::ORDER` defines the order for removing optional columns.
@@ -600,6 +619,14 @@ impl ColumnDrop {
         Self::Activity,
         Self::Status,
     ];
+
+    /// An optional column drops before the session cut, and a restore can add it back.
+    const fn is_optional(self) -> bool {
+        matches!(
+            self,
+            Self::Effort | Self::Model | Self::Directory | Self::Type | Self::Branch
+        )
+    }
 
     const fn column(self) -> TreeColumn {
         match self {
@@ -634,6 +661,8 @@ pub(crate) struct TreeMetrics {
     session_header_lead: SessionHeaderLead,
     ages:                AgeLayout,
     columns:             PermittedTreeColumns,
+    /// The columns the rows fill before any drop; a restore adds back only these.
+    measured_columns:    PermittedTreeColumns,
     presentation:        TreePresentation,
     alignment:           TreeColumnAlignment,
     /// The activity width that keeps each live word whole and cuts only jobs.
@@ -702,6 +731,7 @@ impl TreeMetrics {
         if matches!(other.session_header_lead, SessionHeaderLead::OverBranch) {
             self.session_header_lead = SessionHeaderLead::OverBranch;
         }
+        self.measured_columns.union(other.measured_columns);
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
         }
@@ -731,10 +761,7 @@ impl TreeMetrics {
     }
 
     fn drop_step(&mut self, step: ColumnDrop, width: u16) {
-        if matches!(
-            step,
-            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status
-        ) {
+        if !step.is_optional() {
             self.cut_session(width);
         }
         let activity = self.widths[TreeColumn::Activity as usize];
@@ -747,13 +774,10 @@ impl TreeMetrics {
             self.set_activity_width(activity);
             self.presentation = TreePresentation::Compressed;
         }
-        let spacing = match step {
-            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status => 1,
-            ColumnDrop::Effort
-            | ColumnDrop::Model
-            | ColumnDrop::Directory
-            | ColumnDrop::Type
-            | ColumnDrop::Branch => TABLE_COLUMN_SPACING,
+        let spacing = if step.is_optional() {
+            TABLE_COLUMN_SPACING
+        } else {
+            1
         };
         let full_fits = self.occupied_width(spacing) <= usize::from(width);
         if !full_fits || header_width(self.heading_width) > width {
@@ -788,9 +812,27 @@ impl TreeMetrics {
             .max(self.minimum_session_width());
     }
 
+    /// Add back each dropped optional column, most important first, while it
+    /// fits; a later drop can free the width that an earlier drop needed.
+    fn restore_columns(&mut self, width: u16) {
+        for &step in ColumnDrop::ORDER.iter().rev() {
+            if !step.is_optional()
+                || self.columns.contains(step)
+                || !self.measured_columns.contains(step)
+            {
+                continue;
+            }
+            self.columns.add(step);
+            if self.occupied_width(TABLE_COLUMN_SPACING) > usize::from(width) {
+                self.columns.remove(step);
+            }
+        }
+    }
+
     fn fit_step(&mut self, step: &GroupFitStep, width: u16) {
         match step {
             GroupFitStep::Drop(column) => self.drop_step(*column, width),
+            GroupFitStep::Restore => self.restore_columns(width),
             GroupFitStep::CutSession => self.cut_session(width),
             GroupFitStep::FinalMerge => {},
         }
@@ -956,6 +998,7 @@ impl TreeMeasurement {
                 session_header_lead: lead,
                 ages: AgeLayout::from_ages(ages.iter().copied()),
                 columns,
+                measured_columns: columns,
                 presentation: TreePresentation::Full,
                 alignment: TreeColumnAlignment::Measured,
                 activity_floor,
@@ -1165,17 +1208,19 @@ impl AgentTile<'_> {
 /// Every fitting pass either drops its named column or merges the final sets.
 enum GroupFitStep {
     Drop(ColumnDrop),
+    Restore,
     CutSession,
     FinalMerge,
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 11] = [
+    const ORDER: [Self; 12] = [
         Self::Drop(ColumnDrop::ORDER[0]),
         Self::Drop(ColumnDrop::ORDER[1]),
         Self::Drop(ColumnDrop::ORDER[2]),
         Self::Drop(ColumnDrop::ORDER[3]),
         Self::Drop(ColumnDrop::ORDER[4]),
+        Self::Restore,
         Self::CutSession,
         Self::Drop(ColumnDrop::ORDER[5]),
         Self::Drop(ColumnDrop::ORDER[6]),
@@ -1241,11 +1286,13 @@ impl MeasuredTreeGroup {
         group.metrics.widths[TreeColumn::Status as usize] =
             status_width(group.metrics.presentation);
         match step {
-            GroupFitStep::Drop(_) | GroupFitStep::CutSession => group
+            GroupFitStep::Drop(_) | GroupFitStep::Restore | GroupFitStep::CutSession => group
                 .members
                 .iter()
                 .map(|&index| {
                     let mut metrics = group.metrics.clone();
+                    // Each tile adds back only the columns its own rows fill.
+                    metrics.measured_columns = measurements[index].metrics.measured_columns;
                     metrics.fit_step(step, group.width);
                     metrics.widths[TreeColumn::Status as usize] =
                         status_width(metrics.presentation);
@@ -1321,6 +1368,7 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             let mut metrics = group.metrics.clone();
             metrics.widths.fill(0);
             metrics.columns.0.0.fill(false);
+            metrics.measured_columns = metrics.columns;
             (metrics, group.width)
         });
         *width = (*width).min(group.width);
@@ -1332,6 +1380,8 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             .session_guide_width
             .max(group.metrics.session_guide_width);
         common.activity_floor = common.activity_floor.max(group.metrics.activity_floor);
+        // A tile draws only its own fitted columns, so the common fit adds back no other.
+        common.measured_columns.union(group.metrics.columns);
         common.activity_fit = common
             .activity_fit
             .merged(group.metrics.activity_fit, common.activity_floor);
@@ -1393,7 +1443,15 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
     }
 }
 
-impl TreeLineContent<'_> {
+impl<'a> TreeLineContent<'a> {
+    /// The census identity of the row this line draws.
+    const fn row_identity(&self) -> RowIdentity<'a> {
+        RowIdentity {
+            machine: self.machine,
+            pid:     self.row.pid,
+        }
+    }
+
     fn selection_identity(&self, ordinal: usize) -> crate::interaction::RowIdentity {
         if let DispatchLabel::Worker(dispatch) = self.dispatch_label {
             return SelectedRow::Seat {
@@ -1540,6 +1598,25 @@ impl TreeLine<'_> {
             SessionLocation::SameMachine => name,
             SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
         }
+    }
+
+    /// The drawn name: a shell command shows each path argument as its file name.
+    fn display_name(&self) -> String {
+        if self.is_shell() {
+            shell_command::short_command(&self.name())
+        } else {
+            self.name()
+        }
+    }
+
+    fn is_shell(&self) -> bool {
+        matches!(
+            self.subject,
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(_),
+                ..
+            })
+        )
     }
 
     /// The name without its machine.
@@ -1858,20 +1935,13 @@ impl TreeLine<'_> {
 
     /// The pre-sort ordering used to break equal selected values.
     fn order_key(&self) -> (u64, &str, u32) {
-        line_order(
-            RowIdentity {
-                machine: self.machine,
-                pid:     self.row.pid,
-            },
-            self.row,
-            self.subject,
-        )
+        line_order(self.row_identity(), self.row, self.subject)
     }
 
     /// Text in one active column.
     fn value(&self, column: TreeColumn, now: u64) -> String {
         match column {
-            TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
+            TreeColumn::Session => format!("{}{}", self.lead(), self.display_name()),
             TreeColumn::Role => self.role_text().to_string(),
             TreeColumn::Activity => self.activity_parts(now).text(),
             TreeColumn::Model => self.model().display_text().to_owned(),
@@ -2123,7 +2193,7 @@ pub(crate) fn session_cells(
 ) -> BTreeMap<String, SessionCells> {
     let mut cells = BTreeMap::new();
     for entry in cell_order_placed(placement) {
-        let root = match root_tile(placement, root_identity(&entry)) {
+        let root = match root_tile(placement, entry.root_identity()) {
             RootTile::Own => tile_root_line(&entry),
             RootTile::Pooled(_) => pooled_line(&entry),
         };
@@ -2244,14 +2314,6 @@ fn root_tile<'a>(placement: &AgentPlacement<'a>, identity: RowIdentity<'a>) -> R
     }
 }
 
-/// The identity of a tile entry's root session.
-const fn root_identity<'a>(entry: &AgentEntry<'a>) -> RowIdentity<'a> {
-    RowIdentity {
-        machine: entry.machine,
-        pid:     entry.row.pid,
-    }
-}
-
 /// A pool and a showrunner tile list their sessions by name.
 const POOL_SORT: TreeSort = TreeSort {
     column:    TreeColumn::Session,
@@ -2324,7 +2386,7 @@ pub(crate) fn group_tiles<'a>(
     let session_sorts = agents
         .iter()
         .map(|entry| {
-            let root = root_tile(placement, root_identity(entry));
+            let root = root_tile(placement, entry.root_identity());
             let key = match root {
                 RootTile::Own => TileKey::Agent(entry.id.clone()),
                 RootTile::Pooled(pool) => pool.key(),
@@ -2343,7 +2405,7 @@ pub(crate) fn group_tiles<'a>(
     let mut tiles = Vec::new();
     let mut drawn_pools = HashSet::new();
     for entry in &ordered {
-        match root_tile(placement, root_identity(entry)) {
+        match root_tile(placement, entry.root_identity()) {
             RootTile::Own => tiles.push(AgentTile::Agent(entry.clone())),
             RootTile::Pooled(pool) => {
                 for pool in [TilePool::Producers, pool] {
@@ -2367,7 +2429,7 @@ fn pooled_tile<'a>(
 ) -> Option<AgentTile<'a>> {
     let roots: Vec<_> = ordered
         .iter()
-        .filter(|root| root_tile(placement, root_identity(root)) == RootTile::Pooled(pool))
+        .filter(|root| root_tile(placement, root.root_identity()) == RootTile::Pooled(pool))
         .collect();
     let first = roots.first()?;
     let location = if roots.iter().all(|root| root.machine == first.machine) {
@@ -2574,10 +2636,7 @@ fn sort_cells<'a>(
         entry.lines.clear();
         lines_of(
             &context,
-            RowIdentity {
-                machine: entry.machine,
-                pid:     entry.row.pid,
-            },
+            entry.root_identity(),
             &mut Vec::new(),
             &mut 0,
             entry.hue,
@@ -3214,7 +3273,13 @@ fn tree_widths(
             }
             lines
                 .iter()
-                .map(|line| summary::cell_width(&line.cell_text(column, now, &ages)))
+                .map(|line| match column {
+                    // A shell row takes the agent rows' width and draws its guides and `…`.
+                    TreeColumn::Session if line.is_shell() => {
+                        summary::cell_width(&line.lead()).saturating_add(1)
+                    },
+                    _ => summary::cell_width(&line.cell_text(column, now, &ages)),
+                })
                 .max()
                 .unwrap_or(0)
                 .max(summary::cell_width(&column.sorted_header_text(sort, lead)))
@@ -3514,7 +3579,7 @@ fn tree_cell_line(
         let mut value = tree_value_line(
             line,
             column,
-            summary::truncated(&line.name(), usize::from(remaining)),
+            summary::truncated(&line.display_name(), usize::from(remaining)),
             now,
             footer_colors,
         );
@@ -4051,10 +4116,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_)
             | LineSubject::Agent(_)
             | LineSubject::UnassignedSession
-            | LineSubject::Work(_) => RowIdentity {
-                machine: self.machine,
-                pid:     self.row.pid,
-            },
+            | LineSubject::Work(_) => self.row_identity(),
         };
         while let Some(agent) = placement
             .rows
@@ -4079,13 +4141,7 @@ impl TreeLine<'_> {
             if let Some(property) = property
                 && !named.iter().any(|(existing, _)| *existing == property)
             {
-                let name = if identity
-                    == (RowIdentity {
-                        machine: self.machine,
-                        pid:     self.row.pid,
-                    })
-                    && named.is_empty()
-                {
+                let name = if identity == self.row_identity() && named.is_empty() {
                     self.name()
                 } else {
                     agent.row.name.clone()
@@ -4244,6 +4300,8 @@ mod tests {
     mod producers_tests;
     #[path = "repair_tests.rs"]
     mod repair_tests;
+    #[path = "shell_command_tests.rs"]
+    mod shell_command_tests;
     #[path = "sort_tests.rs"]
     mod sort_tests;
     #[path = "subagent_row_tests.rs"]
@@ -4872,7 +4930,7 @@ mod tests {
             .expect("full width");
         let fits = drawn(&arrange, None, width);
         let cut = drawn(&arrange, None, width - 1);
-        assert!(find(&fits, "cargo nextest run -p hana_video").is_some());
+        assert!(find(&fits, "cargo nextest run").is_some());
         assert!(find(&fits, "Review the permission queue").is_some());
         assert_eq!(
             CellView::at_width(&entry, width - 1, NOW, AccountColumn::Hidden),
@@ -5165,7 +5223,7 @@ mod tests {
             "tool-based-ui-arrange",
             "Run the tests",
             "Review the permission queue",
-            "cargo nextest run -p hana_video",
+            "cargo nextest run",
         ] {
             assert_eq!(find_all(&buffer, name).len(), 1, "{name}");
         }

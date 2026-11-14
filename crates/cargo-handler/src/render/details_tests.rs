@@ -21,13 +21,16 @@ use super::*;
 use crate::census::Activity;
 use crate::census::AgentActivity;
 use crate::census::CensusUpdate;
+use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::HierarchyRole;
 use crate::census::RunLocation;
+use crate::census::ShellTimerObservation;
 use crate::census::VerifyStep;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::accounts::Reading;
+use crate::census::model::ReasoningEffort;
 use crate::details::DetailsOverlay;
 use crate::theme;
 
@@ -1365,4 +1368,78 @@ fn details_click_app() -> TestResult<App> {
 fn paint_details(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult<Buffer> {
     terminal.draw(|frame| app.details_overlay.render(frame, app.framework.color_mode))?;
     Ok(terminal.backend().buffer().clone())
+}
+
+const LONG_SHELL: &str =
+    "python3 /tmp/claude/session/abc/scratchpad/a-long-watch-script.py --interval 30 2>&1";
+
+/// The director at high effort, running `LONG_SHELL` in place of its timer.
+fn long_shell_application(now: u64) -> TestResult<App> {
+    let mut app = application(now, 86400)?;
+    let machine = app.census.machines(&[])[0];
+    let mut rows = machine.state.rows().to_vec();
+    let hierarchy = HierarchyEdges(machine.state.edges().to_vec());
+    rows[0].effort = ReasoningEffort::High;
+    rows[0].children[0].name = LONG_SHELL.into();
+    rows[0].children[0].kind = ChildKind::Shell(ShellTimerObservation::Untimed);
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: hierarchy.into(),
+        stage: ScanStage::Completed,
+    });
+    Ok(app)
+}
+
+#[test]
+fn a_shell_row_draws_its_short_command_and_d_shows_and_copies_the_full_command() -> TestResult {
+    use tui_pane::Shortcuts;
+
+    use crate::details::DetailsPane;
+
+    let mut app = long_shell_application(census::unix_now())?;
+    let mut renderer = Renderer::new(&mut app, 160, 40)?;
+    let buffer = renderer.paint(&mut app)?;
+    let text = drawn_details(&buffer).join("\n");
+    // The shell row takes the agent rows' width and ends in the mark.
+    assert!(text.contains("python3 a-…"), "{text}");
+    assert!(!text.contains("scratchpad/"), "{text}");
+    app.click(details_test_locate(&buffer, "python3 a-…")?);
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(160, 40))?;
+    let details = drawn_details(&paint_details(&mut app, &mut terminal)?);
+    assert_eq!(drawn_property(&details, "name")?, LONG_SHELL);
+    let name = details_property_index(&app, "name")?;
+    select_details_property(&mut app, name);
+    let actions = DetailsPane::defaults().into_scope_map();
+    let copy = actions
+        .action_for(&tui_pane::KeyBind::from('y'))
+        .ok_or("y binding")?;
+    let mut clipboard = CopiedValues::default();
+    copy.apply(&mut app, &mut clipboard);
+    assert_eq!(clipboard.0, [LONG_SHELL]);
+    Ok(())
+}
+
+#[test]
+fn the_details_of_a_claude_row_with_recorded_effort_show_that_effort() -> TestResult {
+    let mut app = long_shell_application(census::unix_now())?;
+    let mut renderer = Renderer::new(&mut app, 160, 40)?;
+    let buffer = renderer.paint(&mut app)?;
+    app.click(
+        details_test_positions(&buffer, "director-name")
+            .into_iter()
+            .last()
+            .ok_or("director")?,
+    );
+    tui_pane::dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(160, 40))?;
+    let details = drawn_details(&paint_details(&mut app, &mut terminal)?);
+    assert_eq!(drawn_property(&details, "effort")?, "high");
+    Ok(())
 }

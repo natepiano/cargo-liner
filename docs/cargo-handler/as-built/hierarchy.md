@@ -215,6 +215,7 @@ A name default retains its session header arrow.
 The details view groups values into agent, hierarchy, location, and now sections.
 Its hierarchy section shows the accepted showrunner, unit, and worker names.
 Unassigned sessions and shells show their full name instead.
+A shell's name value is its full command, and `y` copies it.
 The details view shows the long age last in the now section.
 The agent section contains account, model, effort, and type.
 The now section contains activity, status, and age, in that order.

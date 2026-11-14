@@ -527,14 +527,14 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
     for width in [180, 65] {
         let buffer = drawn_among(&cell, &[], width);
         let agent_status = status_at(&buffer, "running-agent");
-        let shell_status = status_at(&buffer, "compile-project");
+        let shell_status = status_at(&buffer, "compile-pro");
         assert_eq!(agent_status.symbol(), "b");
         assert_eq!(shell_status.symbol(), "b");
         assert_eq!(shell_status.fg, agent_status.fg, "width={width}");
         let activity_x = find(&buffer, TREE_ACTIVITY_HEADER)
             .expect("activity header")
             .0;
-        let y = find(&buffer, "progress-clock").expect("timer row").1;
+        let y = find(&buffer, "progress-cl").expect("timer row").1;
         let timer_status = &buffer[(activity_x + 6, y)];
         assert_eq!(timer_status.symbol(), "3");
         assert_eq!(Some(timer_status.fg), Role::Shell.style().fg);

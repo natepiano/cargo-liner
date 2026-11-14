@@ -2122,7 +2122,7 @@ fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
                     app.click(at);
                 }
                 if matches!(ground, MatchGround::SelectedUnfocused) {
-                    app.click(word_click_tests::locate(&initial, "build-for-50")?);
+                    app.click(word_click_tests::locate(&initial, "build-50")?);
                 }
                 let before = renderer.paint(&mut app)?;
                 let x = role_word.x + 6;
