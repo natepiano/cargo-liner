@@ -131,7 +131,7 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
                     AccountColumn::Hidden,
                     &colors,
                 ),
-                AgentTile::Unassigned(entry) => agent_cell::draw_unassigned(
+                AgentTile::Pooled(entry) => agent_cell::draw_pooled(
                     &mut buffer,
                     area,
                     entry,
@@ -141,7 +141,7 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
                 ),
             }
             let drawn = text(&buffer);
-            if matches!(tile, AgentTile::Unassigned(_)) {
+            if matches!(tile, AgentTile::Pooled(_)) {
                 unassigned.push_str(&drawn);
             }
             drawn

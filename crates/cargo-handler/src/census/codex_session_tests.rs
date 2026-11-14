@@ -172,8 +172,8 @@ fn drawn(rows: Vec<AgentRow>, work: RootWork) -> (Vec<String>, Vec<String>, Vec<
     let tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), START + 100);
     let mut pool = Buffer::empty(AREA);
     for tile in &tiles {
-        if let AgentTile::Unassigned(entry) = tile {
-            agent_cell::draw_unassigned(
+        if let AgentTile::Pooled(entry) = tile {
+            agent_cell::draw_pooled(
                 &mut pool,
                 AREA,
                 entry,

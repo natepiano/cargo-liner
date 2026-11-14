@@ -189,7 +189,7 @@ fn long_sessions_keep_the_four_core_columns_before_their_names() {
         })
         .filter_map(|tile| match tile {
             AgentTile::Agent(entry) => Some(entry),
-            AgentTile::Unassigned(_) => None,
+            AgentTile::Pooled(_) => None,
         })
         .collect();
     let owner = cells.iter().find(|cell| cell.row.pid == 10).expect("owner");
@@ -242,13 +242,13 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned pool");
     let rect = area(90, 12);
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         pool,
@@ -256,7 +256,7 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
         AccountColumn::Shown,
         &FooterColors::default(),
     );
-    let columns: Vec<_> = unassigned_header_spans(pool, rect, NOW, AccountColumn::Shown)
+    let columns: Vec<_> = pooled_header_spans(pool, rect, NOW, AccountColumn::Shown)
         .into_iter()
         .map(|span| span.column)
         .collect();
@@ -339,14 +339,14 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned tile");
     for width in [65, 220] {
         let rect = area(width, 12);
         let mut buffer = Buffer::empty(rect);
-        draw_unassigned(
+        draw_pooled(
             &mut buffer,
             rect,
             pool,
@@ -364,7 +364,7 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
         }
         // Select the actual status header after the empty columns leave.
         let (x, y) = find(&buffer, "status").expect("status header");
-        let spans = unassigned_header_spans(pool, rect, NOW, AccountColumn::Hidden);
+        let spans = pooled_header_spans(pool, rect, NOW, AccountColumn::Hidden);
         assert_eq!(
             sort::header_hit(
                 &spans,
@@ -585,13 +585,13 @@ fn unassigned_rows_without_paths_keep_other_rows_branch_and_directory_columns() 
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned tile");
     let rect = area(220, 12);
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         pool,

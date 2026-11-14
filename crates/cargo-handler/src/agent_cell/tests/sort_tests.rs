@@ -742,7 +742,7 @@ fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
         .iter()
         .find_map(|tile| match tile {
             AgentTile::Agent(entry) if entry.row.pid == 10 => Some(entry),
-            AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
+            AgentTile::Agent(_) | AgentTile::Pooled(_) => None,
         })
         .expect("showrunner tile");
     let cells = cell_order_placed(&placement);
@@ -754,7 +754,7 @@ fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
             .iter()
             .find_map(|tile| match tile {
                 AgentTile::Agent(entry) if entry.row.pid == 10 => Some(entry),
-                AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
+                AgentTile::Agent(_) | AgentTile::Pooled(_) => None,
             })
             .expect("showrunner tile");
         let buffer = drawn_into(entry, &cells, 240, 16);
@@ -782,7 +782,7 @@ fn unassigned_session_sort_ignores_case_and_breaks_ties_by_original_name() {
     let original = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let tile = original
         .iter()
-        .find(|tile| matches!(tile, AgentTile::Unassigned(_)))
+        .find(|tile| matches!(tile, AgentTile::Pooled(_)))
         .expect("pool");
     let mut sort = TreeSort::default();
     sort.select(TreeColumn::Session);
@@ -792,13 +792,13 @@ fn unassigned_session_sort_ignores_case_and_breaks_ties_by_original_name() {
         let pool = tiles
             .iter()
             .find_map(|tile| match tile {
-                AgentTile::Unassigned(entry) => Some(entry),
+                AgentTile::Pooled(entry) => Some(entry),
                 AgentTile::Agent(_) => None,
             })
             .expect("unassigned tile");
         let rect = area(240, 16);
         let mut buffer = Buffer::empty(rect);
-        draw_unassigned(
+        draw_pooled(
             &mut buffer,
             rect,
             pool,

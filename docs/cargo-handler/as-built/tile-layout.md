@@ -23,16 +23,21 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 
 ### Groups and tree rows
 
-`TileKey` distinguishes `Agent(AgentCell)` from `Unassigned { machine }`.
+`TileKey` has three kinds: `Agent(AgentCell)`, `Producers`, and `Unassigned { machine }`.
 `group_tiles` groups roots after hue assignment.
-A root with managed members or drawable work belongs in its hierarchy tile and the summary's session table.
+A root that staff names a producer belongs in the one producers tile.
+That tile holds the producers of every machine, each as a flat root with its work below it.
+A producer row adds its machine to its name when the tile holds more than one machine.
+Any other root with managed members or drawable work belongs in its hierarchy tile and the summary's session table.
 A root without hierarchy belongs in its machine's unassigned tile.
 It does not also appear as a summary session row.
-An empty unassigned pool has no tile.
+`TilePool` names the two pools, and `PooledEntry` draws both with the shared tree table.
+An empty pool has no tile.
+The producers tile comes before the first unassigned tile.
 Pool identity survives individual sessions entering and leaving.
-Its title is `unassigned · <machine>` in the theme title ink.
+The titles are `producers` and `unassigned · <machine>`, in the theme title ink.
 
-`RootPresentation` supplies that membership decision.
+`RootPresentation` supplies the summary membership decision, and producers do not change it.
 Machine heading counts follow the sessions that the summary lists.
 Count text uses `top-level agent` or `top-level agents`.
 The unassigned count follows the current pooled rows.

@@ -66,7 +66,7 @@ fn rows() -> TestResult<Vec<AgentRow>> {
     Ok(rows)
 }
 
-fn publish(app: &mut App, rows: Vec<AgentRow>) {
+pub(super) fn publish(app: &mut App, rows: Vec<AgentRow>) {
     app.census.apply(CensusUpdate::Local {
         rows,
         hierarchy: HierarchyEdges::default().into(),
@@ -88,7 +88,7 @@ fn application() -> TestResult<(App, Vec<AgentRow>)> {
     Ok((app, rows))
 }
 
-fn paint(app: &mut App, width: u16, height: u16) -> TestResult<Buffer> {
+pub(super) fn paint(app: &mut App, width: u16, height: u16) -> TestResult<Buffer> {
     let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     let keymap = app.keymap();
     for _ in 0..3 {
@@ -105,7 +105,7 @@ fn first_frame(app: &mut App, width: u16, height: u16) -> TestResult<Buffer> {
     Ok(terminal.backend().buffer().clone())
 }
 
-fn ranks(app: &App) -> TileColumnOrder<TileKey> {
+pub(super) fn ranks(app: &App) -> TileColumnOrder<TileKey> {
     Cells::new(
         app.census.machines(&[]),
         NOW,
@@ -118,7 +118,7 @@ fn ranks(app: &App) -> TileColumnOrder<TileKey> {
     .column_order()
 }
 
-fn positions(app: &App) -> HashMap<TileKey, Rect> {
+pub(super) fn positions(app: &App) -> HashMap<TileKey, Rect> {
     app.tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth())
         .into_iter()
@@ -183,7 +183,7 @@ fn ranked_columns_use_complete_handler_trees_before_expansion() -> TestResult {
     Ok(())
 }
 
-fn rect_text(buffer: &Buffer, rect: Rect) -> String {
+pub(super) fn rect_text(buffer: &Buffer, rect: Rect) -> String {
     (rect.y..rect.bottom())
         .map(|y| {
             (rect.x..rect.right())

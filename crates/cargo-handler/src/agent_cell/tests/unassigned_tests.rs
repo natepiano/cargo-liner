@@ -1,4 +1,4 @@
-//! `draw_unassigned` renders `UnassignedEntry` values with nested `ChildRow`
+//! `draw_pooled` renders `PooledEntry` values with nested `ChildRow`
 //! lines and each session's `SessionHue` preserved.
 
 #![expect(
@@ -91,20 +91,22 @@ fn work_buffer(name: &str) -> Buffer {
     drawn_into(owner, &cells, 220, 12)
 }
 
-fn pool<'t, 'a>(tiles: &'t [AgentTile<'a>], machine: &str) -> &'t UnassignedEntry<'a> {
+fn pool<'t, 'a>(tiles: &'t [AgentTile<'a>], machine: &str) -> &'t PooledEntry<'a> {
     tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) if entry.machine == machine => Some(entry),
-            AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
+            AgentTile::Pooled(entry) if entry.pool == TilePool::Unassigned { machine } => {
+                Some(entry)
+            },
+            AgentTile::Agent(_) | AgentTile::Pooled(_) => None,
         })
         .expect("the machine has an unassigned tile")
 }
 
-fn draw_pool(entry: &UnassignedEntry<'_>, width: u16) -> Buffer {
-    let rect = area(width, unassigned_height(entry));
+fn draw_pool(entry: &PooledEntry<'_>, width: u16) -> Buffer {
+    let rect = area(width, pooled_height(entry));
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         entry,
@@ -158,7 +160,7 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
     assert!(
         !tiles
             .iter()
-            .any(|tile| matches!(tile, AgentTile::Unassigned(entry) if entry.machine == "natedev"))
+            .any(|tile| matches!(tile, AgentTile::Pooled(entry) if entry.pool == TilePool::Unassigned { machine: "natedev" }))
     );
     let buffer = draw_pool(pool(&tiles, "mac"), 220);
     assert!(find(&buffer, "remote-session").is_some());
@@ -312,7 +314,7 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
         let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
         let entry = pool(&tiles, "natedev");
         let before = draw_pool(entry, width);
-        let spans = unassigned_header_spans(entry, before.area, NOW, AccountColumn::Shown);
+        let spans = pooled_header_spans(entry, before.area, NOW, AccountColumn::Shown);
         let header = &lines(&before)[0];
         assert!(
             header.contains(TREE_SESSION_HEADER)
@@ -448,7 +450,7 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
         let (_, value_y) = find(&buffer, "free-session").expect("session row");
         assert!(value_y > header_y);
         assert!(find(&buffer, "type").is_none());
-        let spans = unassigned_header_spans(entry, buffer.area, NOW, AccountColumn::Shown);
+        let spans = pooled_header_spans(entry, buffer.area, NOW, AccountColumn::Shown);
         assert_eq!(
             sort::header_hit(
                 &spans,

@@ -653,10 +653,8 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             area,
             Color::Reset,
         );
-        let (alpha, zeta) = if matches!(
-            cells.tile(&key),
-            TileLookup::Current(AgentTile::Unassigned(_))
-        ) {
+        let (alpha, zeta) = if matches!(cells.tile(&key), TileLookup::Current(AgentTile::Pooled(_)))
+        {
             ("alpha-alone", "zeta-alone")
         } else {
             ("alpha-unit", "zeta-unit")

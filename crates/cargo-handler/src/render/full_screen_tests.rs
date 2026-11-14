@@ -11,10 +11,13 @@ use tui_pane::FullScreenCell;
 use tui_pane::Repaint;
 use tui_pane::TerminalApp;
 
+use super::producers_tile_tests;
+use super::ranked_column_tests;
 use super::word_click_tests::Renderer;
 use super::word_click_tests::TestResult;
 use super::word_click_tests::{self};
 use super::*;
+use crate::constants::PRODUCERS_CELL_TITLE;
 use crate::details::DetailsOverlay;
 use crate::word_highlight::WordHighlight;
 
@@ -354,5 +357,25 @@ fn the_expand_hint_yields_to_uptime_at_a_narrow_width() -> TestResult {
     assert!(row.contains("Uptime"), "{row:?}");
     assert!(row.contains("? shortcuts"), "{row:?}");
     assert!(!row.contains("enter expand"), "{row:?}");
+    Ok(())
+}
+
+#[test]
+fn enter_fills_the_pane_with_the_producers_tile() -> TestResult {
+    let mut app = producers_tile_tests::application(&[(30, "morty"), (40, "brain")])?;
+    let mut renderer = Renderer::with_fixed_time(&mut app, WIDTH, HEIGHT, NOW)?;
+    let buffer = renderer.paint(&mut app)?;
+    let rect = ranked_column_tests::positions(&app)
+        .remove(&TileKey::Producers)
+        .ok_or("the producers tile")?;
+    app.click(producers_tile_tests::locate(&buffer, rect, "brain")?);
+    let full = expand(&mut app, &mut renderer)?;
+    let cell = app.full_screen.cell().ok_or("full-screen cell")?;
+    assert_eq!(cell.content(), &TileContent::Group(TileKey::Producers));
+    let text = body_rows(&full).join("\n");
+    for name in [PRODUCERS_CELL_TITLE, "morty", "brain"] {
+        assert!(text.contains(name), "{name}: {text}");
+    }
+    assert!(!text.contains("loner"), "{text}");
     Ok(())
 }
