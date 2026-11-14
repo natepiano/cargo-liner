@@ -298,48 +298,20 @@ No crate code changed. On natedev, the crate's own stages of one `cargo-handler 
 
 ### Phase 12 — Every busy row shows what the session does  · status: done
 
-**Depends on:** Phase 10 (the busy activity cell and the `sessions` list)
+#### As-built
 
-#### Work Order
+A busy row draws an activity word from `census/activity.rs` `Activity`. Two causes left the cell empty, and each has its own fix:
 
-**Goal:** every busy row draws an activity word in its activity cell, in the tile and in `census --json`. No busy row has an empty activity cell.
+1. The Claude session record stays `busy` while the Stop hooks run after the last answer. `census/scan.rs` `attach_activity_with_runs` takes the open turn from the record status: a record `idle` keeps the row idle, and in an open turn the transcript names the work, with `thinking` after an `end_turn` answer.
+2. The accounts report reads the session record at a different time than the census scan, so at turn start it can say `busy` while the scan row says `idle`. `agent_cell.rs` `TreeLine::conversation_activity`, called from `live_activity`, gives a `SessionState::Busy` session, worker or unassigned line with a scanned `Idle` or `Unreported` activity `Activity::Thinking`. Shell and subagent work lines keep their scanned activity, and `activity_parts` takes no line-kind branch.
 
-**Source:** the showrunner, 2026-11-13, on the Phase 10 add-on: "Add-on 1 (every busy row shows an activity): current. Add it as a new phase after Phase 11." The Phase 10 rule: each busy showrunner, unit and worker shows an activity. Live on natedev on 2026-11-13, the hana unit `fps`, sessions named by a shell command, and once the hana showrunner read busy with no activity.
+The status still comes from the accounts report. Census samples on natedev, 15 s apart: 7 empty busy cells in 30 samples before, 2 of 293 in 60 after cause 1, 0 of 344 in 60 after cause 2.
 
-**Spec:**
+**Files:** `crates/cargo-handler/src/census/scan.rs`, `census/scan/activity_scan_tests.rs`, `agent_cell.rs`, `census/report_tests.rs`, `docs/cargo-handler/as-built/activity.md`.
 
-Director decisions:
-1. Find the cause first. For each busy row with an empty activity cell on natedev, name why the census has no live activity for it.
-2. Fix each cause in the census reader that owns the fact. The status stays from the accounts report; cargo-handler makes no status word.
-3. Each fixed row takes a word from the shared activity definition (`census/activity.rs` `Activity`). A cause with no fact to read goes to the showrunner before any word is chosen for it.
+**Binds later work:** a busy conversation line can show `thinking` for one census interval while its turn already runs a tool.
 
-Tests (red first, each under one second):
-1. A fixture for each cause found gives the busy row an activity word in the tile and in `census --json` `sessions[].activity`.
-2. A row that is not busy keeps a null `sessions[].activity` and shows only its job.
-
-**Constraints from prior phases:**
-- Phase 10: `TreeLine::activity_parts` (`agent_cell.rs`) joins the live word only for a reported `SessionState::Busy`; `job_and_live_word` takes the job from the line kind and the live word from `live_activity()`. An `AgentActivity::Idle` or `Unreported` live activity gives no word, so a busy row with no job draws an empty cell.
-- Phase 7 holds the run, pane and activity facts; Phase 8 prints them; Phase 10 builds `sessions` from `agent_cell::session_cells`. Add no second reader.
-- Phase 11 changed no census reader: the crate stages take 0.19 s median in release. Add no read per row.
-- The Delegation Context Status source: cargo-handler never makes a status word of its own.
-
-**Live check (director):** on natedev, capture the tile and run `cargo-handler census --json` from a build of this branch. No busy row has an empty activity cell, and each `sessions` entry with status `busy` has an activity.
-
-**Change-Review line:** Every busy row shows what the session does | On natedev, run cargo-handler and look at the activity column of the busy rows | No busy row has an empty activity cell
-
-**Files:**
-- `crates/cargo-handler/src/census/activity.rs` — the activity facts
-- `crates/cargo-handler/src/census/scan.rs` — the live activity reads; add each other census reader that the cause names
-- `crates/cargo-handler/src/agent_cell.rs` — the busy activity cell
-- `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/report_tests.rs` — the tests
-- `docs/cargo-handler/as-built/activity.md` — the activity sources
-
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
-
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows no busy row with an empty activity cell.
+**Ruled out:** one read of the session record for both status and activity; Phase 10 keeps the status from the accounts report.
 
 ### Phase 13 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
 
