@@ -2595,7 +2595,7 @@ The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth test
 
 **Ruled out:** a longer timeout, a retry or a sleep. Phase 58f does not cause the slow times (three timing pairs against base 644f8c3).
 
-### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: todo
+### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: done
 
 **Depends on:** Phase 58j (its method and its template helpers). Phase 63a runs first.
 
@@ -2643,6 +2643,42 @@ The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99, 10 of 32 
 **Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-tile`; `verify.sh test cargo-berth` and `verify.sh test cargo-tile` green on natedev, each of the 18 tests under 1 s; one loaded natedev workspace suite with each of the 18 tests under 1 s.
+
+### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
+
+**Depends on:** Phase 58k (its split tests and its times).
+
+After Phase 58k, five lifecycle tests still run one real rebase each and stay near or over 1 s on natedev. The showrunner approved this phase on 2026-11-13.
+
+1. `split_rebase_captures_stacked_branches_rewritten_with_update_refs` — 1.409 s (load 36)
+2. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` — 1.127 s (load 36)
+3. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` — 1.116 s (load 36)
+4. `outstanding_rebase_uses_its_integration_target_as_the_new_anchor` — 1.164 s (load 41), 0.379 s (load 36)
+5. `rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint` — 1.002 s (load 41), 0.340-0.361 s (load 36)
+
+Under strace, each commit in a stopped rebase starts a post-commit `cargo-berth drift --full` (0.10-0.36 s each). `rebase --continue` starts about 35 reference-transaction hook processes. A further test split cannot remove that cost.
+
+#### Work Order
+
+**Goal:** the cargo-berth rebase hooks do less work, so the five tests run under 1 s on natedev.
+
+**Spec:**
+
+1. Measure first. Time each hook start and each `drift --full` in one rebase of each test.
+2. Make the post-commit hook cheaper during a rebase. Each rebased commit runs `drift --full` now.
+3. Make the reference-transaction hook cheaper on `rebase --continue`. It starts about 35 processes now.
+4. Keep every assertion and every recorded hook result. Add no retry, sleep or longer wait.
+5. Report the five tests' times before and after, at the same load band.
+6. Also report the new times of the 21 other cargo-berth tests at 1.0-1.5 s in the Phase 58k crate gate.
+
+**Files:**
+
+- `crates/cargo-berth/src/` — the hook entry points, drift and the reference-transaction path
+- `crates/cargo-berth/tests/` — only where a test must name a new hook result
+
+**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Phase 58k: the split rebase tests start from the `CONTINUED_SPLIT_*` and `SPLIT_LOWER` templates.
+
+**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, the five tests under 1 s.
 
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
 
