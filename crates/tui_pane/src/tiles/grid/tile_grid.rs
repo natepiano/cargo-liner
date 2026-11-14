@@ -20,6 +20,8 @@ use super::CellTravel;
 use super::CheckedLayoutAdmission;
 use super::ColumnLayout;
 use super::ColumnPlan;
+use super::ColumnPreparation;
+use super::ColumnRanks;
 use super::CycleDirection;
 use super::Debug;
 use super::DemandSync;
@@ -82,6 +84,7 @@ use super::Slot;
 use super::SummaryRowAllocation;
 use super::TABLE_CELL;
 use super::TileAction;
+use super::TileColumnOrder;
 use super::TileContent;
 use super::TileDemands;
 use super::TileDrawing;
@@ -184,6 +187,8 @@ pub struct TileGrid<Id> {
     pub(super) layout_admission:       OnceLock<CheckedLayoutAdmission>,
     /// One owner retains the candidate choice and its reuse inputs.
     pub(super) selected_plan:          SelectedLayoutPlan<Id>,
+    /// Detail ranks are independent of width-dependent row demands.
+    pub(super) column_ranks:           ColumnRanks<Id>,
     #[cfg(test)]
     pub(super) admission_checks:       AtomicUsize,
 }
@@ -254,6 +259,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             retargeted_destination:        RetargetedMotionDestination::default(),
             layout_admission:              OnceLock::new(),
             selected_plan:                 SelectedLayoutPlan::Unmeasured,
+            column_ranks:                  ColumnRanks::SourceOrder,
             #[cfg(test)]
             admission_checks:              AtomicUsize::new(0),
         }
@@ -1190,8 +1196,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     pub(in crate::tiles) fn sync_measured_demands(
         &mut self,
         growth: TileGrowth,
+        order: TileColumnOrder<Id>,
         mut measure: impl FnMut(&[(TileContent<Id>, u16)]) -> TileDemands<Id>,
-    ) -> SelectedLayoutMeasurements<Id> {
+    ) -> (SelectedLayoutMeasurements<Id>, ColumnPreparation) {
+        let previous_slots = self.slots.clone();
+        let previous_depth = self.depth;
+        let ranks = self.column_ranks.refresh(order);
+        if self.column_ranks != ranks {
+            self.column_ranks = ranks;
+            self.selected_plan = SelectedLayoutPlan::Unmeasured;
+        }
         let widths = self.content_widths(self.area, growth);
         let initial = measure(&widths);
         let mut plan = std::mem::replace(&mut self.selected_plan, SelectedLayoutPlan::Unmeasured);
@@ -1234,6 +1248,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 if selected.widths.is_empty() {
                     selected.widths.clone_from(&widths);
                 }
+                inputs.target.clone_from(&selected.slots);
                 plan = SelectedLayoutPlan::Selected(Box::new(LayoutSelection {
                     inputs,
                     selected: selected.clone(),
@@ -1242,7 +1257,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             },
         );
         self.selected_plan = plan;
-        selected
+        let preparation = if !self.column_ranks.keeps_source_order()
+            && (self.slots != previous_slots || self.depth != previous_depth)
+        {
+            ColumnPreparation::Reassigned
+        } else {
+            ColumnPreparation::Prepared
+        };
+        (selected, preparation)
     }
 
     /// Read external inputs after the grid reconciles target slots.
@@ -1269,6 +1291,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         SelectedLayoutMeasurements {
             widths:  Vec::new(),
             demands: self.demands.clone(),
+            slots:   target.to_vec(),
             depth:   summary_depth(
                 self.area,
                 &cell_wants(&self.demands, target, &self.settings),
@@ -1302,10 +1325,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             if let CandidateDepthSelection::Selected(candidate) =
                 self.select_depth(target, &base.columns, preferred_width, measure)
             {
-                let stepped: Vec<_> = cell_wants(&candidate.demands, target, &self.settings)
-                    .into_iter()
-                    .map(|want| CellRowDemand::uniform(want.stepped_framed()))
-                    .collect();
+                let stepped: Vec<_> =
+                    cell_wants(&candidate.demands, &candidate.slots, &self.settings)
+                        .into_iter()
+                        .map(|want| CellRowDemand::uniform(want.stepped_framed()))
+                        .collect();
                 let asked = stepped.first().map_or(0, |want| want.stepped_framed());
                 let capacity = summary_share(
                     &stepped,
@@ -1340,10 +1364,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 1
             };
             for span in 1..=spans {
-                let widths = candidate_content_widths(target, self.area, base, columns, span);
+                let slots = self.ranked_candidate(target, base, columns);
+                let widths = candidate_content_widths(&slots, self.area, base, columns, span);
                 let mut demands = measure(&widths);
                 demands.summary_width = preferred_width;
-                let held = self.candidate_held(target, base, &demands);
+                let held = self.candidate_held(&slots, base, &demands);
                 let layout = Grid::with_row_use(
                     self.area,
                     &held,
@@ -1351,7 +1376,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     &self.settings,
                     &mut |_, area, _| area.height,
                 );
-                let destination: Vec<_> = cells(target)
+                let destination: Vec<_> = cells(&slots)
                     .into_iter()
                     .filter_map(|(content, index)| {
                         layout
@@ -1364,6 +1389,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                         widths,
                         demands,
                         depth: base.summary_depth,
+                        slots,
                     });
                 }
             }
@@ -1415,19 +1441,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let mut arrangement = self.target();
         let mut steps: Vec<Vec<Slot<Id>>> = Vec::new();
         let live = demands.ids();
-        while let Some(index) = arrangement.iter().position(|slot| match slot {
-            Slot::Group(id) => !live.contains(id),
-            Slot::Empty(_) => false,
-        }) {
-            Self::close(&mut arrangement, index, &mut steps);
-        }
+        Self::remove_departed(&mut arrangement, &live, &mut steps);
         // Worked out against the cells the departed have already given
         // back, so a command arriving in the same scan another leaves
         // takes the room that leaving freed.
         let ids = self.admitted(&arrangement, live, growth);
         // Every cell from the first one out of order onward goes, and
         // the cells before it are the run the grid gets to keep.
-        let standing = kept(&arrangement, &ids);
+        let standing = if self.column_ranks.keeps_source_order() {
+            kept(&arrangement, &ids)
+        } else {
+            ids.len()
+        };
         let mut reopening: Vec<Id> = Vec::new();
         while let Some((index, id)) =
             arrangement
@@ -1493,6 +1518,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         // like any other, and queued as one so it travels rather than
         // snapping.
         let selected = select(self, &arrangement);
+        if selected.slots != arrangement {
+            steps.push(selected.slots.clone());
+        }
         let wanted_depth = selected.depth;
         self.replace_demands(&selected.demands);
         if steps.is_empty() && matches!(self.motion, GridMotion::Moving(_)) {
@@ -1522,16 +1550,49 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         selected
     }
 
+    /// Remove retired groups without changing the identities of empty cells.
+    fn remove_departed(
+        arrangement: &mut Vec<Slot<Id>>,
+        live: &[Id],
+        steps: &mut Vec<Vec<Slot<Id>>>,
+    ) {
+        while let Some(index) = arrangement.iter().position(|slot| match slot {
+            Slot::Group(id) => !live.contains(id),
+            Slot::Empty(_) => false,
+        }) {
+            Self::close(arrangement, index, steps);
+        }
+    }
+
+    /// Keep each candidate's summary and empty slots while assigning detail ranks.
+    fn ranked_candidate(
+        &self,
+        target: &[Slot<Id>],
+        base: &ColumnLayout,
+        columns: usize,
+    ) -> Vec<Slot<Id>> {
+        self.column_ranks.arrange(
+            target,
+            &base.column_capacities(target.len(), columns),
+            base.summary_depth,
+        )
+    }
+
     /// Changed render rows release retained height before the grid divides its columns.
     fn reconciled_held(&self, sync: DemandSync, change: RowDemandChange) -> HeldCellLayout {
         match (sync, change) {
-            (DemandSync::CurrentRender, RowDemandChange::Changed) => HeldCellLayout {
-                rows:          cell_wants(&self.demands, &self.slots, &self.settings),
-                focused:       self.focused_cell(),
-                summary_span:  self.wanted_span(),
-                summary_depth: self.depth,
-            },
+            (DemandSync::CurrentRender, RowDemandChange::Changed) => self.current_demands_held(),
             _ => self.settled_held(),
+        }
+    }
+
+    /// A reassigned tile receives its own measured demand at the destination.
+    fn current_demands_held(&self) -> HeldCellLayout {
+        HeldCellLayout {
+            rows:          cell_wants(&self.demands, &self.slots, &self.settings),
+            focused:       self.focused_cell(),
+            summary_span:  self.wanted_span(),
+            summary_depth: self.depth,
         }
     }
 
@@ -2010,7 +2071,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let previous = std::mem::replace(&mut self.slots, slots);
         self.depth = depth;
         self.settle_focus(&previous);
-        self.held = self.settled_held();
+        self.held = if !self.column_ranks.keeps_source_order() && previous != self.slots {
+            self.current_demands_held()
+        } else {
+            self.settled_held()
+        };
         previous
     }
 

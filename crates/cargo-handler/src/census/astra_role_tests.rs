@@ -49,12 +49,18 @@ impl AstraFixture {
         let staff = root.path().join("staff.json");
         let document = json!({"schema":2,"rows":[
             {"kind":"showrunner","id":"boss","name":"production boss","parent":null,"current_session":"boss-session"},
-            {"kind":"unit","id":"unit","name":"unit director","parent":"boss","current_session":"unit-session"},
+            {"kind":"unit","id":"unit","name":"unit director","parent":"boss","current_session":"unit-session","run":root.path()},
             {"kind":"worker","id":"designer","name":"designer session","parent":"unit","current_session":DESIGNER,"role":"astra-designer","home":home},
             {"kind":"worker","id":"reviewer","name":"reviewer session","parent":"boss","current_session":REVIEWER,"role":"astra-reviewer","home":home},
             {"kind":"future-kind","id":false,"parent":12}
         ]});
         std::fs::write(&staff, serde_json::to_vec(&document)?)?;
+        std::fs::write(
+            root.path().join("progress_history_state.json"),
+            serde_json::to_vec(&json!({
+                "pass":{"designer":{"worker_id":"designer","status":"active","started_at":100}}
+            }))?,
+        )?;
         let db = Connection::open(home.join("state_6.sqlite"))?;
         // Disable durability waits for `AstraFixture`'s temporary SQLite connection.
         db.pragma_update(None, "synchronous", "OFF")?;

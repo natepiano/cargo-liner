@@ -622,7 +622,10 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             column_value(&buffer, "status", row_of(&buffer, name), &HEADERS),
             status
         );
-        assert_eq!(detail_value(&cells[0], name, "state", NOW), "idle");
+        assert_eq!(
+            detail_value(&cells[0], name, "activity", NOW),
+            MISSING_VALUE
+        );
     }
 }
 

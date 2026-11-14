@@ -427,6 +427,9 @@ impl Ticker {
         app.prepare_full_frame();
         let accounts_changed = app.accounts.refresh();
         let census_changed = self.drain_census(app);
+        if accounts_changed || census_changed {
+            app.census.record_local_accounts(&app.accounts.table);
+        }
         let appearance_changed = self.drain_appearances(app);
         let emphasis_changed = self.drain_word_highlight(app);
         if accounts_changed

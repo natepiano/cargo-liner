@@ -49,6 +49,7 @@ pub use draw::draw_tile_grid;
 pub use grid::CellIndex;
 pub use grid::CellTravel;
 pub use grid::FocusLocation;
+pub use grid::TileColumnOrder;
 pub use grid::TileContent;
 pub use grid::TileDemand;
 pub use grid::TileDemands;

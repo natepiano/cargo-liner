@@ -1616,7 +1616,7 @@ fn claim_with_session(repository_root: &Path, scope: &str, run: &str, session_id
         .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("mapped claim should run");
-    assert!(claimed.status.success());
+    assert!(claimed.status.success(), "{claimed:?}");
     json_output(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("claim should return a reservation id")
@@ -2217,7 +2217,7 @@ fn drift_rejects_every_invalid_coordination_identity_with_executable_recovery() 
     assert!(!mismatch_repository.path().join(MARKER_PATH).exists());
     let (_second_directory, second_root) = foreign_worktree(mismatch_repository, "drift-second");
     let mismatch_session = "foreign-drift-session";
-    let live_reservation_id = claim_with_session(
+    claim_with_session(
         mismatch_repository.path(),
         "file:live-session",
         THIRD_RUN,
@@ -2225,13 +2225,7 @@ fn drift_rejects_every_invalid_coordination_identity_with_executable_recovery() 
     );
     let mismatch_rejection = run_berth_with_session(
         &second_root,
-        &[
-            "drift",
-            "--full",
-            "--reservation",
-            &live_reservation_id,
-            "--json",
-        ],
+        &["drift", "--full", "--json"],
         mismatch_session,
     );
     assert_eq!(mismatch_rejection.status.code(), Some(5));
@@ -2240,6 +2234,128 @@ fn drift_rejects_every_invalid_coordination_identity_with_executable_recovery() 
         "session_worktree_mismatch",
         &["rerun_from_holding_worktree", "claim_separately_here"],
     );
+}
+
+const TWO_WORKTREE_OWNER: &str = "two-worktree-owner";
+
+/// One session holds a reservation in the fixture root and one in a second worktree.
+struct TwoWorktreeOwner {
+    _second_directory: TempDir,
+    second_root:       PathBuf,
+    repository:        TempDir,
+    first:             String,
+    second:            String,
+}
+
+fn two_worktree_owner() -> TwoWorktreeOwner {
+    let repository = initialized_repository();
+    let (second_directory, second_root) = foreign_worktree(&repository, "owned-second");
+    let first = claim_with_session(
+        repository.path(),
+        "file:first",
+        FIRST_RUN,
+        TWO_WORKTREE_OWNER,
+    );
+    let cleared = run_berth_with_session(
+        repository.path(),
+        &["identity", "clear-session", "--json"],
+        TWO_WORKTREE_OWNER,
+    );
+    assert!(cleared.status.success(), "{cleared:?}");
+    let second = claim_with_session(&second_root, "file:second", SECOND_RUN, TWO_WORKTREE_OWNER);
+    TwoWorktreeOwner {
+        _second_directory: second_directory,
+        second_root,
+        repository,
+        first,
+        second,
+    }
+}
+
+#[test]
+fn explicit_reservations_route_each_owned_holder_and_refuse_other_owners() {
+    let owned = two_worktree_owner();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&owned.repository, "other-owner");
+    let foreign = claim_with_session(&foreign_root, "file:foreign", THIRD_RUN, "other-owner");
+    for issuing in [owned.repository.path(), owned.second_root.as_path()] {
+        for id in [&owned.first, &owned.second] {
+            let output = run_berth_with_session(
+                issuing,
+                &["drift", "--full", "--reservation", id, "--json"],
+                TWO_WORKTREE_OWNER,
+            );
+            assert!(output.status.success(), "{issuing:?}: {id}: {output:?}");
+        }
+        let refused = run_berth_with_session(
+            issuing,
+            &[
+                "check",
+                "file:foreign-new",
+                "--reservation",
+                &foreign,
+                "--json",
+            ],
+            TWO_WORKTREE_OWNER,
+        );
+        assert!(!refused.status.success(), "{refused:?}");
+    }
+}
+
+#[test]
+fn explicit_reservation_widens_its_holder_until_release() {
+    let owned = two_worktree_owner();
+    let second = owned.second.as_str();
+    for (verb, path) in [
+        ("check", "file:checked-in-holder"),
+        ("claim", "file:claimed-in-holder"),
+    ] {
+        let output = run_berth_with_session(
+            owned.repository.path(),
+            &[verb, path, "--reservation", second, "--json"],
+            TWO_WORKTREE_OWNER,
+        );
+        assert!(output.status.success(), "{verb}: {output:?}");
+    }
+    let events = journal_events(owned.repository.path());
+    let second_claim = events
+        .iter()
+        .find(|event| event["op"] == "claim" && event["reservation_id"] == second)
+        .expect("the second claim must be recorded");
+    let holder = second_claim["actor"]["worktree"].clone();
+    for path in ["checked-in-holder", "claimed-in-holder"] {
+        let event = events
+            .iter()
+            .find(|event| {
+                event["op"] == "widen"
+                    && event["reservation_id"] == second
+                    && event.to_string().contains(path)
+            })
+            .expect("the holder must receive the widening");
+        assert_eq!(event["actor"]["worktree"], holder);
+        assert_eq!(event["resolved_session"]["session_id"], TWO_WORKTREE_OWNER);
+        assert_eq!(
+            event["identity_inputs"]["invocation_directory"]["path"],
+            owned
+                .repository
+                .path()
+                .to_str()
+                .expect("the root must be UTF-8")
+        );
+    }
+    let board = run_berth_with_session(
+        owned.repository.path(),
+        &["board", "--reservation", second, "--json"],
+        TWO_WORKTREE_OWNER,
+    );
+    assert!(board.status.success(), "{board:?}");
+    let released = run_berth(&owned.second_root, &["release", second, "--json"]);
+    assert!(released.status.success(), "{released:?}");
+    let refused = run_berth_with_session(
+        owned.repository.path(),
+        &["drift", "--full", "--reservation", second, "--json"],
+        TWO_WORKTREE_OWNER,
+    );
+    assert!(!refused.status.success(), "{refused:?}");
 }
 
 #[test]

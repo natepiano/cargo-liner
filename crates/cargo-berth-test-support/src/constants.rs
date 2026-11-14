@@ -11,6 +11,10 @@ include!("../../cargo-berth/src/git/constants/child.rs");
 
 /// The first coordination run used by integration fixtures.
 pub const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+/// Prevent Git from taking optional locks during a fixture read.
+pub(crate) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
+/// The path where Git writes structured trace events.
+pub(crate) const GIT_TRACE2_EVENT_ENVIRONMENT: &str = "GIT_TRACE2_EVENT";
 /// The second coordination run used by integration fixtures.
 pub const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 /// The main coordination run used by ledger identity fixtures.

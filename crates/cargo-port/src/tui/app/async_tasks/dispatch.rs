@@ -93,16 +93,32 @@ impl App {
 
         self.begin_startup_phase(lint_registered);
     }
-    /// Handle a single `BackgroundMsg`. Returns `true` if the tree
-    /// needs rebuilding. The match is a 1:1 mapping from variant to
-    /// handler — see the style guide entry on never splitting
-    /// exhaustive matches with `unreachable!()`. Multi-statement arms
-    /// are extracted as small helpers so each arm stays a single
-    /// call.
+    /// Handle a single `BackgroundMsg` as a batch of one. Returns `true` if the
+    /// tree needs rebuilding.
+    #[cfg(test)]
     pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+        let mut row_batch = RowPresentationBatch::default();
+        let rebuild = self.handle_batched_bg_msg(msg, &mut row_batch);
+        self.finish_row_batch(row_batch);
+        rebuild
+    }
+
+    /// Handle one `BackgroundMsg` of a frame batch. `finish_row_batch` compares
+    /// the row presentation once for the batch, so a burst of row messages
+    /// costs two presentations, not two per message.
+    pub(super) fn handle_batched_bg_msg(
+        &mut self,
+        msg: BackgroundMsg,
+        row_batch: &mut RowPresentationBatch,
+    ) -> bool {
         let disk_before = self.disk_message_inputs(&msg);
         let row_generation_before = self.project_list.row_generation;
-        let row_before = self.row_message_input(&msg);
+        if affects_row_presentation(&msg) && matches!(row_batch, RowPresentationBatch::Untouched) {
+            *row_batch = RowPresentationBatch::Captured {
+                presentation:   self.project_row_presentation(),
+                row_generation: row_generation_before,
+            };
+        }
         let storage_before = self.project_list.project_storage();
         let is_disk = matches!(
             msg,
@@ -113,17 +129,10 @@ impl App {
             self.update_generations_for_msg(&msg);
         }
         let rebuild = self.apply_bg_msg(msg);
-        let row_changed = match row_before {
-            MessageRowInput::Unaffected => false,
-            MessageRowInput::Rows(before) => before != self.project_row_presentation(),
-        };
         let disk_changed = disk_before
             .iter()
             .any(|(path, before)| disk_row_input(&self.project_list, path) != *before);
-        if disk_changed
-            || (is_storage && self.project_list.project_storage() != storage_before)
-            || row_changed
-        {
+        if disk_changed || (is_storage && self.project_list.project_storage() != storage_before) {
             if self.project_list.row_generation == row_generation_before {
                 self.project_list.row_generation += 1;
             }
@@ -139,23 +148,20 @@ impl App {
         rebuild
     }
 
-    fn row_message_input(&self, msg: &BackgroundMsg) -> MessageRowInput {
-        match msg {
-            BackgroundMsg::CiRuns { .. }
-            | BackgroundMsg::CheckoutInfo { .. }
-            | BackgroundMsg::RepoInfo { .. }
-            | BackgroundMsg::NoRepository { .. }
-            | BackgroundMsg::Submodules { .. }
-            | BackgroundMsg::LintStatus { .. }
-            | BackgroundMsg::LintStartupStatus { .. }
-            | BackgroundMsg::LanguageStatsBatch { .. }
-            | BackgroundMsg::CargoMetadata { .. } => {
-                MessageRowInput::Rows(self.project_row_presentation())
-            },
-            // Structural handlers own index/row generations. Disk and storage
-            // compare their measured inputs separately; all other messages
-            // update tooling, detail or toast state rather than list rows.
-            _ => MessageRowInput::Unaffected,
+    /// Raise `row_generation` once when the batch's row messages changed a row.
+    /// A handler that already raised it in the batch makes the compare unneeded.
+    pub(super) fn finish_row_batch(&mut self, row_batch: RowPresentationBatch) {
+        let RowPresentationBatch::Captured {
+            presentation,
+            row_generation,
+        } = row_batch
+        else {
+            return;
+        };
+        if self.project_list.row_generation == row_generation
+            && presentation != self.project_row_presentation()
+        {
+            self.project_list.row_generation += 1;
         }
     }
 
@@ -172,6 +178,11 @@ impl App {
         }
     }
 
+    /// Apply one `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
+    /// The match is a 1:1 mapping from variant to handler — see the style guide
+    /// entry on never splitting exhaustive matches with `unreachable!()`.
+    /// Multi-statement arms are extracted as small helpers so each arm stays a
+    /// single call.
     #[allow(
         clippy::too_many_lines,
         reason = "trivial 1:1 exhaustive variant mapping"
@@ -420,7 +431,33 @@ fn disk_row_input(projects: &ProjectList, path: &Path) -> DiskRowInput {
 }
 
 /// Only list-row inputs can change the list's width cache.
-enum MessageRowInput {
-    Unaffected,
-    Rows(ProjectListPresentation),
+const fn affects_row_presentation(msg: &BackgroundMsg) -> bool {
+    // Structural handlers own index/row generations. Disk and storage
+    // compare their measured inputs separately; all other messages
+    // update tooling, detail or toast state rather than list rows.
+    matches!(
+        msg,
+        BackgroundMsg::CiRuns { .. }
+            | BackgroundMsg::CheckoutInfo { .. }
+            | BackgroundMsg::RepoInfo { .. }
+            | BackgroundMsg::NoRepository { .. }
+            | BackgroundMsg::Submodules { .. }
+            | BackgroundMsg::LintStatus { .. }
+            | BackgroundMsg::LintStartupStatus { .. }
+            | BackgroundMsg::LanguageStatsBatch { .. }
+            | BackgroundMsg::CargoMetadata { .. }
+    )
+}
+
+/// The row state one frame batch compares in `App::finish_row_batch`.
+#[derive(Default)]
+pub(super) enum RowPresentationBatch {
+    /// No row message arrived in this batch.
+    #[default]
+    Untouched,
+    /// The rows as the first row message of this batch found them.
+    Captured {
+        presentation:   ProjectListPresentation,
+        row_generation: u64,
+    },
 }

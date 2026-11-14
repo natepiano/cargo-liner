@@ -25,6 +25,7 @@ use super::OrderingEdge;
 use super::OrderingOverlapScopeSet;
 use super::OrderingReason;
 use super::RepositoryReservationEvidence;
+use super::RepositoryReservationSnapshot;
 use super::RepositorySnapshot;
 use super::cycle;
 use crate::answer::AuthorizedOverlapSet;
@@ -109,6 +110,32 @@ pub(crate) struct OrderingGraph {
     deferrals:           Vec<DeferredOverlap>,
     deferral_indices:    HashMap<(ReservationId, ReservationId), Vec<usize>>,
     overridden_overlaps: Vec<OverriddenOverlap>,
+}
+
+/// Select the work commit without inventing a checkpoint for an absent holder.
+fn reservation_integration_subject(snapshot: &RepositoryReservationSnapshot) -> IntegrationSubject {
+    match &snapshot.evidence {
+        RepositoryReservationEvidence::Active => match &snapshot.worktree_head {
+            WorktreeHead::Resolved(object_id) => IntegrationSubject::Commit {
+                object_id: object_id.clone(),
+            },
+            WorktreeHead::Unavailable => IntegrationSubject::WorktreeHeadUnavailable,
+        },
+        RepositoryReservationEvidence::Outstanding { protected_tip, .. }
+        | RepositoryReservationEvidence::Released { protected_tip, .. } => {
+            IntegrationSubject::Commit {
+                object_id: protected_tip.as_ref().clone(),
+            }
+        },
+        RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
+            integration, ..
+        } => IntegrationSubject::Commit {
+            object_id: integration.work_head.clone(),
+        },
+        RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
+            IntegrationSubject::NotApplicable
+        },
+    }
 }
 
 impl OrderingGraph {
@@ -246,6 +273,7 @@ impl OrderingGraph {
                 | JournalOperation::UnrecordedTargetsPinned { .. }
                 | JournalOperation::Renew { .. }
                 | JournalOperation::Release { .. }
+                | JournalOperation::IntegrateAbsentHolder { .. }
                 | JournalOperation::ReplaceReleaseDisposition { .. }
                 | JournalOperation::EvidenceRevalidated { .. }
                 | JournalOperation::ScopedPatchEquivalenceChecked { .. }
@@ -297,25 +325,8 @@ impl OrderingGraph {
             .map(|reservation| {
                 let repository_reservation_snapshot =
                     repository_snapshot.reservation(reservation.id())?;
-                let integration_subject = match &repository_reservation_snapshot.evidence {
-                    RepositoryReservationEvidence::Active => match &repository_reservation_snapshot
-                        .worktree_head
-                    {
-                        WorktreeHead::Resolved(object_id) => IntegrationSubject::Commit {
-                            object_id: object_id.clone(),
-                        },
-                        WorktreeHead::Unavailable => IntegrationSubject::WorktreeHeadUnavailable,
-                    },
-                    RepositoryReservationEvidence::Outstanding { protected_tip, .. }
-                    | RepositoryReservationEvidence::Released { protected_tip, .. } => {
-                        IntegrationSubject::Commit {
-                            object_id: protected_tip.as_ref().clone(),
-                        }
-                    },
-                    RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
-                        IntegrationSubject::NotApplicable
-                    },
-                };
+                let integration_subject =
+                    reservation_integration_subject(repository_reservation_snapshot);
                 Ok(IntegrationReservationFacts {
                     reservation_id: reservation.id(),
                     actor:          reservation.actor().clone(),

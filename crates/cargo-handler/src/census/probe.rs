@@ -42,6 +42,7 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
+use super::accounts::AccountsTable;
 #[cfg(test)]
 use super::accounts::EMPTY_SESSION_STATES;
 use super::activity::Activity;
@@ -518,6 +519,9 @@ impl From<ProbeAgentRow> for AgentRow {
 /// What the probe prints.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ProbeReport {
+    /// Older probes omit observations without invalidating their agent rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    facts:            Option<super::CensusFacts>,
     /// [`PROBE_SCHEMA`] of the build that printed it.
     schema:           u32,
     /// The printing machine's short host name.
@@ -576,6 +580,7 @@ impl ProbeReport {
         }
         Self {
             schema: PROBE_SCHEMA,
+            facts: None,
 
             machine,
             rows,
@@ -626,6 +631,24 @@ impl ProbeReport {
             },
             HierarchyNotice::Clear => HierarchyAnswer::Answered(self.edges),
         };
+        let hierarchy = match self.facts {
+            Some(facts) => {
+                let (edges, notice) = match hierarchy {
+                    HierarchyAnswer::Answered(edges) => (edges, HierarchyNotice::Clear),
+                    HierarchyAnswer::Unmatched(edges) => (edges, HierarchyNotice::NoSessionMatched),
+                    HierarchyAnswer::Failed { reason } => {
+                        (HierarchyEdges::default(), HierarchyNotice::Failed(reason))
+                    },
+                    HierarchyAnswer::WithFacts(snapshot) => (snapshot.edges, snapshot.notice),
+                };
+                HierarchyAnswer::WithFacts(super::HierarchySnapshot {
+                    edges,
+                    notice,
+                    facts: facts.into(),
+                })
+            },
+            None => hierarchy,
+        };
         (rows, hierarchy)
     }
 }
@@ -652,8 +675,17 @@ pub(crate) fn print() -> ExitCode {
 
 /// Scan with the configuration that remains valid after loading.
 fn scan_configured(config: &Config) -> ProbeReport {
+    let (rows, publication) = scan_local(config);
+    let mut report = ProbeReport::from_answer(local_machine_name(), rows, publication.edges);
+    let mut facts = *publication.facts;
+    facts.accounts = AccountsTable::read_once(&config.census.accounts_command).health();
+    report.facts = Some(facts);
+    report
+}
+
+/// One completed scan of this machine with the configured staff file and timeouts.
+pub(super) fn scan_local(config: &Config) -> (Vec<AgentRow>, super::HierarchySnapshot) {
     let source = HierarchySource::from(config.census.staff_file.0.clone());
-    let staff = StaffFileReader::default();
     let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
         &config.accounts,
         dirs::home_dir().as_deref(),
@@ -661,10 +693,12 @@ fn scan_configured(config: &Config) -> ProbeReport {
     .with_codex_start_window(config.census.codex_thread_start_window)
     .with_herdr_probe_wait(config.census.herdr_probe_wait)
     .with_herdr_read_timeout(config.census.herdr_read_timeout)
-    .with_staff_file(super::StaffFileSetting::new(source), staff)
+    .with_staff_file(
+        super::StaffFileSetting::new(source),
+        StaffFileReader::default(),
+    )
     .scan();
-    let edges = snapshot.publication().edges;
-    ProbeReport::from_answer(local_machine_name(), rows, edges)
+    (rows, snapshot.publication())
 }
 
 /// Keep the JSON report separate from probe diagnostics.
@@ -696,6 +730,7 @@ pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdg
     parse_answer(output).map(|(rows, hierarchy)| {
         let edges = match hierarchy {
             HierarchyAnswer::Answered(edges) | HierarchyAnswer::Unmatched(edges) => edges,
+            HierarchyAnswer::WithFacts(snapshot) => snapshot.edges,
             HierarchyAnswer::Failed { .. } => HierarchyEdges::default(),
         };
         (rows, edges)
@@ -818,6 +853,7 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
+            facts:            None,
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
             schema:           PROBE_SCHEMA,

@@ -57,8 +57,7 @@ impl DetachedWorkerFixture {
                 "fixture-impl": {"current_session":THREAD,"role":"test"}
             }),
         );
-        fs::remove_file(session.join("progress_history_state.json"))
-            .expect("legacy director fixture");
+        write_current_pass(&session, "fixture-impl");
         let mut scanner = LocalScanner::new(AccountLabels::default());
         scanner.worker_names = worker_dispatch::fixture_names(&session);
         scanner.session_roots = SessionRoots::new([root.path().to_path_buf()]);
@@ -99,11 +98,16 @@ impl DetachedWorkerFixture {
     }
 
     fn scan(&mut self, processes: &[ProcessEntry]) -> Vec<AgentRow> {
-        let staff = self.scanner.staff.snapshot();
-        self.scanner.worker_names.set_staff(staff.roster);
+        let mut staff = self.scanner.staff.snapshot();
+        staff.roster = self.scanner.current_staff.select(staff.roster);
+        self.scanner
+            .worker_names
+            .set_staff(Arc::clone(&staff.roster));
         let mut rows = Self::rows();
         self.scanner
             .attach_details(processes, &[], Some(self.root.path()), &mut rows);
+        self.scanner
+            .complete_worker_facts(&rows, processes, &staff.roster);
         rows
     }
 }
@@ -147,6 +151,12 @@ fn detached_worker_run_needs_a_live_process_and_its_own_director() {
     fixture.write_run("running");
     assert_eq!(fixture.scan(&[])[0].children, []);
     fs::write(fixture.session.join(DIRECTOR_FILE), "another-director").expect("other director");
+    let path = fixture.session.join("staff.json");
+    let mut staff: Value =
+        serde_json::from_slice(&fs::read(&path).expect("staff file")).expect("staff rows");
+    staff["rows"][1]["current_session"] = "another-director".into();
+    fs::write(path, serde_json::to_vec(&staff).expect("changed staff"))
+        .expect("changed staff file");
     let processes = [fixture.supervisor()];
     assert_eq!(fixture.scan(&processes)[0].children, []);
 }
@@ -188,6 +198,16 @@ fn write_staff_run(fixture: &DetachedWorkerFixture, status: &str) {
     .expect("current run record");
 }
 
+/// A current run with no recorded owner whose pass map names `worker`.
+fn write_current_pass(session: &Path, worker: &str) {
+    fs::write(
+        session.join("progress_history_state.json"),
+        serde_json::json!({"pass": {"fixture": {"worker_id": worker, "status": "complete"}}})
+            .to_string(),
+    )
+    .expect("current pass map");
+}
+
 fn write_staff_membership(fixture: &DetachedWorkerFixture, thread: &str) {
     fs::write(
         fixture.root.path().join("staff.json"),
@@ -195,7 +215,7 @@ fn write_staff_membership(fixture: &DetachedWorkerFixture, thread: &str) {
             {"id": "boss", "kind": "showrunner", "name": "boss",
              "parent": null, "current_session": "boss-session"},
             {"id": "stable-unit", "kind": "unit", "name": "fixture",
-             "parent": "boss", "current_session": "director-id"},
+             "parent": "boss", "current_session": "director-id", "run":fixture.session},
             {"id": "stable-worker", "kind": "worker", "name": "fixture-test",
              "parent": "stable-unit", "current_session": thread, "role":"test"}
         ]})
@@ -206,6 +226,7 @@ fn write_staff_membership(fixture: &DetachedWorkerFixture, thread: &str) {
 
 fn current_staff_fixture(thread: &str) -> DetachedWorkerFixture {
     let mut fixture = DetachedWorkerFixture::new();
+    write_current_pass(&fixture.session, "stable-worker");
     write_staff_membership(&fixture, thread);
     let setting = StaffFileSetting::new(HierarchySource::File(
         fixture
@@ -281,7 +302,8 @@ fn assert_drawn_worker_details(rows: Vec<AgentRow>, expected: &str) -> Result<()
     );
     terminal.draw(|frame| app.draw(frame, &keymap))?;
     let details = drawn_rows(terminal.backend().buffer());
-    for (label, value) in [("state", expected), ("status", "idle")] {
+    let expected_activity = format!("test · {expected}");
+    for (label, value) in [("activity", expected_activity.as_str()), ("status", "idle")] {
         let marker = format!("{label}:");
         let actual = details
             .iter()
@@ -359,6 +381,92 @@ fn staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread()
             .run_records
             .record_changed(&fixture.session, "gate.json".into());
         assert_eq!(fixture.scan(&processes)[0].children, []);
+    }
+    assert_only_the_staff_current_run()?;
+    Ok(())
+}
+
+fn assert_only_the_staff_current_run() -> Result<(), Box<dyn Error>> {
+    use crate::census::Observed;
+    use crate::census::activity::DetachedRunState;
+    let mut fixture = current_staff_fixture(THREAD);
+    let old = fixture.root.path().join("old-open-run");
+    fs::create_dir_all(old.join("detached_runs"))?;
+    fs::write(old.join(DIRECTOR_FILE), "director-id")?;
+    fs::write(
+        old.join("progress_history_state.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "owner_staff_id":"stable-unit","pass":{"old":{"worker_id":"old-worker","status":"active","started_at":50}}
+        }))?,
+    )?;
+    let staff_path = fixture.root.path().join("staff.json");
+    let mut staff: Value = serde_json::from_slice(&fs::read(&staff_path)?)?;
+    staff["rows"].as_array_mut().ok_or("staff rows")?.push(serde_json::json!({
+        "id":"old-worker","kind":"worker","name":"old-review-worker","parent":"stable-unit","current_session":"old-thread","role":"review"
+    }));
+    fs::write(staff_path, serde_json::to_vec(&staff)?)?;
+    let mut old_record: Value =
+        serde_json::from_slice(&fs::read(fixture.session.join("detached_runs/gate.json"))?)?;
+    old_record["staff_id"] = "old-worker".into();
+    old_record["worker"] = "old-review-worker".into();
+    old_record["pid"] = 200.into();
+    old_record["run_id"] = "old-gate".into();
+    fs::write(
+        old.join("detached_runs/gate.json"),
+        serde_json::to_vec(&old_record)?,
+    )?;
+    fs::write(
+        fixture.session.join("progress_history_state.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "owner_staff_id":"stable-unit","pass":{"test":{"worker_id":"stable-worker","status":"active","started_at":90}}
+        }))?,
+    )?;
+    let mut old_supervisor = supervisor(&old);
+    old_supervisor.pid = 200;
+    let active = fixture.scan(&[
+        claude(),
+        fixture.supervisor(),
+        process(101, 100, &["cargo", "check"]),
+        old_supervisor.clone(),
+    ]);
+    assert_eq!(
+        active[0]
+            .children
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect::<Vec<_>>(),
+        ["fixture-test"]
+    );
+    assert_drawn_worker_details(active, "check")?;
+    for (status, queued, expected) in [
+        ("running", false, DetachedRunState::Missing),
+        ("finished", true, DetachedRunState::FinishedQueued),
+    ] {
+        let path = fixture.session.join("detached_runs/gate.json");
+        let mut record: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        record["status"] = status.into();
+        record["delivery"] = if queued { "queued: fixture result" } else { "" }.into();
+        fs::write(path, serde_json::to_vec(&record)?)?;
+        fixture
+            .scanner
+            .run_records
+            .record_changed(&fixture.session, "gate.json".into());
+        assert_eq!(
+            fixture.scan(&[claude(), old_supervisor.clone()])[0].children,
+            []
+        );
+        let facts = &fixture.scanner.worker_facts[THREAD];
+        let Observed::Known(runs) = &facts.runs else {
+            return Err("current records must remain readable".into());
+        };
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.id.as_str(), run.state))
+                .collect::<Vec<_>>(),
+            [("gate", expected)]
+        );
+        assert_eq!(facts.activity_started, Observed::Known(90));
+        assert!(!fixture.scanner.worker_facts.contains_key("old-thread"));
     }
     Ok(())
 }

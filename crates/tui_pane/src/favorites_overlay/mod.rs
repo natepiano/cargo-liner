@@ -31,6 +31,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -81,6 +82,7 @@ use crate::FavoritesFileState;
 use crate::FavoritesMutationError;
 use crate::Keymap;
 use crate::PopupFrame;
+use crate::ScrollDirection;
 use crate::Viewport;
 use crate::ViewportOverflow;
 use crate::VisualDeadline;
@@ -139,6 +141,39 @@ impl FavoritesOverlay {
     /// Whether the app modal is currently consuming input.
     #[must_use]
     pub const fn is_open(&self) -> bool { matches!(self.state, FavoritesOverlayState::Open(_)) }
+
+    /// Select the favorite at the last rendered position.
+    pub fn click(&mut self, position: Position) {
+        if !self.is_open() {
+            return;
+        }
+        let mut painted = self.viewport.clone();
+        painted.set_len(self.line_plan.lines.len());
+        let Some(line) = painted.pos_to_local_row(position) else {
+            return;
+        };
+        if let Some(index) = self
+            .line_plan
+            .navigation_line_index
+            .iter()
+            .position(|row| *row == line)
+        {
+            self.cancel_deletion_confirmation();
+            self.viewport.set_pos(index);
+            self.refresh_footer();
+        }
+    }
+
+    /// Apply one wheel step inside the rendered content.
+    pub fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        if self.is_open() && self.viewport.content_area().contains(position) {
+            let action = match direction {
+                ScrollDirection::Up => FavoritesOverlayAction::SelectPrevious,
+                ScrollDirection::Down => FavoritesOverlayAction::SelectNext,
+            };
+            self.handle_action_at(action, Instant::now());
+        }
+    }
 
     #[cfg(test)]
     const fn deletion_confirmation_is_armed_for_test(&self) -> bool {

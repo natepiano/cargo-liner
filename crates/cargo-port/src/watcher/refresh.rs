@@ -22,6 +22,7 @@ use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
 use crate::constants::TARGET_DIR;
 use crate::lint;
+use crate::process_observation::DiskReadBytes;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::RepoInfo;
@@ -233,7 +234,6 @@ pub(super) fn is_internal_git_refresh_event(event_path: &Path, entry: &ProjectEn
     };
     event_path == repo_root.join(".gitignore")
         || event_path == git_dir.join("index")
-        || event_path == git_dir.join("index.lock")
         || event_path == git_dir.join("info").join("exclude")
         || event_path == git_dir.join("HEAD")
         || event_path == git_dir.join("FETCH_HEAD")
@@ -410,34 +410,6 @@ pub(super) fn is_target_metadata_event(event_path: &Path, project_root: &Path) -
         || event_path.starts_with(tests)
 }
 
-pub(super) fn emit_root_git_info_refresh(
-    background_tx: &Sender<BackgroundMsg>,
-    entry: &ProjectEntry,
-) {
-    let started = Instant::now();
-    let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
-        return;
-    };
-    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), &repo.local_main_branch);
-    tracing::trace!(
-        target: PERF_LOG_TARGET,
-        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
-        path = %entry.label,
-        git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
-        "watcher_root_git_info_refresh"
-    );
-    let _ = background_tx.send(BackgroundMsg::RepoInfo {
-        path: entry.abs_path.clone(),
-        info: repo,
-    });
-    if let Some(checkout) = checkout {
-        let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
-            path: entry.abs_path.clone(),
-            info: checkout,
-        });
-    }
-}
-
 pub(super) fn fire_git_updates(
     handle: &Handle,
     git_limit: &Arc<Semaphore>,
@@ -457,11 +429,7 @@ pub(super) fn fire_git_updates(
         // `affected` collects each `ProjectEntry` sharing `git_refresh_key`; `common_git_dir`
         // combines primary and linked siblings in one repository. Each needs its own
         // `CheckoutInfo` probe because branch, HEAD and status differ per worktree.
-        let affected: Vec<AbsolutePath> = projects
-            .values()
-            .filter(|entry| git_refresh_key(entry).as_ref() == Some(&refresh_key))
-            .map(|entry| entry.abs_path.clone())
-            .collect();
+        let affected = requested_git_checkouts(projects, &refresh_key);
         if affected.is_empty() {
             if let Some(state) = pending_git.get_mut(&refresh_key) {
                 *state = WatchState::Idle;
@@ -474,9 +442,8 @@ pub(super) fn fire_git_updates(
         let primary_path = projects
             .values()
             .find(|entry| {
-                entry.git_dir.as_deref() == Some(refresh_key.as_path())
-                    || entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
-                        && entry.abs_path.as_path().join(GIT_DIR).is_dir()
+                entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
+                    && entry.abs_path.as_path().join(GIT_DIR).is_dir()
             })
             .map_or_else(|| affected[0].clone(), |entry| entry.abs_path.clone());
         if let Some(state) = pending_git.get_mut(&refresh_key) {
@@ -491,6 +458,34 @@ pub(super) fn fire_git_updates(
             primary_path,
             affected,
         );
+    }
+}
+
+pub(super) fn requested_git_checkouts(
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    refresh_key: &AbsolutePath,
+) -> Vec<AbsolutePath> {
+    let candidates: Vec<_> = projects
+        .values()
+        .filter(|entry| git_refresh_key(entry).as_ref() == Some(refresh_key))
+        .collect();
+    let requested: Vec<_> = candidates
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.git_refresh_demand.take(),
+                super::runtime::GitRefreshRequest::Pending
+            )
+        })
+        .map(|entry| entry.abs_path.clone())
+        .collect();
+    if requested.is_empty() {
+        candidates
+            .iter()
+            .map(|entry| entry.abs_path.clone())
+            .collect()
+    } else {
+        requested
     }
 }
 
@@ -673,6 +668,7 @@ impl DiskUpdateInputs {
     }
 
     fn measure(self) -> ProjectDiskUpdate {
+        let reads = crate::process_observation::DiskReadMeasurement::start();
         let mut update = self.project.refresh();
         let mut target_bytes = HashMap::new();
         let mut external_targets = Vec::new();
@@ -703,10 +699,12 @@ impl DiskUpdateInputs {
             }
         }
         ProjectDiskUpdate {
+            read_bytes: reads.finish(),
             entries: update.entries,
             external_targets,
             visited_entries: update.visited_entries,
             identity_entries_examined: update.identity_entries_examined,
+            aggregation_entries_examined: update.aggregation_entries_examined,
         }
     }
 }
@@ -731,10 +729,12 @@ fn measure_target(
 }
 
 struct ProjectDiskUpdate {
-    entries:                   Vec<(AbsolutePath, DirSizes)>,
-    external_targets:          Vec<BackgroundMsg>,
-    visited_entries:           usize,
-    identity_entries_examined: usize,
+    read_bytes:                   DiskReadBytes,
+    entries:                      Vec<(AbsolutePath, DirSizes)>,
+    external_targets:             Vec<BackgroundMsg>,
+    visited_entries:              usize,
+    identity_entries_examined:    usize,
+    aggregation_entries_examined: usize,
 }
 
 fn spawn_disk_update(
@@ -765,6 +765,8 @@ fn spawn_disk_update(
                 abs_path = %request.root.display(),
                 visited_entries = update.visited_entries,
                 identity_entries_examined = update.identity_entries_examined,
+                aggregation_entries_examined = update.aggregation_entries_examined,
+                read_bytes = %update.read_bytes,
                 "watcher_disk_usage"
             );
             for (path, sizes) in update.entries {

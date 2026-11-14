@@ -67,8 +67,8 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
         let state = MachineState::Answered(
             rows(),
             HierarchySnapshot {
-                edges: HierarchyEdges::default(),
                 notice,
+                ..HierarchySnapshot::default()
             },
         );
         let machines = [Machine {
@@ -158,6 +158,7 @@ fn hierarchy_failure_without_agents_or_accounts_draws_the_summary_in_the_real_fr
     app.census.apply(CensusUpdate::Local {
         rows:      Vec::new(),
         hierarchy: HierarchySnapshot {
+            facts:  crate::census::CensusFacts::default().into(),
             edges:  HierarchyEdges::default(),
             notice: HierarchyNotice::Failed(HierarchyError::TimedOut),
         },

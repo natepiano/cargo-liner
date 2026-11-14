@@ -11,8 +11,9 @@ cargo handler
 
 Once installed it answers to both `cargo-handler` and `cargo handler` -- cargo
 runs any binary on the path whose name starts with `cargo-` as a subcommand of
-its own. Beyond `--help` and `--version` it takes one hidden subcommand,
-`probe`, which the summary runs on remote machines (see below).
+its own. Beyond `--help` and `--version` it takes `census --json`, which
+prints the census as JSON (see below), and one hidden subcommand, `probe`,
+which the summary runs on remote machines.
 
 It takes over the terminal (alternate screen, raw mode) and draws a tile grid
 above the framework status line. The grid opens on the summary cell, which
@@ -256,6 +257,71 @@ window is matched to the agent this way:
 Off Linux, outside KDE Plasma, or where `KWin` does not answer, every desktop is
 `—`. The probe carries each row's `desktop`, so a remote Linux machine under KDE
 fills it in; the Mac shows `—`.
+
+## census
+
+`cargo-handler census --json` scans once and prints the unit directors and
+workers that the tiles show, then exits. It reads the same local scan, staff
+file, accounts command and remote probes as the TUI. Each `status`, `activity`
+and `name` is the value that the tile draws.
+
+- A bad config prints the error on stderr and exits non-zero.
+- An unreachable remote, an unreadable staff file or a failed accounts read
+  exits 0. The machine's `error` names the cause.
+- A director or worker shows only while a tile shows its session. A worker
+  also must be in its unit's current run.
+- A fact that the census cannot read is null, and `unknown.reason` names why.
+  The reasons are joined with `; `.
+- `status` is null when the accounts command has no entry for the session.
+- `pane` is `open`, `stopped`, `closed` or `unknown`. It is separate from
+  `status`.
+- Each run `state` is `running`, `finished_queued` or `missing`.
+- Times are epoch seconds. A change to a key or a type increments `schema`.
+
+<!-- census-json-example: report_tests.rs checks these keys and types -->
+```json
+{
+  "schema": 1,
+  "machines": [
+    { "name": "natedev", "reachable": true, "error": null },
+    { "name": "mac", "reachable": false, "error": "timed out" }
+  ],
+  "directors": [
+    {
+      "staff_id": "handler-unit",
+      "name": "handler-unit",
+      "machine": "natedev",
+      "current_run_id": "/tmp/claude/unit/54fb1c7e",
+      "status": "busy",
+      "activity": "thinking",
+      "activity_started_at": 1794600000,
+      "unknown": { "reason": "no running detached run or open pass start" }
+    }
+  ],
+  "workers": [
+    {
+      "staff_id": "handler-impl",
+      "name": "handler-impl",
+      "parent_staff_id": "handler-unit",
+      "machine": "natedev",
+      "status": "busy",
+      "activity": "verify test",
+      "activity_started_at": 1794600060,
+      "pass": { "role": "impl", "phase": "8" },
+      "pane": "open",
+      "runs": [
+        {
+          "label": "verify test",
+          "started_at": 1794600060,
+          "state": "running",
+          "unknown": { "reason": "run has no start time" }
+        }
+      ],
+      "unknown": { "reason": "no readable pane observation for this worker" }
+    }
+  ]
+}
+```
 
 ## keys
 

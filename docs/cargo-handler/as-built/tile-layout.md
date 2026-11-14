@@ -125,6 +125,33 @@ Selection areas are installed only after shared metrics resolve.
 
 ### Grid admission and stable layout
 
+cargo-handler selects `TileColumnOrder::LongestWithShortest` through `TileCells::column_order`.
+The shared grid keeps source order by default, including cargo-tile.
+`Cells` records each full tree count before expansion removes hidden rows.
+The count includes the root and every descendant.
+It excludes headings, wrapped text, and the tile readout.
+Collapse, scrolling, and viewport height do not change these counts.
+
+The grid ranks detail tiles by full tree count, longest first.
+Equal counts retain their previous ranking.
+The first ranking uses source order for equal counts.
+It assigns ranks across columns in snake order: left to right, then right to left.
+A full column receives no further rank in that pass.
+Each column retains source order among its assigned tiles.
+The summary and empty slots keep their positions.
+The placement retains the selected column capacities, summary depth, and summary span.
+With four detail slots in two columns, counts `42, 42, 11, 3` produce pairs `42, 3` and `42, 11`.
+
+`ColumnRanks` stores identities in rank order rather than changing row counts.
+A count change that preserves the ranking and grid geometry does not change assignment.
+Grid geometry includes pane size, column count, and summary depth.
+A summary depth change assigns the same ranks over the new column capacities.
+A rank, membership, or column-count change invalidates the selected placement.
+The existing grid motion animates each reassignment.
+Frame preparation recomputes the column union after assignment.
+Measured widths remain separate from fitted drawing widths.
+The next painted frame records the new header positions for clicks.
+
 cargo-handler selects `TileWidthFloor::CompressSingleColumn`.
 It retains one compressed tile column below the core width.
 Generic grids with `Required` can show the summary alone when no width fits.
@@ -141,7 +168,8 @@ Excess tiles remain demanded without receiving an invalid allocation.
 `LayoutSelection` retains selected widths, demands, and depth.
 Equal inputs avoid another candidate search.
 An unchanged draw makes two provider demand calls.
-Preparation runs once before those calls.
+Source-order preparation runs once before those calls.
+Ranked placement prepares the new column memberships before painting.
 
 `LayoutDemandMeasurement` equality compares widths and requested rows, while ignoring preferred summary width alone.
 A new summary width remeasures cached candidates before reuse.

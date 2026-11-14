@@ -23,6 +23,7 @@ use crate::constants::GIT_DIR;
 use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
+use crate::project::GitEventRefresh;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -110,8 +111,14 @@ pub(super) fn route_folder_event_with_config(
             Subscription::Watched(role) => Subscription::Watched(role),
         };
         match subscription {
-            Subscription::Watched(WatchedFolderRole::Project | WatchedFolderRole::ConfigSource) => {
+            Subscription::Watched(WatchedFolderRole::Project) => {
                 project_event.paths.push(path.clone());
+            },
+            Subscription::Watched(WatchedFolderRole::ConfigSource) => {
+                // Drop other Cargo folder files here, such as the Cargo home cache journal.
+                if registered.config_source_event_matters(path) {
+                    project_event.paths.push(path.clone());
+                }
             },
             Subscription::Watched(WatchedFolderRole::Discovery | WatchedFolderRole::Candidate) => {
                 // A Cargo config folder can also lead to a known project.
@@ -369,37 +376,7 @@ pub(super) fn handle_notify_event(
 
     refresh::try_dispatch_out_of_tree_cargo_config_refresh(event_path, ctx, metadata_dispatch);
 
-    let mut matched_git = false;
-    for entry in ctx.projects.values() {
-        let fast_git = entry.is_alive() && refresh::is_fast_git_refresh_event(event_path, entry);
-        let internal_git = refresh::is_internal_git_path(event_path, entry)
-            && refresh::is_internal_git_refresh_event(event_path, entry);
-        if (fast_git || internal_git)
-            && let Some(refresh_key) = refresh::git_refresh_key(entry)
-        {
-            matched_git = true;
-            tracing::trace!(
-                target: PERF_LOG_TARGET,
-                refresh_key = %refresh_key.display(),
-                event_path = %event_path.display(),
-                fast_git,
-                "watcher_git_event"
-            );
-            if fast_git {
-                refresh::emit_root_git_info_refresh(background_tx, entry);
-            }
-            let cause = if fast_git { "fast_git" } else { "git_internal" };
-            refresh::enqueue_git_refresh(
-                pending_git,
-                refresh_key,
-                now,
-                false,
-                cause,
-                watcher_config,
-            );
-        }
-    }
-    if matched_git {
+    if queue_git_metadata_refresh(event_path, ctx.projects, pending_git, now, watcher_config) {
         return;
     }
 
@@ -409,6 +386,9 @@ pub(super) fn handle_notify_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
+        if refresh::is_internal_git_path(event_path, entry) {
+            return;
+        }
         if let Some(lint_runtime) = lint_runtime
             && entry.is_alive()
             && let Some(event) = event
@@ -416,9 +396,9 @@ pub(super) fn handle_notify_event(
             dispatch_project_lint(lint_runtime, entry, event, event_path);
         }
         if let Some(dispatch) = metadata_dispatch
-            && entry.is_alive()
             && let Some(kind) =
                 lint::classify_cargo_metadata_event_path(entry.abs_path.as_path(), event_path)
+            && entry.is_alive()
         {
             tracing::trace!(
                 target: PERF_LOG_TARGET,
@@ -429,13 +409,10 @@ pub(super) fn handle_notify_event(
             );
             scan::spawn_cargo_metadata_refresh(dispatch.clone(), entry.abs_path.clone());
         }
-        if entry.is_alive()
-            && refresh::is_target_metadata_event(event_path, entry.abs_path.as_path())
+        if refresh::is_target_metadata_event(event_path, entry.abs_path.as_path())
+            && entry.is_alive()
         {
             probe::spawn_project_refresh(background_tx.clone(), entry.abs_path.clone());
-        }
-        if refresh::is_internal_git_path(event_path, entry) {
-            return;
         }
         let resolved_target =
             metadata_dispatch.and_then(|dispatch| dispatch.resolved_target_dir(&entry.abs_path));
@@ -453,7 +430,29 @@ pub(super) fn handle_notify_event(
             record_project_disk_change(dispatch, entry, event_path, change);
         }
         refresh::schedule_disk_refresh(pending_disk, &entry.label, now, watcher_config);
-        if !is_target_event && let Some(refresh_key) = refresh::git_refresh_key(entry) {
+        let git_event_refresh = if is_target_event {
+            GitEventRefresh::Ignored
+        } else {
+            match (&entry.repo_root, &entry.git_dir) {
+                (Some(root), Some(git_dir)) => entry
+                    .git_event_visibility
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .requires_refresh(root, git_dir, event_path),
+                _ => GitEventRefresh::Required,
+            }
+        };
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            event_path = %event_path.display(),
+            project = %entry.abs_path.display(),
+            git_refresh = matches!(git_event_refresh, GitEventRefresh::Required) && refresh::git_refresh_key(entry).is_some(),
+            "watcher_project_event"
+        );
+        if matches!(git_event_refresh, GitEventRefresh::Required)
+            && let Some(refresh_key) = refresh::git_refresh_key(entry)
+        {
+            request_project_git_refresh(ctx.projects, entry, event_path);
             refresh::enqueue_git_refresh(
                 pending_git,
                 refresh_key,
@@ -467,6 +466,132 @@ pub(super) fn handle_notify_event(
     }
 
     schedule_discovery_probe(event_path, ctx, pending_new, now, watcher_config);
+}
+
+fn request_project_git_refresh(
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    entry: &ProjectEntry,
+    event_path: &Path,
+) {
+    for affected in projects.values().filter(|candidate| {
+        candidate.repo_root == entry.repo_root
+            && (event_path.starts_with(&candidate.abs_path)
+                || candidate.abs_path.starts_with(event_path))
+    }) {
+        affected.git_refresh_demand.request();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GitEventKind {
+    Fast,
+    Internal,
+    Unrelated,
+    Noise,
+}
+
+/// `GitEventClassification` reports the manifest probes that Git event routing performs.
+pub(super) struct GitEventClassification {
+    git_event_kind:             GitEventKind,
+    pub(super) manifest_probes: usize,
+}
+
+pub(super) fn classify_project_git_event(
+    path: &Path,
+    entry: &ProjectEntry,
+) -> GitEventClassification {
+    let mut manifest_probes = 0;
+    let internal_path = refresh::is_internal_git_path(path, entry);
+    let possible_fast = internal_path || path.file_name().is_some_and(|name| name == ".gitignore");
+    if internal_path
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "lock")
+    {
+        return GitEventClassification {
+            git_event_kind: GitEventKind::Noise,
+            manifest_probes,
+        };
+    }
+    let source_change = match (&entry.repo_root, &entry.git_dir, &entry.common_git_dir) {
+        (Some(root), Some(git_dir), Some(common)) => entry
+            .git_event_visibility
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_rule_source(root, git_dir, common, path),
+        _ => false,
+    };
+    let fast = source_change
+        || possible_fast && refresh::is_fast_git_refresh_event(path, entry) && {
+            manifest_probes += 1;
+            entry.is_alive()
+        };
+    let internal = internal_path && refresh::is_internal_git_refresh_event(path, entry);
+    GitEventClassification {
+        git_event_kind: if fast {
+            GitEventKind::Fast
+        } else if internal {
+            GitEventKind::Internal
+        } else {
+            GitEventKind::Unrelated
+        },
+        manifest_probes,
+    }
+}
+
+fn queue_git_metadata_refresh(
+    event_path: &Path,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
+    now: Instant,
+    watcher_config: &WatcherConfig,
+) -> bool {
+    let mut matched_git = false;
+    let mut manifest_probes = 0;
+    for entry in projects.values() {
+        let classification = classify_project_git_event(event_path, entry);
+        entry
+            .git_event_visibility
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate(event_path);
+        manifest_probes += classification.manifest_probes;
+        let fast_git = matches!(classification.git_event_kind, GitEventKind::Fast);
+        if matches!(classification.git_event_kind, GitEventKind::Noise) {
+            matched_git = true;
+            continue;
+        }
+        if !matches!(classification.git_event_kind, GitEventKind::Unrelated)
+            && let Some(refresh_key) = refresh::git_refresh_key(entry)
+        {
+            matched_git = true;
+            entry.git_refresh_demand.request();
+            tracing::trace!(
+                target: PERF_LOG_TARGET,
+                refresh_key = %refresh_key.display(),
+                event_path = %event_path.display(),
+                fast_git,
+                "watcher_git_event"
+            );
+            let cause = if fast_git { "fast_git" } else { "git_internal" };
+            refresh::enqueue_git_refresh(
+                pending_git,
+                refresh_key,
+                now,
+                fast_git,
+                cause,
+                watcher_config,
+            );
+        }
+    }
+    tracing::trace!(
+        target: PERF_LOG_TARGET,
+        event_path = %event_path.display(),
+        manifest_probes,
+        registered_projects = projects.len(),
+        "watcher_git_event_probes"
+    );
+    matched_git
 }
 
 fn dispatch_project_lint(
@@ -574,4 +699,207 @@ pub(super) fn handle_event(
         pending_new,
         &WatcherConfig::default(),
     );
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests panic on fixture errors")]
+#[allow(clippy::unwrap_used, reason = "tests panic on fixture errors")]
+#[allow(clippy::panic, reason = "tests panic on unexpected values")]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::channel;
+    use crate::test_support;
+    use crate::watcher::events;
+    use crate::watcher::watch_test_support;
+    #[test]
+    fn ignored_worktree_events_keep_disk_sizes_without_git_refresh() {
+        let tmp = tempfile::tempdir().expect("fixture");
+        let project_dir = ignored_git_project(tmp.path());
+        let root = AbsolutePath::from(project_dir.as_path());
+        let projects = watch_test_support::tracked_file_projects(&project_dir);
+        let watch_roots = vec![AbsolutePath::from(tmp.path())];
+        let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
+        let discovered = HashSet::new();
+        let context = watch_test_support::tracked_file_event_context(
+            &watch_roots,
+            &projects,
+            &project_parents,
+            &discovered,
+        );
+        let (sender, receiver) = channel::unbounded();
+        let dispatch = dispatch_with_git_lock_check(&sender);
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        crate::project::GIT_COMMANDS.with(|commands| commands.set(0));
+        for (relative, visible) in [
+            ("target/artifact.o", false),
+            ("session.log", false),
+            ("nested/session.log", false),
+            ("nested/visible.log", true),
+            ("ignored/new.txt", false),
+            ("scratch.scratch", false),
+            ("new.txt", true),
+            ("src/main.rs", true),
+            ("ignored", true),
+        ] {
+            let path = project_dir.join(relative);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent");
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).expect("delete tracked directory");
+            } else {
+                std::fs::write(&path, "changed").expect("change");
+            }
+            events::handle_notify_event(
+                &path,
+                None,
+                &context,
+                &sender,
+                None,
+                Some(&dispatch),
+                &mut pending_disk,
+                &mut pending_git,
+                &mut pending_new,
+                &WatcherConfig::default(),
+            );
+            if relative == "target/artifact.o" {
+                crate::project::GIT_COMMANDS.with(|commands| {
+                    assert_eq!(
+                        commands.get(),
+                        0,
+                        "target artifacts must not launch Git commands"
+                    );
+                });
+            }
+            watch_test_support::assert_pending_disk(&pending_disk, "~/demo");
+            assert_eq!(!pending_git.is_empty(), visible, "{relative}");
+            assert!(pending_new.is_empty(), "{relative}");
+            assert!(receiver.try_recv().is_err(), "{relative}");
+            pending_disk.clear();
+            pending_git.clear();
+        }
+        crate::project::GIT_COMMANDS.with(|commands| {
+            assert!(
+                commands.get() > 0,
+                "the visibility cache must start Git commands"
+            );
+        });
+        std::fs::write(root.join(".gitignore"), "").expect("remove ignore rule");
+        projects[&root]
+            .git_event_visibility
+            .lock()
+            .expect("watcher cache")
+            .invalidate(&root.join(".gitignore"));
+        let path = root.join("session.log");
+        events::handle_notify_event(
+            &path,
+            None,
+            &context,
+            &sender,
+            None,
+            Some(&dispatch),
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+            &WatcherConfig::default(),
+        );
+        assert!(
+            !pending_git.is_empty(),
+            "an ignore rule change must refresh the filter"
+        );
+        assert_external_rule_changes(tmp.path(), &project_dir, &context, &sender, &dispatch);
+    }
+
+    fn dispatch_with_git_lock_check(sender: &Sender<BackgroundMsg>) -> MetadataDispatchContext {
+        let dispatch = MetadataDispatchContext {
+            handle:         test_support::test_runtime().handle().clone(),
+            sender:         sender.clone(),
+            metadata_store: Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new())),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        crate::project::GIT_COMMAND_METADATA_STORE.with(|store| {
+            *store.borrow_mut() = Arc::downgrade(&dispatch.metadata_store);
+        });
+        dispatch
+    }
+
+    fn assert_external_rule_changes(
+        temporary: &Path,
+        project_dir: &Path,
+        context: &EventContext<'_>,
+        sender: &Sender<BackgroundMsg>,
+        dispatch: &MetadataDispatchContext,
+    ) {
+        let root = AbsolutePath::from(project_dir);
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let external = temporary.join("external-ignore");
+        std::fs::write(&external, "*.log\n").expect("external rules");
+        let configured = std::process::Command::new("git")
+            .current_dir(project_dir)
+            .args(["config", "core.excludesfile"])
+            .arg(&external)
+            .status()
+            .expect("external config");
+        assert!(configured.success());
+        context.projects[&root]
+            .git_event_visibility
+            .lock()
+            .expect("watcher cache")
+            .invalidate(&root.join(".git/config"));
+        handle_notify_event(
+            &root.join("session.log"),
+            None,
+            context,
+            sender,
+            None,
+            Some(dispatch),
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+            &WatcherConfig::default(),
+        );
+        for contents in ["", "*.log\n"] {
+            pending_git.clear();
+            std::fs::write(&external, contents).expect("change external rules");
+            handle_notify_event(
+                &external,
+                None,
+                context,
+                sender,
+                None,
+                Some(dispatch),
+                &mut pending_disk,
+                &mut pending_git,
+                &mut pending_new,
+                &WatcherConfig::default(),
+            );
+            assert!(
+                !pending_git.is_empty(),
+                "each external rule change must refresh the checkout"
+            );
+        }
+    }
+
+    fn ignored_git_project(temporary: &Path) -> PathBuf {
+        let project_dir = temporary.join("demo");
+        watch_test_support::write_tracked_file(&project_dir, "fn main() {}\n");
+        std::fs::create_dir_all(project_dir.join("ignored")).expect("tracked ignored directory");
+        std::fs::write(project_dir.join("ignored/kept.txt"), "tracked")
+            .expect("tracked ignored file");
+        test_support::init_git_repo(&project_dir);
+        std::fs::write(project_dir.join(".gitignore"), "*.log\n*.rs\nignored/\n")
+            .expect("ignore rules");
+        std::fs::create_dir_all(project_dir.join("nested")).expect("nested rules");
+        std::fs::write(project_dir.join("nested/.gitignore"), "!visible.log\n")
+            .expect("nested rules");
+        std::fs::create_dir_all(project_dir.join(".git/info")).expect("exclude directory");
+        std::fs::write(project_dir.join(".git/info/exclude"), "*.scratch\n").expect("exclude rule");
+        project_dir
+    }
 }

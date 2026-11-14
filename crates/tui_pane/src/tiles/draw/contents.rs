@@ -10,6 +10,7 @@ use super::RowsReadout;
 use super::SummaryFoot;
 use super::TileContent;
 use super::TileDemands;
+use crate::tiles::TileColumnOrder;
 /// Whether the cells are drawn with what is in them.
 ///
 /// Hidden leaves the frames, the borders and the summary title and
@@ -34,6 +35,9 @@ pub enum TileGridContents {
 pub trait TileCells<Id> {
     /// The title written into the summary cell's top border.
     fn summary_title(&self) -> &str;
+
+    /// Assign detail tiles to columns. Existing applications keep source order.
+    fn column_order(&self) -> TileColumnOrder<Id> { TileColumnOrder::SourceOrder }
 
     /// Completeness of the source, independent of the cell's measured row demand.
     fn content_extent(&self, _content: &TileContent<Id>) -> CellContentExtent {

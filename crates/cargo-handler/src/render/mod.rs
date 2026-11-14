@@ -33,6 +33,7 @@ use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
+use tui_pane::TileColumnOrder;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::TileWidthFloor;
@@ -143,6 +144,18 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     app.details_overlay.render(frame, app.framework.color_mode);
     if matches!(app.details_overlay, DetailsOverlay::Open { .. }) {
         tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
+    }
+}
+
+/// Keep the cell foreground readable on the selected row's background.
+pub(crate) fn apply_row_selection(buffer: &mut Buffer, area: Rect, style: Style) {
+    buffer.set_style(area, style);
+    if let Some(ground) = style.bg {
+        for position in area.positions() {
+            let cell = &mut buffer[position];
+            cell.fg =
+                crate::footer_colors::SelectedGroundInk::resolve(cell.fg, ground).foreground();
+        }
     }
 }
 
@@ -416,6 +429,8 @@ struct Cells<'a> {
     placement:         AgentPlacement<'a>,
     /// Grouped tiles, apart from the per-session summary hue lookup.
     tiles:             Vec<AgentTile<'a>>,
+    /// Full tree counts remain independent of the visible tree rows.
+    full_tree_rows:    Vec<(TileKey, usize)>,
     /// The unix second the ages are measured to.
     now:               u64,
     /// Footer colors already loaded by the app.
@@ -520,15 +535,7 @@ impl<'a> Cells<'a> {
                     )
                     .intersection(area)
                     .intersection(buffer.area);
-                    buffer.set_style(row, style);
-                    if let Some(ground) = style.bg {
-                        for position in row.positions() {
-                            let cell = &mut buffer[position];
-                            cell.fg =
-                                crate::footer_colors::SelectedGroundInk::resolve(cell.fg, ground)
-                                    .foreground();
-                        }
-                    }
+                    apply_row_selection(buffer, row, style);
                 }
             }
         }
@@ -546,6 +553,10 @@ impl<'a> Cells<'a> {
         let placement = AgentPlacement::from_machines(&machines, accounts.session_states());
         let agents = agent_cell::cell_order_placed(&placement);
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
+        let full_tree_rows = tiles
+            .iter()
+            .map(|tile| (tile.key(), tile.full_tree_rows()))
+            .collect();
         let account_column = agent_cell::account_column(&agents);
         Self {
             color_mode: ColorMode::Colored,
@@ -561,6 +572,7 @@ impl<'a> Cells<'a> {
             account_column,
             placement,
             tiles,
+            full_tree_rows,
             now,
             footer_colors,
             summary_sort,
@@ -845,6 +857,10 @@ impl TileCells<TileKey> for Cells<'_> {
     }
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn column_order(&self) -> TileColumnOrder<TileKey> {
+        TileColumnOrder::LongestWithShortest(self.full_tree_rows.clone())
+    }
 
     /// Measure each tile at its allocated content width. Account rows choose
     /// their full, two-line or stacked layout from the summary's width.
@@ -2387,6 +2403,9 @@ mod drawn_frame_tests;
 #[cfg(test)]
 mod layout_stability_tests;
 
+#[cfg(test)]
+mod ranked_column_tests;
+
 /// Draw the complete frame for census placement tests, including tile titles.
 #[cfg(test)]
 pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
@@ -2395,3 +2414,6 @@ pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -
 
 #[cfg(test)]
 mod details_tests;
+
+#[cfg(test)]
+mod favorites_tests;

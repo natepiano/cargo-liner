@@ -21,7 +21,9 @@ use serde::de::Error;
 
 use super::Agent;
 use super::AgentRow;
+use super::Observed;
 use super::SessionIdentity;
+use super::SourceHealth;
 use super::hierarchy;
 use super::hierarchy::HierarchyError;
 use crate::constants::ACCOUNTS_REFRESH_INTERVAL;
@@ -104,6 +106,7 @@ impl ReportedSessionState {
     pub(crate) const fn color_role(self) -> Role {
         match self {
             Self::Reported(SessionState::Busy | SessionState::Starting) => Role::Busy,
+            Self::Reported(SessionState::Waiting) => Role::Waiting,
             Self::Unavailable | Self::Reported(_) => Role::Idle,
         }
     }
@@ -459,6 +462,20 @@ pub(crate) enum AccountsTable {
 }
 
 impl AccountsTable {
+    /// The census keeps the monitor's outcome; a failure keeps its reason.
+    pub(super) fn health(&self) -> super::Observed<super::SourceHealth> {
+        match self {
+            Self::NotConfigured => Observed::Known(SourceHealth::Absent),
+            Self::AwaitingFirstReading => {
+                super::Observed::unknown("the accounts command has not answered")
+            },
+            Self::Ready(_) => Observed::Known(SourceHealth::Loaded),
+            Self::Failed(failure) | Self::FailedKeepingLast { failure, .. } => Observed::Known(
+                SourceHealth::Unreadable(super::UnknownReason(failure.to_string())),
+            ),
+        }
+    }
+
     pub(crate) fn session_states(&self) -> &SessionStates {
         match self {
             Self::Ready(reading) | Self::FailedKeepingLast { last: reading, .. } => {
@@ -468,6 +485,16 @@ impl AccountsTable {
                 &EMPTY_SESSION_STATES
             },
         }
+    }
+
+    /// One read of `command` for a process with no monitor; an empty command is not configured.
+    pub(super) fn read_once(command: &str) -> Self {
+        if command.trim().is_empty() {
+            return Self::NotConfigured;
+        }
+        let mut table = Self::AwaitingFirstReading;
+        table.apply(read_accounts(command));
+        table
     }
 
     /// Visible account content keeps the summary present even without agents.
@@ -508,6 +535,10 @@ pub(crate) fn read_accounts(command: &str) -> Result<AccountsReading, AccountsFa
         hierarchy::run_output(command, HIERARCHY_TIMEOUT).map_err(AccountsFailure::Command)?;
     AccountsReading::parse(&bytes)
 }
+
+#[cfg(test)]
+#[path = "accounts_source_tests.rs"]
+mod source_tests;
 
 /// A stored-account command whose answer is delivered by the refresh thread.
 pub(crate) type AccountsCommand =

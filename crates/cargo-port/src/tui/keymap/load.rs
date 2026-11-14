@@ -32,7 +32,7 @@ use super::constants::LEGACY_CLEAN_SCOPES;
 use super::constants::LEGACY_PAUSE_LINT_ACTION_KEY;
 use super::constants::PAUSE_ALL_LINTS_ACTION_KEY;
 use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
-use super::resolved::ResolvedKeymap;
+use super::resolved_keymap::ResolvedKeymap;
 use crate::config;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::NavigationKeys;
@@ -858,6 +858,37 @@ clear_history = "d"
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn existing_shift_arrow_keymap_keeps_its_bindings_and_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("keymap.toml");
+        let mut table: Table = ResolvedKeymap::default_toml().parse().unwrap();
+        for (action, key) in [
+            ("expand_row", "Shift+Right"),
+            ("collapse_row", "Shift+Left"),
+        ] {
+            table["project_list"][action] = Value::String(key.to_string());
+        }
+        let contents = table.to_string();
+        std::fs::write(&path, &contents).unwrap();
+        let _keymap_path = override_keymap_path_for_test(path.clone());
+
+        let loaded = load_keymap(NavigationKeys::ArrowsOnly);
+
+        assert!(loaded.errors.is_empty());
+        assert_eq!(loaded.missing_actions, [] as [std::string::String; 0]);
+        for (action, code) in [
+            (ProjectListAction::ExpandRow, KeyCode::Right),
+            (ProjectListAction::CollapseRow, KeyCode::Left),
+        ] {
+            assert_eq!(
+                loaded.keymap.project_list.key_for(action),
+                Some(&KeyBind::from_parts(code, KeyModifiers::SHIFT))
+            );
+        }
+        assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
     }
 
     #[test]

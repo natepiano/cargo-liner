@@ -4,12 +4,19 @@ use super::Slot;
 use super::TileContent;
 use super::TileDemands;
 use super::TileGrowth;
+/// Whether the selected frame needs new shared column measurements.
+pub(in crate::tiles) enum ColumnPreparation {
+    Prepared,
+    Reassigned,
+}
+
 /// Measurements selected together for one destination.
 #[derive(Clone)]
 pub(in crate::tiles) struct SelectedLayoutMeasurements<Id> {
     pub(in crate::tiles) widths:  Vec<(TileContent<Id>, u16)>,
     pub(in crate::tiles) demands: TileDemands<Id>,
     pub(super) depth:             usize,
+    pub(super) slots:             Vec<Slot<Id>>,
 }
 
 /// A depth either has a measured fit or permits no candidate.

@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
@@ -41,14 +42,12 @@ use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
-use crate::census::AstraSessionMembership;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyRole;
 #[cfg(test)]
 use crate::census::Machine;
-use crate::census::PaneWork;
 use crate::census::Placement;
 use crate::census::RoleFallback;
 use crate::census::RoleLabel;
@@ -317,20 +316,6 @@ impl ShellState {
             },
         }
     }
-
-    fn text(self) -> String {
-        match self {
-            Self::Running => AgentActivity::Active(Activity::Running).text().to_owned(),
-            Self::CountingDown(PositiveRemainingTime(remaining)) => {
-                time_left_label(remaining.get())
-            },
-        }
-    }
-}
-
-/// Text and ink resolved together for one row in this frame.
-struct ResolvedStatus {
-    text: String,
 }
 
 /// A work row paired with its classified role in the tree.
@@ -1483,6 +1468,15 @@ impl<'a> CensusWorkIdentities<'a> {
 impl TreeLine<'_> {
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
+        let name = self.session_name();
+        match self.location {
+            SessionLocation::SameMachine => name,
+            SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
+        }
+    }
+
+    /// The name without its machine.
+    fn session_name(&self) -> String {
         let original = match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 &self.row.name
@@ -1506,7 +1500,7 @@ impl TreeLine<'_> {
                 CodexThreadId::Unrecorded => None,
             },
         };
-        let name = staff_name.map_or_else(
+        staff_name.map_or_else(
             || match self.dispatch_label {
                 DispatchLabel::Original => match self.subject {
                     LineSubject::ManagedThread(child, role, _) => child.worker_task.label(
@@ -1526,11 +1520,7 @@ impl TreeLine<'_> {
                 DispatchLabel::Worker(dispatch) => dispatch.label(),
             },
             Clone::clone,
-        );
-        match self.location {
-            SessionLocation::SameMachine => name,
-            SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
-        }
+        )
     }
 
     /// Tree rails and the branch preceding this name.
@@ -1860,56 +1850,6 @@ impl TreeLine<'_> {
             | TreeColumn::Directory => self.value(column, now),
         }
     }
-
-    /// Resolve a shell's clock once so text and ink cannot disagree.
-    fn status(&self, now: u64) -> ResolvedStatus {
-        if matches!(
-            self.subject,
-            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
-        ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
-        {
-            let text = if self.row.activity == AgentActivity::Active(Activity::Compacting)
-                || member.has_live_run()
-            {
-                summary::status_text(self.row)
-            } else {
-                match member.work() {
-                    PaneWork::Idle => "idle",
-                    PaneWork::Busy => summary::status_text(self.row),
-                    PaneWork::Unknown => "unknown",
-                }
-            };
-            return ResolvedStatus {
-                text: text.to_owned(),
-            };
-        }
-        let text = match self.subject {
-            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                summary::status_text(self.row).to_owned()
-            },
-            LineSubject::ManagedThread(child, _, _)
-            | LineSubject::Work(Work {
-                child,
-                kind: WorkKind::Thread | WorkKind::Subagent(_),
-                ..
-            }) => child.activity.text().to_owned(),
-            LineSubject::Work(Work {
-                child,
-                kind: WorkKind::Shell(_),
-                ..
-            }) => {
-                let state = ShellState::resolve(
-                    match child.kind {
-                        ChildKind::Shell(timer) => timer,
-                        _ => ShellTimerObservation::Untimed,
-                    },
-                    now,
-                );
-                state.text()
-            },
-        };
-        ResolvedStatus { text }
-    }
 }
 
 /// Account labels sort without their decorative service-tier mark.
@@ -2038,6 +1978,67 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
     cells
 }
 
+/// The tile cells of one session, as its tile line draws them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionCells {
+    /// The machine the session runs on.
+    pub(crate) machine:  String,
+    /// The name cell, without the machine.
+    pub(crate) name:     String,
+    /// The state the status cell draws.
+    pub(crate) status:   ReportedSessionState,
+    /// The activity cell text.
+    pub(crate) activity: String,
+}
+
+/// Each session's first tile line, by session id. Shell and subagent work has no session.
+pub(crate) fn session_cells(
+    placement: &AgentPlacement<'_>,
+    now: u64,
+) -> BTreeMap<String, SessionCells> {
+    let mut cells = BTreeMap::new();
+    for entry in cell_order_placed(placement) {
+        let root = match placement.root_presentation(RowIdentity {
+            machine: entry.machine,
+            pid:     entry.row.pid,
+        }) {
+            RootPresentation::Hierarchy => tile_root_line(&entry),
+            RootPresentation::Unassigned => unassigned_line(&entry),
+        };
+        for line in iter::once(&root).chain(&entry.lines) {
+            let thread = match line.subject {
+                LineSubject::TileRoot(_)
+                | LineSubject::Agent(_)
+                | LineSubject::UnassignedSession => None,
+                LineSubject::ManagedThread(child, _, _)
+                | LineSubject::Work(Work {
+                    child,
+                    kind: WorkKind::Thread,
+                    ..
+                }) => Some(&child.thread_id),
+                LineSubject::Work(Work {
+                    kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
+                    ..
+                }) => continue,
+            };
+            let ids: Vec<&str> = match thread {
+                None => line.row.session_id.ids().collect(),
+                Some(CodexThreadId::Recorded(id)) => vec![id.as_str()],
+                Some(CodexThreadId::Unrecorded) => Vec::new(),
+            };
+            for id in ids {
+                cells.entry(id.to_owned()).or_insert_with(|| SessionCells {
+                    machine:  line.machine.to_owned(),
+                    name:     line.session_name(),
+                    status:   line.session_status(),
+                    activity: line.value(TreeColumn::Activity, now),
+                });
+            }
+        }
+    }
+    cells
+}
+
 /// A production-role root or the flat pool for one machine.
 #[derive(Clone, Debug)]
 pub(crate) enum AgentTile<'a> {
@@ -2048,6 +2049,14 @@ pub(crate) enum AgentTile<'a> {
 }
 
 impl AgentTile<'_> {
+    /// Count the full tree before expansion removes hidden rows.
+    pub(crate) const fn full_tree_rows(&self) -> usize {
+        match self {
+            Self::Agent(entry) => entry.lines.len().saturating_add(1),
+            Self::Unassigned(entry) => entry.lines.len(),
+        }
+    }
+
     /// Stable identity independent of the current sessions in a pool.
     pub(crate) fn key(&self) -> TileKey {
         match self {
@@ -3307,36 +3316,22 @@ fn tree_cell_line(
 ) -> Line<'static> {
     let now = frame.now;
     let footer_colors = frame.footer_colors;
-    let text = SessionRowInk::Text.style();
     if column == TreeColumn::Session {
         let lead = line.lead();
         let remaining = width.saturating_sub(summary::cell_width(&lead));
-        Line::from(vec![
-            Span::styled(lead, text),
-            Span::styled(
-                summary::truncated(&line.name(), usize::from(remaining)),
-                line.name_style(),
-            ),
-        ])
-    } else if column == TreeColumn::Account {
-        match line.account() {
-            Account::Unrecorded => Line::from(Span::styled(MISSING_VALUE, text)),
-            Account::Home(home) => {
-                let value = line.cell_text(column, now, ages);
-                let (account, tier) = value.split_at(home.label().len());
-                Line::from(vec![
-                    Span::styled(
-                        account.to_owned(),
-                        footer_colors.account(home.label()).style(text),
-                    ),
-                    Span::styled(tier.to_owned(), Role::Codex.style()),
-                ])
-            },
-        }
+        let mut value = tree_value_line(
+            line,
+            column,
+            summary::truncated(&line.name(), usize::from(remaining)),
+            now,
+            footer_colors,
+        );
+        value
+            .spans
+            .insert(0, Span::styled(lead, SessionRowInk::Text.style()));
+        value
     } else {
-        let status = line.session_status();
         let value = match column {
-            TreeColumn::Status => status.text().to_owned(),
             TreeColumn::Role
             | TreeColumn::Activity
             | TreeColumn::Branch
@@ -3345,31 +3340,48 @@ fn tree_cell_line(
             },
             _ => line.cell_text(column, now, ages),
         };
-        Line::styled(
-            value,
-            match column {
-                TreeColumn::Status => status.color_role().style(),
-                TreeColumn::Role => line.footer_role(footer_colors).style(text),
-                TreeColumn::Activity => match line.subject {
-                    LineSubject::Work(Work {
-                        kind: WorkKind::Shell(ShellPurpose::Timer(timer)),
-                        ..
-                    }) => {
-                        let state = ShellState::resolve(
-                            ShellTimerObservation::ObservedCountdown(timer),
-                            now,
-                        );
-                        match state {
-                            ShellState::Running => Role::Busy.style(),
-                            ShellState::CountingDown(_) => Role::Shell.style(),
-                        }
-                    },
-                    _ => line.footer_role(footer_colors).style(text),
-                },
-                _ => text,
-            },
-        )
+        tree_value_line(line, column, value, now, footer_colors)
     }
+}
+
+/// Tile cells and details values share the same ink rules.
+fn tree_value_line(
+    line: &TreeLine<'_>,
+    column: TreeColumn,
+    value: String,
+    now: u64,
+    colors: &FooterColors,
+) -> Line<'static> {
+    let text = SessionRowInk::Text.style();
+    if column == TreeColumn::Account {
+        return match line.account() {
+            Account::Unrecorded => Line::styled(value, text),
+            Account::Home(home) => {
+                let (account, tier) = value.split_at(home.label().len());
+                Line::from(vec![
+                    Span::styled(account.to_owned(), colors.account(home.label()).style(text)),
+                    Span::styled(tier.to_owned(), Role::Codex.style()),
+                ])
+            },
+        };
+    }
+    let style = match column {
+        TreeColumn::Session => line.name_style(),
+        TreeColumn::Status => line.session_status().color_role().style(),
+        TreeColumn::Role => line.footer_role(colors).style(text),
+        TreeColumn::Activity => match line.subject {
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(ShellPurpose::Timer(timer)),
+                ..
+            }) => match ShellState::resolve(ShellTimerObservation::ObservedCountdown(timer), now) {
+                ShellState::Running => Role::Busy.style(),
+                ShellState::CountingDown(_) => Role::Shell.style(),
+            },
+            _ => line.footer_role(colors).style(text),
+        },
+        _ => text,
+    };
+    Line::styled(value, style)
 }
 
 fn draw_tree(
@@ -3717,10 +3729,21 @@ pub(crate) fn tile_order_for_expansion<'a>(placement: &AgentPlacement<'a>) -> Ve
 }
 
 /// Resolve details through the same tree identities that selection uses.
+#[cfg(test)]
 pub(crate) fn row_details(
     placement: &AgentPlacement<'_>,
     selected: &SelectedRow,
     now: u64,
+) -> RowDetailsLookup {
+    row_details_with_inks(placement, selected, now, &FooterColors::default())
+}
+
+/// Retain the tile inks with the selected row's values.
+pub(crate) fn row_details_with_inks(
+    placement: &AgentPlacement<'_>,
+    selected: &SelectedRow,
+    now: u64,
+    colors: &FooterColors,
 ) -> RowDetailsLookup {
     let entries = cell_order_placed(placement);
     for entry in &entries {
@@ -3732,9 +3755,26 @@ pub(crate) fn row_details(
             let mut details = line.details(now);
             line.hierarchy_details(placement, &mut details.properties);
             details.properties.retain(|(property, value)| {
-                *property == DetailProperty::Effort || (!value.is_empty() && value != MISSING_VALUE)
+                matches!(
+                    property,
+                    DetailProperty::Effort | DetailProperty::Activity | DetailProperty::Status
+                ) || (!value.is_empty() && value != MISSING_VALUE)
             });
             details.properties.sort_by_key(|(property, _)| *property);
+            for column in FULL_ACCOUNTS {
+                let property = column.detail_property();
+                if property == DetailProperty::Age {
+                    continue;
+                }
+                if let Some((_, value)) =
+                    details.properties.iter().find(|(key, _)| *key == property)
+                {
+                    details.value_lines.insert(
+                        property,
+                        tree_value_line(line, *column, value.clone(), now, colors),
+                    );
+                }
+            }
             return RowDetailsLookup::Found(details);
         }
     }
@@ -3821,6 +3861,33 @@ impl TreeLine<'_> {
         }
     }
 
+    /// Join the job and the live activity without repeating either word.
+    fn details_activity(&self, now: u64) -> String {
+        let job = self.activity_text(now);
+        let activity = match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                self.row.activity
+            },
+            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
+                child.activity
+            },
+        };
+        let live = match activity {
+            AgentActivity::Idle | AgentActivity::Unreported => "",
+            AgentActivity::Active(_) => activity.text(),
+        };
+        let mut parts: Vec<_> = [job.as_str(), live]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect();
+        parts.dedup();
+        if parts.is_empty() {
+            MISSING_VALUE.to_owned()
+        } else {
+            parts.join(HEADING_SEPARATOR)
+        }
+    }
+
     fn details(&self, now: u64) -> RowDetails {
         let mut properties = vec![
             (
@@ -3829,7 +3896,7 @@ impl TreeLine<'_> {
             ),
             (DetailProperty::Name, self.name()),
             (DetailProperty::Role, self.role_text().to_owned()),
-            (DetailProperty::Activity, self.activity_text(now)),
+            (DetailProperty::Activity, self.details_activity(now)),
             (
                 DetailProperty::Status,
                 self.session_status().text().to_owned(),
@@ -3893,17 +3960,13 @@ impl TreeLine<'_> {
             LineSubject::Work(_) | LineSubject::ManagedThread(_, _, _) => {},
         }
         properties.push((
-            DetailProperty::Family,
-            self.service_tier()
-                .mark(self.program().label())
-                .into_owned(),
-        ));
-        properties.push((DetailProperty::State, self.status(now).text));
-        properties.push((
             DetailProperty::Age,
             age::long_age_label(now.saturating_sub(self.started())),
         ));
-        RowDetails { properties }
+        RowDetails {
+            properties,
+            value_lines: BTreeMap::new(),
+        }
     }
 }
 
@@ -4534,8 +4597,8 @@ mod tests {
             Role::Busy.style().fg
         );
         assert_eq!(
-            detail_value(&entry, "Review the permission queue", "state", NOW),
-            "idle"
+            detail_value(&entry, "Review the permission queue", "activity", NOW),
+            MISSING_VALUE
         );
         let subagent_y = find(&cut, "Review the permission").expect("subagent row").1;
         let status_x = find(&cut, "status").expect("status header").0;
@@ -4994,7 +5057,7 @@ mod tests {
         assert!(rendered[0].contains("activity"), "{rendered:?}");
         assert!(rendered[0].contains("status"), "{rendered:?}");
         assert_eq!(
-            detail_value(boss, "tool-based-ui-trunk", "state", NOW),
+            detail_value(boss, "tool-based-ui-trunk", "activity", NOW),
             "thinking"
         );
         let restored = lines(&drawn_into(
@@ -5332,14 +5395,13 @@ mod tests {
             started:  NOW - 2 * MINUTE,
             deadline: NOW - MINUTE,
         };
-        assert_eq!(
+        assert!(matches!(
             ShellState::resolve(
                 crate::census::ShellTimerObservation::ObservedCountdown(past),
                 NOW
-            )
-            .text(),
-            "running"
-        );
+            ),
+            ShellState::Running
+        ));
     }
 
     /// A timer shell retains its description and draws its remaining time

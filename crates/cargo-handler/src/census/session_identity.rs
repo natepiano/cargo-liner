@@ -32,7 +32,7 @@ pub(crate) enum ProvenCodexThread {
 
 impl SessionIdentity {
     /// `SessionIdentity` supplies zero or one stable ids for staff matching.
-    pub(super) fn ids(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
         match self {
             Self::Unrecorded => None,
             Self::Claude(id) => Some(id.as_str()),

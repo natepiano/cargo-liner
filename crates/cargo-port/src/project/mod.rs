@@ -50,6 +50,12 @@ pub(crate) use git::CheckoutInfo;
 pub(crate) use git::CommitDate;
 pub(crate) use git::Comparison;
 pub(crate) use git::FirstCommit;
+#[cfg(test)]
+pub(crate) use git::GIT_COMMAND_METADATA_STORE;
+#[cfg(test)]
+pub(crate) use git::GIT_COMMANDS;
+pub(crate) use git::GitEventRefresh;
+pub(crate) use git::GitEventVisibilityCache;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
