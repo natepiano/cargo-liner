@@ -3,6 +3,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(unix)]
 use rustix::time::ClockId;
 
 use super::constants::CPU_DECIMAL_BELOW_PERCENT;
@@ -38,10 +39,15 @@ pub(crate) enum ProcessCpuTime {
 
 impl ProcessCpuTime {
     /// Read user and system CPU time through the safe process clock.
+    #[cfg(unix)]
     pub(crate) fn read() -> Self {
         Duration::try_from(rustix::time::clock_gettime(ClockId::ProcessCPUTime))
             .map_or(Self::Unavailable, Self::Available)
     }
+
+    /// Windows has no process clock in rustix, so the status line shows no reading.
+    #[cfg(not(unix))]
+    pub(crate) const fn read() -> Self { Self::Unavailable }
 }
 
 /// The previous successful process CPU sample.
