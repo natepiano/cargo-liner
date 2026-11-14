@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Enter shows the focused tile on the full screen, and Esc returns it to the grid. Rows, details and word clicks work in it as in the grid.
+
 - Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
 
 - Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.
@@ -48,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+
+- Enter no longer toggles the selected row. `global.toggle_row` has no default key; Right and Left still open and close rows.
 
 - Worker units and roles come from the shared staff file instead of legacy roster and role cache files.
 

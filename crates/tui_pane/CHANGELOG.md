@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `FullScreenView` and `FullScreenCell` keep one tile's identity, motion clock and app policy state on its way to and from the full pane. `FullScreenStep` and `FullScreenSettle` tell the app what to draw. Clicks and pointer regions read the drawn full-screen tile first.
 - Add `contrast_ratio`, which measures the WCAG contrast of two explicit colours with the palette of `blend_color`.
 - Show the process CPU beside uptime in each framework status line. Update both once each second.
 - Add `Framework::tick_status` and `Framework::status_visual_deadline` so an app with its own event loop keeps the status line current.
@@ -41,6 +42,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ### Changed
 
 - **Breaking:** Rename `CellClick` to `CellPointer` for press and wheel input.
+- **Breaking:** `TileGrid::draw_cell_view` takes `&mut self`, so it can record the drawn tile for input.
 - **Breaking:** `ExpansionAction::key_bindings` takes no argument and binds row expand and collapse to plain Right and Left.
 
 - Choose tile columns from the demand at each candidate width, and reuse the selected layout while its inputs stay equal.

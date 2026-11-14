@@ -313,7 +313,7 @@ The status still comes from the accounts report. Census samples on natedev, 15 s
 
 **Ruled out:** one read of the session record for both status and activity; Phase 10 keeps the status from the accounts report.
 
-### Phase 13 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: todo
+### Phase 13 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: done
 
 **Depends on:** Phase 3 (both change the handler key handling)
 
