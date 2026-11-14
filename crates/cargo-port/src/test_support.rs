@@ -134,7 +134,10 @@ pub(crate) fn git_binary() -> &'static str {
 }
 
 /// System allocator that counts allocation calls only on the measured test thread.
-pub(crate) struct ThreadCountingAllocator;
+struct ThreadCountingAllocator;
+
+#[global_allocator]
+static TEST_ALLOCATOR: ThreadCountingAllocator = ThreadCountingAllocator;
 
 /// Measurement is disabled outside an explicit allocation scope.
 #[derive(Clone, Copy)]
