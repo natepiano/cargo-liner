@@ -83,7 +83,6 @@ pub(crate) use git::get_submodules;
 pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
-pub(crate) use git::worktree_ahead_behind_primary;
 pub(crate) use info::CiPagination;
 pub(crate) use info::DiskMeasurement;
 // `info` re-exports shared project enrichment and display state types.

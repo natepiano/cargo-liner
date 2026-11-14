@@ -94,7 +94,7 @@ impl Display for CiStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { f.write_str(self.icon()) }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct CiRun {
     pub run_id:          u64,
     pub created_at:      String,
@@ -111,7 +111,7 @@ pub struct CiRun {
     pub fetched:         FetchStatus,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct CiJob {
     pub name:          String,
     pub ci_status:     CiStatus,

@@ -117,6 +117,21 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     Some(AbsolutePath::resolve(target, &git_dir))
 }
 
+/// Resolve the primary worktree root for a linked worktree.
+///
+/// A linked worktree's git dir holds a `commondir` file. The primary root is the
+/// parent of the common `.git` directory. A primary checkout, a submodule and a
+/// bare common directory return `None`.
+pub(super) fn linked_primary_root(repo_root: &Path) -> Option<AbsolutePath> {
+    let git_dir = resolve_git_dir(repo_root)?;
+    let contents = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let common_git_dir = AbsolutePath::resolve(contents.trim(), &git_dir);
+    if common_git_dir.as_path().file_name() != Some(std::ffi::OsStr::new(GIT_DIR)) {
+        return None;
+    }
+    common_git_dir.as_path().parent().map(AbsolutePath::from)
+}
+
 /// Check if a project directory is a broken worktree — `.git` is a file whose
 /// gitdir target does not exist on disk.
 pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {

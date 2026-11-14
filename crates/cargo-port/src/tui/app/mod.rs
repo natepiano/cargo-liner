@@ -2723,6 +2723,42 @@ mod tests {
         }
 
         #[test]
+        fn shimmer_match_reads_a_few_root_items_per_row() {
+            let projects: Vec<_> = (0..100)
+                .map(|index| make_project(None, &format!("~/rust/project_{index}")))
+                .collect();
+            let mut app = make_app(&projects);
+            app.scan.state.phase = ScanPhase::Complete;
+            assert!(app.handle_project_discovered(make_project(Some("new"), "~/rust/new")));
+            let rows: Vec<_> = (0..100)
+                .map(|index| test_path(&format!("~/rust/project_{index}")))
+                .chain(std::iter::once(test_path("~/rust/new")))
+                .collect();
+            crate::tui::app::discovery_shimmer::take_root_item_reads();
+
+            let shimmering: Vec<_> = rows
+                .iter()
+                .filter(|path| {
+                    app.discovery_name_segments_for_path(
+                        path.as_path(),
+                        "name",
+                        Some(GitStatus::Clean),
+                        DiscoveryRowKind::Root,
+                    )
+                    .is_some()
+                })
+                .collect();
+
+            let reads = crate::tui::app::discovery_shimmer::take_root_item_reads();
+            assert_eq!(shimmering, vec![&test_path("~/rust/new")]);
+            assert!(
+                reads <= 2 * rows.len(),
+                "shimmer matching read {reads} root items for {} rows",
+                rows.len()
+            );
+        }
+
+        #[test]
         fn prune_discovery_shimmers_removes_expired_entries() {
             let mut app = make_app(&[]);
             let path = test_path("~/rust/demo");
@@ -4902,15 +4938,16 @@ mod tests {
 
         fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
             let checkout = CheckoutInfo {
-                status:              GitStatus::Clean,
-                head:                HeadState::Branch("main".to_string()),
-                last_commit:         CommitDate::At("2024-01-02T00:00:00Z".to_string()),
-                ahead_behind_local:  Comparison::Counted(AheadBehind {
+                status:               GitStatus::Clean,
+                head:                 HeadState::Branch("main".to_string()),
+                last_commit:          CommitDate::At("2024-01-02T00:00:00Z".to_string()),
+                ahead_behind_local:   Comparison::Counted(AheadBehind {
                     ahead:  0,
                     behind: 0,
                 }),
-                primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                bisect:              None,
+                ahead_behind_primary: Comparison::NotCompared,
+                primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                bisect:               None,
             };
             let repo = RepoInfo {
                 remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -6200,6 +6237,69 @@ mod tests {
 
             assert_eq!(app.focused_pane_id(), PaneId::Package);
             assert_eq!(app.panes.package.viewport.pos(), 0);
+        }
+
+        #[test]
+        fn render_reads_worktree_comparisons_without_git() {
+            let tmp = tempfile::tempdir().expect("create test tempdir");
+            let primary = tmp.path().join("demo");
+            let linked = tmp.path().join("demo_fix");
+            std::fs::create_dir_all(&primary).expect("create test directory");
+            crate::test_support::init_git_repo(&primary);
+            assert!(
+                std::process::Command::new(crate::test_support::git_binary())
+                    .args(["worktree", "add", "-b", "fix"])
+                    .arg(&linked)
+                    .current_dir(&primary)
+                    .output()
+                    .expect("add worktree")
+                    .status
+                    .success()
+            );
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(make_package_worktree(
+                    "demo",
+                    &primary,
+                    false,
+                    Some(&primary),
+                )),
+                vec![RustProject::Package(make_package_worktree(
+                    "demo",
+                    &linked,
+                    true,
+                    Some(&primary),
+                ))],
+            ))]);
+            let (mut checkout, _) = make_git_info(None);
+            checkout.ahead_behind_primary = Comparison::Counted(AheadBehind {
+                ahead:  2,
+                behind: 1,
+            });
+            app.handle_checkout_info(&AbsolutePath::from(linked.as_path()), checkout);
+            app.ensure_visible_rows_cached();
+            crate::project::GIT_COMMANDS.with(|commands| commands.set(0));
+
+            render_ui(&mut app);
+
+            assert_eq!(
+                crate::project::GIT_COMMANDS.with(std::cell::Cell::get),
+                0,
+                "render must read stored worktree comparisons and run no git"
+            );
+            let git = app.panes.git.content().expect("git pane content");
+            assert_eq!(
+                git.worktrees
+                    .iter()
+                    .map(|worktree| worktree.ahead_behind)
+                    .collect::<Vec<_>>(),
+                vec![
+                    Comparison::NotCompared,
+                    Comparison::Counted(AheadBehind {
+                        ahead:  2,
+                        behind: 1,
+                    }),
+                ]
+            );
         }
 
         #[test]
@@ -9265,12 +9365,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Unborn,
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Untracked,
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Unborn,
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Untracked,
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -11987,12 +12088,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -12050,12 +12152,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("main".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("main".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -12121,12 +12224,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -12873,12 +12977,13 @@ mod tests {
             let base_info = || -> (CheckoutInfo, RepoInfo) {
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -12971,12 +13076,13 @@ mod tests {
                 BackgroundMsg::CheckoutInfo {
                     path: project.path().to_path_buf().into(),
                     info: CheckoutInfo {
-                        status:              GitStatus::Modified,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Modified,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                 },
             );
@@ -12997,12 +13103,13 @@ mod tests {
                 BackgroundMsg::CheckoutInfo {
                     path: project.path().to_path_buf().into(),
                     info: CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                 },
             );
@@ -13022,15 +13129,16 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::Counted(AheadBehind {
                             ahead:  3,
                             behind: 0,
                         }),
-                        primary_tracked_ref: TrackedRef::Untracked,
-                        bisect:              None,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Untracked,
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -13067,15 +13175,16 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feature/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feature/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::Counted(AheadBehind {
                             ahead:  2,
                             behind: 1,
                         }),
-                        primary_tracked_ref: TrackedRef::Untracked,
-                        bisect:              None,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Untracked,
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -13114,12 +13223,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("enh/various".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Untracked,
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("enh/various".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Untracked,
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -13266,12 +13376,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("enh/various".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Untracked,
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("enh/various".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Untracked,
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -13326,15 +13437,16 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("feat/demo".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::Counted(AheadBehind {
                             ahead:  0,
                             behind: 0,
                         }),
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -13998,12 +14110,13 @@ mod tests {
                 project.path(),
                 (
                     CheckoutInfo {
-                        status:              GitStatus::Clean,
-                        head:                HeadState::Branch("main".to_string()),
-                        last_commit:         CommitDate::NoCommits,
-                        ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-                        bisect:              None,
+                        status:               GitStatus::Clean,
+                        head:                 HeadState::Branch("main".to_string()),
+                        last_commit:          CommitDate::NoCommits,
+                        ahead_behind_local:   Comparison::NotCompared,
+                        ahead_behind_primary: Comparison::NotCompared,
+                        primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+                        bisect:               None,
                     },
                     RepoInfo {
                         remotes:           RemoteList::Listed(vec![RemoteInfo {
@@ -18225,12 +18338,13 @@ mod tests {
 
     fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
         let checkout = CheckoutInfo {
-            status:              GitStatus::Clean,
-            head:                HeadState::Branch("main".to_string()),
-            last_commit:         CommitDate::NoCommits,
-            ahead_behind_local:  Comparison::NotCompared,
-            primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
-            bisect:              None,
+            status:               GitStatus::Clean,
+            head:                 HeadState::Branch("main".to_string()),
+            last_commit:          CommitDate::NoCommits,
+            ahead_behind_local:   Comparison::NotCompared,
+            ahead_behind_primary: Comparison::NotCompared,
+            primary_tracked_ref:  TrackedRef::Named("origin/main".to_string()),
+            bisect:               None,
         };
         let repo = RepoInfo {
             remotes:           RemoteList::Listed(vec![RemoteInfo {

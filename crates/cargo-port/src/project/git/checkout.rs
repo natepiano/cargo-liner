@@ -131,21 +131,24 @@ pub(crate) enum Comparison {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
-    pub status:              GitStatus,
+    pub status:               GitStatus,
     /// The resolved state of `HEAD` (branch, detached, unborn, or unreadable).
-    pub head:                HeadState,
+    pub head:                 HeadState,
     /// ISO 8601 date of the most recent commit on this branch.
-    pub last_commit:         CommitDate,
+    pub last_commit:          CommitDate,
     /// Commits ahead and behind the local `{local_main_branch}`.
-    pub ahead_behind_local:  Comparison,
+    pub ahead_behind_local:   Comparison,
+    /// Commits ahead and behind the primary worktree's `HEAD`. `NotCompared`
+    /// outside a linked worktree.
+    pub ahead_behind_primary: Comparison,
     /// The current branch's `@{upstream}` tracked ref (e.g. `origin/main`).
     /// Stored as a string instead of an index so a primary-side remotes
     /// rewrite cannot silently invalidate a linked checkout's pointer.
     /// `Untracked` when the current branch has no upstream tracking ref.
-    pub primary_tracked_ref: TrackedRef,
+    pub primary_tracked_ref:  TrackedRef,
     /// Progress of an in-flight `git bisect`, when one is running for this
     /// checkout. `None` when no bisect is active.
-    pub bisect:              Option<BisectProgress>,
+    pub bisect:               Option<BisectProgress>,
 }
 
 /// Progress of an in-flight `git bisect`.
@@ -207,18 +210,26 @@ impl CheckoutInfo {
         let repo_root = discovery::git_repo_root(probe_path)?;
 
         let head = resolve_head_state(&repo_root);
-        let (current_upstream, last_commit, status, bisect) = std::thread::scope(|scope| {
-            let upstream = scope.spawn(|| branches::get_upstream_branch(&repo_root, &head));
-            let commit = scope.spawn(|| last_commit_date(&repo_root, &head));
-            let status = scope.spawn(|| get_git_status(probe_path, &repo_root));
-            let bisect = scope.spawn(|| bisect_progress(&repo_root));
-            (
-                probes::finish_probe(upstream),
-                probes::finish_probe(commit),
-                probes::finish_probe(status),
-                probes::finish_probe(bisect),
-            )
-        });
+        let (current_upstream, last_commit, status, bisect, ahead_behind_primary) =
+            std::thread::scope(|scope| {
+                let upstream = scope.spawn(|| branches::get_upstream_branch(&repo_root, &head));
+                let commit = scope.spawn(|| last_commit_date(&repo_root, &head));
+                let status = scope.spawn(|| get_git_status(probe_path, &repo_root));
+                let bisect = scope.spawn(|| bisect_progress(&repo_root));
+                let primary = scope.spawn(|| {
+                    discovery::linked_primary_root(&repo_root)
+                        .map_or(Comparison::NotCompared, |primary_root| {
+                            worktree_ahead_behind_primary(&repo_root, &primary_root)
+                        })
+                });
+                (
+                    probes::finish_probe(upstream),
+                    probes::finish_probe(commit),
+                    probes::finish_probe(status),
+                    probes::finish_probe(bisect),
+                    probes::finish_probe(primary),
+                )
+            });
         let ahead_behind_local = match (&head, local_main_branch) {
             (
                 HeadState::Unreadable,
@@ -249,6 +260,7 @@ impl CheckoutInfo {
             head,
             last_commit,
             ahead_behind_local,
+            ahead_behind_primary,
             primary_tracked_ref: current_upstream,
             bisect,
         })
@@ -514,7 +526,7 @@ impl LocalGitState {
 /// Ahead/behind of `worktree_dir`'s HEAD vs `primary_dir`'s HEAD. The
 /// primary HEAD is resolved to a commit SHA so refs resolve cleanly across
 /// the worktree's ref namespace.
-pub(crate) fn worktree_ahead_behind_primary(worktree_dir: &Path, primary_dir: &Path) -> Comparison {
+fn worktree_ahead_behind_primary(worktree_dir: &Path, primary_dir: &Path) -> Comparison {
     match command::git_answer_logged(
         primary_dir,
         "worktree_primary_sha",
@@ -948,6 +960,56 @@ bisect_all=13
             worktree_ahead_behind_primary(checkout.path(), primary.path()),
             Comparison::Unreadable
         );
+    }
+
+    #[test]
+    fn linked_worktree_probe_compares_head_to_the_primary() {
+        let tmp = tempfile::tempdir().expect("fixture");
+        let primary = tmp.path().join("primary");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&primary).expect("primary directory");
+        crate::test_support::init_git_repo(&primary);
+        let git = |dir: &Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new(crate::test_support::git_binary())
+                    .args(args)
+                    .current_dir(dir)
+                    .output()
+                    .expect("git")
+                    .status
+                    .success()
+            );
+        };
+        let linked_arg = linked.to_string_lossy().into_owned();
+        git(&primary, &["worktree", "add", "-b", "fix", &linked_arg]);
+        git(
+            &linked,
+            &[
+                "-c",
+                "user.name=cargo-port-tests",
+                "-c",
+                "user.email=cargo-port-tests@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "ahead",
+            ],
+        );
+
+        let linked_info =
+            CheckoutInfo::get(&linked, &ResolvedBranch::NotFound).expect("linked checkout");
+        assert_eq!(
+            linked_info.ahead_behind_primary,
+            Comparison::Counted(AheadBehind {
+                ahead:  1,
+                behind: 0,
+            })
+        );
+        let primary_info =
+            CheckoutInfo::get(&primary, &ResolvedBranch::NotFound).expect("primary checkout");
+        assert_eq!(primary_info.ahead_behind_primary, Comparison::NotCompared);
     }
 
     #[test]

@@ -17,6 +17,49 @@ use crate::tui::panes::PaneId;
 use crate::tui::render;
 use crate::tui::test_support;
 
+/// Branch CI data with one timed run, for the table layout tests.
+fn timed_branch_ci_data() -> anyhow::Result<CiData> {
+    let run: CiRun = serde_json::from_value(serde_json::json!({
+        "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
+        "url": "", "ci_status": "passed",
+        "jobs": [{"name": "build", "ci_status": "passed", "duration": "1m", "duration_secs": 60}],
+        "wall_clock_secs": 60, "commit_title": "Repair the display"
+    }))?;
+    Ok(CiData {
+        runs:           vec![run],
+        mode_label:     Some("branch".to_string()),
+        current_branch: Some("fleet".to_string()),
+        empty_state:    CiEmptyState::NoRuns,
+    })
+}
+
+#[test]
+fn ci_table_layout_is_built_once_while_content_and_width_hold() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.ci.set_content(timed_branch_ci_data()?);
+    let _ = super::render::take_column_inferences();
+
+    test_support::draw_pane(&mut app, PaneId::CiRuns, 80)?;
+    test_support::draw_pane(&mut app, PaneId::CiRuns, 80)?;
+
+    assert_eq!(super::render::take_column_inferences(), 1);
+    Ok(())
+}
+
+#[test]
+fn ci_table_layout_holds_when_the_same_content_is_set_again() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.ci.set_content(timed_branch_ci_data()?);
+    let _ = super::render::take_column_inferences();
+
+    test_support::draw_pane(&mut app, PaneId::CiRuns, 80)?;
+    app.ci.set_content(timed_branch_ci_data()?);
+    test_support::draw_pane(&mut app, PaneId::CiRuns, 80)?;
+
+    assert_eq!(super::render::take_column_inferences(), 1);
+    Ok(())
+}
+
 #[test]
 fn narrow_ci_draws_only_complete_columns() -> anyhow::Result<()> {
     let mut app = test_support::project_app();

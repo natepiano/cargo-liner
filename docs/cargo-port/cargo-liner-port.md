@@ -284,7 +284,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
-**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), and Phase 13c (both edit cargo-port and its CHANGELOG).
+**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), Phase 13c and Phase 13d (all edit cargo-port and its CHANGELOG).
 
 #### Work Order
 
@@ -303,6 +303,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
 - Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
+- Phase 13c: a linked worktree's background Git probe compares its `HEAD` with the primary `HEAD` (`CheckoutInfo.ahead_behind_primary`). An event on the primary `HEAD` file now refreshes the linked checkouts, which runs Git for each. Name that share in the attribution.
 - `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
 
 **Spec:**
@@ -360,7 +361,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** one `RepoInfo` result can still take 2.6 s on the frame path, and the largest disk walks take 36 to 65 s. Phase 13c owns the frame time.
 
-### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: todo
+### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: done
 
 **Depends on:** Phase 13b on main (this phase changes its apply path). Runs before Phase 12: Phase 12 needs natedev load under 8, and this phase measures under high load.
 
@@ -399,3 +400,43 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
 3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13b build, then this build. In this build no frame takes more than 100 ms, and Disk usage done is not later than in the Phase 13b build.
 4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the app answers keys at once while startup runs.
+
+### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
+
+**Depends on:** Phase 13c (it edits the same frame path and the CHANGELOG). Runs before Phase 12, which also edits the cargo-port CHANGELOG.
+
+#### Work Order
+
+**Goal:** at startup with natedev load under 32, no frame takes more than 100 ms.
+
+**Source:** the showrunner ruling on Phase 13c, 2026-11-13: when a frame takes more than 100 ms at load under 32, add a follow-up phase for its step. Phase 13c paired start at load 25-27 had 3 such frames, all in the first 3.5 s:
+1. 199 ms: one `CargoMetadata` apply of 113 ms in bg (126 ms), column fit 49 ms.
+2. 154 ms: one `ScanResult` apply of 60 ms in bg (62 ms), column fit 84 ms.
+3. 102 ms: draw 65 ms, column fit 35 ms.
+
+**Constraints from prior phases:**
+- Phase 13c keeps the CI table plan across equal CI data (`ci_table_layout_holds_when_the_same_content_is_set_again`). Keep its tests green.
+- Phase 13c names the draw time also when the screen does not change (`FrameDraw::Unchanged(Duration)`).
+- Phase 13b: keep `row_message_burst_builds_row_presentation_at_most_twice` green.
+- Do not run builds or lint during a paired start, because they add load.
+
+**Spec:**
+1. **Measure.** Add temporary perf fields inside the `CargoMetadata` apply, the `ScanResult` apply, `ensure_fit_widths_cached` and `render::ui` to find the cost in each.
+2. **Repair.** Make each named step cheaper, or move it off the frame path. The frame applies only cheap state changes.
+3. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
+4. **Changelog.** Add a cargo-port fix entry.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/` — the `CargoMetadata` and `ScanResult` apply
+- `crates/cargo-port/src/tui/app/` — `ensure_fit_widths_cached`
+- `crates/cargo-port/src/tui/render/` — `render::ui`, for the 65 ms draw
+- `crates/cargo-port/CHANGELOG.md` — entry
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:**
+1. The tests fail before the repair and pass after.
+2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
+3. Paired natedev starts at load under 32 with the same `include_dirs`: the Phase 13c build, then this build. In this build no frame takes more than 100 ms.
