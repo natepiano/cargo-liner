@@ -12,6 +12,8 @@
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
 
+#[cfg(test)]
+use tui_pane::ProcessIdentity;
 use tui_pane::RunningTracker;
 
 use super::owned_run_process_actor::OwnedProcessGroupSignalOutcome;
@@ -19,8 +21,6 @@ use super::owned_run_process_actor::OwnedRunProcessActor;
 use super::owned_run_process_actor::OwnedRunTerminationOutcome;
 use super::owned_run_process_actor::OwnedRunTerminationSubmission;
 use super::owned_run_process_actor::OwnedRunTerminationToken;
-#[cfg(test)]
-use crate::process_observation::identity::ProcessIdentity;
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
 #[cfg(test)]

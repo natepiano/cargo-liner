@@ -276,12 +276,12 @@ fn high_contrast_light() -> Theme {
 mod tests {
     use tui_pane::ThemeFamily;
     use tui_pane::ThemeVariantFile;
+    use tui_pane::covered_contrast_ratio;
 
     use super::*;
-
-    const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
-    const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
-    const LIGHT_TEMPLATE: &str = include_str!("../../themes/default_light.toml");
+    use crate::themes::constants::DARK_TEMPLATE;
+    use crate::themes::constants::HC_TEMPLATE;
+    use crate::themes::constants::LIGHT_TEMPLATE;
 
     /// Parse one template and return its variants, asserting the
     /// schema version and the expected variant count.
@@ -336,88 +336,6 @@ mod tests {
                 DEFAULT_HC_LIGHT_THEME,
             ]
         );
-    }
-
-    const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
-        (0, 0, 0),
-        (205, 0, 0),
-        (0, 205, 0),
-        (205, 205, 0),
-        (0, 0, 238),
-        (205, 0, 205),
-        (0, 205, 205),
-        (229, 229, 229),
-        (127, 127, 127),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (92, 92, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
-    ];
-
-    fn selection_rgb(color: Color) -> (u8, u8, u8) {
-        let named = match color {
-            Color::Black | Color::Reset => 0,
-            Color::Red => 1,
-            Color::Green => 2,
-            Color::Yellow => 3,
-            Color::Blue => 4,
-            Color::Magenta => 5,
-            Color::Cyan => 6,
-            Color::Gray => 7,
-            Color::DarkGray => 8,
-            Color::LightRed => 9,
-            Color::LightGreen => 10,
-            Color::LightYellow => 11,
-            Color::LightBlue => 12,
-            Color::LightMagenta => 13,
-            Color::LightCyan => 14,
-            Color::White => 15,
-            Color::Rgb(red, green, blue) => return (red, green, blue),
-            Color::Indexed(index) => return xterm_indexed_rgb(index),
-        };
-        XTERM_ANSI_COLORS[named]
-    }
-
-    fn xterm_indexed_rgb(index: u8) -> (u8, u8, u8) {
-        if let Some(rgb) = XTERM_ANSI_COLORS.get(usize::from(index)) {
-            return *rgb;
-        }
-        if index < 232 {
-            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-            let offset = index - 16;
-            return (
-                LEVELS[usize::from(offset / 36)],
-                LEVELS[usize::from((offset % 36) / 6)],
-                LEVELS[usize::from(offset % 6)],
-            );
-        }
-        let gray = 8 + 10 * (index - 232);
-        (gray, gray, gray)
-    }
-
-    fn covered_contrast_ratio(foreground: Color, background: Color) -> f64 {
-        let ink = <[u8; 3]>::from(selection_rgb(foreground)).map(f64::from);
-        let ground = <[u8; 3]>::from(selection_rgb(background)).map(f64::from);
-        let covered = std::array::from_fn(|index| {
-            f64::mul_add(ground[index], 47.0 / 255.0, ink[index] * (208.0 / 255.0))
-        });
-        let luminance = |channels: [f64; 3]| {
-            let [red, green, blue] = channels.map(|channel| {
-                let channel = channel / 255.0;
-                if channel <= 0.04045 {
-                    channel / 12.92
-                } else {
-                    ((channel + 0.055) / 1.055).powf(2.4)
-                }
-            });
-            0.2126f64.mul_add(red, 0.7152f64.mul_add(green, 0.0722 * blue))
-        };
-        let foreground = luminance(covered);
-        let background = luminance(ground);
-        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
     }
 
     #[test]

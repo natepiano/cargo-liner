@@ -28,6 +28,10 @@ use sysinfo::ProcessesToUpdate;
 use sysinfo::Signal;
 #[cfg(all(not(unix), not(test)))]
 use sysinfo::System;
+use tui_pane::ProcessIdentity;
+#[cfg(not(test))]
+use tui_pane::StrongProcessIdentityRevalidation;
+use tui_pane::VerifiedProcessIdentity;
 
 use super::constants::OWNED_RUN_CHILD_REAP_POLL_INTERVAL;
 #[cfg(unix)]
@@ -39,12 +43,6 @@ use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::RecvTimeoutError;
 use crate::channel::Sender;
-#[cfg(not(test))]
-use crate::process_observation::identity;
-use crate::process_observation::identity::ProcessIdentity;
-#[cfg(not(test))]
-use crate::process_observation::identity::StrongProcessIdentityRevalidation;
-use crate::process_observation::identity::VerifiedProcessIdentity;
 #[cfg(unix)]
 use crate::support;
 use crate::tui::messages::OwnedRunEvent;
@@ -144,7 +142,7 @@ impl OwnedProcessGroupTerminationCapability {
 
     #[cfg(not(test))]
     fn signal(&self) -> OwnedProcessGroupSignalOutcome {
-        match identity::revalidate_strong_process_identity(&self.process_identity) {
+        match tui_pane::revalidate_strong_process_identity(&self.process_identity) {
             StrongProcessIdentityRevalidation::Current => {
                 signal_owned_process_group(self.process_group_id, &self.process_identity)
             },
@@ -207,7 +205,7 @@ fn signal_owned_process_group(
     }
 
     if !matches!(
-        identity::revalidate_strong_process_identity(process_identity),
+        tui_pane::revalidate_strong_process_identity(process_identity),
         StrongProcessIdentityRevalidation::Current
     ) {
         return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
@@ -238,7 +236,7 @@ fn signal_owned_process_group(
         ProcessRefreshKind::nothing().without_tasks(),
     );
     if !matches!(
-        identity::revalidate_strong_process_identity(process_identity),
+        tui_pane::revalidate_strong_process_identity(process_identity),
         StrongProcessIdentityRevalidation::Current
     ) {
         return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
@@ -693,10 +691,10 @@ mod tests {
     #[cfg(unix)]
     use std::sync::atomic::Ordering;
 
-    use super::*;
-    use crate::process_observation::identity;
     #[cfg(unix)]
-    use crate::process_observation::identity::CurrentProcessIdentityObservation;
+    use tui_pane::CurrentProcessIdentityObservation;
+
+    use super::*;
 
     fn owned_run_id(value: u64) -> OwnedRunId {
         OwnedRunId::from(NonZeroU64::new(value).unwrap_or(NonZeroU64::MIN))
@@ -763,7 +761,7 @@ mod tests {
                 .stdin
                 .take()
                 .unwrap_or_else(|| panic!("the actor child fixture should have stdin"));
-            let verified_process_identity = match identity::observe_current_process_identity(
+            let verified_process_identity = match tui_pane::observe_current_process_identity(
                 child.id(),
             ) {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
