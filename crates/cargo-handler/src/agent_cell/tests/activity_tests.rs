@@ -1,5 +1,5 @@
 //! These fixtures exercise `AgentActivity` rendering and sorting in
-//! `AgentTile::Agent` trees and `AgentTile::Unassigned` pools.
+//! `AgentTile::Agent` trees and `AgentTile::Pooled` pools.
 
 #![expect(
     clippy::panic,
@@ -83,12 +83,12 @@ fn activity_pool(sort: TreeSort) -> Buffer {
         sort,
     )]);
     let tiles = tile_order_sorted(&placement, &sorts, NOW);
-    let AgentTile::Unassigned(entry) = &tiles[0] else {
+    let AgentTile::Pooled(entry) = &tiles[0] else {
         panic!("all roots are unassigned")
     };
-    let rect = area(240, unassigned_height(entry));
+    let rect = area(240, pooled_height(entry));
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         entry,

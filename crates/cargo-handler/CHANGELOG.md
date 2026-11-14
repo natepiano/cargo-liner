@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Enter shows the focused tile on the full screen, and Esc returns it to the grid. Rows, details and word clicks work in it as in the grid.
 
+- Producers draw in their own tile, titled `producers`, before the unassigned tiles. The tile holds the producers of every machine.
+
 - Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
 
 - Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.

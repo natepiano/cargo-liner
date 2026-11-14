@@ -235,12 +235,12 @@ fn sessions_without_hierarchy_draw_only_in_unassigned_and_do_not_inflate_summary
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) => Some(entry),
+            AgentTile::Pooled(entry) => Some(entry),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned tile");
     let mut buffer = Buffer::empty(AREA);
-    agent_cell::draw_unassigned(
+    agent_cell::draw_pooled(
         &mut buffer,
         AREA,
         pool,
@@ -298,7 +298,7 @@ fn a_session_with_work_has_one_summary_entry_and_one_tile_instead_of_an_unassign
     assert_eq!(tiles.len(), 1);
     let entry = match &tiles[0] {
         AgentTile::Agent(entry) => Some(entry),
-        AgentTile::Unassigned(_) => None,
+        AgentTile::Pooled(_) => None,
     }
     .expect("a session with work has its own tile");
     let mut buffer = Buffer::empty(AREA);

@@ -568,7 +568,7 @@ fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &st
     Ok(())
 }
 
-fn drawn_property(lines: &[String], label: &str) -> TestResult<String> {
+pub(super) fn drawn_property(lines: &[String], label: &str) -> TestResult<String> {
     let marker = format!("{label}:");
     let rest = lines
         .iter()
@@ -577,7 +577,7 @@ fn drawn_property(lines: &[String], label: &str) -> TestResult<String> {
     Ok(rest.split('│').next().ok_or("value")?.trim().to_owned())
 }
 
-fn drawn_details(buffer: &Buffer) -> Vec<String> {
+pub(super) fn drawn_details(buffer: &Buffer) -> Vec<String> {
     buffer
         .content
         .chunks_exact(usize::from(buffer.area.width))

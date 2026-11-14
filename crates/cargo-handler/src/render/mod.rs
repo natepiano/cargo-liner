@@ -66,10 +66,8 @@ use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
-use crate::constants::HEADING_SEPARATOR;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
-use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::details::DetailsOverlay;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
@@ -862,8 +860,8 @@ impl<'a> Cells<'a> {
             AgentTile::Agent(entry) => {
                 agent_cell::header_spans(entry, area, self.now, self.account_column)
             },
-            AgentTile::Unassigned(entry) => {
-                agent_cell::unassigned_header_spans(entry, area, self.now, self.account_column)
+            AgentTile::Pooled(entry) => {
+                agent_cell::pooled_header_spans(entry, area, self.now, self.account_column)
             },
         }
     }
@@ -989,7 +987,7 @@ impl TileCells<TileKey> for Cells<'_> {
                         AgentTile::Agent(entry) => {
                             agent_cell::height(entry, width, self.now, self.account_column)
                         },
-                        AgentTile::Unassigned(entry) => agent_cell::unassigned_height(entry),
+                        AgentTile::Pooled(entry) => agent_cell::pooled_height(entry),
                     };
                     TileDemand { id, rows }
                 })
@@ -1079,7 +1077,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                TileLookup::Current(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
+                TileLookup::Current(AgentTile::Pooled(entry)) => agent_cell::draw_pooled(
                     buffer,
                     inner,
                     entry,
@@ -1100,11 +1098,8 @@ impl TileCells<TileKey> for Cells<'_> {
     fn group_title(&self, id: &TileKey) -> Option<Line<'static>> {
         self.tile(id).map_or(None, |tile| {
             Some(match tile {
-                AgentTile::Unassigned(entry) => Line::from(Span::styled(
-                    format!(
-                        "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
-                        UNASSIGNED_CELL_TITLE, entry.machine
-                    ),
+                AgentTile::Pooled(entry) => Line::from(Span::styled(
+                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.pool.title()),
                     Style::default().fg(title_color()),
                 )),
                 AgentTile::Agent(entry) => Line::from(vec![
@@ -1224,6 +1219,7 @@ mod tests {
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
+    use crate::constants::UNASSIGNED_CELL_TITLE;
     use crate::sort::SortDirection;
     use crate::sort::SummaryColumn;
 
@@ -2515,6 +2511,9 @@ mod drawn_frame_tests;
 
 #[cfg(test)]
 mod layout_stability_tests;
+
+#[cfg(test)]
+mod producers_tile_tests;
 
 #[cfg(test)]
 mod ranked_column_tests;

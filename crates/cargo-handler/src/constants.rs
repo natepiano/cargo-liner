@@ -611,6 +611,8 @@ pub(crate) const PROBE_SIGNALLED_REASON: &str = "probe ended by a signal";
 
 /// Title of a machine's pool of sessions without production roles.
 pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";
+/// Title of the one pool that holds the producer sessions of every machine.
+pub(crate) const PRODUCERS_CELL_TITLE: &str = "producers";
 
 /// Stored account usage is refreshed independently of the census scan.
 pub(crate) const ACCOUNTS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);

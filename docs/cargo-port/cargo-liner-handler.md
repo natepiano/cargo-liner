@@ -358,7 +358,7 @@ In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pan
 
 **Ruled out:** public collapse constants — no consumer outside `FullScreenView`.
 
-### Phase 15 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 15 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: done
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 

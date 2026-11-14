@@ -148,7 +148,7 @@ fn drawn(rows: Vec<AgentRow>, hierarchy: HierarchySnapshot) -> String {
                     AccountColumn::Hidden,
                     &FooterColors::default(),
                 ),
-                AgentTile::Unassigned(entry) => agent_cell::draw_unassigned(
+                AgentTile::Pooled(entry) => agent_cell::draw_pooled(
                     &mut buffer,
                     area,
                     entry,
