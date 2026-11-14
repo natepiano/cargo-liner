@@ -6,7 +6,10 @@ use std::time::Instant;
 #[cfg(unix)]
 use rustix::time::ClockId;
 
-use super::constants::CPU_DECIMAL_BELOW_PERCENT;
+use super::counter_rate::CounterRate;
+use super::counter_rate::CounterRateSampler;
+use super::counter_rate::CounterReading;
+use super::rate_label;
 
 /// Whether two CPU samples provide a reading.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,23 +22,13 @@ impl CpuReading {
     pub(super) fn label(self) -> String {
         match self {
             Self::Pending => "—".to_string(),
-            // Round to tenths first, so 9.96 shows as `10%`, not `10.0%`.
-            Self::Measured(percent)
-                if (percent * 10.0).round() / 10.0 < CPU_DECIMAL_BELOW_PERCENT =>
-            {
-                format!("{percent:.1}%")
-            },
-            Self::Measured(percent) => format!("{percent:.0}%"),
+            Self::Measured(percent) => format!("{}%", rate_label::rate_label(percent)),
         }
     }
 }
 
 /// CPU time used by this process, including all its threads.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ProcessCpuTime {
-    Unavailable,
-    Available(Duration),
-}
+pub(crate) type ProcessCpuTime = CounterReading<Duration>;
 
 impl ProcessCpuTime {
     /// Read user and system CPU time through the safe process clock.
@@ -50,51 +43,27 @@ impl ProcessCpuTime {
     pub(crate) const fn read() -> Self { Self::Unavailable }
 }
 
-/// The previous successful process CPU sample.
-enum CpuSample {
-    Pending,
-    Recorded {
-        at:       Instant,
-        cpu_time: Duration,
-    },
-}
-
 /// Samples the current process across framework status ticks.
 pub(crate) struct CpuSampler {
-    reading:  CpuReading,
-    previous: CpuSample,
+    rate: CounterRateSampler<Duration>,
 }
 
 impl CpuSampler {
     pub(crate) const fn new() -> Self {
         Self {
-            reading:  CpuReading::Pending,
-            previous: CpuSample::Pending,
+            rate: CounterRateSampler::new(),
         }
     }
 
-    pub(crate) const fn reading(&self) -> CpuReading { self.reading }
+    pub(crate) const fn reading(&self) -> CpuReading {
+        match self.rate.reading() {
+            CounterRate::Pending => CpuReading::Pending,
+            CounterRate::Measured(rate) => CpuReading::Measured(rate * 100.0),
+        }
+    }
 
     pub(crate) fn sample(&mut self, now: Instant, cpu: ProcessCpuTime) {
-        let ProcessCpuTime::Available(cpu_time) = cpu else {
-            self.previous = CpuSample::Pending;
-            self.reading = CpuReading::Pending;
-            return;
-        };
-        if let CpuSample::Recorded {
-            at,
-            cpu_time: previous_cpu,
-        } = self.previous
-        {
-            let elapsed = now.saturating_duration_since(at);
-            if elapsed.is_zero() {
-                return;
-            }
-            self.reading = CpuReading::Measured(
-                cpu_time.saturating_sub(previous_cpu).as_secs_f64() / elapsed.as_secs_f64() * 100.0,
-            );
-        }
-        self.previous = CpuSample::Recorded { at: now, cpu_time };
+        self.rate.sample(now, cpu);
     }
 }
 
@@ -130,6 +99,8 @@ mod tests {
         for (reading, expected) in [
             (CpuReading::Pending, "—"),
             (CpuReading::Measured(9.9), "9.9%"),
+            (CpuReading::Measured(9.94), "9.9%"),
+            (CpuReading::Measured(9.96), "10%"),
             (CpuReading::Measured(10.0), "10%"),
             (CpuReading::Measured(100.0), "100%"),
         ] {

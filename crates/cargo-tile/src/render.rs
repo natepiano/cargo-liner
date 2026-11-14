@@ -889,17 +889,23 @@ mod expanded_view_tests {
         Ok(terminal.backend().buffer().clone())
     }
 
+    /// The cell column where `hint` starts on a one-row status line.
+    fn hint_column(status: &Buffer, hint: &'static str) -> Result<u16, Box<dyn Error>> {
+        let row = tests::buffer_rows(status).join("");
+        let (before_hint, _) = row.split_once(hint).ok_or(hint)?;
+        // Each cell holds one char; a byte offset counts "—" as three cells.
+        Ok(u16::try_from(before_hint.chars().count())?)
+    }
+
     #[test]
     fn collapse_uses_the_same_key_and_label_ink_as_expand() -> Result<(), Box<dyn Error>> {
         let mut app = app()?;
         let before = status(&app)?;
-        let before_text = tests::buffer_rows(&before).join("");
-        let enter = u16::try_from(before_text.find("enter expand").ok_or("expand hint")?)?;
+        let enter = hint_column(&before, "enter expand")?;
         press(&mut app, KeyCode::Enter);
         paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
         let after = status(&app)?;
-        let after_text = tests::buffer_rows(&after).join("");
-        let esc = u16::try_from(after_text.find("esc collapse").ok_or("collapse hint")?)?;
+        let esc = hint_column(&after, "esc collapse")?;
         assert_eq!(after[(esc, 0)].style(), before[(enter, 0)].style());
         assert_eq!(after[(esc + 4, 0)].style(), before[(enter + 6, 0)].style());
         Ok(())
@@ -4559,14 +4565,15 @@ impl FrameTableColumnGrid {
         })
     }
 
-    /// Choose this table's gap after its column reductions.
+    /// Choose this table's gap after its column reductions; the wide gap
+    /// must leave room for the command and its header.
     fn preferred_column_spacing(&self, width: u16) -> u16 {
         let fitted = self.columns_for_command_name(width);
         table_column_spacing(
             fitted.value_width,
             &fitted.constraints,
             &fitted.columns,
-            self.longest_command_width,
+            self.longest_command_width.max(self.command_title_width),
         )
     }
 
@@ -4582,10 +4589,12 @@ impl FrameTableColumnGrid {
                 continue;
             };
             // Argument tails have already yielded to the subcommand in Short view.
+            // The header must fit too, or it draws cut.
             let command_width = match self.view.arguments {
                 ArgumentDetail::Default => table.short.min(table.subcommand),
                 ArgumentDetail::All => table.full.saturating_sub(TABLE_CONTINUATION_CLEARANCE),
-            };
+            }
+            .max(self.command_title_width);
             let fixed = fitted
                 .constraints
                 .iter()
@@ -20073,7 +20082,9 @@ mod tests {
                 }
             })
             .collect();
-        let mut roster = Roster::new();
+        // The CI macOS runner's size: narrow cpu and mem columns pack the most cells.
+        let mut roster =
+            Roster::for_test(SessionColumnWidths::for_machine(3, 7 * BYTES_PER_GIBIBYTE));
         roster.observe(groups, Instant::now());
         roster
     }

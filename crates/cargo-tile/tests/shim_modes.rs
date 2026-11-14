@@ -634,6 +634,15 @@ exec sh "$SHIM_TEST_SHIM" "$@"
         set_mode(path, 0o755);
     }
 
+    /// The first executable of this name on the test's own `PATH`.
+    fn program_on_path(name: &str) -> PathBuf {
+        let search_path = env::var_os("PATH").expect("tests inherit a PATH");
+        env::split_paths(&search_path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+            .expect("the program should be on the test PATH")
+    }
+
     /// Single-quote argv words for util-linux `script` without interpreting their contents.
     fn shell_word(word: &str) -> String { format!("'{}'", word.replace('\'', "'\\''")) }
 
@@ -1285,10 +1294,19 @@ exec sh "$SHIM_TEST_SHIM" "$@"
 
     fn assert_mirror_startup(startup: MirrorStartup, arguments: &[&str]) {
         let fixture = InstalledToolchain::for_live_capture();
+        // dash cannot open a script under a descriptor limit below 11, so the
+        // limited run starts its stand-in cargo under bash.
+        let interpreter = if matches!(startup, MirrorStartup::DescriptorLimit) {
+            program_on_path("bash")
+        } else {
+            PathBuf::from("/bin/sh")
+        };
         write_executable(
             &fixture.bin.join("cargo-tile-real"),
-            r#"#!/bin/sh
-if [ -n "${SHIM_TEST_DESCRIPTOR_LIMIT-}" ]; then
+            &format!(
+                "#!{}\n{}",
+                interpreter.display(),
+                r#"if [ -n "${SHIM_TEST_DESCRIPTOR_LIMIT-}" ]; then
     ulimit -Sn "$SHIM_TEST_DESCRIPTOR_LIMIT"
 fi
 printf 'call\n' >> "$SHIM_TEST_OBSERVATIONS/calls"
@@ -1297,7 +1315,8 @@ printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" 
 printf 'original stdout\n'
 printf 'original stderr\n' >&2
 exit 43
-"#,
+"#
+            ),
         );
         if matches!(startup, MirrorStartup::FailedShell) {
             write_executable(&fixture.bin.join("sh"), "#!/bin/sh\nexit 19\n");
