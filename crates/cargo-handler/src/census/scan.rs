@@ -51,6 +51,7 @@ use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
 use super::Observed;
+use super::PassFact;
 use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
@@ -124,6 +125,7 @@ use super::worker_dispatch;
 use super::worker_dispatch::ManagedSession;
 use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
+use super::worker_dispatch::PassState;
 use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::RunSelection;
 use super::worker_dispatch::SessionRoots;
@@ -183,14 +185,17 @@ impl CurrentRunObservations<'_> {
     fn worker(&self, session: &str) -> super::WorkerFacts {
         let current_run = self.staff.worker_run(session);
         let mut facts = super::WorkerFacts {
+            listing:          Observed::Known(self.staff.listing(session)),
             current_run:      current_run.clone(),
             pane:             Observed::unknown("no readable pane observation for this worker"),
             runs:             Observed::unknown("worker has no readable current run"),
             activity_started: Observed::unknown("no running detached run or open pass start"),
+            pass:             Observed::unknown("worker has no readable current run"),
         };
         let Observed::Known(StaffRunPointer::Current(run)) = current_run else {
             if matches!(current_run, Observed::Known(StaffRunPointer::NoRun)) {
                 facts.runs = Observed::Known(Vec::new());
+                facts.pass = Observed::Known(PassFact::Closed);
             }
             return facts;
         };
@@ -216,36 +221,54 @@ impl CurrentRunObservations<'_> {
             Some(SourceHealth::Loaded | SourceHealth::Absent) => Observed::Known(runs),
             None => Observed::unknown("current run records were not read"),
         };
+        let pass = self.open_pass(run.path(), session);
+        facts.pass = match &pass {
+            Observed::Known(PassState::Open {
+                assignment: Observed::Known(assignment),
+                ..
+            }) => Observed::Known(PassFact::Open(assignment.clone())),
+            Observed::Known(PassState::Open {
+                assignment: Observed::Unknown(reason),
+                ..
+            })
+            | Observed::Unknown(reason) => Observed::Unknown(reason.clone()),
+            Observed::Known(PassState::Closed) => Observed::Known(PassFact::Closed),
+        };
         if matches!(facts.activity_started, Observed::Unknown(_)) {
-            facts.activity_started = self.pass_start(run.path(), session);
+            facts.activity_started = match pass {
+                Observed::Known(PassState::Open { started, .. }) => started,
+                Observed::Known(PassState::Closed) => Observed::unknown("worker has no open pass"),
+                Observed::Unknown(reason) => Observed::Unknown(reason),
+            };
         }
         facts
     }
 
-    fn pass_start(&self, directory: &Path, session: &str) -> super::Observed<u64> {
+    /// The worker's latest open pass in the current run, or the reason the pass map is unread.
+    fn open_pass(&self, directory: &Path, session: &str) -> Observed<PassState> {
         match self.passes.get(directory) {
-            Some(SourceRead::Loaded(passes)) => passes
-                .iter()
-                .filter(|pass| {
-                    WorkerReference::Staff {
-                        staff_id: pass.worker.clone(),
-                    }
-                    .session(self.staff)
-                        == Some(session)
-                })
-                .map(|pass| &pass.started)
-                .max_by_key(|started| match started {
-                    Observed::Known(stamp) => Some(*stamp),
-                    Observed::Unknown(_) => None,
-                })
-                .map_or_else(
-                    || super::Observed::unknown("worker has no open pass"),
-                    Clone::clone,
-                ),
+            Some(SourceRead::Loaded(passes)) => Observed::Known(
+                passes
+                    .iter()
+                    .filter(|pass| {
+                        matches!(pass.state, PassState::Open { .. })
+                            && WorkerReference::Staff {
+                                staff_id: pass.worker.clone(),
+                            }
+                            .session(self.staff)
+                                == Some(session)
+                    })
+                    .max_by_key(|pass| match pass.state {
+                        PassState::Open {
+                            started: Observed::Known(stamp),
+                            ..
+                        } => Some(stamp),
+                        PassState::Open { .. } | PassState::Closed => None,
+                    })
+                    .map_or(PassState::Closed, |pass| pass.state.clone()),
+            ),
             Some(SourceRead::Unreadable(reason)) => Observed::Unknown(reason.clone()),
-            Some(SourceRead::Absent) | None => {
-                super::Observed::unknown("current run has no pass source")
-            },
+            Some(SourceRead::Absent) | None => Observed::unknown("current run has no pass source"),
         }
     }
 }
@@ -1316,12 +1339,14 @@ impl LocalScanner {
             .worker_facts
             .entry(id.to_owned())
             .or_insert_with(|| super::WorkerFacts {
+                listing:          Observed::Known(staff.listing(id)),
                 current_run:      staff.worker_run(id),
                 pane:             super::Observed::unknown("worker has no pane observation"),
                 runs:             super::Observed::unknown("worker has no current run records"),
                 activity_started: super::Observed::unknown(
                     "worker has no current run or open pass",
                 ),
+                pass:             super::Observed::unknown("worker has no current run records"),
             });
         if let WorkerProcess::Running { pid, started } = process {
             facts.pane = self.herdr.pane(pid, started);

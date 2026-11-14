@@ -39,6 +39,7 @@ mod pane_worker_placement_tests;
 mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
+pub(crate) mod report;
 #[cfg(test)]
 mod restart_hierarchy_tests;
 #[cfg(test)]
@@ -88,6 +89,7 @@ pub(crate) use placement::RowIdentity;
 pub(crate) use placement::RowRole;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
+use remote::ProbeOutcome;
 use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
@@ -400,22 +402,63 @@ pub(crate) struct CensusFacts {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default = "WorkerFacts::older_probe")]
 struct WorkerFacts {
+    listing:          Observed<StaffListing>,
     current_run:      Observed<StaffRunPointer>,
     pane:             Observed<PaneState>,
     runs:             Observed<Vec<DetachedRunFact>>,
     activity_started: Observed<u64>,
+    pass:             Observed<PassFact>,
 }
 
 impl WorkerFacts {
     /// An older remote probe sends rows without the worker facts.
     fn older_probe() -> Self {
         Self {
+            listing:          Observed::unknown("remote probe has no staff listing"),
             current_run:      Observed::unknown("remote probe has no current run"),
             pane:             Observed::unknown("remote probe has no pane state"),
             runs:             Observed::unknown("remote probe has no run states"),
             activity_started: Observed::unknown("remote probe has no activity start"),
+            pass:             Observed::unknown("remote probe has no open pass"),
         }
     }
+}
+
+/// The staff row of a session, as the census report lists it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StaffListing {
+    /// A unit director.
+    Director { id: String },
+    /// A worker under the manager with staff id `parent`.
+    Worker { id: String, parent: String },
+    /// A producer, showrunner or agent row, or a session the staff file does not list.
+    Other,
+}
+
+/// The job of an open pass, from its `kind` in the run's pass map.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PassRole {
+    Impl,
+    Test,
+    Fix,
+    Review,
+}
+
+/// What an open pass does, and the phase instance it serves.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PassAssignment {
+    role:  PassRole,
+    phase: String,
+}
+
+/// A worker has one open pass in its unit's current run, or none.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PassFact {
+    Open(PassAssignment),
+    Closed,
 }
 
 impl CensusFacts {
@@ -736,6 +779,17 @@ impl RemoteHierarchyAnswers {
                 )
             },
             Err(reason) => MachineState::Failed(reason),
+        }
+    }
+
+    /// The machine state one probe outcome gives, through [`Self::apply`] when it answered.
+    fn answer(&mut self, host: &str, outcome: ProbeOutcome) -> MachineState {
+        match outcome {
+            ProbeOutcome::Finished {
+                status: Some(0),
+                stdout,
+            } => self.apply(host, probe::parse_answer(&stdout)),
+            outcome => remote::machine_state(outcome),
         }
     }
 

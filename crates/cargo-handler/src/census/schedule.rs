@@ -43,8 +43,7 @@ use super::hierarchy::StaffFileReader;
 #[cfg(test)]
 use super::hierarchy::StaffPublication;
 use super::hierarchy::StaffSnapshot;
-use super::probe;
-use super::remote;
+#[cfg(test)]
 use super::remote::ProbeOutcome;
 use super::remote::RemoteRunner;
 use super::remote::SshRunner;
@@ -944,13 +943,7 @@ fn dispatch(
                 .remove(&host);
             return;
         }
-        let state = match outcome {
-            ProbeOutcome::Finished {
-                status: Some(0),
-                stdout,
-            } => answers.apply(&host, probe::parse_answer(&stdout)),
-            outcome => remote::machine_state(outcome),
-        };
+        let state = answers.answer(&host, outcome);
         drop(answers);
         in_flight
             .lock()
