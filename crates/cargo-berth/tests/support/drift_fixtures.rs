@@ -11,12 +11,15 @@ pub(super) use cargo_berth_test_support::berth_command;
 pub(super) const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 
 /// Committed berth policy and an empty ledger, copied with fresh checkout owners.
-pub(super) const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+///
+/// Most drift tests start here, so the setup script builds it before they start.
+pub(super) const INITIALIZED_REPOSITORY: LedgerTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
     name:             "drift-initialized",
     build:            build_initialized_repository,
-};
+}
+.before_run();
 
 /// How this file drives git: no optional locks, clearing what its fixtures set for themselves.
 pub(super) const GIT: GitDriver = GitDriver {
@@ -30,6 +33,8 @@ pub(super) use std::path::Path;
 pub(super) use std::path::PathBuf;
 pub(super) use std::process::Output;
 
+use cargo_berth_test_support::IntegrationRepository;
+use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::assert_success;
 pub(super) use tempfile::TempDir;
 pub(super) use tempfile::tempdir;
@@ -37,6 +42,8 @@ pub(super) use tempfile::tempdir;
 use crate::recorded_history;
 
 pub(super) const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
+
+pub(super) const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
@@ -192,38 +199,38 @@ pub(super) fn git(repository_root: &Path, arguments: &[&str]) {
     GIT.run(repository_root, arguments);
 }
 
-pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT:
-    cargo_berth_test_support::LedgerTemplate = recorded_history::template(
-    "drift-widening-over-an-overlapped-holder-checkpoint",
-    |destination| {
-        build_history_widening_over_an_overlapped_holder(
-            destination,
-            OverlappedHolderStanding::HereAwaitingIntegration,
-        );
-    },
-);
+pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT: LedgerTemplate =
+    recorded_history::template(
+        "drift-widening-over-an-overlapped-holder-checkpoint",
+        |destination| {
+            build_history_widening_over_an_overlapped_holder(
+                destination,
+                OverlappedHolderStanding::HereAwaitingIntegration,
+            );
+        },
+    );
 
-pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE:
-    cargo_berth_test_support::LedgerTemplate = recorded_history::template(
-    "drift-widening-over-an-overlapped-holder-engine",
-    |destination| {
-        build_history_widening_over_an_overlapped_holder(
-            destination,
-            OverlappedHolderStanding::HereUnderAnEngineIssuedIdentity,
-        );
-    },
-);
+pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE: LedgerTemplate =
+    recorded_history::template(
+        "drift-widening-over-an-overlapped-holder-engine",
+        |destination| {
+            build_history_widening_over_an_overlapped_holder(
+                destination,
+                OverlappedHolderStanding::HereUnderAnEngineIssuedIdentity,
+            );
+        },
+    );
 
-pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN:
-    cargo_berth_test_support::LedgerTemplate = recorded_history::template(
-    "drift-widening-over-an-overlapped-holder-foreign",
-    |destination| {
-        build_history_widening_over_an_overlapped_holder(
-            destination,
-            OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun,
-        );
-    },
-);
+pub(super) const HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN: LedgerTemplate =
+    recorded_history::template(
+        "drift-widening-over-an-overlapped-holder-foreign",
+        |destination| {
+            build_history_widening_over_an_overlapped_holder(
+                destination,
+                OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun,
+            );
+        },
+    );
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct WideningOverAnOverlappedHolderHistory {
@@ -346,7 +353,7 @@ pub(super) fn git_output_with_environment(
     GIT.output_with_environment(repository_root, arguments, name, value)
 }
 
-pub(super) const COMMITTED_INCURSION: cargo_berth_test_support::LedgerTemplate =
+pub(super) const COMMITTED_INCURSION: LedgerTemplate =
     recorded_history::template("drift-committed-incursion", |destination| {
         let repository = initialized_repository();
         let (subject_directory, subject_root) =
@@ -377,4 +384,84 @@ pub(super) struct CommittedIncursionHistory {
     pub(super) subject_id:      String,
     pub(super) holder_id:       String,
     pub(super) entering_commit: String,
+}
+
+/// One phase in a linked worktree, recorded before the tested rebase.
+///
+/// The phase committed its claimed path and one path its reservation does not cover.
+/// Then main gained a path that the worktree never opened.
+pub(super) const PHASE_BEFORE_REBASE: LedgerTemplate =
+    recorded_history::template("drift-phase-before-rebase", |destination| {
+        let repository = initialized_repository();
+        let worktree_parent = tempdir().expect("worktree parent should exist");
+        let feature = worktree_parent.path().join("feature");
+        GIT.add_worktree_without_hooks(repository.path(), &feature, "feature", "HEAD");
+        let reservation_id = claim(&feature, "file:claimed.txt", FIRST_RUN);
+        fs::write(feature.join("claimed.txt"), "phase\n").expect("claimed path should write");
+        fs::write(feature.join("phase-extra.txt"), "phase\n").expect("extra path should write");
+        git(&feature, &["add", "claimed.txt", "phase-extra.txt"]);
+        git(&feature, &["commit", "--quiet", "-m", "phase work"]);
+        fs::write(repository.path().join("upstream.txt"), "upstream\n")
+            .expect("upstream path should write");
+        git(repository.path(), &["add", "upstream.txt"]);
+        git(
+            repository.path(),
+            &["commit", "--quiet", "-m", "upstream work"],
+        );
+
+        recorded_history::save(
+            destination,
+            repository.path(),
+            &PhaseBeforeRebase {
+                feature,
+                reservation_id,
+            },
+        );
+        drop(worktree_parent);
+    });
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct PhaseBeforeRebase {
+    pub(super) feature:        PathBuf,
+    pub(super) reservation_id: String,
+}
+
+/// A main lane with its own claim after `integration` received two commits.
+///
+/// `integration` committed a path its holder claimed and one free path, and the holder
+/// still edits the claimed path. A child lane targets `integration`, so it reads as a trunk.
+pub(super) const INTEGRATED_MERGE: LedgerTemplate =
+    recorded_history::template("drift-integrated-merge", |destination| {
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let lane = repo.main_lane("receiving-unit");
+        let child = repo.lane("child-unit", "integration");
+        assert_success(&repo.claim(&child, "file:child.txt", THIRD_RUN, None));
+        let claim = repo.claim(&lane, "file:own.txt", SECOND_RUN, None);
+        assert_success(&claim);
+        let reservation_id = json_output(&claim)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        assert_success(&repo.claim(&repo.integration, "file:held.txt", FIRST_RUN, None));
+        commit_entering_path(&repo.integration, "held.txt", "integrated held content\n");
+        commit_entering_path(
+            &repo.integration,
+            "received.txt",
+            "integrated free content\n",
+        );
+        fs::write(repo.integration.join("held.txt"), "holder still working\n")
+            .expect("holder edit");
+
+        recorded_history::save(
+            destination,
+            repo.root(),
+            &IntegratedMerge {
+                lane,
+                reservation_id,
+            },
+        );
+    });
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct IntegratedMerge {
+    pub(super) lane:           PathBuf,
+    pub(super) reservation_id: String,
 }

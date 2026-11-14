@@ -149,6 +149,8 @@ mod drift_templates;
 mod gate_templates;
 #[path = "support/parallel_templates.rs"]
 mod parallel_templates;
+#[path = "support/presentation_templates.rs"]
+mod presentation_templates;
 pub use gate_templates::CrossTargetLandingWitnesses;
 pub use gate_templates::ENROLLED_PAIR;
 pub use gate_templates::EnrolledPair;
@@ -243,6 +245,7 @@ fn main() {
             SWITCHED_BRANCH_HOLDER,
             CLEAN_MERGED_HOLDER,
         ])
+        .chain(STARTING_REPOSITORIES.iter().copied())
         .chain(round_two_histories())
         .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
         .chain(GATE_SLOW_HISTORIES.iter().copied())
@@ -608,8 +611,22 @@ const OVERLAP_SLOW_HISTORIES: &[LedgerTemplate] = &[
     overlap_fixtures::BEFORE_A_FIRST_TOUCH_HOLDER_BLOCK_NAMES_THE_VERBS_THAT_CLEAR_IT,
 ];
 
+/// The repositories tests start with: each binary's shared start, then single-test setups.
+///
+/// The setup script builds them before tests start, so no test waits for them.
+const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
+    drift_fixtures::INITIALIZED_REPOSITORY,
+    parallel_templates::INITIALIZED_BEFORE_RUN,
+    presentation_templates::INITIALIZED,
+    parallel_templates::SIBLING_PHASES,
+    parallel_templates::SIBLING_PHASES_AFTER_DRIFT,
+    presentation_templates::INTEGRATION_PHASE,
+];
+
 const DRIFT_HELPER_HISTORIES: &[LedgerTemplate] = &[
     drift_fixtures::COMMITTED_INCURSION,
+    drift_fixtures::PHASE_BEFORE_REBASE,
+    drift_fixtures::INTEGRATED_MERGE,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN,

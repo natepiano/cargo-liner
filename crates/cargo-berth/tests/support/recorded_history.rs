@@ -27,17 +27,14 @@ pub(crate) const fn template(name: &'static str, build: fn(&Path)) -> LedgerTemp
 
 /// Save the repository, its linked checkouts, and the operation's witnesses.
 pub(crate) fn save(root: &Path, source: &Path, state: &impl serde::Serialize) {
-    let relocations = cargo_berth_test_support::copy_recorded_repository(EXECUTABLE, root, source);
-    relocate_tree(root, &relocations);
-    cargo_berth_test_support::write_recorded_state(
+    cargo_berth_test_support::save_recorded_history(
+        EXECUTABLE,
         root,
+        source,
         STATE,
         serde_json::to_value(state).expect("history state should encode"),
-        &relocations,
     );
 }
-
-pub(crate) use cargo_berth_test_support::relocate_tree;
 
 /// Read the witnesses after template relocation renews their paths.
 pub(crate) fn read<State: serde::de::DeserializeOwned>(root: &Path) -> State {

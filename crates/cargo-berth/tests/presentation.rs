@@ -1,52 +1,48 @@
 //! Built-binary acceptance tests for render-ready reservation responses.
 
 use cargo_berth_test_support::FIRST_RUN;
-use cargo_berth_test_support::GitDriver;
-use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::deferring_run_scope;
-use cargo_berth_test_support::git_command;
 
-/// The `cargo-berth` a managed hook must run, in place of any installed copy.
-const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+#[path = "support/presentation_templates.rs"]
+mod presentation_templates;
 
-/// How this file adds a fixture worktree: optional locks taken, nothing held back from git.
-const GIT: GitDriver = GitDriver {
-    executable:          BERTH_EXECUTABLE,
-    optional_locks:      OptionalLocks::Taken,
-    cleared_environment: &[],
-};
-
-use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use presentation_templates::CONFIGURATION_PATH;
+use presentation_templates::IntegrationPhase;
+use presentation_templates::SESSION_ENVIRONMENT;
+use presentation_templates::TestResult;
+use presentation_templates::add_worktree;
+use presentation_templates::claim;
+use presentation_templates::commit_file;
+use presentation_templates::failure;
+use presentation_templates::json_output;
+use presentation_templates::only_rendered_block;
+use presentation_templates::rendered_blocks;
+use presentation_templates::require_success;
+use presentation_templates::required_array;
+use presentation_templates::required_string;
+use presentation_templates::run_berth;
+use presentation_templates::run_git;
 use serde_json::Value;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
-const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
-const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_CLAIM_TIME: &str = "2020-01-01T00:00:00.000Z";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
-
-struct RenderedBlock<'envelope> {
-    summary: &'envelope str,
-    detail:  &'envelope str,
-}
-
 #[test]
 fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let blocked = blocked_claim_with_three_source_kinds(&repository)?;
     let envelope = json_output(&blocked)?;
     assert_eq!(blocked.status.code(), Some(1));
@@ -100,7 +96,7 @@ fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> Tes
 /// not the whole request, and leaves the other holder facts to the payload.
 #[test]
 fn blocked_check_names_each_holder_on_one_line() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let holder = run_berth(
         repository.path(),
         &["claim", "file:held.rs", "--run", FIRST_RUN, "--json"],
@@ -142,7 +138,7 @@ fn blocked_check_names_each_holder_on_one_line() -> TestResult {
 
 #[test]
 fn claimed_presentation_names_its_published_reservation() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let claimed = run_berth_with_session(
         repository.path(),
         &["claim", "file:published.rs", "--run", FIRST_RUN, "--json"],
@@ -168,7 +164,7 @@ fn claimed_presentation_names_its_published_reservation() -> TestResult {
 
 #[test]
 fn degraded_claim_renders_durable_reservation_guidance() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     fs::create_dir(repository.path().join(SESSION_MAPPING_PATH))?;
     let claimed = run_berth_with_session(
         repository.path(),
@@ -202,7 +198,7 @@ fn degraded_claim_renders_durable_reservation_guidance() -> TestResult {
 
 #[test]
 fn claimed_marker_failure_renders_its_diagnostic_and_restore_action() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let (_worktree_directory, worktree_root) = add_worktree(&repository, "marker-failure")?;
     let seed = claim(&worktree_root, "file:marker-seed.rs", SECOND_RUN)?;
     let seed_envelope = json_output(&seed)?;
@@ -254,7 +250,7 @@ fn claimed_marker_failure_renders_its_diagnostic_and_restore_action() -> TestRes
 
 #[test]
 fn release_resolve_and_renew_presentations_are_engine_considered() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let renewable = claim(repository.path(), "file:renewable.rs", FIRST_RUN)?;
     let renewable_envelope = json_output(&renewable)?;
     let renewable_id = required_string(&renewable_envelope, "/payload/data/reservation_id")?;
@@ -287,7 +283,7 @@ fn release_resolve_and_renew_presentations_are_engine_considered() -> TestResult
 
 #[test]
 fn empty_board_report_uses_nothing_to_show_wire_state() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let board = run_berth(repository.path(), &["board", "--json"])?;
     require_success(&board, "empty board")?;
     let envelope = json_output(&board)?;
@@ -298,7 +294,7 @@ fn empty_board_report_uses_nothing_to_show_wire_state() -> TestResult {
 
 #[test]
 fn sequence_presentation_is_engine_considered() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let first = claim(repository.path(), "file:first.rs", FIRST_RUN)?;
     let first_envelope = json_output(&first)?;
     let first_id = required_string(&first_envelope, "/payload/data/reservation_id")?;
@@ -318,7 +314,7 @@ fn sequence_presentation_is_engine_considered() -> TestResult {
 
 #[test]
 fn integration_denial_has_a_one_line_summary_and_complete_detail() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = initialized_repository();
     let (_holder_directory, holder_root) = add_worktree(&repository, "integration-holder")?;
     dirty_source(&holder_root, "src/lib.rs")?;
     let holder = claim(&holder_root, "tree:src", FIRST_RUN)?;
@@ -383,16 +379,19 @@ fn integration_denial_has_a_one_line_summary_and_complete_detail() -> TestResult
 
 #[test]
 fn successful_integrate_presentation_is_engine_considered() -> TestResult {
-    let repository = initialized_repository()?;
-    let (_phase_directory, phase_root) = add_worktree(&repository, "integration-phase")?;
-    let claimed = claim(&phase_root, "file:integrated.rs", FIRST_RUN)?;
-    let claimed_envelope = json_output(&claimed)?;
-    let reservation_id = required_string(&claimed_envelope, "/payload/data/reservation_id")?;
-    commit_file(&phase_root, "integrated.rs", "integrated work\n")?;
+    let worktree_parent = tempdir()?;
+    let repository = presentation_templates::INTEGRATION_PHASE
+        .instantiate_with_external_worktrees(worktree_parent.path());
+    let IntegrationPhase {
+        phase_root,
+        reservation_id,
+    } = serde_json::from_slice(&fs::read(
+        repository.path().join(presentation_templates::PHASE_STATE),
+    )?)?;
 
-    let checkpoint = run_berth(&phase_root, &["release", reservation_id, "--json"])?;
+    let checkpoint = run_berth(&phase_root, &["release", &reservation_id, "--json"])?;
     require_success(&checkpoint, "integration checkpoint")?;
-    let integrated = run_berth(&phase_root, &["integrate", reservation_id, "--json"])?;
+    let integrated = run_berth(&phase_root, &["integrate", &reservation_id, "--json"])?;
     require_success(&integrated, "integrate")?;
     let envelope = json_output(&integrated)?;
     assert_eq!(envelope["status"], "integrated");
@@ -620,35 +619,6 @@ fn assert_nothing_to_show_wire_bytes(output: &Output) -> TestResult {
     }
 }
 
-fn rendered_blocks(envelope: &Value) -> TestResult<&[Value]> {
-    let presentation_kind = required_string(envelope, "/presentation/kind")?;
-    assert_ne!(
-        presentation_kind, "not_provided",
-        "contracted reservation fact serialized an unprovided presentation: {envelope}"
-    );
-    if presentation_kind != "rendered_blocks" {
-        return Err(failure(format!(
-            "engine left presentation unprovided: {}",
-            envelope["presentation"]
-        )));
-    }
-    required_array(envelope, "/presentation/blocks")
-}
-
-fn only_rendered_block(envelope: &Value) -> TestResult<RenderedBlock<'_>> {
-    let blocks = rendered_blocks(envelope)?;
-    let [block] = blocks else {
-        return Err(failure(format!(
-            "expected one rendered presentation block, found {}",
-            blocks.len()
-        )));
-    };
-    Ok(RenderedBlock {
-        summary: required_string(block, "/summary")?,
-        detail:  required_string(block, "/detail")?,
-    })
-}
-
 fn conflict_with_source<'conflicts>(
     conflicts: &'conflicts [Value],
     source_kind: &str,
@@ -769,17 +739,6 @@ fn blocked_claim_with_three_source_kinds(repository: &TempDir) -> TestResult<Out
     )
 }
 
-fn claim(repository_root: &Path, scope: &str, run: &str) -> TestResult<Output> {
-    let output = run_berth(repository_root, &["claim", scope, "--run", run, "--json"])?;
-    require_success(&output, "claim")?;
-    let envelope = json_output(&output)?;
-    let reservation_id = required_string(&envelope, "/payload/data/reservation_id")?;
-    let rendered_block = only_rendered_block(&envelope)?;
-    assert!(rendered_block.summary.contains(reservation_id));
-    assert!(rendered_block.detail.contains(reservation_id));
-    Ok(output)
-}
-
 /// Claim [`deferring_run_scope`] for `SECOND_RUN`, then answer `holder_id` with `--defer`.
 ///
 /// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
@@ -808,53 +767,7 @@ fn deferred_claim(repository_root: &Path, holder_id: &str) -> TestResult<Output>
     )
 }
 
-fn commit_file(repository_root: &Path, path: &str, contents: &str) -> TestResult {
-    let file_path = repository_root.join(path);
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(file_path, contents)?;
-    run_git(repository_root, &["add", path])?;
-    run_git(repository_root, &["commit", "--quiet", "-m", path])
-}
-
-fn initialized_repository() -> TestResult<TempDir> {
-    let repository = tempdir()?;
-    run_git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch", "main"],
-    )?;
-    run_git(
-        repository.path(),
-        &["config", "user.name", "Cargo Berth Test"],
-    )?;
-    run_git(
-        repository.path(),
-        &["config", "user.email", "cargo-berth@example.com"],
-    )?;
-    fs::write(repository.path().join("README.md"), "initial\n")?;
-    run_git(repository.path(), &["add", "README.md"])?;
-    run_git(repository.path(), &["commit", "--quiet", "-m", "initial"])?;
-    let initialized = run_berth(repository.path(), &["init", "--json"])?;
-    require_success(&initialized, "cargo-berth init")?;
-    Ok(repository)
-}
-
-fn add_worktree(repository: &TempDir, branch: &str) -> TestResult<(TempDir, PathBuf)> {
-    let directory = tempdir()?;
-    let worktree_root = directory.path().join(branch);
-    GIT.add_worktree_without_hooks(repository.path(), &worktree_root, branch, "HEAD");
-    let configuration_path = worktree_root.join(CONFIGURATION_PATH);
-    let configuration_directory = configuration_path
-        .parent()
-        .ok_or_else(|| failure("berth configuration should have a parent directory"))?;
-    fs::create_dir_all(configuration_directory)?;
-    fs::copy(
-        repository.path().join(CONFIGURATION_PATH),
-        configuration_path,
-    )?;
-    Ok((directory, worktree_root))
-}
+fn initialized_repository() -> TempDir { presentation_templates::INITIALIZED.instantiate() }
 
 fn linked_worktree_git_directory(worktree_root: &Path) -> TestResult<PathBuf> {
     let git_file = fs::read_to_string(worktree_root.join(".git"))?;
@@ -888,30 +801,6 @@ fn enable_enforcing_gate(repository_root: &Path) -> TestResult {
     Ok(())
 }
 
-fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
-    let output = git_command(BERTH_EXECUTABLE)
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(failure(format!(
-            "git {arguments:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )))
-    }
-}
-
-fn run_berth(repository_root: &Path, arguments: &[&str]) -> TestResult<Output> {
-    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()?)
-}
-
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> TestResult<Output> {
     Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
@@ -933,35 +822,6 @@ fn run_berth_with_session(
         .output()?)
 }
 
-fn require_success(output: &Output, operation: &str) -> TestResult {
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(failure(format!(
-            "{operation} failed with {:?}: stdout={} stderr={}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )))
-    }
-}
-
-fn json_output(output: &Output) -> TestResult<Value> {
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        failure(format!(
-            "cargo-berth stdout should be JSON: {error}; stdout={}",
-            String::from_utf8_lossy(&output.stdout)
-        ))
-    })
-}
-
-fn required_string<'value>(value: &'value Value, pointer: &str) -> TestResult<&'value str> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .ok_or_else(|| failure(format!("{pointer} should be a string in {value}")))
-}
-
 fn required_detail_line<'detail>(detail: &'detail str, prefix: &str) -> TestResult<&'detail str> {
     detail
         .lines()
@@ -971,16 +831,4 @@ fn required_detail_line<'detail>(detail: &'detail str, prefix: &str) -> TestResu
                 "missing rendered detail line starting with {prefix}"
             ))
         })
-}
-
-fn required_array<'value>(value: &'value Value, pointer: &str) -> TestResult<&'value [Value]> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .ok_or_else(|| failure(format!("{pointer} should be an array in {value}")))
-}
-
-fn failure(message: impl Into<String>) -> Box<dyn Error> {
-    std::io::Error::other(message.into()).into()
 }
