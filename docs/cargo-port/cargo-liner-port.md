@@ -363,43 +363,29 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: done
 
-**Depends on:** Phase 13b on main (this phase changes its apply path). Runs before Phase 12: Phase 12 needs natedev load under 8, and this phase measures under high load.
+#### As-built
 
-#### Work Order
-
-**Goal:** at startup under high load, no frame takes more than 100 ms. Heavy result work runs off the frame path, so the app never stalls.
-
-**Source:** the showrunner, 2026-11-13, ruling on the Phase 13b proof: a 2.6 s frame is a stall the user sees. Phase 13b paired natedev starts (load 86 to 74) gave these results:
-1. Slowest frame 2.6 s, 53 saturated frames.
-2. Slow messages (`poll_background_slow_msg`, 10 ms or more): `RepoInfo` 11 messages, 13.1 s in total, at most 2.6 s; `LanguageStatsBatch` 77, 2.0 s; `CiRuns` 7, 0.66 s.
-3. The first row message of each frame batch also carries the before copy of the row presentation (`RowPresentationBatch::Captured`), so its time includes one full presentation build.
-
-**Constraints from prior phases:**
-- Phase 3: cargo-port draws a frame only when something changed; `row_generation` drives the redraw. Keep that rule.
-- Phase 13b: `poll_background` compares the row presentation once per frame batch (`finish_row_batch`). Keep `row_message_burst_builds_row_presentation_at_most_twice` green.
-- `handle_repo_info` (`tui/app/async_tasks/repo_handlers.rs`) keeps `first_commit` and compares `last_fetched` before it invalidates the GitHub fetch cache. Keep that behavior.
-
-**Spec:**
-1. **Measure.** Use `poll_background_slow_msg` and frame timing to find each message kind and step over 100 ms. Add perf fields where the log cannot tell which step costs the time.
-2. **Off the frame path.** Move the `RepoInfo` result work and any other heavy apply work off the frame path, to a background task or into bounded steps. The frame applies only cheap state changes.
-3. **Row presentation.** If one presentation build costs more than the frame budget under load, make it cheaper or incremental. Keep the draw-only-on-change rule.
-4. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
-5. **Changelog.** Add a cargo-port fix entry.
+- `tree_prefixes` (`project_list/tree_rows.rs`) builds every row's tree prefix in one reverse pass. `LaterSegments` records, per lineage prefix, whether later rows hold another segment. The work grows with rows times depth, not rows squared.
+- Discovery shimmer matching finds the one root entry that holds the shimmer path through the path index (`ProjectList::entry_containing`), in place of a walk of every root item per row.
+- `CheckoutInfo.ahead_behind_primary` holds a linked worktree's comparison with the primary `HEAD`. The background Git probe fills it (`discovery::linked_primary_root` reads the `commondir` file); it is `NotCompared` outside a linked worktree. The Git pane reads the stored value, so render runs no Git. An event on the primary `HEAD` file refreshes the linked checkouts.
+- `CiTablePlan` on `Ci` keeps the CI table columns, the `CiDurations` value (`Shown` or `Hidden`) and the widths until the content or the pane width changes. `Ci::set_content` keeps the plan when the new data is equal (`PartialEq` on `CiData`, `CiRun`, `CiJob`, `CiEmptyState`). `Ci::render_parts` splits the borrows for the render.
+- `FrameDraw::Unchanged(Duration)` carries the render time, so the perf log names the draw also when the screen does not change.
+- Proof, paired natedev starts against the Phase 13b build: at load 55-125, slowest frame 3570 ms → 153 ms and frames over 100 ms 35 → 13; at load 17-27, slowest frame 3735 ms → 199 ms, frames over 100 ms 55 → 3, Disk usage done 32.5 s → 11.0 s.
+- Tests: `tree_prefixes_read_each_row_lineage_a_few_times`, `shimmer_match_reads_a_few_root_items_per_row`, `linked_worktree_probe_compares_head_to_the_primary`, `render_reads_worktree_comparisons_without_git`, `ci_table_layout_is_built_once_while_content_and_width_hold`, `ci_table_layout_holds_when_the_same_content_is_set_again`.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/` — the apply path and `repo_handlers.rs`
-- `crates/cargo-port/src/tui/app/mod.rs` — `project_row_presentation`, if the build cost is the cause
-- `crates/cargo-port/CHANGELOG.md` — entry
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `tree_prefixes`, `LaterSegments`
+- `crates/cargo-port/src/tui/app/discovery_shimmer.rs` — path index lookup
+- `crates/cargo-port/src/project/git/checkout.rs`, `discovery.rs` — `ahead_behind_primary`, `linked_primary_root`
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — reads the stored comparison
+- `crates/cargo-port/src/watcher/refresh.rs` — primary `HEAD` refresh event
+- `crates/cargo-port/src/tui/panes/ci/render.rs`, `src/tui/state/ci.rs` — `CiTablePlan`, `CiDurations`
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` — `FrameDraw::Unchanged(Duration)`
+- `crates/cargo-port/CHANGELOG.md` — fix entry
 
-**Workers:** 1 writer.
+**Gotchas:** at load above the 32 natedev CPUs, the scheduler sets the frame times. Measure frame time at load under 32, and do not run builds or lint during a paired start.
 
-**State:** none.
-
-**Acceptance gate:**
-1. The tests fail before the repair and pass after.
-2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
-3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13b build, then this build. In this build no frame takes more than 100 ms, and Disk usage done is not later than in the Phase 13b build.
-4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the app answers keys at once while startup runs.
+**Ruled out:** further cuts for load 125, where 4 runnable tasks per CPU set the frame times.
 
 ### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
 
