@@ -1173,11 +1173,14 @@ impl LocalScanner {
                     .or_insert_with(|| activity::TranscriptRead::new(row.activity));
                 read.advance(path, row.activity);
                 startup_log::startup_event(&format!("transcript_bytes_read {}", read.bytes_read()));
-                // The session record is authoritative for a closed Claude turn.
-                if row.activity != AgentActivity::Idle
-                    && read.activity() != AgentActivity::Unreported
-                {
-                    row.activity = read.activity();
+                // `row.activity` comes from the Claude session record status and says
+                // whether the turn is open, also while the Stop hooks run after the last
+                // answer. In an open turn, `TranscriptRead::activity` names the work.
+                match (row.activity, read.activity()) {
+                    (AgentActivity::Idle, _)
+                    | (_, AgentActivity::Unreported)
+                    | (AgentActivity::Active(_), AgentActivity::Idle) => {},
+                    (_, transcript) => row.activity = transcript,
                 }
             }
             if let Some(verify) = verifications

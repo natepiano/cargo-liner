@@ -296,7 +296,7 @@ No crate code changed. On natedev, the crate's own stages of one `cargo-handler 
 
 **Ruled out:** crate changes to the detached-run record reads; the scan of about 9500 records is inside the 0.19 s crate median.
 
-### Phase 12 — Every busy row shows what the session does  · status: todo
+### Phase 12 — Every busy row shows what the session does  · status: done
 
 **Depends on:** Phase 10 (the busy activity cell and the `sessions` list)
 
