@@ -2617,6 +2617,27 @@ The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99) had 15 `c
 
 **Gotchas:** a nextest or Claude session environment can carry `PYTHONDONTWRITEBYTECODE`; a test that relies on the bytecode cache must remove it.
 
+### Phase 58n — cargo-liner tests ignore inherited Git command settings  · status: done
+
+**Depends on:** none. It runs before Phase 58m, because its failure holds the main CI point (showrunner, 2026-11-13).
+
+The CI point on main 8e7980d6e failed 6 `cargo-berth::gate` post-commit tests in the gate clone. The post-commit hook started 13 Git processes against a ceiling of 5.
+
+The CI point gives validation three Git settings in `GIT_CONFIG_COUNT`: `url.<push>.pushInsteadOf`, `user.name` and `user.email`. The test processes inherit them. `configuration_overlay` in `crates/cargo-berth/src/git/read.rs` accepts only `maintenance.auto` and `gc.auto` for in-process reads. Any other setting sends every read to a Git child. With these three settings set on natedev, 63 workspace tests fail: 14 gate tests, 47 cargo-berth unit tests and 2 cargo-port unit tests. The gate run stopped at the first failures, so it showed only 6.
+
+#### Work Order
+
+**Goal:** the workspace tests give the same result with and without inherited Git command settings.
+
+**Spec:**
+
+1. Set `GIT_CONFIG_COUNT=0` with `force = true` in the `[env]` table of `.cargo/config.toml`. Git then reads no inherited overlay entries, and cargo-berth keeps its in-process reads.
+2. Do not change the product route. A Git setting that cargo-berth does not know still goes to Git.
+
+**Files:** `.cargo/config.toml`.
+
+**Acceptance gate:** `verify.sh lint`; the workspace tests green on natedev without the three settings and with them.
+
 ### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
 
 **Depends on:** Phase 58k (its split tests and its times).
