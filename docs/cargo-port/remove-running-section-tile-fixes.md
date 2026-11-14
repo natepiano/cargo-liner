@@ -2625,18 +2625,16 @@ The CI point on main 8e7980d6e failed 6 `cargo-berth::gate` post-commit tests in
 
 The CI point gives validation three Git settings in `GIT_CONFIG_COUNT`: `url.<push>.pushInsteadOf`, `user.name` and `user.email`. The test processes inherit them. `configuration_overlay` in `crates/cargo-berth/src/git/read.rs` accepts only `maintenance.auto` and `gc.auto` for in-process reads. Any other setting sends every read to a Git child. With these three settings set on natedev, 63 workspace tests fail: 14 gate tests, 47 cargo-berth unit tests and 2 cargo-port unit tests. The gate run stopped at the first failures, so it showed only 6.
 
-#### Work Order
+#### As-built
 
-**Goal:** the workspace tests give the same result with and without inherited Git command settings.
-
-**Spec:**
-
-1. Set `GIT_CONFIG_COUNT=0` with `force = true` in the `[env]` table of `.cargo/config.toml`. Git then reads no inherited overlay entries, and cargo-berth keeps its in-process reads.
-2. Do not change the product route. A Git setting that cargo-berth does not know still goes to Git.
+- The `[env]` table in `.cargo/config.toml` sets `GIT_CONFIG_COUNT = { value = "0", force = true }`. Git and cargo-berth ignore the inherited entries in every process that cargo starts, nextest tests included.
+- The product route does not change. A Git setting that cargo-berth does not know still goes to Git.
+- Results, natedev: 7,878 workspace tests passed with the three CI settings set (63 failed before). The plain workspace gate passed 7,877 tests.
+- Director review only (no workers). Checkpoint: dbd3f8fb9 on `tile-phase-58n`.
 
 **Files:** `.cargo/config.toml`.
 
-**Acceptance gate:** `verify.sh lint`; the workspace tests green on natedev without the three settings and with them.
+**Gotchas:** a caller's `GIT_CONFIG_COUNT` reaches every test process. A test that counts Git processes or names a read route depends on the `[env]` entry.
 
 ### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
 
