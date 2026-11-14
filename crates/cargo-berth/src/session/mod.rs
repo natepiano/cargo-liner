@@ -19,6 +19,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+mod reservation_command;
+
+pub(crate) use reservation_command::command_directory;
+pub(crate) use reservation_command::select_owned_reservation;
+
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ledger::CLAUDE_CODE_SESSION_ENVIRONMENT;
@@ -347,7 +352,40 @@ impl SessionIdentityMappingPublication {
 /// The complete disposable mapping published atomically under the ledger.
 #[derive(Default, Deserialize, Serialize)]
 struct SessionIdentityStore {
-    identities: BTreeMap<HarnessSessionId, SessionReservationIdentity>,
+    identities:         BTreeMap<HarnessSessionId, SessionReservationIdentity>,
+    /// Active reservations claimed by each resolved session.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    owned_reservations: BTreeMap<HarnessSessionId, BTreeMap<ReservationId, CoordinationRunId>>,
+}
+
+impl SessionIdentityStore {
+    /// Apply one journal consequence to the selections and the owned reservations.
+    fn apply(&mut self, change: SessionMappingChange) {
+        match change {
+            SessionMappingChange::Unchanged => {},
+            SessionMappingChange::Select {
+                session,
+                identity,
+                origin,
+            } => {
+                if matches!(origin, SelectionOrigin::Claim) {
+                    self.owned_reservations
+                        .entry(session.clone())
+                        .or_default()
+                        .insert(identity.reservation_id, identity.coordination_run_id);
+                }
+                self.identities.insert(session, identity);
+            },
+            SessionMappingChange::Retire(retired) => {
+                self.owned_reservations.retain(|_, owned| {
+                    owned.retain(|id, _| !retired.contains(id));
+                    !owned.is_empty()
+                });
+                self.identities
+                    .retain(|_, identity| !retired.contains(&identity.reservation_id));
+            },
+        }
+    }
 }
 
 /// A session identity file could not be encoded or published.
@@ -403,6 +441,9 @@ pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
 pub(crate) fn resolve_first_touch_mapping(
     ledger_directory: &Path,
 ) -> FirstTouchSessionReservationMapping {
+    if let Some(identity) = reservation_command::selected_identity(ledger_directory) {
+        return FirstTouchSessionReservationMapping::Mapped(identity);
+    }
     let HarnessSessionIdentity::Available {
         harness_session_id, ..
     } = HarnessSessionId::from_current_process()
@@ -433,11 +474,37 @@ enum SessionMappingChange {
     Select {
         session:  HarnessSessionId,
         identity: SessionReservationIdentity,
+        origin:   SelectionOrigin,
     },
     Retire(Vec<ReservationId>),
 }
 
+/// The journal operation that selected a reservation for a session.
+enum SelectionOrigin {
+    /// The session claimed the reservation, so the session owns it.
+    Claim,
+    /// The session widened a reservation that it already selected.
+    Widen,
+}
+
 impl SessionMappingChange {
+    fn select(
+        run: CoordinationRunId,
+        reservation_id: ReservationId,
+        origin: SelectionOrigin,
+    ) -> Self {
+        match HarnessSessionId::from_current_process() {
+            HarnessSessionIdentity::Available {
+                harness_session_id, ..
+            } => Self::Select {
+                session: harness_session_id,
+                identity: SessionReservationIdentity::new(run, reservation_id),
+                origin,
+            },
+            HarnessSessionIdentity::Unavailable => Self::Unchanged,
+        }
+    }
+
     fn for_event(event: &JournalEvent) -> Self {
         Self::for_operation(&event.operation, event.actor.run)
     }
@@ -448,17 +515,11 @@ impl SessionMappingChange {
                 source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
                 ..
             } => Self::Unchanged,
-            JournalOperation::Claim { reservation_id, .. }
-            | JournalOperation::Widen { reservation_id, .. } => {
-                match HarnessSessionId::from_current_process() {
-                    HarnessSessionIdentity::Available {
-                        harness_session_id, ..
-                    } => Self::Select {
-                        session:  harness_session_id,
-                        identity: SessionReservationIdentity::new(run, *reservation_id),
-                    },
-                    HarnessSessionIdentity::Unavailable => Self::Unchanged,
-                }
+            JournalOperation::Claim { reservation_id, .. } => {
+                Self::select(run, *reservation_id, SelectionOrigin::Claim)
+            },
+            JournalOperation::Widen { reservation_id, .. } => {
+                Self::select(run, *reservation_id, SelectionOrigin::Widen)
             },
             JournalOperation::Checkpoint { reservation_id, .. }
             | JournalOperation::Release { reservation_id, .. }
@@ -504,17 +565,7 @@ impl PreparedSessionMappingPublication {
             &ledger_directory.join(SessionIdentityStore::FILE_NAME),
         );
         for change in changes {
-            match change {
-                SessionMappingChange::Unchanged => {},
-                SessionMappingChange::Select { session, identity } => {
-                    store.identities.insert(session, identity);
-                },
-                SessionMappingChange::Retire(retired) => {
-                    store
-                        .identities
-                        .retain(|_, identity| !retired.contains(&identity.reservation_id));
-                },
-            }
+            store.apply(change);
         }
         serde_json::to_vec(&store).map_or_else(
             |error| Self::Unavailable {
@@ -629,17 +680,10 @@ impl PreparedSessionMappingPublication {
         changes
             .into_iter()
             .map(|change| {
-                match change {
-                    SessionMappingChange::Unchanged => return Self::Unchanged,
-                    SessionMappingChange::Select { session, identity } => {
-                        store.identities.insert(session, identity);
-                    },
-                    SessionMappingChange::Retire(retired) => {
-                        store
-                            .identities
-                            .retain(|_, identity| !retired.contains(&identity.reservation_id));
-                    },
+                if matches!(change, SessionMappingChange::Unchanged) {
+                    return Self::Unchanged;
                 }
+                store.apply(change);
                 serde_json::to_vec(&store).map_or_else(
                     |error| Self::Unavailable {
                         diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),

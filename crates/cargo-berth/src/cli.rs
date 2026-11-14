@@ -890,6 +890,18 @@ impl Command {
         output_format: CliOutputFormat,
         recovery_command_line: &RecoveryCommandLine,
     ) -> CommandOutputOwnership {
+        let explicit = match &self {
+            Self::Board(arguments) => arguments.reservation.map(|id| (id, CommandVerb::Board)),
+            Self::Check(arguments) => arguments.reservation.map(|id| (id, CommandVerb::Check)),
+            Self::Claim(arguments) => arguments.reservation.map(|id| (id, CommandVerb::Claim)),
+            Self::Drift(arguments) => arguments.reservation.map(|id| (id, CommandVerb::Drift)),
+            _ => None,
+        };
+        if let Some((id, verb)) = explicit
+            && let Err(output) = session::select_owned_reservation(id, verb)
+        {
+            return CommandOutputOwnership::CallerRendersResponse(output);
+        }
         let output_envelope = match self {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
