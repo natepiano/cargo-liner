@@ -2571,51 +2571,29 @@ On 2026-11-13 the port unit director ran two phases in two worktrees. A plain `c
 
 ### Phase 58j — Sixteen cargo-berth drift, phase and presentation tests run under 1 s  · status: done
 
-**Depends on:** none. Phase 58h moves board test setup to a recorded template; use that pattern when it applies.
+**Depends on:** none.
 
-The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth tests at 1.0-1.62 s (`phases/58f/repair1-gate-fixed-slow-tests.json`). Three interleaved timing pairs (Phase 58f tree against base 644f8c3, run `20261113T135730-3586069-916b`) show that Phase 58f does not cause them. In each pair the tree at the lower load was faster. In pair 3 (load 61 base, 69 phase) the phase median was 0.56 of the base. The showrunner ruled that these tests are defects whatever the pairs show (2026-11-13).
+The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth tests at 1.0-1.62 s: 14 `drift` tests, `parallel_phases::a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths` and `presentation::successful_integrate_presentation_is_engine_considered`. The showrunner ruled them defects whatever the timing pairs show.
 
-1. `drift` (14 tests):
-   - `a_rebase_reanchors_the_phase_so_the_new_base_is_not_read_as_its_work` — 1.620 s
-   - `a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition` — 1.578 s
-   - `a_claim_taken_before_a_commit_is_entered_by_it` — 1.487 s
-   - `a_committed_incursion_names_the_commits_that_introduced_its_paths` — 1.462 s
-   - `a_claim_taken_after_a_commit_is_not_entered_by_it` — 1.436 s
-   - `a_merge_keeps_the_units_own_committed_paths` — 1.433 s
-   - `a_cheap_comparison_without_a_baseline_claims_nothing_and_still_catches_the_next_write` — 1.371 s
-   - `a_refused_merge_head_reports_the_path_it_introduced` — 1.279 s
-   - `an_answered_incursion_covers_a_sibling_claimed_after_the_answer` — 1.216 s
-   - `a_working_tree_edit_after_an_integrated_fast_forward_still_counts` — 1.178 s
-   - `a_resolution_in_an_unrecorded_merge_branch_merge_still_enters_the_held_path` — 1.138 s
-   - `ambiguous_post_commit_keeps_changes_for_an_explicit_cheap_retry` — 1.093 s
-   - `a_second_run_that_read_an_unoccupied_worktree_is_refused_under_the_lock` — 1.089 s
-   - `an_integrated_fast_forward_is_not_a_post_write` — 1.086 s
-2. `parallel_phases::a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths` — 1.007 s
-3. `presentation::successful_integrate_presentation_is_engine_considered` — 1.118 s
+#### As-built
 
-#### Work Order
+- Cause: the drift and parallel starting repositories were built inside the first test, so about 32 first-batch tests waited. The presentation tests built their repository live in each test.
+- `RepositoryTemplate::before_run()` (test-support) gives a template that the nextest setup script builds before tests run. The drift, parallel and presentation starting repositories use it, through `STARTING_REPOSITORIES` in `tests/recorded_templates.rs`.
+- Recorded histories replace live setup: `PHASE_BEFORE_REBASE` and `INTEGRATED_MERGE` (`drift_fixtures.rs`), `INTEGRATION_PHASE` (`presentation_templates.rs`), and `SIBLING_PHASES` with `SIBLING_PHASES_AFTER_DRIFT` (`parallel_templates.rs`).
+- `cargo_berth_test_support::save_recorded_history` saves a recorded history in one call. The presentation test crate denies `expect`, so it records through this call and `TestResult`.
+- The presentation helpers moved from `presentation.rs` to `support/presentation_templates.rs`, so the template and the tests share one copy.
+- The parallel sibling test splits in two at its recorded drift. The new test is `a_siblings_checkpoint_keeps_only_its_own_paths`.
+- Results: crate gate (load 98-142) 1,382 tests, the 17 named tests at 0.13-0.64 s. Loaded natedev workspace suite (load 65-99) 7,832 tests, the 17 named tests at 0.29 s or less. Final gate (load 35-62) 1,382 tests, the named tests at 0.54 s or less.
+- Director review only (no workers). Repaired: a duplicated helper copy, an unused re-export and a dead state reader. Solved in repair round 3 of 3.
+- Checkpoint: b873f73a6 on `tile-phase-58j`.
 
-**Goal:** each of the 16 tests runs under 1 s in a loaded natedev full suite at 32 threads, with every assertion.
+**Files:** `crates/cargo-berth-test-support/src/{lib,recorded_history,repository_template}.rs`; `crates/cargo-berth/tests/{drift,parallel_phases,presentation,recorded_templates}.rs`; `crates/cargo-berth/tests/support/{drift_fixtures,history_restore,parallel_templates,presentation_templates,recorded_history}.rs`.
 
-**Spec:**
+**Binds later work:** Phase 58k uses this method: a before-run start, or a recorded history for a test's own setup. A test crate that denies `expect` records through `save_recorded_history`.
 
-1. Measure first. For each test, split its time into fixture setup, Git process starts, cargo-berth process starts, disk sync and assertions. Use one shared timeline for the 14 drift tests; they likely share one setup cost.
-2. Fix the largest shared cost at its cause. Prefer a recorded template (Phase 58b, `crates/cargo-berth/tests/recorded_templates.rs`) over live setup.
-3. Keep every assertion. Add no retry, sleep or longer wait. Do not raise a limit or a timeout.
-4. Report each test's time before and after, at the same load band.
+**Gotchas:** a recorded setup that makes linked worktrees needs `instantiate_with_external_worktrees(parent)`. A template main in `recorded_templates.rs` stays at 100 lines or fewer (clippy `too_many_lines`).
 
-**Files:**
-
-- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/presentation.rs`
-- `crates/cargo-berth/tests/recorded_templates.rs` — template registration
-- `crates/cargo-berth-test-support/src/` — shared fixture setup and templates
-- `crates/cargo-berth/src/` — only when the measured cost is in the product
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, each of the 16 tests under 1 s; one loaded natedev workspace suite at 32 threads with each of the 16 tests under 1 s.
+**Ruled out:** a longer timeout, a retry or a sleep. Phase 58f does not cause the slow times (three timing pairs against base 644f8c3).
 
 ### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: todo
 
