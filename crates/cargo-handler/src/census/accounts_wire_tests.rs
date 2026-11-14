@@ -319,3 +319,45 @@ fn stored_accounts_parse_starting_and_waiting_sessions_with_their_role_counts() 
         })
     );
 }
+
+fn login_end_report(login_ends_at: Option<&Value>) -> Vec<u8> {
+    let mut row = serde_json::json!({
+        "label":"claude1","roles":[],"weekly_left_percent":null,"resets_at":null,
+        "credits":null,"use_credits":false,"read_at":null
+    });
+    if let Some(value) = login_ends_at {
+        row["login_ends_at"] = value.clone();
+    }
+    serde_json::to_vec(&serde_json::json!({"accounts":[row],"problems":[]}))
+        .expect("login end JSON")
+}
+
+#[test]
+fn login_ends_at_parses_a_date_a_null_and_a_missing_key() {
+    let instant = "2026-11-20T06:00:00Z";
+    let dated = AccountsReading::parse(&login_end_report(Some(&serde_json::json!(instant))))
+        .expect("dated login end");
+    assert_eq!(
+        dated.accounts[0].login_ends_at,
+        Reading::Known(
+            chrono::DateTime::parse_from_rfc3339(instant)
+                .expect("fixture instant")
+                .with_timezone(&chrono::Utc)
+        )
+    );
+    for (label, value) in [("null", Some(&Value::Null)), ("missing key", None)] {
+        let reading = AccountsReading::parse(&login_end_report(value)).expect(label);
+        assert_eq!(
+            reading.accounts[0].login_ends_at,
+            Reading::Unavailable,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn malformed_login_ends_at_rejects_the_reading_as_resets_at_does() {
+    assert!(
+        AccountsReading::parse(&login_end_report(Some(&serde_json::json!("next week")))).is_err()
+    );
+}

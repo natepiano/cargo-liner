@@ -1528,7 +1528,7 @@ mod tests {
                 " pi · scanning",
                 "",
                 " accounts",
-                "    account  left  role  busy  starting  waiting  idle  paused  exited  total  resets  credits  enabled",
+                "    account  left  role  busy  starting  waiting  idle  paused  exited  total  resets  login ends  credits  enabled",
             ]
         );
         assert_summary_label_and_session_colors(&buffer);

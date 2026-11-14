@@ -279,7 +279,9 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
                     .next_change(now),
                 );
             }
-            if matches!(row.resets_at, Reading::Known(_)) {
+            if matches!(row.resets_at, Reading::Known(_))
+                || matches!(row.login_ends_at, Reading::Known(_))
+            {
                 next = next.earlier(DisplayText::AccountResetDate.next_change(now));
             }
         }

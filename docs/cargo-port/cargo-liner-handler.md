@@ -232,7 +232,7 @@
 
 **Ruled out:** a second reader or a copy of a tile rule in the command; wait holders and wait reasons in the JSON (they stay in the run records).
 
-### Phase 9 — The accounts table shows the date each Claude login ends  · status: todo
+### Phase 9 — The accounts table shows the date each Claude login ends  · status: done
 
 **Depends on:** Phase 7 (it changes `census/accounts.rs`, the typed accounts read)
 
@@ -320,6 +320,8 @@ Tests (red first, each under one second):
 - Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Add no second reader.
 - Phase 8: `census --json` (`census/report.rs`) lists only unit directors and workers, by staff id, from `StaffListing` facts. Showrunners, producers and unlisted sessions are not in it, so the accounts board needs the new `sessions` list. `agent_cell::session_cells` gives each tile-shown session its `SessionCells { machine, name, status, activity }`; build `sessions` from it. The README `census` section and its example document, checked by `census_json_matches_the_readme_example_keys_and_types`, change with the schema.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
+- Accounts unit, 2026-11-13 (`757df4d92`, branch `move-anomalies`, not on main yet): `sessions[].state` writes only `busy`, `idle`, `paused` or `exited`. `role_counts` drops the `starting` and `waiting` keys. `RoleCountsWire` reads both with `#[serde(default)]`, so the parse needs no change; remove the two fields with the columns. The accounts board activity column waits for the `sessions` list in schema 2.
+- Phase 9: `AccountsColumn::LoginEnds` sits after `Resets`, and `AccountsColumnDrop::ORDER` is `[Enabled, LoginEnds, Credits]`. The header lists in `summary/mod.rs` (`each_machine_lists...` header line) and `summary/accounts_tests.rs` name every column, so removing `starting` and `waiting` edits both. `AccountsColumn::index` values shift.
 
 **Live check (director):** on natedev, compare the accounts board with cargo-handler while a unit starts, waits and works. Both show the same status and the same activity for each row.
 
@@ -576,13 +578,13 @@ Tests (red first, each under one second):
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 16 — Nine slow tests run in under one second  · status: todo
+### Phase 16 — Twelve slow tests run in under one second  · status: todo
 
 **Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 14 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
-**Goal:** nine tests that took one second or more now run in under one second in the full package run, with the same assertions.
+**Goal:** twelve tests that took one second or more now run in under one second in the full package run, with the same assertions.
 
 **Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
 
@@ -601,8 +603,11 @@ The tests and their measured times:
 5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
 6. cargo-handler `row_details_key_shows_properties_and_long_age_then_escape_closes` (`crates/cargo-handler/src/render/details_tests.rs`) — 1.06 to 1.24 s, Phase 5.
 7. cargo-handler `codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec` (`crates/cargo-handler/src/census/codex.rs`) — 1.047 s, tile Phase 62 gate.
-8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate.
+8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate; 1.573 s, tile unit workspace run 2026-11-13.
 9. cargo-handler `an_explicit_resume_id_cannot_name_an_unproven_non_user_thread` (same file) — 1.038 s, tile Phase 62 gate.
+10. cargo-handler `a_running_tui_changes_threads_only_after_its_child_confirms_resume` (same file) — 1.120 s, tile unit workspace run 2026-11-13.
+11. cargo-handler `a_picker_delay_does_not_pair_clients_by_start_order` (same file) — 1.043 s, tile unit workspace run 2026-11-13.
+12. cargo-handler `a_reconnect_does_not_transfer_a_detached_connection_to_a_tui` (same file) — 1.042 s, tile unit workspace run 2026-11-13.
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
@@ -618,11 +623,11 @@ The tests and their measured times:
 - `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
 - `crates/cargo-handler/src/render/details_tests.rs` — test 6
 - `crates/cargo-handler/src/census/codex.rs` — test 7
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 and 9
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 to 12
 
 **Workers:** 1 writer.
 - `impl` — every file above.
 
 **State:** none
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the nine tests runs in under one second in its full package run, with its assertions unchanged.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the twelve tests runs in under one second in its full package run, with its assertions unchanged.
