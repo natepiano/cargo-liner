@@ -3,6 +3,7 @@ use std::path::Path;
 use tui_pane::Appearance;
 
 use super::cargo_metadata::CargoMetadataError;
+use super::discovery::ProjectGitLayout;
 use super::disk_usage::DirSizes;
 use super::disk_usage::ProjectStorage;
 use crate::cache_paths;
@@ -22,7 +23,6 @@ use crate::project::CommitDate;
 use crate::project::CratesIoRelease;
 use crate::project::GithubRunCount;
 use crate::project::LanguageStats;
-use crate::project::ManifestFingerprint;
 use crate::project::ProjectPrData;
 use crate::project::PullRequestGoneReason;
 use crate::project::PullRequestInfo;
@@ -91,6 +91,11 @@ pub(crate) enum BackgroundMsg {
     /// enqueue for this path. Used by startup readiness to wait for dynamic
     /// declarations such as submodule crates.io fetches.
     ProjectDetailsDeclared { path: AbsolutePath },
+    /// The startup Git layout of each project, read on a worker thread. The
+    /// frame spawns one detail job per project that is still in the list.
+    StartupGitLayouts {
+        layouts: Vec<(AbsolutePath, ProjectGitLayout)>,
+    },
     /// A complete crates.io release fetched for a project.
     CratesIoVersion {
         path:    AbsolutePath,
@@ -217,14 +222,13 @@ pub(crate) enum BackgroundMsg {
     /// Periodic `sccache --show-stats` summary for the status-line segment.
     SccacheSummary(SccacheSummary),
     /// `cargo metadata --no-deps --offline` result for one workspace root.
-    /// The `fingerprint` was captured *before* the spawn; callers recompute
-    /// at merge time and discard the result on mismatch. `generation`
-    /// coalesces rapid re-dispatches — arrivals stamped with an older
-    /// generation are dropped rather than merged.
+    /// The worker compares the manifest fingerprint before and after the
+    /// run, and reports a change as [`CargoMetadataError::ManifestChanged`].
+    /// `generation` coalesces rapid re-dispatches — arrivals stamped with an
+    /// older generation are dropped rather than merged.
     CargoMetadata {
         workspace_root: AbsolutePath,
         generation:     u64,
-        fingerprint:    ManifestFingerprint,
         result:         Result<WorkspaceMetadata, CargoMetadataError>,
     },
     /// Disk walk result for an out-of-tree `target_directory`. Emitted by
@@ -321,6 +325,8 @@ impl BackgroundMsg {
             // raises a toast.
             | Self::CratesIoNewRelease { .. }
             | Self::ProjectDetailsDeclared { .. }
+            // The detail jobs that the layouts start send the detail data.
+            | Self::StartupGitLayouts { .. }
             // `LintStatus` invalidates detail only after its handler resolves
             // the lint-owning project, tying owner remaps and toast state to
             // the same model update.

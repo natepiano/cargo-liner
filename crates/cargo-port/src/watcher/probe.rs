@@ -15,7 +15,6 @@ use crate::enrichment;
 use crate::http::HttpClient;
 use crate::project;
 use crate::project::AbsolutePath;
-use crate::project::GitRepoPresence;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::scan;
@@ -23,6 +22,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
+use crate::scan::ProjectGitLayout;
 use crate::scan::SourceMeasurements;
 
 pub(super) fn spawn_project_refresh(
@@ -144,11 +144,7 @@ pub(super) fn probe_new_projects(
             let abs_path = AbsolutePath::from(item.path().to_path_buf());
             outcomes.push(project_probe_outcome(&item));
             let project_name = item.name().map(str::to_string);
-            let repo_presence = if project::git_repo_root(&abs_path).is_some() {
-                GitRepoPresence::InRepo
-            } else {
-                GitRepoPresence::OutsideRepo
-            };
+            let layout = ProjectGitLayout::read(abs_path.as_path());
             let disk_entries = scan::disk_usage_batch_for_item(&item);
             let _ = background_tx.send(BackgroundMsg::ProjectDiscovered { item });
             let _ = background_tx.send(BackgroundMsg::DiskUsageBatch {
@@ -181,9 +177,9 @@ pub(super) fn probe_new_projects(
                 fetch_context: &fetch_context,
                 abs_path: &abs_path,
                 name: project_name.as_deref(),
-                repo_presence,
+                layout,
             };
-            rayon::spawn(scan::project_detail_job(&request));
+            rayon::spawn(scan::project_detail_job(request));
         } else {
             outcomes.push(FolderProbeOutcome::NotProject(dir));
         }

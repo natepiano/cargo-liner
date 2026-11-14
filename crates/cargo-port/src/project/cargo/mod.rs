@@ -11,6 +11,9 @@ mod workspace;
 pub(crate) use crates_io_release::CratesIoRelease;
 pub(crate) use crates_io_release::CratesIoReleaseState;
 pub(crate) use member_group::MemberGroup;
+#[cfg(test)]
+pub(crate) use metadata_store::FINGERPRINT_CAPTURES;
+#[cfg(test)]
 pub(crate) use metadata_store::FileStamp;
 pub(crate) use metadata_store::ManifestFingerprint;
 pub(crate) use metadata_store::PackageRecord;

@@ -12,6 +12,15 @@ pub(crate) enum GitRepoPresence {
 }
 
 impl GitRepoPresence {
+    /// Find whether `project_dir` or one of its ancestors holds a `.git` entry.
+    pub(crate) fn of(project_dir: &Path) -> Self {
+        if git_repo_root(project_dir).is_some() {
+            Self::InRepo
+        } else {
+            Self::OutsideRepo
+        }
+    }
+
     pub(crate) const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
 }
 

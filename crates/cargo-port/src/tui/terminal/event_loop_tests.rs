@@ -249,6 +249,7 @@ fn queue(app: &mut App, message: BackgroundMsg) {
         1,
         "only the queued reply is processed"
     );
+    app.settle_row_batch();
 }
 
 fn select_fixture_project(app: &mut App, path: &str) {
@@ -328,6 +329,7 @@ fn delayed_storage_reply_after_identical_disk_reply_changes_the_row_frame_input(
         "the poll includes DiskUsage and ProjectStorage"
     );
     assert_eq!(stats.disk_usage_msgs, 1);
+    app.settle_row_batch();
     assert_eq!(app.project_list.row_generation, row_generation + 1);
     assert_eq!(app.scan.generation(), detail_generation);
     assert!(frames.needs_draw(&app, now));
@@ -355,6 +357,48 @@ fn row_message_burst_builds_row_presentation_at_most_twice() {
         ROW_PRESENTATION_BUILDS.with(std::cell::Cell::get) <= 2,
         "one frame batch compares the row presentation once"
     );
+}
+
+#[test]
+fn background_frame_that_changes_widths_builds_row_presentation_once() {
+    let paths = ["/tmp/phase13d-first", "/tmp/phase13d-second"];
+    let mut app = test_support::make_app(&[project(paths[0]), project(paths[1])]);
+    app.ensure_visible_rows_cached();
+    app.ensure_fit_widths_cached();
+    let fit_width_builds = app.project_list.fit_width_builds.get();
+    let sender = app.background.background_sender();
+    for path in paths.iter().cycle().take(20) {
+        sender
+            .send(BackgroundMsg::NoRepository {
+                path: AbsolutePath::from(*path),
+            })
+            .expect("queue row message");
+    }
+    sender
+        .send(BackgroundMsg::DiskUsage {
+            path:  AbsolutePath::from(paths[0]),
+            bytes: 5 << 30,
+        })
+        .expect("queue disk message");
+    ROW_PRESENTATION_BUILDS.with(|builds| builds.set(0));
+
+    let stats = app.poll_background();
+    app.ensure_visible_rows_cached();
+    app.ensure_disk_cache();
+    app.ensure_fit_widths_cached();
+
+    assert_eq!(stats.bg_msgs, 21);
+    assert_eq!(
+        app.project_list.fit_width_builds.get(),
+        fit_width_builds + 1,
+        "the disk message changes the fit widths"
+    );
+    assert_eq!(
+        ROW_PRESENTATION_BUILDS.with(std::cell::Cell::get),
+        1,
+        "the fit check build closes the batch and measures the shown names"
+    );
+    assert!(!app.row_batch_is_open());
 }
 
 #[test]
@@ -429,7 +473,6 @@ fn row_reply_comparison_never_recomputes_fitted_widths() {
     let reply = || BackgroundMsg::CargoMetadata {
         workspace_root: root.clone(),
         generation,
-        fingerprint: fixture_fingerprint(),
         result: Err(CargoMetadataError::ManifestRejected {
             first_line: "invalid manifest".into(),
         }),
@@ -521,7 +564,6 @@ fn unselected_manifest_error_and_recovery_each_draw() {
         project(root.as_path().to_str().expect("fixture path")),
     ]);
     select_fixture_project(&mut app, "/tmp/phase3-selected");
-    let fingerprint = fixture_fingerprint();
     let now = Instant::now();
     let mut frames = FrameState::default();
     assert!(frames.needs_draw(&app, now));
@@ -536,7 +578,6 @@ fn unselected_manifest_error_and_recovery_each_draw() {
         BackgroundMsg::CargoMetadata {
             workspace_root: root.clone(),
             generation,
-            fingerprint: fingerprint.clone(),
             result: Err(CargoMetadataError::ManifestRejected {
                 first_line: "invalid manifest".into(),
             }),
@@ -558,7 +599,7 @@ fn unselected_manifest_error_and_recovery_each_draw() {
         declared_checkout_root:   root.clone(),
         target_directory:         AbsolutePath::from(root.join("target")),
         packages:                 std::collections::HashMap::new(),
-        fingerprint:              fingerprint.clone(),
+        fingerprint:              fixture_fingerprint(),
         out_of_tree_target_bytes: None,
     };
     queue(
@@ -566,7 +607,6 @@ fn unselected_manifest_error_and_recovery_each_draw() {
         BackgroundMsg::CargoMetadata {
             workspace_root: root.clone(),
             generation,
-            fingerprint,
             result: Ok(metadata),
         },
     );

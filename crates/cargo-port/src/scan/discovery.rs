@@ -81,16 +81,38 @@ pub(crate) struct ProjectDetailRequest<'a> {
     pub fetch_context: &'a FetchContext,
     pub abs_path:      &'a Path,
     pub name:          Option<&'a str>,
-    pub repo_presence: GitRepoPresence,
+    pub layout:        ProjectGitLayout,
+}
+
+/// The Git layout that a detail job reads from the disk before it starts.
+pub(crate) struct ProjectGitLayout {
+    repo_presence: GitRepoPresence,
+    submodules:    Vec<Submodule>,
+}
+
+impl ProjectGitLayout {
+    /// Read the repository presence and the declared submodules. Callers on
+    /// the frame read the layout on a worker thread first.
+    pub(crate) fn read(abs_path: &Path) -> Self {
+        let repo_presence = GitRepoPresence::of(abs_path);
+        let submodules = if repo_presence.is_in_repo() {
+            project::get_submodules(abs_path)
+        } else {
+            Vec::new()
+        };
+        Self {
+            repo_presence,
+            submodules,
+        }
+    }
 }
 
 /// Capture submodule caches before detail work enters the background queue.
-pub(crate) fn project_detail_job(req: &ProjectDetailRequest<'_>) -> impl FnOnce() + Send + use<> {
-    let submodules = if req.repo_presence.is_in_repo() {
-        project::get_submodules(req.abs_path)
-    } else {
-        Vec::new()
-    };
+pub(crate) fn project_detail_job(req: ProjectDetailRequest<'_>) -> impl FnOnce() + Send + use<> {
+    let ProjectGitLayout {
+        repo_presence,
+        submodules,
+    } = req.layout;
     let abs = AbsolutePath::from(req.abs_path);
     let submodule_paths: Vec<_> = submodules.iter().map(|sub| sub.path().clone()).collect();
     req.fetch_context
@@ -103,28 +125,29 @@ pub(crate) fn project_detail_job(req: &ProjectDetailRequest<'_>) -> impl FnOnce(
     let sender = req.sender.clone();
     let fetch_context = req.fetch_context.clone();
     let name = req.name.map(str::to_string);
-    let repo_presence = req.repo_presence;
     move || {
         let request = ProjectDetailRequest {
-            sender: &sender,
+            sender:        &sender,
             fetch_context: &fetch_context,
-            abs_path: abs.as_path(),
-            name: name.as_deref(),
-            repo_presence,
+            abs_path:      abs.as_path(),
+            name:          name.as_deref(),
+            layout:        ProjectGitLayout {
+                repo_presence,
+                submodules,
+            },
         };
-        fetch_project_details(&request, submodules, enrichment_jobs);
+        fetch_project_details(request, enrichment_jobs);
     }
 }
 
-fn fetch_project_details(
-    req: &ProjectDetailRequest<'_>,
-    submodules: Vec<Submodule>,
-    enrichment_jobs: Vec<impl FnOnce()>,
-) {
+fn fetch_project_details(req: ProjectDetailRequest<'_>, enrichment_jobs: Vec<impl FnOnce()>) {
     let sender = req.sender;
     let fetch_context = req.fetch_context;
     let abs: AbsolutePath = req.abs_path.to_path_buf().into();
-    let repo_presence = req.repo_presence;
+    let ProjectGitLayout {
+        repo_presence,
+        submodules,
+    } = req.layout;
     let client = &fetch_context.client;
     // `emit_git_info` sends local Git metadata, including Git status, but skips
     // `first_commit`, which `schedule_git_first_commit_refreshes` handles separately
@@ -362,11 +385,7 @@ pub(super) fn phase1_discover(
                 let item = tree::cargo_parse_result_to_item(cargo_parse_result);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
-                let repo_presence = if project::git_repo_root(&abs_path).is_some() {
-                    GitRepoPresence::InRepo
-                } else {
-                    GitRepoPresence::OutsideRepo
-                };
+                let repo_presence = GitRepoPresence::of(&abs_path);
                 tracing::trace!(
                     target: PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(repo_presence_started.elapsed().as_millis()),
@@ -384,5 +403,34 @@ pub(super) fn phase1_discover(
         items: root_items,
         disk_entries,
         stats,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectGitLayout;
+    use crate::constants::GIT_DIR;
+
+    #[test]
+    fn git_layout_reads_the_repo_and_its_submodules() -> std::io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let outside = ProjectGitLayout::read(scratch.path());
+        assert!(!outside.repo_presence.is_in_repo());
+        assert!(outside.submodules.is_empty());
+
+        std::fs::create_dir(scratch.path().join(GIT_DIR))?;
+        std::fs::write(
+            scratch.path().join(".gitmodules"),
+            "[submodule \"child\"]\n\tpath = child\n\turl = https://example.com/child\n",
+        )?;
+        let inside = ProjectGitLayout::read(scratch.path());
+        assert!(inside.repo_presence.is_in_repo());
+        let paths: Vec<_> = inside
+            .submodules
+            .iter()
+            .map(|submodule| submodule.path.as_path().to_path_buf())
+            .collect();
+        assert_eq!(paths, vec![scratch.path().join("child")]);
+        Ok(())
     }
 }

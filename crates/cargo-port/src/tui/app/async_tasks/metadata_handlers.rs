@@ -2,7 +2,6 @@ use tui_pane::PERF_LOG_TARGET;
 
 use crate::project;
 use crate::project::AbsolutePath;
-use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadata;
 use crate::scan;
 use crate::scan::CargoMetadataError;
@@ -17,7 +16,6 @@ impl App {
         &mut self,
         workspace_root: AbsolutePath,
         generation: u64,
-        fingerprint: &ManifestFingerprint,
         result: Result<WorkspaceMetadata, CargoMetadataError>,
     ) {
         if !self.project_list.is_rust_at_path(&workspace_root) {
@@ -50,27 +48,21 @@ impl App {
         }
         match result {
             Ok(workspace_metadata) => {
-                if !self.accept_cargo_metadata(
-                    &workspace_root,
-                    generation,
-                    fingerprint,
-                    workspace_metadata,
-                ) {
-                    return;
-                }
+                self.accept_cargo_metadata(&workspace_root, generation, workspace_metadata);
             },
             Err(err) => match err {
+                CargoMetadataError::ManifestChanged => {
+                    // Skip the startup bookkeeping. The refresh that the
+                    // watcher dispatches for the edit completes the startup
+                    // metadata entry for this workspace.
+                    tracing::debug!(
+                        workspace_root = %workspace_root.display(),
+                        generation,
+                        "cargo_metadata_msg_fingerprint_drift"
+                    );
+                    return;
+                },
                 CargoMetadataError::ManifestRejected { first_line } => {
-                    if ManifestFingerprint::capture(&workspace_root)
-                        .is_ok_and(|current| &current != fingerprint)
-                    {
-                        tracing::debug!(
-                            workspace_root = %workspace_root.display(),
-                            generation,
-                            "cargo_metadata_msg_fingerprint_drift"
-                        );
-                        return;
-                    }
                     if self.project_list.is_rust_at_path(&workspace_root) {
                         self.scan
                             .manifest_metadata
@@ -113,29 +105,15 @@ impl App {
         self.startup.metadata.seen.insert(workspace_root);
         self.maybe_log_startup_phase_completions();
     }
-    /// Merge a successful `cargo metadata` arrival. Returns `false` when the
-    /// arrival was dropped because the captured fingerprint no longer
-    /// matches what's on disk — caller should skip startup-phase bookkeeping
-    /// so a later dispatch can still tick it off.
+    /// Merge a successful `cargo metadata` arrival. The worker already
+    /// dropped a result whose manifest changed during the run, so this
+    /// merge reads nothing from the disk.
     pub(super) fn accept_cargo_metadata(
         &mut self,
         workspace_root: &AbsolutePath,
         generation: u64,
-        fingerprint: &ManifestFingerprint,
         workspace_metadata: WorkspaceMetadata,
-    ) -> bool {
-        let current_fp = ManifestFingerprint::capture(workspace_root.as_path()).ok();
-        let fingerprint_drift = current_fp
-            .as_ref()
-            .is_some_and(|current| current != fingerprint);
-        if fingerprint_drift {
-            tracing::debug!(
-                workspace_root = %workspace_root.as_path().display(),
-                generation,
-                "cargo_metadata_msg_fingerprint_drift"
-            );
-            return false;
-        }
+    ) {
         let target_directory = workspace_metadata.target_directory.clone();
         let member_roots = workspace_member_roots(&workspace_metadata);
         let needs_out_of_tree_walk = !target_directory
@@ -197,7 +175,6 @@ impl App {
             generation,
             "cargo_metadata_applied"
         );
-        true
     }
 }
 /// Project root for each package covered by a [`WorkspaceMetadata`] —

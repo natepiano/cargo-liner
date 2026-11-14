@@ -267,4 +267,3 @@ pub(in crate::tui) use presentation::ProjectPresentation;
 pub(super) use project_list::ProjectRowPresentation;
 pub(super) use project_list::ProjectRowWidthInput;
 pub(super) use project_list::project_width_presentations;
-pub(super) use project_list::shown_name_width;

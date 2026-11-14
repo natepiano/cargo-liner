@@ -92,6 +92,13 @@ impl SourceMeasurements {
     }
 
     #[cfg(test)]
+    pub(crate) fn has_submodule_owner_for_test(&self, child: &AbsolutePath) -> bool {
+        self.submodule_owners
+            .lock()
+            .is_ok_and(|owners| owners.contains_key(child))
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_language_owner_for_test(&self, root: &AbsolutePath) -> bool {
         self.languages
             .lock()

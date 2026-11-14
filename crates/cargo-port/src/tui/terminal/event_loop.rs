@@ -259,6 +259,8 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain 
     }
     if count == 0 {
         flush_deferred_selection(app);
+    } else {
+        app.forget_row_presentation();
     }
     InputDrain {
         count,
@@ -541,16 +543,18 @@ impl FrameState {
     /// can be checked independently of scheduler delays.
     fn needs_draw(&mut self, app: &App, now: Instant) -> bool {
         let key = FrameKey::from_app(app, now);
-        let changed = match self {
-            Self::FirstFrame => true,
-            Self::Drawn {
-                key: previous,
-                next_visual_change,
-            } => {
-                previous.as_ref() != &key
-                    || matches!(next_visual_change, ToastVisualDeadline::At(deadline) if now >= *deadline)
-            },
-        };
+        // An open frame batch holds row changes that no build compared yet.
+        let changed = app.row_batch_is_open()
+            || match self {
+                Self::FirstFrame => true,
+                Self::Drawn {
+                    key: previous,
+                    next_visual_change,
+                } => {
+                    previous.as_ref() != &key
+                        || matches!(next_visual_change, ToastVisualDeadline::At(deadline) if now >= *deadline)
+                },
+            };
         if changed {
             self.record_draw(app, now);
         }
