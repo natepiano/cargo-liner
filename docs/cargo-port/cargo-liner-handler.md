@@ -380,66 +380,28 @@ A session whose staff role is `producer` (`RoleLabel::Stated(Producer)`) draws a
 
 ### Phase 16 — Claude rows show their effort, and a long shell command does not widen the session column  · status: done
 
-**Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
+#### As-built
 
-#### Work Order
+`ConversationModel::take_claude` takes the model from `message.model` and the effort from the top level of an assistant record, then from the nested effort fields. System-record metadata and the effort aliases still apply, and a later record with no effort keeps the recorded one.
 
-**Goal:** every tile with room draws the effort column for Claude and Codex rows. A shell command row takes no more width than the agent rows beside it.
+The column fitter keeps the drop order as the priority order. `GroupFitStep::Restore` runs after the five optional drops (`ColumnDrop::is_optional`: effort, model, directory, type, branch) and before `CutSession`. `TreeMetrics::restore_columns` adds back each dropped optional column in reverse drop order while it fits, then the fill gives the rest to the session column. Added-back columns keep their display positions, and the column set depends only on the tile width and the row data. Each tile adds back only columns its own rows fill (`TreeMetrics::measured_columns`); the shared fit at one x adds back only columns that one of its tiles keeps.
 
-**Source:** the user, via the showrunner, 2026-11-11 (C263): "there are a few problems with the current setup so think about these 4 the future: why does effort only show in the unassigned when the rest have plenty of space - also we shouldn't allow a long python script description to take up so much space as it does in the natedev showrunner." Screenshot: `/tmp/claude/scratch/until-2026-11-15T0500Z-handler-shot-c263/handler_c263_followup.png`.
-
-**Spec:**
-
-Director decisions:
-1. Cause of the effort gap: Claude writes `effort` at the top level of each assistant record (`{"type":"assistant","effort":"high","message":{...}}`). `ConversationModel::take_claude` reads effort from `message`, so no Claude row has an effort, and the fitter drops the empty column. Codex rows record effort, so only the unassigned tile drew it. Fix the reader: take the model from `message.model`. Take effort from the top-level record first, then from the nested effort fields that `take_claude` reads today. Keep the system-record metadata and the effort aliases. A later record with no effort keeps the recorded one.
-2. The drop order is the priority order. After the drop steps, the fitter adds back each dropped optional column, in the reverse drop order, while it fits. Then the fill gives the rest to the session column. Added-back columns keep their display positions. The column set depends only on the tile width and the row data, so a redraw at one width never changes it. Source: showrunner ruling A, 2026-11-14. The live check showed that effort dropped first and did not come back after directory dropped.
-3. A shell command row's session cell cuts each path argument to its file name: `python3 /tmp/…/scratchpad/watchgates.py 2>&1` draws `python3 watchgates.py 2>&1`.
-4. The session column width comes from the agent rows of the tile. A shell row wider than that width ends in `…` at the column edge. The details view `name:` line keeps the full command.
-5. One way to read a row's `RowIdentity` (the Phase 15 style review). The free function `root_identity` becomes an `AgentEntry` method, and the `lines_of` call uses it. `TreeLineContent::row_identity` serves `TreeLine::order_key` and the details owner walk. Both replace their own `RowIdentity { machine, pid }` literals.
-
-**Constraints from prior phases:**
-- Phase 1 shows the recorded model and effort in the `d` view. Use `ModelName` and `ReasoningEffort::Unrecorded`. JSON `Option` values stay inside the decode step; add no optional effort field.
-- `TreeLine::name` feeds both the drawn cell and the `d` view `name:` line. Keep the full command for the `d` view and for selection identity. Use a separate display text for the short shell form.
-- Phase 8: `agent_cell::session_cells` copies the line name into `census --json`. Shell lines have no session and are not in it; agent names stay full.
-- Leave shell text out of the preferred session width before the shared metrics and layout demand run. The minimum width still holds the tree guides and the session header. Cut on grapheme boundaries and keep span styles.
-- Phase 3 keeps the measured demand widths (`TreeMetrics.widths`) apart from the drawn widths (`TreeColumnAlignment::Fitted`), and fills shared tiles in `align_screen_columns`. The shell rule changes only the measured session width. Keep the shared slots and the fill space that the fitter gives; a shell row can draw into session width that the fill gives.
-- The cut keeps quotes, spaces, redirections and arguments that are not paths.
-- Phase 10: `drop_step` cuts the activity job by the overflow before the role column drops (`ActivityFit::Cut`, never below `activity_floor`). A narrower session width changes the overflow; keep `a_narrow_tile_cuts_the_activity_job_by_its_overflow_only` green.
-- Phase 14: at a narrow width, `enter expand` gives way first, before the uptime and the navigation hints. `the_expand_hint_yields_to_uptime_at_a_narrow_width` (`render/full_screen_tests.rs`) holds it. A status-row assertion in `render/narrow_width_tests.rs` expects that.
-- Phase 15: the producers tile and the unassigned tiles are pooled tiles. `TilePool` names the pool, and `PooledEntry` draws it through `draw_pooled`, `pooled_line` and `pooled_header_spans` (`agent_cell.rs`). Producer rows carry their shell work, so the shell width rule holds in pooled tiles too.
-
-Tests (red first, each under one second):
-1. A Claude assistant record with a top-level `effort` gives that effort; its `message.model` gives the model.
-2. A Claude tile with recorded effort draws the effort column at a width that fits it.
-3. A path argument draws as its file name; other arguments are unchanged.
-4. A shell row longer than the widest agent row does not widen the session column, and it ends in `…` at the exact column edge. Neighbor tiles keep their widths.
-5. The details view of that shell row, opened with `d`, shows the full command, and `y` on its `name:` line copies the full command.
-6. Effort reading: top-level first, nested fallback, system records, aliases and a missing effort. Bounded first reads, unchanged-file reuse, appends and file replacement keep working.
-7. Quoted paths with spaces, relative paths and redirections cut correctly; other arguments are unchanged.
-8. The `d` view of a Claude row with recorded effort shows that effort on its `effort:` line in the agent section.
-
-**Live check (director):** before the checkpoint, capture the natedev showrunner tile and the hana showrunner tile from a build of this branch and from main, under the safety rule.
-
-**Change-Review line:** Claude rows show their effort, and a long shell command no longer pushes the columns to the right | On natedev, run cargo-handler and look at the natedev and hana showrunner tiles | The effort column shows on Claude rows where the tile has room; a shell command shows its script name and ends in … at the session column edge; d shows the full command
+A shell command row draws `shell_command::short_command`, which cuts each path argument to its file name and keeps quotes, redirections and other arguments. `TreeLine::display_name` holds the drawn text; `TreeLine::name` keeps the full command for the `d` view `name:` line, `y`, and selection identity. A shell row adds only its tree lead to the session demand, so the agent rows set the session width and a longer shell row ends in `…` at the column edge. `AgentEntry::root_identity` and `TreeLineContent::row_identity` are the one way to read a row's `RowIdentity`.
 
 **Files:**
-- `crates/cargo-handler/src/census/model.rs` — `ConversationModel::take_claude`
-- `crates/cargo-handler/src/agent_cell.rs` — the shell row text and the session column width
-- `docs/cargo-handler/as-built/hierarchy.md` — the effort source and the shell row text
-- `docs/cargo-handler/as-built/tile-layout.md` — the session column width
-- `crates/cargo-handler/src/census/transcript.rs` — metadata reader tests
-- `crates/cargo-handler/src/render/details_tests.rs` — full shell command in the `d` view
-- `crates/cargo-handler/src/render/narrow_width_tests.rs` — shell width and neighbor tiles
-- `docs/cargo-handler/as-built/startup.md` — Claude effort sources
+- `crates/cargo-handler/src/census/model.rs` — the Claude effort and model reader
+- `crates/cargo-handler/src/agent_cell.rs` — the restore step, `measured_columns`, the shell row width and display text
+- `crates/cargo-handler/src/shell_command.rs` — the short command form
+- `crates/cargo-handler/src/agent_cell/tests/shell_command_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/render/details_tests.rs`, `crates/cargo-handler/src/census/transcript.rs` — the tests
+- `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/tile-layout.md`, `docs/cargo-handler/as-built/startup.md` — the effort source, the restore step and the shell row text
 
-**Workers:** 2 writers.
-- `metadata` — `census/model.rs`, `census/transcript.rs` tests, `docs/cargo-handler/as-built/startup.md`: the effort reader.
-- `shell` — `agent_cell.rs` shell text and session width, `render/details_tests.rs`, `render/narrow_width_tests.rs`, `hierarchy.md`, `tile-layout.md`.
-Both use the existing `ModelName` and `ReasoningEffort` types.
+**Binds later work:** `render/details_tests.rs` holds `long_shell_application` and its two tests (the drawn short command, and `d` and `y` on the full command).
 
-**State:** none
+**Gotchas:**
+- The restore uses the uncut session width: a long session name keeps its room, and the session cut comes after.
+- A tile draws only its own fitted columns. If the shared fit adds a column that none of its tiles keeps, the tiles draw empty slots and the session falls short.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
+**Ruled out:** moving effort later in the drop order, and deferring the column rule.
 
 ### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
@@ -536,6 +498,7 @@ The tests and their measured times:
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
 - Phase 17 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
+- Phase 16 adds `long_shell_application` and its two tests to `render/details_tests.rs`: the drawn short command, and `d` and `y` on the full command. Keep them.
 
 **Change-Review line:** none (test code only)
 
