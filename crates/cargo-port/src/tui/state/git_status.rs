@@ -16,13 +16,6 @@ use tui_pane::ToastTaskId;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 
-#[derive(Default)]
-pub(in crate::tui) struct GitStatusTracker {
-    entries:       HashMap<AbsolutePath, Baseline>,
-    current_toast: Option<ToastTaskId>,
-    next_item_seq: u64,
-}
-
 /// Two-state baseline for the per-project `GitStatus`.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 enum Baseline {
@@ -34,6 +27,35 @@ enum Baseline {
     Seen(GitStatus),
 }
 
+/// The "Git status changes" task toast id that the tracker retains.
+///
+/// `Tracked` means an id is retained, not that the framework toast is still live.
+#[derive(Clone, Copy, Default)]
+pub(in crate::tui) enum GitStatusToastTracking {
+    /// No toast id is retained.
+    #[default]
+    Untracked,
+    /// The id of the last toast this tracker created.
+    Tracked(ToastTaskId),
+}
+
+/// The outcome of one `GitStatusTracker::observe` call.
+pub(in crate::tui) enum GitStatusObservation {
+    /// The first observation for this path seeded its baseline.
+    BaselineSeeded,
+    /// The value equals the prior observation.
+    Unchanged,
+    /// The value differs from the prior observation.
+    Changed(GitStatusTransition),
+}
+
+#[derive(Default)]
+pub(in crate::tui) struct GitStatusTracker {
+    entries:       HashMap<AbsolutePath, Baseline>,
+    current_toast: GitStatusToastTracking,
+    next_item_seq: u64,
+}
+
 /// A flipped git-status value worth surfacing.
 pub(in crate::tui) struct GitStatusTransition {
     pub previous: GitStatus,
@@ -41,33 +63,34 @@ pub(in crate::tui) struct GitStatusTransition {
 }
 
 impl GitStatusTracker {
-    /// Record `current` and return `Some` if the value flipped versus the
-    /// prior observation. The first call for a given path always returns
-    /// `None` and just seeds the baseline.
+    /// Record `current` and compare it with the prior observation. The first
+    /// call for a given path returns `BaselineSeeded` and just seeds the baseline.
     pub(in crate::tui) fn observe(
         &mut self,
         path: AbsolutePath,
         current: GitStatus,
-    ) -> Option<GitStatusTransition> {
-        let previous = self.entries.insert(path, Baseline::Seen(current));
-        match previous {
-            Some(Baseline::Seen(prev)) if prev != current => Some(GitStatusTransition {
-                previous: prev,
-                current,
-            }),
-            _ => None,
+    ) -> GitStatusObservation {
+        match self.entries.insert(path, Baseline::Seen(current)) {
+            None | Some(Baseline::Unseen) => GitStatusObservation::BaselineSeeded,
+            Some(Baseline::Seen(previous)) if previous == current => {
+                GitStatusObservation::Unchanged
+            },
+            Some(Baseline::Seen(previous)) => {
+                GitStatusObservation::Changed(GitStatusTransition { previous, current })
+            },
         }
     }
 
-    pub(in crate::tui) const fn current_toast(&self) -> Option<ToastTaskId> { self.current_toast }
-
-    pub(in crate::tui) const fn set_current_toast(&mut self, id: Option<ToastTaskId>) {
-        self.current_toast = id;
+    pub(in crate::tui) const fn current_toast(&self) -> GitStatusToastTracking {
+        self.current_toast
     }
 
-    /// Mint a unique sequence number for the next tracked item key so
-    /// repeated transitions for the same project don't dedupe against each
-    /// other inside one toast.
+    pub(in crate::tui) const fn set_current_toast(&mut self, id: ToastTaskId) {
+        self.current_toast = GitStatusToastTracking::Tracked(id);
+    }
+
+    /// Return a new sequence number for the next tracked item key, so that
+    /// repeated transitions for one project stay separate items in one toast.
     pub(in crate::tui) const fn next_item_seq(&mut self) -> u64 {
         let seq = self.next_item_seq;
         self.next_item_seq = self.next_item_seq.wrapping_add(1);
@@ -85,10 +108,6 @@ pub(in crate::tui) fn format_transition(name: &str, transition: &GitStatusTransi
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::path::PathBuf;
 
@@ -101,36 +120,52 @@ mod tests {
     #[test]
     fn first_observation_seeds_baseline_silently() {
         let mut tracker = GitStatusTracker::default();
-        assert!(tracker.observe(path("a"), GitStatus::Clean).is_none());
+        assert!(matches!(
+            tracker.observe(path("a"), GitStatus::Clean),
+            GitStatusObservation::BaselineSeeded
+        ));
     }
 
     #[test]
     fn same_value_does_not_toast() {
         let mut tracker = GitStatusTracker::default();
         let _ = tracker.observe(path("a"), GitStatus::Clean);
-        assert!(tracker.observe(path("a"), GitStatus::Clean).is_none());
+        assert!(matches!(
+            tracker.observe(path("a"), GitStatus::Clean),
+            GitStatusObservation::Unchanged
+        ));
     }
 
     #[test]
     fn changed_value_toasts() {
         let mut tracker = GitStatusTracker::default();
         let _ = tracker.observe(path("a"), GitStatus::Clean);
-        let transition = tracker
-            .observe(path("a"), GitStatus::Modified)
-            .expect("clean → modified should toast");
-        assert_eq!(transition.previous, GitStatus::Clean);
-        assert_eq!(transition.current, GitStatus::Modified);
+        assert!(
+            matches!(
+                tracker.observe(path("a"), GitStatus::Modified),
+                GitStatusObservation::Changed(GitStatusTransition {
+                    previous: GitStatus::Clean,
+                    current:  GitStatus::Modified,
+                })
+            ),
+            "clean → modified should toast"
+        );
     }
 
     #[test]
     fn back_to_clean_is_a_transition() {
         let mut tracker = GitStatusTracker::default();
         let _ = tracker.observe(path("a"), GitStatus::Modified);
-        let transition = tracker
-            .observe(path("a"), GitStatus::Clean)
-            .expect("modified → clean should toast");
-        assert_eq!(transition.previous, GitStatus::Modified);
-        assert_eq!(transition.current, GitStatus::Clean);
+        assert!(
+            matches!(
+                tracker.observe(path("a"), GitStatus::Clean),
+                GitStatusObservation::Changed(GitStatusTransition {
+                    previous: GitStatus::Modified,
+                    current:  GitStatus::Clean,
+                })
+            ),
+            "modified → clean should toast"
+        );
     }
 
     #[test]
@@ -140,13 +175,21 @@ mod tests {
         let _ = tracker.observe(path("b"), GitStatus::Modified);
         // `GitStatusTracker::observe` sees b's unchanged `GitStatus::Modified` baseline, so no
         // toast.
-        assert!(tracker.observe(path("b"), GitStatus::Modified).is_none());
+        assert!(matches!(
+            tracker.observe(path("b"), GitStatus::Modified),
+            GitStatusObservation::Unchanged
+        ));
         // `GitStatusTracker::observe` sees a change to `GitStatus::Untracked`, so a toasts.
-        let transition = tracker
-            .observe(path("a"), GitStatus::Untracked)
-            .expect("a flipped");
-        assert_eq!(transition.previous, GitStatus::Clean);
-        assert_eq!(transition.current, GitStatus::Untracked);
+        assert!(
+            matches!(
+                tracker.observe(path("a"), GitStatus::Untracked),
+                GitStatusObservation::Changed(GitStatusTransition {
+                    previous: GitStatus::Clean,
+                    current:  GitStatus::Untracked,
+                })
+            ),
+            "a flipped"
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::project::AbsolutePath;
 use crate::tui::project_list::ExpandTarget;
 use crate::tui::terminal;
+use crate::tui::terminal::RestoredTreeState;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::tui) enum SelectionSync {
@@ -32,10 +33,13 @@ pub(in crate::tui) struct SelectionPaths {
 
 impl SelectionPaths {
     pub(in crate::tui) fn new() -> Self {
-        let (last_selected, pending_expanded) = terminal::load_tree_state();
+        let RestoredTreeState {
+            selection,
+            expanded,
+        } = terminal::load_tree_state();
         Self {
-            last_selected,
-            pending_expanded,
+            last_selected: selection.into_saved_path(),
+            pending_expanded: expanded,
             ..Self::default()
         }
     }

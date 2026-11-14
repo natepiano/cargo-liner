@@ -30,12 +30,9 @@ pub(in crate::tui) const fn icon_for(kind: LintStatusKind) -> Icon {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::lint::LintRunPhase;
-
-    const TEST_SPINNER_SAMPLE_ELAPSED: Duration = Duration::from_millis(100);
+    use crate::tui::integration::constants::TEST_SPINNER_SAMPLE_ELAPSED;
 
     #[test]
     fn running_kind_uses_framework_activity_spinner_in_both_phases() {
