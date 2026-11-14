@@ -338,7 +338,7 @@ In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pan
 - While the tile is expanded, `TileGrid::prepare_covered` keeps the grid geometry without a paint; `redraw_grid` resets the pane before the grid draws again.
 - Word-click tests need `Renderer::new`: the fixed-time renderer does not keep `painted_frame`.
 
-### Phase 14 — The cargo-handler status bar shows `enter expand` and `esc collapse`, as cargo-tile does  · status: todo
+### Phase 14 — The cargo-handler status bar shows `enter expand` and `esc collapse`, as cargo-tile does  · status: done
 
 **Depends on:** Phase 13 (it adds the full-screen tile and `global.expand`)
 
@@ -369,6 +369,8 @@ Tests (red first, each under one second):
 
 **Files:**
 - `crates/tui_pane/src/tiles/full_screen.rs` — `FullScreenView::status_hint`
+- `crates/tui_pane/src/tiles/constants.rs` — the collapse key and label
+- `crates/tui_pane/src/bar/status_line.rs` — an `after_uptime` hint gives way before the navigation hints
 - `crates/tui_pane/CHANGELOG.md` — one Added line
 - `crates/cargo-tile/src/render.rs` — the status line calls `status_hint`
 - `crates/cargo-tile/src/constants.rs` — drop the two collapse constants
