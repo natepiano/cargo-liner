@@ -22,6 +22,9 @@ use tui_pane::CellPointer;
 use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
+use tui_pane::FullScreenSettle;
+use tui_pane::FullScreenStep;
+use tui_pane::FullScreenView;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
@@ -36,6 +39,7 @@ use tui_pane::TileCells;
 use tui_pane::TileColumnOrder;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
+use tui_pane::TileGrowth;
 use tui_pane::TileWidthFloor;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
@@ -91,6 +95,7 @@ use crate::summary::SummaryLayout;
 use crate::theme::Role;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
+use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
 
 mod painted_surface;
@@ -225,15 +230,30 @@ fn draw_panes_at(
         .map_or(SelectableSurface::EmptyCell, |placement| {
             selection_surface(&placement.content)
         });
-    tui_pane::draw_tile_grid(
-        frame.buffer_mut(),
-        &mut app.tiles,
-        area,
-        growth,
-        contents,
-        &cells,
-        app.framework.color_mode,
-    );
+    let shown = contents == TileGridContents::Shown;
+    if shown && matches!(app.full_screen, FullScreenView::Expanded { .. }) {
+        app.tiles.prepare_covered(area, growth, &cells);
+    } else {
+        tui_pane::draw_tile_grid(
+            frame.buffer_mut(),
+            &mut app.tiles,
+            area,
+            growth,
+            contents,
+            &cells,
+            app.framework.color_mode,
+        );
+    }
+    if shown {
+        draw_full_screen(
+            frame.buffer_mut(),
+            &mut app.tiles,
+            &mut app.full_screen,
+            FullScreenPane { rect: area, growth },
+            &cells,
+            app.framework.color_mode,
+        );
+    }
     app.painted_words
         .refresh(&app.word_highlight, frame.buffer_mut(), || {
             app.tiles.pointer_regions()
@@ -262,6 +282,80 @@ fn draw_panes_at(
             app.tiles.focus_cell(index);
         }
     }
+}
+
+/// The pane a full-screen tile fills, and the grid settings of the tiles under it.
+#[derive(Clone, Copy)]
+struct FullScreenPane {
+    rect:   Rect,
+    growth: TileGrowth,
+}
+
+/// Draw the full-screen tile over the grid with the grid's own cell painter.
+///
+/// One allocation fits the tile's columns on its own. A tile that leaves the
+/// census, or a collapse that ends, draws the grid again, which fits the shared
+/// columns again.
+fn draw_full_screen(
+    buffer: &mut Buffer,
+    tiles: &mut TileGrid,
+    view: &mut FullScreenView<TileKey, ()>,
+    pane: FullScreenPane,
+    cells: &Cells<'_>,
+    mode: ColorMode,
+) {
+    if !view.is_open() {
+        return;
+    }
+    let FullScreenPane { rect: area, growth } = pane;
+    let placements = tiles.placements(area, growth);
+    view.resolve_opening(&placements, || ());
+    let step = view.travel(area, &placements);
+    let (content, travel) = match step {
+        FullScreenStep::Inactive => return,
+        FullScreenStep::ContentLeft => {
+            view.close();
+            redraw_grid(buffer, tiles, pane, cells, mode);
+            return;
+        },
+        FullScreenStep::Travel { content, travel } => (content, travel),
+    };
+    let present = match &content {
+        TileContent::Group(key) => matches!(cells.tile(key), TileLookup::Current(_)),
+        TileContent::Summary | TileContent::Empty(_) => true,
+    };
+    if !present {
+        view.close();
+        redraw_grid(buffer, tiles, pane, cells, mode);
+        return;
+    }
+    let (rect, repaint) = tiles.draw_cell_view(buffer, &content, travel, cells, mode);
+    if view.settle(rect, repaint) == FullScreenSettle::Closed {
+        redraw_grid(buffer, tiles, pane, cells, mode);
+    }
+}
+
+/// Clear the full-screen tile and draw the grid in its place.
+fn redraw_grid(
+    buffer: &mut Buffer,
+    tiles: &mut TileGrid,
+    pane: FullScreenPane,
+    cells: &Cells<'_>,
+    mode: ColorMode,
+) {
+    let area = pane.rect.intersection(buffer.area);
+    for position in area.positions() {
+        buffer[position].reset();
+    }
+    tui_pane::draw_tile_grid(
+        buffer,
+        tiles,
+        pane.rect,
+        pane.growth,
+        TileGridContents::Shown,
+        cells,
+        mode,
+    );
 }
 
 /// `focused_surface` reads logical focus without the held focus used during motion.
@@ -1284,13 +1378,13 @@ fraying = "leading"
         "│       │   Collapse the selected row                     left         │       │",
         "│       │   Dismiss overlay / output                      x            │       │",
         "│       │   Expand all rows                               =            │       │",
+        "│       │   Expand the focused tile                       enter        │       │",
         "│       │   Expand the selected row                       right        │       │",
         "│       │   Focus the tile above                          shift-up     │       │",
         "│       │   Focus the tile below                          shift-down   │       │",
         "│       │   Focus the tile to the left                    shift-left   │       │",
         "│       │   Focus the tile to the right                   shift-right  │       │",
-        "│       │   Open attract favorites                        ctrl-o       │       │",
-        "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
+        "│       └───────────────────────────1 of 8 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1309,6 +1403,7 @@ fraying = "leading"
         "│             │   Collapse all to first level       -            │             │",
         "│             │   Collapse the selected row         left         │             │",
         "│             │   Expand all rows                   =            │             │",
+        "│             │   Expand the focused tile           enter        │             │",
         "│             │   Expand the selected row           right        │             │",
         "│             │   Focus the tile above              shift-up     │             │",
         "│             │   Focus the tile below              shift-down   │             │",
@@ -1317,8 +1412,7 @@ fraying = "leading"
         "│             │   Open attract favorites            ctrl-o       │             │",
         "│             │   Open keymap viewer                ctrl-k       │             │",
         "│             │   Open settings                     s            │             │",
-        "│             │   Quit                              q            │             │",
-        "│             │   Randomize the attract screen      r            │  r/c: 21/78 │",
+        "│             │   Quit                              q            │  r/c: 21/78 │",
         "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
@@ -2417,3 +2511,6 @@ mod details_tests;
 
 #[cfg(test)]
 mod favorites_tests;
+
+#[cfg(test)]
+mod full_screen_tests;

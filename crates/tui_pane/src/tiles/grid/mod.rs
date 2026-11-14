@@ -207,6 +207,7 @@ use visual::CellAppearance;
 pub(super) use visual::CellHit;
 use visual::CellIdentity;
 use visual::FocusedPaneTint;
+use visual::FullScreenPiece;
 pub(super) use visual::GridDisplay;
 use visual::GridVisualState;
 use visual::LastPainted;

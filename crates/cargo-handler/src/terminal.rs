@@ -448,6 +448,8 @@ impl Ticker {
         let favorites = tui_pane::poll_favorites(app, now);
         // The grid advances motion and requests only changed body frames.
         let grid_moving = app.tiles.tick();
+        // The full-screen tile reads the same poll clock for its motion.
+        let full_screen = app.full_screen.advance(now);
         // Attract::frame_due requests frames while app.attract is shown
         // and once more when its idle delay expires.
         let attract = app.attract.frame_due();
@@ -458,6 +460,7 @@ impl Ticker {
             || ages_moved
             || favorites == Repaint::Needed
             || grid_moving
+            || full_screen == Repaint::Needed
             || attract == Repaint::Needed
         {
             app.invalidate_body();

@@ -18,6 +18,7 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 | `word_highlight.rs` | Tokens, word lookup, and match painting. |
 | `sort.rs` | Shared sort direction and header spans. |
 | `crates/tui_pane/src/tiles/host.rs` | Pointer routing and framework overlay priority. |
+| `crates/tui_pane/src/tiles/full_screen.rs` | The full-screen tile identity, motion clock and travel geometry. |
 
 ## How it works
 
@@ -60,7 +61,8 @@ Root rows start open; deeper rows start closed.
 Explicit choices survive sorting and parent changes.
 Choices leave the model when their rows leave the forest.
 
-Right opens, Left closes, and Enter toggles.
+Right opens and Left closes.
+`toggle_row` toggles the selected row and has no default key.
 Left on a closed child selects its parent.
 Digits zero through nine set the focused tile's depth through `DepthDigit`.
 `DepthLevel::All` opens every level.
@@ -100,13 +102,29 @@ Summary sorting stays within each machine.
 A tile's sort uses `TileKey`, including the per-machine unassigned tile.
 Pruning removes sorts for departed tiles.
 
+### Full-screen tile
+
+Enter (`global.expand`) shows the focused tile on the full pane, and Esc returns it to the grid.
+`App::full_screen` holds a `tui_pane::FullScreenView<TileKey, ()>`; cargo-tile uses the same type.
+tui_pane owns the tile identity, the motion clock and the travel between the grid rectangle and the pane.
+`terminal.rs` advances the motion clock in each poll.
+`render/mod.rs` draws the tile through `TileGrid::draw_cell_view` with the same `Cells` as the grid.
+While the tile fills the pane, `TileGrid::prepare_covered` keeps the grid geometry without painting it.
+The full-screen tile fits its columns as one local tile at the full pane width.
+On collapse, the grid fits the shared columns again.
+Row keys, `d`, header clicks, row clicks and word clicks work in the full-screen tile as in the grid.
+Clicks and pointer regions read the drawn full-screen tile before the grid pieces.
+The focus keys do nothing while the full-screen tile shows, so the row keys stay on the shown tile.
+Esc closes the details view first, then the full-screen tile, then the word highlight.
+A tile that leaves the census closes the full-screen view at once.
+
 ### Word matching and frame reuse
 
 `WordHighlight::{Off, Word(HighlightWord)}` stores at most one nonempty token.
 Tokens use space boundaries with leading and trailing punctuation removed.
 Matches use whole tokens and exact case across the painted window.
 A press on another word changes the token.
-The same word, empty space, or Esc without an overlay clears it.
+The same word, empty space, or Esc with no overlay and no full-screen tile clears it.
 Tree guides and markers supply no word.
 Toast hit testing runs before tile word lookup.
 
