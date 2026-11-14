@@ -996,12 +996,13 @@ mod tests {
             ..Cargo::default()
         };
         package.local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-            status:              GitStatus::Clean,
-            head:                HeadState::Branch("match-branch".to_string()),
-            last_commit:         CommitDate::NoCommits,
-            ahead_behind_local:  Comparison::NotCompared,
-            primary_tracked_ref: TrackedRef::Untracked,
-            bisect:              None,
+            status:               GitStatus::Clean,
+            head:                 HeadState::Branch("match-branch".to_string()),
+            last_commit:          CommitDate::NoCommits,
+            ahead_behind_local:   Comparison::NotCompared,
+            ahead_behind_primary: Comparison::NotCompared,
+            primary_tracked_ref:  TrackedRef::Untracked,
+            bisect:               None,
         }));
         test_support::make_app(&[RootItem::Rust(RustProject::Package(package))])
     }

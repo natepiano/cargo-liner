@@ -45,6 +45,7 @@ use crate::tui::app::CiRunDisplayMode;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
+use crate::tui::panes::CiTablePlan;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
 
@@ -146,6 +147,9 @@ pub(in crate::tui) struct Ci {
     /// Cached CI table content built per-frame in
     /// `panes::build_ci_data`.
     content:           Option<CiData>,
+    /// Table plan for `content`, built at render and kept while the
+    /// content and the pane width hold.
+    table_plan:        Option<CiTablePlan>,
 }
 
 impl Ci {
@@ -157,6 +161,7 @@ impl Ci {
             viewport:      Viewport::new(),
             focus:         RenderFocus::inactive(),
             content:       None,
+            table_plan:    None,
         }
     }
 
@@ -166,9 +171,31 @@ impl Ci {
 
     pub(in crate::tui) const fn content(&self) -> Option<&CiData> { self.content.as_ref() }
 
-    pub(in crate::tui) fn set_content(&mut self, data: CiData) { self.content = Some(data); }
+    /// Store new CI data. Equal data keeps the stored table plan.
+    pub(in crate::tui) fn set_content(&mut self, data: CiData) {
+        if self.content.as_ref() == Some(&data) {
+            return;
+        }
+        self.content = Some(data);
+        self.table_plan = None;
+    }
 
-    pub(in crate::tui) fn clear_content(&mut self) { self.content = None; }
+    pub(in crate::tui) fn clear_content(&mut self) {
+        self.content = None;
+        self.table_plan = None;
+    }
+
+    /// The content, the table plan slot and the viewport, borrowed apart for
+    /// the pane render.
+    pub(in crate::tui) const fn render_parts(
+        &mut self,
+    ) -> (Option<&CiData>, &mut Option<CiTablePlan>, &mut Viewport) {
+        (
+            self.content.as_ref(),
+            &mut self.table_plan,
+            &mut self.viewport,
+        )
+    }
 
     #[cfg(test)]
     pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
@@ -176,6 +203,7 @@ impl Ci {
             ci.runs = runs;
             ci.mode_label = None;
         }
+        self.table_plan = None;
     }
 
     // `Ci::fetch_tracker` tracks paths with in-flight CI requests.
