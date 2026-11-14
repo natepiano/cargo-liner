@@ -47,6 +47,7 @@ use super::Observed;
 use super::SessionIdentity;
 use super::SourceHealth;
 use super::SourceRead;
+use super::StaffListing;
 use super::UnknownReason;
 #[cfg(test)]
 use super::accounts::EMPTY_SESSION_STATES;
@@ -863,6 +864,29 @@ impl StaffRoster {
         match self.member(session) {
             StaffMemberLookup::Managed { manager, .. } => self.unit_run(manager),
             StaffMemberLookup::Root(_) | StaffMemberLookup::Unavailable => self.unit_run(session),
+        }
+    }
+
+    /// The census report lists unit directors and their workers by staff id.
+    pub(super) fn listing(&self, session: &str) -> StaffListing {
+        let Some((id, membership)) = self
+            .sessions
+            .get(session)
+            .and_then(|id| self.members.get_key_value(id))
+        else {
+            return StaffListing::Other;
+        };
+        match (membership.kind, &membership.parent) {
+            (StaffKind::Unit, _) => StaffListing::Director { id: id.clone() },
+            (StaffKind::Worker, StaffManager::Session(manager)) => self
+                .sessions
+                .get(manager)
+                .map_or(StaffListing::Other, |parent| StaffListing::Worker {
+                    id:     id.clone(),
+                    parent: parent.clone(),
+                }),
+            (StaffKind::Producer | StaffKind::Showrunner | StaffKind::Agent, _)
+            | (StaffKind::Worker, StaffManager::Root) => StaffListing::Other,
         }
     }
 

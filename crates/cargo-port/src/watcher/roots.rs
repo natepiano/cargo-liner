@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 use super::skip::ExclusionTransition;
 use super::skip::WatchSkipSet;
 use crate::constants::DOT_CARGO_DIR;
+use crate::lint;
 use crate::project::AbsolutePath;
 
 /// Subscription strategy chosen for the platform watcher.
@@ -136,6 +137,17 @@ impl RegisteredRoots {
     }
 
     pub(super) fn skips(&self, path: &Path) -> bool { self.skips.skips(path) }
+
+    /// Whether an event in a config source can change cargo-port state.
+    /// A Git tree event can. A Cargo config folder event can only for its config file.
+    pub(super) fn config_source_event_matters(&self, path: &Path) -> bool {
+        matches!(
+            lint::classify_cargo_metadata_basename(path),
+            Some(lint::CargoMetadataTriggerKind::Config)
+        ) || self.config_sources.iter().any(|(root, scope)| {
+            matches!(scope, ConfigWatchScope::GitTree) && path.starts_with(root)
+        })
+    }
 }
 
 pub(super) fn filter_event_paths(registered: &RegisteredRoots, event: &mut Event) {

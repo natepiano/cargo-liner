@@ -204,71 +204,33 @@
 
 **Gotchas:** a missing or unreadable pass map gives a director no workers and an unknown start with the reason; it never restores workers from older runs. Remote snapshots expect `CensusFacts::older_probe()` reasons, local ones the `Default` reasons.
 
-### Phase 8 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: todo
+### Phase 8 — `cargo-handler census --json` prints the census the TUI shows, so other tools read the same worker facts  · status: done
 
-**Depends on:** Phase 6 (it changes `agent_cell.rs`, whose activity text this command prints); Phase 7 (the census facts this command prints)
+#### As-built
 
-#### Work Order
-
-**Goal:** one command prints, as JSON, the unit directors and workers the TUI shows, with the same status, activity and run facts, so `/showrunner:units` and cargo-handler give one answer.
-
-**Source:** the user, via the showrunner, 2026-11-13: "the /showrunner:units skill and cargo handler tui app should all be using the same informaton sources to find out what workers are working on - so we have consistency - eventually i might merge /showrunner:units into cargo handler but not now - so i want to make sure we prepare the way". Showrunner context: two readers exist today and gave different answers: the cargo-handler Rust census, and `~/.claude/scripts/direct/worker_runs.py` behind `/showrunner:units`. The showrunner's call: the cargo-handler census is the one source. unit-board in sdlc consumes the JSON.
-
-**Spec:**
-
-Director decisions:
-1. Add a visible subcommand, `cargo-handler census --json`, in `cli.rs` beside the hidden `probe`. It scans once, prints one JSON document on stdout, and exits 0. It opens no terminal and draws nothing. Diagnostics go to stderr, as `probe` does.
-2. The command builds its answer through the functions the TUI uses: the local scan, the configured remote probes, the hierarchy, the staff source and the accounts session states. The status word and the activity text come from the functions that fill the tile status and activity cells. Add no second reader and no copy of a rule. Every fact the JSON needs is in the census after Phase 7; a fact still missing goes into the census, never into the command alone.
-3. The JSON has a top-level `schema` integer, starting at 1, `machines`, `directors` and `workers`. The field set is unit-board's, sent by the showrunner 2026-11-13. Times are epoch seconds. A field with no value is null, never a missing key.
-   - Each machine: `name`, `reachable` (bool) and `error` (the error text, or null).
-   - Each director: `staff_id`, `name`, `machine`, `current_run_id` (the staff run pointer), `status` (the tile status word, or null with no accounts entry), `activity` (the tile activity text), `activity_started_at`.
-   - Each worker: `staff_id`, `name` (the display name), `parent_staff_id` (its unit), `machine`, `status`, `activity`, `activity_started_at` (the Phase 7 activity start).
-   - Each worker's `pass`: `role` (`impl`, `test`, `fix` or `review`) and `phase` (the phase instance id), or null with no open pass.
-   - Each worker's `pane`: `open`, `stopped`, `closed` or `unknown`.
-   - Each worker's `runs`: each run of its unit's current run, with `label`, `started_at` and `state` (`running`, `finished_queued` for a finished run with a queued result, or `missing`).
-   - `unknown`: on a director, worker or run, an object with `reason` text when a fact is a Phase 7 `Unknown`; null otherwise. A pane or run the census cannot read never reads as an empty list.
-   Wait holders and wait reasons stay in the run records; the JSON does not carry them.
-4. The serde types are the contract. Document each field in the type's doc comments and in a `census --json` section of `crates/cargo-handler/README.md`, with one example document. A field rename or removal increments `schema`. The domain types stay as Phase 7 made them; only the serde types are nullable.
-5. A remote machine that does not answer gives a `machines` entry with `reachable: false`, its error text and no rows. An unreadable staff file or a failed accounts command gives the local `machines` entry its error and prints the rows that remain. In both cases the command exits 0. A bad configuration or a failed local process scan exits non-zero with the error on stderr.
-6. The command reads no file on a UI thread, because it has none. It uses the configured probe and read timeouts.
-
-Tests (red first, each under one second):
-1. With a fixture census of one showrunner, one unit director and two workers, one with a detached run, the command's JSON lists each with every field in decision 3. The status and activity equal the tile cell text for the same rows, read from the rendered tile.
-2. Each run `state` value and each `pane` value comes out of a fixture that holds it. A Phase 7 `Unknown` fact gives `unknown` with its reason.
-3. A row with no accounts entry has `"status": null`. A worker with no run has `"runs": []`.
-4. A unit whose staff row names a current run, with an older open run beside it, lists only the current run's workers and runs.
-5. An unreachable remote machine gives its `machines` entry with the error, and the command exits 0. An unreadable staff file gives the local entry its error, and the command exits 0. A bad configuration exits non-zero.
-6. The JSON parses against the README example's field set: the same keys, the same types.
-
-**Constraints from prior phases:**
-- Phase 5: a waiting status reads `waiting`, from `ReportedSessionState`. The JSON gives the word; ink does not apply.
-- Phase 6: the tile activity cell does not join the live word; only the `d` view does. The JSON `activity` is the tile cell text.
-- Phase 7: the census keeps the staff run pointer (`StaffRunPointer`), the current-run rule, the run and pane states, the activity start, the typed source outcomes and the `Observed<T>` unknowns. The command reads them; it does not read the files again.
-- Phase 7: `CensusFacts` (`census/mod.rs`, on `HierarchySnapshot.facts`) holds `staff` and `accounts` as `Observed<SourceHealth>`, and `workers` as `Observed<BTreeMap<session id, WorkerFacts>>`. `WorkerFacts` holds `current_run`, `pane` (`PaneState::{Open, Stopped, Closed}`; unknown is `Observed::Unknown`), `runs` (`DetachedRunFact` with `DetachedRunState::{Running, FinishedQueued, Missing}`) and `activity_started`. These types are private to `census`; put `report.rs` inside `census` so it reads them without new public API.
-- Phase 7: the TUI writes the local `accounts` fact through `Census::record_local_accounts(&AccountsTable)`, called from `terminal.rs` after the accounts monitor reads. The command has no monitor. It runs the configured accounts read once and passes its table to `record_local_accounts`. Without that call, the fact stays unknown with the reason "the accounts monitor has not answered".
-- Phase 7: a unit's current workers come from its current run's pass map (`progress_history_state.json`). A missing or unreadable pass map gives the director no workers and an unknown activity start with the reason; the JSON prints that reason in the director's `unknown`, never an empty worker list as a fact. A malformed run record gives `runs` an unknown with the first failure; the valid sibling runs still give the activity text.
-- Phase 7: unknown reasons read "this snapshot has no ..." for a local snapshot built before its read, and "remote probe has no ..." for an older remote probe.
-- The Delegation Context Status source: cargo-handler never makes a status word of its own.
-
-**Live check (director):** on natedev, run the release build's `cargo-handler census --json` while this unit's workers run. Compare it with the TUI tile for the cargo-liner production: the same unit directors, workers, statuses, activities and runs. Measure the run time over five runs and name it in the phase report.
-
-**Change-Review line:** cargo-handler census --json prints the workers the TUI shows | On natedev, run cargo-handler census --json while a unit works, and open cargo-handler | The JSON lists the same unit directors and workers, with the same status, activity and runs, as the tiles
+- `cargo-handler census --json` (`cli.rs`, `CENSUS_COMMAND`) scans once, prints one JSON document on stdout and exits 0. A bad configuration or a failed local process scan exits non-zero with the error on stderr.
+- `census/report.rs` holds the serde contract: `CensusReport { schema, machines, directors, workers }` with `MachineReport`, `DirectorReport`, `WorkerReport`, `PassReport`, `PaneReport`, `RunReport` and `UnknownReport`. `schema` is 1. Times are epoch seconds; a field with no value is null, never a missing key. A field rename or removal increments `schema`.
+- The report lists only the unit directors and current-run workers that a tile shows, keyed by staff id. A staff row with no tile line is not listed. Name, machine, status and activity come from `agent_cell::session_cells`, so they equal the tile text. `status` is null with no accounts entry.
+- `print_to` runs the remote probes and `AccountsTable::read_once` in threads beside `probe::scan_local`, then applies them through `Census::record_local_accounts` and `RemoteHierarchyAnswers::answer`. The probe and the TUI use the same three functions.
+- An unreachable remote gives its `machines` entry `reachable: false` and its error, with no rows. An unreadable staff file or a failed accounts read gives the local entry its error and keeps the remaining rows. Both exit 0.
+- `WorkerFacts` adds `listing` (`StaffListing::{Director { id }, Worker { id, parent }, Other}`) and `pass` (`PassFact::{Open(PassAssignment), Closed}`, `PassRole::{Impl, Test, Fix, Review}`).
+- A Phase 7 `Unknown` fact prints as `unknown: { reason }` on its director, worker or run, never as an empty list.
 
 **Files:**
+- `crates/cargo-handler/src/census/report.rs`, `crates/cargo-handler/src/census/report_tests.rs` — the command, the JSON types and their tests
 - `crates/cargo-handler/src/cli.rs`, `crates/cargo-handler/src/constants.rs` — the subcommand
-- `crates/cargo-handler/src/census/report.rs` — new: the JSON types and the shared build
-- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/scan.rs` — the shared scan entry for the command
-- `crates/cargo-handler/src/agent_cell.rs` — the shared status and activity text
-- `crates/cargo-handler/src/census/report_tests.rs` — new: the tests
-- `crates/cargo-handler/README.md` — the schema section
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/worker_dispatch/` — the staff listing and pass facts
+- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/schedule.rs` — the shared accounts read, local scan and remote answer
+- `crates/cargo-handler/src/census/session_identity.rs` — `SessionIdentity::ids`, the session ids the tile cells use
+- `crates/cargo-handler/src/agent_cell.rs` — `session_cells`
+- `crates/cargo-handler/README.md` — the `census --json` section and example, checked by a test
 - `docs/cargo-handler/as-built/hierarchy.md` — the command and its source
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `AccountsTable::read_once` and the accounts monitor share one `AccountsReading` parse. `census --json` takes status and activity only from `agent_cell::session_cells`, so a session that does not reach `session_cells` is absent from the JSON, and `session_cells` copies the full line name. A new top-level JSON list or a field rename increments `schema`.
 
-**State:** none
+**Gotchas:** live run time is 2.95 to 8.66 s; the first run of a series is the slowest. Listing every staff row of a current run gives far more rows than the tiles (72 directors and 202 workers against 37 and 0); the tile-shown filter is what makes the JSON and the tiles agree.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check output matches the TUI, and the phase report names the measured run time.
+**Ruled out:** a second reader or a copy of a tile rule in the command; wait holders and wait reasons in the JSON (they stay in the run records).
 
 ### Phase 9 — The accounts table shows the date each Claude login ends  · status: todo
 
@@ -305,6 +267,7 @@ Tests (red first, each under one second):
 
 **Constraints from prior phases:**
 - Phase 7: the accounts monitor keeps `AccountsTable::{NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast}` (`census/accounts.rs`). The census keeps only its health, through `Census::record_local_accounts`. The new field goes into `AccountsReading`; the health does not change.
+- Phase 8: `AccountsTable::read_once` runs the configured accounts command once for `census --json`, and the monitor uses the same parse. The new field reaches both through `AccountsReading`. `census --json` does not print it.
 - The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
 
 **Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
@@ -343,7 +306,7 @@ Tests (red first, each under one second):
 
 Director decisions:
 1. The status cell shows only `busy`, `idle`, `paused` or `exited`, from the accounts report. `starting` and `waiting` leave the status.
-2. A busy row's activity cell shows its activity word from the census. `census --json` prints each session as `{session, status, activity}`, with `activity` null on a row that is not busy.
+2. A busy row's activity cell shows its activity word from the census. `census --json` gets a top-level `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, with `activity` null on a row that is not busy. The new key increments `schema` to 2. The `directors` and `workers` lists keep their fields.
 3. The accounts table drops its `starting` and `waiting` columns.
 4. Director call: the `waiting` bright yellow ink (Phase 5) moves from the status word to the activity word `waiting`. The other activity words keep their inks.
 
@@ -355,6 +318,7 @@ Tests (red first, each under one second):
 
 **Constraints from prior phases:**
 - Phase 7 holds the run, pane and activity facts. Phase 8 prints them. Add no second reader.
+- Phase 8: `census --json` (`census/report.rs`) lists only unit directors and workers, by staff id, from `StaffListing` facts. Showrunners, producers and unlisted sessions are not in it, so the accounts board needs the new `sessions` list. `agent_cell::session_cells` gives each tile-shown session its `SessionCells { machine, name, status, activity }`; build `sessions` from it. The README `census` section and its example document, checked by `census_json_matches_the_readme_example_keys_and_types`, change with the schema.
 - The Delegation Context Status source: cargo-handler never makes a status word of its own.
 
 **Live check (director):** on natedev, compare the accounts board with cargo-handler while a unit starts, waits and works. Both show the same status and the same activity for each row.
@@ -365,7 +329,8 @@ Tests (red first, each under one second):
 - `crates/cargo-handler/src/census/accounts.rs` — the four status values
 - `crates/cargo-handler/src/agent_cell.rs` — the activity word and its ink
 - `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/summary/accounts.rs` — the removed columns
-- `crates/cargo-handler/src/census/report.rs` — the `census --json` activity
+- `crates/cargo-handler/src/census/report.rs` — the `census --json` `sessions` list and schema 2
+- `crates/cargo-handler/README.md` — the `census` section and its example document
 - `crates/cargo-handler/src/census/accounts_wire_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/census/report_tests.rs` — the tests
 - `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/hierarchy.md`, `docs/cargo-handler/as-built/colors.md` — status, activity and ink
 
@@ -456,6 +421,7 @@ Director decisions:
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
 - Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 11 full-screen tile with its selection, expansion and `y` copy.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
+- Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. A producer line in the new tile must still reach it.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
 
 Tests (red first, each under one second):
@@ -514,6 +480,7 @@ Director decisions:
 **Constraints from prior phases:**
 - Phase 1 shows the recorded model and effort in the `d` view. Use `ModelName` and `ReasoningEffort::Unrecorded`. JSON `Option` values stay inside the decode step; add no optional effort field.
 - `TreeLine::name` feeds both the drawn cell and the `d` view `name:` line. Keep the full command for the `d` view and for selection identity. Use a separate display text for the short shell form.
+- Phase 8: `agent_cell::session_cells` copies the line name into `census --json`. Shell lines have no session and are not in it; agent names stay full.
 - Leave shell text out of the preferred session width before the shared metrics and layout demand run. The minimum width still holds the tree guides and the session header. Cut on grapheme boundaries and keep span styles.
 - Phase 3 keeps the measured demand widths (`TreeMetrics.widths`) apart from the drawn widths (`TreeColumnAlignment::Fitted`), and fills shared tiles in `align_screen_columns`. The shell rule changes only the measured session width. Keep the shared slots and the fill space that the fitter gives; a shell row can draw into session width that the fill gives.
 - The cut keeps quotes, spaces, redirections and arguments that are not paths.

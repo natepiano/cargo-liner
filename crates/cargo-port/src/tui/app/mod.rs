@@ -339,6 +339,13 @@ pub(super) struct App {
 #[derive(PartialEq)]
 struct ProjectListPresentation(Vec<ProjectRowPresentation>);
 
+#[cfg(test)]
+thread_local! {
+    /// Counts `App::project_row_presentation` builds for cost tests.
+    pub(in crate::tui) static ROW_PRESENTATION_BUILDS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 impl ProjectListPresentation {
     fn width_inputs(self) -> Vec<ProjectRowWidthInput> {
         self.0
@@ -352,6 +359,8 @@ impl App {
     /// Reuse the row renderer for change detection so diagnostic markers, Git
     /// state and width inputs have one presentation owner. Freeze animation time.
     fn project_row_presentation(&self) -> ProjectListPresentation {
+        #[cfg(test)]
+        ROW_PRESENTATION_BUILDS.with(|builds| builds.set(builds.get() + 1));
         let lookup = self.ci.status_lookup();
         ProjectListPresentation(panes::project_width_presentations(
             &self.presentation_ctx(&lookup),
