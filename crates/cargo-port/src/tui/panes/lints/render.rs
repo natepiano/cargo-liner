@@ -31,6 +31,7 @@ use super::data::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunPhase;
 use crate::lint::LintRunStatus;
+use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
@@ -93,9 +94,20 @@ impl LintRowLayout {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts the lint rows built with content, one per drawn run.
+    static LINT_ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The lint rows built with content on this thread since the last call.
+#[cfg(test)]
+pub(super) fn take_lint_rows_built() -> usize { LINT_ROWS_BUILT.with(|built| built.replace(0)) }
+
 struct LintRowsCtx<'a> {
     animation_elapsed: Duration,
     viewport:          &'a Viewport,
+    draw_window:       Range<usize>,
     pane_focus_state:  PaneFocusState,
     color_mode:        ColorMode,
     layout:            LintRowLayout,
@@ -112,10 +124,22 @@ fn build_lint_rows(
         .fg(title_color())
         .add_modifier(Modifier::BOLD);
 
-    let mut rows = Vec::new();
-    let mut current_date = String::new();
+    // Rows outside the draw window are empty: the table never draws them.
+    let placeholder = Row::default().height(ctx.row_height);
+    let window = ctx.draw_window.clone();
+    let mut rows = Vec::with_capacity(runs.len());
+    rows.extend(std::iter::repeat_n(placeholder.clone(), window.start));
+    // The date shows only where it changes, so the row above the window seeds it.
+    let mut current_date = window
+        .start
+        .checked_sub(1)
+        .and_then(|above| runs.get(above))
+        .map(|run| super::super::format_date(&run.started_at))
+        .unwrap_or_default();
 
-    for (row_index, lint_run) in runs.iter().enumerate() {
+    for (row_index, lint_run) in window.clone().zip(&runs[window.clone()]) {
+        #[cfg(test)]
+        LINT_ROWS_BUILT.with(|built| built.set(built.get() + 1));
         let date = super::super::format_date(&lint_run.started_at);
         let date_cell = if date == current_date {
             Cell::from("")
@@ -187,6 +211,7 @@ fn build_lint_rows(
             .style(pane_selection_state.patch(row_style, ctx.color_mode)),
         );
     }
+    rows.extend(std::iter::repeat_n(placeholder, runs.len() - window.end));
 
     rows
 }
@@ -227,12 +252,14 @@ pub fn render_lints_pane_body(
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let mode = pane_render_ctx.color_mode;
-    let Some(lints_data) = pane.content().cloned() else {
+    let focused = pane.focus.is_focused();
+    let pane_focus_state = pane.focus.pane_focus_state;
+    let (content, viewport, row_rects_slot) = pane.render_parts();
+    let Some(lints_data) = content else {
         return empty_lints_chrome(" No Lint Runs ");
     };
 
-    let focused = pane.focus.is_focused();
-    let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
+    let title = lints_panel_title(lints_data, focused, viewport.pos());
     let mut pane_frame_chrome = PaneFrameChrome {
         title,
         focused: focused && !lints_data.runs.is_empty(),
@@ -247,60 +274,63 @@ pub fn render_lints_pane_body(
     };
     let layout = LintRowLayout::for_width(table_inner.width);
     let row_height = layout.row_height(inner.height);
-    {
-        let viewport = &mut pane.viewport;
-        viewport.set_content_area(inner);
-        viewport.set_viewport_rows(usize::from(if matches!(layout, LintRowLayout::Stacked) {
-            inner.height.checked_div(row_height).unwrap_or(0)
-        } else {
-            inner.height.saturating_sub(1)
-        }));
-    }
+    viewport.set_content_area(inner);
+    viewport.set_viewport_rows(usize::from(if matches!(layout, LintRowLayout::Stacked) {
+        inner.height.checked_div(row_height).unwrap_or(0)
+    } else {
+        inner.height.saturating_sub(1)
+    }));
 
-    if lints_data.runs.is_empty() {
-        pane.viewport.set_len(0);
-        pane.set_row_rects(Vec::new());
+    let run_count = lints_data.runs.len();
+    viewport.set_len(run_count);
+    if run_count == 0 {
+        row_rects_slot.clear();
         return pane_frame_chrome;
     }
 
-    let viewport_clone = pane.viewport.clone();
-    let pane_focus_state = pane.focus.pane_focus_state;
+    let header_height = u16::from(!matches!(layout, LintRowLayout::Stacked));
+    let table_area = Rect {
+        height: (header_height
+            + u16::try_from(viewport.visible_rows())
+                .unwrap_or(u16::MAX)
+                .saturating_mul(row_height))
+        .min(inner.height),
+        ..table_inner
+    };
+    let draw_window = support::table_draw_window(
+        run_count,
+        viewport.scroll_offset(),
+        viewport.pos(),
+        row_height,
+        table_area.height,
+    );
     let rows = build_lint_rows(
         &lints_data.runs,
         &lints_data.sizes,
         &lints_data.phases,
         &LintRowsCtx {
             animation_elapsed: pane_render_ctx.animation_elapsed,
-            viewport: &viewport_clone,
+            viewport,
+            draw_window,
             pane_focus_state,
             color_mode: mode,
             layout,
             row_height,
         },
     );
-    pane.viewport.set_len(rows.len());
 
     let table = lint_table(rows, layout);
 
-    let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
-    *table_state.offset_mut() = pane.viewport.scroll_offset();
-    let header_height = u16::from(!matches!(layout, LintRowLayout::Stacked));
-    let table_area = Rect {
-        height: (header_height
-            + u16::try_from(pane.viewport.visible_rows())
-                .unwrap_or(u16::MAX)
-                .saturating_mul(row_height))
-        .min(inner.height),
-        ..table_inner
-    };
+    let mut table_state = TableState::default().with_selected(Some(viewport.pos()));
+    *table_state.offset_mut() = viewport.scroll_offset();
     frame.render_stateful_widget(table, table_area, &mut table_state);
-    pane.viewport.set_scroll_offset(table_state.offset());
+    viewport.set_scroll_offset(table_state.offset());
     let row_rects = lint_row_rects(
         inner,
         header_height,
         row_height,
-        table_state.offset()..lints_data.runs.len(),
-        pane.viewport.visible_rows(),
+        table_state.offset()..run_count,
+        viewport.visible_rows(),
     );
     // The selection bar reaches the left border across the margin cell.
     for (rect, row) in &row_rects {
@@ -310,16 +340,16 @@ pub fn render_lints_pane_body(
                 width: TABLE_LEFT_MARGIN.min(rect.width),
                 ..*rect
             },
-            tui_pane::selection_state(&pane.viewport, *row, pane_focus_state),
+            tui_pane::selection_state(viewport, *row, pane_focus_state),
             mode,
         );
     }
-    pane.set_row_rects(row_rects);
+    *row_rects_slot = row_rects;
     pane_frame_chrome
         .labels
         .extend(tui_pane::overflow_affordance_label(
             area,
-            pane.viewport.overflow(),
+            viewport.overflow(),
             Style::default().fg(label_color()),
         ));
 
@@ -453,6 +483,48 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn lint_draws_build_only_the_rows_the_table_shows() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        app.lint.set_content(LintsData {
+            runs: (0..600)
+                .map(|index| LintRun {
+                    run_id:        format!("run-{index}"),
+                    started_at:    format!(
+                        "2026-10-{:02}T{:02}:{:02}:55-04:00",
+                        if index < 300 { 31 } else { 30 },
+                        index / 60 % 24,
+                        index % 60
+                    ),
+                    finished_at:   None,
+                    duration_ms:   Some(120_000),
+                    status:        LintRunStatus::Passed,
+                    commands:      Vec::new(),
+                    archive_bytes: 1024,
+                })
+                .collect(),
+            sizes: vec![Some(1024); 600],
+            ..LintsData::default()
+        });
+        app.set_focus_to_pane(PaneId::Lints);
+        app.lint.viewport.set_len(600);
+        app.lint.viewport.set_pos(450);
+        let _ = super::take_lint_rows_built();
+
+        let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Lints, 80, 20)?;
+
+        let rows = test_support::rows(&buffer);
+        test_support::position(&buffer, "07:30:55").context("selected run draws")?;
+        // The top run continues the date of the run above it, so no date shows.
+        assert!(
+            !rows.iter().any(|row| row.contains("2026-10-30")),
+            "{rows:?}"
+        );
+        let built = super::take_lint_rows_built();
+        assert!(built <= 20, "{built} rows built for a 20-row pane");
         Ok(())
     }
 

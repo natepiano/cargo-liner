@@ -12,6 +12,7 @@ use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::ProjectListPresentation;
+use crate::tui::app::RowPresentationState;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
@@ -97,27 +98,29 @@ impl App {
     /// tree needs rebuilding.
     #[cfg(test)]
     pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
-        let mut row_batch = RowPresentationBatch::default();
-        let rebuild = self.handle_batched_bg_msg(msg, &mut row_batch);
-        self.finish_row_batch(row_batch);
+        let rebuild = self.handle_batched_bg_msg(msg);
+        self.settle_row_batch();
         rebuild
     }
 
-    /// Handle one `BackgroundMsg` of a frame batch. `finish_row_batch` compares
-    /// the row presentation once for the batch, so a burst of row messages
-    /// costs two presentations, not two per message.
-    pub(super) fn handle_batched_bg_msg(
-        &mut self,
-        msg: BackgroundMsg,
-        row_batch: &mut RowPresentationBatch,
-    ) -> bool {
+    /// Close an open frame batch with a new build, as the fit check does.
+    #[cfg(test)]
+    pub(in crate::tui) fn settle_row_batch(&mut self) {
+        if self.row_batch_is_open() {
+            let after = self.project_row_presentation();
+            self.close_row_batch(&after);
+            self.row_presentation = RowPresentationState::Built(after);
+        }
+    }
+
+    /// Handle one `BackgroundMsg` of a frame batch. The first row message opens
+    /// the batch, and the fit check closes it with the build it makes, so a
+    /// burst of row messages costs one presentation, not two per message.
+    pub(super) fn handle_batched_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         let disk_before = self.disk_message_inputs(&msg);
         let row_generation_before = self.project_list.row_generation;
-        if affects_row_presentation(&msg) && matches!(row_batch, RowPresentationBatch::Untouched) {
-            *row_batch = RowPresentationBatch::Captured {
-                presentation:   self.project_row_presentation(),
-                row_generation: row_generation_before,
-            };
+        if affects_row_presentation(&msg) {
+            self.open_row_batch();
         }
         let storage_before = self.project_list.project_storage();
         let is_disk = matches!(
@@ -148,18 +151,33 @@ impl App {
         rebuild
     }
 
-    /// Raise `row_generation` once when the batch's row messages changed a row.
-    /// A handler that already raised it in the batch makes the compare unneeded.
-    pub(super) fn finish_row_batch(&mut self, row_batch: RowPresentationBatch) {
-        let RowPresentationBatch::Captured {
-            presentation,
-            row_generation,
-        } = row_batch
-        else {
-            return;
+    /// Keep the rows as the first row message of a batch finds them. A stored
+    /// build is those rows, so the batch builds none.
+    fn open_row_batch(&mut self) {
+        let row_generation = self.project_list.row_generation;
+        self.row_presentation = match std::mem::take(&mut self.row_presentation) {
+            open @ RowPresentationState::BatchOpen { .. } => open,
+            RowPresentationState::Built(before) => RowPresentationState::BatchOpen {
+                before,
+                row_generation,
+            },
+            RowPresentationState::Unknown => RowPresentationState::BatchOpen {
+                before: self.project_row_presentation(),
+                row_generation,
+            },
         };
-        if self.project_list.row_generation == row_generation
-            && presentation != self.project_row_presentation()
+    }
+
+    /// Close an open frame batch. Raise `row_generation` once when its row
+    /// messages changed a row. A handler that already raised it in the batch
+    /// makes the compare unneeded. The caller stores `after`.
+    pub(in crate::tui::app) fn close_row_batch(&mut self, after: &ProjectListPresentation) {
+        if let RowPresentationState::BatchOpen {
+            before,
+            row_generation,
+        } = std::mem::take(&mut self.row_presentation)
+            && self.project_list.row_generation == row_generation
+            && before != *after
         {
             self.project_list.row_generation += 1;
         }
@@ -238,6 +256,9 @@ impl App {
             },
             BackgroundMsg::ProjectDetailsDeclared { path } => {
                 self.mark_startup_project_details_declared(path);
+            },
+            BackgroundMsg::StartupGitLayouts { layouts } => {
+                self.spawn_startup_project_details(layouts);
             },
             BackgroundMsg::Submodules { path, submodules } => {
                 self.handle_submodules_msg(path.as_path(), submodules);
@@ -320,9 +341,8 @@ impl App {
             BackgroundMsg::CargoMetadata {
                 workspace_root,
                 generation,
-                fingerprint,
                 result,
-            } => self.handle_cargo_metadata_msg(workspace_root, generation, &fingerprint, result),
+            } => self.handle_cargo_metadata_msg(workspace_root, generation, result),
             BackgroundMsg::OutOfTreeTargetSize {
                 workspace_root,
                 target_dir,
@@ -447,17 +467,4 @@ const fn affects_row_presentation(msg: &BackgroundMsg) -> bool {
             | BackgroundMsg::LanguageStatsBatch { .. }
             | BackgroundMsg::CargoMetadata { .. }
     )
-}
-
-/// The row state one frame batch compares in `App::finish_row_batch`.
-#[derive(Default)]
-pub(super) enum RowPresentationBatch {
-    /// No row message arrived in this batch.
-    #[default]
-    Untouched,
-    /// The rows as the first row message of this batch found them.
-    Captured {
-        presentation:   ProjectListPresentation,
-        row_generation: u64,
-    },
 }

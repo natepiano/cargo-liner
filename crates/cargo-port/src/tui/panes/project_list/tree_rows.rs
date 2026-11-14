@@ -512,7 +512,7 @@ pub(in crate::tui) struct ProjectRowWidthInput {
 }
 
 impl ProjectRowWidthInput {
-    fn name_width(&self) -> usize {
+    pub(in crate::tui) fn name_width(&self) -> usize {
         let name = self
             .cells
             .get(columns::COL_NAME)
@@ -537,26 +537,29 @@ impl ProjectRowPresentation {
         self
     }
 
-    pub(in crate::tui) fn into_width_input(self) -> ProjectRowWidthInput {
+    pub(in crate::tui) fn width_input(&self) -> ProjectRowWidthInput {
         let cells = self
             .cells
             .cells
-            .into_iter()
+            .iter()
             .map(|cell| {
-                let mut text = cell.segments.map_or(cell.text, |segments| {
-                    segments
-                        .into_iter()
-                        .map(|segment| segment.text)
-                        .collect::<String>()
-                });
-                if let Some(suffix) = cell.suffix {
-                    text.push_str(&suffix);
+                let mut text = cell.segments.as_ref().map_or_else(
+                    || cell.text.clone(),
+                    |segments| {
+                        segments
+                            .iter()
+                            .map(|segment| segment.text.as_str())
+                            .collect::<String>()
+                    },
+                );
+                if let Some(suffix) = &cell.suffix {
+                    text.push_str(suffix);
                 }
                 text
             })
             .collect();
         ProjectRowWidthInput {
-            prefix: self.cells.prefix,
+            prefix: self.cells.prefix.clone(),
             cells,
         }
     }
@@ -1444,26 +1447,19 @@ fn project_row_presentations(ctx: &PaneRenderCtx<'_>) -> Vec<ProjectRowPresentat
     project_row_presentations_for(ctx, ctx.project_list.visible_rows())
 }
 
-/// The name width of the widest row on screen, measured as the fit widths
-/// measure a name.
-pub(in crate::tui) fn shown_name_width(ctx: &PaneRenderCtx<'_>) -> usize {
-    project_row_presentations(ctx)
-        .into_iter()
-        .map(|row| row.into_width_input().name_width())
-        .max()
-        .unwrap_or(0)
-}
-
 pub(in crate::tui) fn project_width_presentations(
     ctx: &PaneRenderCtx<'_>,
+    width_input_rows: &[VisibleRow],
 ) -> Vec<ProjectRowPresentation> {
-    project_row_presentations_for(ctx, &ctx.project_list.width_input_rows())
+    project_row_presentations_for(ctx, width_input_rows)
 }
 
 fn project_row_presentations_for(
     ctx: &PaneRenderCtx<'_>,
     visible_rows: &[VisibleRow],
 ) -> Vec<ProjectRowPresentation> {
+    #[cfg(test)]
+    crate::tui::app::ROW_PRESENTATION_BUILDS.with(|builds| builds.set(builds.get() + 1));
     let sorted = &ctx.project_list.cached_root_sorted;
     let root_labels = ctx
         .project_list

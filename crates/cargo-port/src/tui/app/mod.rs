@@ -326,6 +326,9 @@ pub(super) struct App {
     /// key dispatch.
     pub(super) framework_keymap:     Rc<FrameworkKeymap<Self>>,
     pub(super) pending_nav_chord:    Vec<KeyBind>,
+    /// The stored row presentation. A frame batch compares its rows with it,
+    /// and the fit check closes the batch with its own build.
+    row_presentation:                RowPresentationState,
     /// Temp directories backing the config, keymap, themes, and cache paths
     /// this `App` was built against, handed over by
     /// [`test_support::TestApp::into_quiet_app`] when a fixture returns a bare
@@ -337,21 +340,52 @@ pub(super) struct App {
 
 /// Unpadded presentation includes hidden descendants that still affect fitting.
 #[derive(PartialEq)]
-struct ProjectListPresentation(Vec<ProjectRowPresentation>);
+struct ProjectListPresentation {
+    rows:          Vec<VisibleRow>,
+    presentations: Vec<ProjectRowPresentation>,
+}
+
+/// The stored row presentation, between frames and in a frame batch.
+#[derive(Default)]
+enum RowPresentationState {
+    /// No build is stored. Input came after the last build.
+    #[default]
+    Unknown,
+    /// The last build, while no input came after it.
+    Built(ProjectListPresentation),
+    /// Row messages arrived after `before`. The next build compares with it.
+    BatchOpen {
+        before:         ProjectListPresentation,
+        row_generation: u64,
+    },
+}
 
 #[cfg(test)]
 thread_local! {
-    /// Counts `App::project_row_presentation` builds for cost tests.
+    /// Counts project row presentation builds for cost tests.
     pub(in crate::tui) static ROW_PRESENTATION_BUILDS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
 impl ProjectListPresentation {
-    fn width_inputs(self) -> Vec<ProjectRowWidthInput> {
-        self.0
-            .into_iter()
-            .map(panes::ProjectRowPresentation::into_width_input)
+    fn width_inputs(&self) -> Vec<ProjectRowWidthInput> {
+        self.presentations
+            .iter()
+            .map(panes::ProjectRowPresentation::width_input)
             .collect()
+    }
+
+    /// The name width of the widest row on screen. Each shown row is also a
+    /// fit row, with the same name and a prefix of the same width.
+    fn shown_name_width(&self, shown: &[VisibleRow]) -> usize {
+        let shown: HashSet<VisibleRow> = shown.iter().copied().collect();
+        self.rows
+            .iter()
+            .zip(&self.presentations)
+            .filter(|(row, _)| shown.contains(row))
+            .map(|(_, presentation)| presentation.width_input().name_width())
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -359,18 +393,30 @@ impl App {
     /// Reuse the row renderer for change detection so diagnostic markers, Git
     /// state and width inputs have one presentation owner. Freeze animation time.
     fn project_row_presentation(&self) -> ProjectListPresentation {
-        #[cfg(test)]
-        ROW_PRESENTATION_BUILDS.with(|builds| builds.set(builds.get() + 1));
         let lookup = self.ci.status_lookup();
-        ProjectListPresentation(panes::project_width_presentations(
-            &self.presentation_ctx(&lookup),
-        ))
+        let rows = self.project_list.width_input_rows();
+        let presentations =
+            panes::project_width_presentations(&self.presentation_ctx(&lookup), &rows);
+        ProjectListPresentation {
+            rows,
+            presentations,
+        }
     }
 
-    /// The name width of the widest project row on screen.
-    fn shown_name_width(&self) -> usize {
-        let lookup = self.ci.status_lookup();
-        panes::shown_name_width(&self.presentation_ctx(&lookup))
+    /// Forget a stored build, because input can change the rows. An open
+    /// frame batch keeps the rows it compares with.
+    pub(in crate::tui) fn forget_row_presentation(&mut self) {
+        if matches!(self.row_presentation, RowPresentationState::Built(_)) {
+            self.row_presentation = RowPresentationState::Unknown;
+        }
+    }
+
+    /// Whether row messages changed rows that no build compared yet.
+    pub(in crate::tui) const fn row_batch_is_open(&self) -> bool {
+        matches!(
+            self.row_presentation,
+            RowPresentationState::BatchOpen { .. }
+        )
     }
 
     /// The render context for row presentations, with animation time frozen.
@@ -8231,7 +8277,6 @@ mod tests {
                 app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                     workspace_root: root,
                     generation,
-                    fingerprint: workspace_metadata.fingerprint.clone(),
                     result: Ok(workspace_metadata),
                 });
             }
@@ -9540,7 +9585,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root,
                 generation,
-                fingerprint: workspace_metadata.fingerprint.clone(),
                 result: Ok(workspace_metadata),
             });
             app.ensure_detail_cached();
@@ -11521,6 +11565,7 @@ mod tests {
         use crate::project::CommitDate;
         use crate::project::Comparison;
         use crate::project::CratesIoRelease;
+        use crate::project::FINGERPRINT_CAPTURES;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
         use crate::project::GithubRunCount;
@@ -14402,12 +14447,8 @@ mod tests {
         // ── Cargo metadata phase + arrival handling ─────────────────────────
 
         fn fake_fingerprint() -> ManifestFingerprint {
-            // Fields are irrelevant to the handler's accept path: if
-            // `capture()` on the workspace_root succeeds at runtime it will
-            // produce a real fingerprint that (almost certainly) differs from
-            // this one and the arrival gets dropped as drift. Tests use
-            // workspace_root paths that don't exist on disk so `capture()`
-            // fails (returns None) and the drift check becomes a no-op.
+            // The handler's accept path does not read the fingerprint: the
+            // metadata worker checks for manifest drift before it sends.
             ManifestFingerprint {
                 manifest:       FileStamp {
                     content_hash: [0_u8; 32],
@@ -14440,7 +14481,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: fake_fingerprint(),
                 result: Ok(fake_metadata(workspace_root)),
             });
         }
@@ -14508,7 +14548,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: fake_fingerprint(),
                 result: Ok(fake_metadata(&workspace_root)),
             });
 
@@ -14621,7 +14660,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation:     stale_generation,
-                fingerprint:    fake_fingerprint(),
                 result:         Ok(fake_metadata(&workspace_root)),
             });
             assert!(matches!(
@@ -14686,7 +14724,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation:     stale_gen,
-                fingerprint:    fake_fingerprint(),
                 result:         Ok(fake_metadata(&workspace_root)),
             });
 
@@ -14731,6 +14768,34 @@ mod tests {
             }
         }
 
+        #[test]
+        fn manifest_metadata_apply_reads_no_fingerprint() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
+            let root = project.path().clone();
+            let mut app = make_app(&[project]);
+            FINGERPRINT_CAPTURES.with(|captures| captures.set(0));
+
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected {
+                    first_line: "error: orphaned workspace member".into(),
+                }),
+            );
+            deliver_manifest_metadata(&mut app, &root, Ok(fake_metadata(&root)));
+
+            assert_eq!(
+                FINGERPRINT_CAPTURES.with(std::cell::Cell::get),
+                0,
+                "the apply on the frame reads no manifest input from the disk"
+            );
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::Available
+            );
+        }
+
         fn deliver_manifest_metadata(
             app: &mut App,
             workspace_root: &AbsolutePath,
@@ -14745,7 +14810,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: ManifestFingerprint::capture(workspace_root).expect("fingerprint"),
                 result,
             });
         }
@@ -14877,8 +14941,6 @@ mod tests {
                 manifest_row_text(&mut app).contains(" !"),
                 "retained Rust failure"
             );
-            let rejected_fingerprint =
-                ManifestFingerprint::capture(&root).expect("rejected fingerprint");
             std::fs::remove_file(root.join("Cargo.toml")).expect("remove manifest");
             app.prepare_rescan();
             app.handle_bg_msg(BackgroundMsg::ScanResult {
@@ -14910,7 +14972,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: root.clone(),
                 generation,
-                fingerprint: rejected_fingerprint,
                 result: Err(CargoMetadataError::ManifestRejected {
                     first_line: error.into(),
                 }),
@@ -15054,7 +15115,6 @@ mod tests {
             let scratch = orphan_manifest_fixture();
             let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
             let root = project.path().clone();
-            let fingerprint = ManifestFingerprint::capture(&root).expect("rejected fingerprint");
             let mut app = make_app(&[project]);
             let generation = app
                 .scan
@@ -15068,13 +15128,11 @@ mod tests {
             )
             .expect("fixed manifest");
 
+            // The worker saw the fix after the run and reports the change.
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: root.clone(),
                 generation,
-                fingerprint,
-                result: Err(CargoMetadataError::ManifestRejected {
-                    first_line: "outdated manifest rejection".into(),
-                }),
+                result: Err(CargoMetadataError::ManifestChanged),
             });
 
             assert_eq!(
@@ -15156,7 +15214,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: fake_fingerprint(),
                 result: Err(CargoMetadataError::ManifestRejected {
                     first_line: "could not read Cargo.toml".into(),
                 }),
@@ -15217,7 +15274,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: fake_fingerprint(),
                 result: Err(CargoMetadataError::WorkspaceMissing),
             });
 
@@ -15453,7 +15509,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
-                fingerprint: fake_fingerprint(),
                 result: Ok(fake_metadata(&workspace_root)),
             });
 
@@ -16467,7 +16522,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: project_path.clone(),
                 generation,
-                fingerprint: workspace_metadata.fingerprint.clone(),
                 result: Ok(workspace_metadata),
             });
 
@@ -16686,7 +16740,6 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root,
                 generation,
-                fingerprint: metadata.fingerprint.clone(),
                 result: Ok(metadata),
             });
         }

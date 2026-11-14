@@ -47,6 +47,32 @@ fn ci_table_layout_is_built_once_while_content_and_width_hold() -> anyhow::Resul
 }
 
 #[test]
+fn ci_draws_build_only_the_rows_the_table_shows() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    let mut data = timed_branch_ci_data()?;
+    let run = data.runs.first().context("one run")?.clone();
+    data.runs = (0..600)
+        .map(|index| CiRun {
+            run_id: index,
+            commit_title: Some(format!("Repair {index}")),
+            ..run.clone()
+        })
+        .collect();
+    app.ci.set_content(data);
+    app.set_focus_to_pane(PaneId::CiRuns);
+    app.ci.viewport.set_len(600);
+    app.ci.viewport.set_pos(450);
+    let _ = super::render::take_ci_rows_built();
+
+    let buffer = test_support::draw_pane_at_size(&mut app, PaneId::CiRuns, 80, 20)?;
+
+    test_support::position(&buffer, "Repair 450").context("selected run draws")?;
+    let built = super::render::take_ci_rows_built();
+    assert!(built <= 20, "{built} rows built for a 20-row pane");
+    Ok(())
+}
+
+#[test]
 fn ci_table_layout_holds_when_the_same_content_is_set_again() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.ci.set_content(timed_branch_ci_data()?);

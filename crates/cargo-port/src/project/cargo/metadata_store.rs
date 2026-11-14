@@ -253,6 +253,13 @@ pub(crate) struct ManifestFingerprint {
     pub configs:        BTreeMap<PathBuf, Option<FileStamp>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts fingerprint captures for cost tests.
+    pub(crate) static FINGERPRINT_CAPTURES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 impl ManifestFingerprint {
     /// Capture every input that can affect `cargo metadata`'s output for a
     /// workspace: the manifest, the lockfile, an optional `rust-toolchain`
@@ -263,6 +270,8 @@ impl ManifestFingerprint {
     /// `None → Some` transition on any config slot is a real change and
     /// invalidates the cached metadata even though no tracked-file edit occurred.
     pub(crate) fn capture(workspace_root: &Path) -> io::Result<Self> {
+        #[cfg(test)]
+        FINGERPRINT_CAPTURES.with(|captures| captures.set(captures.get() + 1));
         let manifest = FileStamp::from_path(&workspace_root.join(CARGO_TOML))?;
         let lockfile = optional_stamp(&workspace_root.join(CARGO_LOCK))?;
         let rust_toolchain = toolchain_stamp(workspace_root)?;

@@ -14,8 +14,11 @@ pub(crate) use cargo::CratesIoRelease;
 pub(crate) use cargo::CratesIoReleaseState;
 #[cfg(test)]
 pub(crate) use cargo::ExampleGroup;
+#[cfg(test)]
+pub(crate) use cargo::FINGERPRINT_CAPTURES;
 // `FileStamp`, `ManifestFingerprint` and `ManifestTargets` describe metadata cache
 // inputs and targets.
+#[cfg(test)]
 pub(crate) use cargo::FileStamp;
 // `LibraryTargetKind` is the library target kind that `Cargo` stores.
 pub(crate) use cargo::LibraryTargetKind;

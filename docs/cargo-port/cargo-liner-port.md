@@ -387,7 +387,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** further cuts for load 125, where 4 runnable tasks per CPU set the frame times.
 
-### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
+### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: done
 
 **Depends on:** Phase 13c (it edits the same frame path and the CHANGELOG). Runs before Phase 12, which also edits the cargo-port CHANGELOG.
 

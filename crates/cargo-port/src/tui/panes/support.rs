@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -76,6 +78,37 @@ pub(super) fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+/// The rows that `ratatui::widgets::Table` can draw, for rows of one height.
+///
+/// The table starts at `offset`. It moves up to a `selected` row above that,
+/// and down until a `selected` row below the area shows. It also draws one
+/// partial row. A row outside the range needs only its height, so a caller
+/// builds those rows empty. `area_height` can include the header: a taller
+/// area gives a wider range.
+pub(super) fn table_draw_window(
+    len: usize,
+    offset: usize,
+    selected: usize,
+    row_height: u16,
+    area_height: u16,
+) -> Range<usize> {
+    if row_height == 0 {
+        return 0..len;
+    }
+    let last = len.saturating_sub(1);
+    let selected = selected.min(last);
+    let offset = offset.min(last);
+    let fit = usize::from(area_height / row_height);
+    let start = if selected >= offset + fit {
+        (selected + 1).saturating_sub(fit)
+    } else {
+        offset
+    }
+    .min(selected);
+    let end = (start + fit + 1).max(selected + 2).min(len);
+    start..end
 }
 
 /// Inner width where fields can place their values on a separate row.
@@ -254,4 +287,75 @@ pub(super) fn detail_header_groups(
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Constraint;
+    use ratatui::widgets::Row;
+    use ratatui::widgets::Table;
+    use ratatui::widgets::TableState;
+
+    use super::table_draw_window;
+
+    fn draw(
+        rows: Vec<Row<'static>>,
+        offset: usize,
+        selected: usize,
+        height: u16,
+    ) -> anyhow::Result<(String, usize)> {
+        let backend = TestBackend::new(6, height);
+        let mut terminal = Terminal::new(backend)?;
+        let mut state = TableState::default().with_selected(Some(selected));
+        *state.offset_mut() = offset;
+        let table = Table::new(rows, [Constraint::Length(6)]).header(Row::new(["head"]));
+        terminal.draw(|frame| frame.render_stateful_widget(table, frame.area(), &mut state))?;
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        Ok((text, state.offset()))
+    }
+
+    #[test]
+    fn empty_rows_outside_the_draw_window_draw_the_same_table() -> anyhow::Result<()> {
+        let len = 8;
+        for row_height in 1..=2 {
+            for height in 1..=7 {
+                for offset in 0..len + 2 {
+                    for selected in 0..len + 2 {
+                        let full = (0..len)
+                            .map(|index| Row::new([format!("r{index}")]).height(row_height))
+                            .collect();
+                        let window = table_draw_window(len, offset, selected, row_height, height);
+                        let fit = usize::from(height / row_height);
+                        assert!(
+                            window.len() <= fit + 2,
+                            "row_height={row_height} height={height} offset={offset} selected={selected} window={window:?}"
+                        );
+                        let windowed = (0..len)
+                            .map(|index| {
+                                if window.contains(&index) {
+                                    Row::new([format!("r{index}")]).height(row_height)
+                                } else {
+                                    Row::default().height(row_height)
+                                }
+                            })
+                            .collect();
+                        assert_eq!(
+                            draw(full, offset, selected, height)?,
+                            draw(windowed, offset, selected, height)?,
+                            "row_height={row_height} height={height} offset={offset} selected={selected}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }

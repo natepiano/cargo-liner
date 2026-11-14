@@ -32,6 +32,7 @@ use tui_pane::ToastSettings;
 
 use super::App;
 use super::ConfirmationModalState;
+use super::RowPresentationState;
 use super::async_tasks::Startup;
 use super::scan_state::ScanState;
 use crate::channel;
@@ -320,6 +321,7 @@ impl AppBuilder<Started> {
             framework,
             framework_keymap: Rc::new(framework_keymap),
             pending_nav_chord: Vec::new(),
+            row_presentation: RowPresentationState::Unknown,
             #[cfg(test)]
             fixture_dirs: None,
         };

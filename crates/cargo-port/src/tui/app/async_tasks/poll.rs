@@ -12,7 +12,6 @@ use tui_pane::TrackedItemTiming;
 
 use super::constants::MAX_MSGS_PER_FRAME;
 use super::constants::SLOW_BG_MSG_MS;
-use super::dispatch::RowPresentationBatch;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::poll_background_stats::PollBackgroundStats;
@@ -32,7 +31,6 @@ impl App {
         let mut msg_count = 0;
         let started = Instant::now();
         let mut stats = PollBackgroundStats::default();
-        let mut row_batch = RowPresentationBatch::default();
 
         while msg_count < MAX_MSGS_PER_FRAME {
             let Ok(msg) = self.background.background_receiver().try_recv() else {
@@ -42,10 +40,9 @@ impl App {
             msg_count += 1;
             let kind: &'static str = (&msg).into();
             let msg_started = Instant::now();
-            rebuild_status.merge_needed(self.handle_batched_bg_msg(msg, &mut row_batch));
+            rebuild_status.merge_needed(self.handle_batched_bg_msg(msg));
             log_slow_background_msg(kind, msg_started.elapsed().as_millis());
         }
-        self.finish_row_batch(row_batch);
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
@@ -237,6 +234,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::CratesIoNewRelease { .. }
         | BackgroundMsg::RepoMeta { .. }
         | BackgroundMsg::ProjectDetailsDeclared { .. }
+        | BackgroundMsg::StartupGitLayouts { .. }
         | BackgroundMsg::ProjectStorage { .. }
         | BackgroundMsg::Submodules { .. }
         | BackgroundMsg::ScanResult { .. }

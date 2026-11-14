@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fmt::Formatter;
 use std::io::ErrorKind;
@@ -37,7 +36,6 @@ use crate::config::NonRustInclusion;
 use crate::constants::CARGO_TOML;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
-use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
 use crate::project::PublishPolicy;
@@ -60,6 +58,9 @@ pub(crate) enum CargoMetadataError {
     ManifestRejected { first_line: String },
     /// Launch, I/O, timeout and output-decoding failures retain their timed toast.
     Other(String),
+    /// A manifest input changed while `cargo metadata` ran, so its output is
+    /// stale. The watcher dispatches the next refresh; the result is dropped.
+    ManifestChanged,
 }
 
 impl From<Error> for CargoMetadataError {
@@ -359,36 +360,25 @@ async fn execute_metadata_refresh(workspace_root: &AbsolutePath, refresh: Metada
             tracing::warn!(workspace_root = %workspace_root.display(), "cargo_metadata_task_join_failed");
             return;
         },
-        Err(_) => {
-            let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
-                .unwrap_or_else(|_| synthetic_fingerprint());
-            CargoMetadataTaskOutput {
-                generation,
-                fingerprint,
-                result: Err(CargoMetadataError::Other(format!(
-                    "cargo metadata timed out after {}s",
-                    metadata_timeout.as_secs()
-                ))),
-            }
+        Err(_) => CargoMetadataTaskOutput {
+            generation,
+            result: Err(CargoMetadataError::Other(format!(
+                "cargo metadata timed out after {}s",
+                metadata_timeout.as_secs()
+            ))),
         },
     };
-    let CargoMetadataTaskOutput {
-        generation,
-        fingerprint,
-        result,
-    } = task_result;
+    let CargoMetadataTaskOutput { generation, result } = task_result;
     let _ = dispatch.sender.send(BackgroundMsg::CargoMetadata {
         workspace_root: workspace_root.clone(),
         generation,
-        fingerprint,
         result,
     });
 }
 
 struct CargoMetadataTaskOutput {
-    generation:  u64,
-    fingerprint: ManifestFingerprint,
-    result:      Result<WorkspaceMetadata, CargoMetadataError>,
+    generation: u64,
+    result:     Result<WorkspaceMetadata, CargoMetadataError>,
 }
 
 /// Walk `target_dir` on a blocking thread and emit its total byte size via
@@ -436,7 +426,7 @@ fn run_cargo_metadata_for_root(
     workspace_root: &AbsolutePath,
     generation: u64,
 ) -> CargoMetadataTaskOutput {
-    let fingerprint = match ManifestFingerprint::capture(workspace_root.as_path()) {
+    let before = match ManifestFingerprint::capture(workspace_root.as_path()) {
         Ok(fp) => fp,
         Err(err) => {
             // `NotFound` here means the workspace root vanished between
@@ -451,24 +441,15 @@ fn run_cargo_metadata_for_root(
                     "fingerprint capture failed: {err}"
                 )))
             };
-            return CargoMetadataTaskOutput {
-                generation,
-                fingerprint: synthetic_fingerprint(),
-                result,
-            };
+            return CargoMetadataTaskOutput { generation, result };
         },
     };
 
     let manifest_path = workspace_root.as_path().join(CARGO_TOML);
     let started_at = std::time::Instant::now();
-    let result = match execute_cargo_metadata(&manifest_path) {
-        Ok(metadata) => Ok(build_workspace_metadata(
-            workspace_root.clone(),
-            &metadata,
-            fingerprint.clone(),
-        )),
-        Err(err) => Err(err),
-    };
+    let result = execute_cargo_metadata(&manifest_path).map(|metadata| {
+        build_workspace_metadata(workspace_root.clone(), &metadata, before.clone())
+    });
     tracing::trace!(
         target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started_at.elapsed().as_millis()),
@@ -479,9 +460,29 @@ fn run_cargo_metadata_for_root(
 
     CargoMetadataTaskOutput {
         generation,
-        fingerprint,
-        result,
+        result: drop_changed_manifest(workspace_root, &before, result),
     }
+}
+
+/// Replace a result with [`CargoMetadataError::ManifestChanged`] when a
+/// manifest input changed while `cargo metadata` ran. The check reads the
+/// disk here, on the worker thread, so the apply on the frame does not.
+fn drop_changed_manifest(
+    workspace_root: &AbsolutePath,
+    before: &ManifestFingerprint,
+    result: Result<WorkspaceMetadata, CargoMetadataError>,
+) -> Result<WorkspaceMetadata, CargoMetadataError> {
+    let reads_manifest = matches!(
+        result,
+        Ok(_) | Err(CargoMetadataError::ManifestRejected { .. })
+    );
+    if reads_manifest
+        && ManifestFingerprint::capture(workspace_root.as_path())
+            .is_ok_and(|after| &after != before)
+    {
+        return Err(CargoMetadataError::ManifestChanged);
+    }
+    result
 }
 
 fn execute_cargo_metadata(manifest_path: &Path) -> Result<Metadata, CargoMetadataError> {
@@ -500,17 +501,6 @@ fn execute_metadata_command(command: &MetadataCommand) -> Result<Metadata, Cargo
 fn format_cargo_metadata_error(err: &Error) -> String {
     let text = err.to_string();
     text.lines().next().unwrap_or(&text).to_string()
-}
-
-const fn synthetic_fingerprint() -> ManifestFingerprint {
-    ManifestFingerprint {
-        manifest:       FileStamp {
-            content_hash: [0_u8; 32],
-        },
-        lockfile:       None,
-        rust_toolchain: None,
-        configs:        BTreeMap::new(),
-    }
 }
 
 fn build_workspace_metadata(
@@ -663,6 +653,42 @@ mod tests {
             result??;
             Ok::<_, anyhow::Error>(())
         })
+    }
+
+    #[test]
+    fn manifest_edit_during_the_run_drops_the_result() -> std::io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let root = AbsolutePath::from(scratch.path());
+        let manifest = scratch.path().join(CARGO_TOML);
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        let before = ManifestFingerprint::capture(root.as_path())?;
+        let rejected = || -> Result<WorkspaceMetadata, CargoMetadataError> {
+            Err(CargoMetadataError::ManifestRejected {
+                first_line: "error: rejected manifest".into(),
+            })
+        };
+        assert!(
+            matches!(
+                drop_changed_manifest(&root, &before, rejected()),
+                Err(CargoMetadataError::ManifestRejected { .. })
+            ),
+            "an unchanged manifest keeps its result"
+        );
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"demo\"\nversion = \"0.2.0\"\nedition = \"2024\"\n",
+        )?;
+        assert!(
+            matches!(
+                drop_changed_manifest(&root, &before, rejected()),
+                Err(CargoMetadataError::ManifestChanged)
+            ),
+            "a manifest edit during the run drops the result"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]

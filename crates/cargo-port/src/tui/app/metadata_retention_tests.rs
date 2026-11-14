@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use super::App;
+use crate::constants::GIT_DIR;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
@@ -10,6 +11,7 @@ use crate::project::RustProject;
 use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
 use crate::scan::BackgroundMsg;
+use crate::scan::ProjectGitLayout;
 use crate::tui::test_support;
 
 #[test]
@@ -103,11 +105,9 @@ fn removed_checkout_reply_cannot_restore_metadata() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("{error}"))?
         .next_generation(&retired);
     let snapshot = metadata(&retired);
-    let fingerprint = snapshot.fingerprint.clone();
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: retired.clone(),
         generation,
-        fingerprint,
         result: Ok(snapshot),
     });
     let guard = store.lock().map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -215,4 +215,32 @@ fn rescans_keep_discovered_submodule_measurements_before_repo_info_arrives() {
             .source_measurements
             .has_test_owner_for_test(&submodule)
     );
+}
+
+#[test]
+fn late_startup_layout_registers_no_submodules_for_a_removed_project() -> std::io::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    std::fs::create_dir(scratch.path().join(GIT_DIR))?;
+    std::fs::write(
+        scratch.path().join(".gitmodules"),
+        "[submodule \"child\"]\n\tpath = child\n\turl = https://example.com/child\n",
+    )?;
+    let removed = AbsolutePath::from(scratch.path());
+    let child = AbsolutePath::from(scratch.path().join("child"));
+    let layout = ProjectGitLayout::read(removed.as_path());
+    let mut app = test_support::make_app(&[]);
+    app.handle_bg_msg(BackgroundMsg::StartupGitLayouts {
+        layouts: vec![(removed.clone(), layout)],
+    });
+    assert!(
+        app.startup.details_declared.seen.contains(&removed),
+        "a project that left the list must not hold startup open"
+    );
+    assert!(
+        !app.scan
+            .source_measurements
+            .has_submodule_owner_for_test(&child),
+        "a layout for a project that left the list must not restore its submodules"
+    );
+    Ok(())
 }
