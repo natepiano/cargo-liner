@@ -315,60 +315,28 @@ The status still comes from the accounts report. Census samples on natedev, 15 s
 
 ### Phase 13 — Enter shows the focused tile on the full screen, shared with cargo-tile through tui_pane  · status: done
 
-**Depends on:** Phase 3 (both change the handler key handling)
+#### As-built
 
-#### Work Order
+`tui_pane::FullScreenView<Id, P>` (`crates/tui_pane/src/tiles/full_screen.rs`) owns the shown tile identity, the motion clock and the travel between the grid allocation and the pane. Its states are `Grid`, `Opening`, `Expanding`, `Expanded` and `Collapsing`. `P` is the app policy state: cargo-tile `CellScroll`, cargo-handler `()`. Each frame the app calls `resolve_opening`, `travel` (`FullScreenStep::Inactive | ContentLeft | Travel`), `TileGrid::draw_cell_view` and `settle` (`FullScreenSettle::Shown | Closed`). Each app's `terminal.rs` calls `advance` in the poll.
 
-**Goal:** in cargo-handler, Enter shows the focused tile on the full screen, and Esc returns to the grid. cargo-tile and cargo-handler use one full-screen tile implementation in tui_pane.
+`TileGrid::draw_cell_view` takes `&mut self` and records the drawn tile as `FullScreenPiece`. `cell_hit` and `pointer_regions` read that piece first, and each body paint resets it.
 
-**Source:** the user, change review C219 (returned), via the showrunner, 2026-11-12: "i like it and it works on cargo tile and this should be shared via tuii_pane to work on cargo handler". C219 shipped the cargo-tile full-screen cell in merge 35a8bccf. Showrunner: move the code into tui_pane with no copy; cargo-tile keeps its behavior and its tests; the handler unit may edit cargo-tile after it reserves the files with berth; check that Enter is free in the handler grid and report it before the build.
-
-**Spec:**
-
-Director decisions:
-1. Keys, confirmed by the showrunner on 2026-11-12: Enter takes the full-screen tile in cargo-handler, as `global.expand = enter` does in cargo-tile. Right and Left keep row open and close. `toggle_row` stays an action with no default key; a user can bind it in config.
-2. The shared view state moves into tui_pane: from `crates/cargo-tile/src/grid_view.rs` the expanded cell identity and the motion clock, and from cargo-tile's `render.rs` the motion and clipping parts of `draw_cell_view` and `ExpandedCell`. Scrolling stays an app policy (decision 3). The tile identity is a type parameter, and the content comes through the trait in the constraints below. Each app's `terminal.rs` advances the motion clock. No part is copied.
-3. Each app has its own key policy around the shared state. `CellViewport::key` takes Left and Right and uses Up and Down to scroll in cargo-tile. In cargo-handler, Up and Down select rows and Right and Left open and close rows, in the full-screen tile too.
-4. Esc in cargo-handler closes the first open layer: the details view, then the full-screen tile, then the word highlight.
-5. cargo-tile's Enter, Esc, scroll and motion keep their current behavior.
-6. In cargo-handler, the full-screen tile draws the same tree, columns and selection as the grid tile, at the full pane size. Row keys, `d` and word clicks work in it as in the grid.
-7. Reserve the cargo-tile files with `cargo-berth` before the first edit.
-
-**Constraints from prior phases:**
-- Phase 2: a config update calls `invalidate_body` to repaint retained bodies. The full-screen tile repaints on the same signal. The word highlight notice surfaces from Phase 2 stay as they are.
-- Shared boundary (director decision, 2026-11-13): cargo-tile's `draw_cell_view` reads its roster and prepared tables, and `ExpandedCell` uses app row and header measures. A generic tile identity alone cannot move them. tui_pane owns the expanded identity, the motion clock, and the motion and clipping geometry. Each app supplies its content measures and draws its content into the rect that tui_pane gives, through one tui_pane trait. cargo-tile's roster and table reads stay in cargo-tile, behind its trait implementation.
-- cargo-handler `Cells` owns row selection, the tree viewport, the painted headers and the Phase 3 shared column fitting. The full-screen tile uses that selection and viewport; it does not use cargo-tile's scroll state, so there is one viewport owner. The expanded tile fits its columns as a `TreeSizing::Local` tile at the full pane width. On collapse, the grid fits the shared columns again, and the blank slots of Phase 3 come back.
-- Phase 3 registers the details view as its own copy target and draws the copy notice above a details view that fills the frame (`render/mod.rs`). Keep both paths with the full-screen layer under the details view.
-- Phase 6: `App::click` (`app.rs`) sends a click to an open details view first (`DetailsOverlay::click`, a `tui_pane::table_row_at` hit test on its rendered viewport), then to the favorites overlay, then to the tiles. `App::scroll` follows the same order: the details view, then the favorites overlay, then the tiles. `interaction.rs` `app_modal_overlay_hit` treats an open details view as modal. Keep this order with the full-screen layer under the overlays, and give the full-screen tile the same click and wheel parity as a grid tile.
-- Phase 10: a narrow tile cuts the activity job by its overflow before the role column drops (`TreeMetrics.activity_fit`, `ActivityFit::Cut`, never below `activity_floor`); `align_screen_columns` merges the narrower cut across shared tiles. The full-screen tile measures its own `ActivityFit` as a `TreeSizing::Local` tile; on collapse the shared merge applies again.
-- Phase 4: `TileGrid` holds the column placement state (`ColumnRanks`, `crates/tui_pane/src/tiles/grid/column_order.rs`), and the app selects the rule with `TileCells::column_order`. cargo-handler returns `TileColumnOrder::LongestWithShortest` from each tile's full tree rows; cargo-tile keeps the default source order. Expand and collapse change no tile membership, so they keep the ranks. When the pane size and the ranking do not change, a collapse puts every tile back in the column it held before Enter. Do not clear or rebuild the ranks for the full-screen tile.
-
-Tests (red first, each under one second):
-1. In cargo-handler, Enter on a focused tile draws that tile at the full pane size; Esc returns to the grid with the same focus and selection.
-2. Right and Left still open and close the selected row.
-3. cargo-tile's existing expand, Esc and scroll tests pass unchanged.
-4. The shared tui_pane type has its own tests for identity, motion, clipping, expand and collapse. Scroll tests stay in cargo-tile, and row-navigation tests stay in cargo-handler.
-5. Each key is tested through each app's normal key dispatch: Enter, Esc order (details, full screen, word highlight), Up, Down, Right, Left.
-6. The full-screen motion animates, and a word highlight change repaints the full-screen tile (the Phase 2 retained-body invalidation).
-7. In cargo-handler, expand, resize and collapse keep the row selection, header clicks hit the drawn headers, the blank column slots come back after collapse, and an expanded tile that leaves the census closes the full-screen view.
-8. `details_navigation_skips_headings_and_y_copies_only_the_value` and `assert_full_frame_copy_notice` pass, also with the details view open over the full-screen tile, and with a clipboard failure.
-
-**Live check (director):** before the checkpoint, capture cargo-handler's grid, the full-screen tile after Enter, and the grid after Esc, from a build of this branch, under the safety rule.
-
-**Change-Review line:** Enter shows the focused tile on the full screen in cargo-handler, as in cargo-tile | On natedev, run cargo-handler, focus a tile and press Enter, then Esc | Enter fills the screen with the focused tile; Esc returns to the grid; Right and Left still open and close rows
+In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pane, and `toggle_row` has no default key. Esc closes the details view, then the full-screen tile, then the word highlight. Row keys, `d`, header clicks and word clicks work in the full-screen tile. The focus keys do nothing while it shows. A shown tile that leaves the census closes the view at once. cargo-tile keeps its Enter, Esc, scroll and motion behavior.
 
 **Files:**
-- `crates/tui_pane/src/` — the shared full-screen tile type
-- `crates/cargo-tile/src/grid_view.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/frame_preparation.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs` — use the shared type; `draw_cell_view` and `ExpandedCell` leave `render.rs` (reserved with berth first)
-- `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/terminal.rs` — Enter and Esc, the key policy, the motion clock and the full-screen draw
-- `docs/cargo-handler/as-built/interaction.md`, `docs/cargo-tile/as-built/` — the keys
+- `crates/tui_pane/src/tiles/full_screen.rs` — the shared full-screen state, with `full_screen_tests.rs`
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `grid/visual.rs` — `draw_cell_view` and `FullScreenPiece`
+- `crates/cargo-tile/src/grid_view.rs` — `GridView` alias, `CellScroll`, `key` and `scroll`
+- `crates/cargo-tile/src/render.rs` — the cargo-tile content side of the full-screen draw
+- `crates/cargo-handler/src/render/mod.rs` — `draw_full_screen`, `redraw_grid`, `FullScreenPane`; tests in `render/full_screen_tests.rs`
+- `crates/cargo-handler/src/app.rs`, `globals.rs`, `keymap.rs`, `terminal.rs` — `App::full_screen`, Esc, `Expand`, `move_focus`, the motion clock
+- `docs/cargo-handler/as-built/interaction.md` — the full-screen tile section
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `App::full_screen` keys the shown tile by `TileKey`; a new tile key opens on the full screen with no change there.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test` passes for cargo-handler, tui_pane and cargo-tile with all listed tests, and `bash ~/.claude/scripts/direct/verify.sh lint` passes for each. The live check shows the full-screen tile and the return to the grid.
+**Gotchas:**
+- While the tile is expanded, `TileGrid::prepare_covered` keeps the grid geometry without a paint; `redraw_grid` resets the pane before the grid draws again.
+- Word-click tests need `Renderer::new`: the fixed-time renderer does not keep `painted_frame`.
 
 ### Phase 14 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
@@ -393,6 +361,7 @@ Director decisions:
 - Phase 1 built `StaffKind::Producer`, `ProducerMembership`, the `producer` role word and the schema-3 transport fields. Use them. Do not infer a producer from a name, its descendants or its status.
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
 - Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 13 full-screen tile with its selection, expansion and `y` copy.
+- Phase 13: `App::full_screen` is a `tui_pane::FullScreenView<TileKey, ()>`. It opens on the focused placement and keys the shown tile by `TileKey`, so `TileKey::Producers` needs no change there. A shown tile that leaves the census closes the view. Put the Enter test in `render/full_screen_tests.rs`, with its `focused_grid` and `expand` helpers.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. Phase 10 builds the schema 2 `sessions` list from it. A producer line in the new tile must still reach `sessions`, with its status and activity.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
