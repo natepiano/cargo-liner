@@ -1141,7 +1141,10 @@ fn draw_status_line_at(
     area: Rect,
     uptime_secs: u64,
 ) {
-    let globals = [StatusLineGlobal::global_shortcuts_help()];
+    let globals = [
+        app.full_screen.status_hint(AppGlobalAction::Expand),
+        StatusLineGlobal::global_shortcuts_help(),
+    ];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
@@ -1231,11 +1234,27 @@ mod tests {
     /// Rows above the status line.
     const BODY_ROWS: usize = 23;
 
-    /// The status line's left end over the grid: the uptime and the CPU reading.
-    const GRID_STATUS: &str = " Uptime: 0s CPU: — Reads/s: —";
+    /// The two ends of an expected status line.
+    #[derive(Clone, Copy)]
+    struct StatusEnds {
+        /// The left end: the uptime, the CPU reading and any navigation.
+        left:    &'static str,
+        /// The right end after the notes: the global hints.
+        globals: &'static str,
+    }
+
+    /// Over the grid: the uptime and the CPU reading, and the expand hint before `?`.
+    const GRID_STATUS: StatusEnds = StatusEnds {
+        left:    " Uptime: 0s CPU: —",
+        globals: "  enter expand  ? shortcuts ",
+    };
     /// An overlay status line draws uptime before navigation and omits the
     /// centre action when it has no whole space before the right-side notes.
-    const OVERLAY_STATUS: &str = " Uptime: 0s CPU: —  ↑/↓ nav   tab pane";
+    /// The expand hint gives way before the navigation.
+    const OVERLAY_STATUS: StatusEnds = StatusEnds {
+        left:    " Uptime: 0s CPU: —  ↑/↓ nav   tab pane",
+        globals: "  ? shortcuts ",
+    };
 
     /// One favorite, saved in a past year: a timestamp from any year
     /// but the current one is drawn with its year, so the row reads the
@@ -1515,25 +1534,25 @@ fraying = "leading"
             .collect()
     }
 
-    /// The status line: `left` at the left edge, and the app's name, its
-    /// version, `flag` when there is one and the `?` shortcut at the
+    /// The status line: `status.left` at the left edge, and the app's name,
+    /// its version, `flag` when there is one and `status.globals` at the
     /// right edge.
-    fn status_row(left: &str, flag: Option<&str>) -> String {
+    fn status_row(status: StatusEnds, flag: Option<&str>) -> String {
+        let StatusEnds { left, globals } = status;
         let flag = flag.map_or_else(String::new, |flag| format!(" {flag}"));
-        let notes = format!("cargo-handler {APP_VERSION}{flag}  ? shortcuts ");
+        let notes = format!("cargo-handler {APP_VERSION}{flag}{globals}");
         format!(
             "{left:<width$}{notes}",
             width = usize::from(WIDTH) - notes.chars().count()
         )
     }
 
-    /// A whole expected frame: `body`, then the status line starting
-    /// with `status_left`.
-    fn frame(body: &[&str; BODY_ROWS], status_left: &str) -> Vec<String> {
+    /// A whole expected frame: `body`, then the status line with `status`.
+    fn frame(body: &[&str; BODY_ROWS], status: StatusEnds) -> Vec<String> {
         body.iter()
             .copied()
             .map(str::to_string)
-            .chain([status_row(status_left, None)])
+            .chain([status_row(status, None)])
             .collect()
     }
 

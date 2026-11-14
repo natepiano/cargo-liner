@@ -338,7 +338,27 @@ In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pan
 - While the tile is expanded, `TileGrid::prepare_covered` keeps the grid geometry without a paint; `redraw_grid` resets the pane before the grid draws again.
 - Word-click tests need `Renderer::new`: the fixed-time renderer does not keep `painted_frame`.
 
-### Phase 14 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
+### Phase 14 — The cargo-handler status bar shows `enter expand` and `esc collapse`, as cargo-tile does  · status: done
+
+#### As-built
+
+`tui_pane::FullScreenView::status_hint(expand)` gives the status slot for the full-screen view: the app's expand action (`enter expand`) in the grid, and the fixed `esc collapse` (`FULL_SCREEN_COLLAPSE_KEY`, `FULL_SCREEN_COLLAPSE_LABEL` in `tiles/constants.rs`) while a tile shows. Both are `after_uptime`. cargo-tile and cargo-handler call it in `draw_status_line`; cargo-tile has no collapse constants of its own.
+
+`fitted_right_spans` counts the navigation hints before it shows an `after_uptime` slot, so at a narrow width or under the details view the expand hint gives way first and the navigation hints keep their place.
+
+**Files:**
+- `crates/tui_pane/src/tiles/full_screen.rs` — `status_hint`
+- `crates/tui_pane/src/tiles/constants.rs` — the collapse key and label
+- `crates/tui_pane/src/bar/status_line.rs` — the fit rule for an `after_uptime` slot, with `an_after_uptime_hint_gives_way_before_the_navigation`
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-handler/src/render/mod.rs` — the status line calls `status_hint`
+- `crates/cargo-handler/src/render/full_screen_tests.rs` — the grid, full-screen and narrow-width status tests
+- `docs/cargo-handler/as-built/interaction.md` — the status-bar hints
+
+**Binds later work:** the golden frames in cargo-handler `render/mod.rs` take a `StatusEnds`: `GRID_STATUS` over the grid, `OVERLAY_STATUS` under the details view.
+
+**Ruled out:** public collapse constants — no consumer outside `FullScreenView`.
+
+### Phase 15 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
 **Depends on:** Phase 1 (it adds the `producer` role from the staff source)
 
@@ -362,6 +382,7 @@ Director decisions:
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
 - Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 13 full-screen tile with its selection, expansion and `y` copy.
 - Phase 13: `App::full_screen` is a `tui_pane::FullScreenView<TileKey, ()>`. It opens on the focused placement and keys the shown tile by `TileKey`, so `TileKey::Producers` needs no change there. A shown tile that leaves the census closes the view. Put the Enter test in `render/full_screen_tests.rs`, with its `focused_grid` and `expand` helpers.
+- Phase 14: the status line shows `enter expand` over the grid and `esc collapse` on the full screen (`FullScreenView::status_hint`). The golden frames in `render/mod.rs` take a `StatusEnds`: `GRID_STATUS` over the grid, `OVERLAY_STATUS` under the details view. A new golden frame uses one of them.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. Phase 10 builds the schema 2 `sessions` list from it. A producer line in the new tile must still reach `sessions`, with its status and activity.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
@@ -401,7 +422,7 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the producers tile and no producer in the unassigned tile.
 
-### Phase 15 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
+### Phase 16 — Claude rows show their effort, and a long shell command does not widen the session column  · status: todo
 
 **Depends on:** Phase 1 (the new column order); Phase 3 (the `d` view sections and its `effort:` line)
 
@@ -427,6 +448,7 @@ Director decisions:
 - Phase 3 keeps the measured demand widths (`TreeMetrics.widths`) apart from the drawn widths (`TreeColumnAlignment::Fitted`), and fills shared tiles in `align_screen_columns`. The shell rule changes only the measured session width. Keep the shared slots and the fill space that the fitter gives; a shell row can draw into session width that the fill gives.
 - The cut keeps quotes, spaces, redirections and arguments that are not paths.
 - Phase 10: `drop_step` cuts the activity job by the overflow before the role column drops (`ActivityFit::Cut`, never below `activity_floor`). A narrower session width changes the overflow; keep `a_narrow_tile_cuts_the_activity_job_by_its_overflow_only` green.
+- Phase 14: at a narrow width, `enter expand` gives way first, before the uptime and the navigation hints. `the_expand_hint_yields_to_uptime_at_a_narrow_width` (`render/full_screen_tests.rs`) holds it. A status-row assertion in `render/narrow_width_tests.rs` expects that.
 
 Tests (red first, each under one second):
 1. A Claude assistant record with a top-level `effort` gives that effort; its `message.model` gives the model.
@@ -461,7 +483,7 @@ Both use the existing `ModelName` and `ReasoningEffort` types.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows effort on Claude rows and a shell row that does not widen the session column.
 
-### Phase 16 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: todo
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 
@@ -515,13 +537,15 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
 
-### Phase 17 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+### Phase 18 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
+
+**Numbering:** this phase was Phase 17 until 2026-11-14, when the new Phase 14 moved Phases 14-18 to 15-19.
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 18 — Twelve slow tests run in under one second  · status: todo
+### Phase 19 — Twelve slow tests run in under one second  · status: todo
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 16 (it changes `render/word_contrast_tests.rs`)
+**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
 
 #### Work Order
 
@@ -552,7 +576,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 16 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 17 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 
 **Change-Review line:** none (test code only)
