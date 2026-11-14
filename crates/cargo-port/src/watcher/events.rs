@@ -111,8 +111,14 @@ pub(super) fn route_folder_event_with_config(
             Subscription::Watched(role) => Subscription::Watched(role),
         };
         match subscription {
-            Subscription::Watched(WatchedFolderRole::Project | WatchedFolderRole::ConfigSource) => {
+            Subscription::Watched(WatchedFolderRole::Project) => {
                 project_event.paths.push(path.clone());
+            },
+            Subscription::Watched(WatchedFolderRole::ConfigSource) => {
+                // Drop other Cargo folder files here, such as the Cargo home cache journal.
+                if registered.config_source_event_matters(path) {
+                    project_event.paths.push(path.clone());
+                }
             },
             Subscription::Watched(WatchedFolderRole::Discovery | WatchedFolderRole::Candidate) => {
                 // A Cargo config folder can also lead to a known project.

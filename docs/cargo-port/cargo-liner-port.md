@@ -379,7 +379,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.
 
-### Phase 13b — cargo-port applies startup results fast under high load  · status: todo
+### Phase 13b — cargo-port applies startup results fast under high load  · status: done
 
 **Depends on:** Phase 13 (both edit the startup disk path and `crates/cargo-port/CHANGELOG.md`). Runs next, before Phase 12, in its own worktree.
 
