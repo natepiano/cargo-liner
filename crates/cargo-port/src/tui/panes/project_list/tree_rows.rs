@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use ratatui::style::Style;
@@ -51,7 +52,7 @@ use crate::tui::state;
 use crate::tui::state::Lint;
 use crate::tui::theme_roles;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TreeSegment {
     Root(usize),
     Group(usize, usize),
@@ -324,7 +325,66 @@ impl TreeRow {
     }
 }
 
-fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[TreeRow]) -> String {
+#[cfg(test)]
+thread_local! {
+    /// Counts the lineage reads that decide tree prefix continuations.
+    static LINEAGE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The tree prefix of each row, in row order. One reverse pass records the
+/// segments that later rows hold under each lineage prefix, so the work
+/// grows with rows times depth.
+fn tree_prefixes(project_list: &ProjectList, rows: &[TreeRow]) -> Vec<String> {
+    let mut later_segments: HashMap<&[TreeSegment], LaterSegments> = HashMap::new();
+    let mut prefixes = Vec::with_capacity(rows.len());
+    for row in rows.iter().rev() {
+        let lineage = row.lineage.as_slice();
+        let later_siblings: Vec<bool> = (0..lineage.len())
+            .map(|segment_index| {
+                #[cfg(test)]
+                LINEAGE_READS.with(|reads| reads.set(reads.get() + 1));
+                later_segments
+                    .get(&lineage[..segment_index])
+                    .is_some_and(|later| later.holds_other_than(lineage[segment_index]))
+            })
+            .collect();
+        prefixes.push(tree_prefix(project_list, row, &later_siblings));
+        for (segment_index, segment) in lineage.iter().enumerate() {
+            later_segments
+                .entry(&lineage[..segment_index])
+                .and_modify(|later| later.record(*segment))
+                .or_insert(LaterSegments::One(*segment));
+        }
+    }
+    prefixes.reverse();
+    prefixes
+}
+
+/// The segments later rows hold at one lineage position. Two distinct
+/// segments are enough to answer whether a later row differs from any one.
+enum LaterSegments {
+    One(TreeSegment),
+    Several,
+}
+
+impl LaterSegments {
+    fn record(&mut self, segment: TreeSegment) {
+        if matches!(self, Self::One(seen) if *seen != segment) {
+            *self = Self::Several;
+        }
+    }
+
+    fn holds_other_than(&self, segment: TreeSegment) -> bool {
+        match self {
+            Self::One(seen) => *seen != segment,
+            Self::Several => true,
+        }
+    }
+}
+
+/// `later_siblings[index]` tells whether a later row shares this row's
+/// lineage before `index` and holds another segment at `index`.
+fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_siblings: &[bool]) -> String {
     let TreeRow { row, lineage } = tree_row;
     if lineage.len() <= 1 {
         return root_prefix(project_list, *row).to_string();
@@ -333,7 +393,7 @@ fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[Tre
     let mut prefix = String::new();
     let depth = TreeRowDepth::from_lineage_length(lineage.len());
     for segment_index in depth.ancestor_indices() {
-        if has_later_sibling(later_rows, lineage, segment_index) {
+        if later_siblings[segment_index] {
             prefix.push_str(TREE_PREFIX_CONTINUATION);
         } else {
             prefix.push_str(TREE_PREFIX_BLANK);
@@ -346,7 +406,7 @@ fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[Tre
         Some(_) => TreeRowExpansion::Collapsed,
         None => TreeRowExpansion::Leaf,
     };
-    prefix.push_str(expansion.prefix(has_later_sibling(later_rows, lineage, row_segment_index)));
+    prefix.push_str(expansion.prefix(later_siblings[row_segment_index]));
     prefix
 }
 
@@ -368,18 +428,6 @@ fn root_prefix(project_list: &ProjectList, row: VisibleRow) -> &'static str {
     } else {
         PREFIX_ROOT_COLLAPSED
     }
-}
-
-fn has_later_sibling(
-    later_rows: &[TreeRow],
-    lineage: &[TreeSegment],
-    segment_index: usize,
-) -> bool {
-    later_rows.iter().map(|row| &row.lineage).any(|candidate| {
-        candidate.len() > segment_index
-            && candidate[..segment_index] == lineage[..segment_index]
-            && candidate[segment_index] != lineage[segment_index]
-    })
 }
 
 fn project_name_segments(
@@ -1426,12 +1474,11 @@ fn project_row_presentations_for(
         .map(|row| TreeRow::new(ctx.project_list, row))
         .collect();
     rows.iter()
-        .enumerate()
-        .map(|(row_index, row)| {
+        .zip(tree_prefixes(ctx.project_list, &rows))
+        .map(|(row, tree_prefix)| {
             let prefix = format!(
-                "{:padding$}{}",
+                "{:padding$}{tree_prefix}",
                 "",
-                tree_prefix(ctx.project_list, row, &rows[row_index + 1..]),
                 padding = PROJECT_LIST_LEFT_PADDING,
             );
             render_tree_item(ctx, row.row, &prefix, &root_labels, sorted)
@@ -1621,6 +1668,59 @@ mod tests {
                 ..RustInfo::default()
             },
             ..Package::default()
+        }
+    }
+
+    #[test]
+    fn tree_prefixes_read_each_row_lineage_a_few_times() {
+        let groups = (0..100)
+            .map(|index| {
+                let primary_path = AbsolutePath::from(format!("/repo_{index}"));
+                RootItem::Worktrees(WorktreeGroup::new(
+                    RustProject::Package(package(
+                        &format!("/repo_{index}"),
+                        MIB,
+                        WorktreeStatus::Primary {
+                            root: primary_path.clone(),
+                        },
+                    )),
+                    vec![RustProject::Package(package(
+                        &format!("/repo_{index}_linked"),
+                        MIB,
+                        WorktreeStatus::Linked {
+                            primary: primary_path,
+                        },
+                    ))],
+                ))
+            })
+            .collect();
+        let mut list = ProjectList::new(groups);
+        for node_index in 0..100 {
+            list.expanded.expand(ExpandKey::Node(node_index), 0);
+        }
+        list.recompute_visibility(true);
+        let rows: Vec<_> = list
+            .visible_rows()
+            .iter()
+            .map(|row| TreeRow::new(&list, *row))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            300,
+            "each group shows its root and two checkouts"
+        );
+        LINEAGE_READS.with(|reads| reads.set(0));
+
+        let prefixes = tree_prefixes(&list, &rows);
+
+        let reads = LINEAGE_READS.with(std::cell::Cell::get);
+        assert!(
+            reads <= 8 * rows.len(),
+            "{reads} lineage reads for {} rows",
+            rows.len()
+        );
+        for group in prefixes.chunks(3) {
+            assert_ne!(group[1], group[2], "only the last checkout ends its branch");
         }
     }
 

@@ -142,9 +142,12 @@ pub(super) fn event_loop(
             disk_elapsed = measure(|| app.ensure_disk_cache());
             fit_elapsed = measure(|| app.ensure_fit_widths_cached());
             detail_elapsed = measure(|| app.ensure_detail_cached());
-            if let FrameDraw::Drawn(elapsed) = draw_frame(terminal, app, &mut frame_output)? {
-                draw_elapsed = elapsed;
-                frame_counter.drawn();
+            match draw_frame(terminal, app, &mut frame_output)? {
+                FrameDraw::Drawn(elapsed) => {
+                    draw_elapsed = elapsed;
+                    frame_counter.drawn();
+                },
+                FrameDraw::Unchanged(elapsed) => draw_elapsed = elapsed,
             }
             frame_state.record_draw(app, tick_now);
             if !rearmed_after_first_draw {
@@ -330,7 +333,7 @@ fn draw_frame_with_renderer<B: Backend>(
     if changed {
         Ok(FrameDraw::Drawn(started.elapsed()))
     } else {
-        Ok(FrameDraw::Unchanged)
+        Ok(FrameDraw::Unchanged(started.elapsed()))
     }
 }
 
@@ -345,8 +348,10 @@ struct RenderedScreen {
     cells: Buffer,
 }
 
+/// Each outcome carries the render time, so the perf log names it when the
+/// screen does not change.
 enum FrameDraw {
-    Unchanged,
+    Unchanged(Duration),
     Drawn(Duration),
 }
 

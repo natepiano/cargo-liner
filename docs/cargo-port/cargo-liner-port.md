@@ -284,7 +284,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
-**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), and Phase 13c (both edit cargo-port and its CHANGELOG).
+**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), Phase 13c and Phase 13d (all edit cargo-port and its CHANGELOG).
 
 #### Work Order
 
@@ -303,6 +303,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
 - Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
+- Phase 13c: a linked worktree's background Git probe compares its `HEAD` with the primary `HEAD` (`CheckoutInfo.ahead_behind_primary`). An event on the primary `HEAD` file now refreshes the linked checkouts, which runs Git for each. Name that share in the attribution.
 - `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
 
 **Spec:**
@@ -360,34 +361,61 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** one `RepoInfo` result can still take 2.6 s on the frame path, and the largest disk walks take 36 to 65 s. Phase 13c owns the frame time.
 
-### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: todo
+### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: done
 
-**Depends on:** Phase 13b on main (this phase changes its apply path). Runs before Phase 12: Phase 12 needs natedev load under 8, and this phase measures under high load.
+#### As-built
+
+- `tree_prefixes` (`project_list/tree_rows.rs`) builds every row's tree prefix in one reverse pass. `LaterSegments` records, per lineage prefix, whether later rows hold another segment. The work grows with rows times depth, not rows squared.
+- Discovery shimmer matching finds the one root entry that holds the shimmer path through the path index (`ProjectList::entry_containing`), in place of a walk of every root item per row.
+- `CheckoutInfo.ahead_behind_primary` holds a linked worktree's comparison with the primary `HEAD`. The background Git probe fills it (`discovery::linked_primary_root` reads the `commondir` file); it is `NotCompared` outside a linked worktree. The Git pane reads the stored value, so render runs no Git. An event on the primary `HEAD` file refreshes the linked checkouts.
+- `CiTablePlan` on `Ci` keeps the CI table columns, the `CiDurations` value (`Shown` or `Hidden`) and the widths until the content or the pane width changes. `Ci::set_content` keeps the plan when the new data is equal (`PartialEq` on `CiData`, `CiRun`, `CiJob`, `CiEmptyState`). `Ci::render_parts` splits the borrows for the render.
+- `FrameDraw::Unchanged(Duration)` carries the render time, so the perf log names the draw also when the screen does not change.
+- Proof, paired natedev starts against the Phase 13b build: at load 55-125, slowest frame 3570 ms → 153 ms and frames over 100 ms 35 → 13; at load 17-27, slowest frame 3735 ms → 199 ms, frames over 100 ms 55 → 3, Disk usage done 32.5 s → 11.0 s.
+- Tests: `tree_prefixes_read_each_row_lineage_a_few_times`, `shimmer_match_reads_a_few_root_items_per_row`, `linked_worktree_probe_compares_head_to_the_primary`, `render_reads_worktree_comparisons_without_git`, `ci_table_layout_is_built_once_while_content_and_width_hold`, `ci_table_layout_holds_when_the_same_content_is_set_again`.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `tree_prefixes`, `LaterSegments`
+- `crates/cargo-port/src/tui/app/discovery_shimmer.rs` — path index lookup
+- `crates/cargo-port/src/project/git/checkout.rs`, `discovery.rs` — `ahead_behind_primary`, `linked_primary_root`
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — reads the stored comparison
+- `crates/cargo-port/src/watcher/refresh.rs` — primary `HEAD` refresh event
+- `crates/cargo-port/src/tui/panes/ci/render.rs`, `src/tui/state/ci.rs` — `CiTablePlan`, `CiDurations`
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` — `FrameDraw::Unchanged(Duration)`
+- `crates/cargo-port/CHANGELOG.md` — fix entry
+
+**Gotchas:** at load above the 32 natedev CPUs, the scheduler sets the frame times. Measure frame time at load under 32, and do not run builds or lint during a paired start.
+
+**Ruled out:** further cuts for load 125, where 4 runnable tasks per CPU set the frame times.
+
+### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
+
+**Depends on:** Phase 13c (it edits the same frame path and the CHANGELOG). Runs before Phase 12, which also edits the cargo-port CHANGELOG.
 
 #### Work Order
 
-**Goal:** at startup under high load, no frame takes more than 100 ms. Heavy result work runs off the frame path, so the app never stalls.
+**Goal:** at startup with natedev load under 32, no frame takes more than 100 ms.
 
-**Source:** the showrunner, 2026-11-13, ruling on the Phase 13b proof: a 2.6 s frame is a stall the user sees. Phase 13b paired natedev starts (load 86 to 74) gave these results:
-1. Slowest frame 2.6 s, 53 saturated frames.
-2. Slow messages (`poll_background_slow_msg`, 10 ms or more): `RepoInfo` 11 messages, 13.1 s in total, at most 2.6 s; `LanguageStatsBatch` 77, 2.0 s; `CiRuns` 7, 0.66 s.
-3. The first row message of each frame batch also carries the before copy of the row presentation (`RowPresentationBatch::Captured`), so its time includes one full presentation build.
+**Source:** the showrunner ruling on Phase 13c, 2026-11-13: when a frame takes more than 100 ms at load under 32, add a follow-up phase for its step. Phase 13c paired start at load 25-27 had 3 such frames, all in the first 3.5 s:
+1. 199 ms: one `CargoMetadata` apply of 113 ms in bg (126 ms), column fit 49 ms.
+2. 154 ms: one `ScanResult` apply of 60 ms in bg (62 ms), column fit 84 ms.
+3. 102 ms: draw 65 ms, column fit 35 ms.
 
 **Constraints from prior phases:**
-- Phase 3: cargo-port draws a frame only when something changed; `row_generation` drives the redraw. Keep that rule.
-- Phase 13b: `poll_background` compares the row presentation once per frame batch (`finish_row_batch`). Keep `row_message_burst_builds_row_presentation_at_most_twice` green.
-- `handle_repo_info` (`tui/app/async_tasks/repo_handlers.rs`) keeps `first_commit` and compares `last_fetched` before it invalidates the GitHub fetch cache. Keep that behavior.
+- Phase 13c keeps the CI table plan across equal CI data (`ci_table_layout_holds_when_the_same_content_is_set_again`). Keep its tests green.
+- Phase 13c names the draw time also when the screen does not change (`FrameDraw::Unchanged(Duration)`).
+- Phase 13b: keep `row_message_burst_builds_row_presentation_at_most_twice` green.
+- Do not run builds or lint during a paired start, because they add load.
 
 **Spec:**
-1. **Measure.** Use `poll_background_slow_msg` and frame timing to find each message kind and step over 100 ms. Add perf fields where the log cannot tell which step costs the time.
-2. **Off the frame path.** Move the `RepoInfo` result work and any other heavy apply work off the frame path, to a background task or into bounded steps. The frame applies only cheap state changes.
-3. **Row presentation.** If one presentation build costs more than the frame budget under load, make it cheaper or incremental. Keep the draw-only-on-change rule.
-4. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
-5. **Changelog.** Add a cargo-port fix entry.
+1. **Measure.** Add temporary perf fields inside the `CargoMetadata` apply, the `ScanResult` apply, `ensure_fit_widths_cached` and `render::ui` to find the cost in each.
+2. **Repair.** Make each named step cheaper, or move it off the frame path. The frame applies only cheap state changes.
+3. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
+4. **Changelog.** Add a cargo-port fix entry.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/` — the apply path and `repo_handlers.rs`
-- `crates/cargo-port/src/tui/app/mod.rs` — `project_row_presentation`, if the build cost is the cause
+- `crates/cargo-port/src/tui/app/async_tasks/` — the `CargoMetadata` and `ScanResult` apply
+- `crates/cargo-port/src/tui/app/` — `ensure_fit_widths_cached`
+- `crates/cargo-port/src/tui/render/` — `render::ui`, for the 65 ms draw
 - `crates/cargo-port/CHANGELOG.md` — entry
 
 **Workers:** 1 writer.
@@ -397,5 +425,4 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Acceptance gate:**
 1. The tests fail before the repair and pass after.
 2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
-3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13b build, then this build. In this build no frame takes more than 100 ms, and Disk usage done is not later than in the Phase 13b build.
-4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the app answers keys at once while startup runs.
+3. Paired natedev starts at load under 32 with the same `include_dirs`: the Phase 13c build, then this build. In this build no frame takes more than 100 ms.

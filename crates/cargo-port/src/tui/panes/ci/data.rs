@@ -6,7 +6,7 @@ use crate::project::RepoInfo;
 use crate::tui::app::App;
 use crate::tui::state::CiApplicability;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum CiEmptyState {
     Fetching,
     Loading,
@@ -32,7 +32,7 @@ impl CiEmptyState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CiData {
     pub runs:           Vec<CiRun>,
     pub mode_label:     Option<String>,

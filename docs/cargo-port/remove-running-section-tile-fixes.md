@@ -2595,54 +2595,72 @@ The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth test
 
 **Ruled out:** a longer timeout, a retry or a sleep. Phase 58f does not cause the slow times (three timing pairs against base 644f8c3).
 
-### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: todo
+### Phase 58k — Sixteen more cargo-berth tests and two cargo-tile tests run under 1 s  · status: done
 
 **Depends on:** Phase 58j (its method and its template helpers). Phase 63a runs first.
 
-The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99, 10 of 32 test threads) had these tests at 1 s or more. The showrunner approved this phase on 2026-11-13. The cargo-handler and cargo-mend tests from the same run went to their owners, and this phase does not fix them.
+The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99) had 15 `cargo-berth::lifecycle` tests, one `cargo-berth::gate` test and two `cargo-tile` reader scenario tests at 1.0-1.6 s.
 
-1. `cargo-berth::lifecycle` (15 tests):
-   - `merge_extent::merge_extents_exclude_changes_already_on_the_integration_target` — 1.588 s
-   - `merge_extent::lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward` — 1.491 s
-   - `outstanding_rebase_uses_trunk_when_its_integration_target_disappears` — 1.378 s
-   - `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.300 s
-   - `split_checkpoint_survives_switching_the_issuing_checkout_before_board` — 1.215 s
-   - `refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors` — 1.207 s
-   - `released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk` — 1.202 s
-   - `merge_extent::two_outstanding_reservations_have_one_answerable_foreign_merge_conflict` — 1.197 s
-   - `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` — 1.189 s
-   - `merge_extent::f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains` — 1.148 s
-   - `merge_extent::repeated_drift_cannot_leave_other_crates_in_the_merge_extent` — 1.118 s
-   - `merge_extent::younger_unavailable_holders_answer_authorizes_only_its_scope_after_replay` — 1.087 s
-   - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` — 1.031 s
-   - `rebase_resnapshot_updates_protected_tip_and_retention_ref` — 1.022 s
-   - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` — 1.003 s
-2. `cargo-berth::gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 1.114 s
-3. `cargo-tile::unit_tests` (2 tests):
-   - `shim_registration::reader_scenarios::reader_scenario_assertion_removes_its_processes_and_folder` — 1.148 s
-   - `shim_registration::reader_scenarios::reader_scenario_sigkill_removes_its_processes_and_folder` — 1.102 s
+#### As-built
 
-#### Work Order
+- `INITIALIZED_REPOSITORY`, `COMMITTED_POLICY_REPOSITORY` and `INITIALIZED_REFTABLE_REPOSITORY` are before-run templates in `tests/support/lifecycle_templates.rs`. The lifecycle tests no longer build them in the first test.
+- The session and nextest environments set `PYTHONDONTWRITEBYTECODE=1`, so each reader scenario process compiled `reader_scenario_cases.py`. `python_cache::cache_python_modules` removes that variable, and the cache folder now fills.
+- The three `split_checkpoint_survives_*` tests ran a split rebase and then its reconciliation. `continue_split` and `drain_split` (`support/reanchoring_templates.rs`) split that work. The new `split_rebase_captures_*` tests run the rebase. The old names drain from the `CONTINUED_SPLIT_RETENTION`, `CONTINUED_SPLIT_SIBLING` and `CONTINUED_SPLIT_SWITCHED` templates.
+- The lanes test is two tests: `lanes_release_when_their_integration_target_receives_a_merge_commit` and `…_receives_a_fast_forward`.
+- `pyrightconfig.json` at the repository root makes basedpyright find the scenario modules.
+- Results, natedev crate gate at load 36: 1,388 tests. Lanes 1.35 s to 0.53 s. Drain halves 0.14-0.20 s. The other named lifecycle tests 0.38-0.70 s. Load 41 workspace suite: reader tests 0.32 s and 0.31 s, the gate test 0.28 s.
+- Still over 1 s, each one real rebase: `split_rebase_captures_stacked_branches_rewritten_with_update_refs` 1.41 s and the two `upper_checkpoint_keeps_the_full_split_interval_*` tests 1.12-1.13 s. Phase 58m takes them.
+- Director review only (no workers). Repair round 1 of 3.
+- Checkpoint: a6851294c on `tile-phase-58k`.
 
-**Goal:** each of the 18 tests runs under 1 s in the crate gate and in a loaded natedev workspace suite, with every assertion.
+**Files:** `crates/cargo-berth/tests/{lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/{lifecycle_templates,reanchoring,reanchoring_templates}.rs`, `crates/cargo-tile/src/shim_registration/{python_cache.rs,reader_scenario.py,reader_scenario_cases.py}`, `pyrightconfig.json`.
 
-**Spec:**
+**Gotchas:** a nextest or Claude session environment can carry `PYTHONDONTWRITEBYTECODE`; a test that relies on the bytecode cache must remove it.
 
-1. Measure first. For each test, split its time into setup, Git process starts, cargo-berth process starts, disk sync and assertions.
-2. Use the Phase 58j method. Record live setup as a before-run template (`recorded_history::template`, `LedgerTemplate::before_run`, `save_recorded_history`). Split a test that runs many cargo-berth commands into tests that each start from a recorded state.
-3. Keep every assertion. Add no retry, sleep or longer wait. Do not raise a limit or a timeout.
-4. Report each test's time before and after, at the same load band.
+### Phase 58n — cargo-liner tests ignore inherited Git command settings  · status: done
 
-**Files:**
+**Depends on:** none. It runs before Phase 58m, because its failure holds the main CI point (showrunner, 2026-11-13).
 
-- `crates/cargo-berth/tests/lifecycle.rs` and its `support/` template modules, `crates/cargo-berth/tests/gate.rs`
-- `crates/cargo-berth/tests/recorded_templates.rs` — template registration
-- `crates/cargo-berth-test-support/src/` — shared fixture setup and templates
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the two reader scenario tests
+The CI point on main 8e7980d6e failed 6 `cargo-berth::gate` post-commit tests in the gate clone. The post-commit hook started 13 Git processes against a ceiling of 5.
 
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
+The CI point gives validation three Git settings in `GIT_CONFIG_COUNT`: `url.<push>.pushInsteadOf`, `user.name` and `user.email`. The test processes inherit them. `configuration_overlay` in `crates/cargo-berth/src/git/read.rs` accepts only `maintenance.auto` and `gc.auto` for in-process reads. Any other setting sends every read to a Git child. With these three settings set on natedev, 63 workspace tests fail: 14 gate tests, 47 cargo-berth unit tests and 2 cargo-port unit tests. The gate run stopped at the first failures, so it showed only 6.
 
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-tile`; `verify.sh test cargo-berth` and `verify.sh test cargo-tile` green on natedev, each of the 18 tests under 1 s; one loaded natedev workspace suite with each of the 18 tests under 1 s.
+#### As-built
+
+- The `[env]` table in `.cargo/config.toml` sets `GIT_CONFIG_COUNT = { value = "0", force = true }`. Git and cargo-berth ignore the inherited entries in every process that cargo starts, nextest tests included.
+- The product route does not change. A Git setting that cargo-berth does not know still goes to Git.
+- Results, natedev: 7,878 workspace tests passed with the three CI settings set (63 failed before). The plain workspace gate passed 7,877 tests.
+- Director review only (no workers). Checkpoint: dbd3f8fb9 on `tile-phase-58n`.
+
+**Files:** `.cargo/config.toml`.
+
+**Gotchas:** a caller's `GIT_CONFIG_COUNT` reaches every test process. A test that counts Git processes or names a read route depends on the `[env]` entry.
+
+### Phase 58m — The cargo-berth rebase hooks run faster  · status: done
+
+**Depends on:** Phase 58k (its split tests and its times).
+
+After Phase 58k, five lifecycle tests still run one real rebase each and stay near or over 1 s on natedev. The showrunner approved this phase on 2026-11-13.
+
+1. `split_rebase_captures_stacked_branches_rewritten_with_update_refs` — 1.409 s (load 36)
+2. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` — 1.127 s (load 36)
+3. `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` — 1.116 s (load 36)
+4. `outstanding_rebase_uses_its_integration_target_as_the_new_anchor` — 1.164 s (load 41), 0.379 s (load 36)
+5. `rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint` — 1.002 s (load 41), 0.340-0.361 s (load 36)
+
+#### As-built
+
+- Measurement only. No product or test code changed.
+- A process trace of `split_rebase_captures_stacked_branches_rewritten_with_update_refs` shows 146 process starts in the test. Git started the `reference-transaction` hook 104 times: about 35 ref transactions, each in its `preparing`, `prepared` and `committed` states. The hook script starts the binary only 2 times, both for `refs/heads` moves in `committed`. The other 102 runs end in shell builtins.
+- The post-commit hook ran `drift --full` 4 times. During a rebase, `drift::execute` stops at its first check, and a bare binary start costs 1.6 ms on natedev. A shell skip in the post-commit hook saves about 0.05 s per test and moves the rewrite reconciliation of other worktrees to the next command. It is not made.
+- A `/bin/sh` start costs 1.3 ms on natedev. Git sets the number of hook starts, so cargo-berth cannot remove the main cost of a real rebase.
+- Results, natedev crate gate at load 19 (16 of 32 threads), 1,388 tests: split rebase 0.56 s, `upper_checkpoint_*` lower first 0.45 s and upper first 0.39 s, `outstanding_rebase_*` 0.24 s, `rebase_onto_another_reservation_*` 0.25 s. Alone at load 17-20: 0.13-0.30 s. The Phase 58k times of 1.0-1.4 s were at load 36-41.
+- Of the 21 other tests at 1.0-1.5 s in the Phase 58k gate, none reached 1 s. Two other tests did: `trunk_gate_checks_successor_recorded_against_another_target` 1.01 s and `a_second_commit_to_an_answered_working_tree_incursion_reopens_it` 1.23 s. Alone they run 0.15 s and 0.17 s; the load rose to 55 during that gate.
+- Director review only (no workers).
+
+**Files:** none outside this plan.
+
+**Gotchas:** a test that runs a real rebase with the managed hooks starts about 100 hook shells. Its time scales with machine load more than other tests.
 
 ### Phase 58l — Before-run templates restore at their canonical path  · status: done
 

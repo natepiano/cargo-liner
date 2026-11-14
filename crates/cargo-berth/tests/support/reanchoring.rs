@@ -30,6 +30,9 @@ use super::reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
 use super::reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
 use super::reanchoring_templates::CHECKPOINT_BEFORE_OTHER_REBASE;
 use super::reanchoring_templates::CONFLICTING_TWO_HUNK_CHECKPOINT;
+use super::reanchoring_templates::CONTINUED_SPLIT_RETENTION;
+use super::reanchoring_templates::CONTINUED_SPLIT_SIBLING;
+use super::reanchoring_templates::CONTINUED_SPLIT_SWITCHED;
 use super::reanchoring_templates::CheckpointPlacement;
 use super::reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
 use super::reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
@@ -48,7 +51,6 @@ use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
 use super::reanchoring_templates::SPLIT_OUTSTANDING_PHASE;
-use super::reanchoring_templates::STATE_PATH;
 use super::reanchoring_templates::SplitLowerCheckpointState;
 use super::reanchoring_templates::SplitRefChange;
 use super::reanchoring_templates::SplitReservationStage;
@@ -156,7 +158,7 @@ pub(super) fn checkpoint_ranges_survive_two_rebases_reconciled_during_integratio
 
 fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
     let fixture = RewriteFixture::from_repository(TWO_REBASE_HISTORY.instantiate());
-    let history: TwoRebaseHistoryState = read_state(fixture.root());
+    let history: TwoRebaseHistoryState = reanchoring_templates::read_state(fixture.root());
     let fixture = &fixture;
     let (first, second) = (history.first.as_str(), history.second.as_str());
     let (earlier_tip, final_tip) = (history.earlier_tip.as_str(), history.final_tip.as_str());
@@ -233,7 +235,7 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
         old_tip,
         trunk,
         ..
-    } = read_state(fixture.root());
+    } = reanchoring_templates::read_state(fixture.root());
     assert!(
         !journal_events(fixture.root())
             .iter()
@@ -410,7 +412,7 @@ fn apply_rebase_reanchors_checkpoint(progress: ApplyRebaseProgress) {
         old_tip,
         trunk,
         ..
-    } = read_state(fixture.root());
+    } = reanchoring_templates::read_state(fixture.root());
     assert!(
         !journal_events(fixture.root())
             .iter()
@@ -574,7 +576,7 @@ pub(super) fn aborted_rebase_does_not_leave_a_rewrite_marker() {
     let reanchoring_templates::SplitPhaseState {
         id,
         old_tip: old_head,
-    } = read_state(fixture.root());
+    } = reanchoring_templates::read_state(fixture.root());
     fixture.stop_rebase();
     assert_eq!(
         reanchoring_templates::pending_markers(fixture.root()),
@@ -613,7 +615,7 @@ fn rebase_onto_another_reservation(stage: SplitReservationStage) {
         other_tip,
         old_tip,
         trunk,
-    } = read_state(fixture.root());
+    } = reanchoring_templates::read_state(fixture.root());
 
     GIT.run(&fixture.holder, ["rebase", "other-reservation"]);
     let rewritten_tip = fixture.head();
@@ -653,7 +655,7 @@ fn rebase_onto_another_reservation(stage: SplitReservationStage) {
 
 pub(super) fn pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement() {
     let fixture = RewriteFixture::from_repository(UNRESERVED_REBASE_PREFIX.instantiate());
-    let old_tip: String = read_state(fixture.root());
+    let old_tip: String = reanchoring_templates::read_state(fixture.root());
     GIT.run(&fixture.holder, ["rebase", "main"]);
     let markers = reanchoring_templates::pending_markers(fixture.root());
     assert_eq!(markers.len(), 1, "real rebase must capture its map");
@@ -687,7 +689,8 @@ pub(super) fn pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement() 
 
 pub(super) fn stopped_rebase_defers_a_pending_reanchor() {
     let fixture = RewriteFixture::from_repository(CONFLICTING_TWO_HUNK_CHECKPOINT.instantiate());
-    let reanchoring_templates::SplitPhaseState { id, .. } = read_state(fixture.root());
+    let reanchoring_templates::SplitPhaseState { id, .. } =
+        reanchoring_templates::read_state(fixture.root());
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "two");
     let amended_tip = fixture.head();
@@ -830,7 +833,8 @@ pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() 
 
 pub(super) fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
     let fixture = RewriteFixture::from_repository(ONE_HUNK_CHECKPOINT.instantiate());
-    let reanchoring_templates::SplitPhaseState { id, .. } = read_state(fixture.root());
+    let reanchoring_templates::SplitPhaseState { id, .. } =
+        reanchoring_templates::read_state(fixture.root());
     let rewrite_marker = fixture.deferred_amend("one", "base");
     let bypass_name = format!("{PENDING_PREFIX}mixed-bypass.json");
     let bypass_marker = fixture.root().join(".git").join(&bypass_name);
@@ -935,7 +939,7 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         expected_start,
         split_tip,
     } = if recorded {
-        read_state(fixture.root())
+        reanchoring_templates::read_state(fixture.root())
     } else {
         reanchoring_templates::prepare_first_split(fixture.root(), workflow, stage)
     };
@@ -991,7 +995,7 @@ pub(super) fn dropping_a_hunk_after_soft_checkpoint_split_keeps_it_outstanding()
 
 fn assert_recorded_split_survives_hunk_loss(template: cargo_berth_test_support::LedgerTemplate) {
     let fixture = RewriteFixture::from_repository(template.instantiate());
-    let state = read_state(fixture.root());
+    let state = reanchoring_templates::read_state(fixture.root());
     assert_lost_split_hunk_stays_outstanding(&fixture, state);
 }
 
@@ -1034,6 +1038,18 @@ fn assert_lost_split_hunk_stays_outstanding(
     );
 }
 
+pub(super) fn split_rebase_captures_an_active_phases_rewritten_retention_ref() {
+    assert_split_captures_ref_change(SplitRefChange::ActiveRetention);
+}
+
+pub(super) fn split_rebase_captures_stacked_branches_rewritten_with_update_refs() {
+    assert_split_captures_ref_change(SplitRefChange::UpdatedSibling);
+}
+
+pub(super) fn split_rebase_captures_switching_the_issuing_checkout_before_board() {
+    assert_split_captures_ref_change(SplitRefChange::SwitchedCheckout);
+}
+
 pub(super) fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
     assert_split_survives_ref_change(SplitRefChange::ActiveRetention);
 }
@@ -1063,7 +1079,7 @@ fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder
         first_split,
         split_tip,
         new_upper,
-    } = read_state(fixture.root());
+    } = reanchoring_templates::read_state(fixture.root());
     let editor = fixture.worktrees.path().join("stacked-order-editor");
     assert_ne!(old_upper, new_upper);
     assert_eq!(
@@ -1111,10 +1127,26 @@ pub(super) fn split_checkpoint_survives_switching_the_issuing_checkout_before_bo
     assert_split_survives_ref_change(SplitRefChange::SwitchedCheckout);
 }
 
-fn assert_split_survives_ref_change(change: SplitRefChange) {
+/// The split rebase itself: its stop, its two new commits and the rewrite its hooks capture.
+fn assert_split_captures_ref_change(change: SplitRefChange) {
     let (fixture, state) = split_checkpoint_before_ref_change(change);
     let editor = fixture.worktrees.path().join("split-editor");
-    reanchoring_templates::prepare_split_checkpoint(&fixture, state, &editor, change);
+    reanchoring_templates::continue_split(&fixture, state, &editor, change);
+}
+
+/// From the finished split: reconciliation keeps each phase's accepted anchors.
+fn assert_split_survives_ref_change(change: SplitRefChange) {
+    let template = match change {
+        SplitRefChange::ActiveRetention => CONTINUED_SPLIT_RETENTION,
+        SplitRefChange::UpdatedSibling => CONTINUED_SPLIT_SIBLING,
+        SplitRefChange::SwitchedCheckout => CONTINUED_SPLIT_SWITCHED,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    reanchoring_templates::drain_split(
+        &fixture,
+        reanchoring_templates::read_state(fixture.root()),
+        change,
+    );
 }
 
 pub(super) fn dropping_a_split_hunk_keeps_the_switched_checkout_checkpoint_outstanding() {
@@ -1131,7 +1163,7 @@ pub(super) fn dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstan
 
 fn assert_drained_checkpoint_survives_drop(template: cargo_berth_test_support::LedgerTemplate) {
     let fixture = RewriteFixture::from_repository(template.instantiate());
-    let state: DrainedSplitCheckpointState = read_state(fixture.root());
+    let state: DrainedSplitCheckpointState = reanchoring_templates::read_state(fixture.root());
     let editor = fixture.worktrees.path().join("drop-editor");
     assert_dropping_split_preserves_checkpoint(
         &fixture,
@@ -1152,21 +1184,21 @@ fn split_checkpoint_before_ref_change(
             let fixture = RewriteFixture::from_repository(
                 SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION.instantiate(),
             );
-            let state = read_state(fixture.root());
+            let state = reanchoring_templates::read_state(fixture.root());
             (fixture, state)
         },
         SplitRefChange::UpdatedSibling => {
             let fixture = RewriteFixture::from_repository(
                 SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING.instantiate(),
             );
-            let state = read_state(fixture.root());
+            let state = reanchoring_templates::read_state(fixture.root());
             (fixture, state)
         },
         SplitRefChange::SwitchedCheckout => {
             let fixture = RewriteFixture::from_repository(
                 SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT.instantiate(),
             );
-            let state = read_state(fixture.root());
+            let state = reanchoring_templates::read_state(fixture.root());
             (fixture, state)
         },
     }
@@ -1294,7 +1326,8 @@ enum CaptureReadFailure {
 
 fn assert_capture_read_failure_writes_no_marker(failure: CaptureReadFailure) {
     let fixture = RewriteFixture::from_repository(SPLIT_OUTSTANDING_PHASE.instantiate());
-    let reanchoring_templates::SplitPhaseState { id, old_tip } = read_state(fixture.root());
+    let reanchoring_templates::SplitPhaseState { id, old_tip } =
+        reanchoring_templates::read_state(fixture.root());
     let editor = fixture.worktrees.path().join("capture-failure-editor");
     split_rebase::write_first_rebase_action(&editor, "edit");
     SplitWorkflow::InteractiveRebase.stop_before_split(&fixture, &editor);
@@ -1555,11 +1588,6 @@ fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
     loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
 }
 
-fn read_state<T: serde::de::DeserializeOwned>(root: &Path) -> T {
-    serde_json::from_slice(&fs::read(root.join(STATE_PATH)).expect("rewrite state should read"))
-        .expect("rewrite state should decode")
-}
-
 /// Both relocated copies must preserve reservation ownership and replay pending rewrites.
 pub(super) fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
     let first_copy = RewriteFixture::from_repository(TWO_REBASE_HISTORY.instantiate());
@@ -1576,7 +1604,7 @@ pub(super) fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
         assert_ne!(first_identity, second_identity, "copies must renew {path}");
     }
     for fixture in [first_copy, second_copy] {
-        let history: TwoRebaseHistoryState = read_state(fixture.root());
+        let history: TwoRebaseHistoryState = reanchoring_templates::read_state(fixture.root());
         assert!(
             !reanchoring_templates::pending_markers(fixture.root()).is_empty(),
             "the copied rewrite must still need reconciliation"

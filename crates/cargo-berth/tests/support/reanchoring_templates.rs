@@ -22,6 +22,7 @@ use cargo_berth_test_support::json as json_output;
 use cargo_berth_test_support::reservation_row;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use split_rebase::write_first_rebase_action;
 use tempfile::tempdir;
@@ -1155,19 +1156,19 @@ pub(super) fn make_read_only(path: &Path) -> fs::Permissions {
     permissions
 }
 
-/// Exercise the real split, capture and reconciliation before a later dropped hunk.
-pub(super) fn prepare_split_checkpoint(
+/// Split the lower checkpoint's first commit in a real rebase, and check what its hooks captured.
+pub(super) fn continue_split(
     fixture: &RewriteRepository,
     state: SplitLowerCheckpointState,
     editor: &Path,
     change: SplitRefChange,
-) -> DrainedSplitCheckpointState {
+) -> ContinuedSplitState {
     let SplitLowerCheckpointState {
         trunk,
         lower,
         old_lower,
         old_upper,
-        mut active_phases,
+        active_phases,
     } = state;
     if matches!(change, SplitRefChange::UpdatedSibling) {
         split_rebase::stop_for_split(&fixture.holder, editor, &trunk);
@@ -1205,6 +1206,33 @@ pub(super) fn prepare_split_checkpoint(
     if matches!(change, SplitRefChange::SwitchedCheckout) {
         switch_before_split_import(fixture, &markers, &trunk);
     }
+    ContinuedSplitState {
+        trunk,
+        lower,
+        old_lower,
+        first_split,
+        split_tip,
+        new_upper,
+        active_phases,
+    }
+}
+
+/// Reconcile a finished split's pending markers, and check every phase's anchors.
+pub(super) fn drain_split(
+    fixture: &RewriteRepository,
+    state: ContinuedSplitState,
+    change: SplitRefChange,
+) -> DrainedSplitCheckpointState {
+    let ContinuedSplitState {
+        trunk,
+        lower,
+        old_lower,
+        first_split,
+        split_tip,
+        new_upper,
+        mut active_phases,
+    } = state;
+    let markers = pending_markers(fixture.root());
     for upper in &active_phases {
         assert_split_anchors(
             fixture,
@@ -1247,6 +1275,18 @@ pub(super) fn prepare_split_checkpoint(
     }
 }
 
+/// A finished split rebase whose rewrite markers are still pending.
+#[derive(Serialize, Deserialize)]
+pub(super) struct ContinuedSplitState {
+    pub(super) trunk:         String,
+    pub(super) lower:         String,
+    pub(super) old_lower:     String,
+    pub(super) first_split:   String,
+    pub(super) split_tip:     String,
+    pub(super) new_upper:     String,
+    pub(super) active_phases: Vec<String>,
+}
+
 /// A reconciled split checkpoint whose protected first hunk has not yet been dropped.
 #[derive(Serialize, Deserialize)]
 pub(super) struct DrainedSplitCheckpointState {
@@ -1277,21 +1317,66 @@ pub(super) const DRAINED_SPLIT_SIBLING_CHECKPOINT: LedgerTemplate = LedgerTempla
 };
 
 fn build_drained_retention_checkpoint(root: &Path) {
-    build_active_retention(root);
+    build_continued_retention(root);
     build_drained_checkpoint(root, SplitRefChange::ActiveRetention);
 }
 
 fn build_drained_sibling_checkpoint(root: &Path) {
-    build_updated_sibling(root);
+    build_continued_sibling(root);
     build_drained_checkpoint(root, SplitRefChange::UpdatedSibling);
 }
+
+fn build_continued_retention(root: &Path) {
+    build_active_retention(root);
+    build_continued_split(root, SplitRefChange::ActiveRetention);
+}
+
+fn build_continued_sibling(root: &Path) {
+    build_updated_sibling(root);
+    build_continued_split(root, SplitRefChange::UpdatedSibling);
+}
+
+fn build_continued_switched(root: &Path) {
+    build_switched_checkout(root);
+    build_continued_split(root, SplitRefChange::SwitchedCheckout);
+}
+
+/// A finished split of the lower checkpoint while the upper retention ref is active.
+pub(super) const CONTINUED_SPLIT_RETENTION: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "continued-split-retention",
+        build: build_continued_retention,
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// A finished split that rebase applied to its sibling branch, too.
+pub(super) const CONTINUED_SPLIT_SIBLING: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "continued-split-sibling",
+        build: build_continued_sibling,
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// A finished split whose issuing checkout then switched branches.
+pub(super) const CONTINUED_SPLIT_SWITCHED: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "continued-split-switched",
+        build: build_continued_switched,
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
 
 /// A reconciled checkpoint after its issuing checkout switched branches.
 pub(super) const DRAINED_SPLIT_SWITCHED_CHECKPOINT: LedgerTemplate = LedgerTemplate {
     repository: RepositoryTemplate {
         name: "drained-split-switched-checkpoint",
         build: |root| {
-            build_switched_checkout(root);
+            build_continued_switched(root);
             build_drained_checkpoint(root, SplitRefChange::SwitchedCheckout);
         },
         ..REWRITE_MAIN
@@ -1299,19 +1384,28 @@ pub(super) const DRAINED_SPLIT_SWITCHED_CHECKPOINT: LedgerTemplate = LedgerTempl
     ..TWO_REBASE_HISTORY
 };
 
-fn build_drained_checkpoint(root: &Path, change: SplitRefChange) {
+fn build_continued_split(root: &Path, change: SplitRefChange) {
     let fixture = RewriteRepository::at_root(root);
-    let state =
-        serde_json::from_slice(&fs::read(root.join(STATE_PATH)).expect("split state should read"))
-            .expect("split state should decode");
     let editor_directory = cargo_berth_test_support::fixture_tempdir("split-editor-");
-    let state = prepare_split_checkpoint(
+    let state = continue_split(
         &fixture,
-        state,
+        read_state(root),
         &editor_directory.path().join("split-editor"),
         change,
     );
     write_state(root, &state);
+}
+
+fn build_drained_checkpoint(root: &Path, change: SplitRefChange) {
+    let fixture = RewriteRepository::at_root(root);
+    let state = drain_split(&fixture, read_state(root), change);
+    write_state(root, &state);
+}
+
+/// The state a template's build wrote beside its repository.
+pub(super) fn read_state<State: DeserializeOwned>(root: &Path) -> State {
+    serde_json::from_slice(&fs::read(root.join(STATE_PATH)).expect("rewrite state should read"))
+        .expect("rewrite state should decode")
 }
 
 fn retained_tip(fixture: &RewriteRepository, id: &str) -> String {

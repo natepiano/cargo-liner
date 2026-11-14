@@ -79,35 +79,21 @@ fn discovery_shimmer_session_for_path(
         .map(|(session_path, shimmer)| (session_path.clone(), *shimmer))
 }
 
+/// Only the root entry that holds `session_path` can match, so the path index
+/// finds it in place of a walk of every root.
 fn discovery_shimmer_session_matches(
     project_list: &ProjectList,
     session_path: &Path,
     row_path: &Path,
     row_kind: DiscoveryRowKind,
 ) -> bool {
-    discovery_scope_contains(project_list, session_path, row_path)
-        || discovery_parent_row(project_list, session_path).is_some_and(|parent| {
+    let Some(entry) = project_list.entry_containing(session_path) else {
+        return false;
+    };
+    root_item_scope_contains(entry, session_path, row_path)
+        || root_item_parent_row(entry, session_path).is_some_and(|parent| {
             parent.path.as_path() == row_path && row_kind.allows_parent_kind(parent.kind)
         })
-}
-
-fn discovery_scope_contains(
-    project_list: &ProjectList,
-    session_path: &Path,
-    row_path: &Path,
-) -> bool {
-    project_list
-        .iter()
-        .any(|item| root_item_scope_contains(item, session_path, row_path))
-}
-
-fn discovery_parent_row(
-    project_list: &ProjectList,
-    session_path: &Path,
-) -> Option<DiscoveryParentRow> {
-    project_list
-        .iter()
-        .find_map(|item| root_item_parent_row(item, session_path))
 }
 
 const fn discovery_shimmer_window_len(char_count: usize) -> usize {
@@ -173,7 +159,19 @@ fn workspace_contains_path(ws: &Workspace, row_path: &Path) -> bool {
             .any(|vendored| vendored.path() == row_path)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts the root items that shimmer matching reads.
+    static ROOT_ITEM_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The root items that shimmer matching read on this thread since the last call.
+#[cfg(test)]
+pub(super) fn take_root_item_reads() -> usize { ROOT_ITEM_READS.with(|reads| reads.replace(0)) }
+
 fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Path) -> bool {
+    #[cfg(test)]
+    ROOT_ITEM_READS.with(|reads| reads.set(reads.get() + 1));
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             workspace_scope_contains(ws, session_path, row_path)
@@ -218,6 +216,8 @@ fn package_scope_contains(pkg: &Package, session_path: &Path, row_path: &Path) -
 }
 
 fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<DiscoveryParentRow> {
+    #[cfg(test)]
+    ROOT_ITEM_READS.with(|reads| reads.set(reads.get() + 1));
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             workspace_parent_row(ws, session_path, DiscoveryRowKind::Root)

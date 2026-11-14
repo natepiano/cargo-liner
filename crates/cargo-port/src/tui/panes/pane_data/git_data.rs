@@ -28,7 +28,6 @@ use super::WorktreeStatus;
 use super::ci;
 use super::formatting;
 use super::formatting::GitReadFailures;
-use super::project;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::project::CommitDate;
 use crate::project::Comparison;
@@ -830,11 +829,8 @@ fn shorten_remote_url(url: &str, default_host: &str) -> String {
 
 /// Collect worktree info from a worktree group item.
 ///
-/// Branch is read from cached `CheckoutInfo` populated by the watcher (no
-/// shell-out). Ahead/behind is computed via git shell-out — this is the
-/// expensive part — and is the reason the caller wraps this in
-/// `App::worktree_summary_or_compute` so each `(group, data_generation)`
-/// pair pays at most once.
+/// The branch and the comparison to the primary come from the cached
+/// `CheckoutInfo` that background git probes fill, so render runs no git.
 fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
     let (paths_and_names, primary_path) = match item {
         RootItem::Worktrees(group) => {
@@ -871,7 +867,9 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             } else {
                 (
                     primary_branch.clone(),
-                    project::worktree_ahead_behind_primary(path.as_path(), primary_path.as_path()),
+                    app.project_list
+                        .git_info_for(path.as_path())
+                        .map_or(Comparison::NotCompared, |info| info.ahead_behind_primary),
                 )
             };
             WorktreeInfo {
