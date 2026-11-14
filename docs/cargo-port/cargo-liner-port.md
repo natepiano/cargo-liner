@@ -212,58 +212,29 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: done
 
-**Depends on:** Phase 3. Phase 10 merges before this phase's final measurements, because both edit `tests/support/` and `CHANGELOG.md`.
+#### As-built
 
-#### Work Order
-
-**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev and on the Mac. No assertion becomes weaker.
-
-**Source:** Phase 3 reached its 3-round repair cap with this goal open (finding F004, routed here). Phase 3 round 3 final suites, 2026-11-12:
-- Mac 20261112T164244-3431635-f6bd: 1,027 pass, 89 tests at 1 s or more, slowest 2.377 s, load 20.74, 6 of 12 threads. Main at ad8977d87 on the Mac: 130 at 1 s or more, slowest 2.353 s, load 15.81.
-- natedev 20261112T164244-3431634-648f: 1,029 pass, 32 at 1 s or more, slowest 2.169 s, load 23.17, 16 of 32 threads. Round 2 had 3 at load 40.1; the rise is not explained. Main at ad8977d87 on natedev: 102 at 1 s or more, slowest 2.384 s, load 40.27.
-- The slowest Mac tests: `pub_use_outside_subtree_fixes` multi-pass re-export fixes, `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run`, several `pub_use_fixes` tests, `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`, `suspicious_pub_fixes` signature boundaries. Their assertions need the CLI and Cargo boundary.
-
-**Constraints from prior phases:**
-- Phase 3 tries, in order (attempts log `attempts-p3-mend-test-time`): own job queue (removed), private Cargo home per thread (kept), nextest thread group (removed), less driver-cache output, warm driver copies, debug 0 and incremental 0 fixtures, one rustfmt call, 38 syntax-only cases moved in process through `MendRunner::combined_function_plan`, 15 inline cases in `scan.rs`, compiler fixtures on real callbacks (`src/compiler/driver/fixture.rs`), smaller batches. Do not repeat them.
-- Phase 3 checkpoint is `cba42a650`. The attempts log is `~/.claude/projects/-home-natepiano-rust-cargo-liner/memory/attempts-p3-mend-test-time.md`; it names every run id. The round 2 tree (3 slow on natedev) is the uncommitted state recorded in that log's row 9; rebuild it from the run records under `/tmp/claude/unit/386d8d90-e9fc-4c2c-bc14-c3db0779daf3/` if a diff is needed.
-- The 89 and 32 counts are earlier observations. The same Phase 3 tree at load 115-119 gave Mac 103 (run `20261112T172442-2561348-f986`, slowest 2.799 s) and natedev 218 (run `20261112T172442-2561193-823f`, slowest 5.707 s). Tie every count to its tree and binary.
-- `fixes/runner/apply.rs:81` keeps the validation plan, and `fixes/runner/plan.rs:69` uses it with no second Cargo check. `ToolchainProbes` caches compiler queries within one run. Do not assume duplicate checks without a trace.
-- `main.rs:143` `run()` opens the running executable as the compiler wrapper (`compiler/build/execute.rs:144`). In a test process that executable is the test harness, so an in-process CLI entry needs an explicit driver executable.
-- The rollback and cache-repair fixtures have no dependencies, and cache-repair tests prepare missing or incompatible reports on purpose. Keep writable targets and mend reports per test.
-- The diagnostics tests compile into the `cargo-mend` bin test through `src/diagnostic_tests.rs`. Keep each diagnostic test registered exactly once there.
-- `compiler::analyze_fixture_json` (`src/compiler/driver/fixture.rs`) names each compiler output `{package_index}-{target_index}-{mode}.rmeta`. Keep one report per package, target and mode, and keep the same-name test `a_lib_and_bin_target_pair_advertises_and_applies_one_rewrite` green when shared targets or a CLI entry change.
-- The function_length formatter groups all proposed sources into one rustfmt call per run, with a per-file fallback when the grouped call fails. Read `fixes/runner/function_length/formatter.rs` for the exact grouping.
-- Not every slow test is a CLI test: `inline_path_fixes::synthesized_import_keeps_only_mixed_cfg_attr_gate` (1.018 s, Mac run `20261112T164244-3431635-f6bd`) uses the in-process rewrite helper and four Cargo checks. Attribute every slow test.
-- Record the actual nextest thread count and the cache state (warm or cold driver cache, target dir) with each timing. Hold both constant within each alternating pair.
-- An Astra review of this goal ran at the Phase 3 close: `/tmp/claude/astra/20261112T225040Z-351564/review.md`. Read it first and follow its ranking.
-- Phase 10 (checkpoint `00d23f5c3`) Mac run: 1,034 of 1,034 pass at load 16.22, 49 tests at 1 s or more, all on the Phase 3 final slow list. Do not claim a gain that Phase 10 already shipped.
-- Phase 10 keys callers by `DeclarationIdentity` (source file and definition path, `compiler/persistence/schema.rs`) and keeps the caller union for one physical declaration. Suppression and the visibility reconciler read `CallerEvidence::{Recorded, NoneRecorded}`. Keep both.
-- The saved report is at `FINDINGS_SCHEMA_VERSION` 37 (`compiler/constants.rs:95`), and `UseSite` carries `declaration: DeclarationIdentity`. A warm-cache fixture must write this format, or the automatic rebuild changes its timing and cache assertions.
-- `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply` (`selection/display_filter.rs:112`). An in-process CLI entry must still run it. `DisplayFilter` parses sources only when target facts are incomplete.
-
-**Spec:**
-1. **Baseline.** Measure `00d23f5c3` (the Phase 10 checkpoint) on both machines. Use `cba42a650` only for the natedev rise in step 2. Record per-test times, the suite time, the thread count, Cargo jobs, compiler version, cache state and other load.
-2. **Natedev rise.** Find why natedev went from 3 to 32 slow tests between Phase 3 rounds 2 and 3. Compare matching tests on the two trees under matched conditions. Load average alone does not explain it.
-3. **Trace.** Trace the 10 slowest Mac tests and the slow syntax cases. Split each into startup, Cargo work, compiler queries, compilation, formatting and wait. Count a child's time once. Measure acceptance without the tracer.
-4. **Classify.** Give each slow test its cost pattern, with helper calls and fixture loops. `pub_use_outside_subtree_fixes::package_filtered_reexport_used_through_raw_include_stays_manual` runs two independent fixtures. Split independent cases into separate tests. Keep dependent sequences, such as rollback and repeated-run cache tests, in one test.
-5. **Repair the common cost,** in this order. Pick the first repair from the trace.
-   1. Remove Cargo calls that the trace shows are duplicates. Record each call's purpose, source state, targets, features and cache result. Keep validation after edits, feature checks and cache recovery.
-   2. Remove fixture work that no assertion needs.
-   3. Reuse dependency artifacts only where the trace shows repeated dependency builds. Use a read-only seed, never a shared writable target.
-   4. Add an in-process CLI entry only after a measurement shows the startup saving. Pass an explicit driver executable. Keep subprocess tests for process behavior.
-6. **Keep coverage.** Do not delete, skip or weaken a test. Report each changed assertion with an `Assertion-Change:` line.
-7. **Changelog.** Add an entry when cargo-mend's own run time changes.
+- cargo fix and its validation check run with the mend wrapper in passthrough (`RunWrapper::configure_passthrough`: driver on, config root removed) and share the run's `ToolchainProbes`. Cargo keeps one compiler identity, so the analysis after a fix does not rebuild units. A project with an unusable project compiler can run `--fix-all`.
+- The function-length bound uses `body_bytes` (body braces included) in place of the full item range, so a long header no longer sends a small body to the formatter.
+- `FixtureCompiler` resolves the production wrapper; `prepare_fresh_cache_units` no longer copies it by hand.
+- `package_filtered_reexport_used_through_raw_include_stays_manual` is split in two: the qualified raw include is now `package_filtered_reexport_used_through_qualified_raw_include_stays_manual`. Both share `assert_raw_include_reexport_stays_manual`. No assertion changed.
+- Root `Cargo.toml` sets `[profile.test.package.cargo-mend] opt-level = 1`. It changes only cargo-mend test builds. Mac pairs at matched threads gave fewer slow tests every time: 122 → 36 and 238 → 143.
+- An in-process CLI entry was measured and rejected: no startup saving.
+- Final runs on checkpoint `0a2e89d65`:
+  1. natedev: 1,038 pass, 0 tests at 1 s or more (slowest 0.706 s) at load 55-60; 29 (slowest 2.206 s) at load 63, 10 of 32 threads.
+  2. Mac: 1,036 pass, 97 tests at 1 s or more, slowest 1.914 s, load 16.36, 6 of 12 threads.
+- The acceptance gate is not met. The natedev gate holds only at moderate load. A workspace suite at load 65-99 (tile-unit, 2026-11-13) had 108 cargo-mend tests at 1 s or more; the slowest were `rendering::fresh_units_without_reports_are_examined_on_the_first_run` (9.0 s) and `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run` (8.3 s). The Mac per-test gate is unmet. The showrunner ruled to record it and close (2026-11-13).
+- Tests: `fix_all_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` (`cli_smoke.rs`); a function-length test with two long headers and a test-only formatter call counter.
 
 **Files:**
-- `crates/cargo-mend/src/`
-- `crates/cargo-mend/tests/`
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-mend/src/compiler/build/execute.rs`, `build/mod.rs`, `compiler/mod.rs` — passthrough wrapper and shared probes for cargo fix
+- `crates/cargo-mend/src/fixes/runner/mend_runner.rs` — fix and validation runs
+- `crates/cargo-mend/src/fixes/runner/function_length/function_collector.rs`, `function_length_plan.rs`, `formatter.rs` — body-byte bound and test-only counter
+- `crates/cargo-mend/tests/cli_smoke.rs`, `tests/diagnostics/pub_use_outside_subtree_fixes.rs`, `tests/diagnostics/rendering.rs` — tests
+- `Cargo.toml` — cargo-mend test profile
+- `crates/cargo-mend/CHANGELOG.md` — two Fixed entries
 
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. These tests keep their assertions: the five `target_identity_*` tests in `tests/diagnostics/target_identity.rs`, `same_line_facades_in_separate_namespaces_keep_macro_callers`, `compiler_mounts_filter_without_reading_sources`, and `wrong_schema_or_fingerprint_reports_are_rejected`. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs under matched conditions, with process counts, per-test times and the suite time. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
+**Gotchas:** each cargo-mend CLI test starts Cargo and rustc, so its time follows host load more than any code change. The attempts log is `attempts-p9-mend-test-time.md` in the project memory folder.
 
 ### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: done
 
@@ -313,7 +284,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
-**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), and Phase 13b (both edit the watcher and the CHANGELOG).
+**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), and Phase 13c (both edit cargo-port and its CHANGELOG).
 
 #### Work Order
 
@@ -391,7 +362,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: todo
 
-**Depends on:** Phase 12 (both edit cargo-port and `crates/cargo-port/CHANGELOG.md`). Runs after Phase 12.
+**Depends on:** Phase 13b on main (this phase changes its apply path). Runs before Phase 12: Phase 12 needs natedev load under 8, and this phase measures under high load.
 
 #### Work Order
 
