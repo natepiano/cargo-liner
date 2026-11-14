@@ -340,51 +340,23 @@ In cargo-handler, Enter (`global.expand`) opens the focused tile on the full pan
 
 ### Phase 14 — The cargo-handler status bar shows `enter expand` and `esc collapse`, as cargo-tile does  · status: done
 
-**Depends on:** Phase 13 (it adds the full-screen tile and `global.expand`)
+#### As-built
 
-#### Work Order
+`tui_pane::FullScreenView::status_hint(expand)` gives the status slot for the full-screen view: the app's expand action (`enter expand`) in the grid, and the fixed `esc collapse` (`FULL_SCREEN_COLLAPSE_KEY`, `FULL_SCREEN_COLLAPSE_LABEL` in `tiles/constants.rs`) while a tile shows. Both are `after_uptime`. cargo-tile and cargo-handler call it in `draw_status_line`; cargo-tile has no collapse constants of its own.
 
-**Goal:** the status bar tells the user that Enter shows the focused tile on the full screen, and that Esc returns it. The tile-fixes as-built names the shared full-screen state.
-
-**Source:** the showrunner, 2026-11-14, on the Phase 13 add-on: "Add-on 'enter expand' status bar hint: current. Put it with the doc fix in one small follow-up checkpoint before Phase 14 work." That Phase 14 is the producers phase, now Phase 15. The doc fix: "You can now edit the stale as-built lines in remove-running-section-tile-fixes.md for your follow-up checkpoint."
-
-**Spec:**
-
-Director decisions:
-1. In the grid, the status bar shows `enter expand`, from the `global.expand` keymap binding. While the full-screen view is open, it shows `esc collapse`. Both hints give way before the uptime at a narrow width, as in cargo-tile.
-2. `tui_pane::FullScreenView::status_hint(expand)` gives that slot. It owns the `esc collapse` key and label. cargo-tile and cargo-handler both call it, so the rule has one source. cargo-tile drops its `COLLAPSE_HINT_KEY` and `COLLAPSE_HINT_LABEL` constants. Its status bar does not change.
-3. `docs/cargo-port/remove-running-section-tile-fixes.md` names `tui_pane::FullScreenView` where it names the old `GridView` states: the Phase 46 as-built state and status-bar lines, its `grid_view.rs` Files line, and the Phase 34 pause clock line.
-
-**Constraints from prior phases:**
-- Phase 13: `App::full_screen` is a `tui_pane::FullScreenView<TileKey, ()>`; cargo-tile's `GridView` is `FullScreenView<InvocationId, CellScroll>`. `is_open()` is false only in `Grid`.
-- Keep cargo-tile's status tests green: `the_expand_hint_yields_to_uptime_at_a_narrow_width` and the `enter expand` / `esc collapse` tests in `render.rs`.
-
-Tests (red first, each under one second):
-1. The cargo-handler status bar shows `enter expand` in the grid, and `esc collapse` while the full-screen tile shows.
-2. At a narrow width, the cargo-handler hint gives way before the uptime.
-
-**Live check (director):** none. The look change is one status-bar hint. The status tests read the drawn buffer.
-
-**Change-Review line:** The cargo-handler status bar names Enter and Esc for the full-screen tile | On natedev, run cargo-handler, then press Enter and Esc | The status bar reads enter expand in the grid and esc collapse on the full screen
+`fitted_right_spans` counts the navigation hints before it shows an `after_uptime` slot, so at a narrow width or under the details view the expand hint gives way first and the navigation hints keep their place.
 
 **Files:**
-- `crates/tui_pane/src/tiles/full_screen.rs` — `FullScreenView::status_hint`
+- `crates/tui_pane/src/tiles/full_screen.rs` — `status_hint`
 - `crates/tui_pane/src/tiles/constants.rs` — the collapse key and label
-- `crates/tui_pane/src/bar/status_line.rs` — an `after_uptime` hint gives way before the navigation hints
-- `crates/tui_pane/CHANGELOG.md` — one Added line
-- `crates/cargo-tile/src/render.rs` — the status line calls `status_hint`
-- `crates/cargo-tile/src/constants.rs` — drop the two collapse constants
-- `crates/cargo-handler/src/render/mod.rs` — the status line calls `status_hint`
-- `crates/cargo-handler/src/render/full_screen_tests.rs` — tests 1 and 2
+- `crates/tui_pane/src/bar/status_line.rs` — the fit rule for an `after_uptime` slot, with `an_after_uptime_hint_gives_way_before_the_navigation`
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-handler/src/render/mod.rs` — the status line calls `status_hint`
+- `crates/cargo-handler/src/render/full_screen_tests.rs` — the grid, full-screen and narrow-width status tests
 - `docs/cargo-handler/as-built/interaction.md` — the status-bar hints
-- `docs/cargo-port/remove-running-section-tile-fixes.md` — the stale as-built lines
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** the golden frames in cargo-handler `render/mod.rs` take a `StatusEnds`: `GRID_STATUS` over the grid, `OVERLAY_STATUS` under the details view.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint` pass.
+**Ruled out:** public collapse constants — no consumer outside `FullScreenView`.
 
 ### Phase 15 — Producers get their own tile, titled "producers"; they leave the unassigned tile  · status: todo
 
@@ -410,6 +382,7 @@ Director decisions:
 - `UnassignedEntry` and `group_tiles` (`agent_cell.rs`) own pooling today. `UnassignedEntry` stores one `machine` value for one machine's pool. Make a pooled-tile type with an explicit pool enum (unassigned for one machine, producers across machines), not a bool or a bare `Option`. Each producer row carries its own machine.
 - Membership changes keep the Phase 3 column fitter and the Phase 4 placement rule. The producers tile is a detail tile: it takes part in the Phase 4 ranking, and in the Phase 13 full-screen tile with its selection, expansion and `y` copy.
 - Phase 13: `App::full_screen` is a `tui_pane::FullScreenView<TileKey, ()>`. It opens on the focused placement and keys the shown tile by `TileKey`, so `TileKey::Producers` needs no change there. A shown tile that leaves the census closes the view. Put the Enter test in `render/full_screen_tests.rs`, with its `focused_grid` and `expand` helpers.
+- Phase 14: the status line shows `enter expand` over the grid and `esc collapse` on the full screen (`FullScreenView::status_hint`). The golden frames in `render/mod.rs` take a `StatusEnds`: `GRID_STATUS` over the grid, `OVERLAY_STATUS` under the details view. A new golden frame uses one of them.
 - `hierarchy_details` (`agent_cell.rs`) maps `RoleLabel::Stated` and `Inferred` through `RowRole::from_hierarchy`. A producer row's `d` view shows `name: <session>` and `role: producer` today. Keep that result in the producers tile, and test it.
 - Phase 8: `agent_cell::session_cells` walks `cell_order_placed` and `RootPresentation` to give `census --json` each tile line's cells. Phase 10 builds the schema 2 `sessions` list from it. A producer line in the new tile must still reach `sessions`, with its status and activity.
 - Keep `staff_run_keeps_one_waiting_worker_without_a_launcher_or_open_thread` green. A worker with a live detached run draws under its producer when the producer owns it, and its `d` view shows the run step.
@@ -475,6 +448,7 @@ Director decisions:
 - Phase 3 keeps the measured demand widths (`TreeMetrics.widths`) apart from the drawn widths (`TreeColumnAlignment::Fitted`), and fills shared tiles in `align_screen_columns`. The shell rule changes only the measured session width. Keep the shared slots and the fill space that the fitter gives; a shell row can draw into session width that the fill gives.
 - The cut keeps quotes, spaces, redirections and arguments that are not paths.
 - Phase 10: `drop_step` cuts the activity job by the overflow before the role column drops (`ActivityFit::Cut`, never below `activity_floor`). A narrower session width changes the overflow; keep `a_narrow_tile_cuts_the_activity_job_by_its_overflow_only` green.
+- Phase 14: at a narrow width, `enter expand` gives way first, before the uptime and the navigation hints. `the_expand_hint_yields_to_uptime_at_a_narrow_width` (`render/full_screen_tests.rs`) holds it. A status-row assertion in `render/narrow_width_tests.rs` expects that.
 
 Tests (red first, each under one second):
 1. A Claude assistant record with a top-level `effort` gives that effort; its `message.model` gives the model.
