@@ -6,11 +6,14 @@
 //! built repository on disk under the test crate's `CARGO_TARGET_TMPDIR`,
 //! keyed by the test binary and the `cargo-berth` it runs, so the first test
 //! of a build pays for it and every test copies it into a temporary directory
-//! of its own. The copy gets what building in place would have given it: each
-//! absolute path `cargo-berth init` wrote, as in the `reference-transaction`
-//! hook, names the copy; the repository and worktree identities, when the
-//! fixture ran `cargo-berth init`, are new; and git's index matches the copied
-//! files.
+//! of its own. A template built in the first test makes every test that starts
+//! with it wait for that build. The nextest setup script builds a before-run
+//! template before tests start, so no test waits.
+//!
+//! The copy gets what building in place would have given it: each absolute
+//! path `cargo-berth init` wrote, as in the `reference-transaction` hook, names
+//! the copy; the repository and worktree identities, when the fixture ran
+//! `cargo-berth init`, are new; and git's index matches the copied files.
 
 use std::env;
 use std::fs;
@@ -208,6 +211,19 @@ impl RepositoryTemplate {
         .restore_into(root);
     }
 
+    /// This template with an empty ledger, built by the nextest setup script.
+    ///
+    /// Register the result in `recorded_templates.rs`. Without that
+    /// registration, the first test that starts with it builds it.
+    #[must_use]
+    pub const fn before_run(self) -> LedgerTemplate {
+        LedgerTemplate {
+            repository:   self,
+            ledger:       LedgerFixture::Empty,
+            build_timing: TemplateBuildTiming::BeforeRun,
+        }
+    }
+
     /// Directory shared by every before-run template built by this executable.
     ///
     /// # Panics
@@ -252,11 +268,14 @@ impl LedgerTemplate {
     ///
     /// # Panics
     /// Panics when the template cannot be built, copied, or relocated.
-    pub fn restore_into(self, root: &Path) {
-        let template_root = self.built_root();
+    pub fn restore_into(self, root: &Path) { self.restore_from(&self.built_root(), root); }
+
+    /// Restore the build at `template_root`, which must be canonical: Git records
+    /// a linked worktree by its canonical path, and only that text is relocated.
+    fn restore_from(self, template_root: &Path, root: &Path) {
         let repository_root =
             fs::canonicalize(root).expect("destination repository should canonicalize");
-        let mut snapshot = DirectorySnapshot::capture(&template_root);
+        let mut snapshot = DirectorySnapshot::capture(template_root);
         let relocated = snapshot.replace_text(
             &template_root.to_string_lossy(),
             &repository_root.to_string_lossy(),
@@ -268,7 +287,7 @@ impl LedgerTemplate {
                     .all(|path| !path.starts_with(LEDGER_DIRECTORY)),
             "the template ledger records its root in {relocated:?}; build this fixture in place"
         );
-        IdentityRenewal::read(&template_root).apply(&mut snapshot);
+        IdentityRenewal::read(template_root).apply(&mut snapshot);
         snapshot.restore(&repository_root);
         if self.ledger == LedgerFixture::Recorded {
             for name in ["reservations.json", "replay-checkpoint.json"] {
@@ -287,11 +306,9 @@ impl LedgerTemplate {
     fn built_root(self) -> PathBuf {
         if self.build_timing == TemplateBuildTiming::BeforeRun
             && let Some(directory) = env::var_os("CARGO_BERTH_PREBUILT_TEMPLATES")
+            && let Some(root) = self.prebuilt_root(Path::new(&directory))
         {
-            let root = Path::new(&directory).join(self.repository.name);
-            if self.complete(&root) {
-                return root;
-            }
+            return root;
         }
         // macOS can name the setup script's `builder` symlink here. Resolve it
         // before using its file name beside that link as a cache directory.
@@ -363,6 +380,9 @@ impl LedgerTemplate {
     /// Panics when setup cannot lock or build its repository.
     pub fn prepare_before_run(self, directory: &Path) {
         fs::create_dir_all(directory).expect("before-run directory should exist");
+        // Build at the canonical path, the one Git records for a linked worktree.
+        let directory =
+            fs::canonicalize(directory).expect("before-run directory should canonicalize");
         let lock = File::create(directory.join(format!("{}.lock", self.repository.name)))
             .expect("setup lock should open");
         lock.lock().expect("setup lock should be taken");
@@ -373,6 +393,12 @@ impl LedgerTemplate {
             }
             self.build_at(&root);
         }
+    }
+
+    /// The canonical root of this template's complete build in a before-run directory.
+    fn prebuilt_root(self, directory: &Path) -> Option<PathBuf> {
+        let root = fs::canonicalize(directory).ok()?.join(self.repository.name);
+        self.complete(&root).then_some(root)
     }
 
     fn complete(self, root: &Path) -> bool {
@@ -423,6 +449,8 @@ fn remove_stale_builds(builds: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -530,6 +558,40 @@ mod tests {
             .bounded_output()
             .expect("fixture Git should start");
         assert!(output.status.success(), "{arguments:?}: {output:?}");
+    }
+
+    #[test]
+    fn before_run_template_restores_its_linked_worktree_through_a_linked_directory() {
+        let template = index_template("linked-worktree", |root| {
+            build_clean_index(root);
+            run_index_git(root, &["worktree", "add", "--quiet", "linked"]);
+        });
+        let template = LedgerTemplate {
+            build_timing: TemplateBuildTiming::BeforeRun,
+            ..template
+        };
+        let real = fixture_tempdir("before-run-real-");
+        let links = tempdir().expect("link parent should exist");
+        let linked = links.path().join("before-run");
+        symlink(real.path(), &linked).expect("directory link should write");
+        template.prepare_before_run(&linked);
+        let template_root = template
+            .prebuilt_root(&linked)
+            .expect("setup should complete the build");
+        let repository = fixture_tempdir("restore-");
+        template.restore_from(&template_root, repository.path());
+        let output = git_driver::fixture_git_command()
+            .current_dir(repository.path())
+            .args(["worktree", "list", "--porcelain"])
+            .bounded_output()
+            .expect("Git should list the restored worktrees");
+        assert!(output.status.success(), "{output:?}");
+        let listed = String::from_utf8(output.stdout).expect("worktree list should be UTF-8");
+        let copy = fs::canonicalize(repository.path()).expect("copy should canonicalize");
+        assert!(
+            listed.contains(&format!("worktree {}\n", copy.join("linked").display())),
+            "the copy's linked worktree must name the copy: {listed}"
+        );
     }
 
     #[test]

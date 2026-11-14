@@ -49,12 +49,13 @@ fn sync_width_app() -> anyhow::Result<(App, RemoteInfo)> {
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("project")
         .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-        status:              GitStatus::Clean,
-        head:                HeadState::Branch("fleet".to_string()),
-        last_commit:         CommitDate::NoCommits,
-        ahead_behind_local:  Comparison::NotCompared,
-        primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
-        bisect:              None,
+        status:               GitStatus::Clean,
+        head:                 HeadState::Branch("fleet".to_string()),
+        last_commit:          CommitDate::NoCommits,
+        ahead_behind_local:   Comparison::NotCompared,
+        ahead_behind_primary: Comparison::NotCompared,
+        primary_tracked_ref:  TrackedRef::Named("origin/fleet".to_string()),
+        bisect:               None,
     }));
     let remote = RemoteInfo {
         name:         "origin".to_string(),
@@ -259,6 +260,7 @@ fn selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
                 ahead:  0,
                 behind: 0,
             }),
+            ahead_behind_primary: Comparison::NotCompared,
             primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
             bisect: None,
         }));
@@ -465,12 +467,13 @@ fn selected_deleted_name_and_disk_have_readable_contrast() -> anyhow::Result<()>
             .at_path_mut(Path::new(PROJECT_PATH))
             .expect_found("the fixture project");
         info.local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-            status:              GitStatus::Modified,
-            head:                HeadState::Branch("fleet".to_string()),
-            last_commit:         CommitDate::Unreadable,
-            ahead_behind_local:  Comparison::NotCompared,
-            primary_tracked_ref: TrackedRef::Untracked,
-            bisect:              None,
+            status:               GitStatus::Modified,
+            head:                 HeadState::Branch("fleet".to_string()),
+            last_commit:          CommitDate::Unreadable,
+            ahead_behind_local:   Comparison::NotCompared,
+            ahead_behind_primary: Comparison::NotCompared,
+            primary_tracked_ref:  TrackedRef::Untracked,
+            bisect:               None,
         }));
         if deleted {
             info.visibility = Visibility::Deleted;
@@ -779,15 +782,16 @@ fn hovered_clean_git_glyph_uses_the_selected_row_ink() -> anyhow::Result<()> {
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("project")
         .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
-        status:              GitStatus::Clean,
-        head:                HeadState::Branch("master".to_string()),
-        last_commit:         CommitDate::At("2026-11-07 12:00".to_string()),
-        ahead_behind_local:  Comparison::Counted(AheadBehind {
+        status:               GitStatus::Clean,
+        head:                 HeadState::Branch("master".to_string()),
+        last_commit:          CommitDate::At("2026-11-07 12:00".to_string()),
+        ahead_behind_local:   Comparison::Counted(AheadBehind {
             ahead:  0,
             behind: 0,
         }),
-        primary_tracked_ref: TrackedRef::Named("origin/master".to_string()),
-        bisect:              None,
+        ahead_behind_primary: Comparison::NotCompared,
+        primary_tracked_ref:  TrackedRef::Named("origin/master".to_string()),
+        bisect:               None,
     }));
     app.project_list
         .select_project_in_tree(Path::new(PROJECT_PATH), true);

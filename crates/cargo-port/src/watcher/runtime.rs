@@ -2638,6 +2638,13 @@ mod tests {
                 ],
             ),
             (
+                common_git_dir.join("HEAD"),
+                vec![
+                    tmp.path().join("main_repo"),
+                    tmp.path().join("main_repo_style_fix"),
+                ],
+            ),
+            (
                 branch_ref.clone(),
                 vec![
                     tmp.path().join("main_repo"),

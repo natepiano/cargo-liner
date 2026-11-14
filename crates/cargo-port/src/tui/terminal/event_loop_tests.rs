@@ -733,7 +733,7 @@ fn production_frame_decision_ignores_mouse_in_confirmation_and_draws_dismissal()
     assert_eq!(input.count, 1);
     assert!(matches!(
         draw_frame(&mut terminal, &mut app, &mut output).expect("ignored input frame decision"),
-        FrameDraw::Unchanged
+        FrameDraw::Unchanged(_)
     ));
     assert!(app.confirmation_is_open());
     tx.send(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)))
@@ -830,7 +830,7 @@ fn changed_frames_reuse_terminal_and_retained_cell_buffers() {
         })
         .expect("unchanged frame")
     });
-    assert!(matches!(unchanged, FrameDraw::Unchanged));
+    assert!(matches!(unchanged, FrameDraw::Unchanged(_)));
     assert_eq!(unchanged_allocations, 0);
 }
 

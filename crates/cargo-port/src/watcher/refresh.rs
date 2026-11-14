@@ -236,6 +236,8 @@ pub(super) fn is_internal_git_refresh_event(event_path: &Path, entry: &ProjectEn
         || event_path == git_dir.join("index")
         || event_path == git_dir.join("info").join("exclude")
         || event_path == git_dir.join("HEAD")
+        // A linked worktree compares its `HEAD` to the primary `HEAD`.
+        || event_path == common_git_dir.join("HEAD")
         || event_path == git_dir.join("FETCH_HEAD")
         || event_path == git_dir.join("ORIG_HEAD")
         || event_path == git_dir.join("config")

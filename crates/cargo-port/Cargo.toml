@@ -29,7 +29,6 @@ itertools            = { workspace = true }
 libc                 = { workspace = true }
 notify               = { workspace = true }
 nucleo-matcher       = { workspace = true }
-processkit           = { workspace = true }
 pulldown-cmark       = { workspace = true }
 ratatui              = { workspace = true }
 rayon                = { workspace = true }
@@ -53,6 +52,10 @@ tui_pane = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tui_pane = { workspace = true, features = [
+  "contrast-test",
+  "process-identity-test",
+] }
 
 [lints]
 workspace = true

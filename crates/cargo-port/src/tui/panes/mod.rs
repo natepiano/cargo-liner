@@ -25,6 +25,7 @@ pub(super) use actions::handle_ci_runs_key;
 pub(super) use ci::CiData;
 #[cfg(test)]
 pub(super) use ci::CiEmptyState;
+pub(super) use ci::CiTablePlan;
 pub(super) use ci::build_ci_data;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]

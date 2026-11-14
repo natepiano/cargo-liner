@@ -14,9 +14,11 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ColorMode;
+use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
+use tui_pane::Viewport;
 use tui_pane::label_color;
 use unicode_width::UnicodeWidthStr;
 
@@ -79,9 +81,23 @@ struct CiJobColumn {
     max_runtime_s: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts the CI column inferences, one per table layout pass.
+    static COLUMN_INFERENCES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The CI column inferences on this thread since the last call.
+#[cfg(test)]
+pub(super) fn take_column_inferences() -> usize {
+    COLUMN_INFERENCES.with(|inferences| inferences.replace(0))
+}
+
 /// Job columns in first-seen order across `runs` (newest first), deduped by
 /// exact job name and annotated with observed runtime for display planning.
 fn infer_ci_columns(runs: &[CiRun]) -> Vec<CiJobColumn> {
+    #[cfg(test)]
+    COLUMN_INFERENCES.with(|inferences| inferences.set(inferences.get() + 1));
     let mut cols: Vec<CiJobColumn> = Vec::new();
     for run in runs {
         for job in &run.jobs {
@@ -110,7 +126,9 @@ fn ci_job_display_columns(cols: &[CiJobColumn]) -> Vec<CiDisplayColumn> {
 fn ci_display_columns_for_width(runs: &[CiRun], inner_width: u16) -> Vec<CiDisplayColumn> {
     let cols = infer_ci_columns(runs);
     let all_ci_display_columns = ci_job_display_columns(&cols);
-    if ci_table_fixed_width(runs, &all_ci_display_columns, true) <= usize::from(inner_width) {
+    if ci_table_fixed_width(runs, &all_ci_display_columns, CiDurations::Shown)
+        <= usize::from(inner_width)
+    {
         return all_ci_display_columns;
     }
 
@@ -126,7 +144,9 @@ fn ci_display_columns_for_width(runs: &[CiRun], inner_width: u16) -> Vec<CiDispl
     for ci_job_column in ranked_ci_job_columns {
         selected.insert(ci_job_column.name.clone());
         let ci_display_columns = ci_grouped_display_columns(&cols, &selected);
-        if ci_table_fixed_width(runs, &ci_display_columns, true) > usize::from(inner_width) {
+        if ci_table_fixed_width(runs, &ci_display_columns, CiDurations::Shown)
+            > usize::from(inner_width)
+        {
             selected.remove(&ci_job_column.name);
         }
     }
@@ -179,7 +199,7 @@ fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'
 fn build_ci_data_row(
     ci_run: &CiRun,
     cols: &[CiDisplayColumn],
-    show_durations: bool,
+    durations: CiDurations,
     commit_width: usize,
     branch_width: usize,
     pane_selection_state: PaneSelectionState,
@@ -207,11 +227,11 @@ fn build_ci_data_row(
             cells.push(ci_metric_cell(
                 data.duration.trim(),
                 data.status,
-                show_durations,
+                durations,
                 style,
             ));
         } else {
-            cells.push(ci_missing_metric_cell(show_durations));
+            cells.push(ci_missing_metric_cell(durations));
         }
     }
 
@@ -219,7 +239,7 @@ fn build_ci_data_row(
     cells.push(ci_metric_cell(
         total_dur.trim(),
         ci_run.ci_status,
-        show_durations,
+        durations,
         total_style,
     ));
 
@@ -229,11 +249,11 @@ fn build_ci_data_row(
 fn ci_metric_cell(
     duration: &str,
     status: CiStatus,
-    show_durations: bool,
+    durations: CiDurations,
     style: Style,
 ) -> Cell<'static> {
     let mut spans = Vec::new();
-    if show_durations {
+    if durations == CiDurations::Shown {
         spans.push(Span::styled(duration.to_string(), style));
         spans.push(Span::styled(" ".repeat(CI_STATUS_GAP_WIDTH), style));
     }
@@ -241,9 +261,9 @@ fn ci_metric_cell(
     Cell::from(Line::from(spans).alignment(Alignment::Right))
 }
 
-fn ci_missing_metric_cell(show_durations: bool) -> Cell<'static> {
+fn ci_missing_metric_cell(durations: CiDurations) -> Cell<'static> {
     let style = Style::default().fg(label_color());
-    let label = if show_durations {
+    let label = if durations == CiDurations::Shown {
         format!(
             "—{}{}",
             " ".repeat(CI_STATUS_GAP_WIDTH),
@@ -310,14 +330,13 @@ fn ci_jobs_status(jobs: &[&CiJob]) -> CiStatus {
 fn build_ci_widths(
     ci_runs: &[CiRun],
     cols: &[CiDisplayColumn],
-    show_durations: bool,
+    durations: CiDurations,
     inner_width: u16,
 ) -> Vec<Constraint> {
     // `build_ci_widths` builds `ColumnSpec` entries for Commit, Branch, Timestamp, each
     // `CiDisplayColumn` and Total; `ci_metric_cell` combines duration and status glyph, so headers
     // can use both areas.
-    let (commit_width, branch_width) =
-        ci_description_widths(ci_runs, cols, show_durations, inner_width);
+    let (commit_width, branch_width) = ci_description_widths(ci_runs, cols, durations, inner_width);
     let mut column_specs = vec![
         ColumnSpec {
             min: label_width(" Commit"),
@@ -331,7 +350,7 @@ fn build_ci_widths(
     ];
     for ci_display_column in cols {
         let label_min = label_width(&ci_display_column.header_min_label());
-        if show_durations {
+        if durations == CiDurations::Shown {
             column_specs.push(ColumnSpec::fit(label_min.max(ci_status_glyph_width_u16())));
         } else {
             column_specs.push(ColumnSpec::fixed(
@@ -340,7 +359,7 @@ fn build_ci_widths(
         }
     }
     let total_label = label_width("Total");
-    if show_durations {
+    if durations == CiDurations::Shown {
         column_specs.push(ColumnSpec::fit(
             total_label.max(ci_status_glyph_width_u16()),
         ));
@@ -357,7 +376,7 @@ fn build_ci_widths(
         column_widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").width() + 1);
         column_widths.observe_cell_usize(1, run.branch.width());
     }
-    if show_durations {
+    if durations == CiDurations::Shown {
         for (i, ci_display_column) in cols.iter().enumerate() {
             let column_index = 3 + i;
             for run in ci_runs {
@@ -461,8 +480,8 @@ fn constraint_width(constraint: Option<&Constraint>) -> Option<usize> {
     }
 }
 
-fn ci_duration_width(ci_runs: &[CiRun], col: &CiDisplayColumn, show_durations: bool) -> usize {
-    if show_durations {
+fn ci_duration_width(ci_runs: &[CiRun], col: &CiDisplayColumn, durations: CiDurations) -> usize {
+    if durations == CiDurations::Shown {
         ci_metric_width(
             ci_duration_data_width(ci_runs, col),
             col.header_min_label().width(),
@@ -507,7 +526,7 @@ fn ci_status_glyph_width() -> usize {
 fn ci_description_widths(
     ci_runs: &[CiRun],
     cols: &[CiDisplayColumn],
-    show_durations: bool,
+    durations: CiDurations,
     inner_width: u16,
 ) -> (u16, u16) {
     let commit_min = ci_commit_min_width(ci_runs);
@@ -527,7 +546,7 @@ fn ci_description_widths(
         return (inner_width, 0);
     }
     let available = usize::from(inner_width)
-        .saturating_sub(ci_non_description_width(ci_runs, cols, show_durations))
+        .saturating_sub(ci_non_description_width(ci_runs, cols, durations))
         .max(min_total);
 
     let commit_observed = ci_runs
@@ -561,8 +580,8 @@ fn ci_description_widths(
     )
 }
 
-fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
-    if show_durations {
+fn ci_total_width(ci_runs: &[CiRun], durations: CiDurations) -> usize {
+    if durations == CiDurations::Shown {
         ci_metric_width(ci_total_duration_width(ci_runs), "Total".width())
     } else {
         "Total".width().max(ci_status_glyph_width())
@@ -591,9 +610,9 @@ fn ci_total_duration_width(ci_runs: &[CiRun]) -> usize {
 fn ci_table_fixed_width(
     ci_runs: &[CiRun],
     cols: &[CiDisplayColumn],
-    show_durations: bool,
+    durations: CiDurations,
 ) -> usize {
-    ci_description_min_width(ci_runs) + ci_non_description_width(ci_runs, cols, show_durations)
+    ci_description_min_width(ci_runs) + ci_non_description_width(ci_runs, cols, durations)
 }
 
 fn ci_description_min_width(ci_runs: &[CiRun]) -> usize {
@@ -633,27 +652,38 @@ const fn ci_content_aware_min_width(observed: usize, compact_min: usize, long_mi
 fn ci_non_description_width(
     ci_runs: &[CiRun],
     cols: &[CiDisplayColumn],
-    show_durations: bool,
+    durations: CiDurations,
 ) -> usize {
     let column_count = 3 + cols.len() + 1;
     let base = usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
         .map(|ci_display_column| {
-            ci_duration_width(ci_runs, ci_display_column, show_durations)
+            ci_duration_width(ci_runs, ci_display_column, durations)
                 .max(ci_display_column.header_target_width())
         })
         .sum();
-    let total = ci_total_width(ci_runs, show_durations);
+    let total = ci_total_width(ci_runs, durations);
     base + job_columns + total + column_count.saturating_sub(1)
 }
 
-fn ci_display_table_shows_durations(
+fn ci_display_table_durations(
     ci_runs: &[CiRun],
     cols: &[CiDisplayColumn],
     inner_width: u16,
-) -> bool {
-    ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
+) -> CiDurations {
+    if ci_table_fixed_width(ci_runs, cols, CiDurations::Shown) <= usize::from(inner_width) {
+        CiDurations::Shown
+    } else {
+        CiDurations::Hidden
+    }
+}
+
+/// Whether the CI table shows job durations beside the status glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CiDurations {
+    Shown,
+    Hidden,
 }
 
 /// Select the cursor count shown in the CI title.
@@ -732,11 +762,12 @@ fn compact_ci_header_row() -> Row<'static> {
 fn paint_ci_row_selections(
     frame: &mut Frame,
     inner: Rect,
-    pane: &Ci,
+    viewport: &Viewport,
+    focus_state: PaneFocusState,
     run_count: usize,
     mode: ColorMode,
 ) {
-    let offset = pane.viewport.scroll_offset();
+    let offset = viewport.scroll_offset();
     for slot in 0..usize::from(inner.height.saturating_sub(1)).min(run_count.saturating_sub(offset))
     {
         theme_roles::paint_selection(
@@ -747,7 +778,7 @@ fn paint_ci_row_selections(
                 inner.width,
                 1,
             ),
-            tui_pane::selection_state(&pane.viewport, offset + slot, pane.focus.pane_focus_state),
+            tui_pane::selection_state(viewport, offset + slot, focus_state),
             mode,
         );
     }
@@ -784,6 +815,55 @@ fn render_empty_ci(frame: &mut Frame, area: Rect, data: &CiData) -> PaneFrameChr
     empty_ci_chrome(&title)
 }
 
+/// The CI table columns, duration flag and widths for one content and one width.
+///
+/// [`Ci`] keeps the plan until its content or the pane width changes, so a
+/// frame does not infer the columns and widths again.
+pub(in crate::tui) struct CiTablePlan {
+    width:     u16,
+    columns:   Vec<CiDisplayColumn>,
+    durations: CiDurations,
+    layout:    CiTableLayout,
+}
+
+impl CiTablePlan {
+    fn build(data: &CiData, width: u16) -> Self {
+        let columns = ci_display_columns_for_width(&data.runs, width);
+        let durations = ci_display_table_durations(&data.runs, &columns, width);
+        let layout = ci_widths_for_mode(data, &columns, durations, width);
+        Self {
+            width,
+            columns,
+            durations,
+            layout,
+        }
+    }
+}
+
+/// Render a CI pane that has no runs to list, and empty its viewport.
+fn render_ci_without_runs(
+    frame: &mut Frame,
+    area: Rect,
+    content: Option<&CiData>,
+    viewport: &mut Viewport,
+) -> PaneFrameChrome {
+    viewport.set_len(0);
+    viewport.set_content_area(Rect::ZERO);
+    match content {
+        Some(data) => render_empty_ci(frame, area, data),
+        None => render_empty_ci(
+            frame,
+            area,
+            &CiData {
+                runs:           Vec::new(),
+                mode_label:     None,
+                current_branch: None,
+                empty_state:    CiEmptyState::NoRuns,
+            },
+        ),
+    }
+}
+
 pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -791,28 +871,19 @@ pub fn render_ci_pane_body(
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let mode = pane_render_ctx.color_mode;
-    let ci_data = pane.content().cloned().unwrap_or_else(|| CiData {
-        runs:           Vec::new(),
-        mode_label:     None,
-        current_branch: None,
-        empty_state:    CiEmptyState::NoRuns,
-    });
-
-    if !ci_data.has_runs() {
-        let viewport = &mut pane.viewport;
-        viewport.set_len(0);
-        viewport.set_content_area(Rect::ZERO);
-        return render_empty_ci(frame, area, &ci_data);
-    }
-
     let ci_focused = pane.focus.is_focused();
     let ci_pane_focus_state = pane.focus.pane_focus_state;
+    let (content, table_plan, viewport) = pane.render_parts();
+    let Some(ci_data) = content.filter(|data| data.has_runs()) else {
+        return render_ci_without_runs(frame, area, content, viewport);
+    };
+
     let cursor = if ci_focused {
-        CiTitleCursor::Visible(pane.viewport.pos())
+        CiTitleCursor::Visible(viewport.pos())
     } else {
         CiTitleCursor::Hidden
     };
-    let title = fitted_ci_panel_title(&ci_data, cursor, area.width);
+    let title = fitted_ci_panel_title(ci_data, cursor, area.width);
 
     let mut pane_frame_chrome = PaneFrameChrome {
         title,
@@ -822,21 +893,25 @@ pub fn render_ci_pane_body(
 
     let mut inner = tui_pane::frame_inner(area);
     inner.width = inner.width.saturating_sub(1);
-    {
-        let viewport = &mut pane.viewport;
-        viewport.set_len(ci_data.runs.len());
-        viewport.set_content_area(inner);
-        viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
-    }
+    viewport.set_len(ci_data.runs.len());
+    viewport.set_content_area(inner);
+    viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
 
-    let cols = ci_display_columns_for_width(&ci_data.runs, inner.width);
-    let show_durations = ci_display_table_shows_durations(&ci_data.runs, &cols, inner.width);
-    let layout = ci_widths_for_mode(&ci_data, &cols, show_durations, inner.width);
+    if table_plan
+        .as_ref()
+        .is_some_and(|plan| plan.width != inner.width)
+    {
+        *table_plan = None;
+    }
+    let plan = table_plan.get_or_insert_with(|| CiTablePlan::build(ci_data, inner.width));
+    let cols = &plan.columns;
+    let durations = plan.durations;
+    let layout = &plan.layout;
     let widths = layout.widths();
     let commit_width = constraint_width(widths.first()).unwrap_or(CI_COMMIT_MIN_WIDTH);
     let branch_width = constraint_width(widths.get(1)).unwrap_or(CI_BRANCH_MIN_WIDTH);
 
-    let viewport_ref = &pane.viewport;
+    let viewport_ref: &Viewport = viewport;
     let rows: Vec<Row> = ci_data
         .runs
         .iter()
@@ -845,8 +920,8 @@ pub fn render_ci_pane_body(
             if matches!(layout, CiTableLayout::Standard(_)) {
                 build_ci_data_row(
                     ci_run,
-                    &cols,
-                    show_durations,
+                    cols,
+                    durations,
                     commit_width,
                     branch_width,
                     tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
@@ -858,7 +933,7 @@ pub fn render_ci_pane_body(
         })
         .collect();
 
-    let header = layout.header(&cols);
+    let header = layout.header(cols);
 
     let spacing = u16::from(
         !(matches!(layout, CiTableLayout::BranchSummary(_))
@@ -873,16 +948,23 @@ pub fn render_ci_pane_body(
         .column_spacing(spacing)
         .row_highlight_style(Style::default());
 
-    let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
-    *table_state.offset_mut() = pane.viewport.scroll_offset();
+    let mut table_state = TableState::default().with_selected(Some(viewport.pos()));
+    *table_state.offset_mut() = viewport.scroll_offset();
     frame.render_stateful_widget(table, layout.table_area(inner), &mut table_state);
-    pane.viewport.set_scroll_offset(table_state.offset());
-    paint_ci_row_selections(frame, inner, pane, ci_data.runs.len(), mode);
+    viewport.set_scroll_offset(table_state.offset());
+    paint_ci_row_selections(
+        frame,
+        inner,
+        viewport,
+        ci_pane_focus_state,
+        ci_data.runs.len(),
+        mode,
+    );
     pane_frame_chrome
         .labels
         .extend(tui_pane::overflow_affordance_label(
             area,
-            pane.viewport.overflow(),
+            viewport.overflow(),
             Style::default().fg(label_color()),
         ));
 
@@ -931,7 +1013,7 @@ impl CiTableLayout {
         cells.push(ci_metric_cell(
             &ci_total_seconds(run).map_or_else(|| "—".to_string(), ci::format_secs),
             run.ci_status,
-            true,
+            CiDurations::Shown,
             render::ci_status_style(Some(run.ci_status)),
         ));
         Row::new(cells)
@@ -1010,7 +1092,7 @@ impl CiTableLayout {
 fn ci_widths_for_mode(
     data: &CiData,
     cols: &[CiDisplayColumn],
-    durations: bool,
+    durations: CiDurations,
     width: u16,
 ) -> CiTableLayout {
     let widths = build_ci_widths(&data.runs, cols, durations, width);
@@ -1020,7 +1102,7 @@ fn ci_widths_for_mode(
     if fits && (!all || branch_visible) {
         return CiTableLayout::Standard(widths);
     }
-    let status = u16::try_from(ci_total_width(&data.runs, true)).unwrap_or(u16::MAX);
+    let status = u16::try_from(ci_total_width(&data.runs, CiDurations::Shown)).unwrap_or(u16::MAX);
     if width < status {
         return CiTableLayout::StatusSummary(Vec::new());
     }
@@ -1069,6 +1151,7 @@ mod tests {
     use super::CI_JOB_LABEL_MIN_WIDTH;
     use super::CI_STATUS_GAP_WIDTH;
     use super::CiDisplayColumn;
+    use super::CiDurations;
     use super::CiTitleCursor;
     use super::OTHER_JOBS_HEADER;
     use super::build_ci_widths;
@@ -1076,7 +1159,7 @@ mod tests {
     use super::ci_column_data;
     use super::ci_commit_min_width;
     use super::ci_display_columns_for_width;
-    use super::ci_display_table_shows_durations;
+    use super::ci_display_table_durations;
     use super::ci_grouped_display_columns;
     use super::ci_panel_title;
     use super::ci_status_glyph_width;
@@ -1177,7 +1260,7 @@ mod tests {
         let selected =
             std::collections::HashSet::from(["clippy".to_string(), "benchmark".to_string()]);
         let expected_ci_display_columns = ci_grouped_display_columns(&cols, &selected);
-        let width = ci_table_fixed_width(&runs, &expected_ci_display_columns, true);
+        let width = ci_table_fixed_width(&runs, &expected_ci_display_columns, CiDurations::Shown);
 
         assert!(
             ci_table_fixed_width(
@@ -1186,7 +1269,7 @@ mod tests {
                     .iter()
                     .map(|col| CiDisplayColumn::Job(col.name.clone()))
                     .collect::<Vec<_>>(),
-                true,
+                CiDurations::Shown,
             ) > width
         );
         assert_eq!(
@@ -1196,11 +1279,14 @@ mod tests {
             ),
             expected_ci_display_columns
         );
-        assert!(ci_display_table_shows_durations(
-            &runs,
-            &expected_ci_display_columns,
-            u16::try_from(width).expect("grouped CI table width should fit u16"),
-        ));
+        assert_eq!(
+            ci_display_table_durations(
+                &runs,
+                &expected_ci_display_columns,
+                u16::try_from(width).expect("grouped CI table width should fit u16"),
+            ),
+            CiDurations::Shown
+        );
     }
 
     #[test]
@@ -1214,10 +1300,16 @@ mod tests {
             CiDisplayColumn::Job("clippy".to_string()),
         ];
 
-        assert!(!ci_display_table_shows_durations(&runs, &cols, 20));
-        assert!(ci_display_table_shows_durations(&runs, &cols[..1], 80));
         assert_eq!(
-            super::ci_total_width(&runs, false),
+            ci_display_table_durations(&runs, &cols, 20),
+            CiDurations::Hidden
+        );
+        assert_eq!(
+            ci_display_table_durations(&runs, &cols[..1], 80),
+            CiDurations::Shown
+        );
+        assert_eq!(
+            super::ci_total_width(&runs, CiDurations::Hidden),
             "Total".len().max(ci_status_glyph_width())
         );
     }
@@ -1230,14 +1322,15 @@ mod tests {
             CiStatus::Passed,
         )])];
         let cols = vec![CiDisplayColumn::Job("Format Check".to_string())];
-        let baseline_width = super::ci_duration_width(&runs, &cols[0], true);
+        let baseline_width = super::ci_duration_width(&runs, &cols[0], CiDurations::Shown);
         let target_width = "Format Check".len();
-        let inner_width = ci_table_fixed_width(&runs, &cols, true) + target_width - baseline_width;
+        let inner_width =
+            ci_table_fixed_width(&runs, &cols, CiDurations::Shown) + target_width - baseline_width;
 
         let widths = build_ci_widths(
             &runs,
             &cols,
-            true,
+            CiDurations::Shown,
             u16::try_from(inner_width).expect("CI header width fixture should fit u16"),
         );
         let job_width = constraint_width(widths.get(3)).unwrap_or(0);
@@ -1258,15 +1351,15 @@ mod tests {
             cols[0].header_min_label().width() + CI_STATUS_GAP_WIDTH + ci_status_glyph_width();
 
         assert_eq!(
-            super::ci_duration_width(&runs, &cols[0], true),
+            super::ci_duration_width(&runs, &cols[0], CiDurations::Shown),
             expected_min
         );
 
         let widths = build_ci_widths(
             &runs,
             &cols,
-            true,
-            u16::try_from(ci_table_fixed_width(&runs, &cols, true))
+            CiDurations::Shown,
+            u16::try_from(ci_table_fixed_width(&runs, &cols, CiDurations::Shown))
                 .expect("CI minimum header fixture width should fit u16"),
         );
         let job_width = constraint_width(widths.get(3)).unwrap_or(0);
@@ -1300,7 +1393,7 @@ mod tests {
             vec![ci_job("fmt", 10, CiStatus::Passed)],
         )];
         let cols = ci_display_columns_for_width(&runs, 120);
-        let widths = build_ci_widths(&runs, &cols, true, 120);
+        let widths = build_ci_widths(&runs, &cols, CiDurations::Shown, 120);
 
         assert_eq!(ci_commit_min_width(&runs), CI_COMMIT_LONG_MIN_WIDTH);
         assert_eq!(ci_branch_min_width(&runs), CI_BRANCH_LONG_MIN_WIDTH);
@@ -1337,9 +1430,12 @@ mod tests {
                 .any(|col| matches!(col, CiDisplayColumn::Other { .. })),
             "real Bevy cache shape should group short-runtime jobs into Other"
         );
-        assert!(ci_display_table_shows_durations(&runs, &cols, width));
+        assert_eq!(
+            ci_display_table_durations(&runs, &cols, width),
+            CiDurations::Shown
+        );
 
-        let widths = build_ci_widths(&runs, &cols, true, width);
+        let widths = build_ci_widths(&runs, &cols, CiDurations::Shown, width);
         let rendered_width = widths
             .iter()
             .map(|constraint| match constraint {
@@ -1360,7 +1456,7 @@ mod tests {
         let runs = bevy_cached_ci_runs();
         let width = 220;
         let cols = ci_display_columns_for_width(&runs, width);
-        let widths = build_ci_widths(&runs, &cols, true, width);
+        let widths = build_ci_widths(&runs, &cols, CiDurations::Shown, width);
 
         let labels: Vec<String> = cols
             .iter()

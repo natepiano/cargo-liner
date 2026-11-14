@@ -48,6 +48,7 @@ impl FunctionCollector<'_> {
             self.functions.push(FunctionBody {
                 name:             name.to_string(),
                 range:            full.start()..full.end(),
+                body_bytes:       body.end() - body.start(),
                 lines:            self
                     .lexical_regions
                     .code_lines(body.start() + 1..body.end() - 1),
@@ -121,6 +122,7 @@ pub(super) fn collect(text: &str) -> Result<Vec<FunctionBody>> {
 pub(super) struct FunctionBody {
     pub(super) name:             String,
     pub(super) range:            Range<usize>,
+    pub(super) body_bytes:       usize,
     pub(super) lines:            usize,
     pub(super) length_exemption: LengthExemption,
 }

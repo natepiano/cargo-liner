@@ -1,0 +1,10 @@
+# CI and the dev machines use one toolchain. Move this pin in its own change.
+[toolchain]
+channel = "1.99.1"
+components = [
+  "clippy",
+  "llvm-tools-preview",
+  "rust-src",
+  "rustc-dev",
+  "rustfmt",
+]

@@ -127,6 +127,8 @@ An open pass with a kind other than impl, test, fix or review is unknown with it
 The local scan, the accounts read and each remote probe run at the same time.
 `probe::scan_local`, `AccountsTable::read_once` and `RemoteHierarchyAnswers::answer` are the same calls that the probe and the TUI use.
 The report lists each unit director and current-run worker that a tile shows, from the staff listing facts.
+Schema 2 adds a `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, in session order.
+A `sessions` entry has a `null` activity when its status is not `busy`.
 `agent_cell::session_cells` supplies each name, status and activity from the tile lines.
 A staff row with no tile line is not listed, so the JSON and the tiles name the same sessions.
 A session that two machines list takes its facts from the machine whose tile shows it.
@@ -178,10 +180,17 @@ Activity names the assigned work, including `impl`, `test`, `fix`, and `reviewer
 A timer shows `timer` and its countdown in Activity.
 A compacting session shows `compacting` instead of its assigned job.
 The existing census compaction detector supplies that state for every session role.
+A row with a reported `busy` status adds its live activity word after the job, as in `impl · thinking`.
+The word is left out when it repeats the job. Other rows show the job only.
+`census --json` gives the same joined text.
+A narrow tile cuts the activity jobs before it drops the role column, and each live word stays whole.
+Below one cell of room for the job, the cell shows only the live word.
 
 Each account row supplies `sessions: [{session, state}]` beside its `role_counts`.
 The reader merges these lists into one session map.
-`SessionState` accepts `busy`, `starting`, `waiting`, `idle`, `paused`, and `exited`.
+`SessionState` has four values: `busy`, `idle`, `paused`, and `exited`.
+The reader reads an old `starting` or `waiting` word as `busy`.
+Starting and waiting are activities, not status values.
 The external accounts classifier owns these meanings.
 Rust reads its result without repeating its classification rules.
 Claude rows use their `session_id` string as the lookup key.
@@ -193,10 +202,9 @@ A Codex row without a thread ID shows `idle` with a live process, or `exited` wi
 Conflicting account entries remove only that session status.
 Retained account readings retain their session states after a refresh failure.
 A live shell shows `busy` independently of its countdown.
-A reported `waiting` status uses the `waiting` theme role in every tile.
-The full session heading uses the same ink.
+The live activity word `waiting` uses the `waiting` theme role in every tile.
 The theme files supply its bright yellow color for dark and light appearances.
-Other statuses and the hierarchy activity column keep their existing inks.
+The job and the other activity words keep their existing inks.
 
 Age remains a computed sort value.
 Showrunner and unassigned tiles start in session name order.
@@ -209,7 +217,7 @@ Unassigned sessions and shells show their full name instead.
 The details view shows the long age last in the now section.
 The agent section contains account, model, effort, and type.
 The now section contains activity, status, and age, in that order.
-The activity value joins the job and the live activity without repeated words.
+The activity value joins the job and the live activity without repeated words, for every status.
 It omits the live word when it is `idle` or `—`.
 An absent job and live activity show `—`.
 The status value retains the accounts-board word.

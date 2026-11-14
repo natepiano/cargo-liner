@@ -4,8 +4,9 @@
 //! [`tui_pane::GlobalAction`] owns quit, restart, pane cycling, and the
 //! settings / keymap / shortcut overlays — those need no registration
 //! here. This scope is for the shortcuts *this* app adds on top: the two
-//! that open and close cells, and the horizontal arrows that move the focus
-//! ring between them. The framework picks up the rest from the
+//! that open and close cells, the horizontal arrows that move the focus
+//! ring between them, and Enter, which shows the focused tile on the full
+//! screen. The framework picks up the rest from the
 //! registration in [`crate::keymap`]: TOML loading, the status-line
 //! slots, and the rows in the keymap overlay.
 //!
@@ -18,6 +19,8 @@
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
+use std::time::Instant;
+
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::ExpansionAction;
@@ -25,6 +28,7 @@ use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::NavAction;
 use tui_pane::TileAction;
+use tui_pane::TileGrowth;
 
 use crate::app::App;
 use crate::app::expansion::DepthDigit;
@@ -44,6 +48,7 @@ tui_pane::action_enum! {
         ExpandRow => ("expand_row", "Expand the selected row");
         CollapseRow => ("collapse_row", "Collapse the selected row");
         ToggleRow => ("toggle_row", "Toggle the selected row");
+        Expand => ("expand", "Expand the focused tile");
         Depth0 => ("depth_0", "Show focused tile depth 0");
         Depth1 => ("depth_1", "Show focused tile depth 1");
         Depth2 => ("depth_2", "Show focused tile depth 2");
@@ -104,7 +109,7 @@ impl Globals<App> for AppGlobalAction {
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
             'm' => Self::RandomFavorite,
-            KeyCode::Enter => Self::ToggleRow,
+            KeyCode::Enter => Self::Expand,
             '0' => Self::Depth0,
             '1' => Self::Depth1,
             '2' => Self::Depth2,
@@ -129,6 +134,13 @@ impl Globals<App> for AppGlobalAction {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
+}
+
+/// Move the focus ring. A full-screen tile keeps the focus, so row keys stay on the shown tile.
+fn move_focus(app: &mut App, action: TileAction, growth: TileGrowth) {
+    if !app.full_screen.is_open() {
+        app.tiles.apply(action, growth);
+    }
 }
 
 /// Run one app-global action.
@@ -157,6 +169,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
             HandlerExpansionAction::Shared(ExpansionAction::CollapseRow),
         ),
         AppGlobalAction::ToggleRow => expansion::dispatch(app, HandlerExpansionAction::Toggle),
+        AppGlobalAction::Expand => app.full_screen.expand(Instant::now()),
         AppGlobalAction::Depth0 => {
             expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Zero));
         },
@@ -189,10 +202,10 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         },
         AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, growth),
         AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, growth),
-        AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, growth),
-        AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, growth),
-        AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
-        AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
+        AppGlobalAction::FocusLeft => move_focus(app, TileAction::FocusLeft, growth),
+        AppGlobalAction::FocusRight => move_focus(app, TileAction::FocusRight, growth),
+        AppGlobalAction::FocusUp => move_focus(app, TileAction::FocusUp, growth),
+        AppGlobalAction::FocusDown => move_focus(app, TileAction::FocusDown, growth),
         AppGlobalAction::RowUp => render::navigate_selection(app, NavAction::Up),
         AppGlobalAction::RowDown => render::navigate_selection(app, NavAction::Down),
         AppGlobalAction::RowPageUp => render::navigate_selection(app, NavAction::PageUp),
@@ -377,7 +390,7 @@ mod tests {
             (KeyBind::from('-'), AppGlobalAction::CollapseAll),
             (KeyBind::from(KeyCode::Left), AppGlobalAction::CollapseRow),
             (KeyBind::from(KeyCode::Right), AppGlobalAction::ExpandRow),
-            (KeyBind::from(KeyCode::Enter), AppGlobalAction::ToggleRow),
+            (KeyBind::from(KeyCode::Enter), AppGlobalAction::Expand),
             (KeyBind::from('0'), AppGlobalAction::Depth0),
             (KeyBind::from('1'), AppGlobalAction::Depth1),
             (KeyBind::from('2'), AppGlobalAction::Depth2),
@@ -413,8 +426,10 @@ mod tests {
         for (bind, action) in expected {
             assert_eq!(scope.action_for(&bind), Some(action), "{bind:?}");
         }
+        // `toggle_row` is the one action with no default key.
+        assert_eq!(scope.key_for(AppGlobalAction::ToggleRow), None);
         assert_eq!(
-            expected.len(),
+            expected.len() + 1,
             <AppGlobalAction as tui_pane::Action>::ALL.len()
         );
     }

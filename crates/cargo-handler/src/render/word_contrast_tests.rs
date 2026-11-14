@@ -2244,7 +2244,7 @@ fn emphasis_grounds_and_modifiers_in_high_contrast_light() -> TestResult {
     check_emphasized_theme("High Contrast Light")
 }
 
-fn waiting_status_application() -> TestResult<App> {
+fn waiting_activity_application() -> TestResult<App> {
     use crate::census::accounts::AccountsReading;
     use crate::census::accounts::AccountsTable;
 
@@ -2266,8 +2266,8 @@ fn waiting_status_application() -> TestResult<App> {
         AccountsReading::parse(
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,"read_ok":true,"sessions":[
-            {"session":"word-session-10","state":"waiting"},
-            {"session":"waiting-thread","state":"waiting"},
+            {"session":"word-session-10","state":"busy"},
+            {"session":"waiting-thread","state":"busy"},
             {"session":"word-session-20","state":"busy"},
             {"session":"word-session-30","state":"idle"}
         ]}],"problems":[]
@@ -2294,38 +2294,39 @@ fn assert_waiting_word_ink(cell: &Cell, other_inks: &[Color]) -> TestResult {
     Ok(())
 }
 
-fn waiting_fixture_status(buffer: &Buffer, label: &str, word: &str) -> TestResult<Position> {
+fn fixture_word(buffer: &Buffer, label: &str, word: &str) -> TestResult<Position> {
     let row = word_click_tests::locate(buffer, label)?;
     word_click_tests::positions(buffer, word)
         .into_iter()
         .find(|point| point.y == row.y && point.x > row.x)
-        .ok_or_else(|| format!("missing {word} status for {label}").into())
+        .ok_or_else(|| format!("missing {word} for {label}").into())
 }
 
 #[test]
-fn waiting_summary_status_uses_the_waiting_theme_ink() -> TestResult {
+fn summary_status_of_a_waiting_session_draws_busy_in_the_busy_ink() -> TestResult {
     let reset = ResetThemeFixture::install();
     tui_pane::set_transparent_background(false);
-    let mut app = waiting_status_application()?;
+    let mut app = waiting_activity_application()?;
     app.loaded_config.config.tiles.view = TileView::Summary;
     let mut renderer = Renderer::new(&mut app, 100, 20)?;
     let buffer = renderer.paint(&mut app)?;
-    let point = waiting_fixture_status(&buffer, "waiting-owner", "waiting")?;
-    let expected = Role::Waiting.style().fg.ok_or("waiting ink")?;
-    for x in point.x..point.x + 7 {
+    let point = fixture_word(&buffer, "waiting-owner", "busy")?;
+    let expected = Role::Busy.style().fg.ok_or("busy ink")?;
+    for x in point.x..point.x + 4 {
         assert_eq!(buffer[(x, point.y)].fg, expected);
     }
-    assert_eq!(
-        (point.x..point.x + 7)
-            .map(|x| buffer[(x, point.y)].symbol())
-            .collect::<String>(),
-        "waiting"
+    let label = word_click_tests::locate(&buffer, "waiting-owner")?;
+    assert!(
+        word_click_tests::positions(&buffer, "waiting")
+            .iter()
+            .all(|waiting| waiting.y != point.y || waiting.x == label.x),
+        "only the session name holds the word waiting"
     );
     drop(reset);
     Ok(())
 }
 
-fn check_waiting_status_matches(name: &str) -> TestResult {
+fn check_waiting_activity_matches(name: &str) -> TestResult {
     let builtin = theme::builtins()
         .into_iter()
         .find(|variant| variant.id.as_str() == name)
@@ -2334,12 +2335,12 @@ fn check_waiting_status_matches(name: &str) -> TestResult {
     tui_pane::set_transparent_background(false);
     for tint in [false, true] {
         tui_pane::set_focused_pane_tint(tint);
-        let mut app = waiting_status_application()?;
+        let mut app = waiting_activity_application()?;
         let mut renderer = Renderer::new(&mut app, 100, 35)?;
         let initial = renderer.paint(&mut app)?;
         let worker = word_click_tests::locate(&initial, "waiting-worker")?;
         let away = word_click_tests::locate(&initial, "busy-control")?;
-        let waiting = waiting_fixture_status(&initial, "waiting-worker", "waiting")?;
+        let waiting = fixture_word(&initial, "waiting-worker", "waiting")?;
         for ground in [
             MatchGround::Base,
             MatchGround::SelectedFocused,
@@ -2368,8 +2369,8 @@ fn check_waiting_status_matches(name: &str) -> TestResult {
                 },
             }
             let other_inks = [
-                baseline[waiting_fixture_status(&baseline, "busy-control", "busy")?].fg,
-                baseline[waiting_fixture_status(&baseline, "idle-control", "idle")?].fg,
+                baseline[fixture_word(&baseline, "busy-control", "busy")?].fg,
+                baseline[fixture_word(&baseline, "idle-control", "idle")?].fg,
                 Role::Unreachable.style().fg.ok_or("unreachable ink")?,
             ];
             assert_waiting_word_ink(before, &other_inks)?;
@@ -2411,21 +2412,21 @@ fn check_waiting_status_matches(name: &str) -> TestResult {
 }
 
 #[test]
-fn waiting_status_matches_keep_yellow_contrast_in_default_dark() -> TestResult {
-    check_waiting_status_matches("Default Dark")
+fn waiting_activity_matches_keep_yellow_contrast_in_default_dark() -> TestResult {
+    check_waiting_activity_matches("Default Dark")
 }
 
 #[test]
-fn waiting_status_matches_keep_yellow_contrast_in_default_light() -> TestResult {
-    check_waiting_status_matches("Default Light")
+fn waiting_activity_matches_keep_yellow_contrast_in_default_light() -> TestResult {
+    check_waiting_activity_matches("Default Light")
 }
 
 #[test]
-fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_dark() -> TestResult {
-    check_waiting_status_matches("High Contrast Dark")
+fn waiting_activity_matches_keep_yellow_contrast_in_high_contrast_dark() -> TestResult {
+    check_waiting_activity_matches("High Contrast Dark")
 }
 
 #[test]
-fn waiting_status_matches_keep_yellow_contrast_in_high_contrast_light() -> TestResult {
-    check_waiting_status_matches("High Contrast Light")
+fn waiting_activity_matches_keep_yellow_contrast_in_high_contrast_light() -> TestResult {
+    check_waiting_activity_matches("High Contrast Light")
 }

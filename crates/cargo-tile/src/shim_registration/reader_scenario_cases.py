@@ -14,6 +14,11 @@ GROUP_REGISTRATION_TIMEOUT_SECONDS = 0.1
 class ChildEvents:
     """Wake the parent when a child changes state."""
 
+    read_descriptor: int
+    write_descriptor: int
+    previous_descriptor: int
+    previous_handler: Callable[[int, FrameType | None], object] | int | signal.Handlers | None
+
     def __init__(self) -> None:
         self.read_descriptor, self.write_descriptor = os.pipe()
         os.set_blocking(self.write_descriptor, False)
@@ -43,9 +48,11 @@ def register_owned_group() -> None:
         if connection.recv(1) != b'R':
             raise RuntimeError('The scenario owner ended before group registration')
 
-def start_owned_group(arguments: list[str], **options) -> subprocess.Popen:
+def start_owned_group(arguments: list[str], *, stdin: int, stdout: int | IO[bytes],
+                      stderr: int | IO[bytes], env: dict[str, str] | None = None,
+                      cwd: str | None = None) -> subprocess.Popen[bytes]:
     return subprocess.Popen([sys.executable, '-S', sys.argv[0], '--owned-exec', *arguments],
-                            **options)
+                            stdin=stdin, stdout=stdout, stderr=stderr, env=env, cwd=cwd)
 
 def fork_owned_terminal() -> tuple[int, int]:
     """Register the reader before it creates its terminal session."""
@@ -65,10 +72,38 @@ def fork_owned_terminal() -> tuple[int, int]:
         os.close(slave)
     return pid, master
 
+def live_group_members(groups: set[int]) -> list[tuple[int, int]]:
+    """List each process, with its group, that is in one of the groups and is not a zombie.
+
+    Linux reads each process's stat file in this process. Other systems ask ps.
+    """
+    if sys.platform != 'linux':
+        result = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat='],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode not in (0, 1):
+            raise RuntimeError('Cannot read the process table: ' + result.stderr)
+        rows = (line.split() for line in result.stdout.splitlines())
+        return [(int(pid), int(group)) for pid, group, state in rows
+                if int(group) in groups and not state.startswith('Z')]
+    members: list[tuple[int, int]] = []
+    for name in os.listdir('/proc'):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f'/proc/{name}/stat', 'rb') as stat_file:
+                fields = stat_file.read()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        # The command name can hold spaces and parentheses; the fields after its last ')' cannot.
+        state, _parent, group = fields[fields.rindex(b')') + 2:].split(maxsplit=3)[:3]
+        if int(group) in groups and state != b'Z':
+            members.append((int(name), int(group)))
+    return members
+
 def end_owned_groups(groups: set[int], events: ChildEvents) -> None:
     """Stop only registered groups, including children of an exited group leader."""
     while True:
-        permission_denied_groups = set()
+        permission_denied_groups: set[int] = set()
         for group in groups:
             try:
                 os.killpg(group, signal.SIGKILL)
@@ -76,18 +111,12 @@ def end_owned_groups(groups: set[int], events: ChildEvents) -> None:
                 pass
             except PermissionError:
                 permission_denied_groups.add(group)
-        result = subprocess.run(['ps', '-axo', 'pgid=,stat='],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode not in (0, 1):
-            raise RuntimeError('Cannot read the owned groups: ' + result.stderr)
-        live_groups = {int(group)
-                       for group, state in (line.split() for line in result.stdout.splitlines())
-                       if int(group) in groups and not state.startswith('Z')}
+        live_groups = {group for _pid, group in live_group_members(groups)}
         for group in permission_denied_groups & live_groups:
             raise RuntimeError(f'Cannot stop the live owned group {group}: permission denied')
         if not live_groups:
             return
-        events.wait(0.005)
+        _ = events.wait(0.005)
 
 def run_owned_scenario() -> int:
     """Own the folder and groups independently of the Rust test and scenario."""
@@ -97,7 +126,7 @@ def run_owned_scenario() -> int:
         with tempfile.TemporaryDirectory(prefix='ct-') as directory:
             root = Path(directory)
             source = root / 'capture-shim.sh'
-            source.write_text(os.environ['CARGO_TILE_SCENARIO_SHIM'])
+            _ = source.write_text(os.environ['CARGO_TILE_SCENARIO_SHIM'])
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
                 address = str(root / 'owner')
                 listener.bind(address)
@@ -166,7 +195,8 @@ if sys.argv[1:2] == ['--owned-exec']:
 
 def guard_writer_group() -> int:
     """Keep the writer group inside the scenario's lifetime."""
-    request = json.loads(sys.stdin.buffer.readline())
+    # The guardian starts before `typing` loads, so it cannot call `cast`.
+    request: WriterRequest = json.loads(sys.stdin.buffer.readline())  # pyright: ignore[reportAny]
     scenario_descriptor = sys.stdin.fileno()
     child_events = ChildEvents()
     with open(request['output'], 'wb') as output:
@@ -205,7 +235,7 @@ from concurrent.futures import ThreadPoolExecutor
 import codecs
 import ctypes
 from decimal import Decimal
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 import errno
 import faulthandler
 import fcntl
@@ -217,12 +247,14 @@ import pwd
 import re
 import shlex
 import shutil
-import stat
 import struct
 import termios
 import threading
 import time
-from typing import TYPE_CHECKING, ClassVar, Iterator, TypeVar, cast
+from types import FrameType
+from typing import IO, TYPE_CHECKING, ClassVar, TypeVar, cast, final
+if TYPE_CHECKING:
+    from typing import TypedDict
 
 if TYPE_CHECKING:
     # A started writer is (child, observations, registration, fields, log).
@@ -231,6 +263,21 @@ if TYPE_CHECKING:
     # A cell foreground holds its SGR color parameters, or None for the default color.
     Foreground = tuple[int, ...] | None
     Snapshot = tuple[str, list[list[Foreground]]]
+
+    class WriterRequest(TypedDict):
+        """What `ScenarioOwnedWriter` asks its guardian to start."""
+        arguments: list[str]
+        directory: str
+        environment: dict[str, str]
+        output: str
+
+    class OwnershipIdentities(TypedDict):
+        """The processes and folder that `ownership_victim` reports."""
+        scenario: int
+        writer: int
+        guardian: int
+        server: int
+        root: str
 
 root = Path(sys.argv[1]).resolve()
 binary, source, scenario, observation_argument, smoothing_argument, *deadline_arguments = sys.argv[2:]
@@ -245,7 +292,7 @@ def record_timestamp(name: str) -> None:
         now = time.monotonic()
         if timestamps_requested:
             print(f'reader timestamp {name}: +{now - timestamp_origin:.6f}s '
-                  f'({now - previous_timestamp:.6f}s)', file=sys.stderr, flush=True)
+                  + f'({now - previous_timestamp:.6f}s)', file=sys.stderr, flush=True)
         previous_timestamp = now
 
 record_timestamp('python start')
@@ -439,7 +486,7 @@ writers: list[tuple[ScenarioOwnedWriter, Path]] = []
 parent_owned_children: list[Path] = []
 detached_servers: list[subprocess.Popen[bytes]] = []
 # CPU setup assigns these through globals; annotations narrow them at module scope.
-cache_server = None
+cache_server: int | None = None
 cache_server_process: subprocess.Popen[bytes] | None = None
 reader: int | None = None
 child_events = ChildEvents()
@@ -448,7 +495,7 @@ transcript = bytearray()
 pending_waits: dict[int, tuple[str, ...]] = {}
 
 @contextmanager
-def named_wait(description: str) -> Iterator[None]:
+def named_wait(description: str) -> Generator[None]:
     thread = threading.get_ident()
     previous = pending_waits.get(thread, ())
     pending_waits[thread] = (*previous, description)
@@ -469,10 +516,10 @@ def pending_wait_description() -> str:
     return next((descriptions[-1] for descriptions in waits if descriptions),
                 'scenario execution')
 
-def scenario_deadline_reached(_signal_number, _frame) -> None:
+def scenario_deadline_reached(_signal_number: int, _frame: FrameType | None) -> None:
     raise TimeoutError(
         f'{scenario} exceeded {scenario_deadline_seconds:g} seconds while waiting for '
-        f'{pending_wait_description()}')
+        + pending_wait_description())
 
 def arm_scenario_deadline() -> None:
     _ = signal.signal(signal.SIGALRM, scenario_deadline_reached)
@@ -486,6 +533,13 @@ def cancel_scenario_deadline() -> None:
 
 def reader_pid() -> int:
     return required(reader, 'reader process is used before pty.fork')
+
+def reader_is_started() -> bool:
+    """Tell whether this process started a reader; module code cannot see a function's assignment."""
+    return reader is not None and reader != 0
+
+def cache_server_pid() -> int:
+    return required(cache_server, 'prepare_cpu_workload does not assign cache_server')
 
 def reader_terminal() -> int:
     return required(terminal, 'reader terminal is used before pty.fork')
@@ -551,6 +605,7 @@ def wait_for_files(predicate: Callable[[], object], description: str, *,
             changes.close()
         raise AssertionError(description)
 
+@final
 class WriterNotification:
     """Wake a fixture shell without a polling process."""
 
@@ -570,16 +625,17 @@ class WriterNotification:
 
 writer_notifications: dict[Path, WriterNotification] = {}
 
+@final
 class ScenarioOwnedWriter:
     """Own a writer through a guardian and a scenario-only lifetime pipe."""
 
     def __init__(self, arguments: list[str], directory: Path,
                  child_environment: dict[str, str], output: Path) -> None:
-        self.guardian = subprocess.Popen(
+        self.guardian: subprocess.Popen[bytes] = subprocess.Popen(
             [sys.executable, '-S', sys.argv[0], '--writer-guardian'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         lifetime = required(self.guardian.stdin, 'writer guardian has no lifetime pipe')
-        reply = required(self.guardian.stdout, 'writer guardian has no startup reply')
+        reply: IO[bytes] = required(self.guardian.stdout, 'writer guardian has no startup reply')
         try:
             request = dict(arguments=arguments, directory=str(directory),
                            environment=child_environment, output=str(output))
@@ -602,11 +658,12 @@ class ScenarioOwnedWriter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(self.guardian.args, timeout)
-            child_events.wait(remaining)
+            _ = child_events.wait(remaining)
         status = self.guardian.wait()
         required(self.guardian.stdin, 'writer guardian has no lifetime pipe').close()
         return status
 
+@final
 class LaunchedWriter:
     def __init__(self, child: ScenarioOwnedWriter, observations: Path,
                  writer_home: Path, nested_observations: tuple[Path, ...]) -> None:
@@ -836,9 +893,10 @@ def process_children(pid: int) -> list[int]:
         children = Path(f'/proc/{pid}/task/{pid}/children')
         return [int(child) for child in children.read_text().split()]
     library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
-    list_pids = library.proc_listpids
-    list_pids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
-    list_pids.restype = ctypes.c_int
+    function = library.proc_listpids
+    function.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
+    function.restype = ctypes.c_int
+    list_pids = cast('Callable[..., int]', function)
     # libproc.h: PROC_PPID_ONLY selects direct children. Results contain PID bytes.
     parent_filter = 6
     size = list_pids(parent_filter, pid, None, 0)
@@ -850,18 +908,19 @@ def process_children(pid: int) -> list[int]:
     written = list_pids(parent_filter, pid, children, ctypes.sizeof(children))
     if written < 0:
         raise OSError(ctypes.get_errno(), 'read fixture child process list', pid)
-    return [child for child in children[:written // ctypes.sizeof(ctypes.c_uint32)] if child]
+    listed: list[int] = children[:written // ctypes.sizeof(ctypes.c_uint32)]
+    return [child for child in listed if child]
 
 def cpu_readings_in_frame(rendered: str, writers: tuple[StartedWriter, ...]
                           ) -> list[tuple[StartedWriter, int]]:
-    readings = []
+    readings: list[tuple[StartedWriter, int]] = []
     for writer in writers:
         pid = str(writer[0].pid)
         rows = [line for line in rendered.splitlines() if writer[1].name in line
                 and re.match(r'^\s*│\s*' + pid + r'\s', line)]
         if not rows:
             continue
-        values = []
+        values: list[int] = []
         for row in rows:
             # Header and row redraws can be observed separately; read CPU from this row.
             prefix, command, _ = row.partition('cargo ')
@@ -928,7 +987,7 @@ def assert_cpu_observation_waits_for_reporting_windows() -> None:
 
 def assert_changing_cpu_load() -> None:
     oracle = NativeCpuOracle()
-    shown = []
+    shown: list[CpuReading] = []
     for number, (at, counter) in enumerate(((0.0, 0.0), (0.025, 0.025), (0.05, 0.025),
                                            (0.075, 0.05), (0.1, 0.05)), 1):
         scan = CpuScan(number, nanoseconds(str(at)), owners={10: ('Reading(0.0)', 'invocation')},
@@ -970,7 +1029,7 @@ def assert_cpu_retention() -> None:
                            owners={10: ('Reading(0.0)', 'invocation')},
                            counters={10: {'tree': counters}},
                            reapers={identity: reapers[identity] for identity in counters if identity in reapers})
-            oracle.observe(scan)
+            _ = oracle.observe(scan)
             assert abs(oracle.histories['invocation'].accumulated - expected) < 0.0000001, \
                 (number, counters, expected, oracle.histories['invocation'])
 
@@ -1001,10 +1060,10 @@ def assert_delayed_cpu_drain() -> None:
         return [oracle.observe(scans[number])[10] for number, _, _ in frames]
     assert replay(actual) == replay(expected) == [UnavailableCpuReading.UNAVAILABLE, CpuPercent(20.0)]
     path = root / 'cpu-counter-fragments.tsv'
-    path.write_text('scan\t1\t0\nend\t1\nscan\t2\t')
+    _ = path.write_text('scan\t1\t0\nend\t1\nscan\t2\t')
     assert [scan.number for scan in read_cpu_scans(path)] == [1], \
         'an unfinished native scan enters the oracle'
-    path.write_text('scan\t1\t0\nend\t1\nscan\t2\t50000000\nend\t2\n')
+    _ = path.write_text('scan\t1\t0\nend\t1\nscan\t2\t50000000\nend\t2\n')
     assert [scan.number for scan in read_cpu_scans(path)] == [1, 2]
     path.unlink()
 
@@ -1015,6 +1074,7 @@ def assert_compiler_counter(recorded: float, independent: float) -> None:
         'recorded compiler CPU differs from its stopped kernel counter', recorded, independent)
 
 
+@final
 class MacProcessUsage(ctypes.Structure):
     # sys/resource.h::rusage_info_v0, selected by RUSAGE_INFO_V0 (0).
     _fields_ = [('uuid', ctypes.c_ubyte * 16),
@@ -1022,8 +1082,13 @@ class MacProcessUsage(ctypes.Structure):
                   ('user_time', 'system_time', 'package_idle_wakeups', 'interrupt_wakeups',
                    'pageins', 'wired_size', 'resident_size', 'physical_footprint',
                    'process_start', 'process_exit')]]
+    if TYPE_CHECKING:
+        # ctypes makes these attributes from `_fields_`, which the checker cannot read.
+        user_time: int = 0
+        system_time: int = 0
 
 
+@final
 class MacProcessInfo(ctypes.Structure):
     """Read parent and stop state without starting a utility process."""
 
@@ -1036,6 +1101,11 @@ class MacProcessInfo(ctypes.Structure):
                  ('files', 'group', 'group_members', 'terminal', 'terminal_group')]
     _fields_ += [('priority', ctypes.c_int32), ('start_seconds', ctypes.c_uint64),
                  ('start_microseconds', ctypes.c_uint64)]
+    if TYPE_CHECKING:
+        # ctypes makes these attributes from `_fields_`, which the checker cannot read.
+        status: int = 0
+        parent: int = 0
+        start_seconds: int = 0
     STOPPED: ClassVar[int] = 4  # sys/proc.h::SSTOP.
 
     @classmethod
@@ -1052,8 +1122,13 @@ class MacProcessInfo(ctypes.Structure):
         return info
 
 
+@final
 class MacTimebase(ctypes.Structure):
     _fields_ = [('numerator', ctypes.c_uint32), ('denominator', ctypes.c_uint32)]
+    if TYPE_CHECKING:
+        # ctypes makes these attributes from `_fields_`, which the checker cannot read.
+        numerator: int = 0
+        denominator: int = 0
 
 
 def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> None:
@@ -1106,7 +1181,7 @@ def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> Non
 
 
 @contextmanager
-def verify_compiler_cpu() -> Iterator[None]:
+def verify_compiler_cpu() -> Generator[None]:
     compiler = int((root / 'cpu-server/compiler-pid').read_text())
     deadline = time.monotonic() + wait_seconds
     # The kernel check can run before the first completed terminal frame.
@@ -1170,7 +1245,7 @@ class FixtureCpuOwnership:
 
 def assert_rejected(check: Callable[[], object], message: str) -> None:
     try:
-        check()
+        _ = check()
     except AssertionError:
         return
     raise AssertionError(message)
@@ -1301,7 +1376,8 @@ def read_cpu_scans(path: Path) -> list[CpuScan]:
             elif fields[0] == 'nested':
                 pending.nested.setdefault(int(fields[1]), {})[fields[2]] = float(fields[3])
             elif fields[0] == 'result':
-                pending.results[int(fields[1])] = (float(fields[2]), *(observed_measurement(value) for value in fields[3:]))
+                first, second, third = (observed_measurement(value) for value in fields[3:])
+                pending.results[int(fields[1])] = (float(fields[2]), first, second, third)
     return scans
 
 
@@ -1317,7 +1393,7 @@ class NativeCpuHistory:
     baseline: CpuCounterBaseline | AwaitingCpuBaseline = AwaitingCpuBaseline.AWAITING
 
     def sample(self, scan: CpuScan, pid: int) -> CpuReading:
-        UniqueProcessContributions.from_groups(scan.counters.get(pid, {}))
+        _ = UniqueProcessContributions.from_groups(scan.counters.get(pid, {}))
         retention = scan.cadence[3]
         for group, counters in scan.counters.get(pid, {}).items():
             if retention is CounterRetention.REAPED_CHILDREN:
@@ -1338,7 +1414,7 @@ class NativeCpuHistory:
                     if identity in scan.reapers:
                         self.reapers[identity] = scan.reapers[identity]
                     else:
-                        self.reapers.pop(identity, None)
+                        _ = self.reapers.pop(identity, None)
                 self.present[group] = set(counters)
                 self.totals[group] = total
             else:
@@ -1421,7 +1497,7 @@ def assert_cpu_attribution(frames: list[tuple[int, int, str]], writer: StartedWr
                            unrelated: StartedWriter, ownership: FixtureCpuOwnership) -> None:
     scans = read_cpu_scans(root / CPU_OBSERVATION_FILE)
     oracle = NativeCpuOracle()
-    expected = {}
+    expected: dict[int, dict[int, CpuReading]] = {}
     for scan in scans:
         ownership.check(scan)
         expected[scan.number] = oracle.observe(scan)
@@ -1458,8 +1534,8 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
         if remaining <= 0:
             return False
         # Use completed frames before waiting for another publication.
-        terminal_snapshot()
-        terminal_frames.take_completed()
+        _ = terminal_snapshot()
+        _ = terminal_frames.take_completed()
         scans = {scan.number: scan for scan in read_cpu_scans(root / CPU_OBSERVATION_FILE)}
         for number, published, frame in terminal_frames.take_cpu_completed():
             if not cpu_rows_are_ready(frame, writers):
@@ -1479,7 +1555,7 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
     record_timestamp('CPU rows')
     wait_for(observe_cpu, 'CPU samples to cover smoothing and three reporting windows',
              lambda: f': need {observation_window:g}s of native scans and three sustained readings; '
-                     f'collected {readings!r}', pause=0, deadline=deadline)
+                     + f'collected {readings!r}', pause=0, deadline=deadline)
     assert_cpu_attribution(frames, writer, unrelated, ownership)
     record_timestamp('CPU observation')
     return rendered
@@ -1731,7 +1807,7 @@ def measurement_cell(header: str, row: str, column: str, rendered: str) -> str:
     if title is None:
         assert column in ('compiler', 'runs'), 'missing ' + column + ' title\n' + rendered
         return ''
-    def cell_start(title):
+    def cell_start(title: re.Match[str]) -> int:
         if title.group() != 'state':
             return title.start()
         start = title.end()
@@ -1875,7 +1951,7 @@ def assert_settings_scroll() -> None:
                     if stopped:
                         assert stopped == reader and os.WIFSTOPPED(status), (stopped, status)
                         break
-                    child_events.wait(max(0.0, deadline - time.monotonic()))
+                    _ = child_events.wait(max(0.0, deadline - time.monotonic()))
                 else:
                     raise AssertionError('reader did not stop after SIGSTOP')
         _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
@@ -1971,7 +2047,7 @@ def assert_blocked_invocation_readiness() -> None:
     assert not blocked_invocation_in_rendered(marker, unrelated_blocked), \
         'another invocation supplies the blocked state'
     frames = iter((discovered, unrelated_blocked, ready))
-    observed = []
+    observed: list[str] = []
     def row_is_blocked() -> bool:
         rendered = next(frames)
         observed.append(rendered)
@@ -2078,23 +2154,22 @@ def assert_reader_end_bounds_output_writer() -> None:
 def assert_killed_scenario_ends_writer_group() -> None:
     victim_arguments = list(sys.argv)
     victim_arguments[4] = '--writer-kill-victim'
-    victim = subprocess.Popen([sys.executable, '-S', *victim_arguments],
+    victim: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, '-S', *victim_arguments],
                               stdout=subprocess.PIPE, bufsize=0)
     scenario_pid = victim.pid
     writer_pid = None
     scenario_reaped = False
     group_ended = False
     try:
-        with required(victim.stdout, 'scenario has no readiness pipe') as ready:
+        readiness: IO[bytes] = required(victim.stdout, 'scenario has no readiness pipe')
+        with readiness as ready:
             with named_wait('scenario to start a writer'):
                 writer_pid = int(ready.readline())
             with named_wait('writer to reach its wait'):
                 assert ready.readline() == b'ready\n', 'writer readiness is missing'
 
         def live_writer_group() -> list[int]:
-            table = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], text=True)
-            return [int(pid) for pid, group, state in (line.split() for line in table.splitlines())
-                    if int(group) == writer_pid and not state.startswith('Z')]
+            return [pid for pid, _group in live_group_members({writer_pid})]
 
         before = live_writer_group()
         assert writer_pid in before, 'writer exits before the scenario is killed'
@@ -2132,7 +2207,7 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         assert first_started.wait(0.2), 'first concurrent wait does not start'
         with named_wait('concurrent pending predicate'):
             second_started.set()
-            release_second.wait()
+            _ = release_second.wait()
     from concurrent.futures import ThreadPoolExecutor
     executor = ThreadPoolExecutor(max_workers=2)
     try:
@@ -2147,14 +2222,15 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
 
 def ownership_victim() -> None:
     """Start small writer and server groups before the selected exit."""
-    writer = ScenarioOwnedWriter(
-        [sys.executable, '-S', '-c',
-         'import os, signal; os.fork(); print(os.getpid(), flush=True); signal.pause()'],
-        root, dict(os.environ), root / 'writer-output')
+    # The server starts first, so both groups start at the same time.
     server = start_owned_group([sys.executable, '-S', '-c',
                                 'import signal; print("ready", flush=True); signal.pause()'],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL)
+    writer = ScenarioOwnedWriter(
+        [sys.executable, '-S', '-c',
+         'import os, signal; os.fork(); print(os.getpid(), flush=True); signal.pause()'],
+        root, dict(os.environ), root / 'writer-output')
     assert required(server.stdout, 'server has no readiness pipe').readline() == b'ready\n'
     wait_for_files(lambda: (root / 'writer-output').read_bytes(), 'writer to start')
     print(json.dumps(dict(scenario=os.getpid(), writer=writer.pid,
@@ -2184,7 +2260,7 @@ def assert_scenario_releases_resources(exit_path: str) -> None:
         victim_environment = dict(os.environ, SCENARIO_EXIT_PATH=exit_path,
                                   SCENARIO_RELEASE_DESCRIPTOR=str(release_read),
                                   CARGO_TILE_SCENARIO_SHIM=Path(source).read_text())
-        victim = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        victim: subprocess.Popen[bytes] = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=victim_environment,
                                   pass_fds=(release_read,))
         os.close(release_read)
@@ -2192,8 +2268,8 @@ def assert_scenario_releases_resources(exit_path: str) -> None:
         lifetime = required(victim.stdin, 'owner has no lifetime pipe')
         victim.stdin = None
         try:
-            ready = required(victim.stdout, 'scenario has no readiness pipe')
-            identities = json.loads(ready.readline())
+            ready: IO[bytes] = required(victim.stdout, 'scenario has no readiness pipe')
+            identities: OwnershipIdentities = json.loads(ready.readline())  # pyright: ignore[reportAny]
             directory = identities['root']
             groups = (identities['writer'], identities['server'])
             for group in groups:
@@ -2201,13 +2277,11 @@ def assert_scenario_releases_resources(exit_path: str) -> None:
             if killed_process == 'caller':
                 victim.kill()
             else:
-                os.write(release_write, b'R')
+                _ = os.write(release_write, b'R')
             _, error = victim.communicate(timeout=5)
             expected = {'pass': 0, 'failure': 1, 'timeout': 1, 'sigkill': -signal.SIGKILL}[exit_path]
             assert victim.returncode == expected, (exit_path, victim.returncode, error)
-            table = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], text=True)
-            alive = [int(pid) for pid, group, state in (line.split() for line in table.splitlines())
-                     if int(group) in groups and not state.startswith('Z')]
+            alive = [pid for pid, _group in live_group_members(set(groups))]
             assert not alive and not Path(directory).exists(), (
                 exit_path, 'live group members', alive, 'folder remains', Path(directory).exists())
         finally:
@@ -2394,13 +2468,13 @@ IFS= read -r notification < "$OBSERVED/notification"
     if scenario == 'cpu-cache-server':
         wait_for_files(lambda: (first[1] / 'cpu-ready').exists(),
                        'invocation baseline is not established')
-        cache_server = required(cache_server, 'prepare_cpu_workload does not assign cache_server')
-        assert process_parent(cache_server) == os.getpid()
+        server_pid = cache_server_pid()
+        assert process_parent(server_pid) == os.getpid()
         wait_for_files(lambda: (root / 'cpu-server/compiler-pid').exists()
                  and (root / 'cpu-server/compiler-pid').read_text(),
                  'server does not start rustc')
         compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
-        assert process_parent(compiler_pid) == cache_server
+        assert process_parent(compiler_pid) == server_pid
         client_pid = int((first[1] / 'client-pid').read_text())
         assert process_parent(client_pid) == int((first[1] / 'cargo-pid').read_text())
         unrelated_ready = required(unrelated, 'CPU setup does not assign unrelated')[1] / 'cpu-ready'
@@ -2545,7 +2619,7 @@ finally:
         record_timestamp('cleanup releases sent')
     finally:
         try:
-            if reader is not None and reader != 0:
+            if reader_is_started():
                 request = (signal.SIGKILL if scenario in ('cpu-cache-server', 'locale') else
                            signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q')
                 end_reader(request)

@@ -365,6 +365,7 @@ fn run_with_refusing_project_rustc(args: &[&str]) -> TempDir {
     )
     .expect("write helper source");
     single_compile_target(&fixture.path().join(COMPILER_PROJECT_DIRECTORY));
+    init_git_repo(&fixture.path().join(COMPILER_PROJECT_DIRECTORY));
     let output = mend_command()
         .current_dir(fixture.path().join(COMPILER_PROJECT_DIRECTORY))
         .env("RUSTC", fixture.path().join(MISSING_PROJECT_RUSTC_PATH))
@@ -382,6 +383,14 @@ fn run_with_refusing_project_rustc(args: &[&str]) -> TempDir {
 #[test]
 fn fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc() {
     let fixture = run_with_refusing_project_rustc(&[FIX_FLAG]);
+    let helper = fs::read_to_string(fixture.path().join(COMPILER_PROJECT_HELPERS_PATH))
+        .expect("read fixed helper source");
+    assert!(helper.starts_with(FIXED_COMPILER_HELPER_PREFIX), "{helper}");
+}
+
+#[test]
+fn fix_all_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc() {
+    let fixture = run_with_refusing_project_rustc(&["--fix-all"]);
     let helper = fs::read_to_string(fixture.path().join(COMPILER_PROJECT_HELPERS_PATH))
         .expect("read fixed helper source");
     assert!(helper.starts_with(FIXED_COMPILER_HELPER_PREFIX), "{helper}");

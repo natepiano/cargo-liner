@@ -20,7 +20,6 @@ pub(crate) use checkout::GitStatus;
 pub(crate) use checkout::HeadState;
 pub(crate) use checkout::LocalGitState;
 pub(crate) use checkout::TrackedRef;
-pub(crate) use checkout::worktree_ahead_behind_primary;
 #[cfg(test)]
 pub(crate) use command::GIT_COMMAND_METADATA_STORE;
 #[cfg(test)]

@@ -30,16 +30,6 @@ const SOURCE_ORDER: [&str; 4] = ["gamma", "alpha", "beta", "delta"];
 fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
     for (name, ascending, descending) in [
         (
-            "starting",
-            ["alpha", "beta", "gamma"],
-            ["gamma", "beta", "alpha"],
-        ),
-        (
-            "waiting",
-            ["gamma", "beta", "alpha"],
-            ["alpha", "beta", "gamma"],
-        ),
-        (
             "paused",
             ["alpha", "beta", "gamma"],
             ["gamma", "beta", "alpha"],
@@ -51,7 +41,7 @@ fn board_paused_and_exited_header_presses_sort_whole_account_groups() {
         ),
     ] {
         let rows: Vec<_> = [("gamma",5,1), ("alpha",1,8), ("beta",3,4)].into_iter().map(|(label,paused,exited)| serde_json::json!({
-            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"starting":paused,"waiting":exited,"idle":3,"paused":paused,"exited":exited,"total":5+2*paused+2*exited},null],
+            "label":label,"roles":["units","workers"],"role_counts":[{"busy":2,"idle":3,"paused":paused,"exited":exited,"total":5+paused+exited},null],
             "weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null
         })).collect();
         let reading = AccountsReading::parse(
@@ -231,6 +221,35 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
         assert_ne!(app.summary_sort, original_sort);
         assert_order(&accounts_gradient_tests::drawn(&app), &descending);
     }
+}
+
+#[test]
+fn accounts_header_sort_login_ends_orders_by_the_login_date_in_both_directions() {
+    let mut rows: Vec<_> = accounts()
+        .into_iter()
+        .zip([4, 7, 1, 2])
+        .map(|(account, days)| AccountUsage {
+            login_ends_at: accounts_gradient_tests::reset(days * DAY_SECONDS),
+            ..account
+        })
+        .collect();
+    rows.insert(
+        1,
+        accounts_gradient_tests::account("codex-account", accounts_gradient_tests::reset(0)),
+    );
+    let mut app = app_with_accounts(rows);
+    let before = drawn(&mut app);
+    click_header(&mut app, &before, AccountsColumn::LoginEnds);
+    let first = drawn(&mut app);
+    assert_order(
+        &first,
+        &["beta", "delta", "gamma", "alpha", "codex-account"],
+    );
+    click_header(&mut app, &first, AccountsColumn::LoginEnds);
+    assert_order(
+        &drawn(&mut app),
+        &["alpha", "gamma", "delta", "beta", "codex-account"],
+    );
 }
 
 #[test]

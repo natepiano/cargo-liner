@@ -210,60 +210,31 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** closing the idle-read gate on high-load measurements.
 
-### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: todo
+### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: done
 
-**Depends on:** Phase 3. Phase 10 merges before this phase's final measurements, because both edit `tests/support/` and `CHANGELOG.md`.
+#### As-built
 
-#### Work Order
-
-**Goal:** every cargo-mend test takes less than 1 s in the full suite on natedev and on the Mac. No assertion becomes weaker.
-
-**Source:** Phase 3 reached its 3-round repair cap with this goal open (finding F004, routed here). Phase 3 round 3 final suites, 2026-11-12:
-- Mac 20261112T164244-3431635-f6bd: 1,027 pass, 89 tests at 1 s or more, slowest 2.377 s, load 20.74, 6 of 12 threads. Main at ad8977d87 on the Mac: 130 at 1 s or more, slowest 2.353 s, load 15.81.
-- natedev 20261112T164244-3431634-648f: 1,029 pass, 32 at 1 s or more, slowest 2.169 s, load 23.17, 16 of 32 threads. Round 2 had 3 at load 40.1; the rise is not explained. Main at ad8977d87 on natedev: 102 at 1 s or more, slowest 2.384 s, load 40.27.
-- The slowest Mac tests: `pub_use_outside_subtree_fixes` multi-pass re-export fixes, `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run`, several `pub_use_fixes` tests, `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`, `suspicious_pub_fixes` signature boundaries. Their assertions need the CLI and Cargo boundary.
-
-**Constraints from prior phases:**
-- Phase 3 tries, in order (attempts log `attempts-p3-mend-test-time`): own job queue (removed), private Cargo home per thread (kept), nextest thread group (removed), less driver-cache output, warm driver copies, debug 0 and incremental 0 fixtures, one rustfmt call, 38 syntax-only cases moved in process through `MendRunner::combined_function_plan`, 15 inline cases in `scan.rs`, compiler fixtures on real callbacks (`src/compiler/driver/fixture.rs`), smaller batches. Do not repeat them.
-- Phase 3 checkpoint is `cba42a650`. The attempts log is `~/.claude/projects/-home-natepiano-rust-cargo-liner/memory/attempts-p3-mend-test-time.md`; it names every run id. The round 2 tree (3 slow on natedev) is the uncommitted state recorded in that log's row 9; rebuild it from the run records under `/tmp/claude/unit/386d8d90-e9fc-4c2c-bc14-c3db0779daf3/` if a diff is needed.
-- The 89 and 32 counts are earlier observations. The same Phase 3 tree at load 115-119 gave Mac 103 (run `20261112T172442-2561348-f986`, slowest 2.799 s) and natedev 218 (run `20261112T172442-2561193-823f`, slowest 5.707 s). Tie every count to its tree and binary.
-- `fixes/runner/apply.rs:81` keeps the validation plan, and `fixes/runner/plan.rs:69` uses it with no second Cargo check. `ToolchainProbes` caches compiler queries within one run. Do not assume duplicate checks without a trace.
-- `main.rs:143` `run()` opens the running executable as the compiler wrapper (`compiler/build/execute.rs:144`). In a test process that executable is the test harness, so an in-process CLI entry needs an explicit driver executable.
-- The rollback and cache-repair fixtures have no dependencies, and cache-repair tests prepare missing or incompatible reports on purpose. Keep writable targets and mend reports per test.
-- The diagnostics tests compile into the `cargo-mend` bin test through `src/diagnostic_tests.rs`. Keep each diagnostic test registered exactly once there.
-- `compiler::analyze_fixture_json` (`src/compiler/driver/fixture.rs`) names each compiler output `{package_index}-{target_index}-{mode}.rmeta`. Keep one report per package, target and mode, and keep the same-name test `a_lib_and_bin_target_pair_advertises_and_applies_one_rewrite` green when shared targets or a CLI entry change.
-- The function_length formatter groups all proposed sources into one rustfmt call per run, with a per-file fallback when the grouped call fails. Read `fixes/runner/function_length/formatter.rs` for the exact grouping.
-- Not every slow test is a CLI test: `inline_path_fixes::synthesized_import_keeps_only_mixed_cfg_attr_gate` (1.018 s, Mac run `20261112T164244-3431635-f6bd`) uses the in-process rewrite helper and four Cargo checks. Attribute every slow test.
-- Record the actual nextest thread count and the cache state (warm or cold driver cache, target dir) with each timing. Hold both constant within each alternating pair.
-- An Astra review of this goal ran at the Phase 3 close: `/tmp/claude/astra/20261112T225040Z-351564/review.md`. Read it first and follow its ranking.
-- Phase 10 (checkpoint `00d23f5c3`) Mac run: 1,034 of 1,034 pass at load 16.22, 49 tests at 1 s or more, all on the Phase 3 final slow list. Do not claim a gain that Phase 10 already shipped.
-- Phase 10 keys callers by `DeclarationIdentity` (source file and definition path, `compiler/persistence/schema.rs`) and keeps the caller union for one physical declaration. Suppression and the visibility reconciler read `CallerEvidence::{Recorded, NoneRecorded}`. Keep both.
-- The saved report is at `FINDINGS_SCHEMA_VERSION` 37 (`compiler/constants.rs:95`), and `UseSite` carries `declaration: DeclarationIdentity`. A warm-cache fixture must write this format, or the automatic rebuild changes its timing and cache assertions.
-- `compiler::analyze_fixture_json` and `compiled_report` skip `DisplayFilter::apply` (`selection/display_filter.rs:112`). An in-process CLI entry must still run it. `DisplayFilter` parses sources only when target facts are incomplete.
-
-**Spec:**
-1. **Baseline.** Measure `00d23f5c3` (the Phase 10 checkpoint) on both machines. Use `cba42a650` only for the natedev rise in step 2. Record per-test times, the suite time, the thread count, Cargo jobs, compiler version, cache state and other load.
-2. **Natedev rise.** Find why natedev went from 3 to 32 slow tests between Phase 3 rounds 2 and 3. Compare matching tests on the two trees under matched conditions. Load average alone does not explain it.
-3. **Trace.** Trace the 10 slowest Mac tests and the slow syntax cases. Split each into startup, Cargo work, compiler queries, compilation, formatting and wait. Count a child's time once. Measure acceptance without the tracer.
-4. **Classify.** Give each slow test its cost pattern, with helper calls and fixture loops. `pub_use_outside_subtree_fixes::package_filtered_reexport_used_through_raw_include_stays_manual` runs two independent fixtures. Split independent cases into separate tests. Keep dependent sequences, such as rollback and repeated-run cache tests, in one test.
-5. **Repair the common cost,** in this order. Pick the first repair from the trace.
-   1. Remove Cargo calls that the trace shows are duplicates. Record each call's purpose, source state, targets, features and cache result. Keep validation after edits, feature checks and cache recovery.
-   2. Remove fixture work that no assertion needs.
-   3. Reuse dependency artifacts only where the trace shows repeated dependency builds. Use a read-only seed, never a shared writable target.
-   4. Add an in-process CLI entry only after a measurement shows the startup saving. Pass an explicit driver executable. Keep subprocess tests for process behavior.
-6. **Keep coverage.** Do not delete, skip or weaken a test. Report each changed assertion with an `Assertion-Change:` line.
-7. **Changelog.** Add an entry when cargo-mend's own run time changes.
+- cargo fix and its validation check run with the mend wrapper in passthrough (`RunWrapper::configure_passthrough`: driver on, config root removed) and share the run's `ToolchainProbes`. Cargo keeps one compiler identity, so the analysis after a fix does not rebuild units. A project with an unusable project compiler can run `--fix-all`.
+- The function-length bound uses `body_bytes` (body braces included) in place of the full item range, so a long header no longer sends a small body to the formatter.
+- `FixtureCompiler` resolves the production wrapper; `prepare_fresh_cache_units` no longer copies it by hand.
+- `package_filtered_reexport_used_through_raw_include_stays_manual` is split in two: the qualified raw include is now `package_filtered_reexport_used_through_qualified_raw_include_stays_manual`. Both share `assert_raw_include_reexport_stays_manual`. No assertion changed.
+- Root `Cargo.toml` sets `[profile.test.package.cargo-mend] opt-level = 1`. It changes only cargo-mend test builds. Mac pairs at matched threads gave fewer slow tests every time: 122 → 36 and 238 → 143.
+- An in-process CLI entry was measured and rejected: no startup saving.
+- Final runs on checkpoint `0a2e89d65`:
+  1. natedev: 1,038 pass, 0 tests at 1 s or more (slowest 0.706 s) at load 55-60; 29 (slowest 2.206 s) at load 63, 10 of 32 threads.
+  2. Mac: 1,036 pass, 97 tests at 1 s or more, slowest 1.914 s, load 16.36, 6 of 12 threads.
+- The acceptance gate is not met. The natedev gate holds only at moderate load. A workspace suite at load 65-99 (tile-unit, 2026-11-13) had 108 cargo-mend tests at 1 s or more; the slowest were `rendering::fresh_units_without_reports_are_examined_on_the_first_run` (9.0 s) and `rendering::fresh_units_with_another_builds_reports_are_examined_on_the_first_run` (8.3 s). The Mac per-test gate is unmet. The showrunner ruled to record it and close (2026-11-13).
+- Tests: `fix_all_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` (`cli_smoke.rs`); a function-length test with two long headers and a test-only formatter call counter.
 
 **Files:**
-- `crates/cargo-mend/src/`
-- `crates/cargo-mend/tests/`
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-mend/src/compiler/build/execute.rs`, `build/mod.rs`, `compiler/mod.rs` — passthrough wrapper and shared probes for cargo fix
+- `crates/cargo-mend/src/fixes/runner/mend_runner.rs` — fix and validation runs
+- `crates/cargo-mend/src/fixes/runner/function_length/function_collector.rs`, `function_length_plan.rs`, `formatter.rs` — body-byte bound and test-only counter
+- `crates/cargo-mend/tests/cli_smoke.rs`, `tests/diagnostics/pub_use_outside_subtree_fixes.rs`, `tests/diagnostics/rendering.rs` — tests
+- `Cargo.toml` — cargo-mend test profile
+- `crates/cargo-mend/CHANGELOG.md` — two Fixed entries
 
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-mend` passes on natedev and on the Mac with every test under 1 s. These tests keep their assertions: the five `target_identity_*` tests in `tests/diagnostics/target_identity.rs`, `same_line_facades_in_separate_namespaces_keep_macro_callers`, `compiler_mounts_filter_without_reading_sources`, and `wrong_schema_or_fingerprint_reports_are_rejected`. Each timing has its load average and the merged revision. Each claimed gain has 3 alternating paired runs under matched conditions, with process counts, per-test times and the suite time. `verify.sh lint cargo-mend` is clean. No `Change-Review:` line: test time is not visible in normal use.
+**Gotchas:** each cargo-mend CLI test starts Cargo and rustc, so its time follows host load more than any code change. The attempts log is `attempts-p9-mend-test-time.md` in the project memory folder.
 
 ### Phase 10 — cargo-mend keeps a library and a binary apart when they share a source folder  · status: done
 
@@ -313,7 +284,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
 
-**Depends on:** Phase 8 (its idle-read repairs) and Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`).
+**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), Phase 13c and Phase 13d (all edit cargo-port and its CHANGELOG).
 
 #### Work Order
 
@@ -327,9 +298,12 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Constraints from prior phases:**
 - Phase 8 added Git event visibility (`crates/cargo-port/src/project/git/event_visibility.rs`), measured Git output (`project/git/measured_output.rs`), disk read observation (`process_observation/disk_reads.rs`) and `scan/disk_totals.rs`. Keep their tests green.
 - Phase 7: `DiskUsageTracker` in `scan/disk_measurements.rs` measures only changed paths; `request_rescan` is the one full walk.
+- Phase 13: a hard-link alias group in `DiskUsageIndex` is a sorted set; a new link updates only its own and the counted link's totals. Keep `hard_link_group_scan_reads_each_alias_a_few_times` green.
+- Phase 13b drops Cargo home folder events other than the Cargo config file at the watcher (`RegisteredRoots::config_source_event_matters`). Events under `/tmp` and `~/.claude` stay, because they are user `include_dirs`. Idle reads against the `bd55fde2d` baseline then include that change; name its share apart from this phase's repairs.
 - A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
 - Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
+- Phase 13c: a linked worktree's background Git probe compares its `HEAD` with the primary `HEAD` (`CheckoutInfo.ahead_behind_primary`). An event on the primary `HEAD` file now refreshes the linked checkouts, which runs Git for each. Name that share in the attribution.
 - `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
 
 **Spec:**
@@ -352,57 +326,96 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 13 — cargo-port finishes its startup disk usage step  · status: done
 
-**Depends on:** Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`). Runs before Phase 12, in its own worktree.
+#### As-built
 
-#### Work Order
-
-**Goal:** at startup, the Disk usage row completes for every project. It does not show "Disk usage failed".
-
-**Source:** the showrunner, 2026-11-13. On natedev the installed cargo-port from main `13182d0dc` (Phase 8) showed "Disk usage failed" in its startup panel. `include_dirs` were `/etc`, `/tmp`, `~/.claude`, `~/rust` and `~/worktrees`. Load was about 198. The director traced the failure condition:
-1. `sweep_startup_timeouts` in `tui/app/async_tasks/startup_phase/tracker.rs:397` marks the Disk usage row failed when the row stays visible past `STARTUP_ROW_TIMEOUT` (2 minutes, `tui/constants.rs:67`) without completing.
-2. The row completes when `startup.disk.seen` holds every expected path. `tui/app/async_tasks/disk_handlers.rs:114` and `:126-133` insert into `seen`. `maybe_complete_startup_disk` (`tracker.rs:502`) logs `seen` and `expected` on completion.
-3. No perf log from that startup exists, so the cause is not proven. Two causes are possible: the startup walk took longer than 2 minutes at that load, or some expected path never reaches `seen`. Phase 8 changed disk totals to update from changed files and hard-link aliases (`scan/disk_totals.rs`).
-
-**Spec:**
-1. **Cause.** Reproduce on natedev with the same `include_dirs`, in a terminal you start yourself, with the perf log on. Record `seen`, `expected`, the paths that never reach `seen`, the walk time and the load. Compare with the `596c2c75a` binary (before Phase 8) once. Post the cause on the board as soon as you know it.
-2. **Fix.** When an expected path never reaches `seen`, make each startup disk result insert its paths. When the walk is slow, find the slow part and remove the waste. Do not hide the defect with a longer timeout only.
-3. **Test.** Add a test that fails before the fix: a startup disk pass whose expected paths all reach `seen`, for the input that the cause names. It runs under 1 s and does not depend on the timing of the real disk.
-4. **Changelog.** Add a cargo-port fix entry.
+- Cause: cargo-berth templates under `target/tmp/cargo-berth-templates` hard-link Git hooks 524 and 827 times. Phase 8's `DiskUsageIndex::replace_file` reapplied every alias of a group for each new link and took the smallest path per alias. The startup walks took 129 s and 135 s, and the Disk usage row timed out at 120 s.
+- `DiskUsageIndex` keeps each alias group as a `BTreeSet`; the first path counts the group's bytes. A new link updates only its own, the counted link's and the next link's totals (`removal_contributors`). Alias records change only when the file metadata changes (`alias_record`).
+- Proof on natedev, paired starts at the same load: Disk usage done at 115.6 s with no timeout, against 120.8 s for `596c2c75a` (before Phase 8). The cargo-liner walk fell from 129.3 s to 10.6 s.
+- Test: `hard_link_group_scan_reads_each_alias_a_few_times` (64 aliases, at most 3 record reads per alias; 4096 before the fix).
 
 **Files:**
-- `crates/cargo-port/src/` — the startup disk path that the cause names
-- `crates/cargo-port/CHANGELOG.md` — entry
+- `crates/cargo-port/src/scan/disk_measurements.rs` — alias groups, `alias_record`, `removal_contributors`, the test
+- `crates/cargo-port/CHANGELOG.md` — fix entry
 
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** the test fails before the repair and passes after. `verify.sh test cargo-port` passes on natedev and the Mac, every test under 1 s. Lint is clean. A natedev startup with the same `include_dirs` completes the Disk usage row. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev, and the Disk usage row completes with no failure.
+**Gotchas:** the remaining startup time under high load is the main loop's background apply (one frame took 18.5 s for 50 results), older than Phase 8. Phase 13b owns it.
 
 ### Phase 13b — cargo-port applies startup results fast under high load  · status: done
 
-**Depends on:** Phase 13 (both edit the startup disk path and `crates/cargo-port/CHANGELOG.md`). Runs next, before Phase 12, in its own worktree.
+#### As-built
+
+- Cause: for each git, lint, CI, language or metadata result, `handle_bg_msg` built `project_row_presentation` (every row, every target expanded) before and after the apply. That was about 99% of the slow apply time; the apply itself was about 1%.
+- `poll_background` applies a frame batch with one `RowPresentationBatch`: the first row message captures the before copy, and `finish_row_batch` compares once after the batch, only when no handler already raised `row_generation`. `handle_bg_msg` is now test-only and runs a batch of one.
+- `RegisteredRoots::config_source_event_matters` drops Cargo home folder events other than the Cargo config file, such as `.global-cache-journal`. Events under `/tmp` and `~/.claude` stay, because they are user `include_dirs`.
+- `poll_background_slow_msg` logs each background message that takes `SLOW_BG_MSG_MS` (10 ms) or more, with its kind (`BackgroundMsg` derives `strum::IntoStaticStr`).
+- Proof on natedev, paired starts at similar load: Disk usage done at 79.5 s against 165.5 s (timeout) for the Phase 13 build. Slowest frame 15.9 s → 2.6 s; saturated frames 149 → 53.
+- Tests: `row_message_burst_builds_row_presentation_at_most_twice` (20 row messages, at most 2 builds) and `cargo_home_routes_only_its_config_file`.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — `handle_batched_bg_msg`, `finish_row_batch`, `RowPresentationBatch`, `affects_row_presentation`
+- `crates/cargo-port/src/tui/app/async_tasks/poll.rs`, `constants.rs` — batch loop, slow-message trace
+- `crates/cargo-port/src/tui/app/mod.rs` — test-only `ROW_PRESENTATION_BUILDS` counter
+- `crates/cargo-port/src/watcher/roots.rs`, `events.rs` — config source filter
+- `crates/cargo-port/src/scan/background.rs` — `IntoStaticStr`
+- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`, `src/watcher/watch_role_tests.rs` — tests
+- `crates/cargo-port/CHANGELOG.md` — fix entry
+
+**Gotchas:** one `RepoInfo` result can still take 2.6 s on the frame path, and the largest disk walks take 36 to 65 s. Phase 13c owns the frame time.
+
+### Phase 13c — no cargo-port startup frame takes more than 100 ms  · status: done
+
+#### As-built
+
+- `tree_prefixes` (`project_list/tree_rows.rs`) builds every row's tree prefix in one reverse pass. `LaterSegments` records, per lineage prefix, whether later rows hold another segment. The work grows with rows times depth, not rows squared.
+- Discovery shimmer matching finds the one root entry that holds the shimmer path through the path index (`ProjectList::entry_containing`), in place of a walk of every root item per row.
+- `CheckoutInfo.ahead_behind_primary` holds a linked worktree's comparison with the primary `HEAD`. The background Git probe fills it (`discovery::linked_primary_root` reads the `commondir` file); it is `NotCompared` outside a linked worktree. The Git pane reads the stored value, so render runs no Git. An event on the primary `HEAD` file refreshes the linked checkouts.
+- `CiTablePlan` on `Ci` keeps the CI table columns, the `CiDurations` value (`Shown` or `Hidden`) and the widths until the content or the pane width changes. `Ci::set_content` keeps the plan when the new data is equal (`PartialEq` on `CiData`, `CiRun`, `CiJob`, `CiEmptyState`). `Ci::render_parts` splits the borrows for the render.
+- `FrameDraw::Unchanged(Duration)` carries the render time, so the perf log names the draw also when the screen does not change.
+- Proof, paired natedev starts against the Phase 13b build: at load 55-125, slowest frame 3570 ms → 153 ms and frames over 100 ms 35 → 13; at load 17-27, slowest frame 3735 ms → 199 ms, frames over 100 ms 55 → 3, Disk usage done 32.5 s → 11.0 s.
+- Tests: `tree_prefixes_read_each_row_lineage_a_few_times`, `shimmer_match_reads_a_few_root_items_per_row`, `linked_worktree_probe_compares_head_to_the_primary`, `render_reads_worktree_comparisons_without_git`, `ci_table_layout_is_built_once_while_content_and_width_hold`, `ci_table_layout_holds_when_the_same_content_is_set_again`.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `tree_prefixes`, `LaterSegments`
+- `crates/cargo-port/src/tui/app/discovery_shimmer.rs` — path index lookup
+- `crates/cargo-port/src/project/git/checkout.rs`, `discovery.rs` — `ahead_behind_primary`, `linked_primary_root`
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — reads the stored comparison
+- `crates/cargo-port/src/watcher/refresh.rs` — primary `HEAD` refresh event
+- `crates/cargo-port/src/tui/panes/ci/render.rs`, `src/tui/state/ci.rs` — `CiTablePlan`, `CiDurations`
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` — `FrameDraw::Unchanged(Duration)`
+- `crates/cargo-port/CHANGELOG.md` — fix entry
+
+**Gotchas:** at load above the 32 natedev CPUs, the scheduler sets the frame times. Measure frame time at load under 32, and do not run builds or lint during a paired start.
+
+**Ruled out:** further cuts for load 125, where 4 runnable tasks per CPU set the frame times.
+
+### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
+
+**Depends on:** Phase 13c (it edits the same frame path and the CHANGELOG). Runs before Phase 12, which also edits the cargo-port CHANGELOG.
 
 #### Work Order
 
-**Goal:** at startup under high load, the Disk usage row completes well under the 2 minute limit. Each background result applies to the app in little time.
+**Goal:** at startup with natedev load under 32, no frame takes more than 100 ms.
 
-**Source:** the showrunner, 2026-11-13, add-on ruling on the Phase 13 proof. Paired natedev starts at the same load (about 53 to 145) gave these results:
-1. Before Phase 8 (`596c2c75a`): Disk usage done at 120.8 s.
-2. Phase 13 fix: done at 115.6 s. The cargo-liner walk took 10.6 s.
-3. In both builds the main loop applies at most `MAX_MSGS_PER_FRAME` (50, `tui/app/async_tasks/constants.rs:28`) results per frame in `tui/app/async_tasks/poll.rs`. One frame took 18.5 s to apply 50 results. The apply time per run sums to 111-132 s.
-4. In 100 s the perf log held 2461 `watcher_git_event_probes` and 901 `watcher_project_event` lines (`watcher/events.rs`). Many came from files under `/tmp` and `~/.claude` that are not project files, for example Claude session `.jsonl` files.
-5. At load 128 the Disk usage row timed out in both builds.
+**Source:** the showrunner ruling on Phase 13c, 2026-11-13: when a frame takes more than 100 ms at load under 32, add a follow-up phase for its step. Phase 13c paired start at load 25-27 had 3 such frames, all in the first 3.5 s:
+1. 199 ms: one `CargoMetadata` apply of 113 ms in bg (126 ms), column fit 49 ms.
+2. 154 ms: one `ScanResult` apply of 60 ms in bg (62 ms), column fit 84 ms.
+3. 102 ms: draw 65 ms, column fit 35 ms.
+
+**Constraints from prior phases:**
+- Phase 13c keeps the CI table plan across equal CI data (`ci_table_layout_holds_when_the_same_content_is_set_again`). Keep its tests green.
+- Phase 13c names the draw time also when the screen does not change (`FrameDraw::Unchanged(Duration)`).
+- Phase 13b: keep `row_message_burst_builds_row_presentation_at_most_twice` green.
+- Do not run builds or lint during a paired start, because they add load.
 
 **Spec:**
-1. **Slow apply.** Find which result kinds make one frame apply 50 results in 18.5 s. Use the perf log and add perf fields where the log cannot tell. Make each apply cheap; remove the waste, not the work the screen needs.
-2. **Watcher events.** Find why watcher events from `/tmp` and `~/.claude` that are not project files reach cargo-port's queue. Drop events outside the watched project roots at the source, in the watcher, before they cost a Git probe or a queue message.
-3. **Test.** Add tests that fail before each fix and pass after. They run under 1 s and do not depend on real disk timing or load.
+1. **Measure.** Add temporary perf fields inside the `CargoMetadata` apply, the `ScanResult` apply, `ensure_fit_widths_cached` and `render::ui` to find the cost in each.
+2. **Repair.** Make each named step cheaper, or move it off the frame path. The frame applies only cheap state changes.
+3. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
 4. **Changelog.** Add a cargo-port fix entry.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/` — the background apply path that the cause names
-- `crates/cargo-port/src/watcher/` — event filtering at the source
+- `crates/cargo-port/src/tui/app/async_tasks/` — the `CargoMetadata` and `ScanResult` apply
+- `crates/cargo-port/src/tui/app/` — `ensure_fit_widths_cached`
+- `crates/cargo-port/src/tui/render/` — `render::ui`, for the 65 ms draw
 - `crates/cargo-port/CHANGELOG.md` — entry
 
 **Workers:** 1 writer.
@@ -412,5 +425,4 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Acceptance gate:**
 1. The tests fail before the repair and pass after.
 2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
-3. Paired natedev starts with the same `include_dirs` and at the same load: the Phase 13 build, then this build. The Disk usage row in this build completes well under the 120 s limit.
-4. The checkpoint carries a `Change-Review:` line: start cargo-port on natedev under load, and the Disk usage row completes with no failure.
+3. Paired natedev starts at load under 32 with the same `include_dirs`: the Phase 13c build, then this build. In this build no frame takes more than 100 ms.

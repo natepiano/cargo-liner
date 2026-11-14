@@ -18,6 +18,7 @@ use tui_pane::TerminalApp;
 
 use super::*;
 use crate::app::App;
+use crate::census::Activity;
 use crate::census::CensusUpdate;
 use crate::census::ChildRow;
 use crate::census::HierarchyEdges;
@@ -716,6 +717,36 @@ pub(super) fn process(pid: u32, parent: u32, args: &[&str]) -> ProcessEntry {
         directory: None,
         claude_pid: None,
         config_home: ConfigHome::Unread,
+    }
+}
+
+/// The Stop hooks run after the last answer, so a busy session record keeps the turn open.
+#[test]
+fn a_busy_session_record_keeps_the_turn_open_after_the_last_answer() {
+    let directory = tempfile::tempdir().expect("transcript fixture");
+    let transcript = directory.path().join("claude.jsonl");
+    fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type":"assistant","message":{"content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn"}
+            })
+        ),
+    )
+    .expect("transcript writes");
+    let transcripts = HashMap::from([(10, transcript)]);
+    for (status, expected) in [
+        (Some("busy"), AgentActivity::Active(Activity::Thinking)),
+        (Some("idle"), AgentActivity::Idle),
+        (None, AgentActivity::Idle),
+    ] {
+        let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
+            "agent":"claude","name":"root","pid":10,"started":10,"status":status,"desktop":null,"directory":"/work/fixture","branch":null,"launched_by":null,"children":[]
+        }])).expect("Claude row");
+        let mut scanner = LocalScanner::new(AccountLabels::default());
+        scanner.attach_activity_and_names(&[], &transcripts, &mut rows);
+        assert_eq!(rows[0].activity, expected, "session record {status:?}");
     }
 }
 

@@ -26,7 +26,8 @@ jobs:
   # Per-tool gate for the expensive jobs. The workspace holds independent tools
   # with different toolchain needs, so a change to one must not pay for the
   # others' build, test, and platform matrices. Shared files (root manifests,
-  # lockfile, lint and format config, this workflow) turn every filter on.
+  # lockfile, toolchain pin, lint and format config, this workflow) turn every
+  # filter on.
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
@@ -43,6 +44,7 @@ jobs:
             shared: &shared
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - 'rustfmt.toml'
               - 'taplo.toml'
               - '.cargo/**'
@@ -97,10 +99,10 @@ jobs:
 
       # `--workspace` reaches cargo-mend, which links `rustc_private`, so this
       # job needs the compiler's own libraries as well as clippy.
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: clippy, rust-src, rustc-dev, llvm-tools-preview
 
 
@@ -132,10 +134,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
 
 
       - name: Install mold linker
@@ -166,10 +168,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -220,10 +222,10 @@ jobs:
 
       # cargo-mend links `rustc_private`, so it needs the compiler's own
       # libraries, not just the toolchain.
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: rust-src, rustc-dev, llvm-tools-preview
 
       - name: Install mold linker
@@ -243,10 +245,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: rust-src, rustc-dev, llvm-tools-preview
 
       - name: Install cargo-nextest
@@ -270,10 +272,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: rust-src, rustc-dev, llvm-tools-preview
 
 
@@ -324,10 +326,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
 
       - name: Install mold linker
         uses: rui314/setup-mold@v1
@@ -359,10 +361,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: clippy
 
       - name: Cache Rust dependencies
@@ -397,10 +399,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2

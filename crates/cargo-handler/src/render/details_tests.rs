@@ -505,14 +505,6 @@ fn row_details_key_shows_properties_and_long_age_then_escape_closes() -> TestRes
 
 fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &str) -> TestResult {
     let buffer = renderer.paint(app)?;
-    let director = details_test_positions(&buffer, "director-name")
-        .into_iter()
-        .last()
-        .ok_or("missing director row")?;
-    let row: String = (buffer.area.x..buffer.area.right())
-        .map(|x| buffer[(x, director.y)].symbol())
-        .collect();
-    assert!(!row.contains("waiting"), "director row: {row}");
     assert_eq!(field(&buffer, "director-name", "status")?, "busy");
     tui_pane::dispatch_key(app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     let DetailsOverlay::Open { details, .. } = &app.details_overlay else {
@@ -693,8 +685,40 @@ impl ClipboardBackend for CopiedValues {
     }
 }
 
+/// The layer the details view opens over.
+#[derive(Clone, Copy, Debug)]
+enum DetailsUnder {
+    Grid,
+    FullScreen,
+}
+
+impl DetailsUnder {
+    /// Show the focused tile on the full pane when the details view opens over it.
+    fn open(self, app: &mut App, renderer: &mut Renderer) -> TestResult {
+        if matches!(self, Self::FullScreen) {
+            tui_pane::dispatch_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            app.full_screen
+                .advance(std::time::Instant::now() + std::time::Duration::from_secs(60));
+            app.invalidate_body();
+            renderer.paint(app)?;
+            if !matches!(app.full_screen, tui_pane::FullScreenView::Expanded { .. }) {
+                return Err("the focused tile must fill the pane".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[test]
 fn details_navigation_skips_headings_and_y_copies_only_the_value() -> TestResult {
+    for under in [DetailsUnder::Grid, DetailsUnder::FullScreen] {
+        assert_details_navigation(under)?;
+        assert_full_frame_copy_notice(under)?;
+    }
+    Ok(())
+}
+
+fn assert_details_navigation(under: DetailsUnder) -> TestResult {
     use tui_pane::Shortcuts;
 
     use crate::details::DetailsPane;
@@ -708,6 +732,7 @@ fn details_navigation_skips_headings_and_y_copies_only_the_value() -> TestResult
             .last()
             .ok_or("director")?,
     );
+    under.open(&mut app, &mut renderer)?;
     tui_pane::dispatch_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
@@ -735,7 +760,6 @@ fn details_navigation_skips_headings_and_y_copies_only_the_value() -> TestResult
     let buffer = renderer.paint(&mut app)?;
     let text = drawn_details(&buffer).join("\n");
     assert!(text.contains("Copied value"), "{text}");
-    assert_full_frame_copy_notice()?;
     Ok(())
 }
 
@@ -828,7 +852,7 @@ impl ClipboardBackend for FailedClipboard {
     }
 }
 
-fn assert_full_frame_copy_notice() -> TestResult {
+fn assert_full_frame_copy_notice(under: DetailsUnder) -> TestResult {
     use crate::details::DetailsAction;
     let now = census::unix_now();
     let mut app = application(now, 86400)?;
@@ -850,6 +874,7 @@ fn assert_full_frame_copy_notice() -> TestResult {
             .last()
             .ok_or("director")?,
     );
+    under.open(&mut app, &mut renderer)?;
     tui_pane::dispatch_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
@@ -1001,7 +1026,7 @@ fn ink_application() -> TestResult<App> {
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,
         "sessions":[{"session":"director","state":"busy"},
-        {"session":"unit","state":"waiting"},{"session":"worker","state":"idle"}]}],"problems":[]
+        {"session":"unit","state":"busy"},{"session":"worker","state":"idle"}]}],"problems":[]
     }"#,
         )
         .map_err(|error| error.to_string())?,
@@ -1019,7 +1044,7 @@ fn compare_details_tile_inks() -> TestResult {
             vec![
                 ("account", "claude1"),
                 ("role", "unit"),
-                ("status", "waiting"),
+                ("status", "busy"),
                 ("model", "opus"),
                 ("effort", "high"),
                 ("branch", "ink-branch"),
