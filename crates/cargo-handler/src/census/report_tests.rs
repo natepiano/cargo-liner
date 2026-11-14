@@ -21,6 +21,8 @@ use tui_pane::TerminalApp;
 
 use super::*;
 use crate::app::App;
+use crate::census::Activity;
+use crate::census::AgentActivity;
 use crate::census::CensusFacts;
 use crate::census::HierarchyEdges;
 use crate::census::PassAssignment;
@@ -405,6 +407,26 @@ fn each_activity_word_comes_from_the_census_into_the_tile_and_the_sessions_list(
         let painted = painted_with(&directory, rows_with(word));
         let line = line_of(&painted, "alpha-name");
         assert!(line.contains(activity), "{word}: {line}");
+    }
+}
+
+/// The accounts report can read a session record after the census scan, so it sees a new turn
+/// first.
+#[test]
+fn a_busy_session_whose_scan_saw_no_open_turn_shows_thinking() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let thinking = AgentActivity::Active(Activity::Thinking).text();
+    for scanned in [AgentActivity::Idle, AgentActivity::Unreported] {
+        let mut rows = rows_with("thinking");
+        rows[2].activity = scanned;
+        let json = report_with(config(&directory, true), rows.clone(), facts());
+        let alpha = session(&json, "alpha");
+        assert_eq!(alpha["status"], "busy");
+        let activity = alpha["activity"].as_str().expect("busy activity");
+        assert!(activity.ends_with(thinking), "{scanned:?}: {activity}");
+        let painted = painted_with(&directory, rows);
+        let line = line_of(&painted, "alpha-name");
+        assert!(line.contains(activity), "{scanned:?}: {line}");
     }
 }
 
