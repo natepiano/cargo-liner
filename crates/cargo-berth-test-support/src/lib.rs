@@ -89,6 +89,7 @@ pub use journal_records::is_merge_extent_observation;
 pub use journal_records::observes_merge_extent_of;
 pub use recorded_history::copy_recorded_repository;
 pub use recorded_history::relocate_tree;
+pub use recorded_history::save_recorded_history;
 pub use recorded_history::write_recorded_state;
 pub use repository_template::LedgerFixture;
 pub use repository_template::LedgerTemplate;

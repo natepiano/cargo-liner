@@ -17,14 +17,19 @@ use drift_fixtures::GIT;
 use drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT;
 use drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE;
 use drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN;
+use drift_fixtures::INTEGRATED_MERGE;
+use drift_fixtures::IntegratedMerge;
 use drift_fixtures::Output;
 use drift_fixtures::OverlappedHolderStanding;
+use drift_fixtures::PHASE_BEFORE_REBASE;
 use drift_fixtures::POST_COMMIT_ENVIRONMENT;
 use drift_fixtures::Path;
 use drift_fixtures::PathBuf;
+use drift_fixtures::PhaseBeforeRebase;
 use drift_fixtures::RUN_ENVIRONMENT;
 use drift_fixtures::SECOND_RUN;
 use drift_fixtures::SESSION_ENVIRONMENT;
+use drift_fixtures::THIRD_RUN;
 use drift_fixtures::TempDir;
 use drift_fixtures::WideningOverAnOverlappedHolderHistory;
 use drift_fixtures::berth_command;
@@ -111,8 +116,6 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REAL_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_PATH";
 
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
-
-const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 
@@ -484,27 +487,12 @@ fn assert_legacy_incursion_coverage(layout: LegacyIncursionLayout) {
 }
 
 fn integrated_merge_fixture() -> (IntegrationRepository, PathBuf, String) {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
-    let lane = repo.main_lane("receiving-unit");
-    // A recorded child target identifies integration as a trunk even for a lane
-    // whose own target remains main.
-    let child = repo.lane("child-unit", "integration");
-    assert_success(&repo.claim(&child, "file:child.txt", THIRD_RUN, None));
-    let claim = repo.claim(&lane, "file:own.txt", SECOND_RUN, None);
-    assert_success(&claim);
-    let id = json(&claim)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
-    assert_success(&repo.claim(&repo.integration, "file:held.txt", FIRST_RUN, None));
-    commit_entering_path(&repo.integration, "held.txt", "integrated held content\n");
-    commit_entering_path(
-        &repo.integration,
-        "received.txt",
-        "integrated free content\n",
-    );
-    fs::write(repo.integration.join("held.txt"), "holder still working\n").expect("holder edit");
-    (repo, lane, id)
+    let repo = IntegrationRepository::from_recorded_template(INTEGRATED_MERGE);
+    let IntegratedMerge {
+        lane,
+        reservation_id,
+    } = recorded_history::read(repo.root());
+    (repo, lane, reservation_id)
 }
 
 fn configure_local_target_upstream(root: &Path, tip: &str) {
@@ -5337,25 +5325,13 @@ fn post_commit_reports_corrupt_ledger_and_lock_deadline_without_removing_the_com
 
 #[test]
 fn a_rebase_reanchors_the_phase_so_the_new_base_is_not_read_as_its_work() {
-    let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
-    let feature = add_worktree(repository.path(), worktree_parent.path(), "feature");
-    let reservation = claim(&feature, "file:claimed.txt", FIRST_RUN);
-
-    // This phase commits its claimed file and one more the reservation does not cover.
-    fs::write(feature.join("claimed.txt"), "phase\n").expect("claimed path should write");
-    fs::write(feature.join("phase-extra.txt"), "phase\n").expect("extra path should write");
-    git(&feature, &["add", "claimed.txt", "phase-extra.txt"]);
-    git(&feature, &["commit", "--quiet", "-m", "phase work"]);
-
-    // Trunk gains a file this worktree never opened.
-    fs::write(repository.path().join("upstream.txt"), "upstream\n")
-        .expect("upstream path should write");
-    git(repository.path(), &["add", "upstream.txt"]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "upstream work"],
-    );
+    let repository =
+        PHASE_BEFORE_REBASE.instantiate_with_external_worktrees(worktree_parent.path());
+    let PhaseBeforeRebase {
+        feature,
+        reservation_id: reservation,
+    } = recorded_history::read(repository.path());
 
     git(&feature, &["rebase", "main"]);
 

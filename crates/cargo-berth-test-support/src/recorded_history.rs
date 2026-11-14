@@ -153,6 +153,22 @@ pub fn write_recorded_state(
     .expect("history state should write");
 }
 
+/// Save a repository, its linked checkouts, and the witnesses of its recorded operation.
+///
+/// # Panics
+/// Panics when the repository cannot be copied or the witnesses cannot be written.
+pub fn save_recorded_history(
+    executable: &str,
+    root: &Path,
+    source: &Path,
+    state_path: &str,
+    state: Value,
+) {
+    let relocations = copy_recorded_repository(executable, root, source);
+    relocate_tree(root, &relocations);
+    write_recorded_state(root, state_path, state, &relocations);
+}
+
 fn relocate_json(value: &mut Value, relocations: &[(String, String)]) {
     match value {
         Value::String(text) => {
