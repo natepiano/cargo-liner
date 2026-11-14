@@ -175,8 +175,6 @@ pub(crate) enum AccountsColumn {
     WeeklyLeft,
     Roles,
     Busy,
-    Starting,
-    Waiting,
     Idle,
     Paused,
     Exited,
@@ -189,13 +187,11 @@ pub(crate) enum AccountsColumn {
 
 impl AccountsColumn {
     /// The read mark has no header or sort key.
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Account,
         Self::WeeklyLeft,
         Self::Roles,
         Self::Busy,
-        Self::Starting,
-        Self::Waiting,
         Self::Idle,
         Self::Paused,
         Self::Exited,
@@ -207,10 +203,8 @@ impl AccountsColumn {
     ];
 
     /// Count columns share their drawing and sum rules.
-    pub(crate) const COUNTS: [Self; 7] = [
+    pub(crate) const COUNTS: [Self; 5] = [
         Self::Busy,
-        Self::Starting,
-        Self::Waiting,
         Self::Idle,
         Self::Paused,
         Self::Exited,
@@ -222,8 +216,6 @@ impl AccountsColumn {
         match self {
             Self::WeeklyLeft
             | Self::Busy
-            | Self::Starting
-            | Self::Waiting
             | Self::Idle
             | Self::Paused
             | Self::Exited
@@ -242,16 +234,14 @@ impl AccountsColumn {
             Self::WeeklyLeft => 1,
             Self::Roles => 2,
             Self::Busy => 3,
-            Self::Starting => 4,
-            Self::Waiting => 5,
-            Self::Idle => 6,
-            Self::Paused => 7,
-            Self::Exited => 8,
-            Self::Total => 9,
-            Self::Resets => 10,
-            Self::LoginEnds => 11,
-            Self::Credits => 12,
-            Self::Enabled => 13,
+            Self::Idle => 4,
+            Self::Paused => 5,
+            Self::Exited => 6,
+            Self::Total => 7,
+            Self::Resets => 8,
+            Self::LoginEnds => 9,
+            Self::Credits => 10,
+            Self::Enabled => 11,
         }
     }
 
@@ -262,8 +252,6 @@ impl AccountsColumn {
             "left",
             "role",
             "busy",
-            "starting",
-            "waiting",
             "idle",
             "paused",
             "exited",

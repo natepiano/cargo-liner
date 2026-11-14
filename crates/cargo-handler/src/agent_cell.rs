@@ -634,6 +634,39 @@ pub(crate) struct TreeMetrics {
     columns:             PermittedTreeColumns,
     presentation:        TreePresentation,
     alignment:           TreeColumnAlignment,
+    /// The activity width that keeps each live word whole and cuts only jobs.
+    activity_floor:      u16,
+    activity_fit:        ActivityFit,
+}
+
+/// How the activity column of a tile fits its width.
+#[derive(Clone, Copy, Debug)]
+enum ActivityFit {
+    /// The column shows each whole activity.
+    Whole,
+    /// A narrow tile cut its jobs to this width, never below the live word floor.
+    Cut(u16),
+}
+
+impl ActivityFit {
+    /// The drawn width of a column that measures `width`.
+    fn width(self, width: u16) -> u16 {
+        match self {
+            Self::Whole => width,
+            Self::Cut(cut) => width.min(cut),
+        }
+    }
+
+    /// Aligned tiles share the narrower cut, never below the shared `floor`.
+    fn merged(self, other: Self, floor: u16) -> Self {
+        match (self, other) {
+            (Self::Whole, Self::Whole) => Self::Whole,
+            (Self::Cut(left), Self::Cut(right)) => Self::Cut(left.min(right).max(floor)),
+            (Self::Cut(cut), Self::Whole) | (Self::Whole, Self::Cut(cut)) => {
+                Self::Cut(cut.max(floor))
+            },
+        }
+    }
 }
 
 /// Measured widths determine demand; fitted widths determine drawing positions.
@@ -670,6 +703,10 @@ impl TreeMetrics {
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
         }
+        self.activity_floor = self.activity_floor.max(other.activity_floor);
+        self.activity_fit = self
+            .activity_fit
+            .merged(other.activity_fit, self.activity_floor);
         self.presentation = match (self.presentation, other.presentation) {
             (TreePresentation::Compressed, _) | (_, TreePresentation::Compressed) => {
                 TreePresentation::Compressed
@@ -687,12 +724,26 @@ impl TreeMetrics {
             .max(self.session_guide_width.saturating_add(1))
     }
 
+    fn set_activity_width(&mut self, width: u16) {
+        self.widths[TreeColumn::Activity as usize] = self.activity_fit.width(width);
+    }
+
     fn drop_step(&mut self, step: ColumnDrop, width: u16) {
         if matches!(
             step,
             ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status
         ) {
             self.cut_session(width);
+        }
+        let activity = self.widths[TreeColumn::Activity as usize];
+        let overflow = self.occupied_width(1).saturating_sub(usize::from(width));
+        if matches!(step, ColumnDrop::Role) && overflow > 0 && activity > self.activity_floor {
+            let cut = activity
+                .saturating_sub(u16::try_from(overflow).unwrap_or(u16::MAX))
+                .max(self.activity_floor);
+            self.activity_fit = ActivityFit::Cut(cut);
+            self.set_activity_width(activity);
+            self.presentation = TreePresentation::Compressed;
         }
         let spacing = match step {
             ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status => 1,
@@ -846,7 +897,7 @@ impl TreeMeasurement {
             .collect();
         let activity_rows: Vec<_> = lines
             .iter()
-            .map(|line| summary::cell_width(&line.activity_text(now)))
+            .map(|line| summary::cell_width(&line.activity_parts(now).text()))
             .collect();
         let status_rows: Vec<_> = lines
             .iter()
@@ -871,6 +922,14 @@ impl TreeMeasurement {
         };
         let role_widths = visible_widths(&role_rows, TreeColumn::Role);
         let activity_widths = visible_widths(&activity_rows, TreeColumn::Activity);
+        let activity_floor = lines
+            .iter()
+            .map(|line| line.activity_parts(now).floor_width())
+            .max()
+            .unwrap_or(0)
+            .max(summary::cell_width(
+                &TreeColumn::Activity.sorted_header(sort),
+            ));
         let status_widths = visible_widths(&status_rows, TreeColumn::Status);
         widths[TreeColumn::Status as usize] = status_widths.get(TreePresentation::Full);
         widths[TreeColumn::Role as usize] = role_widths.get(TreePresentation::Full);
@@ -897,6 +956,8 @@ impl TreeMeasurement {
                 columns,
                 presentation: TreePresentation::Full,
                 alignment: TreeColumnAlignment::Measured,
+                activity_floor,
+                activity_fit: ActivityFit::Whole,
             },
             ages,
             role_widths,
@@ -1164,8 +1225,9 @@ impl MeasuredTreeGroup {
                 .max()
                 .unwrap_or(0)
         };
-        group.metrics.widths[TreeColumn::Activity as usize] =
-            activity_width(group.metrics.presentation);
+        group
+            .metrics
+            .set_activity_width(activity_width(group.metrics.presentation));
         let status_width = |presentation| {
             group
                 .members
@@ -1186,8 +1248,7 @@ impl MeasuredTreeGroup {
                     metrics.widths[TreeColumn::Status as usize] =
                         status_width(metrics.presentation);
                     metrics.widths[TreeColumn::Role as usize] = role_width(metrics.presentation);
-                    metrics.widths[TreeColumn::Activity as usize] =
-                        activity_width(metrics.presentation);
+                    metrics.set_activity_width(activity_width(metrics.presentation));
                     Self {
                         x: group.x,
                         width: group.width,
@@ -1268,6 +1329,10 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
         common.session_guide_width = common
             .session_guide_width
             .max(group.metrics.session_guide_width);
+        common.activity_floor = common.activity_floor.max(group.metrics.activity_floor);
+        common.activity_fit = common
+            .activity_fit
+            .merged(group.metrics.activity_fit, common.activity_floor);
         if matches!(
             group.metrics.session_header_lead,
             SessionHeaderLead::OverBranch
@@ -1655,15 +1720,42 @@ impl TreeLine<'_> {
         }
     }
 
-    fn activity_text(&self, now: u64) -> String {
-        let activity = match self.subject {
+    /// The census activity of this line's agent.
+    fn live_activity(&self) -> AgentActivity {
+        match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 self.row.activity
             },
             LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
                 child.activity
             },
+        }
+    }
+
+    /// The job, and the live word when the row is busy and the word adds to the job.
+    fn activity_parts(&self, now: u64) -> ActivityParts {
+        let parts = self.job_and_live_word(now);
+        match self.session_status() {
+            ReportedSessionState::Reported(SessionState::Busy) => parts,
+            _ => ActivityParts {
+                live: None,
+                ..parts
+            },
+        }
+    }
+
+    /// The job, and the live word when the word adds to the job.
+    fn job_and_live_word(&self, now: u64) -> ActivityParts {
+        let job = self.activity_text(now);
+        let live = match self.live_activity() {
+            active @ AgentActivity::Active(activity) => (active.text() != job).then_some(activity),
+            AgentActivity::Idle | AgentActivity::Unreported => None,
         };
+        ActivityParts { job, live }
+    }
+
+    fn activity_text(&self, now: u64) -> String {
+        let activity = self.live_activity();
         if activity == AgentActivity::Active(Activity::Compacting)
             && !matches!(self.kind(), LineKind::Shell(_))
         {
@@ -1762,7 +1854,7 @@ impl TreeLine<'_> {
         match column {
             TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
             TreeColumn::Role => self.role_text().to_string(),
-            TreeColumn::Activity => self.activity_text(now),
+            TreeColumn::Activity => self.activity_parts(now).text(),
             TreeColumn::Model => self.model().display_text().to_owned(),
             TreeColumn::Effort => self.effort().display_text().to_owned(),
             TreeColumn::Type => match self.subject {
@@ -1861,6 +1953,20 @@ fn account_sort_text(account: &Account) -> &str {
 }
 
 impl TreeLine<'_> {
+    /// A timer job shows its countdown ink; other jobs use the footer role ink.
+    fn job_style(&self, now: u64, colors: &FooterColors) -> Style {
+        match self.subject {
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(ShellPurpose::Timer(timer)),
+                ..
+            }) => match ShellState::resolve(ShellTimerObservation::ObservedCountdown(timer), now) {
+                ShellState::Running => Role::Busy.style(),
+                ShellState::CountingDown(_) => Role::Shell.style(),
+            },
+            _ => self.footer_role(colors).style(SessionRowInk::Text.style()),
+        }
+    }
+
     /// Only management responsibilities use the footer's role colors.
     fn footer_role(&self, colors: &FooterColors) -> FooterTint {
         match self.kind() {
@@ -3120,9 +3226,10 @@ fn local_tree_metrics(
         [TreeColumn::Age as usize]
         .max(u16::try_from(measurement.metrics.ages.width()).unwrap_or(u16::MAX));
     for step in GroupFitStep::ORDER {
-        measurement.metrics.widths[TreeColumn::Activity as usize] = measurement
+        let activity = measurement
             .activity_widths
             .get(measurement.metrics.presentation);
+        measurement.metrics.set_activity_width(activity);
         measurement.metrics.widths[TreeColumn::Role as usize] = measurement
             .role_widths
             .get(measurement.metrics.presentation);
@@ -3131,9 +3238,10 @@ fn local_tree_metrics(
             .get(measurement.metrics.presentation);
         measurement.metrics.fit_step(&step, tree.width);
     }
-    measurement.metrics.widths[TreeColumn::Activity as usize] = measurement
+    let activity = measurement
         .activity_widths
         .get(TreePresentation::Compressed);
+    measurement.metrics.set_activity_width(activity);
     measurement.metrics.widths[TreeColumn::Role as usize] =
         measurement.role_widths.get(TreePresentation::Compressed);
     measurement.metrics.widths[TreeColumn::Status as usize] =
@@ -3330,12 +3438,15 @@ fn tree_cell_line(
             .spans
             .insert(0, Span::styled(lead, SessionRowInk::Text.style()));
         value
+    } else if column == TreeColumn::Activity {
+        activity_line(
+            &line.activity_parts(now),
+            usize::from(width),
+            line.job_style(now, footer_colors),
+        )
     } else {
         let value = match column {
-            TreeColumn::Role
-            | TreeColumn::Activity
-            | TreeColumn::Branch
-            | TreeColumn::Directory => {
+            TreeColumn::Role | TreeColumn::Branch | TreeColumn::Directory => {
                 summary::truncated(&line.cell_text(column, now, ages), usize::from(width))
             },
             _ => line.cell_text(column, now, ages),
@@ -3365,23 +3476,70 @@ fn tree_value_line(
             },
         };
     }
+    if column == TreeColumn::Activity && value != MISSING_VALUE {
+        return activity_line(
+            &line.job_and_live_word(now),
+            usize::MAX,
+            line.job_style(now, colors),
+        );
+    }
     let style = match column {
         TreeColumn::Session => line.name_style(),
         TreeColumn::Status => line.session_status().color_role().style(),
         TreeColumn::Role => line.footer_role(colors).style(text),
-        TreeColumn::Activity => match line.subject {
-            LineSubject::Work(Work {
-                kind: WorkKind::Shell(ShellPurpose::Timer(timer)),
-                ..
-            }) => match ShellState::resolve(ShellTimerObservation::ObservedCountdown(timer), now) {
-                ShellState::Running => Role::Busy.style(),
-                ShellState::CountingDown(_) => Role::Shell.style(),
-            },
-            _ => line.footer_role(colors).style(text),
-        },
+        TreeColumn::Activity => line.job_style(now, colors),
         _ => text,
     };
     Line::styled(value, style)
+}
+
+/// An activity value: the job in its ink, then the live word that `parts` holds.
+/// A narrow cell cuts the job first and keeps the live word whole.
+fn activity_line(parts: &ActivityParts, width: usize, job_style: Style) -> Line<'static> {
+    let Some(live) = parts.live else {
+        return Line::styled(summary::truncated(&parts.job, width), job_style);
+    };
+    let word = AgentActivity::Active(live).text();
+    let word_style = match live {
+        Activity::Waiting => Role::Waiting.style(),
+        _ => job_style,
+    };
+    let job_width = width.saturating_sub(usize::from(
+        summary::cell_width(word).saturating_add(summary::cell_width(HEADING_SEPARATOR)),
+    ));
+    if parts.job.is_empty() || job_width == 0 {
+        return Line::styled(summary::truncated(word, width), word_style);
+    }
+    Line::from(vec![
+        Span::styled(summary::truncated(&parts.job, job_width), job_style),
+        Span::styled(HEADING_SEPARATOR, job_style),
+        Span::styled(word, word_style),
+    ])
+}
+
+/// One activity cell's text: the job, and the live word of a busy row.
+struct ActivityParts {
+    job:  String,
+    live: Option<Activity>,
+}
+
+impl ActivityParts {
+    /// The narrowest width that keeps the live word whole: a busy row's job can be cut.
+    fn floor_width(&self) -> u16 {
+        self.live.map_or_else(
+            || summary::cell_width(&self.job),
+            |live| summary::cell_width(AgentActivity::Active(live).text()),
+        )
+    }
+
+    /// The joined text that the tile, the details view and `census --json` show.
+    fn text(&self) -> String {
+        match self.live.map(|live| AgentActivity::Active(live).text()) {
+            None => self.job.clone(),
+            Some(word) if self.job.is_empty() => word.to_owned(),
+            Some(word) => format!("{}{HEADING_SEPARATOR}{word}", self.job),
+        }
+    }
 }
 
 fn draw_tree(
@@ -3861,30 +4019,13 @@ impl TreeLine<'_> {
         }
     }
 
-    /// Join the job and the live activity without repeating either word.
+    /// The job and the live word of any status, or the missing mark when the row has none.
     fn details_activity(&self, now: u64) -> String {
-        let job = self.activity_text(now);
-        let activity = match self.subject {
-            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                self.row.activity
-            },
-            LineSubject::ManagedThread(child, _, _) | LineSubject::Work(Work { child, .. }) => {
-                child.activity
-            },
-        };
-        let live = match activity {
-            AgentActivity::Idle | AgentActivity::Unreported => "",
-            AgentActivity::Active(_) => activity.text(),
-        };
-        let mut parts: Vec<_> = [job.as_str(), live]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        parts.dedup();
-        if parts.is_empty() {
+        let text = self.job_and_live_word(now).text();
+        if text.is_empty() {
             MISSING_VALUE.to_owned()
         } else {
-            parts.join(HEADING_SEPARATOR)
+            text
         }
     }
 
@@ -4060,6 +4201,37 @@ mod tests {
         let named = lines(&drawn(&owner, None, 160)).join("\n");
         assert!(named.contains("staff worker"), "{named}");
         assert!(!named.contains("impl · compile crates"), "{named}");
+    }
+
+    #[test]
+    fn a_narrow_activity_cell_cuts_the_job_first_and_keeps_the_live_word_whole() {
+        let mut owner: AgentRow =
+            serde_json::from_str(include_str!("census/fixtures/restarted_unit_codex.json"))
+                .expect("dispatched worker");
+        owner.children[0].activity = AgentActivity::Active(Activity::Waiting);
+        let mut cell = entry(&owner, None);
+        cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
+        let line = &cell.lines[0];
+        let colors = FooterColors::default();
+        let parts = line.activity_parts(NOW);
+        let job_style = line.job_style(NOW, &colors);
+        let text = |width: usize| activity_line(&parts, width, job_style).to_string();
+        assert!(!parts.job.is_empty(), "the fixture worker has a job");
+        let whole = parts.text();
+        let whole_width = usize::from(summary::cell_width(&whole));
+        assert_eq!(whole, format!("{}{HEADING_SEPARATOR}waiting", parts.job));
+        assert_eq!(text(whole_width), whole);
+        let cut = text(whole_width - 1);
+        assert!(
+            cut.ends_with(&format!("{TRUNCATION_MARK}{HEADING_SEPARATOR}waiting")),
+            "{cut}"
+        );
+        assert_eq!(usize::from(summary::cell_width(&cut)), whole_width - 1);
+        assert_eq!(text("waiting".len()), "waiting");
+        let narrow = activity_line(&parts, whole_width, job_style);
+        let word = narrow.spans.last().expect("live word span");
+        assert_eq!(word.content, "waiting");
+        assert_eq!(word.style, Role::Waiting.style());
     }
 
     /// Every cell across `machines`, in the order the grid shows them:

@@ -34,8 +34,23 @@ use crate::census::remote::ProbeOutcome;
 const README: &str = include_str!("../../README.md");
 const EXAMPLE_MARKER: &str = "<!-- census-json-example";
 const ACCOUNTS: &str = r#"{"accounts":[{"label":"claude1","roles":[],"use_credits":false,
-    "sessions":[{"session":"director","state":"busy"},{"session":"alpha","state":"waiting"}]}],
+    "sessions":[{"session":"boss","state":"idle"},{"session":"director","state":"busy"},
+        {"session":"alpha","state":"busy"}]}],
     "problems":[]}"#;
+/// Each plain activity word of the definition shared with the accounts board.
+const ACTIVITY_WORDS: [&str; 11] = [
+    "thinking",
+    "compacting",
+    "writing",
+    "reading",
+    "git",
+    "delegating",
+    "web",
+    "running",
+    "asking",
+    "waiting",
+    "starting",
+];
 
 /// A remote that never answers.
 struct Unreachable;
@@ -44,15 +59,18 @@ impl RemoteRunner for Unreachable {
     fn probe(&self, _: &str) -> ProbeOutcome { ProbeOutcome::TimedOut }
 }
 
+fn rows() -> Vec<AgentRow> { rows_with("waiting") }
+
 /// A showrunner, its unit director, two current-run workers and one stale worker row.
-fn rows() -> Vec<AgentRow> {
+/// The alpha worker does `alpha_activity`.
+fn rows_with(alpha_activity: &str) -> Vec<AgentRow> {
     serde_json::from_value(serde_json::json!([
         {"agent":"claude","pid":10,"session_id":"boss","name":"boss-name","started":1,
-         "directory":"/fixture","children":[]},
+         "directory":"/fixture","activity":{"active":"thinking"},"children":[]},
         {"agent":"claude","pid":20,"session_id":"director","name":"director-name","started":1,
          "directory":"/fixture","activity":{"active":"waiting"},"children":[]},
         {"agent":"claude","pid":30,"session_id":"alpha","name":"alpha-name","started":1,
-         "directory":"/fixture","activity":{"active":"waiting"},"children":[]},
+         "directory":"/fixture","activity":{"active":alpha_activity},"children":[]},
         {"agent":"claude","pid":40,"session_id":"beta","name":"beta-name","started":1,
          "directory":"/fixture","children":[]},
         {"agent":"claude","pid":50,"session_id":"stale","name":"stale-name","started":1,
@@ -175,24 +193,39 @@ fn snapshot(facts: CensusFacts) -> HierarchySnapshot {
 
 /// A config whose accounts command prints `ACCOUNTS`, or reads no accounts.
 fn config(directory: &TempDir, accounts: bool) -> Config {
-    let mut config = Config::default();
-    config.census.accounts_command = if accounts {
-        let path = directory.path().join("accounts.json");
-        std::fs::write(&path, ACCOUNTS).expect("accounts fixture");
-        format!("cat '{}'", path.display())
+    if accounts {
+        config_with_accounts(directory, ACCOUNTS)
     } else {
-        String::new()
-    };
+        let mut config = Config::default();
+        config.census.accounts_command = String::new();
+        config
+    }
+}
+
+/// A config whose accounts command prints `accounts`.
+fn config_with_accounts(directory: &TempDir, accounts: &str) -> Config {
+    let mut config = Config::default();
+    let path = directory.path().join("accounts.json");
+    std::fs::write(&path, accounts).expect("accounts fixture");
+    config.census.accounts_command = format!("cat '{}'", path.display());
     config
 }
 
 fn print_census(loaded: &LoadedConfig, facts: CensusFacts) -> (ExitCode, Value, String) {
+    print_census_with(loaded, rows(), facts)
+}
+
+fn print_census_with(
+    loaded: &LoadedConfig,
+    rows: Vec<AgentRow>,
+    facts: CensusFacts,
+) -> (ExitCode, Value, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = print_to(
         loaded,
         &Unreachable,
-        |_| (rows(), snapshot(facts)),
+        |_| (rows, snapshot(facts)),
         &mut stdout,
         &mut stderr,
     );
@@ -208,16 +241,36 @@ fn print_census(loaded: &LoadedConfig, facts: CensusFacts) -> (ExitCode, Value, 
     )
 }
 
-fn report(config: Config, facts: CensusFacts) -> Value {
-    let (status, json, stderr) = print_census(
+fn report(config: Config, facts: CensusFacts) -> Value { report_with(config, rows(), facts) }
+
+fn report_with(config: Config, rows: Vec<AgentRow>, facts: CensusFacts) -> Value {
+    let (status, json, stderr) = print_census_with(
         &LoadedConfig {
             config,
             error: None,
         },
+        rows,
         facts,
     );
     assert_eq!(status, ExitCode::SUCCESS, "{stderr}");
     json
+}
+
+fn session<'a>(json: &'a Value, id: &str) -> &'a Value {
+    json["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|entry| entry["session"] == id)
+        .expect("listed session")
+}
+
+/// The tile line that names `name`, or an empty line.
+fn line_of<'a>(painted: &'a [String], name: &str) -> &'a str {
+    painted
+        .iter()
+        .find(|line| line.contains(name))
+        .map_or("", String::as_str)
 }
 
 fn entry<'a>(json: &'a Value, list: &str, staff_id: &str) -> &'a Value {
@@ -229,12 +282,14 @@ fn entry<'a>(json: &'a Value, list: &str, staff_id: &str) -> &'a Value {
         .expect("listed staff id")
 }
 
-fn painted(directory: &TempDir) -> Vec<String> {
+fn painted(directory: &TempDir) -> Vec<String> { painted_with(directory, rows()) }
+
+fn painted_with(directory: &TempDir, rows: Vec<AgentRow>) -> Vec<String> {
     let mut app = App::new_for_test().expect("test app");
     app.census.apply(CensusUpdate::Local {
-        rows:      rows(),
+        rows,
         hierarchy: snapshot(facts()),
-        stage:     ScanStage::Completed,
+        stage: ScanStage::Completed,
     });
     let bytes = std::fs::read(directory.path().join("accounts.json")).expect("accounts fixture");
     app.accounts.table = AccountsTable::Ready(AccountsReading::parse(&bytes).expect("accounts"));
@@ -280,7 +335,7 @@ fn census_json_lists_directors_and_workers_with_the_tile_status_and_activity() {
     );
     let alpha = entry(&json, "workers", "alpha-id");
     assert_eq!(alpha["parent_staff_id"], "unit-id");
-    assert_eq!(alpha["status"], "waiting");
+    assert_eq!(alpha["status"], "busy");
     assert_eq!(alpha["activity_started_at"], 300);
     assert_eq!(
         alpha["pass"],
@@ -305,6 +360,84 @@ fn census_json_lists_directors_and_workers_with_the_tile_status_and_activity() {
             }
         }
     }
+}
+
+#[test]
+fn each_status_value_draws_in_the_status_cell_and_starting_and_waiting_draw_busy() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    for (state, word) in [
+        ("busy", "busy"),
+        ("idle", "idle"),
+        ("paused", "paused"),
+        ("exited", "exited"),
+        ("starting", "busy"),
+        ("waiting", "busy"),
+    ] {
+        let accounts = format!(
+            r#"{{"accounts":[{{"label":"claude1","roles":[],"use_credits":false,
+            "sessions":[{{"session":"alpha","state":"{state}"}}]}}],"problems":[]}}"#
+        );
+        let json = report_with(
+            config_with_accounts(&directory, &accounts),
+            rows_with("thinking"),
+            facts(),
+        );
+        assert_eq!(session(&json, "alpha")["status"], word, "{state}");
+        let painted = painted_with(&directory, rows_with("thinking"));
+        let line = line_of(&painted, "alpha-name");
+        assert!(line.contains(word), "{state}: {line}");
+        for retired in ["starting", "waiting"] {
+            assert!(!line.contains(retired), "{state} draws {retired}: {line}");
+        }
+    }
+}
+
+#[test]
+fn each_activity_word_comes_from_the_census_into_the_tile_and_the_sessions_list() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    for word in ACTIVITY_WORDS {
+        let json = report_with(config(&directory, true), rows_with(word), facts());
+        let alpha = session(&json, "alpha");
+        assert_eq!(alpha["status"], "busy");
+        let activity = alpha["activity"].as_str().expect("busy activity");
+        assert!(activity.ends_with(word), "{word}: {activity}");
+        assert_eq!(entry(&json, "workers", "alpha-id")["activity"], activity);
+        let painted = painted_with(&directory, rows_with(word));
+        let line = line_of(&painted, "alpha-name");
+        assert!(line.contains(activity), "{word}: {line}");
+    }
+}
+
+#[test]
+fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let json = report(config(&directory, true), facts());
+    assert_eq!(json["schema"], 2);
+    let ids: Vec<&str> = json["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .map(|entry| entry["session"].as_str().expect("session id"))
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "session id order");
+    for id in ["alpha", "beta", "boss", "director"] {
+        assert!(ids.contains(&id), "{id} in {ids:?}");
+        assert_eq!(session(&json, id)["machine"], local_machine_name());
+    }
+    let boss = session(&json, "boss");
+    assert_eq!(boss["status"], "idle");
+    assert_eq!(boss["activity"], Value::Null, "an idle row has no activity");
+    let beta = session(&json, "beta");
+    assert_eq!(beta["status"], Value::Null);
+    assert_eq!(beta["activity"], Value::Null);
+    let director = session(&json, "director");
+    assert_eq!(director["status"], "busy");
+    assert_eq!(
+        director["activity"],
+        entry(&json, "directors", "unit-id")["activity"]
+    );
 }
 
 #[test]

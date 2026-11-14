@@ -353,12 +353,12 @@ fn needs_measurement(
     if function.lines > limit || !matches!(function.length_exemption, LengthExemption::Limited) {
         return false;
     }
-    // Each byte permits two lines, including punctuation inserted by rustfmt.
+    // Headers do not contribute body lines. Each body or replacement byte permits two lines.
     let (edits, bytes) = fixes
         .iter()
         .filter(|fix| fix.path == path && touches(&function.range, fix))
         .fold(
-            (PassEdits::Unchanged, function.range.len()),
+            (PassEdits::Unchanged, function.body_bytes),
             |(_, bytes), fix| {
                 (
                     PassEdits::Written,
@@ -501,6 +501,32 @@ mod tests {
         );
         assert!(report.findings.is_empty());
         assert_eq!(second.notice().context("repeat notice")?.render(), notice);
+        for header in [
+            format!("fn function_with_a_long_name_{}()", "named_".repeat(40)),
+            format!("#[doc = {:?}]\nfn documented()", "Header text. ".repeat(30)),
+        ] {
+            let fixture = FunctionLengthFixture::new(
+                &format!(
+                    "use crate::unusually_long_module_name::update;\n{header} {{ update(1, 2, 3); }}\n"
+                ),
+                200,
+            )?;
+            let before = super::formatter::formatting_commands();
+            let (plan, report) = fixture.plan()?;
+            assert_eq!(
+                super::formatter::formatting_commands(),
+                before,
+                "a long header does not require a body measurement"
+            );
+            assert!(plan.notice().is_none());
+            assert!(!report.findings.is_empty());
+            crate::fixes::imports::apply_fixes(&plan.fixes)?;
+            let rewritten = std::fs::read_to_string(fixture.0.path().join("src/scenarios.rs"))?;
+            assert!(rewritten.contains("unusually_long_module_name::update(1, 2, 3)"));
+            let (repeated, report) = fixture.plan()?;
+            assert_eq!(repeated.fixes.presence(), FixSetPresence::Empty);
+            assert!(report.findings.is_empty());
+        }
         Ok(())
     }
 

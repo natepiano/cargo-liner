@@ -69,3 +69,27 @@ pub const ACTIVITY_SPINNER: FrameCycle =
 const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
     "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
 ];
+
+/// xterm RGB values for the 16 named ANSI colors.
+#[cfg(any(test, feature = "contrast-test"))]
+pub(crate) const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (205, 0, 0),
+    (0, 205, 0),
+    (205, 205, 0),
+    (0, 0, 238),
+    (205, 0, 205),
+    (0, 205, 205),
+    (229, 229, 229),
+    (127, 127, 127),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (92, 92, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
+/// xterm channel levels for the 6x6x6 indexed color cube.
+#[cfg(any(test, feature = "contrast-test"))]
+pub(crate) const XTERM_CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];

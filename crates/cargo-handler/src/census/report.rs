@@ -1,7 +1,7 @@
-//! `cargo-handler census --json` prints the unit directors and workers the
-//! tiles show. It reads the same local scan, staff file, accounts read and
-//! remote probes as the TUI, once, and takes each status and activity from
-//! the tile cells.
+//! `cargo-handler census --json` prints each session, unit director and
+//! worker the tiles show. It reads the same local scan, staff file, accounts
+//! read and remote probes as the TUI, once, and takes each status and activity
+//! from the tile cells.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -27,6 +27,7 @@ use super::StaffListing;
 use super::WorkerFacts;
 use super::accounts::AccountsTable;
 use super::accounts::ReportedSessionState;
+use super::accounts::SessionState;
 use super::accounts::SessionStates;
 use super::activity::DetachedRunFact;
 use super::activity::DetachedRunState;
@@ -61,6 +62,36 @@ struct CensusReport {
     directors: Vec<DirectorReport>,
     /// Each worker of a unit's current run that a tile shows, in staff id order.
     workers:   Vec<WorkerReport>,
+    /// Each session a tile shows, in session id order.
+    sessions:  Vec<SessionReport>,
+}
+
+/// One session a tile shows.
+#[derive(Debug, Serialize)]
+struct SessionReport {
+    /// The session id.
+    session:  String,
+    /// The machine whose tile shows the session.
+    machine:  String,
+    /// The tile status word, or null with no accounts entry.
+    status:   Option<&'static str>,
+    /// The tile activity text of a busy session, or null when the session is not busy.
+    activity: Option<String>,
+}
+
+impl SessionReport {
+    fn new(session: &str, cell: &SessionCells) -> Self {
+        Self {
+            session:  session.to_owned(),
+            machine:  cell.machine.clone(),
+            status:   status(cell),
+            activity: matches!(
+                cell.status,
+                ReportedSessionState::Reported(SessionState::Busy)
+            )
+            .then(|| cell.activity.clone()),
+        }
+    }
 }
 
 /// One machine and whether its answer arrived.
@@ -260,6 +291,10 @@ impl CensusReport {
                 .collect(),
             directors,
             workers,
+            sessions: cells
+                .iter()
+                .map(|(session, cell)| SessionReport::new(session, cell))
+                .collect(),
         }
     }
 }

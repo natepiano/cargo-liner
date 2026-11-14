@@ -1,11 +1,14 @@
 //! Sorting preserves the displayed hierarchy and its preassigned colors.
 
+use std::sync::LazyLock;
+
 use tui_pane::CellPoint;
 
 use super::*;
 use crate::census::Activity;
 use crate::census::RoleFallback;
 use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::census::accounts::SessionStates;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -83,23 +86,33 @@ fn sorting_forest() -> MachineState {
     )
 }
 
-/// The adapter is the only test helper coupled to the frame API.
-fn sorted_buffer(machines: &[Machine<'_>], width: u16, sort: TreeSort) -> Buffer {
-    let report = crate::census::accounts::AccountsReading::parse(
+/// The fixture's source statuses.
+static SOURCE_STATES: LazyLock<SessionStates> = LazyLock::new(|| {
+    crate::census::accounts::AccountsReading::parse(
         br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
         {"session":"older-id","state":"idle"},{"session":"younger-id","state":"busy"},
         {"session":"id-20","state":"idle"},{"session":"id-30","state":"paused"},
         {"session":"id-40","state":"busy"},{"session":"id-50","state":"exited"}
     ]}],"problems":[]}"#,
     )
-    .expect("source statuses");
-    let placement = AgentPlacement::from_machines(machines, &report.sessions);
+    .expect("source statuses")
+    .sessions
+});
+
+/// The fixture cells with their source statuses, sorted by `sort`.
+fn sorted_cells<'a>(machines: &[Machine<'a>], sort: TreeSort) -> Vec<AgentEntry<'a>> {
+    let placement = AgentPlacement::from_machines(machines, &SOURCE_STATES);
     let defaults = cell_order_placed(&placement);
     let sorts = defaults
         .iter()
         .map(|cell| (cell.id.clone(), sort))
         .collect();
-    let cells = cell_order_sorted(&placement, &sorts, NOW);
+    cell_order_sorted(&placement, &sorts, NOW)
+}
+
+/// The adapter is the only test helper coupled to the frame API.
+fn sorted_buffer(machines: &[Machine<'_>], width: u16, sort: TreeSort) -> Buffer {
+    let cells = sorted_cells(machines, sort);
     let entry = &cells[0];
     let area = area(width, 20);
     let mut buffer = Buffer::empty(area);
@@ -157,7 +170,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
         ("z-thread", "│ └── z-thread — worker exited — —"),
         (
             "alpha",
-            "└── alpha a-account worker impl busy a-branch /a-directory",
+            "└── alpha a-account worker impl · thinking busy a-branch /a-directory",
         ),
         ("a-shell", "└── a-shell a-account busy — shell —"),
     ] {
@@ -280,7 +293,7 @@ fn tree_header_clicks_match_drawn_columns_and_ignore_gaps_and_data_rows() {
         name:  "natedev",
         state: &state,
     }];
-    let cells = cell_order(&machines);
+    let cells = sorted_cells(&machines, TreeSort::default());
     for width in [60, 220] {
         let buffer = sorted_buffer(&machines, width, TreeSort::default());
         assert_eq!(

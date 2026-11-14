@@ -10,11 +10,11 @@ use std::process::Command;
 use std::process::Stdio;
 use std::thread;
 
+use tui_pane::CurrentProcessIdentityObservation;
+
 use crate::channel::Sender;
 use crate::ci;
 use crate::constants::CARGO_COMMAND_NAME;
-use crate::process_observation::identity;
-use crate::process_observation::identity::CurrentProcessIdentityObservation;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -112,7 +112,7 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
     // process identity is observed and revalidated.
     let process_group_id = child.id();
     let CurrentProcessIdentityObservation::Verified(verified_process_identity) =
-        identity::observe_current_process_identity(process_group_id)
+        tui_pane::observe_current_process_identity(process_group_id)
     else {
         state::discard_unverified_owned_process_group(&mut child);
         let output_was_empty = app.inflight.owned_run().output_is_empty();

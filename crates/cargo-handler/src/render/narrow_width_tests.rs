@@ -1008,10 +1008,10 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
 fn narrow_growth_reports_fixture_counts() {
     for (count, width, expected_groups, expected_summary_rows) in [
         (6, 200, 6, 28),
-        (6, 80, 6, 30),
+        (6, 80, 6, 28),
         (6, 50, 6, 30),
-        (6, 40, 6, 31),
-        (20, 34, 1, 45),
+        (6, 40, 6, 30),
+        (20, 34, 2, 44),
     ] {
         let mut app = fixture(count);
         paint(&mut app, width, 50);
