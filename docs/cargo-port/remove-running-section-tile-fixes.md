@@ -2644,24 +2644,23 @@ The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99, 10 of 32 
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-tile`; `verify.sh test cargo-berth` and `verify.sh test cargo-tile` green on natedev, each of the 18 tests under 1 s; one loaded natedev workspace suite with each of the 18 tests under 1 s.
 
-### Phase 58l — Before-run templates restore at their canonical path  · status: todo
+### Phase 58l — Before-run templates restore at their canonical path  · status: done
 
-**Depends on:** none. It runs before Phase 58k, because its failure holds the main CI point (showrunner, 2026-11-13).
+**Depends on:** none. It ran before Phase 58k, because its failure held the main CI point (showrunner, 2026-11-13).
 
-The CI point on main e6a75c0fc failed 7 `cargo-berth::board` tests in the gate clone. The Phase 58h failure output named the cause. The gate reaches its target folder through a path that is not canonical. The setup script builds each before-run template at that path, but Git records a linked worktree by its canonical path. A restore replaces only the non-canonical root text, so the copy's `.git/worktrees/<name>/gitdir` keeps the template's path. Each test that starts from a template with a linked worktree then sees a broken worktree.
+The CI point on main e6a75c0fc failed 7 `cargo-berth::board` tests in the gate clone. Each starts from `initial-integration-pair` or a template built from it.
 
-#### Work Order
+#### As-built
 
-**Goal:** a before-run template restores correctly when its folder is reached through a symbolic link.
+- Cause: the gate reaches its target folder through a path that is not canonical. The setup script built each before-run template at that path. Git records a linked worktree (`.git/worktrees/<name>/gitdir` and the worktree's `.git` file) by its canonical path. `restore_into` replaced only the path as given, so each copy kept the template's worktree paths. The in-test fallback already canonicalized its build folder.
+- `prepare_before_run` (`crates/cargo-berth-test-support/src/repository_template.rs`) builds at the canonical path. `prebuilt_root` reads a complete prebuilt template at its canonical path. `restore_from` holds the restore body that `restore_into` calls.
+- New test `before_run_template_restores_its_linked_worktree_through_a_linked_directory`: it builds a template with a linked worktree through a symbolically linked folder, restores it, and checks that Git lists the worktree at the copy. Without the fix it fails: Git lists the worktree at the template.
+- Gate: lint clean; 10 `cargo-berth-test-support` tests; 1,384 `cargo-berth` tests on natedev (load 64, 6 of 32 threads).
+- Director work only (no workers). Checkpoint: 5f236df23 on `tile-phase-58l`.
 
-**Spec:**
+**Files:** `crates/cargo-berth-test-support/src/repository_template.rs`.
 
-1. Build each before-run template at its canonical path, and read it back at that path in each restore.
-2. Add a test: build a before-run template with a linked worktree under a symbolically linked folder, restore it, and check that Git lists the copy's worktree at the copy.
-
-**Files:** `crates/cargo-berth-test-support/src/repository_template.rs`
-
-**Acceptance gate:** `verify.sh lint cargo-berth-test-support`; `verify.sh test cargo-berth-test-support` and `verify.sh test cargo-berth` green; the new test fails without item 1.
+**Binds later work:** a template fixture that records an absolute path must build and restore at the canonical path.
 
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
 
