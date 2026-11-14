@@ -3560,7 +3560,7 @@ On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits)
 
 **Files:** `crates/cargo-tile/tests/shim_modes.rs`.
 
-### Phase 63a — The shim signal tests wait on an event and name their cause  · status: todo
+### Phase 63a — The shim signal tests wait on an event and name their cause  · status: done
 
 **Depends on:** none. It runs before Phase 58k, because its failure held a merge (showrunner, 2026-11-13).
 
