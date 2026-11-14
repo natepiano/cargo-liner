@@ -8,6 +8,12 @@
 # cleared, so an accidental nightly feature fails there.
 [env]
 RUSTC_BOOTSTRAP = "1"
+# A caller can pass Git settings to its child commands in GIT_CONFIG_COUNT,
+# as the CI point does for validation. cargo-berth sends every read to a Git
+# child when it finds a setting it does not know, so the tests that count Git
+# processes or name a read route fail. A count of 0 makes Git and cargo-berth
+# ignore the inherited entries in every process that cargo starts.
+GIT_CONFIG_COUNT = { value = "0", force = true }
 
 # `screencapturekit` (behind tui_pane's `backdrop` feature) depends on
 # `apple-metal`, whose Swift bridge object needs two things a Rust link line
