@@ -32,3 +32,6 @@ pub(super) const PROJECT_STORAGE_REFRESH_SECS: u64 = 2;
 
 // `repo_handlers` uses `PR_CHECK_POLL_SECS` to space pull-request check polling.
 pub(super) const PR_CHECK_POLL_SECS: u64 = 10;
+
+// `poll` logs one background message whose apply takes `SLOW_BG_MSG_MS` or more.
+pub(super) const SLOW_BG_MSG_MS: u128 = 10;

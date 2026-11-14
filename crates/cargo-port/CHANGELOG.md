@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Finish the startup disk usage step for trees with large hard-link groups; each new link updates only its own and the counted link's totals.
+- Apply background results fast under high load: compare the project rows once per frame, not twice per result, and drop Cargo home events other than its config file at the watcher.
 - Bind row expand and collapse to plain Right and Left in a new keymap file.
 - Stop the timed full walks of every project and target tree in an idle session; file events update disk sizes from the changed paths.
 - Ignore Git lock files and ignored file events when scheduling Git refreshes. Keep ignore rules in watcher state. Refresh changed rules and affected checkouts once. Update disk totals from changed files and their hard-link aliases.

@@ -12,6 +12,8 @@ use serde_json::Value;
 use super::DIRECTOR_FILE;
 use super::WorkerReference;
 use crate::census::Observed;
+use crate::census::PassAssignment;
+use crate::census::PassRole;
 use crate::census::SourceRead;
 use crate::census::UnknownReason;
 use crate::census::activity;
@@ -27,8 +29,49 @@ use crate::constants::SESSION_ROOTS;
 /// An open pass supplies an activity start without defining a session status.
 #[derive(Clone, Debug)]
 pub(in crate::census) struct WorkerPass {
-    pub(in crate::census) worker:  String,
-    pub(in crate::census) started: Observed<u64>,
+    pub(in crate::census) worker: String,
+    pub(in crate::census) state:  PassState,
+}
+
+/// Only an open pass has a start and an assignment.
+#[derive(Clone, Debug)]
+pub(in crate::census) enum PassState {
+    Open {
+        started:    Observed<u64>,
+        assignment: Observed<PassAssignment>,
+    },
+    Closed,
+}
+
+impl PassState {
+    fn read(pass: &Value) -> Self {
+        if pass["status"] != "active" {
+            return Self::Closed;
+        }
+        let started = pass["started_at"].as_f64().map_or_else(
+            || Observed::unknown("open pass has no start"),
+            activity::epoch_seconds,
+        );
+        let role = PassRole::deserialize(&pass["kind"]).ok();
+        let phase = pass["phase"]["instance_id"]
+            .as_str()
+            .filter(|phase| !phase.is_empty());
+        let assignment = match (role, phase) {
+            (Some(role), Some(phase)) => Observed::Known(PassAssignment {
+                role,
+                phase: phase.to_owned(),
+            }),
+            (None, _) => Observed::Unknown(UnknownReason(format!(
+                "open pass kind {} is not impl, test, fix or review",
+                pass["kind"]
+            ))),
+            (Some(_), None) => Observed::unknown("open pass has no phase instance id"),
+        };
+        Self::Open {
+            started,
+            assignment,
+        }
+    }
 }
 
 /// Read only the staff-selected run's pass map.
@@ -65,17 +108,9 @@ pub(in crate::census) fn current_passes(directory: &Path) -> SourceRead<Vec<Work
         else {
             continue;
         };
-        let started = if pass["status"] == "active" {
-            pass["started_at"].as_f64().map_or_else(
-                || Observed::unknown("open pass has no start"),
-                activity::epoch_seconds,
-            )
-        } else {
-            Observed::unknown("worker has no open pass")
-        };
         result.push(WorkerPass {
             worker: worker.to_owned(),
-            started,
+            state:  PassState::read(pass),
         });
     }
     SourceRead::Loaded(result)

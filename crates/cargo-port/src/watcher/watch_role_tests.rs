@@ -465,6 +465,31 @@ fn ancestor_cargo_config_keeps_subscription_and_metadata_refresh() {
 }
 
 #[test]
+fn cargo_home_routes_only_its_config_file() {
+    let scratch = tempfile::tempdir().expect("scratch root");
+    let root = scratch.path().join("projects");
+    std::fs::create_dir(&root).expect("discovery root");
+    let cargo_home = scratch.path().join("home/.cargo");
+    std::fs::create_dir_all(&cargo_home).expect("Cargo home");
+    let (mut watcher, mut registered) = discovery_root(&root);
+    roots::register_cargo_home_directory(&mut watcher, &mut registered, &cargo_home);
+    let mut state = watcher_state();
+    let (sender, _receiver) = channel::unbounded();
+    let journal = Event::new(EventKind::Modify(ModifyKind::Any))
+        .add_path(cargo_home.join(".global-cache-journal"));
+    let config =
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(cargo_home.join("config.toml"));
+
+    let routed_journal =
+        events::route_folder_event(&mut watcher, &mut registered, &journal, &mut state, &sender);
+    let routed_config =
+        events::route_folder_event(&mut watcher, &mut registered, &config, &mut state, &sender);
+
+    assert_eq!(routed_journal, [] as [notify::Event; 0]);
+    assert_eq!(routed_config, vec![config]);
+}
+
+#[test]
 fn linked_worktree_git_event_keeps_subscription_and_git_refresh() {
     let scratch = tempfile::tempdir().expect("scratch root");
     let root = scratch.path().join("projects");

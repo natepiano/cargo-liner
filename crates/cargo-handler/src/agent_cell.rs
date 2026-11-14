@@ -1468,6 +1468,15 @@ impl<'a> CensusWorkIdentities<'a> {
 impl TreeLine<'_> {
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
+        let name = self.session_name();
+        match self.location {
+            SessionLocation::SameMachine => name,
+            SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
+        }
+    }
+
+    /// The name without its machine.
+    fn session_name(&self) -> String {
         let original = match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 &self.row.name
@@ -1491,7 +1500,7 @@ impl TreeLine<'_> {
                 CodexThreadId::Unrecorded => None,
             },
         };
-        let name = staff_name.map_or_else(
+        staff_name.map_or_else(
             || match self.dispatch_label {
                 DispatchLabel::Original => match self.subject {
                     LineSubject::ManagedThread(child, role, _) => child.worker_task.label(
@@ -1511,11 +1520,7 @@ impl TreeLine<'_> {
                 DispatchLabel::Worker(dispatch) => dispatch.label(),
             },
             Clone::clone,
-        );
-        match self.location {
-            SessionLocation::SameMachine => name,
-            SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
-        }
+        )
     }
 
     /// Tree rails and the branch preceding this name.
@@ -1969,6 +1974,67 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
             sort: TreeSort::default(),
             lines,
         });
+    }
+    cells
+}
+
+/// The tile cells of one session, as its tile line draws them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionCells {
+    /// The machine the session runs on.
+    pub(crate) machine:  String,
+    /// The name cell, without the machine.
+    pub(crate) name:     String,
+    /// The state the status cell draws.
+    pub(crate) status:   ReportedSessionState,
+    /// The activity cell text.
+    pub(crate) activity: String,
+}
+
+/// Each session's first tile line, by session id. Shell and subagent work has no session.
+pub(crate) fn session_cells(
+    placement: &AgentPlacement<'_>,
+    now: u64,
+) -> BTreeMap<String, SessionCells> {
+    let mut cells = BTreeMap::new();
+    for entry in cell_order_placed(placement) {
+        let root = match placement.root_presentation(RowIdentity {
+            machine: entry.machine,
+            pid:     entry.row.pid,
+        }) {
+            RootPresentation::Hierarchy => tile_root_line(&entry),
+            RootPresentation::Unassigned => unassigned_line(&entry),
+        };
+        for line in iter::once(&root).chain(&entry.lines) {
+            let thread = match line.subject {
+                LineSubject::TileRoot(_)
+                | LineSubject::Agent(_)
+                | LineSubject::UnassignedSession => None,
+                LineSubject::ManagedThread(child, _, _)
+                | LineSubject::Work(Work {
+                    child,
+                    kind: WorkKind::Thread,
+                    ..
+                }) => Some(&child.thread_id),
+                LineSubject::Work(Work {
+                    kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
+                    ..
+                }) => continue,
+            };
+            let ids: Vec<&str> = match thread {
+                None => line.row.session_id.ids().collect(),
+                Some(CodexThreadId::Recorded(id)) => vec![id.as_str()],
+                Some(CodexThreadId::Unrecorded) => Vec::new(),
+            };
+            for id in ids {
+                cells.entry(id.to_owned()).or_insert_with(|| SessionCells {
+                    machine:  line.machine.to_owned(),
+                    name:     line.session_name(),
+                    status:   line.session_status(),
+                    activity: line.value(TreeColumn::Activity, now),
+                });
+            }
+        }
     }
     cells
 }

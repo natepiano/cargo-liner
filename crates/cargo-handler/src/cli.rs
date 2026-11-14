@@ -1,6 +1,7 @@
 //! `Cli::run` calls `terminal::run` to open the grid. With the hidden
 //! `Command::Probe` subcommand, it calls `probe::print` to print this
-//! machine's agents as JSON for a remote summary to read.
+//! machine's agents as JSON for a remote summary to read. With
+//! `Command::Census`, it calls `report::print` to print the census as JSON.
 //!
 //! `cargo handler` and `cargo-handler` both use `Cli::parse_arguments`.
 //! Cargo runs any `cargo-`-prefixed binary on the path as a subcommand.
@@ -16,7 +17,9 @@ use clap::Parser;
 use clap::Subcommand;
 
 use crate::census::probe;
+use crate::census::report;
 use crate::constants::BINARY_NAME;
+use crate::constants::CENSUS_COMMAND;
 use crate::constants::CLI_ABOUT;
 use crate::constants::PROBE_COMMAND;
 use crate::constants::SUBCOMMAND_NAME;
@@ -25,7 +28,8 @@ use crate::terminal;
 /// `Cli` defines the `cargo-handler` command line for clap parsing.
 ///
 /// It has no options. Clap handles `--help` and `--version`, accepts the
-/// hidden `Command::Probe` subcommand, and rejects anything else.
+/// hidden `Command::Probe` subcommand and `Command::Census`, and rejects
+/// anything else.
 #[derive(Debug, Parser)]
 #[command(name = BINARY_NAME, version, about = CLI_ABOUT, long_about = None)]
 pub(crate) struct Cli {
@@ -34,13 +38,19 @@ pub(crate) struct Cli {
     command: Option<Command>,
 }
 
-/// The subcommands, all hidden: each is for another cargo-handler to
-/// run, not for a person.
+/// The subcommands. The hidden probe is for another cargo-handler to run.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Print this machine's top-level agents as JSON and exit.
     #[command(name = PROBE_COMMAND, hide = true)]
     Probe,
+    /// Print the unit directors and workers the tiles show, as JSON, and exit.
+    #[command(name = CENSUS_COMMAND)]
+    Census {
+        /// Print JSON. The command has no other format.
+        #[arg(long, required = true)]
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -57,6 +67,7 @@ impl Cli {
         match command {
             None => terminal::run(),
             Some(Command::Probe) => probe::print(),
+            Some(Command::Census { json: _ }) => report::print(),
         }
     }
 }
@@ -115,6 +126,21 @@ mod tests {
         assert!(parses(&[BINARY_NAME, SUBCOMMAND_NAME, PROBE_COMMAND]));
         let help = Cli::command().render_help().to_string();
         assert!(!help.contains(PROBE_COMMAND), "{help}");
+    }
+
+    /// `census` parses only with `--json`, directly or after the Cargo prefix, and shows in help.
+    #[test]
+    fn the_census_needs_json_and_shows_in_help() {
+        assert!(parses(&[BINARY_NAME, CENSUS_COMMAND, "--json"]));
+        assert!(parses(&[
+            BINARY_NAME,
+            SUBCOMMAND_NAME,
+            CENSUS_COMMAND,
+            "--json"
+        ]));
+        assert!(!parses(&[BINARY_NAME, CENSUS_COMMAND]));
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains(CENSUS_COMMAND), "{help}");
     }
 
     /// `without_subcommand_name` preserves later `SUBCOMMAND_NAME` arguments after
