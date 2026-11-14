@@ -717,46 +717,23 @@ fn assert_fresh_units_repaired(damage: CachedReportDamage) {
     }
 }
 
-/// Prepare actual Cargo fingerprints through the same wrapper path, with driver
-/// configuration absent so setup only compiles. Mend must repair the resulting
-/// fresh units on its first invocation; changing wrapper identity would leave
-/// these exact report paths unrepaired and fail the assertions above.
+/// Prepare fresh Cargo units with the CLI's retained driver and build compiler.
+/// The absent analysis configuration leaves their reports missing.
 fn prepare_fresh_cache_units(root: &Path) -> Vec<PathBuf> {
-    let fingerprint = format!(
-        "{}+{}+{}",
-        env!("CARGO_PKG_VERSION"),
-        option_env!("MEND_GIT_HASH").unwrap_or("nogit"),
-        option_env!("MEND_BUILD_ID").unwrap_or("nobuild"),
-    );
     let installed_mend = mend_command();
-    let binary = Path::new(installed_mend.get_program());
-    let metadata = fs::metadata(binary).expect("read mend executable metadata");
-    let modified = metadata
-        .modified()
-        .expect("read mend executable modification time");
-    let (era, timestamp) = match modified.duration_since(std::time::UNIX_EPOCH) {
-        Ok(timestamp) => ("after", timestamp),
-        Err(error) => ("before", error.duration()),
-    };
-    let revision = format!("{}-{era}-{}", metadata.len(), timestamp.as_nanos());
-    let alias_dir = root
-        .join("target/mend-wrapper")
-        .join(fingerprint)
-        .join("independent-copy-v1")
-        .join(revision);
-    fs::create_dir_all(&alias_dir).expect("create wrapper directory");
-    let alias = alias_dir.join(binary.file_name().expect("binary name"));
-    // Match the independent-copy protocol used by mend. A hard link here
-    // would both share writes with the build output and force alias replacement,
-    // changing Cargo's unit identity instead of exercising cache repair.
-    fs::copy(binary, &alias).expect("retain independent wrapper executable");
-    let output = cargo_command()
+    let compiler = crate::compiler::FixtureCompiler::resolve(
+        &root.join("target"),
+        Path::new(installed_mend.get_program()),
+    )
+    .expect("retain the fixture compiler");
+    let mut command = cargo_command();
+    compiler
+        .configure(&mut command)
+        .expect("configure the fixture compiler");
+    let output = command
         .args(["check", "--all-targets", "--message-format=json"])
         .arg("--manifest-path")
         .arg(root.join("Cargo.toml"))
-        .env("RUSTC_WORKSPACE_WRAPPER", alias)
-        .env("MEND_DRIVER", "1")
-        .env_remove("MEND_CONFIG_ROOT")
         .current_dir(root)
         .output()
         .expect("prepare fresh Cargo units");

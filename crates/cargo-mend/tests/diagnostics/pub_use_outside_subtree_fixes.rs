@@ -222,6 +222,8 @@ fn child_reexport_behind_a_parent_facade_moves_to_the_parent() {
     );
 
     // The field narrows on the pass after the re-export moves.
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -270,6 +272,8 @@ fn crate_hub_reexport_moves_to_the_crate_root() {
          _orbit = Orbit;\n    input::poll()\n}\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -314,6 +318,8 @@ fn unused_reexport_is_deleted() {
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[("src/camera.rs", "pub(crate) fn run() -> i32 {\n    1\n}\n")],
@@ -349,6 +355,8 @@ fn grouped_reexport_loses_only_the_flagged_name() {
         "src/platform.rs",
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
     );
+
+    single_compile_target(root);
 
     assert_fixed(
         root,
@@ -399,6 +407,8 @@ fn cfg_reexport_carries_its_cfg_to_the_new_reexport() {
         "#[cfg(unix)]\npub(crate) use super::reset_scene::build_device_recipe;\n\npub(crate) fn \
          stage_all() -> u32 {\n    2\n}\n",
     );
+
+    single_compile_target(root);
 
     assert_fixed(
         root,
@@ -465,6 +475,8 @@ fn callers_in_path_mounted_and_included_files_are_rewritten() {
          }\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -528,6 +540,7 @@ fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::{Recipe, independent};\n",
     );
+    single_compile_target(root);
 
     let before = rust_sources(root);
     let preview =
@@ -596,6 +609,8 @@ fn emptied_inline_owner_module_is_deleted() {
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -644,6 +659,8 @@ fn emptied_inline_owner_module_stays_while_a_pub_use_names_it() {
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
+
+    single_compile_target(root);
 
     assert_fixed(
         root,
@@ -698,6 +715,8 @@ fn module_import_of_the_owner_is_removed_once_its_callers_move() {
 
     // `prefer_module_import` then imports `tool` for the moved call; the
     // emptied staging file and its now private `mod` line stay.
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -743,6 +762,8 @@ fn caller_inside_a_macro_call_is_rewritten() {
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n",
     );
+
+    single_compile_target(root);
 
     assert_fixed(
         root,
@@ -794,6 +815,8 @@ fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
+
+    single_compile_target(root);
 
     assert_fixed(
         root,
@@ -1072,6 +1095,8 @@ fn caller_through_a_module_alias_in_another_file_is_rewritten() {
          ScreenFrame(2).0\n}\n",
     );
 
+    single_compile_target(root);
+
     assert_fixed(
         root,
         &[
@@ -1317,6 +1342,8 @@ fn unrewritable_findings_are_counted_in_the_skipped_notice() {
     );
     let sources = rust_sources(root);
 
+    single_compile_target(root);
+
     let stderr = run_fix(root);
     assert!(
         stderr.contains("skipped 1 `pub_use_outside_subtree` finding(s) `--fix` could not rewrite"),
@@ -1385,6 +1412,10 @@ fn shared_reexport_needed_by_another_package_stays_manual() {
             "pub fn run() -> u8 { prelude::discover() }\n",
         ),
     );
+
+    for package in ["a", "b"] {
+        single_compile_target(&root.join(package));
+    }
 
     let stderr = run_fix_command(mend_command_for(&root.join("Cargo.toml")).args([
         "--workspace",
@@ -1534,6 +1565,10 @@ fn package_filtered_local_reexport_is_rewritten() {
         "pub use crate::platform::discover;\n",
     );
     pub_use_outside_subtree::write(root, "b/src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
+    for package in ["a", "b"] {
+        single_compile_target(&root.join(package));
+    }
+
     let stderr =
         run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
     assert_eq!(
@@ -1587,19 +1622,26 @@ fn package_filtered_reexport_used_through_qualified_include_stays_manual() {
 
 #[test]
 fn package_filtered_reexport_used_through_raw_include_stays_manual() {
-    for include in ["r#include", "std::r#include"] {
-        let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
-        let root = temp.path();
-        pub_use_outside_subtree::write(
-            root,
-            "b/src/lib.rs",
-            &format!(
-                "mod platform;\nmod gateway {{ {include}!(\"../../shared.rs\"); }}\n\
-                 pub fn run() -> u8 {{ gateway::discover() }}\n"
-            ),
-        );
-        assert_filtered_reexport_stays_manual(root);
-    }
+    assert_raw_include_reexport_stays_manual("r#include");
+}
+
+#[test]
+fn package_filtered_reexport_used_through_qualified_raw_include_stays_manual() {
+    assert_raw_include_reexport_stays_manual("std::r#include");
+}
+
+fn assert_raw_include_reexport_stays_manual(include: &str) {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    pub_use_outside_subtree::write(
+        root,
+        "b/src/lib.rs",
+        &format!(
+            "mod platform;\nmod gateway {{ {include}!(\"../../shared.rs\"); }}\n\
+             pub fn run() -> u8 {{ gateway::discover() }}\n"
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
 }
 
 #[test]
@@ -1706,6 +1748,8 @@ fn package_filtered_nested_member_local_reexport_is_rewritten() {
         "a/src/bridge.rs",
         "pub use crate::platform::discover;\n",
     );
+    single_compile_target(root);
+
     let stderr =
         run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
     assert_eq!(

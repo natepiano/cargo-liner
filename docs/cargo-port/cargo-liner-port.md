@@ -210,7 +210,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** closing the idle-read gate on high-load measurements.
 
-### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: todo
+### Phase 9 — cargo-mend CLI-boundary tests run under 1 s  · status: done
 
 **Depends on:** Phase 3. Phase 10 merges before this phase's final measurements, because both edit `tests/support/` and `CHANGELOG.md`.
 
