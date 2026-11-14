@@ -40,6 +40,7 @@ use super::FrameCellRowAnswers;
 use super::FrameCellRowUsage;
 use super::FrameHeightFit;
 use super::FrameRowAnswer;
+use super::FullScreenPiece;
 use super::Grid;
 use super::GridDisplay;
 use super::GridMotion;
@@ -2621,8 +2622,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Paint one cell over the grid using its existing travel and cell painter.
     /// The returned allocation supports continuous reversal. Repaint stops at the endpoint.
+    /// Clicks and pointer regions read this cell first, until the next body paint.
     pub fn draw_cell_view(
-        &self,
+        &mut self,
         buffer: &mut Buffer,
         content: &TileContent<Id>,
         travel: CellTravel,
@@ -2639,16 +2641,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 CellIdentity::Slot(Slot::Empty(u64::try_from(*index).unwrap_or(u64::MAX)))
             },
         };
+        let piece = TilePiece {
+            identity,
+            placement: TilePlacement {
+                content: content.clone(),
+                frame,
+            },
+            name: PieceName::Shown,
+            height_snap: PieceHeightSnap::Settled,
+        };
+        if let LastPainted::Painted { full_screen, .. } = &mut self.last_painted {
+            *full_screen = FullScreenPiece::Drawn(piece.clone());
+        }
         let drawing = TileDrawing {
-            pieces:       vec![TilePiece {
-                identity,
-                placement: TilePlacement {
-                    content: content.clone(),
-                    frame,
-                },
-                name: PieceName::Shown,
-                height_snap: PieceHeightSnap::Settled,
-            }],
+            pieces:       vec![piece],
             column_bands: Vec::new(),
         };
         let widths = vec![(content.clone(), frame.inner().width)];
@@ -2709,23 +2715,33 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 tint: FocusedPaneTint::current(),
             },
             summary_frames,
+            full_screen: FullScreenPiece::Absent,
         };
     }
 
     /// Resolve the topmost painted piece before letting input change focus.
     pub(in crate::tiles) fn cell_hit(&self, pos: Position) -> CellHit<Id> {
         let initial_drawing;
-        let drawing = match &self.last_painted {
-            LastPainted::Painted { visual, .. } => &visual.drawing,
+        let (drawing, full_screen) = match &self.last_painted {
+            LastPainted::Painted {
+                visual,
+                full_screen,
+                ..
+            } => (&visual.drawing, full_screen),
             LastPainted::NeverPainted => {
                 initial_drawing = self.drawing(self.area, self.growth);
-                &initial_drawing
+                (&initial_drawing, &FullScreenPiece::Absent)
             },
         };
-        let Some(piece) = drawing.pieces.iter().rev().find(|piece| {
+        let hit = |piece: &&TilePiece<Id>| {
             draw::has_visible_body_row(piece.placement.frame)
                 && piece.placement.frame.clip().contains(pos)
-        }) else {
+        };
+        let over = match full_screen {
+            FullScreenPiece::Drawn(piece) => Some(piece).filter(hit),
+            FullScreenPiece::Absent => None,
+        };
+        let Some(piece) = over.or_else(|| drawing.pieces.iter().rev().find(hit)) else {
             return CellHit::Missed;
         };
         let index = match &piece.identity {
@@ -2752,12 +2768,19 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Borders and reserved readout rows do not belong to these rectangles.
     #[must_use]
     pub fn pointer_regions(&self) -> Vec<Rect> {
-        let LastPainted::Painted { visual, .. } = &self.last_painted else {
+        let LastPainted::Painted {
+            visual,
+            full_screen,
+            ..
+        } = &self.last_painted
+        else {
             return Vec::new();
         };
-        visual
-            .drawing
-            .pieces
+        let pieces = match full_screen {
+            FullScreenPiece::Drawn(piece) => std::slice::from_ref(piece),
+            FullScreenPiece::Absent => visual.drawing.pieces.as_slice(),
+        };
+        pieces
             .iter()
             .filter(|piece| draw::has_visible_body_row(piece.placement.frame))
             .filter(|piece| match &piece.identity {
