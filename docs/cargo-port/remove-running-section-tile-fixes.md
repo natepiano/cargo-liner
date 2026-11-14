@@ -2599,50 +2599,23 @@ The Phase 58f repair 1 gate (2026-11-13, load about 110) had 16 cargo-berth test
 
 **Depends on:** Phase 58j (its method and its template helpers). Phase 63a runs first.
 
-The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99, 10 of 32 test threads) had these tests at 1 s or more. The showrunner approved this phase on 2026-11-13. The cargo-handler and cargo-mend tests from the same run went to their owners, and this phase does not fix them.
+The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99) had 15 `cargo-berth::lifecycle` tests, one `cargo-berth::gate` test and two `cargo-tile` reader scenario tests at 1.0-1.6 s.
 
-1. `cargo-berth::lifecycle` (15 tests):
-   - `merge_extent::merge_extents_exclude_changes_already_on_the_integration_target` — 1.588 s
-   - `merge_extent::lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward` — 1.491 s
-   - `outstanding_rebase_uses_trunk_when_its_integration_target_disappears` — 1.378 s
-   - `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` — 1.300 s
-   - `split_checkpoint_survives_switching_the_issuing_checkout_before_board` — 1.215 s
-   - `refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors` — 1.207 s
-   - `released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk` — 1.202 s
-   - `merge_extent::two_outstanding_reservations_have_one_answerable_foreign_merge_conflict` — 1.197 s
-   - `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` — 1.189 s
-   - `merge_extent::f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains` — 1.148 s
-   - `merge_extent::repeated_drift_cannot_leave_other_crates_in_the_merge_extent` — 1.118 s
-   - `merge_extent::younger_unavailable_holders_answer_authorizes_only_its_scope_after_replay` — 1.087 s
-   - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` — 1.031 s
-   - `rebase_resnapshot_updates_protected_tip_and_retention_ref` — 1.022 s
-   - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` — 1.003 s
-2. `cargo-berth::gate::target_gate_holds_a_default_answered_requester_that_sequence_orders` — 1.114 s
-3. `cargo-tile::unit_tests` (2 tests):
-   - `shim_registration::reader_scenarios::reader_scenario_assertion_removes_its_processes_and_folder` — 1.148 s
-   - `shim_registration::reader_scenarios::reader_scenario_sigkill_removes_its_processes_and_folder` — 1.102 s
+#### As-built
 
-#### Work Order
+- `INITIALIZED_REPOSITORY`, `COMMITTED_POLICY_REPOSITORY` and `INITIALIZED_REFTABLE_REPOSITORY` are before-run templates in `tests/support/lifecycle_templates.rs`. The lifecycle tests no longer build them in the first test.
+- The session and nextest environments set `PYTHONDONTWRITEBYTECODE=1`, so each reader scenario process compiled `reader_scenario_cases.py`. `python_cache::cache_python_modules` removes that variable, and the cache folder now fills.
+- The three `split_checkpoint_survives_*` tests ran a split rebase and then its reconciliation. `continue_split` and `drain_split` (`support/reanchoring_templates.rs`) split that work. The new `split_rebase_captures_*` tests run the rebase. The old names drain from the `CONTINUED_SPLIT_RETENTION`, `CONTINUED_SPLIT_SIBLING` and `CONTINUED_SPLIT_SWITCHED` templates.
+- The lanes test is two tests: `lanes_release_when_their_integration_target_receives_a_merge_commit` and `…_receives_a_fast_forward`.
+- `pyrightconfig.json` at the repository root makes basedpyright find the scenario modules.
+- Results, natedev crate gate at load 36: 1,388 tests. Lanes 1.35 s to 0.53 s. Drain halves 0.14-0.20 s. The other named lifecycle tests 0.38-0.70 s. Load 41 workspace suite: reader tests 0.32 s and 0.31 s, the gate test 0.28 s.
+- Still over 1 s, each one real rebase: `split_rebase_captures_stacked_branches_rewritten_with_update_refs` 1.41 s and the two `upper_checkpoint_keeps_the_full_split_interval_*` tests 1.12-1.13 s. Phase 58m takes them.
+- Director review only (no workers). Repair round 1 of 3.
+- Checkpoint: a6851294c on `tile-phase-58k`.
 
-**Goal:** each of the 18 tests runs under 1 s in the crate gate and in a loaded natedev workspace suite, with every assertion.
+**Files:** `crates/cargo-berth/tests/{lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/{lifecycle_templates,reanchoring,reanchoring_templates}.rs`, `crates/cargo-tile/src/shim_registration/{python_cache.rs,reader_scenario.py,reader_scenario_cases.py}`, `pyrightconfig.json`.
 
-**Spec:**
-
-1. Measure first. For each test, split its time into setup, Git process starts, cargo-berth process starts, disk sync and assertions.
-2. Use the Phase 58j method. Record live setup as a before-run template (`recorded_history::template`, `LedgerTemplate::before_run`, `save_recorded_history`). Split a test that runs many cargo-berth commands into tests that each start from a recorded state.
-3. Keep every assertion. Add no retry, sleep or longer wait. Do not raise a limit or a timeout.
-4. Report each test's time before and after, at the same load band.
-
-**Files:**
-
-- `crates/cargo-berth/tests/lifecycle.rs` and its `support/` template modules, `crates/cargo-berth/tests/gate.rs`
-- `crates/cargo-berth/tests/recorded_templates.rs` — template registration
-- `crates/cargo-berth-test-support/src/` — shared fixture setup and templates
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the two reader scenario tests
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Test scratch goes to `/dev/shm`; keep it.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-tile`; `verify.sh test cargo-berth` and `verify.sh test cargo-tile` green on natedev, each of the 18 tests under 1 s; one loaded natedev workspace suite with each of the 18 tests under 1 s.
+**Gotchas:** a nextest or Claude session environment can carry `PYTHONDONTWRITEBYTECODE`; a test that relies on the bytecode cache must remove it.
 
 ### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
 
