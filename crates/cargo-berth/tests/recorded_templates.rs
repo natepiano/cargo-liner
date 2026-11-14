@@ -63,6 +63,9 @@ use reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
 use reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
 use reanchoring_templates::CHECKPOINT_BEFORE_OTHER_REBASE;
 use reanchoring_templates::CONFLICTING_TWO_HUNK_CHECKPOINT;
+use reanchoring_templates::CONTINUED_SPLIT_RETENTION;
+use reanchoring_templates::CONTINUED_SPLIT_SIBLING;
+use reanchoring_templates::CONTINUED_SPLIT_SWITCHED;
 use reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SWITCHED_CHECKPOINT;
@@ -190,6 +193,9 @@ mod liveness_fixtures;
 
 #[path = "support/drift_fixtures.rs"]
 mod drift_fixtures;
+
+#[path = "support/lifecycle_templates.rs"]
+mod lifecycle_templates;
 
 #[path = "support/recorded_history.rs"]
 mod recorded_history;
@@ -340,7 +346,7 @@ const fn round_two_histories() -> [LedgerTemplate; 25] {
     ]
 }
 
-const fn recorded_populations() -> [LedgerTemplate; 34] {
+const fn recorded_populations() -> [LedgerTemplate; 37] {
     [
         edges_templates::RECORDED_PROJECTION,
         edges_templates::MERGE_EXTENT_MAIN,
@@ -371,6 +377,9 @@ const fn recorded_populations() -> [LedgerTemplate; 34] {
         TWO_REBASE_HISTORY,
         SPLIT_ACTIVE_PHASE,
         SPLIT_OUTSTANDING_PHASE,
+        CONTINUED_SPLIT_RETENTION,
+        CONTINUED_SPLIT_SIBLING,
+        CONTINUED_SPLIT_SWITCHED,
         DRAINED_SPLIT_RETENTION_CHECKPOINT,
         DRAINED_SPLIT_SIBLING_CHECKPOINT,
         STACKED_UPPER_CHECKPOINT,
@@ -621,6 +630,9 @@ const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
     parallel_templates::SIBLING_PHASES,
     parallel_templates::SIBLING_PHASES_AFTER_DRIFT,
     presentation_templates::INTEGRATION_PHASE,
+    lifecycle_templates::INITIALIZED_REPOSITORY,
+    lifecycle_templates::COMMITTED_POLICY_REPOSITORY,
+    lifecycle_templates::INITIALIZED_REFTABLE_REPOSITORY,
 ];
 
 const DRIFT_HELPER_HISTORIES: &[LedgerTemplate] = &[
