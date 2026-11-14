@@ -62,14 +62,12 @@ fn board_role_counts_reject_the_retired_shell_key() {
 
 #[test]
 fn board_role_count_addition_checks_each_state_for_overflow() -> Result<(), String> {
-    for field in [
-        "busy", "starting", "waiting", "idle", "paused", "exited", "total",
-    ] {
-        let mut maximum = serde_json::json!({"busy":0,"starting":0,"waiting":0,"idle":0,"paused":0,"exited":0,"total":0});
+    for field in ["busy", "idle", "paused", "exited", "total"] {
+        let mut maximum = serde_json::json!({"busy":0,"idle":0,"paused":0,"exited":0,"total":0});
         maximum[field] = serde_json::json!(u64::MAX);
         let first = AccountsReading::parse(&board_count_report(&maximum)).expect("maximum count");
         let second = AccountsReading::parse(&board_count_report(
-            &serde_json::json!({"busy":1,"starting":1,"waiting":1,"idle":1,"paused":1,"exited":1,"total":7}),
+            &serde_json::json!({"busy":1,"idle":1,"paused":1,"exited":1,"total":5}),
         ))
         .expect("added count");
         let (Reading::Known(left), Reading::Known(right)) = (
@@ -147,13 +145,11 @@ fn account_role_counts_use_the_combined_source_without_adding_machine_records() 
     assert_eq!(
         roles[0].counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     6,
-            paused:   3,
-            exited:   0,
-            idle:     4,
-            total:    13,
+            busy:   6,
+            paused: 3,
+            exited: 0,
+            idle:   4,
+            total:  13,
         })
     );
     assert_eq!(roles[1].counts, Reading::Unavailable);
@@ -173,13 +169,11 @@ fn account_role_counts_keep_zero_states_and_source_total() {
     assert_eq!(
         reading.accounts[0].roles[0].counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     2,
-            paused:   0,
-            exited:   0,
-            idle:     3,
-            total:    8,
+            busy:   2,
+            paused: 0,
+            exited: 0,
+            idle:   3,
+            total:  8,
         })
     );
 }
@@ -200,13 +194,11 @@ fn combined_role_counts_preserve_the_source_paused_count() {
     assert_eq!(
         reading.accounts[0].roles[0].counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     5,
-            paused:   5,
-            exited:   0,
-            idle:     8,
-            total:    18,
+            busy:   5,
+            paused: 5,
+            exited: 0,
+            idle:   8,
+            total:  18,
         })
     );
 }
@@ -229,13 +221,11 @@ fn machine_role_counts_cannot_overflow_the_combined_source() {
             .roles[0]
             .counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     0,
-            paused:   0,
-            exited:   0,
-            idle:     0,
-            total:    0,
+            busy:   0,
+            paused: 0,
+            exited: 0,
+            idle:   0,
+            total:  0,
         })
     );
 }
@@ -257,26 +247,22 @@ fn combined_role_counts_keep_claude_codex_and_spare_entries_in_source_order() {
     assert_eq!(
         roles[0].counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     6,
-            paused:   3,
-            exited:   0,
-            idle:     4,
-            total:    13,
+            busy:   6,
+            paused: 3,
+            exited: 0,
+            idle:   4,
+            total:  13,
         })
     );
     assert_eq!(roles[1].role, AccountRole::Workers);
     assert_eq!(
         roles[1].counts,
         Reading::Known(RoleSessionCounts {
-            starting: 0,
-            waiting:  0,
-            busy:     2,
-            paused:   0,
-            exited:   0,
-            idle:     5,
-            total:    7,
+            busy:   2,
+            paused: 0,
+            exited: 0,
+            idle:   5,
+            total:  7,
         })
     );
     assert_eq!(roles[2].role, AccountRole::Spare);
@@ -284,13 +270,17 @@ fn combined_role_counts_keep_claude_codex_and_spare_entries_in_source_order() {
 }
 
 #[test]
-fn stored_accounts_parse_starting_and_waiting_sessions_with_their_role_counts() {
+fn stored_accounts_read_four_status_values_and_old_starting_and_waiting_as_busy() {
     let reading = AccountsReading::parse(br#"{
         "accounts":[{
             "label":"fixture-account","tool":"codex","roles":["workers"],
             "selected_roles":["workers"],
             "role_counts":[{"busy":1,"starting":2,"waiting":3,"idle":4,"paused":5,"exited":6,"total":21}],
             "sessions":[
+                {"session":"fake-busy","state":"busy"},
+                {"session":"fake-idle","state":"idle"},
+                {"session":"fake-paused","state":"paused"},
+                {"session":"fake-exited","state":"exited"},
                 {"session":"fake-starting","state":"starting"},
                 {"session":"fake-waiting","state":"waiting"}
             ],
@@ -299,23 +289,25 @@ fn stored_accounts_parse_starting_and_waiting_sessions_with_their_role_counts() 
         }],"problems":[]
     }"#).expect("stored account report");
     for (session, text, role) in [
-        ("fake-starting", "starting", Role::Busy),
-        ("fake-waiting", "waiting", Role::Waiting),
+        ("fake-busy", "busy", Role::Busy),
+        ("fake-idle", "idle", Role::Idle),
+        ("fake-paused", "paused", Role::Idle),
+        ("fake-exited", "exited", Role::Idle),
+        ("fake-starting", "busy", Role::Busy),
+        ("fake-waiting", "busy", Role::Busy),
     ] {
         let state = reading.sessions.get(session);
-        assert_eq!(state.text(), text);
-        assert_eq!(state.color_role(), role);
+        assert_eq!(state.text(), text, "{session}");
+        assert_eq!(state.color_role(), role, "{session}");
     }
     assert_eq!(
         reading.accounts[0].roles[0].counts,
         Reading::Known(RoleSessionCounts {
-            busy:     1,
-            starting: 2,
-            waiting:  3,
-            idle:     4,
-            paused:   5,
-            exited:   6,
-            total:    21,
+            busy:   1,
+            idle:   4,
+            paused: 5,
+            exited: 6,
+            total:  21,
         })
     );
 }

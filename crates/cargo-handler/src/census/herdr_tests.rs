@@ -889,7 +889,7 @@ fn raw_pane_states_apply_to_proven_and_nested_codex_processes() {
         assert_eq!(snapshots, 1, "names and state share one snapshot");
         assert_eq!(reader.work.get(&(2, 20)), Some(&expected));
         assert_eq!(reader.panes.get(&(2, 20)), Some(&observed));
-        let painted = drawn_accounts_status(observed).expect("drawn waiting status");
+        let painted = drawn_accounts_status(observed).expect("drawn busy status");
         if status_paint.is_empty() {
             status_paint = painted;
         } else {
@@ -964,7 +964,7 @@ fn drawn_accounts_status(pane: Observed<PaneState>) -> Result<Vec<Cell>, &'stati
         crate::census::accounts::AccountsReading::parse(
             &serde_json::to_vec(&json!({
                 "accounts":[{"label":"fixture","roles":[],"use_credits":false,
-                    "sessions":[{"session":"pane-worker","state":"waiting"}]}],"problems":[]
+                    "sessions":[{"session":"pane-worker","state":"busy"}]}],"problems":[]
             }))
             .expect("accounts JSON"),
         )
@@ -986,13 +986,13 @@ fn drawn_accounts_status(pane: Observed<PaneState>) -> Result<Vec<Cell>, &'stati
             .map(|x| buffer[(x, y)].symbol())
             .collect();
         if line.contains("pane-worker")
-            && let Some(offset) = line.find("waiting")
+            && let Some(offset) = line.find("busy")
         {
             let x = u16::try_from(line[..offset].chars().count()).expect("status column");
-            return Ok((x..x + 7).map(|x| buffer[(x, y)].clone()).collect());
+            return Ok((x..x + 4).map(|x| buffer[(x, y)].clone()).collect());
         }
     }
-    Err("waiting status must draw")
+    Err("busy status must draw")
 }
 
 #[test]

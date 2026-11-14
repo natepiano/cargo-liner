@@ -505,14 +505,6 @@ fn row_details_key_shows_properties_and_long_age_then_escape_closes() -> TestRes
 
 fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &str) -> TestResult {
     let buffer = renderer.paint(app)?;
-    let director = details_test_positions(&buffer, "director-name")
-        .into_iter()
-        .last()
-        .ok_or("missing director row")?;
-    let row: String = (buffer.area.x..buffer.area.right())
-        .map(|x| buffer[(x, director.y)].symbol())
-        .collect();
-    assert!(!row.contains("waiting"), "director row: {row}");
     assert_eq!(field(&buffer, "director-name", "status")?, "busy");
     tui_pane::dispatch_key(app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     let DetailsOverlay::Open { details, .. } = &app.details_overlay else {
@@ -1001,7 +993,7 @@ fn ink_application() -> TestResult<App> {
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,
         "sessions":[{"session":"director","state":"busy"},
-        {"session":"unit","state":"waiting"},{"session":"worker","state":"idle"}]}],"problems":[]
+        {"session":"unit","state":"busy"},{"session":"worker","state":"idle"}]}],"problems":[]
     }"#,
         )
         .map_err(|error| error.to_string())?,
@@ -1019,7 +1011,7 @@ fn compare_details_tile_inks() -> TestResult {
             vec![
                 ("account", "claude1"),
                 ("role", "unit"),
-                ("status", "waiting"),
+                ("status", "busy"),
                 ("model", "opus"),
                 ("effort", "high"),
                 ("branch", "ink-branch"),

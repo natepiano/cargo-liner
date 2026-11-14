@@ -40,8 +40,8 @@ enum MetadataColumns {
     Neither,
 }
 
-#[test]
-fn waiting_workers_keep_whole_status_and_core_columns_at_phase_three_widths() {
+/// An owner with long names and one busy impl worker that waits.
+fn waiting_worker_root() -> AgentRow {
     let mut root = agent(10, "owner-with-a-long-session-name", HOUR, None);
     root.account =
         serde_json::from_value(serde_json::json!({"home":"~/.claude1","label":"claude1"}))
@@ -54,8 +54,14 @@ fn waiting_workers_keep_whole_status_and_core_columns_at_phase_three_widths() {
         MINUTE,
     );
     worker.account = root.account.clone();
+    worker.activity = AgentActivity::Active(Activity::Waiting);
     root.children.push(worker);
-    let mut cell = entry(&root, None);
+    root
+}
+
+/// The tile of `root`, with its first line as the busy impl worker.
+fn waiting_worker_cell(root: &AgentRow) -> AgentEntry<'_> {
+    let mut cell = entry(root, None);
     cell.lines[0].subject = LineSubject::ManagedThread(
         &root.children[0],
         HierarchyRole::Impl,
@@ -64,7 +70,41 @@ fn waiting_workers_keep_whole_status_and_core_columns_at_phase_three_widths() {
             pid:     root.pid,
         },
     );
-    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Waiting);
+    cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
+    cell
+}
+
+#[test]
+fn a_narrow_tile_cuts_the_activity_job_by_its_overflow_only() {
+    let root = waiting_worker_root();
+    let cell = waiting_worker_cell(&root);
+    let fitted: Vec<(u16, u16)> = (10..=100)
+        .filter_map(|width| {
+            header_spans(&cell, area(width, 12), NOW, AccountColumn::Shown)
+                .into_iter()
+                .find(|span| span.column == TreeColumn::Activity)
+                .map(|span| (width, span.columns.end - span.columns.start))
+        })
+        .collect();
+    let activity_widths: Vec<u16> = fitted.iter().map(|&(_, activity)| activity).collect();
+    let narrowest = activity_widths.iter().min().copied().unwrap_or(0);
+    let widest = activity_widths.iter().max().copied().unwrap_or(0);
+    assert!(
+        activity_widths.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{fitted:?}"
+    );
+    assert!(
+        activity_widths
+            .iter()
+            .any(|width| narrowest < *width && *width < widest),
+        "{fitted:?}"
+    );
+}
+
+#[test]
+fn waiting_workers_keep_the_whole_live_word_and_core_columns_at_phase_three_widths() {
+    let root = waiting_worker_root();
+    let cell = waiting_worker_cell(&root);
     for width in [60, 70, 90, 92] {
         let buffer = drawn_into(&cell, &[], width, 12);
         let columns = header_spans(&cell, area(width, 12), NOW, AccountColumn::Shown);
@@ -80,7 +120,7 @@ fn waiting_workers_keep_whole_status_and_core_columns_at_phase_three_widths() {
                 lines(&buffer)
             );
         }
-        let (x, y) = find(&buffer, "waiting").expect("the whole status word");
+        let (x, y) = find(&buffer, "waiting").expect("the whole live word");
         assert_eq!(
             (x..x + 7)
                 .map(|x| buffer[(x, y)].symbol())
