@@ -319,7 +319,11 @@ fn codex_session_own_rollout_draws_idle_and_then_reading_after_append() {
     let mut fixture = SessionFixture::new();
     fixture.threads[0].name = SessionName::Unnamed;
     confirm_fixture_thread(&fixture);
-    for (append, expected) in [("", "idle"), (READ, "reading"), (COMPLETE, "idle")] {
+    for (append, expected) in [
+        ("", crate::constants::MISSING_VALUE),
+        (READ, "reading"),
+        (COMPLETE, crate::constants::MISSING_VALUE),
+    ] {
         if !append.is_empty() {
             fs::OpenOptions::new()
                 .append(true)
@@ -341,7 +345,7 @@ fn codex_session_own_rollout_draws_idle_and_then_reading_after_append() {
             crate::agent_cell::detail_property_for_test(
                 &machines,
                 "pid 10",
-                "state",
+                "activity",
                 crate::census::unix_now()
             ),
             expected

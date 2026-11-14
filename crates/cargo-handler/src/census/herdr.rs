@@ -35,6 +35,7 @@ use sysinfo::System;
 #[cfg(not(target_os = "linux"))]
 use sysinfo::UpdateKind;
 
+use super::Observed;
 use super::classify;
 use super::classify::CodexSessionLink;
 use super::classify::ProcessEntry;
@@ -47,7 +48,7 @@ use crate::constants::HERDR_SUBSCRIPTION_RETRY;
 /// A pane reports work independently from its session name.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PaneWork {
+pub(super) enum PaneWork {
     Idle,
     Busy,
     #[default]
@@ -63,6 +64,29 @@ impl From<Option<&str>> for PaneWork {
                 | "none",
             ) => Self::Busy,
             _ => Self::Unknown,
+        }
+    }
+}
+
+/// Pane lifecycle is separate from the accounts session status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PaneState {
+    Open,
+    Stopped,
+    Closed,
+}
+
+impl PaneState {
+    fn observe(status: Option<&str>) -> super::Observed<Self> {
+        match status {
+            Some("stopped") => Observed::Known(Self::Stopped),
+            Some("exited" | "dead" | "closed") => Observed::Known(Self::Closed),
+            Some("idle" | "done" | "working" | "blocked" | "starting" | "running" | "none") => {
+                Observed::Known(Self::Open)
+            },
+            Some(other) => super::Observed::unknown(format!("unrecognized pane state: {other}")),
+            None => super::Observed::unknown("pane state is not reported"),
         }
     }
 }
@@ -130,6 +154,7 @@ struct HerdrReader {
     memberships:  HashMap<(PathBuf, String), PaneMembership>,
     events:       HashMap<PathBuf, PaneEvents>,
     work:         HashMap<(u32, u64), PaneWork>,
+    panes:        HashMap<(u32, u64), super::Observed<PaneState>>,
 }
 
 /// The scan uses completed answers. Only the worker reads the API.
@@ -144,6 +169,7 @@ pub(super) struct HerdrNames {
     answers:                 HashMap<(u32, u64), String>,
     initial:                 InitialAnswer,
     work:                    HashMap<(u32, u64), PaneWork>,
+    panes:                   HashMap<(u32, u64), super::Observed<PaneState>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -164,6 +190,7 @@ struct NameAnswer {
     generation: u64,
     names:      Vec<(PaneProcess, String)>,
     work:       HashMap<(u32, u64), PaneWork>,
+    panes:      HashMap<(u32, u64), super::Observed<PaneState>>,
 }
 
 #[derive(Debug, Default)]
@@ -237,7 +264,7 @@ impl HerdrNames {
         self.collect_answers();
         let clients: Vec<_> = processes
             .iter()
-            .filter(|p| p.is_codex() && !p.is_app_server())
+            .filter(|p| p.is_claude() || (p.is_codex() && !p.is_app_server()))
             .map(|p| NameClient {
                 process: PaneProcess {
                     pid:     p.pid,
@@ -270,6 +297,7 @@ impl HerdrNames {
                     });
                     self.answers.clear();
                     self.work.clear();
+                    self.panes.clear();
                     self.clients = clients;
                     self.initial = InitialAnswer::Pending;
                     // Any queued signal makes the worker take the latest snapshot.
@@ -286,6 +314,12 @@ impl HerdrNames {
         self.work.get(&(pid, started)).copied().unwrap_or_default()
     }
 
+    pub(super) fn pane(&self, pid: u32, started: u64) -> super::Observed<PaneState> {
+        self.panes.get(&(pid, started)).cloned().unwrap_or_else(|| {
+            super::Observed::unknown("no readable pane observation for this process")
+        })
+    }
+
     /// Raw fixtures use the same snapshot decoder and process matching as the socket reader.
     #[cfg(test)]
     pub(super) fn from_snapshot_for_test(processes: &[ProcessEntry], snapshot: &Value) -> Self {
@@ -297,6 +331,7 @@ impl HerdrNames {
         });
         Self {
             work: reader.work,
+            panes: reader.panes,
             ..Self::isolated()
         }
     }
@@ -307,6 +342,7 @@ impl HerdrNames {
                 if answers.generation == self.generation {
                     self.initial = InitialAnswer::Ready;
                     self.work = answers.work;
+                    self.panes = answers.panes;
                     self.answers = answers
                         .names
                         .into_iter()
@@ -369,6 +405,7 @@ impl HerdrNames {
             if answer.generation == self.generation {
                 self.initial = InitialAnswer::Ready;
                 self.work = answer.work;
+                self.panes = answer.panes;
                 self.answers = answer
                     .names
                     .into_iter()
@@ -427,6 +464,7 @@ impl NameWorker {
                             generation,
                             names,
                             work: reader.work.clone(),
+                            panes: reader.panes.clone(),
                         })
                         .is_err()
                     {
@@ -577,6 +615,25 @@ struct ForegroundProcess {
 }
 
 impl HerdrReader {
+    /// Keep lifecycle and legacy work observations from the same pane answer.
+    /// Only Codex members record `PaneWork`, so a Claude tile draws as before.
+    fn record_pane(
+        &mut self,
+        members: &[&ProcessEntry],
+        codex: &[&ProcessEntry],
+        status: Option<&str>,
+    ) {
+        self.record_work(codex, PaneWork::from(status));
+        let state = PaneState::observe(status);
+        for client in members {
+            self.panes
+                .entry((client.pid, client.started))
+                .and_modify(|value| {
+                    *value = super::Observed::unknown("process belongs to multiple panes");
+                })
+                .or_insert_with(|| state.clone());
+        }
+    }
     /// `record_work` keeps `PaneWork::Unknown` when multiple panes report the same process.
     fn record_work(&mut self, members: &[&ProcessEntry], work: PaneWork) {
         for client in members {
@@ -604,7 +661,7 @@ impl HerdrReader {
     ) {
         let clients: Vec<_> = processes
             .iter()
-            .filter(|p| p.is_codex() && !p.is_app_server())
+            .filter(|p| p.is_claude() || (p.is_codex() && !p.is_app_server()))
             .collect();
         self.addresses.retain(|&(pid, started), _| {
             clients.iter().any(|p| p.pid == pid && p.started == started)
@@ -641,9 +698,10 @@ impl HerdrReader {
     ) {
         let clients: Vec<_> = processes
             .iter()
-            .filter(|p| p.is_codex() && !p.is_app_server())
+            .filter(|p| p.is_claude() || (p.is_codex() && !p.is_app_server()))
             .collect();
         self.work.clear();
+        self.panes.clear();
         let table = classify::pid_table(processes);
         let mut names: HashMap<u32, Vec<String>> = HashMap::new();
         let mut present = HashSet::new();
@@ -711,11 +769,13 @@ impl HerdrReader {
                                 .any(|a| membership.shells.iter().any(|s| s.pid == a.pid))
                     })
                     .collect();
-                self.record_work(
+                let codex: Vec<_> = members.iter().copied().filter(|p| p.is_codex()).collect();
+                self.record_pane(
                     &members,
-                    PaneWork::from(pane.agent_status.as_ref().and_then(Value::as_str)),
+                    &codex,
+                    pane.agent_status.as_ref().and_then(Value::as_str),
                 );
-                if let [client] = members.as_slice()
+                if let [client] = codex.as_slice()
                     && let Some(name) = pane_name(
                         pane.label.as_deref(),
                         pane.terminal_title_stripped.as_deref(),

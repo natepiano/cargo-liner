@@ -55,7 +55,10 @@ mod sessions;
 use options::DispatchOptions;
 use options::DispatchPositionals;
 pub(super) use sessions::ManagedSession;
+pub(super) use sessions::RunSelection;
 pub(super) use sessions::SessionRoots;
+pub(super) use sessions::WorkerPass;
+pub(super) use sessions::current_passes;
 
 /// The legacy director identity inside a unit directory.
 pub(super) const DIRECTOR_FILE: &str = "director";

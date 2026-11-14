@@ -804,9 +804,6 @@ const fn agent_role(agent: Agent) -> Role {
     }
 }
 
-/// The status cell: the status, or [`MISSING_VALUE`].
-pub(crate) const fn status_text(row: &AgentRow) -> &str { row.activity.text() }
-
 /// The desktop cell: the desktop, or [`MISSING_VALUE`].
 pub(crate) fn desktop_text(row: &AgentRow) -> &str {
     row.desktop.as_deref().unwrap_or(MISSING_VALUE)

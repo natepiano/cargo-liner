@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::ops::Deref;
 #[cfg(unix)]
@@ -41,11 +42,16 @@ use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyRole;
 use super::HierarchySource;
+use super::Observed;
 #[cfg(test)]
 use super::SessionIdentity;
+use super::SourceHealth;
+use super::SourceRead;
+use super::UnknownReason;
 #[cfg(test)]
 use super::accounts::EMPTY_SESSION_STATES;
 use super::herdr::PaneWork;
+use super::worker_dispatch;
 use super::worker_dispatch::WorkerRole;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
@@ -113,6 +119,7 @@ impl HierarchyNotice {
 pub(crate) struct HierarchySnapshot {
     pub(crate) edges:  HierarchyEdges,
     pub(crate) notice: HierarchyNotice,
+    pub(crate) facts:  Box<super::CensusFacts>,
 }
 
 impl From<HierarchyEdges> for HierarchySnapshot {
@@ -120,6 +127,7 @@ impl From<HierarchyEdges> for HierarchySnapshot {
         Self {
             edges,
             notice: HierarchyNotice::Clear,
+            facts: crate::census::CensusFacts::default().into(),
         }
     }
 }
@@ -190,11 +198,35 @@ pub(super) enum StaffDiscovery {
 impl StaffDiscovery {
     pub(super) fn snapshot(&self) -> StaffSnapshot {
         match self {
-            Self::Disabled => StaffSnapshot::default(),
+            Self::Disabled => StaffSnapshot {
+                facts: super::CensusFacts {
+                    staff:    Observed::Known(SourceHealth::Absent),
+                    accounts: super::Observed::unknown(
+                        "the accounts read is separate from the local scan",
+                    ),
+                    workers:  Observed::Known(BTreeMap::new()),
+                },
+                ..StaffSnapshot::default()
+            },
             Self::File { setting, reader } => {
                 let source = setting.snapshot();
-                let roster = reader.roster(&source);
-                StaffSnapshot { source, roster }
+                let reading = reader.read(&source);
+                let health = reading.health();
+                let roster = match reading {
+                    SourceRead::Loaded(roster) => roster,
+                    SourceRead::Absent | SourceRead::Unreadable(_) => Arc::default(),
+                };
+                StaffSnapshot {
+                    source,
+                    roster,
+                    facts: super::CensusFacts {
+                        staff:    Observed::Known(health),
+                        accounts: super::Observed::unknown(
+                            "the accounts read is separate from the local scan",
+                        ),
+                        workers:  Observed::Known(BTreeMap::new()),
+                    },
+                }
             },
         }
     }
@@ -205,14 +237,17 @@ impl StaffDiscovery {
 pub(super) struct StaffSnapshot {
     source:            HierarchySource,
     pub(super) roster: Arc<StaffRoster>,
+    pub(super) facts:  super::CensusFacts,
 }
 
 impl StaffSnapshot {
     pub(super) fn publication(&self) -> HierarchySnapshot {
-        match self.source {
+        let mut publication: HierarchySnapshot = match self.source {
             HierarchySource::Off => HierarchyEdges::default().into(),
             HierarchySource::File(_) => self.roster.edges.clone().into(),
-        }
+        };
+        publication.facts = self.facts.clone().into();
+        publication
     }
 }
 
@@ -229,13 +264,26 @@ enum StaffFileCache {
         revision: SystemTime,
         roster:   Arc<StaffRoster>,
     },
+    Failed {
+        path:     PathBuf,
+        revision: SystemTime,
+        reason:   super::UnknownReason,
+    },
 }
 
 impl StaffFileReader {
     /// Check the mtime before reading and parsing the file.
     pub(super) fn roster(&self, source: &HierarchySource) -> Arc<StaffRoster> {
+        match self.read(source) {
+            SourceRead::Loaded(roster) => roster,
+            SourceRead::Absent | SourceRead::Unreadable(_) => Arc::default(),
+        }
+    }
+
+    /// Keep a failed file read distinct from an absent staff source.
+    pub(super) fn read(&self, source: &HierarchySource) -> super::SourceRead<Arc<StaffRoster>> {
         let HierarchySource::File(path) = source else {
-            return Arc::default();
+            return SourceRead::Absent;
         };
         let path = path
             .strip_prefix("~/")
@@ -245,22 +293,44 @@ impl StaffFileReader {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Ok(mut file) = fs::File::open(&path) else {
-            *cache = StaffFileCache::Unread;
-            return Arc::default();
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                *cache = StaffFileCache::Unread;
+                return if error.kind() == ErrorKind::NotFound {
+                    SourceRead::Absent
+                } else {
+                    SourceRead::Unreadable(UnknownReason(format!("{}: {error}", path.display())))
+                };
+            },
         };
-        let Ok(metadata) = file.metadata() else {
-            *cache = StaffFileCache::Unread;
-            return Arc::default();
-        };
-        let Ok(revision) = metadata.modified() else {
-            *cache = StaffFileCache::Unread;
-            return Arc::default();
+        let metadata = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                *cache = StaffFileCache::Unread;
+                return SourceRead::Unreadable(UnknownReason(format!(
+                    "{}: {error}",
+                    path.display()
+                )));
+            },
         };
         if !metadata.is_file() {
             *cache = StaffFileCache::Unread;
-            return Arc::default();
+            return SourceRead::Unreadable(UnknownReason(format!(
+                "{} is not a file",
+                path.display()
+            )));
         }
+        let revision = match metadata.modified() {
+            Ok(revision) => revision,
+            Err(error) => {
+                *cache = StaffFileCache::Unread;
+                return SourceRead::Unreadable(UnknownReason(format!(
+                    "{}: {error}",
+                    path.display()
+                )));
+            },
+        };
         if let StaffFileCache::Read {
             path: previous,
             revision: modified,
@@ -269,20 +339,42 @@ impl StaffFileReader {
             && previous == &path
             && modified == &revision
         {
-            return Arc::clone(roster);
+            return SourceRead::Loaded(Arc::clone(roster));
+        }
+        if let StaffFileCache::Failed {
+            path: previous,
+            revision: modified,
+            reason,
+        } = &*cache
+            && previous == &path
+            && modified == &revision
+        {
+            return SourceRead::Unreadable(reason.clone());
         }
         let mut bytes = Vec::new();
-        if file.read_to_end(&mut bytes).is_err() {
+        if let Err(error) = file.read_to_end(&mut bytes) {
             *cache = StaffFileCache::Unread;
-            return Arc::default();
+            return SourceRead::Unreadable(UnknownReason(error.to_string()));
         }
-        let roster = Arc::new(StaffRoster::parse(&bytes).unwrap_or_default());
+        let roster = match StaffRoster::parse(&bytes) {
+            Ok(roster) => Arc::new(roster),
+            Err(error) => {
+                let reason = UnknownReason(error.to_string());
+                *cache = StaffFileCache::Failed {
+                    path,
+                    revision,
+                    reason: reason.clone(),
+                };
+                return SourceRead::Unreadable(reason);
+            },
+        };
         *cache = StaffFileCache::Read {
             path,
             revision,
             roster: Arc::clone(&roster),
         };
-        roster
+        drop(cache);
+        SourceRead::Loaded(roster)
     }
 }
 
@@ -406,6 +498,43 @@ struct StaffMembership {
     parent:  StaffManager,
     role:    StaffWorkerRole,
     kind:    StaffKind,
+    run:     StaffRunPointer,
+}
+
+/// The staff source names an absolute directory for one current unit run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "PathBuf")]
+pub(super) struct RunId(PathBuf);
+
+impl TryFrom<PathBuf> for RunId {
+    type Error = &'static str;
+    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+        if path.is_absolute() {
+            Ok(Self(path))
+        } else {
+            Err("the staff run path is not absolute")
+        }
+    }
+}
+
+impl RunId {
+    pub(super) fn path(&self) -> &Path { &self.0 }
+}
+
+/// A unit has one current run or no run.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum StaffRunPointer {
+    Current(RunId),
+    #[default]
+    NoRun,
+}
+
+impl StaffRunPointer {
+    fn from_staff<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The staff file uses a path or null at its external boundary.
+        Option::<RunId>::deserialize(deserializer).map(|run| run.map_or(Self::NoRun, Self::Current))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -532,6 +661,8 @@ struct StaffFields {
     role:            Option<Value>,
     #[serde(default)]
     home:            Option<Value>,
+    #[serde(default, deserialize_with = "StaffRunPointer::from_staff")]
+    run:             StaffRunPointer,
 }
 
 struct StaffRow {
@@ -657,6 +788,84 @@ pub(super) enum ProducerMembership {
 }
 
 impl StaffRoster {
+    pub(super) fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.sessions.keys().map(String::as_str)
+    }
+
+    /// Only the current run's pass map supplies a unit's worker links.
+    /// An unreadable map supplies none; the director's activity start keeps its reason.
+    pub(super) fn for_current_runs(&self) -> Self {
+        let mut roster = self.clone();
+        for (director, pointer) in self.unit_runs() {
+            let passes = match pointer {
+                StaffRunPointer::Current(run) => {
+                    match worker_dispatch::current_passes(run.path()) {
+                        SourceRead::Loaded(passes) => passes,
+                        SourceRead::Absent | SourceRead::Unreadable(_) => Vec::new(),
+                    }
+                },
+                StaffRunPointer::NoRun => Vec::new(),
+            };
+            let current: BTreeSet<_> = passes.iter().map(|pass| pass.worker.as_str()).collect();
+            let removed: BTreeSet<_> = self.members.iter().filter(|(id, member)| {
+                matches!(member.kind, StaffKind::Worker)
+                    && matches!(&member.parent, StaffManager::Session(parent) if parent == director)
+                    && !current.contains(id.as_str())
+            }).map(|(_, member)| member.session.clone()).collect();
+            roster
+                .edges
+                .0
+                .retain(|edge| !removed.contains(&edge.member));
+            roster
+                .members
+                .retain(|_, member| !removed.contains(&member.session));
+            roster
+                .sessions
+                .retain(|session, _| !removed.contains(session));
+            roster.astra.retain(|session, _| !removed.contains(session));
+        }
+        roster
+    }
+
+    /// Only current unit runs can supply worker records.
+    pub(super) fn current_runs(&self) -> impl Iterator<Item = (&str, &RunId)> {
+        self.unit_runs()
+            .filter_map(|(session, pointer)| match pointer {
+                StaffRunPointer::Current(run) => Some((session, run)),
+                StaffRunPointer::NoRun => None,
+            })
+    }
+
+    fn unit_runs(&self) -> impl Iterator<Item = (&str, &StaffRunPointer)> {
+        self.members
+            .values()
+            .filter(|member| matches!(member.kind, StaffKind::Unit))
+            .map(|member| (member.session.as_str(), &member.run))
+    }
+
+    /// A checked unit's pointer takes precedence over legacy directory discovery.
+    pub(super) fn unit_run(&self, session: &str) -> super::Observed<StaffRunPointer> {
+        self.sessions
+            .get(session)
+            .and_then(|id| self.members.get(id))
+            .filter(|member| matches!(member.kind, StaffKind::Unit))
+            .map_or_else(
+                || super::Observed::unknown("session has no staff unit"),
+                |member| Observed::Known(member.run.clone()),
+            )
+    }
+
+    /// The manager owns a worker's current run.
+    pub(super) fn worker_run(&self, session: &str) -> super::Observed<StaffRunPointer> {
+        if let own @ Observed::Known(_) = self.unit_run(session) {
+            return own;
+        }
+        match self.member(session) {
+            StaffMemberLookup::Managed { manager, .. } => self.unit_run(manager),
+            StaffMemberLookup::Root(_) | StaffMemberLookup::Unavailable => self.unit_run(session),
+        }
+    }
+
     /// `StaffMemberLookup` retains the checked manager state from `StaffRoster`.
     pub(super) fn member(&self, session: &str) -> StaffMemberLookup<'_> {
         let Some((id, membership)) = self
@@ -760,6 +969,7 @@ impl StaffRoster {
                     parent,
                     role: worker_role,
                     kind: member.kind,
+                    run: member.run.clone(),
                 },
             );
             if matches!(member.kind, StaffKind::Worker) {
@@ -803,6 +1013,8 @@ pub(super) fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
 /// Whether discovery answered or must preserve the last successful links.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum HierarchyAnswer {
+    /// New probes retain census observations with their hierarchy answer.
+    WithFacts(HierarchySnapshot),
     /// A successful command, or discovery explicitly turned off.
     Answered(HierarchyEdges),
     /// A configured source answered, but none of its identities occur in this scan.
@@ -1147,6 +1359,7 @@ impl HierarchyCache {
     pub(super) fn retained(&mut self, source: &HierarchySource) -> HierarchySnapshot {
         let edges = self.cached(source).edges();
         HierarchySnapshot {
+            facts: crate::census::CensusFacts::default().into(),
             edges,
             notice: self.notice,
         }
@@ -1233,11 +1446,8 @@ impl TryFrom<AstraMemberWire> for AstraMembership {
 impl AstraMembership {
     pub(super) fn session(&self) -> &str { &self.session }
     pub(super) fn home(&self) -> &Path { &self.home }
-    pub(crate) const fn work(&self) -> PaneWork { self.work }
-
-    pub(crate) const fn has_live_run(&self) -> bool {
-        matches!(self.run, AstraRunActivity::Live(_))
-    }
+    #[cfg(test)]
+    pub(super) const fn work(&self) -> PaneWork { self.work }
 
     pub(super) const fn with_run_activity(mut self, observed: AgentActivity) -> Self {
         if matches!(observed, AgentActivity::Active(Activity::Compacting)) {
@@ -1336,6 +1546,7 @@ mod tests {
             matches!(
                 reader.publication(&source),
                 StaffPublication::Ready(HierarchySnapshot {
+                    facts: _,
                     edges: HierarchyEdges(edges),
                     notice: HierarchyNotice::Clear,
                 }) if edges.is_empty()

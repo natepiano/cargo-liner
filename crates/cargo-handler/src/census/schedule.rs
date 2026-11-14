@@ -1017,6 +1017,7 @@ mod tests {
         CensusUpdate::Local {
             rows,
             hierarchy: HierarchySnapshot {
+                facts: crate::census::CensusFacts::default().into(),
                 edges: HierarchyEdges::default(),
                 notice,
             },
@@ -1279,6 +1280,7 @@ mod tests {
                 CensusUpdate::Local {
                     stage: ScanStage::Completed,
                     hierarchy: HierarchySnapshot {
+                        facts: _,
                         notice: HierarchyNotice::Failed(_),
                         ..
                     },
@@ -1371,6 +1373,7 @@ mod tests {
             CensusUpdate::Local {
                 rows:      expected,
                 hierarchy: HierarchySnapshot {
+                    facts:  crate::census::CensusFacts::default().into(),
                     edges:  retained_edges(),
                     notice: HierarchyNotice::Clear,
                 },
@@ -1560,6 +1563,7 @@ mod tests {
                 .expect("serialize failed hierarchy"),
             )
             .expect("release readded host");
+        let facts = crate::census::CensusFacts::remote_rows(&rows);
         assert_eq!(
             receiver
                 .recv_timeout(Duration::from_millis(200))
@@ -1569,6 +1573,7 @@ mod tests {
                 state: MachineState::Answered(
                     rows,
                     HierarchySnapshot {
+                        facts:  facts.into(),
                         edges:  HierarchyEdges::default(),
                         notice: HierarchyNotice::Failed(HierarchyError::ExitedUnsuccessfully),
                     }
@@ -1640,14 +1645,17 @@ mod tests {
                     .recv_timeout(Duration::from_millis(200))
                     .expect("remote answer"),
             );
+            let rows = vec![session_row(
+                "worker",
+                u32::try_from(pid).expect("small pid"),
+            )];
+            let facts = crate::census::CensusFacts::remote_rows(&rows);
             assert_eq!(
                 census.machines(&configured)[1].state,
                 &MachineState::Answered(
-                    vec![session_row(
-                        "worker",
-                        u32::try_from(pid).expect("small pid")
-                    )],
+                    rows,
                     HierarchySnapshot {
+                        facts:  facts.into(),
                         edges:  expected,
                         notice: if pid == 1 {
                             HierarchyNotice::Failed(HierarchyError::ExitedUnsuccessfully)

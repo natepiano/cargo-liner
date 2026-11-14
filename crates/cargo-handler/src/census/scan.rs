@@ -50,17 +50,23 @@ use super::AstraSessionMembership;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
+use super::Observed;
 use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
+use super::SourceHealth;
+use super::SourceRead;
 use super::WorkIdentity;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::activity;
+use super::activity::ActivityRead;
+use super::activity::DetachedRunState;
 use super::activity::LiveWorkerRun;
 use super::activity::RunDirector;
 use super::activity::RunDirectory;
+use super::activity::RunOwnership;
 use super::activity::RunRecord;
 use super::activity::RunRecords;
 use super::activity::RunSeat;
@@ -90,10 +96,13 @@ use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
 use super::herdr::HerdrNames;
 use super::hierarchy::AstraWorkerMembership;
+use super::hierarchy::FileRevision;
 use super::hierarchy::StaffFileReader;
 use super::hierarchy::StaffMemberLookup;
 use super::hierarchy::StaffRoster;
+use super::hierarchy::StaffRunPointer;
 use super::hierarchy::StaffSnapshot;
+use super::hierarchy::WorkerReference;
 use super::model::ConversationModel;
 use super::tier;
 use super::tier::PacerHistory;
@@ -116,10 +125,12 @@ use super::worker_dispatch::ManagedSession;
 use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
 use super::worker_dispatch::ResolvedWorkerDispatch;
+use super::worker_dispatch::RunSelection;
 use super::worker_dispatch::SessionRoots;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
+use super::worker_dispatch::WorkerPass;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CodexStartWindow;
@@ -140,6 +151,7 @@ use crate::constants::MESH_SEAT_FLAGS;
 use crate::constants::PROC_DIRNAME;
 use crate::constants::PROC_FD_DIRNAME;
 use crate::constants::PROCESS_RECOVERY_INTERVAL;
+use crate::constants::PROGRESS_HISTORY_STATE_FILE;
 use crate::constants::PROJECTS_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
 use crate::constants::TMUX_LIST_CLIENTS;
@@ -158,11 +170,147 @@ struct WorkerRuns {
     folded:     HashSet<u32>,
 }
 
+/// One scan joins run records and open passes through the staff pointer.
+struct CurrentRunObservations<'a> {
+    staff:     &'a StaffRoster,
+    processes: &'a [ProcessEntry],
+    records:   &'a HashMap<PathBuf, Vec<RunRecord>>,
+    health:    &'a HashMap<PathBuf, super::SourceHealth>,
+    passes:    HashMap<PathBuf, super::SourceRead<Vec<WorkerPass>>>,
+}
+
+impl CurrentRunObservations<'_> {
+    fn worker(&self, session: &str) -> super::WorkerFacts {
+        let current_run = self.staff.worker_run(session);
+        let mut facts = super::WorkerFacts {
+            current_run:      current_run.clone(),
+            pane:             Observed::unknown("no readable pane observation for this worker"),
+            runs:             Observed::unknown("worker has no readable current run"),
+            activity_started: Observed::unknown("no running detached run or open pass start"),
+        };
+        let Observed::Known(StaffRunPointer::Current(run)) = current_run else {
+            if matches!(current_run, Observed::Known(StaffRunPointer::NoRun)) {
+                facts.runs = Observed::Known(Vec::new());
+            }
+            return facts;
+        };
+        let records = self.records.get(run.path()).into_iter().flatten();
+        let mut runs = Vec::new();
+        for record in records {
+            if record.ownership(session, self.staff) == RunOwnership::Other {
+                continue;
+            }
+            if let Observed::Known(fact) = record.fact(self.processes) {
+                if fact.state == DetachedRunState::Running
+                    && let Observed::Known(stamp) = fact.started
+                    && !matches!(facts.activity_started, Observed::Known(old) if old >= stamp)
+                {
+                    facts.activity_started = Observed::Known(stamp);
+                }
+                runs.push(fact);
+            }
+        }
+        runs.sort_by(|left, right| left.id.cmp(&right.id));
+        facts.runs = match self.health.get(run.path()) {
+            Some(SourceHealth::Unreadable(reason)) => Observed::Unknown(reason.clone()),
+            Some(SourceHealth::Loaded | SourceHealth::Absent) => Observed::Known(runs),
+            None => Observed::unknown("current run records were not read"),
+        };
+        if matches!(facts.activity_started, Observed::Unknown(_)) {
+            facts.activity_started = self.pass_start(run.path(), session);
+        }
+        facts
+    }
+
+    fn pass_start(&self, directory: &Path, session: &str) -> super::Observed<u64> {
+        match self.passes.get(directory) {
+            Some(SourceRead::Loaded(passes)) => passes
+                .iter()
+                .filter(|pass| {
+                    WorkerReference::Staff {
+                        staff_id: pass.worker.clone(),
+                    }
+                    .session(self.staff)
+                        == Some(session)
+                })
+                .map(|pass| &pass.started)
+                .max_by_key(|started| match started {
+                    Observed::Known(stamp) => Some(*stamp),
+                    Observed::Unknown(_) => None,
+                })
+                .map_or_else(
+                    || super::Observed::unknown("worker has no open pass"),
+                    Clone::clone,
+                ),
+            Some(SourceRead::Unreadable(reason)) => Observed::Unknown(reason.clone()),
+            Some(SourceRead::Absent) | None => {
+                super::Observed::unknown("current run has no pass source")
+            },
+        }
+    }
+}
+
+/// `WorkerProcess` keeps a worker's process identity, or names that no process was found.
+#[derive(Clone, Copy)]
+enum WorkerProcess {
+    Running { pid: u32, started: u64 },
+    Absent,
+}
+
 /// `RunManager` distinguishes a live unit director from an unlocated run.
 #[derive(Clone, Copy)]
 enum RunManager {
     Director(u32),
     Unlocated,
+}
+
+/// Unchanged pass revisions reuse the same filtered staff roster.
+#[derive(Debug, Default)]
+enum CurrentStaff {
+    #[default]
+    Unread,
+    Selected {
+        source:    Arc<StaffRoster>,
+        revisions: Vec<(PathBuf, FileRevision)>,
+        roster:    Arc<StaffRoster>,
+    },
+}
+
+impl CurrentStaff {
+    fn select(&mut self, source: Arc<StaffRoster>) -> Arc<StaffRoster> {
+        let revisions: Vec<_> = source
+            .current_runs()
+            .map(|(_, run)| {
+                let path = run.path().join(PROGRESS_HISTORY_STATE_FILE);
+                let revision = fs::metadata(&path).map_or(FileRevision::Missing, |metadata| {
+                    super::hierarchy::FileRevision::of(&metadata)
+                });
+                (path, revision)
+            })
+            .collect();
+        if let Self::Selected {
+            source: previous,
+            revisions: old,
+            roster,
+        } = self
+            && Arc::ptr_eq(previous, &source)
+            && old == &revisions
+        {
+            return Arc::clone(roster);
+        }
+        let selected = source.for_current_runs();
+        let roster = if selected.session_ids().count() == source.session_ids().count() {
+            Arc::clone(&source)
+        } else {
+            Arc::new(selected)
+        };
+        *self = Self::Selected {
+            source,
+            revisions,
+            roster: Arc::clone(&roster),
+        };
+        roster
+    }
 }
 
 /// `ResolvedWorkerRun` shares one worker identity across all scan consumers.
@@ -290,6 +438,9 @@ pub(super) struct LocalScanner {
     worker_names:        WorkerNames,
     worker_commands:     WorkerCommands,
     session_roots:       SessionRoots,
+    worker_facts:        BTreeMap<String, super::WorkerFacts>,
+    activity_starts:     HashMap<String, ActivityRead>,
+    current_staff:       CurrentStaff,
     /// Where desktop information comes from for this scanner.
     desktop_source:      DesktopSource,
     /// What `KWin` and tmux last answered, kept for
@@ -424,7 +575,8 @@ impl LocalScanner {
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) -> StaffSnapshot {
         self.resolve_codex_sessions(processes, home);
-        let staff = startup_log::startup_stage("staff", || self.staff.snapshot());
+        let mut staff = startup_log::startup_stage("staff", || self.staff.snapshot());
+        staff.roster = self.current_staff.select(staff.roster);
         self.worker_names.set_staff(Arc::clone(&staff.roster));
         let mut rows = startup_log::startup_stage("classify_agents", || {
             let threads = classify::linked_threads(&self.codex_links);
@@ -454,6 +606,8 @@ impl LocalScanner {
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &staff.roster);
         apply_astra_work(&mut rows, &self.herdr);
+        self.complete_worker_facts(&rows, processes, &staff.roster);
+        staff.facts.workers = Observed::Known(self.worker_facts.clone());
         publish(ScanStage::Completed, rows, &staff);
         self.publication = LocalPublication::CompletedAnswerPublished;
         staff
@@ -502,6 +656,9 @@ impl LocalScanner {
             worker_names: WorkerNames::default(),
             worker_commands: WorkerCommands::default(),
             session_roots: SessionRoots::production(),
+            worker_facts: BTreeMap::new(),
+            activity_starts: HashMap::new(),
+            current_staff: CurrentStaff::default(),
             processes: ProcessCensus::default(),
             run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
@@ -551,11 +708,13 @@ impl LocalScanner {
             self.herdr_probe_wait,
         );
         let mut rows = Vec::new();
-        let snapshot = self.scan_staged(|_, answer, _| rows = answer);
+        let mut snapshot = self.scan_staged(|_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links, deadline);
         apply_astra_work(&mut rows, &self.herdr);
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &snapshot.roster);
+        self.complete_worker_facts(&rows, &[], &snapshot.roster);
+        snapshot.facts.workers = Observed::Known(self.worker_facts.clone());
         (rows, snapshot)
     }
 
@@ -1090,6 +1249,91 @@ impl LocalScanner {
     }
 
     /// Read every required run directory before selecting the latest run for each thread.
+    fn record_worker_facts(
+        &mut self,
+        staff: &StaffRoster,
+        processes: &[ProcessEntry],
+        records: &HashMap<PathBuf, Vec<RunRecord>>,
+        health: &HashMap<PathBuf, super::SourceHealth>,
+    ) {
+        let passes = staff
+            .current_runs()
+            .map(|(_, run)| (run.path().to_owned(), self.session_roots.passes(run.path())))
+            .collect();
+        let observations = CurrentRunObservations {
+            staff,
+            processes,
+            records,
+            health,
+            passes,
+        };
+        self.worker_facts = staff
+            .session_ids()
+            .map(|session| (session.to_owned(), observations.worker(session)))
+            .collect();
+    }
+
+    /// Use the displayed activity while retaining its source timestamp.
+    fn complete_worker_facts(
+        &mut self,
+        rows: &[AgentRow],
+        processes: &[ProcessEntry],
+        staff: &StaffRoster,
+    ) {
+        for row in rows {
+            for id in row.session_id.ids() {
+                let process = WorkerProcess::Running {
+                    pid:     row.pid,
+                    started: row.process_started,
+                };
+                self.complete_worker_fact(id, row.activity, process, staff);
+            }
+            for child in &row.children {
+                if let CodexThreadId::Recorded(id) = &child.thread_id {
+                    let process = processes
+                        .iter()
+                        .find(|process| Some(process.pid) == child.pid)
+                        .map_or(WorkerProcess::Absent, |process| WorkerProcess::Running {
+                            pid:     process.pid,
+                            started: process.started,
+                        });
+                    self.complete_worker_fact(id, child.activity, process, staff);
+                }
+            }
+        }
+        self.activity_starts
+            .retain(|session, _| self.worker_facts.contains_key(session));
+    }
+
+    fn complete_worker_fact(
+        &mut self,
+        id: &str,
+        activity: AgentActivity,
+        process: WorkerProcess,
+        staff: &StaffRoster,
+    ) {
+        let facts = self
+            .worker_facts
+            .entry(id.to_owned())
+            .or_insert_with(|| super::WorkerFacts {
+                current_run:      staff.worker_run(id),
+                pane:             super::Observed::unknown("worker has no pane observation"),
+                runs:             super::Observed::unknown("worker has no current run records"),
+                activity_started: super::Observed::unknown(
+                    "worker has no current run or open pass",
+                ),
+            });
+        if let WorkerProcess::Running { pid, started } = process {
+            facts.pane = self.herdr.pane(pid, started);
+        }
+        let read = self
+            .activity_starts
+            .entry(id.to_owned())
+            .or_insert_with(|| activity::ActivityRead::from_activity(activity));
+        read.observe(activity, &facts.activity_started);
+        facts.activity_started = read.started();
+    }
+
     fn read_worker_runs<'t>(
         &mut self,
         processes: &[ProcessEntry],
@@ -1108,9 +1352,13 @@ impl LocalScanner {
             .collect();
         let staff = self.worker_names.staff_snapshot();
         let mut records = HashMap::new();
-        let active_units = self.session_roots.live_directories(processes);
+        let mut active_units = self.session_roots.live_directories(processes);
+        active_units.extend(staff.current_runs().map(|(_, run)| run.path().to_owned()));
+        let mut health = HashMap::new();
         for directory in &active_units {
-            self.read_run_session(directory, &live_processes, &mut records);
+            let read = self.run_records.current(directory);
+            health.insert(directory.clone(), read.health);
+            records.insert(directory.clone(), read.records);
         }
         self.read_rollout_runs(thread_ids, rows, &live_processes, &mut records);
         let live = VerificationProcesses::new(processes).live_runs(records.values().flatten());
@@ -1125,6 +1373,12 @@ impl LocalScanner {
                     }
                     None
                 });
+        drop(live);
+        records.retain(|directory, _| {
+            self.session_roots.selection(directory, &staff) == RunSelection::Current
+        });
+        self.record_worker_facts(&staff, processes, &records, &health);
+        let live = VerificationProcesses::new(processes).live_runs(records.values().flatten());
         let resolved = resolved_worker_runs(&live, &sessions, &directors, &staff);
         let activities = run_activities(&resolved);
         let mut answer = WorkerRuns {
@@ -3250,6 +3504,9 @@ mod tests {
             worker_names:        WorkerNames::default(),
             worker_commands:     WorkerCommands::default(),
             session_roots:       SessionRoots::new([]),
+            worker_facts:        BTreeMap::new(),
+            activity_starts:     HashMap::new(),
+            current_staff:       CurrentStaff::default(),
 
             desktop_source: DesktopSource::Windows(Vec::new()),
             desktops:       None,
@@ -3657,6 +3914,7 @@ mod hierarchy_publication_tests {
             CensusUpdate::Local {
                 rows:      Vec::new(),
                 hierarchy: HierarchySnapshot {
+                    facts:  crate::census::CensusFacts::default().into(),
                     edges:  edges.clone(),
                     notice: HierarchyNotice::NoSessionMatched,
                 },
@@ -3670,6 +3928,7 @@ mod hierarchy_publication_tests {
             CensusUpdate::Local {
                 rows:      Vec::new(),
                 hierarchy: HierarchySnapshot {
+                    facts:  crate::census::CensusFacts::default().into(),
                     edges:  edges.clone(),
                     notice: HierarchyNotice::NoSessionMatched,
                 },
@@ -3683,6 +3942,7 @@ mod hierarchy_publication_tests {
             CensusUpdate::Local {
                 rows:      Vec::new(),
                 hierarchy: HierarchySnapshot {
+                    facts: crate::census::CensusFacts::default().into(),
                     edges,
                     notice: HierarchyNotice::NoSessionMatched
                 },
@@ -3699,6 +3959,10 @@ mod activity_scan_tests;
 #[cfg(test)]
 #[path = "scan/codex_home_tests.rs"]
 mod codex_home_tests;
+
+#[cfg(test)]
+#[path = "scan/current_run_repair_tests.rs"]
+mod current_run_repair_tests;
 
 #[cfg(test)]
 #[path = "subagent_activity_tests.rs"]

@@ -210,13 +210,13 @@ struct DiskFileIdentity {
     inode:  u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DiskModificationTime {
     Available(SystemTime),
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DiskFile {
     bytes:    u64,
     modified: DiskModificationTime,
@@ -231,7 +231,7 @@ struct DiskUsageIndex {
     directories:                  BTreeSet<PathBuf>,
     directory_children:           BTreeMap<PathBuf, HashSet<OsString>>,
     #[cfg(unix)]
-    identities:                   HashMap<DiskFileIdentity, HashSet<PathBuf>>,
+    identities:                   HashMap<DiskFileIdentity, BTreeSet<PathBuf>>,
     visited_entries:              usize,
     identity_entries_examined:    usize,
     aggregation_entries_examined: usize,
@@ -355,22 +355,22 @@ impl DiskUsageIndex {
         }
         let file = DiskFile::from(metadata);
         #[cfg(unix)]
-        let affected = self
-            .file_aliases(&path)
-            .into_iter()
-            .chain(
-                self.identities
-                    .get(&file.identity)
-                    .into_iter()
-                    .flatten()
-                    .cloned(),
-            )
-            .collect();
+        let aliases_changed = self.alias_record(file.identity) != Some(file);
+        #[cfg(unix)]
+        let affected = {
+            let mut affected = self.removal_contributors(&path);
+            match self.identities.get(&file.identity) {
+                Some(aliases) if aliases_changed => affected.extend(aliases.iter().cloned()),
+                Some(aliases) => affected.extend(aliases.first().cloned()),
+                None => {},
+            }
+            affected
+        };
         #[cfg(not(unix))]
         let affected = HashSet::from([path.clone()]);
         self.change_contributions(&affected, ContributionChange::Removed);
         #[cfg(unix)]
-        if let Some(paths) = self.identities.get(&file.identity) {
+        if aliases_changed && let Some(paths) = self.identities.get(&file.identity) {
             for path in paths {
                 self.identity_entries_examined += 1;
                 if let Some(existing) = self.files.get_mut(path) {
@@ -389,13 +389,29 @@ impl DiskUsageIndex {
         self.change_contributions(&affected, ContributionChange::Added);
     }
 
+    /// The record that every alias of `identity` shares.
     #[cfg(unix)]
-    fn file_aliases(&self, path: &Path) -> HashSet<PathBuf> {
-        self.files
+    fn alias_record(&self, identity: DiskFileIdentity) -> Option<DiskFile> {
+        self.identities
+            .get(&identity)
+            .and_then(BTreeSet::first)
+            .and_then(|alias| self.files.get(alias))
+            .copied()
+    }
+
+    /// The paths whose contribution can change when `path` leaves its alias group:
+    /// `path`, the alias that counts the group's bytes, and the alias next in line.
+    #[cfg(unix)]
+    fn removal_contributors(&self, path: &Path) -> HashSet<PathBuf> {
+        let mut affected = HashSet::from([path.to_path_buf()]);
+        if let Some(aliases) = self
+            .files
             .get(path)
             .and_then(|file| self.identities.get(&file.identity))
-            .cloned()
-            .unwrap_or_else(|| HashSet::from([path.to_path_buf()]))
+        {
+            affected.extend(aliases.iter().take(2).cloned());
+        }
+        affected
     }
 
     fn change_contributions(&mut self, paths: &HashSet<PathBuf>, change: ContributionChange) {
@@ -408,7 +424,7 @@ impl DiskUsageIndex {
             let bytes = if self
                 .identities
                 .get(&file.identity)
-                .and_then(|aliases| aliases.iter().min())
+                .and_then(BTreeSet::first)
                 == Some(path)
             {
                 file.bytes
@@ -423,7 +439,7 @@ impl DiskUsageIndex {
 
     fn remove_file(&mut self, path: &Path) {
         #[cfg(unix)]
-        let affected = self.file_aliases(path);
+        let affected = self.removal_contributors(path);
         #[cfg(not(unix))]
         let affected = HashSet::from([path.to_path_buf()]);
         self.change_contributions(&affected, ContributionChange::Removed);
@@ -501,6 +517,9 @@ impl From<&Metadata> for DiskFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    const HARD_LINK_ALIASES: usize = 64;
 
     #[test]
     fn session_log_updates_only_changed_paths() -> std::io::Result<()> {
@@ -622,6 +641,34 @@ mod tests {
         fs::remove_dir_all(&target)?;
         tracker.record_change(&target);
         assert_eq!(tracker.refresh().entries[0].1.total, before.total - 11);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_link_group_scan_reads_each_alias_a_few_times() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = AbsolutePath::from(directory.path());
+        let original = root.join("post-commit");
+        fs::write(&original, [0_u8; 100])?;
+        for alias in 1..HARD_LINK_ALIASES {
+            fs::hard_link(&original, root.join(format!("post-commit-{alias:02}")))?;
+        }
+        let tracker = DiskUsageMeasurements::default().for_tree(DiskUsageTree {
+            root_abs_path: root.clone(),
+            entries:       vec![root],
+        });
+        let update = tracker.refresh();
+        assert_eq!(update.entries[0].1.total, 100);
+        assert!(
+            update.aggregation_entries_examined <= 3 * HARD_LINK_ALIASES,
+            "the scan read {} file records for {HARD_LINK_ALIASES} aliases",
+            update.aggregation_entries_examined
+        );
+        assert_eq!(
+            update.identity_entries_examined, 0,
+            "the scan rewrote alias records that did not change"
+        );
         Ok(())
     }
 
