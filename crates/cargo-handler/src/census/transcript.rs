@@ -1277,6 +1277,63 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_assistant_record_takes_its_top_level_effort_and_message_model() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "effort":"high", "message":{
+                "model":"claude-opus-4-6", "content":[]
+            }})
+            .to_string()],
+        );
+        let read = TranscriptModels::default().read(&path);
+        assert_eq!(read.model, ModelName::Opus);
+        assert_eq!(read.effort, ReasoningEffort::High);
+    }
+
+    #[test]
+    fn claude_effort_prefers_the_top_level_and_keeps_it_through_records_without_effort() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[
+                json!({"type":"assistant", "effort":"xhigh", "message":{
+                    "model":"claude-opus-4-6", "effort":"low"
+                }})
+                .to_string(),
+                json!({"type":"assistant", "message":{"model":"claude-opus-4-6"}}).to_string(),
+                json!({"type":"user", "effort":"low", "message":{"content":"next"}}).to_string(),
+            ],
+        );
+        let read = TranscriptModels::default().read(&path);
+        assert_eq!(read.model, ModelName::Opus);
+        assert_eq!(read.effort, ReasoningEffort::XHigh);
+    }
+
+    #[test]
+    fn a_large_claude_transcript_with_top_level_effort_reads_only_its_tail() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        let padding = "x".repeat(4 * 1024 * 1024);
+        let body = json!({"type":"user", "message":{"content":padding}});
+        let assistant = json!({"type":"assistant", "effort":"medium", "message":{
+            "model":"claude-sonnet-4-5", "content":[{"type":"text","text":"done"}]
+        }});
+        write_lines(&path, &[body.to_string(), assistant.to_string()]);
+        let mut reads = TranscriptModels::default();
+        let read = reads.read(&path);
+        assert_eq!(read.model, ModelName::Sonnet);
+        assert_eq!(read.effort, ReasoningEffort::Medium);
+        assert!(
+            reads.bytes_read <= TRANSCRIPT_TAIL_START,
+            "a recorded effort reads only the tail: {} bytes",
+            reads.bytes_read
+        );
+    }
+
+    #[test]
     fn unchanged_claude_metadata_does_not_read_the_file_again() {
         let directory = TempDir::new().expect("transcript directory");
         let path = directory.path().join("session.jsonl");

@@ -40,7 +40,7 @@ fn drawn_job(prompt: &str) -> String {
         .iter()
         .find_map(|tile| match tile {
             AgentTile::Agent(entry) => Some(entry),
-            AgentTile::Unassigned(_) => None,
+            AgentTile::Pooled(_) => None,
         })
         .expect("root with work has its own tile");
     let area = Rect::new(0, 0, 220, 12);

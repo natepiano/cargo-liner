@@ -886,7 +886,7 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
             .collect()
     } else {
         vec![
-            serde_json::json!({"kind":"shell","depth":0,"pid":11,"name":"palette-focus-away","started":100}),
+            serde_json::json!({"kind":"shell","depth":0,"pid":11,"name":"focus-away","started":100}),
         ]
     };
     (palette_owner_rows(rows, children, family), targets)
@@ -910,7 +910,7 @@ fn palette_owner_rows(
             serde_json::from_value(serde_json::json!({
                 "agent":"claude","pid":20,"session_id":"palette-away","name":"palette-away",
                 "started":100,"directory":"/fixture","children":[
-                    {"kind":"shell","depth":0,"pid":21,"name":"palette-focus-away","started":100}
+                    {"kind":"shell","depth":0,"pid":21,"name":"focus-away","started":100}
                 ]
             }))
             .expect("second focus surface"),
@@ -970,7 +970,7 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
         let original_ink = row_ink(&original, label, word);
         app.click(position(&original, label));
         if !active {
-            app.click(position(&layout, "palette-focus-away"));
+            app.click(position(&layout, "focus-away"));
         }
         let selected = renderer.paint(&mut app, CLOCK);
         let point = position(&selected, label);

@@ -176,6 +176,7 @@ Directory, branch, activity, and account leave in that relative order.
 Subagents and threads show `worker`.
 Shells and unlabeled sessions show an empty role.
 Only a producer record in the staff source supplies the producer role.
+Each producer draws as a flat row of the one `producers` tile, never in an unassigned tile.
 Activity names the assigned work, including `impl`, `test`, `fix`, and `reviewer`.
 A timer shows `timer` and its countdown in Activity.
 A compacting session shows `compacting` instead of its assigned job.
@@ -207,13 +208,14 @@ The theme files supply its bright yellow color for dark and light appearances.
 The job and the other activity words keep their existing inks.
 
 Age remains a computed sort value.
-Showrunner and unassigned tiles start in session name order.
+Showrunner, producers, and unassigned tiles start in session name order.
 Other trees and the top-level agents table keep their age defaults.
 Neither table draws an age column or an age sort marker.
 A name default retains its session header arrow.
 The details view groups values into agent, hierarchy, location, and now sections.
 Its hierarchy section shows the accepted showrunner, unit, and worker names.
 Unassigned sessions and shells show their full name instead.
+A shell's name value is its full command, and `y` copies it.
 The details view shows the long age last in the now section.
 The agent section contains account, model, effort, and type.
 The now section contains activity, status, and age, in that order.

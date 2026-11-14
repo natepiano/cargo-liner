@@ -128,13 +128,13 @@ fn unassigned_sessions_without_a_role_draw_no_role_column() {
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned pool");
     let rect = area(160, 10);
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         pool,

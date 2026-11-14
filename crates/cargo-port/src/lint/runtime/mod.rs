@@ -1,3 +1,9 @@
+mod command;
+mod handle;
+mod request;
+mod run_lock;
+mod supervisor;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -25,6 +31,18 @@ use std::time::Instant;
 use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Local;
+use command::RunAttempt;
+use command::RunCommandsConfig;
+use command::publish_status;
+use command::run_commands_for_project;
+use handle::ChildSlot;
+pub use handle::RuntimeHandle;
+use handle::SupervisorMsg;
+pub use request::RegisterProjectRequest;
+pub use request::project_is_eligible;
+use supervisor::project_still_runnable;
+pub(crate) use supervisor::read_status_from_disk;
+pub use supervisor::spawn;
 
 use super::cache_size_index;
 use super::constants::DEFER_EXIT_CODE;
@@ -61,22 +79,3 @@ use crate::constants::LINTS_LATEST_JSON;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
-
-mod command;
-mod handle;
-mod request;
-mod run_lock;
-mod supervisor;
-
-use command::RunAttempt;
-use command::RunCommandsConfig;
-use command::publish_status;
-use command::run_commands_for_project;
-use handle::ChildSlot;
-pub use handle::RuntimeHandle;
-use handle::SupervisorMsg;
-pub use request::RegisterProjectRequest;
-pub use request::project_is_eligible;
-use supervisor::project_still_runnable;
-pub(crate) use supervisor::read_status_from_disk;
-pub use supervisor::spawn;

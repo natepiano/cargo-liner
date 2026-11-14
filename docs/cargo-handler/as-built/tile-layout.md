@@ -12,6 +12,7 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 | --- | --- |
 | `tiles.rs` | `TileKey` and `AgentCell` identities. |
 | `agent_cell.rs` | Tree lines, grouping, population, measurement, fitting, and demand. |
+| `shell_command.rs` | The short command that a shell line draws. |
 | `render/mod.rs` | Frame preparation, grid demand, selection areas, and styled titles. |
 | `summary/mod.rs` | Machine groups, root membership, and summary layout. |
 | `summary/age.rs` | Shared age text and `AgeLayout`. |
@@ -23,16 +24,21 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 
 ### Groups and tree rows
 
-`TileKey` distinguishes `Agent(AgentCell)` from `Unassigned { machine }`.
+`TileKey` has three kinds: `Agent(AgentCell)`, `Producers`, and `Unassigned { machine }`.
 `group_tiles` groups roots after hue assignment.
-A root with managed members or drawable work belongs in its hierarchy tile and the summary's session table.
+A root that staff names a producer belongs in the one producers tile.
+That tile holds the producers of every machine, each as a flat root with its work below it.
+A producer row adds its machine to its name when the tile holds more than one machine.
+Any other root with managed members or drawable work belongs in its hierarchy tile and the summary's session table.
 A root without hierarchy belongs in its machine's unassigned tile.
 It does not also appear as a summary session row.
-An empty unassigned pool has no tile.
+`TilePool` names the two pools, and `PooledEntry` draws both with the shared tree table.
+An empty pool has no tile.
+The producers tile comes before the first unassigned tile.
 Pool identity survives individual sessions entering and leaving.
-Its title is `unassigned · <machine>` in the theme title ink.
+The titles are `producers` and `unassigned · <machine>`, in the theme title ink.
 
-`RootPresentation` supplies that membership decision.
+`RootPresentation` supplies the summary membership decision, and producers do not change it.
 Machine heading counts follow the sessions that the summary lists.
 Count text uses `top-level agent` or `top-level agents`.
 The unassigned count follows the current pooled rows.
@@ -44,6 +50,8 @@ Headings omit age and detailed state words.
 Expansion actions and redraw deadlines use the same account status source as the frame.
 `ChildLine` classifies work, carriers, and separate sessions exhaustively.
 Shells, subagents, and worker threads draw once as work lines.
+A shell line draws its short command: each path argument shows as its file name.
+Quotes, redirections, URLs and other arguments stay as the command wrote them.
 Carrier processes contribute kept descendants without drawing another line.
 A managed session or thread leaves its former owner's work list.
 Cross-machine descendants retain their machine label.
@@ -95,14 +103,21 @@ Population and ages still consider complete rows.
 3. Remove directory.
 4. Remove type.
 5. Remove branch.
-6. Cut session names to the remaining width.
-7. Remove account only below the session minimum.
-8. Remove role.
-9. Remove activity.
-10. Remove status.
+6. Add back each removed column of steps 1-5, in the reverse order, while it fits.
+7. Cut session names to the remaining width.
+8. Remove account only below the session minimum.
+9. Remove role.
+10. Remove activity.
+11. Remove status.
 
-Each step acts only when the current columns exceed the available width.
+Each remove step acts only when the current columns exceed the available width.
+Step 6 adds back only columns that the tile's rows fill, and each keeps its display position.
+Thus effort and model return when directory drops and frees the width they need.
+The fit of all tiles at one x adds back only columns that one of those tiles keeps.
 The session minimum holds the session header and the deepest tree guides.
+Shell lines add only their guides to the session width.
+Agent and thread rows set that width, and a longer shell command ends in `…`.
+Thus a shell line never widens its own tile or a neighbor tile.
 Matching fitted groups merge after each step.
 Trees in one screen column share the fitted session width.
 `FittedTreeColumns` supplies headers, values, and painted header spans together.

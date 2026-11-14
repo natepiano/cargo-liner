@@ -57,7 +57,7 @@ fn grouped(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
                     AccountColumn::Hidden,
                     &FooterColors::default(),
                 ),
-                AgentTile::Unassigned(entry) => agent_cell::draw_unassigned(
+                AgentTile::Pooled(entry) => agent_cell::draw_pooled(
                     &mut buffer,
                     area,
                     entry,
@@ -113,10 +113,7 @@ fn reviewer_plan_process_without_session_record_draws_review_in_the_unassigned_t
         let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
         let grouped_tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000);
-        assert!(matches!(
-            grouped_tiles.as_slice(),
-            [AgentTile::Unassigned(_)]
-        ));
+        assert!(matches!(grouped_tiles.as_slice(), [AgentTile::Pooled(_)]));
         assert_eq!(rows[0].role_fallback, RoleFallback::Review);
         assert_eq!(rows[0].activity, AgentActivity::Unreported);
         let tiles = grouped(rows, HierarchyEdges::default());

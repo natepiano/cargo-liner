@@ -379,7 +379,7 @@ fn select_work(app: &mut App, identity: &SelectedRow) {
 }
 
 #[test]
-fn recorded_pidless_subagent_hides_children_and_enter_toggles_them() {
+fn recorded_pidless_subagent_hides_children_and_toggle_shows_them() {
     let mut app = application_with_work(&serde_json::json!([
         {"depth":0,"kind":"subagent","work_id":{"Recorded":"task-a"},
          "name":"pidless worker","started":110},
@@ -399,11 +399,9 @@ fn recorded_pidless_subagent_hides_children_and_enter_toggles_them() {
             id:      "task-a".into(),
         },
     );
-    let enter =
-        crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
-    tui_pane::dispatch_key(&mut app, enter);
+    dispatch(&mut app, HandlerExpansionAction::Toggle);
     assert!(paint(&mut app).contains("nested command"));
-    tui_pane::dispatch_key(&mut app, enter);
+    dispatch(&mut app, HandlerExpansionAction::Toggle);
     assert!(!paint(&mut app).contains("nested command"));
 }
 

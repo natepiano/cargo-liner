@@ -1900,14 +1900,15 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 #### As-built
 
 - Enter grows the focused cell (the summary or a command cell) from its grid rectangle to the full grid area with the grid's cell travel clock and easing; Esc shrinks it to the rectangle the grid gives it on that frame, and focus stays on the same cell. A cell whose command ends returns the view to the grid.
-- `GridView::{Grid, Opening, Expanding, Expanded, Collapsing}` (`crates/cargo-tile/src/grid_view.rs`) owns the view state. `Opening` accepts Enter before the first expanded paint; keys the expanded cell does not consume stay Unhandled there, so global keys such as `q` still work (private `CellKey` classification).
+- `tui_pane::FullScreenView` (`crates/tui_pane/src/tiles/full_screen.rs`) owns the view state `{Grid, Opening, Expanding, Expanded, Collapsing}`, the shown cell and its motion clock. cargo-tile's `GridView` (`crates/cargo-tile/src/grid_view.rs`) is `FullScreenView<InvocationId, CellScroll>`; `grid_view.rs` keeps the cell keys and the scroll. `Opening` accepts Enter before the first expanded paint; keys the expanded cell does not consume stay Unhandled there, so global keys such as `q` still work (private `CellKey` classification).
 - `ExpandedCell` (render.rs) implements `TileCells` and uses the grid's one cell draw path in the larger rectangle. Up/Down/PageUp/PageDown/Home/End scroll its rows. `CellColumnHeader::{Absent, Row(u16)}` (`render/cell_paint.rs`, carried in `CellPaintReach` and `PaintedCellContents`) records the painted header row; `ExpandedCell::draw` copies it onto the first inner row, the footer stays on the last, and the frame readout shows the shown range without the header.
 - Expanded preparation keeps its own retained frame with shared command measurements (`render/frame_preparation.rs`); frame preparation inputs include the `GridView`, the expanded identity, the scroll and the motion time.
 - Toast placement protects the painted summary frames and the moving cell during `Expanding` and `Collapsing`, and the expanded cell alone in `Expanded`.
-- Status bar: `enter expand` (grid) and `esc collapse` (expanded) with two cells on both sides; `GlobalSlotFit::AfterUptime` (`tui_pane` bar/status_line.rs) marks a hint slot that gives way before uptime; `? shortcuts` keeps its place with one trailing cell. One hint styler in `tui_pane` bar/support.rs serves keymap hints and the fixed `esc collapse` hint. The keymap has `global.expand = enter` ("Expand the focused cell").
+- Status bar: `enter expand` (grid) and `esc collapse` (expanded) with two cells on both sides; `GlobalSlotFit::AfterUptime` (`tui_pane` bar/status_line.rs) marks a hint slot that gives way before uptime; `? shortcuts` keeps its place with one trailing cell. One hint styler in `tui_pane` bar/support.rs serves keymap hints and the fixed `esc collapse` hint. `FullScreenView::status_hint` gives the slot, and cargo-handler uses it too. The keymap has `global.expand = enter` ("Expand the focused cell").
 
 **Files:**
-- `crates/cargo-tile/src/grid_view.rs` — `GridView` and its clock.
+- `crates/tui_pane/src/tiles/full_screen.rs` — `FullScreenView`, its motion clock and `status_hint`.
+- `crates/cargo-tile/src/grid_view.rs` — the `GridView` alias, the cell keys and the scroll.
 - `crates/cargo-tile/src/render.rs` — `ExpandedCell`, toast protection, status hints, view tests.
 - `crates/cargo-tile/src/render/frame_preparation.rs` — the expanded preparation path.
 - `crates/cargo-tile/src/render/cell_paint.rs` — `CellColumnHeader`.
@@ -2636,7 +2637,7 @@ The CI point gives validation three Git settings in `GIT_CONFIG_COUNT`: `url.<pu
 
 **Gotchas:** a caller's `GIT_CONFIG_COUNT` reaches every test process. A test that counts Git processes or names a read route depends on the `[env]` entry.
 
-### Phase 58m — The cargo-berth rebase hooks run faster  · status: todo
+### Phase 58m — The cargo-berth rebase hooks run faster  · status: done
 
 **Depends on:** Phase 58k (its split tests and its times).
 
@@ -2648,29 +2649,19 @@ After Phase 58k, five lifecycle tests still run one real rebase each and stay ne
 4. `outstanding_rebase_uses_its_integration_target_as_the_new_anchor` — 1.164 s (load 41), 0.379 s (load 36)
 5. `rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint` — 1.002 s (load 41), 0.340-0.361 s (load 36)
 
-Under strace, each commit in a stopped rebase starts a post-commit `cargo-berth drift --full` (0.10-0.36 s each). `rebase --continue` starts about 35 reference-transaction hook processes. A further test split cannot remove that cost.
+#### As-built
 
-#### Work Order
+- Measurement only. No product or test code changed.
+- A process trace of `split_rebase_captures_stacked_branches_rewritten_with_update_refs` shows 146 process starts in the test. Git started the `reference-transaction` hook 104 times: about 35 ref transactions, each in its `preparing`, `prepared` and `committed` states. The hook script starts the binary only 2 times, both for `refs/heads` moves in `committed`. The other 102 runs end in shell builtins.
+- The post-commit hook ran `drift --full` 4 times. During a rebase, `drift::execute` stops at its first check, and a bare binary start costs 1.6 ms on natedev. A shell skip in the post-commit hook saves about 0.05 s per test and moves the rewrite reconciliation of other worktrees to the next command. It is not made.
+- A `/bin/sh` start costs 1.3 ms on natedev. Git sets the number of hook starts, so cargo-berth cannot remove the main cost of a real rebase.
+- Results, natedev crate gate at load 19 (16 of 32 threads), 1,388 tests: split rebase 0.56 s, `upper_checkpoint_*` lower first 0.45 s and upper first 0.39 s, `outstanding_rebase_*` 0.24 s, `rebase_onto_another_reservation_*` 0.25 s. Alone at load 17-20: 0.13-0.30 s. The Phase 58k times of 1.0-1.4 s were at load 36-41.
+- Of the 21 other tests at 1.0-1.5 s in the Phase 58k gate, none reached 1 s. Two other tests did: `trunk_gate_checks_successor_recorded_against_another_target` 1.01 s and `a_second_commit_to_an_answered_working_tree_incursion_reopens_it` 1.23 s. Alone they run 0.15 s and 0.17 s; the load rose to 55 during that gate.
+- Director review only (no workers).
 
-**Goal:** the cargo-berth rebase hooks do less work, so the five tests run under 1 s on natedev.
+**Files:** none outside this plan.
 
-**Spec:**
-
-1. Measure first. Time each hook start and each `drift --full` in one rebase of each test.
-2. Make the post-commit hook cheaper during a rebase. Each rebased commit runs `drift --full` now.
-3. Make the reference-transaction hook cheaper on `rebase --continue`. It starts about 35 processes now.
-4. Keep every assertion and every recorded hook result. Add no retry, sleep or longer wait.
-5. Report the five tests' times before and after, at the same load band.
-6. Also report the new times of the 21 other cargo-berth tests at 1.0-1.5 s in the Phase 58k crate gate.
-
-**Files:**
-
-- `crates/cargo-berth/src/` — the hook entry points, drift and the reference-transaction path
-- `crates/cargo-berth/tests/` — only where a test must name a new hook result
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. Phase 58k: the split rebase tests start from the `CONTINUED_SPLIT_*` and `SPLIT_LOWER` templates.
-
-**Acceptance gate:** `verify.sh lint cargo-berth`; `verify.sh test cargo-berth` green on natedev, the five tests under 1 s.
+**Gotchas:** a test that runs a real rebase with the managed hooks starts about 100 hook shells. Its time scales with machine load more than other tests.
 
 ### Phase 58l — Before-run templates restore at their canonical path  · status: done
 
@@ -2919,7 +2910,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 **Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
-- Pause holds the `GridView` clock (`grid_view.rs:86`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
+- Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
 - `Opening` stays private to key routing and preparation. Keep `quit_after_enter_before_the_first_paint_quits_the_app` green; add no screen label.
 
 **Forward edits from Phase 49 (director, 2026-11-07):**

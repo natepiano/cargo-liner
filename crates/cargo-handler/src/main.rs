@@ -15,6 +15,7 @@ mod interaction;
 mod keymap;
 mod render;
 mod settings;
+mod shell_command;
 mod sort;
 mod startup_log;
 mod summary;

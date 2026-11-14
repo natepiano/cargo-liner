@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::KeyCode;
 use expansion::HandlerExpansion;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -28,6 +29,7 @@ use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
+use tui_pane::FullScreenView;
 use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
@@ -184,6 +186,8 @@ pub(crate) struct App {
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:                        TileGrid,
+    /// The focused tile shown on the full pane, and its motion to and from the grid.
+    pub(crate) full_screen:                  FullScreenView<TileKey, ()>,
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) selection_area:               Rect,
     pub(crate) selections:                   Selections,
@@ -350,6 +354,7 @@ impl App {
             word_highlight_config_status,
             startup_note,
             tiles: TileGrid::new(),
+            full_screen: FullScreenView::Grid,
             selections: crate::interaction::Selections::default(),
             word_highlight: crate::word_highlight::WordHighlight::default(),
             painted_words: crate::word_highlight::PaintedWords::default(),
@@ -556,14 +561,22 @@ impl TerminalApp for App {
 
     /// The favorites modal owns every key while it is open: a key its
     /// scope does not bind is still its own, and disarms a pending
-    /// delete rather than reaching a global.
+    /// delete rather than reaching a global. Under both, Esc returns a
+    /// full-screen tile to the grid before it clears the word highlight.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         self.invalidate_body();
         if matches!(self.details_overlay, DetailsOverlay::Open { .. }) {
             keymap.dispatch_app_pane(AppPaneId::Details, bind, self);
             return KeyOutcome::Consumed;
         }
-        tui_pane::dispatch_favorites_key(self, keymap, bind)
+        if tui_pane::dispatch_favorites_key(self, keymap, bind) == KeyOutcome::Consumed {
+            return KeyOutcome::Consumed;
+        }
+        if *bind == KeyBind::from(KeyCode::Esc) && self.full_screen.is_open() {
+            self.full_screen.collapse(Instant::now());
+            return KeyOutcome::Consumed;
+        }
+        KeyOutcome::Unhandled
     }
 
     /// An attract screen that is what the display is showing owns the

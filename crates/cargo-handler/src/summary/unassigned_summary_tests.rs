@@ -9,6 +9,8 @@ use tui_pane::CellPointer;
 
 use super::*;
 use crate::agent_cell::AgentTile;
+use crate::agent_cell::PooledEntry;
+use crate::agent_cell::TilePool;
 use crate::agent_cell::TreeColumn;
 use crate::app::App;
 use crate::census::CensusUpdate;
@@ -88,21 +90,23 @@ fn apply_local(app: &mut App, rows: Vec<AgentRow>) {
     app.prune_tree_sorts();
 }
 
+/// The unassigned pool of one machine, when it has a tile.
+fn machine_pool<'t, 'a>(tiles: &'t [AgentTile<'a>], machine: &str) -> Option<&'t PooledEntry<'a>> {
+    tiles.iter().find_map(|tile| match tile {
+        AgentTile::Pooled(entry) if entry.pool == TilePool::Unassigned { machine } => Some(entry),
+        AgentTile::Agent(_) | AgentTile::Pooled(_) => None,
+    })
+}
+
 fn app_pool_buffer(app: &App, machine: &str) -> Buffer {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let tiles = agent_cell::tile_order_sorted(&placement, &app.tree_sorts, NOW);
-    let entry = tiles
-        .iter()
-        .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) if entry.machine == machine => Some(entry),
-            AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
-        })
-        .expect("machine pool exists");
+    let entry = machine_pool(&tiles, machine).expect("machine pool exists");
     let mut buffer = Buffer::empty(AREA);
-    agent_cell::draw_unassigned(
+    agent_cell::draw_pooled(
         &mut buffer,
         AREA,
         entry,
@@ -120,14 +124,8 @@ fn click_pool_header(app: &mut App, machine: &str, column: TreeColumn) {
             .machines(&app.loaded_config.config.machines.remote);
         let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let tiles = agent_cell::tile_order_sorted(&placement, &app.tree_sorts, NOW);
-        let entry = tiles
-            .iter()
-            .find_map(|tile| match tile {
-                AgentTile::Unassigned(entry) if entry.machine == machine => Some(entry),
-                AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
-            })
-            .expect("machine pool exists");
-        let span = agent_cell::unassigned_header_spans(entry, AREA, NOW, AccountColumn::Hidden)
+        let entry = machine_pool(&tiles, machine).expect("machine pool exists");
+        let span = agent_cell::pooled_header_spans(entry, AREA, NOW, AccountColumn::Hidden)
             .into_iter()
             .find(|span| span.column == column)
             .expect("requested header");
@@ -267,15 +265,9 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
     } else {
         "natedev"
     };
-    let pool = tiles
-        .iter()
-        .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) if entry.machine == machine => Some(entry),
-            AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
-        })
-        .expect(UNASSIGNED_CELL_TITLE);
+    let pool = machine_pool(tiles, machine).expect(UNASSIGNED_CELL_TITLE);
     let mut buffer = Buffer::empty(AREA);
-    agent_cell::draw_unassigned(
+    agent_cell::draw_pooled(
         &mut buffer,
         AREA,
         pool,
@@ -284,7 +276,7 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
         &FooterColors::parse("role.unassigned=purple"),
     );
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
-    let spans = agent_cell::unassigned_header_spans(pool, AREA, NOW, AccountColumn::Hidden);
+    let spans = agent_cell::pooled_header_spans(pool, AREA, NOW, AccountColumn::Hidden);
     assert!(
         spans.iter().any(|span| span.column == TreeColumn::Role),
         "the role column remains present for unlabeled sessions"
@@ -374,15 +366,9 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
             Role::Session(hue).style().fg.expect("name hue"),
         );
     }
-    let pool = tiles
-        .iter()
-        .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) if entry.machine == "natedev" => Some(entry),
-            _ => None,
-        })
-        .expect("local pool");
+    let pool = machine_pool(&tiles, "natedev").expect("local pool");
     let mut pool_buffer = Buffer::empty(AREA);
-    agent_cell::draw_unassigned(
+    agent_cell::draw_pooled(
         &mut pool_buffer,
         AREA,
         pool,

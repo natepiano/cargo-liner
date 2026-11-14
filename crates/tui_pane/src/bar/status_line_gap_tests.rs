@@ -52,6 +52,7 @@ fn a_version_note_keeps_whole_hint_groups_with_the_default_policy() -> Result<()
                     &palette,
                     StatusLineItems {
                         uptime: vec![Span::raw(" Uptime: 0s ")],
+                        disk_reads: Vec::new(),
                         navigation,
                         center,
                         notes: vec![status_line_note_spans(status.notes, &palette)],
@@ -111,6 +112,7 @@ fn rows_without_notes_draw_navigation_and_center_hints_only_as_whole_groups()
                         &palette,
                         StatusLineItems {
                             uptime: vec![Span::raw(" Uptime: 13s ")],
+                            disk_reads: Vec::new(),
                             navigation,
                             center,
                             notes: Vec::new(),
@@ -175,6 +177,7 @@ fn notes_keep_at_least_three_blank_cells_without_moving_left_hints() -> Result<(
                             &palette,
                             StatusLineItems {
                                 uptime: vec![Span::raw(uptime)],
+                                disk_reads: Vec::new(),
                                 navigation,
                                 center,
                                 notes: vec![vec![Span::raw(format!(" {note} "))]],
@@ -232,6 +235,7 @@ fn centered_hints_shift_only_when_the_note_needs_the_three_cell_gap() -> Result<
                             &palette,
                             StatusLineItems {
                                 uptime: vec![Span::raw(uptime)],
+                                disk_reads: Vec::new(),
                                 navigation: Vec::new(),
                                 center,
                                 notes: vec![vec![Span::raw(format!(" {note} "))]],
@@ -296,6 +300,7 @@ fn disk_cache_notes_drop_only_the_rightmost_hints_at_two_digit_uptimes()
                         &palette,
                         StatusLineItems {
                             uptime: vec![Span::raw(uptime.clone())],
+                            disk_reads: Vec::new(),
                             navigation,
                             center: Vec::new(),
                             notes: vec![vec![Span::raw(format!(" {note} "))]],

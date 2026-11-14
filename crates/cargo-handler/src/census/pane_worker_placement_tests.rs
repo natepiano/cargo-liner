@@ -169,7 +169,7 @@ fn drawn_tiles(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<DrawnTile> {
                     AccountColumn::Hidden,
                     &FooterColors::default(),
                 ),
-                AgentTile::Unassigned(entry) => agent_cell::draw_unassigned(
+                AgentTile::Pooled(entry) => agent_cell::draw_pooled(
                     &mut buffer,
                     area,
                     entry,
@@ -188,7 +188,7 @@ fn drawn_tiles(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<DrawnTile> {
                 .join("\n");
             match tile {
                 AgentTile::Agent(_) => DrawnTile::Managed(text),
-                AgentTile::Unassigned(_) => DrawnTile::Unassigned(text),
+                AgentTile::Pooled(_) => DrawnTile::Unassigned(text),
             }
         })
         .collect()

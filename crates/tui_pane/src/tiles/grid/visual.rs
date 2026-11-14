@@ -4,6 +4,7 @@ use super::Rect;
 use super::Slot;
 use super::TileContent;
 use super::TileDrawing;
+use super::TilePiece;
 use super::TilePlacement;
 /// A cell's content and focus appearance, apart from its geometry.
 #[derive(Clone)]
@@ -72,7 +73,16 @@ pub(super) enum LastPainted<Id> {
     Painted {
         visual:         GridVisualState<Id>,
         summary_frames: Vec<Rect>,
+        full_screen:    FullScreenPiece<Id>,
     },
+}
+
+/// The tile a full-screen view drew over the grid after the last body paint.
+pub(super) enum FullScreenPiece<Id> {
+    /// No tile draws over the grid.
+    Absent,
+    /// This tile draws over the grid, and input reads it first.
+    Drawn(TilePiece<Id>),
 }
 
 /// Whether the painted cell still owns a slot that can receive input.

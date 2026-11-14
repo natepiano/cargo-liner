@@ -87,7 +87,7 @@ fn check(appearance: Appearance) {
     let row: String = (0..240)
         .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
         .collect();
-    assert!(row.contains(" Uptime: 1m 5s CPU: — "), "{row}");
+    assert!(row.contains(" Uptime: 1m 5s CPU: — Reads/s: — "), "{row}");
     let failures = contrast::failures(
         terminal.backend().buffer(),
         &[
@@ -95,6 +95,7 @@ fn check(appearance: Appearance) {
             "Uptime:",
             "1m",
             "CPU:",
+            "Reads/s:",
             "—",
             "e enabled",
             "d disabled",

@@ -174,7 +174,7 @@ fn tiles(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Vec<String> {
                     AccountColumn::Hidden,
                     &FooterColors::default(),
                 ),
-                AgentTile::Unassigned(entry) => agent_cell::draw_unassigned(
+                AgentTile::Pooled(entry) => agent_cell::draw_pooled(
                     &mut buffer,
                     area,
                     entry,
@@ -201,13 +201,13 @@ fn unassigned_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
     let entry = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(entry) => Some(entry),
+            AgentTile::Pooled(entry) => Some(entry),
             AgentTile::Agent(_) => None,
         })
         .expect("the standalone session has an unassigned tile");
     let area = Rect::new(0, 0, 240, 18);
     let mut buffer = Buffer::empty(area);
-    agent_cell::draw_unassigned(
+    agent_cell::draw_pooled(
         &mut buffer,
         area,
         entry,

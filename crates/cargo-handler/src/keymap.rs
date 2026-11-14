@@ -209,7 +209,7 @@ mod tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED_OVERLAY_ROWS: [&str; 117] = [
+    const EXPECTED_OVERLAY_ROWS: [&str; 118] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
@@ -220,6 +220,7 @@ mod tests {
         "global.collapse_row = left",
         "global.dismiss = x",
         "global.expand_all = =",
+        "global.expand = enter",
         "global.expand_row = right",
         "global.focus_up = shift-up",
         "global.focus_down = shift-down",
@@ -253,7 +254,7 @@ mod tests {
         "global.open_global_shortcuts = ?",
         "global.attract = a",
         "global.open_details = d",
-        "global.toggle_row = enter",
+        "global.toggle_row = ",
         "global.undo_attract_replacement = u",
         "[Navigation] navigation",
         "navigation.half_page_down = ",

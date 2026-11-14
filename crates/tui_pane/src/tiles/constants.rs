@@ -255,3 +255,9 @@ pub(super) const LARGE_CONTENT_TEST_INITIAL_ROWS: usize = 5;
 #[cfg(test)]
 pub(super) const LARGE_CONTENT_TEST_MEASUREMENT_BOUND: usize =
     (LARGE_CONTENT_TEST_HEIGHT as usize + 2) * 2;
+
+/// The fixed key of the full-screen collapse hint.
+pub(super) const FULL_SCREEN_COLLAPSE_KEY: &str = "esc";
+
+/// The label of the full-screen collapse hint.
+pub(super) const FULL_SCREEN_COLLAPSE_LABEL: &str = "collapse";

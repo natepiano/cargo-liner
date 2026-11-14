@@ -78,6 +78,7 @@ use crate::constants::MISSING_VALUE;
 use crate::constants::NOTHING_RUNNING_HEIGHT;
 use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
+use crate::constants::PRODUCERS_CELL_TITLE;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TIMER_ROLE;
@@ -97,6 +98,7 @@ use crate::constants::TREE_SPACE;
 use crate::constants::TREE_STATUS_HEADER;
 use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
+use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::details::DetailProperty;
 use crate::details::RowDetails;
 use crate::details::RowDetailsLookup;
@@ -106,6 +108,7 @@ use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
 use crate::interaction::RowSpan;
 use crate::interaction::SurfaceSelection;
+use crate::shell_command;
 use crate::sort;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
@@ -144,7 +147,15 @@ pub(crate) struct AgentEntry<'a> {
     lines:                 Vec<TreeLine<'a>>,
 }
 
-impl AgentEntry<'_> {
+impl<'a> AgentEntry<'a> {
+    /// The identity of this tile's root session.
+    const fn root_identity(&self) -> RowIdentity<'a> {
+        RowIdentity {
+            machine: self.machine,
+            pid:     self.row.pid,
+        }
+    }
+
     /// The name color of a listed agent in this tile.
     fn hue_of(&self, machine: &str, pid: u32) -> Option<SessionHue> {
         if self.machine == machine && self.row.pid == pid {
@@ -550,7 +561,7 @@ impl TreeColumnPopulation {
 }
 
 /// Populated columns allowed by the account decision, with optional columns
-/// removed only in the fixed fitting order.
+/// removed only in the fixed fitting order and added back in its reverse.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct PermittedTreeColumns(TreeColumns);
 
@@ -570,6 +581,16 @@ impl PermittedTreeColumns {
     fn columns(self) -> Vec<TreeColumn> { self.0.retain(FULL_ACCOUNTS) }
 
     const fn remove(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = false; }
+
+    const fn add(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = true; }
+
+    const fn contains(self, step: ColumnDrop) -> bool { self.0.0[step.column() as usize] }
+
+    fn union(&mut self, other: Self) {
+        for (present, other) in self.0.0.iter_mut().zip(other.0.0) {
+            *present |= other;
+        }
+    }
 }
 
 /// `ColumnDrop::ORDER` defines the order for removing optional columns.
@@ -598,6 +619,14 @@ impl ColumnDrop {
         Self::Activity,
         Self::Status,
     ];
+
+    /// An optional column drops before the session cut, and a restore can add it back.
+    const fn is_optional(self) -> bool {
+        matches!(
+            self,
+            Self::Effort | Self::Model | Self::Directory | Self::Type | Self::Branch
+        )
+    }
 
     const fn column(self) -> TreeColumn {
         match self {
@@ -632,6 +661,8 @@ pub(crate) struct TreeMetrics {
     session_header_lead: SessionHeaderLead,
     ages:                AgeLayout,
     columns:             PermittedTreeColumns,
+    /// The columns the rows fill before any drop; a restore adds back only these.
+    measured_columns:    PermittedTreeColumns,
     presentation:        TreePresentation,
     alignment:           TreeColumnAlignment,
     /// The activity width that keeps each live word whole and cuts only jobs.
@@ -700,6 +731,7 @@ impl TreeMetrics {
         if matches!(other.session_header_lead, SessionHeaderLead::OverBranch) {
             self.session_header_lead = SessionHeaderLead::OverBranch;
         }
+        self.measured_columns.union(other.measured_columns);
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
         }
@@ -729,10 +761,7 @@ impl TreeMetrics {
     }
 
     fn drop_step(&mut self, step: ColumnDrop, width: u16) {
-        if matches!(
-            step,
-            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status
-        ) {
+        if !step.is_optional() {
             self.cut_session(width);
         }
         let activity = self.widths[TreeColumn::Activity as usize];
@@ -745,13 +774,10 @@ impl TreeMetrics {
             self.set_activity_width(activity);
             self.presentation = TreePresentation::Compressed;
         }
-        let spacing = match step {
-            ColumnDrop::Account | ColumnDrop::Role | ColumnDrop::Activity | ColumnDrop::Status => 1,
-            ColumnDrop::Effort
-            | ColumnDrop::Model
-            | ColumnDrop::Directory
-            | ColumnDrop::Type
-            | ColumnDrop::Branch => TABLE_COLUMN_SPACING,
+        let spacing = if step.is_optional() {
+            TABLE_COLUMN_SPACING
+        } else {
+            1
         };
         let full_fits = self.occupied_width(spacing) <= usize::from(width);
         if !full_fits || header_width(self.heading_width) > width {
@@ -786,9 +812,27 @@ impl TreeMetrics {
             .max(self.minimum_session_width());
     }
 
+    /// Add back each dropped optional column, most important first, while it
+    /// fits; a later drop can free the width that an earlier drop needed.
+    fn restore_columns(&mut self, width: u16) {
+        for &step in ColumnDrop::ORDER.iter().rev() {
+            if !step.is_optional()
+                || self.columns.contains(step)
+                || !self.measured_columns.contains(step)
+            {
+                continue;
+            }
+            self.columns.add(step);
+            if self.occupied_width(TABLE_COLUMN_SPACING) > usize::from(width) {
+                self.columns.remove(step);
+            }
+        }
+    }
+
     fn fit_step(&mut self, step: &GroupFitStep, width: u16) {
         match step {
             GroupFitStep::Drop(column) => self.drop_step(*column, width),
+            GroupFitStep::Restore => self.restore_columns(width),
             GroupFitStep::CutSession => self.cut_session(width),
             GroupFitStep::FinalMerge => {},
         }
@@ -954,6 +998,7 @@ impl TreeMeasurement {
                 session_header_lead: lead,
                 ages: AgeLayout::from_ages(ages.iter().copied()),
                 columns,
+                measured_columns: columns,
                 presentation: TreePresentation::Full,
                 alignment: TreeColumnAlignment::Measured,
                 activity_floor,
@@ -1057,9 +1102,9 @@ impl AgentTile<'_> {
     /// The same initial ordering used by drawing and the first header click.
     pub(crate) fn default_sort(&self) -> TreeSort {
         match self {
-            Self::Agent(entry) => default_tree_sort(entry.role_label, RootPresentation::Hierarchy),
-            Self::Unassigned(_) => {
-                default_tree_sort(RoleLabel::Unlabeled, RootPresentation::Unassigned)
+            Self::Agent(entry) => default_tree_sort(entry.role_label, RootTile::Own),
+            Self::Pooled(entry) => {
+                default_tree_sort(RoleLabel::Unlabeled, RootTile::Pooled(entry.pool))
             },
         }
     }
@@ -1072,7 +1117,7 @@ impl AgentTile<'_> {
     ) -> TreeMeasurement {
         match self {
             Self::Agent(entry) => TreeMeasurement::for_entry(entry, area, now, account_column),
-            Self::Unassigned(entry) => TreeMeasurement::measure(
+            Self::Pooled(entry) => TreeMeasurement::measure(
                 &entry.lines,
                 area,
                 now,
@@ -1095,7 +1140,7 @@ impl AgentTile<'_> {
     pub(crate) fn named_row_identities(&self) -> Vec<(String, SelectedRow)> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
-            Self::Unassigned(entry) => &entry.lines,
+            Self::Pooled(entry) => &entry.lines,
         };
         lines
             .iter()
@@ -1106,7 +1151,7 @@ impl AgentTile<'_> {
     pub(crate) fn row_identities(&self) -> Vec<crate::interaction::RowIdentity> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
-            Self::Unassigned(entry) => &entry.lines,
+            Self::Pooled(entry) => &entry.lines,
         };
         lines.iter().map(|line| line.identity.clone()).collect()
     }
@@ -1115,7 +1160,7 @@ impl AgentTile<'_> {
     pub(crate) fn row_spans(&self) -> Vec<RowSpan> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
-            Self::Unassigned(entry) => &entry.lines,
+            Self::Pooled(entry) => &entry.lines,
         };
         (0..lines.len()).map(RowSpan::single).collect()
     }
@@ -1123,7 +1168,7 @@ impl AgentTile<'_> {
     pub(crate) fn set_viewport(&self, viewport: &Viewport) {
         let state = match self {
             Self::Agent(entry) => &entry.viewport,
-            Self::Unassigned(entry) => &entry.viewport,
+            Self::Pooled(entry) => &entry.viewport,
         };
         *state.borrow_mut() = viewport.clone();
     }
@@ -1138,7 +1183,7 @@ impl AgentTile<'_> {
                 },
             )
             .len(),
-            Self::Unassigned(_) => 0,
+            Self::Pooled(_) => 0,
         };
         let used = u16::try_from(above)
             .unwrap_or(u16::MAX)
@@ -1154,7 +1199,7 @@ impl AgentTile<'_> {
     pub(crate) fn share_metrics(&self, metrics: TreeMetrics) {
         let sizing = match self {
             Self::Agent(entry) => &entry.sizing,
-            Self::Unassigned(entry) => &entry.sizing,
+            Self::Pooled(entry) => &entry.sizing,
         };
         *sizing.borrow_mut() = TreeSizing::Shared(metrics);
     }
@@ -1163,17 +1208,19 @@ impl AgentTile<'_> {
 /// Every fitting pass either drops its named column or merges the final sets.
 enum GroupFitStep {
     Drop(ColumnDrop),
+    Restore,
     CutSession,
     FinalMerge,
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 11] = [
+    const ORDER: [Self; 12] = [
         Self::Drop(ColumnDrop::ORDER[0]),
         Self::Drop(ColumnDrop::ORDER[1]),
         Self::Drop(ColumnDrop::ORDER[2]),
         Self::Drop(ColumnDrop::ORDER[3]),
         Self::Drop(ColumnDrop::ORDER[4]),
+        Self::Restore,
         Self::CutSession,
         Self::Drop(ColumnDrop::ORDER[5]),
         Self::Drop(ColumnDrop::ORDER[6]),
@@ -1239,11 +1286,13 @@ impl MeasuredTreeGroup {
         group.metrics.widths[TreeColumn::Status as usize] =
             status_width(group.metrics.presentation);
         match step {
-            GroupFitStep::Drop(_) | GroupFitStep::CutSession => group
+            GroupFitStep::Drop(_) | GroupFitStep::Restore | GroupFitStep::CutSession => group
                 .members
                 .iter()
                 .map(|&index| {
                     let mut metrics = group.metrics.clone();
+                    // Each tile adds back only the columns its own rows fill.
+                    metrics.measured_columns = measurements[index].metrics.measured_columns;
                     metrics.fit_step(step, group.width);
                     metrics.widths[TreeColumn::Status as usize] =
                         status_width(metrics.presentation);
@@ -1319,6 +1368,7 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             let mut metrics = group.metrics.clone();
             metrics.widths.fill(0);
             metrics.columns.0.0.fill(false);
+            metrics.measured_columns = metrics.columns;
             (metrics, group.width)
         });
         *width = (*width).min(group.width);
@@ -1330,6 +1380,8 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             .session_guide_width
             .max(group.metrics.session_guide_width);
         common.activity_floor = common.activity_floor.max(group.metrics.activity_floor);
+        // A tile draws only its own fitted columns, so the common fit adds back no other.
+        common.measured_columns.union(group.metrics.columns);
         common.activity_fit = common
             .activity_fit
             .merged(group.metrics.activity_fit, common.activity_floor);
@@ -1391,7 +1443,15 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
     }
 }
 
-impl TreeLineContent<'_> {
+impl<'a> TreeLineContent<'a> {
+    /// The census identity of the row this line draws.
+    const fn row_identity(&self) -> RowIdentity<'a> {
+        RowIdentity {
+            machine: self.machine,
+            pid:     self.row.pid,
+        }
+    }
+
     fn selection_identity(&self, ordinal: usize) -> crate::interaction::RowIdentity {
         if let DispatchLabel::Worker(dispatch) = self.dispatch_label {
             return SelectedRow::Seat {
@@ -1538,6 +1598,25 @@ impl TreeLine<'_> {
             SessionLocation::SameMachine => name,
             SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
         }
+    }
+
+    /// The drawn name: a shell command shows each path argument as its file name.
+    fn display_name(&self) -> String {
+        if self.is_shell() {
+            shell_command::short_command(&self.name())
+        } else {
+            self.name()
+        }
+    }
+
+    fn is_shell(&self) -> bool {
+        matches!(
+            self.subject,
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(_),
+                ..
+            })
+        )
     }
 
     /// The name without its machine.
@@ -1856,20 +1935,13 @@ impl TreeLine<'_> {
 
     /// The pre-sort ordering used to break equal selected values.
     fn order_key(&self) -> (u64, &str, u32) {
-        line_order(
-            RowIdentity {
-                machine: self.machine,
-                pid:     self.row.pid,
-            },
-            self.row,
-            self.subject,
-        )
+        line_order(self.row_identity(), self.row, self.subject)
     }
 
     /// Text in one active column.
     fn value(&self, column: TreeColumn, now: u64) -> String {
         match column {
-            TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
+            TreeColumn::Session => format!("{}{}", self.lead(), self.display_name()),
             TreeColumn::Role => self.role_text().to_string(),
             TreeColumn::Activity => self.activity_parts(now).text(),
             TreeColumn::Model => self.model().display_text().to_owned(),
@@ -2121,12 +2193,9 @@ pub(crate) fn session_cells(
 ) -> BTreeMap<String, SessionCells> {
     let mut cells = BTreeMap::new();
     for entry in cell_order_placed(placement) {
-        let root = match placement.root_presentation(RowIdentity {
-            machine: entry.machine,
-            pid:     entry.row.pid,
-        }) {
-            RootPresentation::Hierarchy => tile_root_line(&entry),
-            RootPresentation::Unassigned => unassigned_line(&entry),
+        let root = match root_tile(placement, entry.root_identity()) {
+            RootTile::Own => tile_root_line(&entry),
+            RootTile::Pooled(_) => pooled_line(&entry),
         };
         for line in iter::once(&root).chain(&entry.lines) {
             let thread = match line.subject {
@@ -2162,13 +2231,13 @@ pub(crate) fn session_cells(
     cells
 }
 
-/// A production-role root or the flat pool for one machine.
+/// A production-role root or one pool of flat roots.
 #[derive(Clone, Debug)]
 pub(crate) enum AgentTile<'a> {
     /// A session with its own tile.
     Agent(AgentEntry<'a>),
-    /// Sessions without a production role, with their work below each row.
-    Unassigned(UnassignedEntry<'a>),
+    /// Flat roots that share one tile, with their work below each row.
+    Pooled(PooledEntry<'a>),
 }
 
 impl AgentTile<'_> {
@@ -2176,7 +2245,7 @@ impl AgentTile<'_> {
     pub(crate) const fn full_tree_rows(&self) -> usize {
         match self {
             Self::Agent(entry) => entry.lines.len().saturating_add(1),
-            Self::Unassigned(entry) => entry.lines.len(),
+            Self::Pooled(entry) => entry.lines.len(),
         }
     }
 
@@ -2184,40 +2253,97 @@ impl AgentTile<'_> {
     pub(crate) fn key(&self) -> TileKey {
         match self {
             Self::Agent(entry) => TileKey::Agent(entry.id.clone()),
-            Self::Unassigned(entry) => TileKey::Unassigned {
-                machine: entry.machine.to_owned(),
+            Self::Pooled(entry) => entry.pool.key(),
+        }
+    }
+}
+
+/// The shared tile a flat root draws in.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum TilePool<'a> {
+    /// The producer sessions of every machine.
+    Producers,
+    /// The roots of one machine without a visible hierarchy.
+    Unassigned {
+        /// The machine shared by all roots in this pool.
+        machine: &'a str,
+    },
+}
+
+impl TilePool<'_> {
+    /// The grid identity of this pool.
+    fn key(self) -> TileKey {
+        match self {
+            Self::Producers => TileKey::Producers,
+            Self::Unassigned { machine } => TileKey::Unassigned {
+                machine: machine.to_owned(),
+            },
+        }
+    }
+
+    /// The tile title: `producers`, or `unassigned` with its machine.
+    pub(crate) fn title(self) -> String {
+        match self {
+            Self::Producers => PRODUCERS_CELL_TITLE.to_owned(),
+            Self::Unassigned { machine } => {
+                format!("{UNASSIGNED_CELL_TITLE}{HEADING_SEPARATOR}{machine}")
             },
         }
     }
 }
 
-/// Default ordering belongs to a tile's semantic role, independent of saved selections.
-fn default_tree_sort(role: RoleLabel, presentation: RootPresentation) -> TreeSort {
-    match (presentation, role) {
-        (RootPresentation::Unassigned, _)
-        | (
-            RootPresentation::Hierarchy,
-            RoleLabel::Stated(HierarchyRole::Showrunner)
-            | RoleLabel::Inferred(HierarchyRole::Showrunner),
-        ) => TreeSort {
-            column:    TreeColumn::Session,
-            direction: SortDirection::Ascending,
-        },
-        (RootPresentation::Hierarchy, _) => TreeSort::default(),
+/// Where a root session draws: its own tile, or a pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RootTile<'a> {
+    /// The root titles its own tile.
+    Own,
+    /// The root is one flat row of a pool.
+    Pooled(TilePool<'a>),
+}
+
+/// Staff producers share one tile; other roots follow their visible hierarchy.
+fn root_tile<'a>(placement: &AgentPlacement<'a>, identity: RowIdentity<'a>) -> RootTile<'a> {
+    if placement.role_label(identity) == RoleLabel::Stated(HierarchyRole::Producer) {
+        return RootTile::Pooled(TilePool::Producers);
+    }
+    match placement.root_presentation(identity) {
+        RootPresentation::Hierarchy => RootTile::Own,
+        RootPresentation::Unassigned => RootTile::Pooled(TilePool::Unassigned {
+            machine: identity.machine,
+        }),
     }
 }
 
-/// A machine's unassigned sessions, each retaining its original hue.
+/// A pool and a showrunner tile list their sessions by name.
+const POOL_SORT: TreeSort = TreeSort {
+    column:    TreeColumn::Session,
+    direction: SortDirection::Ascending,
+};
+
+/// Default ordering belongs to a tile's semantic role, independent of saved selections.
+fn default_tree_sort(role: RoleLabel, root: RootTile<'_>) -> TreeSort {
+    match (root, role) {
+        (RootTile::Pooled(_), _)
+        | (
+            RootTile::Own,
+            RoleLabel::Stated(HierarchyRole::Showrunner)
+            | RoleLabel::Inferred(HierarchyRole::Showrunner),
+        ) => POOL_SORT,
+        (RootTile::Own, _) => TreeSort::default(),
+    }
+}
+
+/// One pool's sessions, each retaining its original hue.
 #[derive(Clone, Debug)]
-pub(crate) struct UnassignedEntry<'a> {
-    sizing:             RefCell<TreeSizing>,
-    viewport:           RefCell<Viewport>,
-    /// The machine shared by all roots in this pool.
-    pub(crate) machine: &'a str,
+pub(crate) struct PooledEntry<'a> {
+    sizing:          RefCell<TreeSizing>,
+    viewport:        RefCell<Viewport>,
+    /// The pool these roots share.
+    pub(crate) pool: TilePool<'a>,
     /// Ordering shared by the flat roots and each nested sibling group.
-    sort:               TreeSort,
+    sort:            TreeSort,
     /// Flat roots followed by the existing depth-first trees below them.
-    lines:              Vec<TreeLine<'a>>,
+    lines:           Vec<TreeLine<'a>>,
 }
 
 /// Classify live tile identities without building or ordering their rows.
@@ -2226,11 +2352,9 @@ pub(crate) fn tile_keys(placement: &AgentPlacement<'_>) -> HashSet<TileKey> {
         .rows
         .iter()
         .filter(|row| row.placement == Placement::Root)
-        .map(|root| match placement.root_presentation(root.identity) {
-            RootPresentation::Unassigned => TileKey::Unassigned {
-                machine: root.identity.machine.to_owned(),
-            },
-            RootPresentation::Hierarchy => TileKey::Agent(AgentCell {
+        .map(|root| match root_tile(placement, root.identity) {
+            RootTile::Pooled(pool) => pool.key(),
+            RootTile::Own => TileKey::Agent(AgentCell {
                 machine:         root.identity.machine.to_owned(),
                 pid:             root.row.pid,
                 process_started: root.row.process_started,
@@ -2251,6 +2375,8 @@ pub(crate) fn tile_order_sorted<'a>(
 }
 
 /// Group already-colored sessions without changing the summary's entries.
+///
+/// The producers tile draws before the first unassigned tile.
 pub(crate) fn group_tiles<'a>(
     placement: &AgentPlacement<'a>,
     agents: &[AgentEntry<'a>],
@@ -2260,79 +2386,82 @@ pub(crate) fn group_tiles<'a>(
     let session_sorts = agents
         .iter()
         .map(|entry| {
-            let key = if placement.root_presentation(RowIdentity {
-                machine: entry.machine,
-                pid:     entry.row.pid,
-            }) == RootPresentation::Unassigned
-            {
-                TileKey::Unassigned {
-                    machine: entry.machine.to_owned(),
-                }
-            } else {
-                TileKey::Agent(entry.id.clone())
+            let root = root_tile(placement, entry.root_identity());
+            let key = match root {
+                RootTile::Own => TileKey::Agent(entry.id.clone()),
+                RootTile::Pooled(pool) => pool.key(),
             };
             (
                 entry.id.clone(),
-                sorts.get(&key).copied().unwrap_or_else(|| {
-                    default_tree_sort(
-                        entry.role_label,
-                        placement.root_presentation(RowIdentity {
-                            machine: entry.machine,
-                            pid:     entry.row.pid,
-                        }),
-                    )
-                }),
+                sorts
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_else(|| default_tree_sort(entry.role_label, root)),
             )
         })
         .collect();
     let mut ordered = agents.to_vec();
     sort_cells(placement, &mut ordered, &session_sorts, now);
     let mut tiles = Vec::new();
-    let mut pooled_machines = HashSet::new();
+    let mut drawn_pools = HashSet::new();
     for entry in &ordered {
-        match placement.root_presentation(RowIdentity {
-            machine: entry.machine,
-            pid:     entry.row.pid,
-        }) {
-            RootPresentation::Hierarchy => {
-                tiles.push(AgentTile::Agent(entry.clone()));
+        match root_tile(placement, entry.root_identity()) {
+            RootTile::Own => tiles.push(AgentTile::Agent(entry.clone())),
+            RootTile::Pooled(pool) => {
+                for pool in [TilePool::Producers, pool] {
+                    if drawn_pools.insert(pool) {
+                        tiles.extend(pooled_tile(placement, &ordered, pool, sorts, now));
+                    }
+                }
             },
-            RootPresentation::Unassigned if pooled_machines.insert(entry.machine) => {
-                let mut roots: Vec<_> = ordered
-                    .iter()
-                    .filter(|root| {
-                        root.machine == entry.machine
-                            && placement.root_presentation(RowIdentity {
-                                machine: root.machine,
-                                pid:     root.row.pid,
-                            }) == RootPresentation::Unassigned
-                    })
-                    .collect();
-                roots.sort_by(|left, right| {
-                    unassigned_line(left).compare(&unassigned_line(right), entry.sort, now)
-                });
-                let lines = roots
-                    .into_iter()
-                    .flat_map(|root| {
-                        iter::once(unassigned_line(root)).chain(root.lines.iter().cloned())
-                    })
-                    .collect();
-                tiles.push(AgentTile::Unassigned(UnassignedEntry {
-                    sizing: RefCell::new(TreeSizing::Local),
-                    viewport: RefCell::new(tui_pane::Viewport::new()),
-                    machine: entry.machine,
-                    sort: entry.sort,
-                    lines,
-                }));
-            },
-            RootPresentation::Unassigned => {},
         }
     }
     tiles
 }
 
+/// One pool's flat roots, each followed by its own tree; `None` when the pool is empty.
+fn pooled_tile<'a>(
+    placement: &AgentPlacement<'a>,
+    ordered: &[AgentEntry<'a>],
+    pool: TilePool<'a>,
+    sorts: &HashMap<TileKey, TreeSort>,
+    now: u64,
+) -> Option<AgentTile<'a>> {
+    let roots: Vec<_> = ordered
+        .iter()
+        .filter(|root| root_tile(placement, root.root_identity()) == RootTile::Pooled(pool))
+        .collect();
+    let first = roots.first()?;
+    let location = if roots.iter().all(|root| root.machine == first.machine) {
+        SessionLocation::SameMachine
+    } else {
+        SessionLocation::AnotherMachine
+    };
+    let sort = sorts.get(&pool.key()).copied().unwrap_or(POOL_SORT);
+    let mut rows: Vec<_> = roots
+        .into_iter()
+        .map(|root| {
+            let mut line = pooled_line(root);
+            line.location = location;
+            (line, root)
+        })
+        .collect();
+    rows.sort_by(|(left, _), (right, _)| left.compare(right, sort, now));
+    let lines = rows
+        .into_iter()
+        .flat_map(|(line, root)| iter::once(line).chain(root.lines.iter().cloned()))
+        .collect();
+    Some(AgentTile::Pooled(PooledEntry {
+        sizing: RefCell::new(TreeSizing::Local),
+        viewport: RefCell::new(tui_pane::Viewport::new()),
+        pool,
+        sort,
+        lines,
+    }))
+}
+
 /// A flat root retains its own session values and preassigned hue.
-fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
+fn pooled_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
     let mut line = TreeLine::new(TreeLineContent {
         dispatch_label: DispatchLabel::Original,
         machine:        entry.machine,
@@ -2353,7 +2482,7 @@ fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
 
 /// A tile root keeps its accepted role and uses the heading's location.
 fn tile_root_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
-    let mut root = unassigned_line(entry);
+    let mut root = pooled_line(entry);
     root.subject = LineSubject::TileRoot(entry.role_label);
     root
 }
@@ -2507,10 +2636,7 @@ fn sort_cells<'a>(
         entry.lines.clear();
         lines_of(
             &context,
-            RowIdentity {
-                machine: entry.machine,
-                pid:     entry.row.pid,
-            },
+            entry.root_identity(),
             &mut Vec::new(),
             &mut 0,
             entry.hue,
@@ -3057,8 +3183,8 @@ pub(crate) fn draw(
 }
 
 /// Header and table layout for a flat pool, using the same tree column fitter.
-fn unassigned_header(
-    entry: &UnassignedEntry<'_>,
+fn pooled_header(
+    entry: &PooledEntry<'_>,
     area: Rect,
     now: u64,
     account_column: AccountColumn,
@@ -3088,25 +3214,25 @@ fn unassigned_header(
 }
 
 /// The pool has one header followed by its flat roots and nested work.
-pub(crate) fn unassigned_height(entry: &UnassignedEntry<'_>) -> usize {
+pub(crate) fn pooled_height(entry: &PooledEntry<'_>) -> usize {
     usize::from(TABLE_HEADER_HEIGHT) + entry.lines.len()
 }
 
-/// Resolved header cells for clicks in an unassigned tile.
-pub(crate) fn unassigned_header_spans(
-    entry: &UnassignedEntry<'_>,
+/// Resolved header cells for clicks in a pooled tile.
+pub(crate) fn pooled_header_spans(
+    entry: &PooledEntry<'_>,
     area: Rect,
     now: u64,
     account_column: AccountColumn,
 ) -> Vec<HeaderSpan<TreeColumn>> {
-    unassigned_header(entry, area, now, account_column).spans
+    pooled_header(entry, area, now, account_column).spans
 }
 
 /// Draw the pool with the shared tree table, palette and sorted header.
-pub(crate) fn draw_unassigned(
+pub(crate) fn draw_pooled(
     buffer: &mut Buffer,
     area: Rect,
-    entry: &UnassignedEntry<'_>,
+    entry: &PooledEntry<'_>,
     now: u64,
     account_column: AccountColumn,
     footer_colors: &FooterColors,
@@ -3116,7 +3242,7 @@ pub(crate) fn draw_unassigned(
         header_indented(area),
         &entry.lines,
         entry.sort,
-        unassigned_header(entry, area, now, account_column),
+        pooled_header(entry, area, now, account_column),
         &TreeDraw {
             now,
             footer_colors,
@@ -3147,7 +3273,13 @@ fn tree_widths(
             }
             lines
                 .iter()
-                .map(|line| summary::cell_width(&line.cell_text(column, now, &ages)))
+                .map(|line| match column {
+                    // A shell row takes the agent rows' width and draws its guides and `…`.
+                    TreeColumn::Session if line.is_shell() => {
+                        summary::cell_width(&line.lead()).saturating_add(1)
+                    },
+                    _ => summary::cell_width(&line.cell_text(column, now, &ages)),
+                })
                 .max()
                 .unwrap_or(0)
                 .max(summary::cell_width(&column.sorted_header_text(sort, lead)))
@@ -3447,7 +3579,7 @@ fn tree_cell_line(
         let mut value = tree_value_line(
             line,
             column,
-            summary::truncated(&line.name(), usize::from(remaining)),
+            summary::truncated(&line.display_name(), usize::from(remaining)),
             now,
             footer_colors,
         );
@@ -3836,7 +3968,7 @@ impl AgentTile<'_> {
                 entry.lines.insert(0, tile_root_line(entry));
                 &mut entry.lines
             },
-            Self::Unassigned(entry) => &mut entry.lines,
+            Self::Pooled(entry) => &mut entry.lines,
         };
         let tree = expansion_tree(lines).with_level(level);
         let mut visibility = tree.visibility(expansion);
@@ -3857,7 +3989,7 @@ impl AgentTile<'_> {
                 lines.extend(entry.lines.iter().cloned());
                 expansion_tree(&lines)
             },
-            Self::Unassigned(entry) => expansion_tree(&entry.lines),
+            Self::Pooled(entry) => expansion_tree(&entry.lines),
         }
     }
 }
@@ -3984,10 +4116,7 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_)
             | LineSubject::Agent(_)
             | LineSubject::UnassignedSession
-            | LineSubject::Work(_) => RowIdentity {
-                machine: self.machine,
-                pid:     self.row.pid,
-            },
+            | LineSubject::Work(_) => self.row_identity(),
         };
         while let Some(agent) = placement
             .rows
@@ -4012,13 +4141,7 @@ impl TreeLine<'_> {
             if let Some(property) = property
                 && !named.iter().any(|(existing, _)| *existing == property)
             {
-                let name = if identity
-                    == (RowIdentity {
-                        machine: self.machine,
-                        pid:     self.row.pid,
-                    })
-                    && named.is_empty()
-                {
+                let name = if identity == self.row_identity() && named.is_empty() {
                     self.name()
                 } else {
                     agent.row.name.clone()
@@ -4173,8 +4296,12 @@ mod tests {
     mod design_ink_tests;
     #[path = "footer_color_tests.rs"]
     mod footer_color_tests;
+    #[path = "producers_tests.rs"]
+    mod producers_tests;
     #[path = "repair_tests.rs"]
     mod repair_tests;
+    #[path = "shell_command_tests.rs"]
+    mod shell_command_tests;
     #[path = "sort_tests.rs"]
     mod sort_tests;
     #[path = "subagent_row_tests.rs"]
@@ -4803,7 +4930,7 @@ mod tests {
             .expect("full width");
         let fits = drawn(&arrange, None, width);
         let cut = drawn(&arrange, None, width - 1);
-        assert!(find(&fits, "cargo nextest run -p hana_video").is_some());
+        assert!(find(&fits, "cargo nextest run").is_some());
         assert!(find(&fits, "Review the permission queue").is_some());
         assert_eq!(
             CellView::at_width(&entry, width - 1, NOW, AccountColumn::Hidden),
@@ -5096,7 +5223,7 @@ mod tests {
             "tool-based-ui-arrange",
             "Run the tests",
             "Review the permission queue",
-            "cargo nextest run -p hana_video",
+            "cargo nextest run",
         ] {
             assert_eq!(find_all(&buffer, name).len(), 1, "{name}");
         }

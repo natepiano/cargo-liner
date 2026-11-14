@@ -41,7 +41,6 @@ dark-light         = { workspace = true }
 dirs               = { workspace = true }
 processkit         = { workspace = true }
 ratatui            = { workspace = true }
-rustix             = { workspace = true, features = ["process", "time"] }
 serde              = { workspace = true, features = ["derive"] }
 sha2               = { workspace = true }
 sysinfo            = { workspace = true }
@@ -58,6 +57,11 @@ uuid = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# Reads the process CPU clock for the status line. Windows has no such clock in rustix,
+# so the status line shows no CPU reading there.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process", "time"] }
 
 # Reconstructs Plasma's wallpaper at the selected KScreen output geometry. Window geometry and
 # wallpaper configuration come from KWin and Plasma over the session D-Bus. The appearance

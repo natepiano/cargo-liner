@@ -153,8 +153,8 @@ fn column_forest() -> MachineState {
     MachineState::Answered(column_rows(), HierarchyEdges::default().into())
 }
 
-#[test]
-fn long_sessions_keep_the_four_core_columns_before_their_names() {
+/// Draw checks on a long-named showrunner tree with every optional column.
+fn with_long_session_cells(check: impl FnOnce(&AgentEntry<'_>, &[AgentEntry<'_>])) {
     let mut rows = column_rows();
     rows[0].name = "natedev-showrunner-with-a-very-long-session-name-that-must-yield-space-to-the-activity-column".into();
     rows[0].branch = Some("feature/long-branch-name".into());
@@ -189,35 +189,73 @@ fn long_sessions_keep_the_four_core_columns_before_their_names() {
         })
         .filter_map(|tile| match tile {
             AgentTile::Agent(entry) => Some(entry),
-            AgentTile::Unassigned(_) => None,
+            AgentTile::Pooled(_) => None,
         })
         .collect();
     let owner = cells.iter().find(|cell| cell.row.pid == 10).expect("owner");
-    for width in [60, 70, 90, 92] {
-        let buffer = drawn_into(owner, &cells, width, 12);
-        let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
-        let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
-        assert_eq!(
-            columns,
-            [
-                TreeColumn::Session,
-                TreeColumn::Account,
-                TreeColumn::Role,
-                TreeColumn::Activity,
-                TreeColumn::Status
-            ],
+    check(owner, &cells);
+}
+
+#[test]
+fn long_sessions_keep_the_four_core_columns_before_their_names() {
+    with_long_session_cells(|owner, cells| {
+        for width in [60, 70, 90, 92] {
+            let buffer = drawn_into(owner, cells, width, 12);
+            let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
+            let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
+            assert_eq!(
+                columns,
+                [
+                    TreeColumn::Session,
+                    TreeColumn::Account,
+                    TreeColumn::Role,
+                    TreeColumn::Activity,
+                    TreeColumn::Status
+                ],
+                "{}",
+                lines(&buffer).join("\n")
+            );
+            assert!(
+                lines(&buffer)
+                    .iter()
+                    .any(|row| row.contains("natedev-") && row.contains('…')),
+                "{}",
+                lines(&buffer).join("\n")
+            );
+        }
+        assert_column_drop_sequence(owner, cells);
+    });
+}
+
+#[test]
+fn a_dropped_directory_gives_its_width_back_to_model_and_effort() {
+    with_long_session_cells(|owner, cells| {
+        let (width, columns) = (10..=260)
+            .rev()
+            .map(|width| (width, drawn_columns(owner, width)))
+            .find(|(_, columns)| !columns.contains(&TreeColumn::Directory))
+            .expect("the directory drops");
+        let buffer = drawn_into(owner, cells, width, 12);
+        assert!(
+            columns.contains(&TreeColumn::Model) && columns.contains(&TreeColumn::Effort),
             "{}",
             lines(&buffer).join("\n")
         );
         assert!(
             lines(&buffer)
                 .iter()
-                .any(|row| row.contains("natedev-") && row.contains('…')),
+                .any(|row| row.contains("natedev-") && row.trim_end().ends_with("opus   high")),
             "{}",
             lines(&buffer).join("\n")
         );
-    }
-    assert_column_drop_sequence(owner, &cells);
+    });
+}
+
+fn drawn_columns(owner: &AgentEntry<'_>, width: u16) -> Vec<TreeColumn> {
+    header_spans(owner, area(width, 12), NOW, AccountColumn::Shown)
+        .iter()
+        .map(|span| span.column)
+        .collect()
 }
 
 #[test]
@@ -242,13 +280,13 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned pool");
     let rect = area(90, 12);
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         pool,
@@ -256,7 +294,7 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
         AccountColumn::Shown,
         &FooterColors::default(),
     );
-    let columns: Vec<_> = unassigned_header_spans(pool, rect, NOW, AccountColumn::Shown)
+    let columns: Vec<_> = pooled_header_spans(pool, rect, NOW, AccountColumn::Shown)
         .into_iter()
         .map(|span| span.column)
         .collect();
@@ -277,7 +315,21 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
     );
 }
 
+/// Columns leave in the drop order. A dropped column returns only at a width
+/// where a column later in that order leaves, and it keeps its display position.
+/// A second draw at one width gives the same buffer.
 fn assert_column_drop_sequence(owner: &AgentEntry<'_>, cells: &[AgentEntry<'_>]) {
+    const DROP_ORDER: [TreeColumn; 9] = [
+        TreeColumn::Effort,
+        TreeColumn::Model,
+        TreeColumn::Directory,
+        TreeColumn::Type,
+        TreeColumn::Branch,
+        TreeColumn::Account,
+        TreeColumn::Role,
+        TreeColumn::Activity,
+        TreeColumn::Status,
+    ];
     let full = vec![
         TreeColumn::Session,
         TreeColumn::Account,
@@ -290,41 +342,45 @@ fn assert_column_drop_sequence(owner: &AgentEntry<'_>, cells: &[AgentEntry<'_>])
         TreeColumn::Effort,
         TreeColumn::Directory,
     ];
+    let rank = |column: &TreeColumn| DROP_ORDER.iter().position(|drop| drop == column);
     let mut previous = full.clone();
     let mut dropped = Vec::new();
     for width in (10..=260).rev() {
         let buffer = drawn_into(owner, cells, width, 12);
-        let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
-        let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
+        let text = lines(&buffer).join("\n");
+        assert_eq!(
+            drawn_into(owner, cells, width, 12),
+            buffer,
+            "redraw at width {width}"
+        );
+        let columns = drawn_columns(owner, width);
         if width == 260 {
             assert_eq!(columns, full);
         }
-        for column in &previous {
-            if !columns.contains(column) {
-                dropped.push(*column);
+        assert!(
+            full.iter()
+                .filter(|column| columns.contains(column))
+                .eq(columns.iter()),
+            "positions at width {width}: {text}"
+        );
+        let left: Vec<_> = previous
+            .iter()
+            .filter(|column| !columns.contains(column))
+            .collect();
+        for column in &left {
+            if !dropped.contains(*column) {
+                dropped.push(**column);
             }
         }
-        assert!(
-            columns.iter().all(|column| previous.contains(column)),
-            "columns return at width {width}: {}",
-            lines(&buffer).join("\n")
-        );
+        for column in columns.iter().filter(|column| !previous.contains(column)) {
+            assert!(
+                left.iter().any(|later| rank(later) > rank(column)),
+                "{column:?} returns at width {width} with no later drop: {text}"
+            );
+        }
         previous = columns;
     }
-    assert_eq!(
-        dropped,
-        [
-            TreeColumn::Effort,
-            TreeColumn::Model,
-            TreeColumn::Directory,
-            TreeColumn::Type,
-            TreeColumn::Branch,
-            TreeColumn::Account,
-            TreeColumn::Role,
-            TreeColumn::Activity,
-            TreeColumn::Status
-        ]
-    );
+    assert_eq!(dropped, DROP_ORDER);
 }
 
 #[test]
@@ -339,14 +395,14 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned tile");
     for width in [65, 220] {
         let rect = area(width, 12);
         let mut buffer = Buffer::empty(rect);
-        draw_unassigned(
+        draw_pooled(
             &mut buffer,
             rect,
             pool,
@@ -364,7 +420,7 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
         }
         // Select the actual status header after the empty columns leave.
         let (x, y) = find(&buffer, "status").expect("status header");
-        let spans = unassigned_header_spans(pool, rect, NOW, AccountColumn::Hidden);
+        let spans = pooled_header_spans(pool, rect, NOW, AccountColumn::Hidden);
         assert_eq!(
             sort::header_hit(
                 &spans,
@@ -585,13 +641,13 @@ fn unassigned_rows_without_paths_keep_other_rows_branch_and_directory_columns() 
     let pool = tiles
         .iter()
         .find_map(|tile| match tile {
-            AgentTile::Unassigned(pool) => Some(pool),
+            AgentTile::Pooled(pool) => Some(pool),
             AgentTile::Agent(_) => None,
         })
         .expect("unassigned tile");
     let rect = area(220, 12);
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         pool,

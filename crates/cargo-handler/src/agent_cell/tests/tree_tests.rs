@@ -505,7 +505,7 @@ fn working_group() -> MachineState {
             1,
             ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
             Some(103),
-            "nested command",
+            "nested job",
             7 * MINUTE,
         ),
         child(
@@ -565,7 +565,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         ("clock job", "", "timer 1:00", "busy", "claude1"),
         ("unheld worker", "worker", "", "", "codex1"),
         ("review worker", "worker", "", "busy", "claude1"),
-        ("nested command", "", "", "busy", "claude1"),
+        ("nested job", "", "", "busy", "claude1"),
         ("root command", "", "", "busy", "claude2"),
     ] {
         let y = row_of(&buffer, name);
@@ -605,9 +605,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     assert!(rows[usize::from(row_of(&buffer, "unit-member"))].contains("├── unit-member"));
     assert!(rows[usize::from(row_of(&buffer, "clock job"))].contains("│ ├── clock job"));
     assert!(rows[usize::from(row_of(&buffer, "unheld worker"))].contains("│ │ └── unheld worker"));
-    assert!(
-        rows[usize::from(row_of(&buffer, "nested command"))].contains("│   └── nested command")
-    );
+    assert!(rows[usize::from(row_of(&buffer, "nested job"))].contains("│   └── nested job"));
     assert!(
         rows.last()
             .expect("last work line")
@@ -619,7 +617,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         Role::Shell.style().fg
     );
     let status_x = find(&buffer, "status").expect("status column").0;
-    for name in ["clock job", "nested command", "root command"] {
+    for name in ["clock job", "nested job", "root command"] {
         assert_eq!(
             Some(buffer[(status_x, row_of(&buffer, name))].fg),
             Role::Busy.style().fg
@@ -685,7 +683,7 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
     let cell = entry(&row, None);
     let indent = summary::cell_width(SECTION_HEADER_INDENT);
     for account_column in [AccountColumn::Hidden, AccountColumn::Shown] {
-        let full_width = (70..240)
+        let full_width = (1..240)
             .find(|&width| {
                 matches!(
                     CellView::at_width(&cell, width, NOW, account_column),
@@ -698,7 +696,7 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
             CellView::Compressed,
             "the full tree uses all available columns"
         );
-        for width in [70, full_width] {
+        for width in [full_width - 1, full_width] {
             let rows = u16::try_from(height(&cell, width, NOW, account_column))
                 .expect("the tree height fits");
             let outer = Rect::new(0, 0, width + 2, rows + 2);

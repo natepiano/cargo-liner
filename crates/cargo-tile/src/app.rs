@@ -68,7 +68,7 @@ use crate::tiles::TileGrid;
 
 #[path = "grid_view.rs"]
 mod grid_view;
-pub(crate) use grid_view::CellViewport;
+pub(crate) use grid_view::CellScroll;
 pub(crate) use grid_view::GridView;
 
 use crate::app_global_action;
@@ -391,7 +391,7 @@ impl TerminalApp for App {
         if self.framework.overlay().is_some() || matches!(self.grid_view, GridView::Grid) {
             tui_pane::handle_tile_scroll(self, position, direction);
         } else {
-            self.grid_view.scroll(direction);
+            grid_view::scroll(&mut self.grid_view, direction);
         }
     }
 
@@ -422,7 +422,7 @@ impl TerminalApp for App {
         if self.framework.overlay().is_some() {
             return KeyOutcome::Unhandled;
         }
-        self.grid_view.key(bind)
+        grid_view::key(&mut self.grid_view, bind)
     }
 
     /// An attract screen that is what the display is showing owns the

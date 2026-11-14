@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Claude rows show the effort that assistant records write at their top level.
+
+- A column that drops early, such as effort, returns when a later drop frees the width it needs.
+
+- Shell rows show path arguments as file names and end at the agent rows' width in `…`; the details view shows and copies the full command.
+
 - Keep pane workers visible and show their detached run activity without separate dispatch rows.
 
 - Codex remote option values cannot supply resume proof for staff placement.
@@ -26,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
 
 ### Added
+
+- Enter shows the focused tile on the full screen, and Esc returns it to the grid. Rows, details and word clicks work in it as in the grid.
+
+- Producers draw in their own tile, titled `producers`, before the unassigned tiles. The tile holds the producers of every machine.
 
 - Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
 
@@ -48,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+
+- Enter no longer toggles the selected row. `global.toggle_row` has no default key; Right and Left still open and close rows.
 
 - Worker units and roles come from the shared staff file instead of legacy roster and role cache files.
 

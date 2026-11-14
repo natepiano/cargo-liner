@@ -22,6 +22,9 @@ use tui_pane::CellPointer;
 use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
+use tui_pane::FullScreenSettle;
+use tui_pane::FullScreenStep;
+use tui_pane::FullScreenView;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
@@ -36,6 +39,7 @@ use tui_pane::TileCells;
 use tui_pane::TileColumnOrder;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
+use tui_pane::TileGrowth;
 use tui_pane::TileWidthFloor;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
@@ -62,10 +66,8 @@ use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
-use crate::constants::HEADING_SEPARATOR;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
-use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::details::DetailsOverlay;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
@@ -91,6 +93,7 @@ use crate::summary::SummaryLayout;
 use crate::theme::Role;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
+use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
 
 mod painted_surface;
@@ -225,15 +228,30 @@ fn draw_panes_at(
         .map_or(SelectableSurface::EmptyCell, |placement| {
             selection_surface(&placement.content)
         });
-    tui_pane::draw_tile_grid(
-        frame.buffer_mut(),
-        &mut app.tiles,
-        area,
-        growth,
-        contents,
-        &cells,
-        app.framework.color_mode,
-    );
+    let shown = contents == TileGridContents::Shown;
+    if shown && matches!(app.full_screen, FullScreenView::Expanded { .. }) {
+        app.tiles.prepare_covered(area, growth, &cells);
+    } else {
+        tui_pane::draw_tile_grid(
+            frame.buffer_mut(),
+            &mut app.tiles,
+            area,
+            growth,
+            contents,
+            &cells,
+            app.framework.color_mode,
+        );
+    }
+    if shown {
+        draw_full_screen(
+            frame.buffer_mut(),
+            &mut app.tiles,
+            &mut app.full_screen,
+            FullScreenPane { rect: area, growth },
+            &cells,
+            app.framework.color_mode,
+        );
+    }
     app.painted_words
         .refresh(&app.word_highlight, frame.buffer_mut(), || {
             app.tiles.pointer_regions()
@@ -262,6 +280,80 @@ fn draw_panes_at(
             app.tiles.focus_cell(index);
         }
     }
+}
+
+/// The pane a full-screen tile fills, and the grid settings of the tiles under it.
+#[derive(Clone, Copy)]
+struct FullScreenPane {
+    rect:   Rect,
+    growth: TileGrowth,
+}
+
+/// Draw the full-screen tile over the grid with the grid's own cell painter.
+///
+/// One allocation fits the tile's columns on its own. A tile that leaves the
+/// census, or a collapse that ends, draws the grid again, which fits the shared
+/// columns again.
+fn draw_full_screen(
+    buffer: &mut Buffer,
+    tiles: &mut TileGrid,
+    view: &mut FullScreenView<TileKey, ()>,
+    pane: FullScreenPane,
+    cells: &Cells<'_>,
+    mode: ColorMode,
+) {
+    if !view.is_open() {
+        return;
+    }
+    let FullScreenPane { rect: area, growth } = pane;
+    let placements = tiles.placements(area, growth);
+    view.resolve_opening(&placements, || ());
+    let step = view.travel(area, &placements);
+    let (content, travel) = match step {
+        FullScreenStep::Inactive => return,
+        FullScreenStep::ContentLeft => {
+            view.close();
+            redraw_grid(buffer, tiles, pane, cells, mode);
+            return;
+        },
+        FullScreenStep::Travel { content, travel } => (content, travel),
+    };
+    let present = match &content {
+        TileContent::Group(key) => matches!(cells.tile(key), TileLookup::Current(_)),
+        TileContent::Summary | TileContent::Empty(_) => true,
+    };
+    if !present {
+        view.close();
+        redraw_grid(buffer, tiles, pane, cells, mode);
+        return;
+    }
+    let (rect, repaint) = tiles.draw_cell_view(buffer, &content, travel, cells, mode);
+    if view.settle(rect, repaint) == FullScreenSettle::Closed {
+        redraw_grid(buffer, tiles, pane, cells, mode);
+    }
+}
+
+/// Clear the full-screen tile and draw the grid in its place.
+fn redraw_grid(
+    buffer: &mut Buffer,
+    tiles: &mut TileGrid,
+    pane: FullScreenPane,
+    cells: &Cells<'_>,
+    mode: ColorMode,
+) {
+    let area = pane.rect.intersection(buffer.area);
+    for position in area.positions() {
+        buffer[position].reset();
+    }
+    tui_pane::draw_tile_grid(
+        buffer,
+        tiles,
+        pane.rect,
+        pane.growth,
+        TileGridContents::Shown,
+        cells,
+        mode,
+    );
 }
 
 /// `focused_surface` reads logical focus without the held focus used during motion.
@@ -768,8 +860,8 @@ impl<'a> Cells<'a> {
             AgentTile::Agent(entry) => {
                 agent_cell::header_spans(entry, area, self.now, self.account_column)
             },
-            AgentTile::Unassigned(entry) => {
-                agent_cell::unassigned_header_spans(entry, area, self.now, self.account_column)
+            AgentTile::Pooled(entry) => {
+                agent_cell::pooled_header_spans(entry, area, self.now, self.account_column)
             },
         }
     }
@@ -895,7 +987,7 @@ impl TileCells<TileKey> for Cells<'_> {
                         AgentTile::Agent(entry) => {
                             agent_cell::height(entry, width, self.now, self.account_column)
                         },
-                        AgentTile::Unassigned(entry) => agent_cell::unassigned_height(entry),
+                        AgentTile::Pooled(entry) => agent_cell::pooled_height(entry),
                     };
                     TileDemand { id, rows }
                 })
@@ -985,7 +1077,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                TileLookup::Current(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
+                TileLookup::Current(AgentTile::Pooled(entry)) => agent_cell::draw_pooled(
                     buffer,
                     inner,
                     entry,
@@ -1006,11 +1098,8 @@ impl TileCells<TileKey> for Cells<'_> {
     fn group_title(&self, id: &TileKey) -> Option<Line<'static>> {
         self.tile(id).map_or(None, |tile| {
             Some(match tile {
-                AgentTile::Unassigned(entry) => Line::from(Span::styled(
-                    format!(
-                        "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
-                        UNASSIGNED_CELL_TITLE, entry.machine
-                    ),
+                AgentTile::Pooled(entry) => Line::from(Span::styled(
+                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.pool.title()),
                     Style::default().fg(title_color()),
                 )),
                 AgentTile::Agent(entry) => Line::from(vec![
@@ -1047,7 +1136,10 @@ fn draw_status_line_at(
     area: Rect,
     uptime_secs: u64,
 ) {
-    let globals = [StatusLineGlobal::global_shortcuts_help()];
+    let globals = [
+        app.full_screen.status_hint(AppGlobalAction::Expand),
+        StatusLineGlobal::global_shortcuts_help(),
+    ];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
@@ -1127,6 +1219,7 @@ mod tests {
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
+    use crate::constants::UNASSIGNED_CELL_TITLE;
     use crate::sort::SortDirection;
     use crate::sort::SummaryColumn;
 
@@ -1137,11 +1230,27 @@ mod tests {
     /// Rows above the status line.
     const BODY_ROWS: usize = 23;
 
-    /// The status line's left end over the grid: the uptime and the CPU reading.
-    const GRID_STATUS: &str = " Uptime: 0s CPU: —";
+    /// The two ends of an expected status line.
+    #[derive(Clone, Copy)]
+    struct StatusEnds {
+        /// The left end: the uptime, the CPU reading and any navigation.
+        left:    &'static str,
+        /// The right end after the notes: the global hints.
+        globals: &'static str,
+    }
+
+    /// Over the grid: the uptime and the CPU reading, and the expand hint before `?`.
+    const GRID_STATUS: StatusEnds = StatusEnds {
+        left:    " Uptime: 0s CPU: —",
+        globals: "  enter expand  ? shortcuts ",
+    };
     /// An overlay status line draws uptime before navigation and omits the
     /// centre action when it has no whole space before the right-side notes.
-    const OVERLAY_STATUS: &str = " Uptime: 0s CPU: —  ↑/↓ nav   tab pane";
+    /// The expand hint gives way before the navigation.
+    const OVERLAY_STATUS: StatusEnds = StatusEnds {
+        left:    " Uptime: 0s CPU: —  ↑/↓ nav   tab pane",
+        globals: "  ? shortcuts ",
+    };
 
     /// One favorite, saved in a past year: a timestamp from any year
     /// but the current one is drawn with its year, so the row reads the
@@ -1284,13 +1393,13 @@ fraying = "leading"
         "│       │   Collapse the selected row                     left         │       │",
         "│       │   Dismiss overlay / output                      x            │       │",
         "│       │   Expand all rows                               =            │       │",
+        "│       │   Expand the focused tile                       enter        │       │",
         "│       │   Expand the selected row                       right        │       │",
         "│       │   Focus the tile above                          shift-up     │       │",
         "│       │   Focus the tile below                          shift-down   │       │",
         "│       │   Focus the tile to the left                    shift-left   │       │",
         "│       │   Focus the tile to the right                   shift-right  │       │",
-        "│       │   Open attract favorites                        ctrl-o       │       │",
-        "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
+        "│       └───────────────────────────1 of 8 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1309,6 +1418,7 @@ fraying = "leading"
         "│             │   Collapse all to first level       -            │             │",
         "│             │   Collapse the selected row         left         │             │",
         "│             │   Expand all rows                   =            │             │",
+        "│             │   Expand the focused tile           enter        │             │",
         "│             │   Expand the selected row           right        │             │",
         "│             │   Focus the tile above              shift-up     │             │",
         "│             │   Focus the tile below              shift-down   │             │",
@@ -1317,8 +1427,7 @@ fraying = "leading"
         "│             │   Open attract favorites            ctrl-o       │             │",
         "│             │   Open keymap viewer                ctrl-k       │             │",
         "│             │   Open settings                     s            │             │",
-        "│             │   Quit                              q            │             │",
-        "│             │   Randomize the attract screen      r            │  r/c: 21/78 │",
+        "│             │   Quit                              q            │  r/c: 21/78 │",
         "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
@@ -1421,25 +1530,25 @@ fraying = "leading"
             .collect()
     }
 
-    /// The status line: `left` at the left edge, and the app's name, its
-    /// version, `flag` when there is one and the `?` shortcut at the
+    /// The status line: `status.left` at the left edge, and the app's name,
+    /// its version, `flag` when there is one and `status.globals` at the
     /// right edge.
-    fn status_row(left: &str, flag: Option<&str>) -> String {
+    fn status_row(status: StatusEnds, flag: Option<&str>) -> String {
+        let StatusEnds { left, globals } = status;
         let flag = flag.map_or_else(String::new, |flag| format!(" {flag}"));
-        let notes = format!("cargo-handler {APP_VERSION}{flag}  ? shortcuts ");
+        let notes = format!("cargo-handler {APP_VERSION}{flag}{globals}");
         format!(
             "{left:<width$}{notes}",
             width = usize::from(WIDTH) - notes.chars().count()
         )
     }
 
-    /// A whole expected frame: `body`, then the status line starting
-    /// with `status_left`.
-    fn frame(body: &[&str; BODY_ROWS], status_left: &str) -> Vec<String> {
+    /// A whole expected frame: `body`, then the status line with `status`.
+    fn frame(body: &[&str; BODY_ROWS], status: StatusEnds) -> Vec<String> {
         body.iter()
             .copied()
             .map(str::to_string)
-            .chain([status_row(status_left, None)])
+            .chain([status_row(status, None)])
             .collect()
     }
 
@@ -2404,6 +2513,9 @@ mod drawn_frame_tests;
 mod layout_stability_tests;
 
 #[cfg(test)]
+mod producers_tile_tests;
+
+#[cfg(test)]
 mod ranked_column_tests;
 
 /// Draw the complete frame for census placement tests, including tile titles.
@@ -2417,3 +2529,6 @@ mod details_tests;
 
 #[cfg(test)]
 mod favorites_tests;
+
+#[cfg(test)]
+mod full_screen_tests;

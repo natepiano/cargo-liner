@@ -104,7 +104,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::ArgumentDetail;
-use crate::app::CellViewport;
+use crate::app::CellScroll;
 use crate::app::GridView;
 use crate::app::ProcessHierarchy;
 use crate::app::Updates;
@@ -169,8 +169,8 @@ use std::ops::IndexMut;
 use std::sync::Arc;
 
 use cell_paint::InkSource;
-use tui_pane::CellTravel;
-use tui_pane::Repaint;
+use tui_pane::FullScreenSettle;
+use tui_pane::FullScreenStep;
 use tui_pane::RowsReadout;
 use tui_pane::Theme;
 
@@ -484,11 +484,11 @@ fn draw_visible_panes(
         draw_cell_view(frame, app, area);
         match &app.grid_view {
             GridView::Expanded { cell } => {
-                return DrawnSummaryFrames(vec![cell.displayed]);
+                return DrawnSummaryFrames(vec![cell.displayed()]);
             },
             GridView::Expanding { cell, .. } | GridView::Collapsing { cell, .. } => {
                 let mut frames = app.tiles.painted_summary_frames().to_vec();
-                frames.push(cell.displayed);
+                frames.push(cell.displayed());
                 return DrawnSummaryFrames(frames);
             },
             GridView::Grid | GridView::Opening { .. } => {},
@@ -497,58 +497,23 @@ fn draw_visible_panes(
     DrawnSummaryFrames(app.tiles.painted_summary_frames().to_vec())
 }
 
-/// Resolve the focused identity before any resolved view state can hold it.
-fn resolve_opening_cell(app: &mut App, area: Rect) {
-    let GridView::Opening { sampled, started } = app.grid_view else {
-        return;
-    };
-    let placements = app
-        .tiles
-        .placements(area, app.loaded_config.config.tiles.growth());
-    app.grid_view = match placements
-        .into_iter()
-        .find(|placement| placement.frame.is_focused())
-    {
-        Some(placement) => GridView::Expanding {
-            cell: CellViewport::new(placement.content, placement.frame.clip(), sampled),
-            started,
-        },
-        None => GridView::Grid,
-    };
-}
-
 /// Draw the selected cell through the grid's cell painter, over its unchanged grid.
 fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
-    resolve_opening_cell(app, area);
-    let state = app.grid_view.clone();
-    let (mut cell, started) = match &state {
-        GridView::Grid | GridView::Opening { .. } => return,
-        GridView::Expanding { cell, started } | GridView::Collapsing { cell, started } => {
-            (cell.clone(), *started)
-        },
-        GridView::Expanded { cell } => (cell.clone(), cell.sampled),
-    };
+    if !app.grid_view.is_open() {
+        return;
+    }
     let growth = app.loaded_config.config.tiles.growth();
     let placements = app.tiles.placements(area, growth);
-    let placement = placements
-        .iter()
-        .find(|placement| placement.content == cell.content);
-    let to = if matches!(state, GridView::Collapsing { .. }) {
-        let Some(placement) = placement else {
-            app.grid_view = GridView::Grid;
+    app.grid_view
+        .resolve_opening(&placements, CellScroll::default);
+    let (content, travel) = match app.grid_view.travel(area, &placements) {
+        FullScreenStep::Inactive => return,
+        FullScreenStep::ContentLeft => {
+            app.grid_view.close();
             restore_grid_after_collapse(frame, app, area);
             return;
-        };
-        placement.frame.clip()
-    } else {
-        area
-    };
-    let content = cell.content.clone();
-    let from = cell.origin.intersection(area);
-    let elapsed = if matches!(state, GridView::Expanded { .. }) {
-        std::time::Duration::MAX
-    } else {
-        cell.sampled.saturating_duration_since(started)
+        },
+        FullScreenStep::Travel { content, travel } => (content, travel),
     };
     let view = CommandView::new(
         app.tree,
@@ -567,43 +532,35 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
         TileContent::Summary | TileContent::Empty(_) => true,
     };
     if !command_remains {
-        app.grid_view = GridView::Grid;
+        app.grid_view.close();
         restore_grid_after_collapse(frame, app, area);
         return;
     }
-    cells.view = state.clone();
+    cells.view = app.grid_view.clone();
+    let scroll = app.grid_view.policy_mut().map_or(0, |cell| cell.scroll);
     let expanded = ExpandedCell {
         cells,
-        scroll: Cell::new(cell.scroll),
+        scroll: Cell::new(scroll),
         rows: Cell::new(0),
         shown: Cell::new(0),
     };
     let (rect, repaint) = app.tiles.draw_cell_view(
         frame.buffer_mut(),
         &content,
-        CellTravel {
-            from,
-            to: to.intersection(area),
-            elapsed,
-        },
+        travel,
         &expanded,
         app.framework.color_mode,
     );
-    cell.displayed = rect;
-    cell.scroll = expanded.scroll.get();
-    cell.rows = expanded.rows.get();
-    cell.shown = expanded.shown.get();
-    app.grid_view = match state {
-        GridView::Expanding { .. } if repaint == Repaint::NotNeeded => GridView::Expanded { cell },
-        GridView::Expanding { started, .. } => GridView::Expanding { cell, started },
-        GridView::Collapsing { .. } if repaint == Repaint::NotNeeded => {
-            restore_grid_after_collapse(frame, app, area);
-            GridView::Grid
-        },
-        GridView::Collapsing { started, .. } => GridView::Collapsing { cell, started },
-        GridView::Expanded { .. } => GridView::Expanded { cell },
-        GridView::Grid | GridView::Opening { .. } => GridView::Grid,
-    };
+    if let Some(cell) = app.grid_view.policy_mut() {
+        *cell = CellScroll {
+            scroll: expanded.scroll.get(),
+            rows:   expanded.rows.get(),
+            shown:  expanded.shown.get(),
+        };
+    }
+    if app.grid_view.settle(rect, repaint) == FullScreenSettle::Closed {
+        restore_grid_after_collapse(frame, app, area);
+    }
 }
 
 /// Remove the expanded readout before the grid paints its shorter readout.
@@ -932,17 +889,23 @@ mod expanded_view_tests {
         Ok(terminal.backend().buffer().clone())
     }
 
+    /// The cell column where `hint` starts on a one-row status line.
+    fn hint_column(status: &Buffer, hint: &'static str) -> Result<u16, Box<dyn Error>> {
+        let row = tests::buffer_rows(status).join("");
+        let (before_hint, _) = row.split_once(hint).ok_or(hint)?;
+        // Each cell holds one char; a byte offset counts "—" as three cells.
+        Ok(u16::try_from(before_hint.chars().count())?)
+    }
+
     #[test]
     fn collapse_uses_the_same_key_and_label_ink_as_expand() -> Result<(), Box<dyn Error>> {
         let mut app = app()?;
         let before = status(&app)?;
-        let before_text = tests::buffer_rows(&before).join("");
-        let enter = u16::try_from(before_text.find("enter expand").ok_or("expand hint")?)?;
+        let enter = hint_column(&before, "enter expand")?;
         press(&mut app, KeyCode::Enter);
         paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
         let after = status(&app)?;
-        let after_text = tests::buffer_rows(&after).join("");
-        let esc = u16::try_from(after_text.find("esc collapse").ok_or("collapse hint")?)?;
+        let esc = hint_column(&after, "esc collapse")?;
         assert_eq!(after[(esc, 0)].style(), before[(enter, 0)].style());
         assert_eq!(after[(esc + 4, 0)].style(), before[(enter + 6, 0)].style());
         Ok(())
@@ -1077,7 +1040,7 @@ mod expanded_view_tests {
             let GridView::Expanded { cell } = &app.grid_view else {
                 return Err("the summary must stay expanded".into());
             };
-            assert_eq!(cell.scroll, 5);
+            assert_eq!(cell.policy().scroll, 5);
         }
         Ok(())
     }
@@ -4602,14 +4565,15 @@ impl FrameTableColumnGrid {
         })
     }
 
-    /// Choose this table's gap after its column reductions.
+    /// Choose this table's gap after its column reductions; the wide gap
+    /// must leave room for the command and its header.
     fn preferred_column_spacing(&self, width: u16) -> u16 {
         let fitted = self.columns_for_command_name(width);
         table_column_spacing(
             fitted.value_width,
             &fitted.constraints,
             &fitted.columns,
-            self.longest_command_width,
+            self.longest_command_width.max(self.command_title_width),
         )
     }
 
@@ -4625,10 +4589,12 @@ impl FrameTableColumnGrid {
                 continue;
             };
             // Argument tails have already yielded to the subcommand in Short view.
+            // The header must fit too, or it draws cut.
             let command_width = match self.view.arguments {
                 ArgumentDetail::Default => table.short.min(table.subcommand),
                 ArgumentDetail::All => table.full.saturating_sub(TABLE_CONTINUATION_CLEARANCE),
-            };
+            }
+            .max(self.command_title_width);
             let fixed = fitted
                 .constraints
                 .iter()
@@ -8033,16 +7999,8 @@ fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).u
 /// slots named here, so `?` lands in the bottom-right corner and stays
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
-    let hint = if matches!(app.grid_view, GridView::Grid) {
-        StatusLineGlobal::app(AppGlobalAction::Expand)
-    } else {
-        StatusLineGlobal::fixed(
-            crate::constants::COLLAPSE_HINT_KEY,
-            crate::constants::COLLAPSE_HINT_LABEL,
-        )
-    };
     let globals = [
-        hint.after_uptime(),
+        app.grid_view.status_hint(AppGlobalAction::Expand),
         StatusLineGlobal::global_shortcuts_help(),
     ];
     let mut notes = vec![StatusLineNote {
@@ -20124,7 +20082,9 @@ mod tests {
                 }
             })
             .collect();
-        let mut roster = Roster::new();
+        // The CI macOS runner's size: narrow cpu and mem columns pack the most cells.
+        let mut roster =
+            Roster::for_test(SessionColumnWidths::for_machine(3, 7 * BYTES_PER_GIBIBYTE));
         roster.observe(groups, Instant::now());
         roster
     }

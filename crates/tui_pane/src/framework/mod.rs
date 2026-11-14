@@ -61,6 +61,8 @@ use crate::VisualDeadline;
 use crate::bar::cpu::CpuReading;
 use crate::bar::cpu::CpuSampler;
 use crate::bar::cpu::ProcessCpuTime;
+use crate::bar::disk_reads::DiskReadRate;
+use crate::bar::disk_reads::DiskReadSampler;
 use crate::copy;
 use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
@@ -97,6 +99,7 @@ pub struct Framework<Ctx: AppContext> {
     pub color_mode:            ColorMode,
     focused:                   FocusedPane<Ctx::AppPaneId>,
     status_cpu:                CpuSampler,
+    status_disk_reads:         DiskReadSampler,
     status_deadline:           StatusDeadline,
     lifecycle_request:         LifecycleRequest,
     mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
@@ -132,10 +135,13 @@ impl<Ctx: AppContext> Framework<Ctx> {
         let now = Instant::now();
         let mut status_cpu = CpuSampler::new();
         status_cpu.sample(now, ProcessCpuTime::read());
+        let mut status_disk_reads = DiskReadSampler::new();
+        status_disk_reads.sample(now);
         Self {
             color_mode: ColorMode::Colored,
             focused: initial_focus,
             status_cpu,
+            status_disk_reads,
             status_deadline: StatusDeadline::new(now),
             lifecycle_request: LifecycleRequest::None,
             mode_queries: HashMap::new(),
@@ -155,6 +161,11 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// Read the CPU reading held between status ticks.
     pub(crate) const fn status_cpu_reading(&self) -> CpuReading { self.status_cpu.reading() }
 
+    /// Read the disk rate held between status ticks.
+    pub(crate) const fn status_disk_read_rate(&self) -> DiskReadRate {
+        self.status_disk_reads.reading()
+    }
+
     /// Read the next whole second of the framework uptime.
     ///
     /// An app with its own event loop wakes no later than this deadline.
@@ -163,7 +174,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
         self.status_deadline.visual_deadline()
     }
 
-    /// Sample CPU once when the status deadline passes.
+    /// Sample CPU and disk reads once when the status deadline passes.
     ///
     /// An app with its own event loop calls this before each frame and
     /// draws when it returns [`Repaint::Needed`].
@@ -172,6 +183,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
         let repaint = self.status_deadline.take_tick(now);
         if repaint == Repaint::Needed {
             self.status_cpu.sample(now, ProcessCpuTime::read());
+            self.status_disk_reads.sample(now);
         }
         repaint
     }

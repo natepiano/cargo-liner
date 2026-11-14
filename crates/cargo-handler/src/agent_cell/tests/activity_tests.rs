@@ -1,5 +1,5 @@
 //! These fixtures exercise `AgentActivity` rendering and sorting in
-//! `AgentTile::Agent` trees and `AgentTile::Unassigned` pools.
+//! `AgentTile::Agent` trees and `AgentTile::Pooled` pools.
 
 #![expect(
     clippy::panic,
@@ -83,12 +83,12 @@ fn activity_pool(sort: TreeSort) -> Buffer {
         sort,
     )]);
     let tiles = tile_order_sorted(&placement, &sorts, NOW);
-    let AgentTile::Unassigned(entry) = &tiles[0] else {
+    let AgentTile::Pooled(entry) = &tiles[0] else {
         panic!("all roots are unassigned")
     };
-    let rect = area(240, unassigned_height(entry));
+    let rect = area(240, pooled_height(entry));
     let mut buffer = Buffer::empty(rect);
-    draw_unassigned(
+    draw_pooled(
         &mut buffer,
         rect,
         entry,
@@ -527,14 +527,14 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
     for width in [180, 65] {
         let buffer = drawn_among(&cell, &[], width);
         let agent_status = status_at(&buffer, "running-agent");
-        let shell_status = status_at(&buffer, "compile-project");
+        let shell_status = status_at(&buffer, "compile-pro");
         assert_eq!(agent_status.symbol(), "b");
         assert_eq!(shell_status.symbol(), "b");
         assert_eq!(shell_status.fg, agent_status.fg, "width={width}");
         let activity_x = find(&buffer, TREE_ACTIVITY_HEADER)
             .expect("activity header")
             .0;
-        let y = find(&buffer, "progress-clock").expect("timer row").1;
+        let y = find(&buffer, "progress-cl").expect("timer row").1;
         let timer_status = &buffer[(activity_x + 6, y)];
         assert_eq!(timer_status.symbol(), "3");
         assert_eq!(Some(timer_status.fg), Role::Shell.style().fg);

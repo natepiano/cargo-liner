@@ -18,6 +18,7 @@ mod action;
 mod constants;
 mod draw;
 mod flow_layout;
+mod full_screen;
 #[cfg_attr(
     test,
     expect(
@@ -46,6 +47,10 @@ pub use draw::TileCells;
 pub use draw::TileGridContents;
 pub use draw::draw_tile_cell;
 pub use draw::draw_tile_grid;
+pub use full_screen::FullScreenCell;
+pub use full_screen::FullScreenSettle;
+pub use full_screen::FullScreenStep;
+pub use full_screen::FullScreenView;
 pub use grid::CellIndex;
 pub use grid::CellTravel;
 pub use grid::FocusLocation;

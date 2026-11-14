@@ -1,5 +1,6 @@
-//! Stable identities for production-role session tiles and each machine's
-//! unassigned pool. The grid also owns its summary and manually opened empty cells.
+//! Stable identities for production-role session tiles, the producers pool and
+//! each machine's unassigned pool. The grid also owns its summary and manually
+//! opened empty cells.
 
 /// The agent a cell draws: its machine, its process id there, and when
 /// that process started, so a pid handed out again is a new cell.
@@ -14,11 +15,13 @@ pub(crate) struct AgentCell {
     pub(crate) process_started: u64,
 }
 
-/// A session tile or the stable pool of unassigned sessions on one machine.
+/// A session tile, the producers pool, or the unassigned pool of one machine.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum TileKey {
     /// A root with a production role.
     Agent(AgentCell),
+    /// The producer sessions of every machine.
+    Producers,
     /// All roots without a production role on this machine.
     Unassigned { machine: String },
 }
