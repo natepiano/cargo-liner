@@ -55,6 +55,7 @@ It suppresses child stderr and terminates the process group on failure.
 `AccountRoleUsage` associates each supplied role with `Reading<RoleSessionCounts>`.
 `RoleSessionCounts` requires busy, idle, paused, exited, and total as `u64` values.
 `RoleCountsWire` accepts extra fields but rejects the retired `shell` key.
+The reader ignores the old `starting` and `waiting` keys as extra fields.
 Missing or invalid required counts cannot become zero.
 `checked_add` reports `RoleCountOverflow`.
 The conversion into `Reading<RoleSessionCounts>` makes overflow unavailable.

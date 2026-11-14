@@ -13,7 +13,7 @@ use crate::footer_colors::tests;
 use crate::theme;
 
 #[test]
-fn waiting_status_words_use_the_configured_ink_in_showrunner_and_unit_tiles() {
+fn waiting_activity_words_use_the_configured_ink_in_showrunner_and_unit_tiles() {
     let mut palette = theme::builtins().remove(0).theme;
     let waiting = Color::Rgb(255, 255, 160);
     palette
@@ -23,11 +23,13 @@ fn waiting_status_words_use_the_configured_ink_in_showrunner_and_unit_tiles() {
     tui_pane::set_transparent_background(false);
     for role in [HierarchyRole::Showrunner, HierarchyRole::Unit] {
         let mut root = agent(10, "owner-session", HOUR, None);
-        root.children
-            .push(child(0, ChildKind::Thread, None, "worker-session", MINUTE));
+        root.activity = AgentActivity::Active(Activity::Waiting);
+        let mut worker = child(0, ChildKind::Thread, None, "worker-session", MINUTE);
+        worker.activity = AgentActivity::Active(Activity::Waiting);
+        root.children.push(worker);
         let mut cell = entry(&root, None);
         cell.role_label = RoleLabel::Stated(role);
-        cell.source_state = ReportedSessionState::Reported(SessionState::Waiting);
+        cell.source_state = ReportedSessionState::Reported(SessionState::Busy);
         cell.lines[0].subject = LineSubject::ManagedThread(
             &root.children[0],
             HierarchyRole::Impl,
@@ -36,39 +38,24 @@ fn waiting_status_words_use_the_configured_ink_in_showrunner_and_unit_tiles() {
                 pid:     root.pid,
             },
         );
-        cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Waiting);
+        cell.lines[0].source_state = ReportedSessionState::Reported(SessionState::Busy);
         cell.lines.insert(0, tile_root_line(&cell));
         for width in [60, 70, 90, 92, 180] {
             let buffer = drawn_into(&cell, &[], width, 12);
-            let (status, header_y) = find(&buffer, "status").expect("status header");
+            let (_, header_y) = find(&buffer, "status").expect("status header");
             for label in ["owner-session", "worker-session"] {
-                let y = u16::try_from(
-                    lines(&buffer)
-                        .iter()
-                        .enumerate()
-                        .find(|(row, text)| *row > usize::from(header_y) && text.contains(label))
-                        .expect("session row below the header")
-                        .0,
-                )
-                .expect("row coordinate");
-                let actual: String = (status..status + 7)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect();
-                assert_eq!(actual, "waiting", "{role:?} width={width}");
-                for x in status..status + 7 {
+                let (row, text) = lines(&buffer)
+                    .into_iter()
+                    .enumerate()
+                    .find(|(row, text)| *row > usize::from(header_y) && text.contains(label))
+                    .expect("session row below the header");
+                let y = u16::try_from(row).expect("row coordinate");
+                let at = text.find("waiting").expect("live word on the session row");
+                let x = u16::try_from(text[..at].chars().count()).expect("column coordinate");
+                for x in x..x + 7 {
                     assert_eq!(buffer[(x, y)].fg, waiting, "{role:?} {label} width={width}");
                 }
-            }
-            if header_y > 0 {
-                let (x, y) = find(&buffer, "waiting").expect("full heading status");
-                assert!(y < header_y);
-                for x in x..x + 7 {
-                    assert_eq!(
-                        buffer[(x, y)].fg,
-                        waiting,
-                        "the full heading uses waiting ink"
-                    );
-                }
+                assert!(text.contains("busy"), "{role:?} {label} status: {text}");
             }
             let (x, y) = find(&buffer, "impl").expect("unchanged activity");
             assert_eq!(buffer[(x, y)].fg, tui_pane::text_default());
@@ -264,11 +251,11 @@ fn check_statuses(ground: Color) {
     let mut cell = entry(&root, None);
     let source_states = [
         SessionState::Idle,
-        SessionState::Paused,
+        SessionState::Busy,
         SessionState::Busy,
         SessionState::Exited,
         SessionState::Busy,
-        SessionState::Waiting,
+        SessionState::Paused,
     ];
     for (line, state) in cell.lines.iter_mut().zip(source_states) {
         line.source_state = ReportedSessionState::Reported(state);
@@ -285,9 +272,12 @@ fn check_statuses(ground: Color) {
         AccountColumn::Hidden,
         &FooterColors::default(),
     );
-    for state in source_states {
-        let word = state.text();
-        let (x, y) = find(&buffer, word).expect("drawn activity word");
+    for word in source_states
+        .map(SessionState::text)
+        .into_iter()
+        .chain(["waiting"])
+    {
+        let (x, y) = find(&buffer, word).expect("drawn status or activity word");
         for offset in 0..summary::cell_width(word) {
             let cell = &buffer[(x + offset, y)];
             let ratio = tests::contrast_ratio(cell.fg, cell.bg);

@@ -136,8 +136,6 @@ fn compare_accounts(
             _ => Ordering::Equal,
         },
         AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -161,13 +159,11 @@ fn summed_counts<'a>(
         })
         .try_fold(
             RoleSessionCounts {
-                busy:     0,
-                starting: 0,
-                waiting:  0,
-                idle:     0,
-                paused:   0,
-                exited:   0,
-                total:    0,
+                busy:   0,
+                idle:   0,
+                paused: 0,
+                exited: 0,
+                total:  0,
             },
             RoleSessionCounts::checked_add,
         )
@@ -187,14 +183,6 @@ const fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn
     match column {
         AccountsColumn::Busy => match counts {
             Reading::Known(counts) => Reading::Known(counts.busy),
-            Reading::Unavailable => Reading::Unavailable,
-        },
-        AccountsColumn::Starting => match counts {
-            Reading::Known(counts) => Reading::Known(counts.starting),
-            Reading::Unavailable => Reading::Unavailable,
-        },
-        AccountsColumn::Waiting => match counts {
-            Reading::Known(counts) => Reading::Known(counts.waiting),
             Reading::Unavailable => Reading::Unavailable,
         },
         AccountsColumn::Idle => match counts {
@@ -469,8 +457,6 @@ fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()
     AccountsColumn::ALL.map(|column| match column {
         AccountsColumn::Account => "total".to_owned(),
         AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited
@@ -547,8 +533,6 @@ const fn on_first_line(column: AccountsColumn) -> bool {
         | AccountsColumn::Roles
         | AccountsColumn::WeeklyLeft
         | AccountsColumn::Busy
-        | AccountsColumn::Starting
-        | AccountsColumn::Waiting
         | AccountsColumn::Idle
         | AccountsColumn::Paused
         | AccountsColumn::Exited

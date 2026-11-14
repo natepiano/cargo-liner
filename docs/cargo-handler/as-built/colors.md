@@ -61,20 +61,20 @@ Astra mauve also uses a per-theme shade.
 The theme TOML files remain the source for those appearance-specific shades.
 Account blue and teal use purpose-specific seeds before readability resolution.
 
-### Waiting status
+### Waiting activity
 
-The `waiting` theme role supplies the bright yellow ink for a reported waiting status.
+The `waiting` theme role supplies the bright yellow ink for the live activity word `waiting`.
 The bundled dark themes use bright yellow.
 The bundled light themes use RGB `(122, 122, 0)`, the brightest equal-channel yellow that meets 4.5:1 on white.
 The readability resolver adjusts the ink for glyph coverage and selection grounds.
 The theme loader preserves the built-in value when a custom theme omits it.
 A custom theme can replace that value under `[variants.roles]`.
-`SessionRowInk::Waiting` applies the status readability rules.
+`Role::Waiting` draws through `SessionRowInk::Waiting`, which applies the readability rules.
 Selection retains readable yellow ink.
 Every word-match emphasis keeps the 4.5:1 contrast floor.
 The match resolver can change the foreground to satisfy that floor.
 Waiting keeps a different ink from busy, idle, and unreachable.
-The hierarchy activity column keeps its existing text and ink.
+The job before the word keeps its existing ink.
 
 ### Grounds and glyph contrast
 
