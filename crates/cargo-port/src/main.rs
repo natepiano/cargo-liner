@@ -1,10 +1,5 @@
 //! `cargo-port` — a TUI for inspecting and managing Rust projects.
 
-use std::process::ExitCode;
-
-#[cfg(test)]
-use test_support::ThreadCountingAllocator;
-
 mod cache_paths;
 mod channel;
 mod ci;
@@ -24,9 +19,7 @@ mod themes;
 mod tui;
 mod watcher;
 
-#[cfg(test)]
-#[global_allocator]
-static TEST_ALLOCATOR: ThreadCountingAllocator = ThreadCountingAllocator;
+use std::process::ExitCode;
 
 fn main() -> ExitCode {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

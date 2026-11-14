@@ -1,5 +1,6 @@
 use tui_pane::Action;
 use tui_pane::ClipboardBackend;
+use tui_pane::CopyLabel;
 use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
 use tui_pane::KeyBind;
@@ -60,7 +61,7 @@ fn dispatch_with_clipboard(
             return true;
         }
         if cancel.contains(&sequence) {
-            super::dispatch_sccache_action(SccacheAction::Cancel, app);
+            dispatch_sccache_action(SccacheAction::Cancel, app);
             return true;
         }
         if copy.contains(&sequence) {
@@ -80,8 +81,21 @@ fn dispatch_with_clipboard(
     true
 }
 
+/// Resolve the modal stat selection without changing the underlying focus.
+pub(in crate::tui) fn copy_selection(app: &App) -> CopySelectionResult {
+    app.overlays
+        .sccache_pane
+        .selected_copy_value()
+        .map_or(CopySelectionResult::Nothing, |target| {
+            CopySelectionResult::Payload(tui_pane::CopyPayload::new(
+                target.value.clone(),
+                CopyLabel::Value,
+            ))
+        })
+}
+
 fn copy_selected_value(app: &mut App, clipboard: &mut impl ClipboardBackend) {
-    let CopySelectionResult::Payload(payload) = super::copy_selection(app) else {
+    let CopySelectionResult::Payload(payload) = copy_selection(app) else {
         app.show_timed_toast("Copy", "Nothing to copy");
         return;
     };
@@ -97,6 +111,15 @@ fn copy_selected_value(app: &mut App, clipboard: &mut impl ClipboardBackend) {
             app.show_timed_toast("Clipboard unavailable", reason.to_string());
         },
         Err(reason) => app.show_timed_toast("Copy failed", reason.to_string()),
+    }
+}
+
+pub(in crate::tui) fn dispatch_sccache_action(action: SccacheAction, app: &mut App) {
+    match action {
+        SccacheAction::Cancel => {
+            app.overlays.sccache_pane.pending_chord.clear();
+            app.overlays.close_sccache();
+        },
     }
 }
 
