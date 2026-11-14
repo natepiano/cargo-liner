@@ -2644,6 +2644,24 @@ The Phase 58j loaded workspace suite (2026-11-13, natedev, load 65-99, 10 of 32 
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-tile`; `verify.sh test cargo-berth` and `verify.sh test cargo-tile` green on natedev, each of the 18 tests under 1 s; one loaded natedev workspace suite with each of the 18 tests under 1 s.
 
+### Phase 58l — Before-run templates restore at their canonical path  · status: done
+
+**Depends on:** none. It ran before Phase 58k, because its failure held the main CI point (showrunner, 2026-11-13).
+
+The CI point on main e6a75c0fc failed 7 `cargo-berth::board` tests in the gate clone. Each starts from `initial-integration-pair` or a template built from it.
+
+#### As-built
+
+- Cause: the gate reaches its target folder through a path that is not canonical. The setup script built each before-run template at that path. Git records a linked worktree (`.git/worktrees/<name>/gitdir` and the worktree's `.git` file) by its canonical path. `restore_into` replaced only the path as given, so each copy kept the template's worktree paths. The in-test fallback already canonicalized its build folder.
+- `prepare_before_run` (`crates/cargo-berth-test-support/src/repository_template.rs`) builds at the canonical path. `prebuilt_root` reads a complete prebuilt template at its canonical path. `restore_from` holds the restore body that `restore_into` calls.
+- New test `before_run_template_restores_its_linked_worktree_through_a_linked_directory`: it builds a template with a linked worktree through a symbolically linked folder, restores it, and checks that Git lists the worktree at the copy. Without the fix it fails: Git lists the worktree at the template.
+- Gate: lint clean; 10 `cargo-berth-test-support` tests; 1,384 `cargo-berth` tests on natedev (load 64, 6 of 32 threads).
+- Director work only (no workers). Checkpoint: 5f236df23 on `tile-phase-58l`.
+
+**Files:** `crates/cargo-berth-test-support/src/repository_template.rs`.
+
+**Binds later work:** a template fixture that records an absolute path must build and restore at the canonical path.
+
 ### Phase 58f — A merged reservation whose worktree is gone can be recorded as integrated  · status: done
 
 **Depends on:** Phase 58g (order only).
@@ -3560,28 +3578,24 @@ On the handler branch (main ce37d0e40 with handler Phase 4, no cargo-tile edits)
 
 **Files:** `crates/cargo-tile/tests/shim_modes.rs`.
 
-### Phase 63a — The shim signal tests wait on an event and name their cause  · status: todo
+### Phase 63a — The shim signal tests wait on an event and name their cause  · status: done
 
-**Depends on:** none. It runs before Phase 58k, because its failure held a merge (showrunner, 2026-11-13).
+**Depends on:** none. It ran before Phase 58k, because its failure held a merge (showrunner, 2026-11-13).
 
-On 2026-11-13 a Mac run of the port 13b merge gate (cargo-port changes only) failed one `cargo-tile` test. `shim_modes::tests::sigint_to_the_shim_alone_waits_for_cargo` failed at 20.036 s with "cargo did not record cargo-held" (`crates/cargo-tile/tests/shim_modes.rs:401`). It passed alone in 0.211 s. The load was about 50-70. This is the same test family as Phase 63, which fails only under load.
+On 2026-11-13 a Mac run of the port 13b merge gate failed `shim_modes::tests::sigint_to_the_shim_alone_waits_for_cargo` at 20.036 s with "cargo did not record cargo-held" (load about 50-70). It passed alone in 0.211 s.
 
-The test waits in `wait_for_observation` for the fake cargo's `cargo-held` file until `SHIM_DEADLINE` (20 s) runs out. It does not look at the shim while it waits. If the shim exits first, or cargo never starts, the test waits the full 20 s and then names only the missing file.
+#### As-built
 
-#### Work Order
+- Cause, found by code reading: when capture setup fails, `run_with_publication` (`crates/cargo-tile/src/hook.rs`) `exec`s the real cargo in the runner's own process. The fake cargo then signals its own pid and dies before it records `cargo-held`. The old wait did not watch the shim, so it ran the full 20 s. Phase 63's `root-absent` comes from the same fallback paths.
+- `wait_for_observation(shim, name)` also watches the shim. A shim that exits first fails the test at once. `observation_failure` names the shim's state, whether cargo ran captured, ran uncaptured or did not start (from the `environment` observation), the observation files and the shim's stderr. `shim_stderr_path` gives the one stderr path.
+- Forced fallback on natedev (`SHIM_TEST_CALLER_REDIRECTIONS` holds 6 of descriptors 3-9): the three signal tests fail in 0.014 s with "the shim exited first (signal: 2 (SIGINT)); cargo ran uncaptured: the shim took a fallback path".
+- Gate: lint on the Mac; 1,292 cargo-tile tests on the Mac (load 10.7 on 12 CPUs); 1,277 on natedev after the merge of main (load 78). The signal tests take 0.03-0.21 s. Every assertion is unchanged; `SHIM_DEADLINE` is unchanged.
+- Not done: the fallback that fires under Mac load did not reproduce. The next failure names it.
+- Director work only (no workers). Checkpoint: 0d68881a3 on `tile-phase-63a`.
 
-**Goal:** the signal tests wait on events, and a failure names its cause.
+**Files:** `crates/cargo-tile/tests/shim_modes.rs`.
 
-**Spec:**
-
-1. While a test waits for an observation, it also watches the shim. If the shim exits first, fail at once with the shim's status, its stderr and the observations present.
-2. When the wait ends with no event, name what the test saw: the shim's state, whether the fake cargo started (`shim-pid`, and other observation files), and the observation it waited for.
-3. Find the trigger under load on the Mac with `mac_test`. Fix it at its cause. If it does not reproduce, the improved failure text is the result, as in Phase 63.
-4. Keep every assertion. Add no retry and no longer wait. Do not raise `SHIM_DEADLINE`.
-
-**Files:** `crates/cargo-tile/tests/shim_modes.rs`; `crates/cargo-tile/src/shim_registration/` only when the cause is in the shim.
-
-**Acceptance gate:** `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and on the Mac. The `shim_modes` signal tests stay under 1 s.
+**Binds later work:** a new failure of these tests that names "cargo ran uncaptured" points at a capture setup failure in `hook.rs`. The runner does not say which setup step failed.
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
