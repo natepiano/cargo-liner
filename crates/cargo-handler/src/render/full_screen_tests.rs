@@ -323,3 +323,36 @@ fn a_full_screen_tile_that_leaves_the_census_returns_to_the_grid() -> TestResult
     assert!(!text.contains("second-owner"), "{text}");
     Ok(())
 }
+
+fn status_row(buffer: &Buffer) -> String {
+    let y = buffer.area.bottom().saturating_sub(STATUS_LINE_HEIGHT);
+    (buffer.area.left()..buffer.area.right())
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
+}
+
+#[test]
+fn the_status_line_names_enter_in_the_grid_and_esc_on_the_full_screen() -> TestResult {
+    let (mut app, mut renderer, grid) = focused_grid()?;
+    let row = status_row(&grid);
+    assert!(row.contains("enter expand"), "{row:?}");
+    assert!(!row.contains("esc collapse"), "{row:?}");
+    let row = status_row(&expand(&mut app, &mut renderer)?);
+    assert!(row.contains("esc collapse"), "{row:?}");
+    assert!(!row.contains("enter expand"), "{row:?}");
+    let row = status_row(&collapse(&mut app, &mut renderer)?);
+    assert!(row.contains("enter expand"), "{row:?}");
+    Ok(())
+}
+
+#[test]
+fn the_expand_hint_yields_to_uptime_at_a_narrow_width() -> TestResult {
+    const NARROW: u16 = 60;
+    let mut app = word_click_tests::application()?;
+    let mut renderer = Renderer::with_fixed_time(&mut app, NARROW, HEIGHT, NOW)?;
+    let row = status_row(&renderer.paint(&mut app)?);
+    assert!(row.contains("Uptime"), "{row:?}");
+    assert!(row.contains("? shortcuts"), "{row:?}");
+    assert!(!row.contains("enter expand"), "{row:?}");
+    Ok(())
+}

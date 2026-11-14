@@ -163,7 +163,8 @@ impl<A: Action> StatusLineGlobal<A> {
         }
     }
 
-    /// Show this slot only when uptime and the other status items also fit.
+    /// Show this slot only when uptime and the other status items, the navigation hints
+    /// included, also fit.
     #[must_use]
     pub const fn after_uptime(mut self) -> Self {
         self.fit = GlobalSlotFit::AfterUptime;
@@ -592,6 +593,7 @@ fn fitted_right_spans(total_width: usize, items: &mut StatusLineItems) -> Vec<Sp
     let hinted_width = items
         .uptime
         .iter()
+        .chain(&items.navigation)
         .chain(items.notes.iter().flatten())
         .chain(&items.with_hints)
         .map(Span::width)
@@ -654,6 +656,21 @@ mod tests {
         notes: Vec<Vec<Span<'static>>>,
         globals: Vec<Span<'static>>,
     ) -> String {
+        drawn_items(
+            width,
+            StatusLineItems {
+                uptime,
+                navigation,
+                center,
+                notes,
+                globals,
+                with_hints: Vec::new(),
+                hint_fit: HintFit::WholeGroups,
+            },
+        )
+    }
+
+    fn drawn_items(width: u16, items: StatusLineItems) -> String {
         if width == 0 {
             return String::new();
         }
@@ -663,15 +680,6 @@ mod tests {
             Err(error) => match error {},
         };
         let result = terminal.draw(|frame| {
-            let items = StatusLineItems {
-                uptime,
-                navigation,
-                center,
-                notes,
-                globals,
-                with_hints: Vec::new(),
-                hint_fit: HintFit::WholeGroups,
-            };
             render_sections(
                 frame,
                 Rect::new(0, 0, width, TEST_HEIGHT),
@@ -752,6 +760,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_after_uptime_hint_gives_way_before_the_navigation() {
+        let palette = BarPalette::default();
+        let uptime = status_line_note_spans(
+            &[StatusLineNote {
+                label: " UUUU".to_string(),
+                value: "1111".to_string(),
+            }],
+            &palette,
+        );
+        let navigation = slot("NNNN", 'n', &palette);
+        let globals = slot("GGGG", 'g', &palette);
+        let mut with_hints = slot("HHHH", 'h', &palette);
+        with_hints.extend(globals.clone());
+        let navigation_text = text(&navigation);
+        let width_of = |spans: &[Span<'_>]| spans.iter().map(Span::width).sum::<usize>();
+        // Room for the uptime, the navigation and the globals, and not for the hint as well.
+        let width = width_of(&uptime)
+            .saturating_add(width_of(&navigation))
+            .saturating_add(width_of(&globals))
+            .saturating_add(FULL_ROW_EXTRA);
+        let row = drawn_items(
+            u16::try_from(width).unwrap_or(u16::MAX),
+            StatusLineItems {
+                uptime,
+                navigation,
+                center: Vec::new(),
+                notes: Vec::new(),
+                globals,
+                with_hints,
+                hint_fit: HintFit::WholeGroups,
+            },
+        );
+        assert!(row.contains(&navigation_text), "{row:?}");
+        assert!(row.contains("GGGG"), "{row:?}");
+        assert!(!row.contains("HHHH"), "{row:?}");
     }
 
     #[test]

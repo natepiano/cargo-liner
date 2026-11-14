@@ -7993,16 +7993,8 @@ fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).u
 /// slots named here, so `?` lands in the bottom-right corner and stays
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
-    let hint = if matches!(app.grid_view, GridView::Grid) {
-        StatusLineGlobal::app(AppGlobalAction::Expand)
-    } else {
-        StatusLineGlobal::fixed(
-            crate::constants::COLLAPSE_HINT_KEY,
-            crate::constants::COLLAPSE_HINT_LABEL,
-        )
-    };
     let globals = [
-        hint.after_uptime(),
+        app.grid_view.status_hint(AppGlobalAction::Expand),
         StatusLineGlobal::global_shortcuts_help(),
     ];
     let mut notes = vec![StatusLineNote {

@@ -106,6 +106,7 @@ Pruning removes sorts for departed tiles.
 
 Enter (`global.expand`) shows the focused tile on the full pane, and Esc returns it to the grid.
 `App::full_screen` holds a `tui_pane::FullScreenView<TileKey, ()>`; cargo-tile uses the same type.
+The status line shows `enter expand` in the grid and `esc collapse` while the tile shows. `FullScreenView::status_hint` gives that slot to both apps, and it gives way before the uptime at a narrow width.
 tui_pane owns the tile identity, the motion clock and the travel between the grid rectangle and the pane.
 `terminal.rs` advances the motion clock in each poll.
 `render/mod.rs` draws the tile through `TileGrid::draw_cell_view` with the same `Cells` as the grid.

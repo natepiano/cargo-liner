@@ -11,10 +11,14 @@ use std::time::Instant;
 
 use ratatui::layout::Rect;
 
+use super::constants::FULL_SCREEN_COLLAPSE_KEY;
+use super::constants::FULL_SCREEN_COLLAPSE_LABEL;
 use super::grid::CellTravel;
 use super::grid::TileContent;
 use super::grid::TilePlacement;
+use crate::Action;
 use crate::Repaint;
+use crate::StatusLineGlobal;
 
 /// A resolved full-screen tile: its identity, its motion endpoints and the app policy state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,6 +127,18 @@ impl<Id, P> FullScreenView<Id, P> {
     /// Whether a tile shows, or will show after the next frame, over the grid.
     #[must_use]
     pub const fn is_open(&self) -> bool { !matches!(self, Self::Grid) }
+
+    /// The status slot for this view: the app's `expand` action in the grid, and the fixed
+    /// `esc collapse` hint while a tile shows. Both give way before the uptime.
+    #[must_use]
+    pub const fn status_hint<A: Action>(&self, expand: A) -> StatusLineGlobal<A> {
+        let hint = if self.is_open() {
+            StatusLineGlobal::fixed(FULL_SCREEN_COLLAPSE_KEY, FULL_SCREEN_COLLAPSE_LABEL)
+        } else {
+            StatusLineGlobal::app(expand)
+        };
+        hint.after_uptime()
+    }
 
     /// The shown tile, when one has resolved.
     #[must_use]
