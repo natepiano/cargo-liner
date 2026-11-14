@@ -1,3 +1,5 @@
+//! Process identity evidence binds an action to one live process lifetime.
+
 #[cfg(target_os = "macos")]
 use std::mem::MaybeUninit;
 
@@ -5,30 +7,12 @@ use std::mem::MaybeUninit;
 use libc::RUSAGE_INFO_V0;
 use processkit::process_info;
 
-/// A process identity whose creation token distinguishes a recycled PID.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ProcessIdentity {
-    pid:            u32,
-    creation_token: PlatformCreationToken,
-}
-
-impl ProcessIdentity {
-    pub(crate) const fn pid(&self) -> u32 { self.pid }
-
-    #[cfg(test)]
-    pub(crate) const fn for_test(pid: u32, creation_token: u64) -> Self {
-        Self {
-            pid,
-            creation_token: PlatformCreationToken(creation_token),
-        }
-    }
-}
-
 /// An opaque OS token fixed at process creation.
 ///
-/// The token is Windows `FILETIME`, Linux `/proc/<pid>/stat` start ticks, or
-/// macOS `proc_pid_rusage` monotonic start time. Its ordering only makes
-/// `ProcessIdentity` a deterministic collection key.
+/// Windows supplies `FILETIME`.
+/// Linux supplies `/proc/<pid>/stat` start ticks.
+/// macOS supplies the `proc_pid_rusage` monotonic start time.
+/// The ordering makes `ProcessIdentity` a deterministic collection key.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PlatformCreationToken(u64);
 
@@ -41,108 +25,62 @@ enum ObservedProcessIdentity {
 
 /// Current host evidence for a previously observed strong process identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum StrongProcessIdentityRevalidation {
+pub enum StrongProcessIdentityRevalidation {
+    /// The observed identity matches the expected identity.
     Current,
+    /// The PID identifies a different process lifetime.
     Replaced(ProcessIdentity),
+    /// The host cannot supply enough identity evidence.
     Unavailable(InsufficientProcessIdentity),
-}
-
-/// A process identity observed and revalidated as the same current lifetime.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct VerifiedProcessIdentity(ProcessIdentity);
-
-impl VerifiedProcessIdentity {
-    pub(crate) const fn into_process_identity(self) -> ProcessIdentity { self.0 }
-}
-
-/// The result of observing a PID and confirming its identity is still current.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CurrentProcessIdentityObservation {
-    Verified(VerifiedProcessIdentity),
-    InitialUnavailable(InsufficientProcessIdentity),
-    ReplacedDuringRevalidation(ProcessIdentity),
-    RevalidationUnavailable(InsufficientProcessIdentity),
-}
-
-/// Observe a strong identity and immediately revalidate it before granting
-/// identity-bound authority.
-pub(crate) fn observe_current_process_identity(pid: u32) -> CurrentProcessIdentityObservation {
-    match observe_process_identity(pid) {
-        ObservedProcessIdentity::Strong(process_identity) => {
-            match revalidate_strong_process_identity(&process_identity) {
-                StrongProcessIdentityRevalidation::Current => {
-                    CurrentProcessIdentityObservation::Verified(VerifiedProcessIdentity(
-                        process_identity,
-                    ))
-                },
-                StrongProcessIdentityRevalidation::Replaced(replacement_identity) => {
-                    CurrentProcessIdentityObservation::ReplacedDuringRevalidation(
-                        replacement_identity,
-                    )
-                },
-                StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity) => {
-                    CurrentProcessIdentityObservation::RevalidationUnavailable(
-                        insufficient_process_identity,
-                    )
-                },
-            }
-        },
-        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
-            CurrentProcessIdentityObservation::InitialUnavailable(insufficient_process_identity)
-        },
-    }
-}
-
-/// Re-observe a strong identity immediately before an identity-sensitive action.
-pub(crate) fn revalidate_strong_process_identity(
-    expected_identity: &ProcessIdentity,
-) -> StrongProcessIdentityRevalidation {
-    match observe_process_identity(expected_identity.pid()) {
-        ObservedProcessIdentity::Strong(current_identity)
-            if current_identity == *expected_identity =>
-        {
-            StrongProcessIdentityRevalidation::Current
-        },
-        ObservedProcessIdentity::Strong(replacement_identity) => {
-            StrongProcessIdentityRevalidation::Replaced(replacement_identity)
-        },
-        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
-            StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity)
-        },
-    }
 }
 
 /// Why an observed PID cannot identify one process lifetime.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum InsufficientProcessIdentity {
+pub enum InsufficientProcessIdentity {
+    /// The process exits before the host observes its identity.
     ExitedBeforeLookup {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
+    /// The host supplies a zero lifetime anchor.
     LifetimeAnchorInvalid {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
+    /// The host supplies no lifetime anchor.
     LifetimeAnchorUnavailable {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(not(target_os = "macos"))]
+    /// The host supplies no process creation token.
     PlatformCreationTokenUnavailable {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
+    /// The lifetime anchor changes during the identity observation.
     PlatformChangedDuringLookup {
+        /// The PID used for the identity observation.
         pid: u32,
     },
+    /// The host process lookup fails.
     PlatformLookupFailed {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
+    /// The macOS monotonic creation query fails.
     PlatformMonotonicCreationQueryFailed {
+        /// The PID used for the identity observation.
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
+    /// The macOS monotonic creation query returns zero.
     PlatformMonotonicCreationValueInvalid {
+        /// The PID used for the identity observation.
         pid: u32,
     },
 }
@@ -171,6 +109,103 @@ impl MacosMonotonicProcessStartObservation {
             0 => Self::ZeroValue,
             value => Self::Observed(value),
         }
+    }
+}
+
+/// A process identity whose creation token distinguishes a recycled PID.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProcessIdentity {
+    pid:            u32,
+    creation_token: PlatformCreationToken,
+}
+
+impl ProcessIdentity {
+    /// Return the PID associated with this process lifetime.
+    #[must_use]
+    pub const fn pid(&self) -> u32 { self.pid }
+
+    #[cfg(any(test, feature = "process-identity-test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn for_test(pid: u32, creation_token: u64) -> Self {
+        Self {
+            pid,
+            creation_token: PlatformCreationToken(creation_token),
+        }
+    }
+}
+
+/// A process identity observed and revalidated as the same current lifetime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedProcessIdentity(ProcessIdentity);
+
+impl VerifiedProcessIdentity {
+    /// Return the process identity that passed revalidation.
+    #[must_use]
+    pub const fn into_process_identity(self) -> ProcessIdentity { self.0 }
+}
+
+/// The result of observing a PID and confirming its identity is still current.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CurrentProcessIdentityObservation {
+    /// Both observations identify the same process lifetime.
+    Verified(VerifiedProcessIdentity),
+    /// The first observation supplies insufficient identity evidence.
+    InitialUnavailable(InsufficientProcessIdentity),
+    /// The second observation identifies a different process lifetime.
+    ReplacedDuringRevalidation(ProcessIdentity),
+    /// The second observation supplies insufficient identity evidence.
+    RevalidationUnavailable(InsufficientProcessIdentity),
+}
+
+/// Observe a strong identity.
+/// Revalidate the identity immediately before granting authority for that process lifetime.
+#[must_use]
+pub fn observe_current_process_identity(pid: u32) -> CurrentProcessIdentityObservation {
+    match observe_process_identity(pid) {
+        ObservedProcessIdentity::Strong(process_identity) => {
+            match revalidate_strong_process_identity(&process_identity) {
+                StrongProcessIdentityRevalidation::Current => {
+                    CurrentProcessIdentityObservation::Verified(VerifiedProcessIdentity(
+                        process_identity,
+                    ))
+                },
+                StrongProcessIdentityRevalidation::Replaced(replacement_identity) => {
+                    CurrentProcessIdentityObservation::ReplacedDuringRevalidation(
+                        replacement_identity,
+                    )
+                },
+                StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity) => {
+                    CurrentProcessIdentityObservation::RevalidationUnavailable(
+                        insufficient_process_identity,
+                    )
+                },
+            }
+        },
+        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
+            CurrentProcessIdentityObservation::InitialUnavailable(insufficient_process_identity)
+        },
+    }
+}
+
+/// Observe a strong identity again immediately before an action that requires the same process
+/// lifetime.
+#[must_use]
+pub fn revalidate_strong_process_identity(
+    expected_identity: &ProcessIdentity,
+) -> StrongProcessIdentityRevalidation {
+    match observe_process_identity(expected_identity.pid()) {
+        ObservedProcessIdentity::Strong(current_identity)
+            if current_identity == *expected_identity =>
+        {
+            StrongProcessIdentityRevalidation::Current
+        },
+        ObservedProcessIdentity::Strong(replacement_identity) => {
+            StrongProcessIdentityRevalidation::Replaced(replacement_identity)
+        },
+        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
+            StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity)
+        },
     }
 }
 

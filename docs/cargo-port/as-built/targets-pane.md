@@ -105,7 +105,7 @@ A cleared Output pane returns focus to Targets when needed.
 
 ## Process identity and termination
 
-`process_observation/identity.rs` defines `ProcessIdentity` and `VerifiedProcessIdentity`.
+`tui_pane` defines `ProcessIdentity` and `VerifiedProcessIdentity` in `crates/tui_pane/src/process_identity.rs`.
 Identity combines a PID with an operating-system creation token.
 Linux uses start ticks, Windows uses FILETIME, and macOS uses the process start token.
 The macOS observation also checks process start time around the token query.
