@@ -23,6 +23,14 @@ use super::constants::RUSTFMT_LOCAL_FILE_ARGUMENTS;
 use super::constants::RUSTUP_COMMAND;
 use super::constants::VERSION_ARGUMENT;
 
+#[cfg(test)]
+thread_local! {
+    static FORMATTING_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn formatting_commands() -> usize { FORMATTING_COMMANDS.get() }
+
 /// The formatter available for function length protection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Formatter {
@@ -141,6 +149,8 @@ impl Formatter {
                 command.arg(&staging);
                 staged.push((path, staging));
             }
+            #[cfg(test)]
+            FORMATTING_COMMANDS.update(|count| count + 1);
             let output = command
                 .output()
                 .context("start rustfmt for function measurements")?;
@@ -171,6 +181,8 @@ impl Formatter {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(test)]
+        FORMATTING_COMMANDS.update(|count| count + 1);
         let mut child = command
             .spawn()
             .context("failed to start rustfmt for function measurement")?;

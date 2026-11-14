@@ -219,6 +219,31 @@ impl RunWrapper {
         compiler.configure(command, &self.path);
         Ok(())
     }
+
+    /// Keep Cargo's compiler identity while delegating compilation to rustc.
+    fn configure_passthrough(&self, command: &mut Command) -> Result<()> {
+        self.configure(command)?;
+        command
+            .env(DRIVER_ENV, DRIVER_ENV_ENABLED)
+            .env_remove(CONFIG_ROOT_ENV);
+        Ok(())
+    }
+}
+
+/// Fixture setup uses the same driver identity and compiler as the CLI.
+#[cfg(test)]
+pub(crate) struct FixtureCompiler(RunWrapper);
+
+#[cfg(test)]
+impl FixtureCompiler {
+    pub(crate) fn resolve(target_directory: &Path, executable: &Path) -> Result<Self> {
+        let mut executable = RunningExecutable::open_path(executable)?;
+        RunWrapper::resolve(target_directory, &mut executable).map(Self)
+    }
+
+    pub(crate) fn configure(&self, command: &mut Command) -> Result<()> {
+        self.0.configure_passthrough(command)
+    }
 }
 
 /// One immutable build copy serves all projects that run the same executable.
@@ -747,13 +772,21 @@ pub(crate) fn run_cargo_fix(
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     all_features_coverage: AllFeaturesCoverage,
+    wrapper: &RunWrapper,
+    toolchain_probes: &ToolchainProbes,
     validate: impl FnOnce() -> Result<(), MendFailure>,
 ) -> Result<CompilerFixOutcome, MendFailure> {
     let start = Instant::now();
     let transaction =
         CompilerFixTransaction::capture(selection).map_err(MendFailure::Unexpected)?;
     let cargo_fix_features = cargo_fix_features_for(&cargo_plan.cargo_args, all_features_coverage);
-    let applied_features = match apply_cargo_fix(cargo_plan, color_mode, cargo_fix_features) {
+    let applied_features = match apply_cargo_fix(
+        cargo_plan,
+        color_mode,
+        cargo_fix_features,
+        wrapper,
+        toolchain_probes,
+    ) {
         Ok(applied_features) => applied_features,
         Err(error) => {
             return Err(compiler_fix_failure(
@@ -773,7 +806,13 @@ pub(crate) fn run_cargo_fix(
     }
     // Feature expansion needs its own check before the original selection is analyzed.
     if applied_features == CargoFixFeatures::All && has_feature_configuration(selection) {
-        let validation = run_cargo_fix_validation(cargo_plan, color_mode, applied_features);
+        let validation = run_cargo_fix_validation(
+            cargo_plan,
+            color_mode,
+            applied_features,
+            wrapper,
+            toolchain_probes,
+        );
         match validation {
             Ok(status) if status.success() => {},
             Ok(_) => {
@@ -849,8 +888,16 @@ fn apply_cargo_fix(
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     cargo_fix_features: CargoFixFeatures,
+    wrapper: &RunWrapper,
+    toolchain_probes: &ToolchainProbes,
 ) -> Result<CargoFixFeatures> {
-    let status = run_cargo_fix_command(cargo_plan, color_mode, cargo_fix_features)?;
+    let status = run_cargo_fix_command(
+        cargo_plan,
+        color_mode,
+        cargo_fix_features,
+        wrapper,
+        toolchain_probes,
+    )?;
     if status.success() {
         return Ok(cargo_fix_features);
     }
@@ -859,7 +906,13 @@ fn apply_cargo_fix(
         eprintln!(
             "cargo fix with --all-features exited with {status}; retrying without --all-features"
         );
-        let retry_status = run_cargo_fix_command(cargo_plan, color_mode, CargoFixFeatures::Plan)?;
+        let retry_status = run_cargo_fix_command(
+            cargo_plan,
+            color_mode,
+            CargoFixFeatures::Plan,
+            wrapper,
+            toolchain_probes,
+        )?;
         if retry_status.success() {
             return Ok(CargoFixFeatures::Plan);
         }
@@ -872,8 +925,12 @@ fn run_cargo_fix_validation(
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     cargo_fix_features: CargoFixFeatures,
+    wrapper: &RunWrapper,
+    toolchain_probes: &ToolchainProbes,
 ) -> Result<ExitStatus> {
     let mut command = cargo_command();
+    wrapper.configure_passthrough(&mut command)?;
+    toolchain_probes.configure(&mut command);
     command
         .arg(CARGO_SUBCOMMAND_CHECK)
         .args(&cargo_plan.cargo_args);
@@ -923,8 +980,12 @@ fn run_cargo_fix_command(
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     cargo_fix_features: CargoFixFeatures,
+    wrapper: &RunWrapper,
+    toolchain_probes: &ToolchainProbes,
 ) -> Result<ExitStatus> {
     let mut command = cargo_command();
+    wrapper.configure_passthrough(&mut command)?;
+    toolchain_probes.configure(&mut command);
     command
         .arg(CARGO_SUBCOMMAND_FIX)
         .arg(CARGO_FLAG_ALLOW_DIRTY)

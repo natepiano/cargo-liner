@@ -100,3 +100,7 @@ redundant_pub_crate     = "allow"
 [workspace.lints.rust]
 missing_docs = "deny"
 unsafe_code  = "deny" # FFI-only; opt back in per item with a reasoned allow
+
+# cargo-mend tests start the cargo-mend binary as a compiler wrapper many times.
+[profile.test.package.cargo-mend]
+opt-level = 1

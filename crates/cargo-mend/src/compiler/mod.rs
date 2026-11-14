@@ -14,6 +14,8 @@ mod visibility;
 
 pub(crate) use build::BuildOutputMode;
 pub(crate) use build::CompilerFixOutcome;
+#[cfg(test)]
+pub(crate) use build::FixtureCompiler;
 pub(crate) use build::RunWrapper;
 pub(crate) use build::RunningExecutable;
 pub(crate) use build::SelectionResult;
