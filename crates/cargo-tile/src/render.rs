@@ -889,17 +889,23 @@ mod expanded_view_tests {
         Ok(terminal.backend().buffer().clone())
     }
 
+    /// The cell column where `hint` starts on a one-row status line.
+    fn hint_column(status: &Buffer, hint: &'static str) -> Result<u16, Box<dyn Error>> {
+        let row = tests::buffer_rows(status).join("");
+        let (before_hint, _) = row.split_once(hint).ok_or(hint)?;
+        // Each cell holds one char; a byte offset counts "—" as three cells.
+        Ok(u16::try_from(before_hint.chars().count())?)
+    }
+
     #[test]
     fn collapse_uses_the_same_key_and_label_ink_as_expand() -> Result<(), Box<dyn Error>> {
         let mut app = app()?;
         let before = status(&app)?;
-        let before_text = tests::buffer_rows(&before).join("");
-        let enter = u16::try_from(before_text.find("enter expand").ok_or("expand hint")?)?;
+        let enter = hint_column(&before, "enter expand")?;
         press(&mut app, KeyCode::Enter);
         paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
         let after = status(&app)?;
-        let after_text = tests::buffer_rows(&after).join("");
-        let esc = u16::try_from(after_text.find("esc collapse").ok_or("collapse hint")?)?;
+        let esc = hint_column(&after, "esc collapse")?;
         assert_eq!(after[(esc, 0)].style(), before[(enter, 0)].style());
         assert_eq!(after[(esc + 4, 0)].style(), before[(enter + 6, 0)].style());
         Ok(())

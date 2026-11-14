@@ -1,6 +1,17 @@
+// rate labels
+/// A rate below this value after rounding to tenths shows one decimal place.
+pub(super) const RATE_DECIMAL_BELOW: f64 = 10.0;
+
 // cpu reading
-/// A status-line CPU reading below this percent shows one decimal place.
-pub(super) const CPU_DECIMAL_BELOW_PERCENT: f64 = 10.0;
+/// Label before the current process CPU reading.
+pub(super) const CPU_LABEL: &str = "CPU: ";
+
+// disk reads
+/// Label before the current process disk read rate.
+pub(super) const DISK_READ_LABEL: &str = "Reads/s: ";
+
+/// Decimal units use one thousand bytes.
+pub(super) const DISK_READ_UNIT_BASE: f64 = 1000.0;
 
 // `SEPARATOR` configures spacing in bar regions.
 /// Inter-slot separator inside one region.
