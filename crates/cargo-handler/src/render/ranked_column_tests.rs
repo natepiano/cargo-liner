@@ -39,8 +39,8 @@ const NOW: u64 = 1_794_096_000;
 fn rows() -> TestResult<Vec<AgentRow>> {
     let mut rows = Vec::new();
     for (pid, name, count) in [
-        (10, "natedev", 42),
-        (20, "hana", 42),
+        (10, "natedev-root", 42),
+        (20, "hana-session", 42),
         (30, "cargo-liner", 11),
     ] {
         let children: Vec<_> = (1..count)

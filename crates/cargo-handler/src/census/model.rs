@@ -152,19 +152,27 @@ impl ConversationModel {
         }
     }
 
+    /// Claude writes an assistant record's effort at the top level and its model in
+    /// `message`; the nested effort fields stay as the fallback.
     pub(super) fn take_claude(&mut self, value: &Value) {
-        let record = match value["type"].as_str() {
-            Some("assistant") => &value["message"],
-            Some("system") => value,
-            _ => return,
-        };
-        self.take_fields(
-            record.get("model"),
-            record
-                .get("effort")
-                .or_else(|| record.get("effortLevel"))
-                .or_else(|| record.get("reasoning_effort")),
-        );
+        match value["type"].as_str() {
+            Some("assistant") => {
+                let message = &value["message"];
+                self.take_fields(
+                    message.get("model"),
+                    Self::claude_effort(value).or_else(|| Self::claude_effort(message)),
+                );
+            },
+            Some("system") => self.take_fields(value.get("model"), Self::claude_effort(value)),
+            _ => {},
+        }
+    }
+
+    fn claude_effort(record: &Value) -> Option<&Value> {
+        record
+            .get("effort")
+            .or_else(|| record.get("effortLevel"))
+            .or_else(|| record.get("reasoning_effort"))
     }
 
     pub(super) fn take_codex(&mut self, value: &Value) {

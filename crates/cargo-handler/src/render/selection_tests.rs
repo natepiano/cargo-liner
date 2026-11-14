@@ -150,9 +150,9 @@ fn horizontal_keys_and_tabs_move_tile_focus_without_moving_the_row() {
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(1)).expect("one screen row");
     let before = paint(&mut app);
-    let left = locate(&before, "build-for-10");
-    let right_top = locate(&before, "build-for-20");
-    let right = locate(&before, "build-for-30");
+    let left = locate(&before, "build-10");
+    let right_top = locate(&before, "build-20");
+    let right = locate(&before, "build-30");
     assert_eq!(right_top.x, right.x, "both right rows share a column");
     assert!(right_top.y < right.y, "the right column has two tiles");
     assert!(left.x < right.x, "the right row is beside the left row");
@@ -160,12 +160,12 @@ fn horizontal_keys_and_tabs_move_tile_focus_without_moving_the_row() {
         app.click(point);
         paint(&mut app);
     }
-    assert_selected(&paint(&mut app), "build-for-10");
+    assert_selected(&paint(&mut app), "build-10");
     for (key, expected) in [
-        (KeyCode::Right, "build-for-30"),
-        (KeyCode::Left, "build-for-10"),
-        (KeyCode::Tab, "build-for-20"),
-        (KeyCode::BackTab, "build-for-10"),
+        (KeyCode::Right, "build-30"),
+        (KeyCode::Left, "build-10"),
+        (KeyCode::Tab, "build-20"),
+        (KeyCode::BackTab, "build-10"),
     ] {
         let modifiers = if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::BackTab) {
             KeyModifiers::SHIFT
@@ -270,7 +270,7 @@ fn with_shell(mut row: AgentRow) -> AgentRow {
     row.children.push(
         serde_json::from_value(serde_json::json!({
             "kind":"shell", "depth":0, "pid":9000+row.pid,
-            "name":format!("build-for-{}",row.pid), "started":100,
+            "name":format!("build-{}",row.pid), "started":100,
         }))
         .expect("shell fixture"),
     );
@@ -342,16 +342,16 @@ fn the_wheel_scrolls_the_tile_under_the_pointer_and_leaves_the_focused_tile_alon
     rows.extend(pool);
     let mut app = application(rows);
     let before = paint(&mut app);
-    app.click(locate(&before, "build-for-10"));
+    app.click(locate(&before, "build-10"));
     let selected = paint(&mut app);
-    assert_selected(&selected, "build-for-10");
+    assert_selected(&selected, "build-10");
     let pointer = locate(&selected, "pool-20");
     // The pointer remains over the pool while keyboard focus stays on the work tile.
     for _ in 0..40 {
         app.scroll(pointer, ScrollDirection::Down);
     }
     let after = paint(&mut app);
-    assert_selected(&after, "build-for-10");
+    assert_selected(&after, "build-10");
     let first_pool = |buffer: &Buffer| {
         (20..60)
             .find(|pid| {

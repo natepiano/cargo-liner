@@ -638,7 +638,7 @@ fn independent_sort_forest() -> MachineState {
                 &format!("under-{name}"),
                 MINUTE,
             )],
-            ..agent(pid, name, age, Some(10))
+            ..agent(pid, &format!("{name}-session-member"), age, Some(10))
         });
         edges.push(HierarchyEdge {
             manager: "root-id".into(),

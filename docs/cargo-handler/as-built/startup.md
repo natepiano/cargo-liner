@@ -133,6 +133,9 @@ The decoder skips message bodies.
 Known model names include Opus, Sonnet, Haiku, Fable, Astra, and Sol.
 Effort values are Low, Medium, High, XHigh, Max, and Unrecorded.
 Claude records use assistant or system metadata.
+An assistant record takes its model from `message` and its effort from the top level.
+The `message` effort fields remain the fallback.
+A record without effort keeps the last recorded effort.
 Codex records use `turn_context` or `thread_settings_applied` metadata.
 Values belong to each conversation, including nested subagents.
 `Unrecorded` fields remain blank and can be absent from probes.

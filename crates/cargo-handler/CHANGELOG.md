@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Claude rows show the effort that assistant records write at their top level.
+
+- A column that drops early, such as effort, returns when a later drop frees the width it needs.
+
+- Shell rows show path arguments as file names and end at the agent rows' width in `…`; the details view shows and copies the full command.
+
 - Keep pane workers visible and show their detached run activity without separate dispatch rows.
 
 - Codex remote option values cannot supply resume proof for staff placement.
