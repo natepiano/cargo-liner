@@ -234,61 +234,28 @@
 
 ### Phase 9 — The accounts table shows the date each Claude login ends  · status: done
 
-**Depends on:** Phase 7 (it changes `census/accounts.rs`, the typed accounts read)
+#### As-built
 
-#### Work Order
-
-**Goal:** the accounts table has a `login ends` column, so the user sees when each Claude account must sign in again.
-
-**Source:** the user, via natedev and the showrunner, 2026-11-13: "yes i want to see this in the accounts table (propagated to cargo handler)". "This" is the date each Claude account's login ends. The wire contract comes from natedev's accounts unit, through the showrunner.
-
-**Spec:**
-
-Wire contract (natedev's accounts unit):
-- cargo-handler already runs `accounts.py status --stored --json` (`census/command_inputs.rs`) and reads `accounts[]`.
-- Each `accounts[]` item gets `login_ends_at`: an ISO 8601 UTC string in the same form as `resets_at`, or null. Codex rows, and Claude rows with no stored value, give null.
-- The value comes from `agent-notes/usage.json`, which cargo-handler already watches. No new input file.
-- The field reaches `~/.claude` main with the accounts phase `login-end-date`. This phase can land first.
-
-Director decisions:
-1. `AccountWire` gets `login_ends_at: Option<String>` with `#[serde(default)]`. An older report without the key parses, and its rows show an empty cell.
-2. `AccountUsage` keeps the value as `Reading<DateTime<Utc>>`, parsed by the function that parses `resets_at`. A malformed value fails the same way as a malformed `resets_at`.
-3. A new `AccountsColumn::LoginEnds` sits after `Resets`. Its header is `login ends`, lower case like the other headers. Its value uses `reset_label`, the date form of the `resets` column. A null value gives an empty cell, as `resets` does.
-4. The column sorts by date, as `resets` does, with an empty value in the place `resets` gives it.
-5. The column draws in the default table ink. It takes no rank color.
-6. On a narrow pane, the column drops after `enabled` and before `credits`. Director call: the date changes once a week, so it gives way before the credit amount.
-
-Tests (red first, each under one second):
-1. A report with `login_ends_at` on a Claude row and null on a Codex row draws the date in the Claude row and an empty cell in the Codex row, read from the rendered accounts table.
-2. A report without the `login_ends_at` key parses, and every `login ends` cell is empty.
-3. The `login ends` cell text equals the `resets` cell text for the same instant, today, within six days and later.
-4. A click on the `login ends` header sorts the rows by that date, in both directions.
-5. On a narrow pane, `enabled` drops first, then `login ends`, then `credits`.
-
-**Constraints from prior phases:**
-- Phase 7: the accounts monitor keeps `AccountsTable::{NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast}` (`census/accounts.rs`). The census keeps only its health, through `Census::record_local_accounts`. The new field goes into `AccountsReading`; the health does not change.
-- Phase 8: `AccountsTable::read_once` runs the configured accounts command once for `census --json`, and the monitor uses the same parse. The new field reaches both through `AccountsReading`. `census --json` does not print it.
-- The Delegation Context Status source: sdlc owns the accounts report. cargo-handler reads the field and makes no date of its own.
-
-**Live check (director):** after the `~/.claude` change merges, capture the accounts table from a build of this branch on natedev, under the safety rule. Each Claude row shows its login end date. Each Codex row shows an empty cell.
-
-**Change-Review line:** The accounts table shows the date each Claude login ends | On natedev, run cargo-handler and look at the accounts table | A `login ends` column shows a date for each Claude account and is empty for Codex accounts
+- `AccountWire::login_ends_at: Option<String>` has `#[serde(default)]`, so an older report without the key parses. `AccountUsage::login_ends_at: Reading<DateTime<Utc>>` uses the `resets_at` timestamp parse; a malformed value fails the reading.
+- `AccountsColumn::LoginEnds` sits after `Resets`, header `login ends`, right aligned. It sorts through `compare_readings`, as `resets` does.
+- The cell text is `reset_label` through `date_cell`, which also serves `resets`. An unavailable reading gives an empty cell. `row_cells` sets the cell to the `numeric` style, the default table ink.
+- Narrow panes drop `enabled`, then `login ends`, then `credits` (`AccountsColumnDrop::ORDER`). The stacked layout shows a `login ends` fact.
+- `terminal.rs` `next_body_change`: the midnight redraw also fires for a known login end date.
+- `census --json` does not print the date.
 
 **Files:**
-- `crates/cargo-handler/src/census/accounts.rs` — `AccountWire::login_ends_at`, `AccountUsage::login_ends_at`
+- `crates/cargo-handler/src/census/accounts.rs` — the wire and usage field
 - `crates/cargo-handler/src/sort.rs` — `AccountsColumn::LoginEnds` and its header
-- `crates/cargo-handler/src/summary/accounts.rs` — the cell value, the sort and the drop order
-- `crates/cargo-handler/src/census/accounts_wire_tests.rs` — tests 1 and 2
-- `crates/cargo-handler/src/summary/accounts_tests.rs` — tests 3 and 5
-- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs` — test 4
-- `docs/cargo-handler/as-built/accounts.md` — the `login ends` column
+- `crates/cargo-handler/src/summary/accounts.rs` — value, sort, ink, drop order, stacked fact
+- `crates/cargo-handler/src/terminal.rs` — the date redraw
+- `crates/cargo-handler/src/census/accounts_wire_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs` — the tests
+- `docs/cargo-handler/as-built/accounts.md` — the column
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** the header lists in `summary/mod.rs` and `summary/accounts_tests.rs` name every column; a column change edits both. `AccountsColumn::index` values follow the column order.
 
-**State:** none
+**Gotchas:** `row_cells` sets each column's style; a new column takes the row freshness ink unless it is set. The accounts report writes `login_ends_at` with fractional seconds and `+00:00`, which the RFC 3339 parse accepts.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows the login end dates.
+**Ruled out:** a rank color for the column; a `census --json` field for the date.
 
 ### Phase 10 — Status reads busy, idle, paused or exited; starting and waiting are activities, the same in the accounts board and cargo-handler  · status: todo
 
