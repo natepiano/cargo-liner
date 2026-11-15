@@ -2889,7 +2889,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 **Workers:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
 - `impl` — every file above, items 1 to 6, the whole rename and the pause path.
 
-**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates.
+**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates. Since "Reads/s stays beside CPU at 100 columns or more", the uptime group (uptime, CPU, `Reads/s`) outranks every status note, so on a narrow row the `paused` note drops before `Reads/s`. Draw `space_pauses_and_unpauses_the_display` at 80 columns or more, where a flag note such as cargo-handler's `attract` still shows.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
@@ -3565,35 +3565,27 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 ### Phase 62a — Reads/s stays beside CPU at 100 columns or more  · status: done
 
-**Depends on:** Phase 58g (order only). It runs next, before Phase 43j (change review fault; director, 2026-11-14).
+#### As-built
 
-Change review C350 returned Phase 62 (merged 845e76993) as a fault (showrunner, 2026-11-14). The row promises `Reads/s` at 100 columns or more. At 120 columns, cargo-port showed `Uptime: 1s CPU: 48% Reads/s: 77 MB` at 1 s. From 2 s to 5 s, while the app scanned the disk, it showed `Uptime: 2s CPU: 340%` with no `Reads/s`. The navigation hints and the `Disk cache:` note stayed. At 160 and 220 columns the field showed. cargo-tile and cargo-handler at 120 columns showed the field. Evidence: `/tmp/claude/session/c27e8199-9b2d-4d7c-a824-e30b8c9db1fb/claude-1000/-home-natepiano-rust-cargo-liner-docs-cargo-port/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/c350/lines.txt`.
-
-Cause (director read of main): `fitted_left_spans` (`crates/tui_pane/src/bar/status_line.rs:568`) adds `Reads/s` only when uptime, every navigation hint and `Reads/s` fit in the left room. `render_sections` fits the right side (notes and globals) first, so the left room is what the notes leave. A wider CPU value (`340%`) then removes `Reads/s` before any hint or note. This is the Phase 62 rule "On a narrow row, `Reads/s` is added only after every navigation hint fits". The cause is in tui_pane, not in the cargo-port layout.
-
-#### Work Order
-
-**Goal:** at 100 columns or more, every app shows `Reads/s: <rate>` directly after `CPU:` on every frame. Lower-value text drops first.
-
-**Spec:**
-
-1. Make uptime, CPU and `Reads/s` one left group. Fit that group before the navigation hints and before the right-side notes.
-2. When the row is too narrow for all items, drop in this order: whole navigation hints from the right, then right-side notes from the left, as the current rules drop them. `Reads/s` drops only when the group itself does not fit.
-3. Keep the `? shortcuts` global and every other current rule. Keep the 80-column cargo-handler `GRID_STATUS` row as main has it, unless the new rule changes it; then update the test string and say why in the as-built.
-4. Add a test that draws a cargo-port-shaped row (scan indicator, a three-digit CPU value such as `447%`, the navigation hints and a `Disk cache:` note) at 100 and 120 columns. The test requires `Reads/s` after `CPU:`. It must fail on the code before the change.
-5. Change no app's status line content. cargo-port's notes and hints stay as port made them.
+- The status line fits the uptime group (the uptime spans, `CPU:` and `Reads/s`) before the navigation hints and the right-side notes. Change review C350 found `Reads/s` missing at 120 columns in cargo-port while it scanned with CPU over 300%.
+- Drop order on a narrow row: navigation hints from the right, then notes from the left, then `Reads/s`, then uptime and CPU. Globals drop last. After-uptime hints (`with_hints`, such as `enter expand`) also give way before `Reads/s`, because `hinted_width` counts `disk_reads`.
+- `crates/tui_pane/src/bar/status_line.rs`:
+  - `uptime_group_width(items, room)` gives the widest form of the group that fits: with `Reads/s`, then without it, else 0.
+  - `fitted_right_spans(total_width, items, hint_fit)` adds notes from the right only while `left_room` still holds that group.
+  - `right_gap` and `left_room` give the gap and the left room for the fitted right spans. `render_sections` and the note loop both use them.
+  - `fitted_left_spans` adds `Reads/s` whenever the group fits, then gives the room that is left to the navigation hints.
+- Tests:
+  - `reads_per_second_stays_after_cpu_while_a_scan_runs_at_one_hundred_columns_or_more` (`status_line_gap_tests.rs`) draws a cargo-port row (scan indicator, `CPU: 447%`, three navigation hints, a `Disk cache:` note, `? shortcuts`) at 100 and 120 columns. It fails on the earlier fit order at 100.
+  - `check_disk_read_priority_at_every_width` derives its rooms from the span widths.
+- cargo-handler at 80 columns now draws ` Uptime: 0s CPU: — Reads/s: —`, then `cargo-handler <version>`, then `? shortcuts`, over the grid and over every overlay. `enter expand` and the overlay navigation hints give way to `Reads/s`. One test constant, `STATUS` (`crates/cargo-handler/src/render/mod.rs`), holds that row.
+- Live check: a pty capture of cargo-port at 120 and 100 columns showed `Reads/s` after `CPU:` on every frame of a scan, with CPU up to 827%.
 
 **Files:**
+- `crates/tui_pane/src/bar/status_line.rs` — the fit order and its helpers
+- `crates/tui_pane/src/bar/status_line_gap_tests.rs` — the cargo-port row test
+- `crates/cargo-handler/src/render/mod.rs` — the 80-column `STATUS` test row
 
-- `crates/tui_pane/src/bar/status_line.rs` — the fit order
-- `crates/tui_pane/src/bar/status_line_gap_tests.rs` — tests, when they fit there
-- `crates/cargo-handler/src/render/mod.rs` — the `GRID_STATUS` test string, only under spec item 3
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`. In no-worker mode, the director writes it.
-
-**Constraints from prior phases:** Phase 62: one `#[allow(clippy::cast_precision_loss)]` is user-approved; add no other allow. Phase 58b: a test at 1 s or more is a defect.
-
-**Acceptance gate:** `verify.sh lint tui_pane` and `verify.sh test tui_pane` green on natedev; `verify.sh test cargo-handler` green. The fix returns as a new change review row, and that review checks cargo-port at 120 columns.
+**Binds later work:** a status note (for example a `paused` or stale mark) drops before `Reads/s` on a narrow row. A test that reads a note from the status line draws at a width where the note fits beside the uptime group.
 
 ### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: todo
 
