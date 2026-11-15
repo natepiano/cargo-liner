@@ -79,6 +79,7 @@ use crate::constants::NOTHING_RUNNING_HEIGHT;
 use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::PRODUCERS_CELL_TITLE;
+use crate::constants::RUNNING_JOB;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TIMER_ROLE;
@@ -1859,9 +1860,16 @@ impl TreeLine<'_> {
         }
         let text = match self.kind() {
             LineKind::Worker(source) => source.activity_text(),
-            LineKind::UnassignedSession | LineKind::Shell(ShellPurpose::Command) => "",
+            LineKind::UnassignedSession => "",
+            LineKind::Shell(ShellPurpose::Command) => match activity {
+                AgentActivity::Active(_) => "",
+                AgentActivity::Idle | AgentActivity::Unreported => RUNNING_JOB,
+            },
             LineKind::Session(role) => role.activity_text(),
-            LineKind::Subagent(role) => role.text(),
+            LineKind::Subagent(role) => match (role.text(), activity) {
+                ("", AgentActivity::Unreported) => RUNNING_JOB,
+                (text, _) => text,
+            },
             LineKind::Shell(ShellPurpose::Timer(timer)) => {
                 return match ShellState::resolve(
                     ShellTimerObservation::ObservedCountdown(timer),
@@ -1899,6 +1907,16 @@ impl TreeLine<'_> {
 
     fn session_status(&self) -> ReportedSessionState {
         match self.subject {
+            // A subagent whose scan says its turn ended is idle.
+            LineSubject::Work(Work {
+                kind: WorkKind::Subagent(_),
+                child:
+                    ChildRow {
+                        activity: AgentActivity::Idle,
+                        ..
+                    },
+                ..
+            }) => ReportedSessionState::Reported(SessionState::Idle),
             LineSubject::Work(Work {
                 kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
@@ -4736,10 +4754,10 @@ mod tests {
                     " ~/rust/tool-based-ui-trunk",
                     " launched by boss of bosses",
                     "     session                                                                                                                                     role    activity  status  type",
-                    " ├── Launch the Phase 1 implementation seat                                                                                                                        busy    shell",
+                    " ├── Launch the Phase 1 implementation seat                                                                                                              running   busy    shell",
                     " │ └── tool-based-ui-trunk-impl                                                                                                                  worker            idle",
-                    " └── Review the permission queue                                                                                                                 worker            busy    subagent",
-                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                          busy    shell",
+                    " └── Review the permission queue                                                                                                                 worker            idle    subagent",
+                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                running   busy    shell",
                 ]
             );
             if let ReportedSessionState::Reported(state) = source_state {
@@ -4951,9 +4969,9 @@ mod tests {
             (status_x..status_x + 4)
                 .map(|x| cut[(x, subagent_y)].symbol())
                 .collect::<String>(),
-            "busy"
+            "idle"
         );
-        assert_eq!(Some(cut[(status_x, subagent_y)].fg), Role::Busy.style().fg);
+        assert_eq!(Some(cut[(status_x, subagent_y)].fg), Role::Idle.style().fg);
     }
 
     /// The text of each run of cells drawn in `color`, row by row,

@@ -2,6 +2,9 @@
 
 use std::time::Duration;
 
+use crate::census::Activity;
+use crate::census::AgentActivity;
+
 // configuration
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, `favorites.toml` and `themes/`.
@@ -135,6 +138,9 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 /// Leads the agent's pid in an agent cell's header, and names a launcher
 /// known by its pid alone.
 pub(crate) const PID_LABEL: &str = "pid";
+/// Activity column text for a shell command, or a subagent with no role, that has no
+/// scanned word.
+pub(crate) const RUNNING_JOB: &str = AgentActivity::Active(Activity::Running).text();
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
 // summary table

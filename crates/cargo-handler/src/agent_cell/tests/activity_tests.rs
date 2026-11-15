@@ -616,3 +616,155 @@ fn spent_shell_timers_draw_running_in_busy_ink_at_the_deadline_and_later() {
         }
     }
 }
+
+/// The activity cell text on the row that shows `name`: the text before the next column gap.
+fn activity_at(buffer: &Buffer, name: &str) -> String {
+    let x = find(buffer, TREE_ACTIVITY_HEADER)
+        .expect("activity header")
+        .0;
+    let y = find(buffer, name).expect("named row").1;
+    let cell: String = (x..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect();
+    cell.split("  ")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// A session with one untimed shell command child whose scanned activity is `activity`.
+fn shell_command_owner(activity: AgentActivity) -> AgentRow {
+    AgentRow {
+        children: vec![ChildRow {
+            activity,
+            ..child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "compile-project",
+                MINUTE,
+            )
+        }],
+        ..agent(10, "shell-owner", HOUR, None)
+    }
+}
+
+#[test]
+fn shell_command_rows_without_a_scanned_word_draw_running() {
+    let running = AgentActivity::Active(Activity::Running).text();
+    for activity in [AgentActivity::Idle, AgentActivity::Unreported] {
+        for width in [180, 65] {
+            let buffer = drawn(&shell_command_owner(activity), None, width);
+            assert_eq!(
+                activity_at(&buffer, "compile-pro"),
+                running,
+                "activity={activity:?}, width={width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shell_command_rows_keep_a_scanned_word_once() {
+    for activity in [
+        AgentActivity::Active(Activity::Verify {
+            step:     VerifyStep::Nextest,
+            location: RunLocation::Mac,
+        }),
+        AgentActivity::Active(Activity::Waiting),
+    ] {
+        let buffer = drawn(&shell_command_owner(activity), None, 180);
+        assert_eq!(
+            activity_at(&buffer, "compile-project"),
+            activity.text(),
+            "activity={activity:?}"
+        );
+    }
+}
+
+#[test]
+fn busy_rows_never_draw_an_empty_activity_cell() {
+    let owner = AgentRow {
+        children: vec![
+            ChildRow {
+                activity: AgentActivity::Unreported,
+                ..child(
+                    0,
+                    ChildKind::Subagent(SubagentRole::Unrecorded),
+                    None,
+                    "review-the-queue",
+                    MINUTE,
+                )
+            },
+            child(
+                1,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "compile-project",
+                MINUTE,
+            ),
+            ChildRow {
+                kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                    Timer {
+                        started:  NOW - 92,
+                        deadline: NOW + 228,
+                    },
+                )),
+                ..child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(22),
+                    "progress-clock",
+                    92,
+                )
+            },
+            child(0, ChildKind::Thread, None, "owner-worker", MINUTE),
+        ],
+        ..agent(10, "shell-owner", HOUR, None)
+    };
+    let mut cell = entry(&owner, None);
+    cell.source_state = ReportedSessionState::Reported(SessionState::Busy);
+    for line in &mut cell.lines {
+        line.source_state = ReportedSessionState::Reported(SessionState::Busy);
+    }
+    let pool = activity_pool(TreeSort::default());
+    for width in [180, 65] {
+        let buffer = drawn_among(&cell, &[], width);
+        assert_eq!(
+            activity_at(&buffer, "progress-cl"),
+            "timer 3:48",
+            "width={width}"
+        );
+        assert_eq!(activity_at(&buffer, "review-"), "running", "width={width}");
+        for (buffer, required) in [
+            (&buffer, &["review-", "compile", "progres"][..]),
+            (&pool, &["writer-", "reader-", "gate-ro"][..]),
+        ] {
+            let status_x = find(buffer, TREE_STATUS_HEADER).expect("status header").0;
+            let activity_x = find(buffer, TREE_ACTIVITY_HEADER)
+                .expect("activity header")
+                .0;
+            let header_y = find(buffer, TREE_STATUS_HEADER).expect("status header").1;
+            let busy: Vec<u16> = (header_y + 1..buffer.area.height)
+                .filter(|&y| {
+                    let status: String = (status_x..status_x + 4)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    status == "busy"
+                })
+                .collect();
+            for name in required {
+                let y = find(buffer, name).expect("named row").1;
+                assert!(busy.contains(&y), "{name} reads busy, width={width}");
+            }
+            for y in busy {
+                assert_ne!(
+                    buffer[(activity_x, y)].symbol(),
+                    " ",
+                    "busy row {y} has an empty activity cell, width={width}"
+                );
+            }
+        }
+    }
+}
