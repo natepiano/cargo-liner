@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A busy shell command row, or a subagent row with no role, shows `running` when no activity is scanned, so no busy row has an empty activity cell.
+
+- A subagent row whose turn ended shows `idle`, not `busy`.
+
 - Claude rows show the effort that assistant records write at their top level.
 
 - A column that drops early, such as effort, returns when a later drop frees the width it needs.

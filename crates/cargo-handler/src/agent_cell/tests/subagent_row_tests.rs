@@ -72,10 +72,11 @@ fn column(buffer: &Buffer, header: &str, next: &str, name: &str) -> String {
 }
 
 #[test]
-fn subagent_rows_show_reading_and_idle_in_the_status_column() {
-    for (activity, expected) in [
-        (AgentActivity::Active(Activity::Reading), "reading"),
-        (AgentActivity::Idle, MISSING_VALUE),
+fn subagent_rows_show_their_scanned_activity_and_status() {
+    for (activity, expected, status) in [
+        (AgentActivity::Active(Activity::Reading), "reading", "busy"),
+        (AgentActivity::Unreported, "running", "busy"),
+        (AgentActivity::Idle, MISSING_VALUE, "idle"),
     ] {
         let root = AgentRow {
             account: account("claude1"),
@@ -98,7 +99,8 @@ fn subagent_rows_show_reading_and_idle_in_the_status_column() {
         );
         assert_eq!(
             column(&rendered(&root), "status", "type", "Inspect source files"),
-            "busy"
+            status,
+            "{activity:?}"
         );
     }
 }
@@ -482,7 +484,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
         "{headers}"
     );
     for (name, expected_type, expected_role) in [
-        ("cargo test", "shell", ""),
+        ("cargo test", "shell", "running"),
         ("Review source changes", "subagent", "reviewer"),
         ("Do the requested work", "subagent", ""),
         ("seat task", "", ""),
