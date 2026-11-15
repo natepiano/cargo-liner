@@ -405,57 +405,35 @@ A shell command row draws `shell_command::short_command`, which cuts each path a
 
 ### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: done
 
-**Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
+#### As-built
 
-#### Work Order
+Three theme roles set the reset times in the accounts footer: `reset_soonest`, `reset_middle` and `reset_latest`. Every built-in theme file sets all three, a custom theme can override each one, and a theme without them takes the Default Dark colors. `reset_nearest` and `reset_farthest` are gone. The steps are different hue families: soonest green (the quota comes back soon), middle blue, latest violet; no step is red.
 
-**Goal:** the soonest, middle and latest reset times in the accounts footer each draw in a different hue, so the step is plain at a glance.
+`ResetStep` (`Soonest`, `Middle`, `Latest`) holds the rank rule through `From<ResetRank>`: the first quarter of distinct ranks is `Soonest`, the last quarter is `Latest`, and the rest are `Middle`; a single reset is `Soonest`. `ResetRank` stays the checked rank type, with strict quarter edges. `ResetRank::color` reads the step's role from the active theme.
 
-**Source:** the user, via the showrunner, 2026-11-11, on C264 (returned): "they differ but it's still preetty subtle - i would prefer there being true  color differences". C264 is phase 53 of the earlier handler plan: three steps blended from `reset_nearest` to `reset_farthest`. Dark themes step from green to teal; light themes step in violet lightness.
-
-**Spec:**
-
-Director decisions:
-1. Three theme roles replace the two-end blend: `reset_soonest`, `reset_middle` and `reset_latest`. Each theme file sets all three. No sRGB midpoint. `reset_nearest` and `reset_farthest` go.
-2. Each step is a different hue family: soonest green (the quota comes back soon), middle blue, latest violet. No step is red. The user, 2026-11-14, on option B: "okay use B - whatever you do, make it different than this - i can't tell the difference between the colors". Gold failed the chroma and low-quota warning floors on the light themes. Reset inks have no hue floor from the account inks, so a blue reset can sit beside a blue account name in another column. On the light themes, the reset ink keeps 17 CIEDE2000 from the low-quota warning ink, not 20: no readable green keeps 20 from that olive and 15 from the Astra reviewer green.
-3. `ResetRank::color` keeps its rank rule: the first quarter of ranks takes `reset_soonest`, the last quarter takes `reset_latest`, and the rest take `reset_middle`. A single reset takes `reset_soonest`.
-4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
-5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
-6. One contrast measure (showrunner, 2026-11-13). The footer color tests use `tui_pane::contrast_ratio` (`crates/tui_pane/src/theme/blend.rs`). The shared measure returns `Option<f64>`, which is `None` for `Color::Reset`. `footer_colors/tests.rs` keeps `contrast_ratio` only as a thin wrapper that unwraps the shared measure with a message that names the two colors, so its 18 callers do not repeat the message.
-
-**Constraints from prior phases:**
-- Phase 5 extends the bundled theme loading with the `waiting` role. Extend that loader with the new reset roles; do not make a second load path. Keep the `waiting` inheritance and contrast tests green. Load the new reset roles from the bundled theme files, with inheritance and custom-override tests. The Phase 2 config reader handles emphasis only; themes use the theme-loading path.
-- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. The new inks keep their readability and differences at every emphasis; add these cases to `render/word_contrast_tests.rs`. On a selected row, the 4.5 lift takes every matched ink near white, so the 20 CIEDE2000 step distance holds on plain matches only.
-- Keep `ResetRank` as the checked rank type, with its strict quarter edges and its single-reset rule. Measure the drawn colors, not only the theme role values. The current gradient test allows four steps and checks only neighbor pairs.
-- `accounts.md` names the new keys that replace `reset_nearest` and `reset_farthest` for custom themes.
-
-Tests (red first, each under one second):
-1. Each built-in theme file sets the three roles, and a theme file can override each one.
-2. The rank rule gives soonest, middle and latest in order; a single reset gives soonest.
-3. A footer with all three rank groups draws exactly three reset colors. Every pair is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, tint on and off.
-4. The existing contrast, no-red and session-color tests pass with the new colors.
-5. Equal reset times, one distinct reset and exact quarter edges keep the rank rule. A custom theme without the new roles takes the defaults.
-6. The footer color tests in `footer_colors/tests.rs` and `footer_colors/ground_tests.rs` pass with `tui_pane::contrast_ratio`, with their floors unchanged.
-
-**Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
-
-**Change-Review line:** Reset times in the accounts footer take three clearly different colors | On natedev, run cargo-handler and look at the resets column of the accounts footer | The soonest resets are green, the middle ones blue, and the latest ones violet, on dark and light themes
+- Dark themes: soonest (0,203,123), middle (10,191,255), latest (204,158,255). Light themes: soonest (0,88,13), middle (2,78,124), latest (130,0,206).
+- Every pair of drawn steps is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, with the pane tint on and off. On light themes each reset ink keeps 17 CIEDE2000 from the low-quota warning ink.
+- The footer color tests measure with `tui_pane::contrast_ratio`; `footer_colors/tests.rs` keeps `contrast_ratio` as a thin wrapper that names the two colors when the measure fails.
 
 **Files:**
-- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the theme role set
-- `crates/cargo-handler/themes/*.toml` — the three roles in each built-in theme
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order and distance
-- `crates/cargo-handler/src/theme/files_tests.rs` — theme file roles
-- `crates/cargo-handler/src/theme/files.rs` — custom theme role load and defaults
-- `crates/cargo-handler/src/footer_colors/tests.rs`, `crates/cargo-handler/src/footer_colors/ground_tests.rs` — the footer contrast tests on the shared measure
-- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset steps
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetStep`, `ResetRank`
+- `crates/cargo-handler/src/theme/files.rs` — the loader reads the three roles
+- `crates/cargo-handler/src/constants.rs` — `RESET_SOONEST_ROLE`, `RESET_MIDDLE_ROLE`, `RESET_LATEST_ROLE`
+- `crates/cargo-handler/themes/*.toml` — the three role colors in each built-in theme
+- `crates/cargo-handler/src/theme/files_tests.rs` — role load, override, distance and contrast floors
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — rank order and the drawn footer colors
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — reset step word matches at every emphasis
+- `crates/cargo-handler/src/footer_colors/tests.rs` — the shared contrast measure
+- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset roles
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `render/word_contrast_tests.rs` holds the reset step cases (`check_reset_step_match`, `RESET_STEP_RANKS`, `EMPHASES`); the slow tests phase keeps them.
 
-**State:** none
+**Gotchas:**
+- On a selected row the 4.5 lift takes every matched ink near white, so the 20 CIEDE2000 step distance holds on plain matches only.
+- The session and reset color floors (14.7, 15.3) are in `render/role_title_tests.rs`.
+- No readable light green keeps 20 CIEDE2000 from the olive low-quota warning and 15 from the Astra reviewer green; the light floor is 17.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
+**Ruled out:** a sRGB midpoint between two end roles; a gold step (it fails the chroma and warning floors on light themes); the 5.0 step floor of the earlier gradient, which the user could not see.
 
 ### Phase 18 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
@@ -600,7 +578,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 17 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 17 adds reset-step cases to `render/word_contrast_tests.rs`: `check_reset_step_match`, `RESET_STEP_RANKS` and the shared `EMPHASES` list. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 - Phase 16 adds `long_shell_application` and its two tests to `render/details_tests.rs`: the drawn short command, and `d` and `y` on the full command. Keep them.
 
