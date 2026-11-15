@@ -401,27 +401,39 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 14 — the startup toast contrast test runs under 1 s  · status: done
 
-**Depends on:** none.
+#### As-built
+
+- `tui::theme_roles::tests` has one test for each toast style: `normal_startup_footer_meets_contrast_in_every_registered_theme`, `warning_startup_footer_meets_contrast_in_every_registered_theme`, `error_startup_footer_meets_contrast_in_every_registered_theme` and `success_startup_footer_meets_contrast_in_every_registered_theme`. Each calls `assert_startup_footer_meets_contrast(ToastStyle)`.
+- The helper draws each registered theme × 2 background modes × 2 color modes × 2 widths, with the same asserts as the single test it replaces.
+- Proof: alone on natedev at load 17, the single test took 146 ms (app builds 53 ms, theme loop 90 ms, of which draws 70 ms). After the split, each test took 0.32-0.47 s on the Mac at load 21.66 on 12 CPUs and 0.12-0.36 s on natedev at load 26.27. Before: 1.051 s on the Mac at load 8.84.
+
+**Files:**
+- `crates/cargo-port/src/tui/theme_roles.rs` — the four tests and the helper
+
+**Gotchas:** in the full parallel suite this test runs about 7 times slower than alone; its time follows CPU load, not its own work.
+
+**Ruled out:** a smaller case set; every case and assert stays.
+
+### Phase 15 — cargo-mend tests find the cargo-mend binary when Cargo sets a build directory  · status: done
 
 #### Work Order
 
-**Goal:** `tui::theme_roles::tests::startup_page_footer_meets_contrast_in_every_registered_theme` runs under 1 s on natedev and the Mac.
+**Source:** the showrunner, 2026-11-15: urgent; the failure blocks the handler final gate and every natedev gate.
 
-**Source:** a defect that the tile unit routed through the showrunner on 2026-11-15. The test took 1.051 s on the Mac at load 8.84 (cargo-port 1546 of 1546 on `a102bcca3`).
+**Failure:** the bin unit test `diagnostic_tests::allowances::attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature` panics `run cargo-mend --json: NotFound` at `crates/cargo-mend/tests/support/mend_json.rs`. It fails in every natedev worktree, main included.
 
-**Constraints from prior phases:** none.
+**Cause:** `mend_bin()` falls back to `current_exe()/../../cargo-mend` when `CARGO_BIN_EXE_cargo-mend` is not set, as in a bin unit test. Since 2026-11-14 19:06, `~/.cargo/config.toml` sets `build-dir = "/build/paths{workspace-root}"`. The test binary then runs from `/build/paths/<worktree>/debug/deps/`, but the cargo-mend binary is in `<worktree>/target/debug/`.
 
-**Spec:**
-1. **Measure first.** Time the parts of one test run: app setup, theme install, each draw and each `test_support::contrast_failures` call. The test draws 4 toast styles × each registered theme × 2 background modes × 2 color modes × 2 widths.
-2. **Keep the coverage.** Keep every case and every assert. Do not loosen an assert or drop a case.
-3. **Fix the cost where it lives.** When a helper does work that the test does not use, change the helper. When the case count alone sets the time, split the test into one test for each toast style.
+**Change:** `mend_bin()` finds the binary in Cargo's target directory, not next to the test executable.
 
-**Files:**
-- `crates/cargo-port/src/tui/theme_roles.rs` — the test
-- `crates/cargo-port/src/tui/test_support/mod.rs` — test helpers, if the cost is there
+1. Keep `CARGO_MEND_TEST_EXECUTABLE` first and `CARGO_BIN_EXE_cargo-mend` second.
+2. Otherwise read `target_directory` and `build_directory` from `cargo metadata --no-deps` once per test process.
+3. Take the path of the test executable relative to `build_directory`. The parts before the first `deps` or `build` part name the profile directory.
+4. Use `<target_directory>/<profile directory>/cargo-mend`.
 
-**Workers:** 1 writer.
+**Acceptance:**
+- The failing test passes on natedev with `build-dir` set.
+- The same lookup gives `target/debug/cargo-mend` when `build-dir` is not set.
+- The full cargo-mend suite passes on natedev and the Mac.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+**Cost:** one `cargo metadata --no-deps` call per test process, about 30 ms at load 48.
