@@ -510,26 +510,12 @@ No code change: the twelve tests run in under one second in their full package r
 
 ### Phase 22 — `census --json` lists each session's shell rows  · status: done
 
-**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. `/showrunner:units` reads `census --json` for Status and Workers. The census does not list a tile's shell rows, so a unit with a running background command looks idle on the board. The sdlc side (unit-board 025dec43b) reads the new field and treats a missing field as empty.
+#### As-built
 
-#### Work Order
+Each `sessions` entry of `census --json` has `shells: [{name, started_at}]`. `agent_cell::session_cells` puts each `WorkKind::Shell` line into `SessionCells::shells` of its owning row's sessions, in tile line order. `census/report.rs` maps each `ShellCells` to a `ShellReport`. The name is the tile name cell without the machine (`shell_command::short_command`). `started_at` is the child row's start in epoch seconds and is never null. A session with no shell row has `[]`. The schema stays 2: a new key does not increment it, and the sdlc census reader accepts only 2. Test: `sessions_list_their_shell_rows_with_the_tile_name_and_start` in `census/report_tests.rs`.
 
-1. Give `SessionCells` the shell rows of its session: one entry for each `WorkKind::Shell` tree line whose owning row has the session id. Each entry has the name the tile draws (`shell_command::short_command` of the line's session name, without the machine) and the shell's start in epoch seconds.
-2. Add `shells: [{ name, started_at }]` to each `sessions[]` entry of `census --json`, in tile line order. A session with no shell row has an empty list.
-3. Keep `schema` at 2: the key is new, and no key is renamed or removed. The sdlc reader accepts only schema 2.
-4. Update the README census section, its JSON example and the rule on when `schema` increments. Update `docs/cargo-handler/as-built/hierarchy.md`.
-
-**Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells`, `session_cells`
-- `crates/cargo-handler/src/census/report.rs`, `crates/cargo-handler/src/census/report_tests.rs` — `SessionReport`, `ShellReport` and their tests
-- `crates/cargo-handler/README.md` — the census section and example
-- `docs/cargo-handler/as-built/hierarchy.md` — the `sessions` entry
-
-**Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a session with one untimed shell and one timer shell lists both, with the tile names and start times; a session with no shell lists `[]`.
-- The README example test passes with the new key.
+**Gotchas:**
+- A Codex process with several recorded threads puts each shell under each thread of the row. One worker runs one thread per process, so this case was left as is.
 
 ### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: todo
 
