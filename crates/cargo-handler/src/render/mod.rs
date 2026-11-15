@@ -1239,16 +1239,11 @@ mod tests {
         globals: &'static str,
     }
 
-    /// Over the grid: the uptime and the CPU reading, and the expand hint before `?`.
-    const GRID_STATUS: StatusEnds = StatusEnds {
-        left:    " Uptime: 0s CPU: —",
-        globals: "  enter expand  ? shortcuts ",
-    };
-    /// An overlay status line draws uptime before navigation and omits the
-    /// centre action when it has no whole space before the right-side notes.
-    /// The expand hint gives way before the navigation.
-    const OVERLAY_STATUS: StatusEnds = StatusEnds {
-        left:    " Uptime: 0s CPU: —  ↑/↓ nav   tab pane",
+    /// The 80-column status line over the grid and over every overlay: the uptime, CPU and
+    /// `Reads/s` group, then `?`. The group outranks the navigation and the expand hint, so
+    /// both give way at this width.
+    const STATUS: StatusEnds = StatusEnds {
+        left:    " Uptime: 0s CPU: — Reads/s: —",
         globals: "  ? shortcuts ",
     };
 
@@ -1709,7 +1704,7 @@ fraying = "leading"
     fn the_first_frame_shows_the_empty_summary() {
         let mut app = App::new_for_test().expect("test app should build");
 
-        assert_eq!(drawn_rows(&mut app, 1), frame(&FIRST_FRAME, GRID_STATUS));
+        assert_eq!(drawn_rows(&mut app, 1), frame(&FIRST_FRAME, STATUS));
     }
 
     #[test]
@@ -1722,7 +1717,7 @@ fraying = "leading"
 
         let rows = drawn_rows(&mut app, 1);
 
-        assert_eq!(rows.last(), Some(&status_row(GRID_STATUS, None)));
+        assert_eq!(rows.last(), Some(&status_row(STATUS, None)));
     }
 
     #[test]
@@ -1732,10 +1727,7 @@ fraying = "leading"
         dispatch_key(&mut app, key('+'));
         app.tiles.settle_for_test();
 
-        assert_eq!(
-            drawn_rows(&mut app, 1),
-            frame(&AFTER_TWO_ADDITIONS, GRID_STATUS)
-        );
+        assert_eq!(drawn_rows(&mut app, 1), frame(&AFTER_TWO_ADDITIONS, STATUS));
     }
 
     #[test]
@@ -1751,7 +1743,7 @@ fraying = "leading"
 
         assert_eq!(
             drawn_rows(&mut app, 1),
-            frame(&AFTER_TWO_ADDITIONS_AND_A_REMOVAL, GRID_STATUS)
+            frame(&AFTER_TWO_ADDITIONS_AND_A_REMOVAL, STATUS)
         );
     }
 
@@ -1760,10 +1752,7 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(&mut app, key('s'));
 
-        assert_eq!(
-            drawn_rows(&mut app, 1),
-            frame(&SETTINGS_OVERLAY, OVERLAY_STATUS)
-        );
+        assert_eq!(drawn_rows(&mut app, 1), frame(&SETTINGS_OVERLAY, STATUS));
     }
 
     #[test]
@@ -1771,10 +1760,7 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(&mut app, ctrl('k'));
 
-        assert_eq!(
-            drawn_rows(&mut app, 1),
-            frame(&KEYMAP_OVERLAY, OVERLAY_STATUS)
-        );
+        assert_eq!(drawn_rows(&mut app, 1), frame(&KEYMAP_OVERLAY, STATUS));
     }
 
     #[test]
@@ -1782,10 +1768,7 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(&mut app, key('?'));
 
-        assert_eq!(
-            drawn_rows(&mut app, 1),
-            frame(&SHORTCUTS_OVERLAY, OVERLAY_STATUS)
-        );
+        assert_eq!(drawn_rows(&mut app, 1), frame(&SHORTCUTS_OVERLAY, STATUS));
     }
 
     #[test]
@@ -1801,10 +1784,7 @@ fraying = "leading"
             },
         );
 
-        assert_eq!(
-            drawn_rows(&mut app, 1),
-            frame(&FAVORITES_OVERLAY, GRID_STATUS)
-        );
+        assert_eq!(drawn_rows(&mut app, 1), frame(&FAVORITES_OVERLAY, STATUS));
     }
 
     /// boss of bosses, running a shell that runs a Codex app server with
@@ -2468,7 +2448,7 @@ fraying = "leading"
 
         assert_eq!(
             rows.last(),
-            Some(&status_row(GRID_STATUS, Some(ATTRACT_NOTE_LABEL)))
+            Some(&status_row(STATUS, Some(ATTRACT_NOTE_LABEL)))
         );
     }
 }
