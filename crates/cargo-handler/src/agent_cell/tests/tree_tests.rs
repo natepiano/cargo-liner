@@ -245,7 +245,9 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["session", "account", "role", "activity", "status", "branch"]
+        [
+            "session", "account", "role", "type", "activity", "status", "branch"
+        ]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
@@ -254,6 +256,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "dashboard",
             "claude1",
             "unit",
+            "agent",
             "thinking",
             "busy",
             "dashboard"
@@ -264,9 +267,10 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         [
             "│",
             "└──",
-            "hanadocs-dashboard-impl",
+            "hanadocs-dashboard…",
             "codex1",
             "worker",
+            "agent",
             "impl",
             "idle",
             "dashboard"
@@ -274,7 +278,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└──", "diagrams", "claude3", "unit", "idle", "—"]
+        ["└──", "diagrams", "claude3", "unit", "agent", "idle", "—"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
@@ -282,13 +286,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     for (name, role, activity, status, account) in [
         ("dashboard", "unit", "thinking", "busy", "claude1"),
-        (
-            "hanadocs-dashboard-impl",
-            "worker",
-            "impl",
-            "idle",
-            "codex1",
-        ),
+        ("hanadocs-dashboard…", "worker", "impl", "idle", "codex1"),
         ("diagrams", "unit", "", "idle", "claude3"),
     ] {
         let row = row_of(&buffer, name);
@@ -307,7 +305,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     }
     for (name, branch) in [
         ("dashboard", "dashboard"),
-        ("hanadocs-dashboard-impl", "dashboard"),
+        ("hanadocs-dashboard…", "dashboard"),
         ("diagrams", "—"),
     ] {
         assert_eq!(
@@ -333,6 +331,7 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
             "session",
             "account",
             "role",
+            "type",
             "activity",
             "status",
             "branch",
@@ -373,7 +372,8 @@ fn tree_headers_names_roles_accounts_and_statuses_keep_their_colors() {
         }
         for (name, pid, status_role) in [
             ("dashboard", 20, Role::Busy),
-            ("hanadocs-dashboard-impl", 20, Role::Idle),
+            // At 80 cells the type column cuts this name to `hanadocs-dashboard…`.
+            ("hanadocs-dashboard", 20, Role::Idle),
             ("diagrams", 30, Role::Idle),
         ] {
             let at = find(&buffer, name).expect("the name is drawn");
@@ -402,8 +402,13 @@ fn one_account_per_program_hides_accounts_and_keeps_the_program_heading() {
         for width in [80, 220] {
             let buffer = rendered(&cells[0], &cells, width, frame_account_column);
             assert!(find(&buffer, "account").is_some());
-            for name in ["dashboard", "hanadocs-dashboard-impl", "diagrams"] {
-                let row = row_of(&buffer, name);
+            // At 80 cells the type column cuts the worker name to `hanadocs-dashboard…`.
+            for (name, drawn) in [
+                ("dashboard", "dashboard"),
+                ("hanadocs-dashboard-impl", "hanadocs-dashboard"),
+                ("diagrams", "diagrams"),
+            ] {
+                let row = row_of(&buffer, drawn);
                 let line = cells[0]
                     .lines
                     .iter()
@@ -566,11 +571,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, activity, status, account) in [
         ("unit-member", "", "", "", "claude1"),
-        ("clock job", "", "timer 1:00", "busy", "claude1"),
+        ("clock job", "", "timer 1:00", "busy", ""),
         ("unheld worker", "worker", "", "", "codex1"),
         ("review worker", "worker", "", "idle", "claude1"),
-        ("nested job", "", "running", "busy", "claude1"),
-        ("root command", "", "running", "busy", "claude2"),
+        ("nested job", "", "running", "busy", ""),
+        ("root command", "", "running", "busy", ""),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");

@@ -254,6 +254,7 @@ fn tree_column(buffer: &Buffer, header: &str, y: u16) -> String {
     let end = [
         "session",
         "role",
+        "type",
         "activity",
         "status",
         "account",
@@ -340,15 +341,13 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 if width == WIDE {
                     let (session_x, header_y) =
                         find(&buffer, "session").expect("full session header");
-                    for header in ["account", "role", "activity", "status"] {
+                    for header in ["account", "role", "type", "activity", "status"] {
                         let (x, y) = find(&buffer, header).expect("full tree column header");
                         assert_eq!(y, header_y, "{header} remains in the full header");
                         assert!(x > session_x, "{header} remains its own column");
                     }
                 }
-                for header in ["type", "branch"] {
-                    assert!(find(&buffer, header).is_none(), "empty {header} is omitted");
-                }
+                assert!(find(&buffer, "branch").is_none(), "empty branch is omitted");
                 let y = find(&buffer, "worker task").expect("worker row").1;
                 if inherits_directory && width == WIDE {
                     let x = find(&buffer, "directory")

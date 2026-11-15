@@ -57,9 +57,11 @@ A managed session or thread leaves its former owner's work list.
 Cross-machine descendants retain their machine label.
 Pool roots use flat branches; their descendants keep ordinary tree guides.
 
-`TreeColumn` draws Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, and Directory.
+`TreeColumn` draws Session, Account, Role, Type, Activity, Status, Branch, Model, Effort, and Directory.
 Age remains a sort key and appears in the details view.
-Type identifies shells and subagents; session and worker rows leave it blank.
+Type (`RowType`) reads `agent` for session and worker rows, `shell` for shells, and `subagent` for subagents.
+A shell runs under no account, so its account cell is blank (`LineAccount::Shell`).
+A subagent without its own account shows its session's account.
 Role shows unit, showrunner, producer, or worker.
 Activity shows the assigned work or `timer <countdown>`.
 An expired timer shows `timer` and keeps status `busy`.
@@ -70,7 +72,7 @@ See [activity](activity.md) for status and role details.
 
 `AccountColumn::of` makes one frame-wide decision across all rows and machines.
 Two labels for one program make accounts visible everywhere.
-Unrecorded accounts do not count as a second label.
+Unrecorded accounts and shell rows do not count as a second label.
 Header program labels and summary labels use that decision.
 Tree account columns retain recorded accounts.
 
@@ -101,8 +103,8 @@ Population and ages still consider complete rows.
 1. Cut the session and branch names, the wider name first, each to its floor.
 2. Remove effort.
 3. Remove model.
-4. Remove directory.
-5. Remove type.
+4. Remove type.
+5. Remove directory.
 6. Remove branch.
 7. Add back each removed column of steps 2-6, in the reverse order, while it fits. Then give the free width back to the cut names, the narrower name first.
 8. Cut session names below the floor to the remaining width.
@@ -116,9 +118,12 @@ The cut floors are `tiles.session_cut_floor` and `tiles.branch_cut_floor` in `co
 Their defaults are `DEFAULT_SESSION_CUT_FLOOR` and `DEFAULT_BRANCH_CUT_FLOOR` in `constants.rs`.
 A cut never takes the session below its minimum, or the branch below its header.
 Thus a long name ends in `…` before an optional column drops.
+A shell name does not widen the session column at measurement, so it cuts no other column.
+`fill_tree_width` gives free table width first to the session column until each shell name is whole (`NameCut::whole_shell_session`), then to the directory.
 A name cut never makes room for the directory (`ColumnDrop::fits_beside_cut_names`).
 The directory fits only beside the uncut names; branch, type, model and effort fit beside the cut names.
 Thus on a tile with long names, the directory drops before effort and model.
+Type drops before directory, so a column of `agent` words never pushes out a path.
 Step 7 adds back only columns that the tile's rows fill, and each keeps its display position.
 Thus effort and model return when directory drops and frees the width they need.
 The activity column takes the width of its widest drawn cell.

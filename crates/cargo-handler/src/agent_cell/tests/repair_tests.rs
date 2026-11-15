@@ -151,8 +151,8 @@ fn unassigned_sessions_without_a_role_draw_no_role_column() {
         "an unlabeled row retains an empty role cell"
     );
     assert!(
-        find(&buffer, "type").is_none(),
-        "a session has no work type"
+        find(&buffer, ROW_TYPE_AGENT).is_some(),
+        "a session has the agent type"
     );
 }
 
@@ -218,7 +218,12 @@ fn older_tiles_measure_their_own_age_labels_beside_younger_tiles() {
             AccountColumn::Shown,
             &FooterColors::default(),
         );
-        assert!(find(&buffer, "age").is_none());
+        assert!(
+            !lines(&buffer)
+                .iter()
+                .any(|line| line.split_whitespace().any(|word| word == "age")),
+            "no age header"
+        );
         for (label, expected) in labels.into_iter().zip(expected) {
             assert_eq!(detail_value(&cells[index], label, "age", NOW), expected);
             assert!(find(&buffer, label).is_some());

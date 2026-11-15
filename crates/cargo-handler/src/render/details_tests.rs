@@ -65,6 +65,57 @@ fn application(now: u64, age: u64) -> TestResult<App> {
     Ok(app)
 }
 
+/// Each details row and the hierarchy section it draws.
+fn hierarchy_cases() -> [(&'static str, Vec<(&'static str, &'static str)>); 6] {
+    [
+        (
+            "worker-with-a-very-long-session-name-that-stays-complete",
+            vec![
+                ("showrunner", "director-name"),
+                ("unit", "unit-name"),
+                (
+                    "worker",
+                    "worker-with-a-very-long-session-name-that-stays-complete",
+                ),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "director-name",
+            vec![
+                ("showrunner", "director-name"),
+                ("role", "showrunner"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "unassigned-name",
+            vec![("name", "unassigned-name"), ("type", "agent")],
+        ),
+        (
+            "timer-name",
+            vec![("name", "timer-name"), ("type", "shell")],
+        ),
+        (
+            "review-name",
+            vec![
+                ("name", "review-name"),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "fix · repair the seat",
+            vec![
+                ("worker", "fix · repair the seat"),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+    ]
+}
+
 #[test]
 fn details_sections_align_values_and_keep_effort() -> TestResult {
     let now = census::unix_now();
@@ -89,34 +140,7 @@ fn details_sections_align_values_and_keep_effort() -> TestResult {
         stage: ScanStage::Completed,
     });
     let mut renderer = Renderer::new(&mut app, 160, 70)?;
-    for (name, hierarchy) in [
-        (
-            "worker-with-a-very-long-session-name-that-stays-complete",
-            vec![
-                ("showrunner", "director-name"),
-                ("unit", "unit-name"),
-                (
-                    "worker",
-                    "worker-with-a-very-long-session-name-that-stays-complete",
-                ),
-                ("role", "worker"),
-            ],
-        ),
-        (
-            "director-name",
-            vec![("showrunner", "director-name"), ("role", "showrunner")],
-        ),
-        ("unassigned-name", vec![("name", "unassigned-name")]),
-        ("timer-name", vec![("name", "timer-name")]),
-        (
-            "review-name",
-            vec![("name", "review-name"), ("role", "worker")],
-        ),
-        (
-            "fix · repair the seat",
-            vec![("worker", "fix · repair the seat"), ("role", "worker")],
-        ),
-    ] {
+    for (name, hierarchy) in hierarchy_cases() {
         if name == "fix · repair the seat" {
             let machine = app.census.machines(&[])[0];
             let mut rows = machine.state.rows().to_vec();
@@ -332,7 +356,7 @@ fn row_columns_put_session_first_and_separate_role_activity_and_timer() -> TestR
         .collect();
     assert_eq!(
         &columns[..5],
-        ["session", "account", "role", "activity", "status"]
+        ["session", "account", "role", "type", "activity"]
     );
     assert!(!columns.contains(&"age"));
     for (name, role, activity, status) in [
@@ -525,6 +549,7 @@ fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &st
             "effort",
             "showrunner",
             "role",
+            "type",
             "directory",
             "branch",
             "desktop",
@@ -795,7 +820,7 @@ fn assert_wrapped_details_navigation() -> TestResult {
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
     );
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12))?;
-    for _ in 0..4 {
+    for _ in 0..5 {
         tui_pane::dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         paint_details(&mut app, &mut terminal)?;
     }
@@ -883,7 +908,7 @@ fn assert_full_frame_copy_notice(under: DetailsUnder) -> TestResult {
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
     );
     let mut renderer = Renderer::new(&mut app, 40, 12)?;
-    for _ in 0..4 {
+    for _ in 0..5 {
         DetailsAction::Down.apply(&mut app, &mut CopiedValues::default());
         renderer.paint(&mut app)?;
     }
@@ -1399,10 +1424,11 @@ fn a_shell_row_draws_its_short_command_and_d_shows_and_copies_the_full_command()
     let mut renderer = Renderer::new(&mut app, 160, 40)?;
     let buffer = renderer.paint(&mut app)?;
     let text = drawn_details(&buffer).join("\n");
-    // The shell row takes the agent rows' width and ends in the mark.
-    assert!(text.contains("python3 a-…"), "{text}");
+    // The shell row takes the free width and shows its whole short command.
+    let short = "python3 a-long-watch-script.py --interval 30 2>&1";
+    assert!(text.contains(short), "{text}");
     assert!(!text.contains("scratchpad/"), "{text}");
-    app.click(details_test_locate(&buffer, "python3 a-…")?);
+    app.click(details_test_locate(&buffer, short)?);
     tui_pane::dispatch_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),

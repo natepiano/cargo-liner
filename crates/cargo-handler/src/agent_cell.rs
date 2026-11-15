@@ -80,6 +80,9 @@ use crate::constants::NOTHING_RUNNING_HEIGHT;
 use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::PRODUCERS_CELL_TITLE;
+use crate::constants::ROW_TYPE_AGENT;
+use crate::constants::ROW_TYPE_SHELL;
+use crate::constants::ROW_TYPE_SUBAGENT;
 use crate::constants::RUNNING_JOB;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
@@ -348,10 +351,64 @@ struct Work<'a> {
 }
 
 impl<'a> Work<'a> {
-    const fn account(self, parent: &'a Account) -> &'a Account {
+    const fn account(self, parent: &'a Account) -> LineAccount<'a> {
         match (self.kind, &self.child.account) {
-            (WorkKind::Thread, _) | (_, Account::Home(_)) => &self.child.account,
-            (WorkKind::Shell(_) | WorkKind::Subagent(_), Account::Unrecorded) => parent,
+            (WorkKind::Shell(_), _) => LineAccount::Shell,
+            (WorkKind::Thread, _) | (WorkKind::Subagent(_), Account::Home(_)) => {
+                LineAccount::Runs(&self.child.account)
+            },
+            (WorkKind::Subagent(_), Account::Unrecorded) => LineAccount::Runs(parent),
+        }
+    }
+}
+
+/// The account a tree line runs under. A shell runs under no account.
+#[derive(Clone, Copy, Debug)]
+enum LineAccount<'a> {
+    /// The line's own account, or the owning session's account for a subagent.
+    Runs(&'a Account),
+    /// A shell row draws a blank account cell.
+    Shell,
+}
+
+/// What a tree row is, as its type cell reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowType {
+    /// A session or a worker conversation.
+    Agent,
+    Shell,
+    Subagent,
+}
+
+impl RowType {
+    const fn text(self) -> &'static str {
+        match self {
+            Self::Agent => ROW_TYPE_AGENT,
+            Self::Shell => ROW_TYPE_SHELL,
+            Self::Subagent => ROW_TYPE_SUBAGENT,
+        }
+    }
+}
+
+impl From<LineSubject<'_>> for RowType {
+    fn from(subject: LineSubject<'_>) -> Self {
+        match subject {
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell(_),
+                ..
+            }) => Self::Shell,
+            LineSubject::Work(Work {
+                kind: WorkKind::Subagent(_),
+                ..
+            }) => Self::Subagent,
+            LineSubject::TileRoot(_)
+            | LineSubject::Agent(_)
+            | LineSubject::UnassignedSession
+            | LineSubject::ManagedThread(_, _, _)
+            | LineSubject::Work(Work {
+                kind: WorkKind::Thread,
+                ..
+            }) => Self::Agent,
         }
     }
 }
@@ -391,10 +448,10 @@ pub(crate) enum TreeColumn {
     Session,
     Account,
     Role,
+    Type,
     Activity,
     Status,
     Branch,
-    Type,
     Model,
     Effort,
     Directory,
@@ -607,8 +664,8 @@ impl PermittedTreeColumns {
 enum ColumnDrop {
     Effort,
     Model,
-    Directory,
     Type,
+    Directory,
     Branch,
     Account,
     Role,
@@ -620,8 +677,8 @@ impl ColumnDrop {
     const ORDER: [Self; 9] = [
         Self::Effort,
         Self::Model,
-        Self::Directory,
         Self::Type,
+        Self::Directory,
         Self::Branch,
         Self::Account,
         Self::Role,
@@ -633,7 +690,7 @@ impl ColumnDrop {
     const fn is_optional(self) -> bool {
         matches!(
             self,
-            Self::Effort | Self::Model | Self::Directory | Self::Type | Self::Branch
+            Self::Effort | Self::Model | Self::Type | Self::Directory | Self::Branch
         )
     }
 
@@ -688,15 +745,19 @@ pub(crate) struct TreeMetrics {
 /// The session and branch widths before any cut, and the floors of a cut.
 #[derive(Clone, Copy, Debug)]
 struct NameCut {
-    uncut_session:      u16,
-    uncut_branch:       u16,
-    branch_label_width: u16,
-    floors:             NameCutFloors,
+    uncut_session:       u16,
+    /// The session width that shows every shell name whole. Shell names take
+    /// only free table width, so they never cut another column.
+    whole_shell_session: u16,
+    uncut_branch:        u16,
+    branch_label_width:  u16,
+    floors:              NameCutFloors,
 }
 
 impl NameCut {
     fn merge(&mut self, other: Self) {
         self.uncut_session = self.uncut_session.max(other.uncut_session);
+        self.whole_shell_session = self.whole_shell_session.max(other.whole_shell_session);
         self.uncut_branch = self.uncut_branch.max(other.uncut_branch);
         self.branch_label_width = self.branch_label_width.max(other.branch_label_width);
     }
@@ -1132,12 +1193,13 @@ impl TreeMeasurement {
                 activity_floor,
                 activity_fit: ActivityFit::Whole,
                 names: NameCut {
-                    uncut_session:      widths[TreeColumn::Session as usize],
-                    uncut_branch:       widths[TreeColumn::Branch as usize],
-                    branch_label_width: summary::cell_width(
+                    uncut_session:       widths[TreeColumn::Session as usize],
+                    whole_shell_session: whole_shell_session(lines, now),
+                    uncut_branch:        widths[TreeColumn::Branch as usize],
+                    branch_label_width:  summary::cell_width(
                         &TreeColumn::Branch.sorted_header(sort),
                     ),
-                    floors:             name_cut_floors,
+                    floors:              name_cut_floors,
                 },
             },
             ages,
@@ -1558,7 +1620,7 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             common.minimum_session_width(),
             *width,
         );
-        fill_tree_width(&columns, &mut widths, *width, spacing);
+        fill_tree_width(&columns, &mut widths, *width, spacing, &common.names);
         let mut slot_widths = common.widths;
         for (&column, &width) in columns.iter().zip(&widths) {
             slot_widths[column as usize] = width;
@@ -1842,13 +1904,14 @@ impl TreeLine<'_> {
         }
     }
 
-    /// Work without its own recorded account uses the owning session's account.
-    const fn account(&self) -> &Account {
+    /// A shell has no account. Other work without its own recorded account uses
+    /// the owning session's account.
+    const fn account(&self) -> LineAccount<'_> {
         match self.content.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                &self.content.row.account
+                LineAccount::Runs(&self.content.row.account)
             },
-            LineSubject::ManagedThread(child, _, _) => &child.account,
+            LineSubject::ManagedThread(child, _, _) => LineAccount::Runs(&child.account),
             LineSubject::Work(work) => work.account(&self.content.row.account),
         }
     }
@@ -2110,29 +2173,12 @@ impl TreeLine<'_> {
             TreeColumn::Activity => self.activity_parts(now).text(),
             TreeColumn::Model => self.model().display_text().to_owned(),
             TreeColumn::Effort => self.effort().display_text().to_owned(),
-            TreeColumn::Type => match self.subject {
-                LineSubject::Work(Work {
-                    kind: WorkKind::Shell(_),
-                    ..
-                }) => "shell",
-                LineSubject::Work(Work {
-                    kind: WorkKind::Subagent(_),
-                    ..
-                }) => "subagent",
-                LineSubject::TileRoot(_)
-                | LineSubject::Agent(_)
-                | LineSubject::UnassignedSession
-                | LineSubject::ManagedThread(_, _, _)
-                | LineSubject::Work(Work {
-                    kind: WorkKind::Thread,
-                    ..
-                }) => "",
-            }
-            .to_owned(),
+            TreeColumn::Type => RowType::from(self.subject).text().to_owned(),
             TreeColumn::Status => self.session_status().text().to_owned(),
             TreeColumn::Account => match self.account() {
-                Account::Unrecorded => MISSING_VALUE.to_string(),
-                Account::Home(home) => self
+                LineAccount::Shell => String::new(),
+                LineAccount::Runs(Account::Unrecorded) => MISSING_VALUE.to_string(),
+                LineAccount::Runs(Account::Home(home)) => self
                     .service_tier()
                     .mark(home.label().to_owned())
                     .into_owned(),
@@ -2198,10 +2244,11 @@ impl TreeLine<'_> {
 }
 
 /// Account labels sort without their decorative service-tier mark.
-fn account_sort_text(account: &Account) -> &str {
+fn account_sort_text(account: LineAccount<'_>) -> &str {
     match account {
-        Account::Home(home) => home.label(),
-        Account::Unrecorded => MISSING_VALUE,
+        LineAccount::Shell => "",
+        LineAccount::Runs(Account::Home(home)) => home.label(),
+        LineAccount::Runs(Account::Unrecorded) => MISSING_VALUE,
     }
 }
 
@@ -2237,12 +2284,12 @@ impl TreeLine<'_> {
 /// Decide once for all cells, including cells the grid cannot place.
 pub(crate) fn account_column(entries: &[AgentEntry<'_>]) -> AccountColumn {
     AccountColumn::of(entries.iter().flat_map(|entry| {
-        iter::once((entry.row.agent, &entry.row.account)).chain(
-            entry
-                .lines
-                .iter()
-                .map(|line| (line.program(), line.account())),
-        )
+        iter::once((entry.row.agent, &entry.row.account)).chain(entry.lines.iter().filter_map(
+            |line| match line.account() {
+                LineAccount::Runs(account) => Some((line.program(), account)),
+                LineAccount::Shell => None,
+            },
+        ))
     }))
 }
 
@@ -3116,10 +3163,10 @@ const FULL_ACCOUNTS: &[TreeColumn] = &[
     TreeColumn::Session,
     TreeColumn::Account,
     TreeColumn::Role,
+    TreeColumn::Type,
     TreeColumn::Activity,
     TreeColumn::Status,
     TreeColumn::Branch,
-    TreeColumn::Type,
     TreeColumn::Model,
     TreeColumn::Effort,
     TreeColumn::Directory,
@@ -3503,11 +3550,36 @@ fn table_width(widths: &[u16]) -> usize {
         + widths.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING)
 }
 
-/// Give the table's unused width to the directory, or the session when absent.
-fn fill_tree_width(columns: &[TreeColumn], widths: &mut [u16], width: u16, spacing: u16) {
+/// The session width, tree guides included, that shows every shell name whole.
+fn whole_shell_session(lines: &[TreeLine<'_>], now: u64) -> u16 {
+    lines
+        .iter()
+        .filter(|line| line.is_shell())
+        .map(|line| summary::cell_width(&line.value(TreeColumn::Session, now)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Give the table's unused width first to the session column until every shell
+/// name is whole, then to the directory, or to the session when absent.
+fn fill_tree_width(
+    columns: &[TreeColumn],
+    widths: &mut [u16],
+    width: u16,
+    spacing: u16,
+    names: &NameCut,
+) {
     let used = widths.iter().copied().map(usize::from).sum::<usize>()
         + columns.len().saturating_sub(1) * usize::from(spacing);
-    let slack = width.saturating_sub(u16::try_from(used).unwrap_or(u16::MAX));
+    let mut slack = width.saturating_sub(u16::try_from(used).unwrap_or(u16::MAX));
+    if let Some(session) = columns
+        .iter()
+        .position(|column| *column == TreeColumn::Session)
+    {
+        let shell_growth = slack.min(names.whole_shell_session.saturating_sub(widths[session]));
+        widths[session] += shell_growth;
+        slack -= shell_growth;
+    }
     let expanding = columns
         .iter()
         .position(|column| *column == TreeColumn::Directory)
@@ -3718,7 +3790,7 @@ fn tree_header(
             .max(metrics.widths[TreeColumn::Age as usize]);
     }
     if matches!(sizing, TreeSizing::Local) {
-        fill_tree_width(&columns, &mut widths, tree.width, spacing);
+        fill_tree_width(&columns, &mut widths, tree.width, spacing, &metrics.names);
     }
     let mut x = tree.x;
     let rects: Vec<_> = widths
@@ -3845,8 +3917,10 @@ fn tree_value_line(
     let text = SessionRowInk::Text.style();
     if column == TreeColumn::Account {
         return match line.account() {
-            Account::Unrecorded => Line::styled(value, text),
-            Account::Home(home) => {
+            LineAccount::Shell | LineAccount::Runs(Account::Unrecorded) => {
+                Line::styled(value, text)
+            },
+            LineAccount::Runs(Account::Home(home)) => {
                 let (account, tier) = value.split_at(home.label().len());
                 Line::from(vec![
                     Span::styled(account.to_owned(), colors.account(home.label()).style(text)),
@@ -4974,11 +5048,11 @@ mod tests {
                     heading.as_str(),
                     " ~/rust/tool-based-ui-trunk",
                     " launched by boss of bosses",
-                    "     session                                                                                                                                     role    activity  status  type",
-                    " ├── Launch the Phase 1 implementation seat                                                                                                              running   busy    shell",
-                    " │ └── tool-based-ui-trunk-impl                                                                                                                  worker            idle",
-                    " └── Review the permission queue                                                                                                                 worker            idle    subagent",
-                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                running   busy    shell",
+                    "     session                                                                                                                                     role    type      activity  status",
+                    " ├── Launch the Phase 1 implementation seat                                                                                                              shell     running   busy",
+                    " │ └── tool-based-ui-trunk-impl                                                                                                                  worker  agent               idle",
+                    " └── Review the permission queue                                                                                                                 worker  subagent            idle",
+                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                shell     running   busy",
                 ]
             );
             if let ReportedSessionState::Reported(state) = source_state {

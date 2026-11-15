@@ -106,7 +106,7 @@ fn subagent_rows_show_their_scanned_activity_and_status() {
 }
 
 #[test]
-fn subagent_and_shell_rows_inherit_the_session_account_and_threads_keep_their_own() {
+fn subagent_rows_inherit_the_session_account_shells_show_none_and_threads_keep_their_own() {
     let root = AgentRow {
         account: account("claude1"),
         children: vec![
@@ -139,18 +139,14 @@ fn subagent_and_shell_rows_inherit_the_session_account_and_threads_keep_their_ow
         ..agent(10, "director", HOUR, None)
     };
     let buffer = rendered(&root);
-    for name in [
-        "Inspect source files",
-        "subagent command",
-        "session command",
+    for (name, expected) in [
+        ("Inspect source files", "claude1"),
+        ("subagent command", ""),
+        ("session command", ""),
+        ("Codex task", "codex2"),
     ] {
-        assert_eq!(
-            column(&buffer, "account", "branch", name),
-            "claude1",
-            "{name}"
-        );
+        assert_eq!(column(&buffer, "account", "role", name), expected, "{name}");
     }
-    assert_eq!(column(&buffer, "account", "branch", "Codex task"), "codex2");
 }
 
 #[test]
@@ -480,15 +476,14 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
         .collect();
     assert_eq!(
         &words[..5],
-        &["session", "account", "role", "activity", "status"],
+        &["session", "account", "role", "type", "activity"],
         "{headers}"
     );
     for (name, expected_type, expected_role) in [
         ("cargo test", "shell", "running"),
         ("Review source changes", "subagent", "reviewer"),
         ("Do the requested work", "subagent", ""),
-        ("seat task", "", ""),
-        ("director", "", ""),
+        ("seat task", "agent", ""),
     ] {
         assert_eq!(
             column(&buffer, "type", "activity", name),
@@ -566,12 +561,14 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
         );
     }
     for buffer in &buffers {
-        let status_x = find(buffer, "status").expect("status header").0;
-        let type_x = find(buffer, "type").expect("type header").0;
+        let activity_x = find(buffer, TREE_ACTIVITY_HEADER)
+            .expect("activity header")
+            .0;
+        let status_x = find(buffer, TREE_STATUS_HEADER).expect("status header").0;
         assert_eq!(
-            type_x - status_x,
-            summary::cell_width(TREE_STATUS_HEADER) + TABLE_COLUMN_SPACING,
-            "six status cells and a two-space gap"
+            status_x - activity_x,
+            summary::cell_width(TREE_ACTIVITY_HEADER) + TABLE_COLUMN_SPACING,
+            "eight activity cells and a two-space gap"
         );
         let (_, y) = find(buffer, "session").expect("tree header");
         assert!(

@@ -145,8 +145,8 @@ The status-clock path reuses a body only while Reusable.
 The modal retains a snapshot of the row's values.
 The modal groups its values into four sections:
 
-1. The `agent` section contains account, model, effort, and type.
-2. The `hierarchy` section contains showrunner, unit, worker, and role.
+1. The `agent` section contains account, model, and effort.
+2. The `hierarchy` section contains showrunner, unit, worker, role, and type.
 3. The `location` section contains directory, branch, desktop, and pid.
 4. The `now` section contains activity, status, and age.
 

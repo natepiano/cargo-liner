@@ -119,8 +119,14 @@ pub(crate) const TREE_EFFORT_HEADER: &str = "effort";
 pub(crate) const TREE_MODEL_HEADER: &str = "model";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
-/// The work type column of an agent tile tree.
+/// The type column of an agent tile tree.
 pub(crate) const TREE_TYPE_HEADER: &str = "type";
+/// The type cell of a session or worker row.
+pub(crate) const ROW_TYPE_AGENT: &str = "agent";
+/// The type cell of a shell row.
+pub(crate) const ROW_TYPE_SHELL: &str = "shell";
+/// The type cell of a subagent row.
+pub(crate) const ROW_TYPE_SUBAGENT: &str = "subagent";
 
 /// The session column of an agent tile tree.
 pub(crate) const TREE_SESSION_HEADER: &str = "session";
