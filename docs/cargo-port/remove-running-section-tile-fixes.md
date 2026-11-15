@@ -3587,7 +3587,7 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 **Binds later work:** a status note (for example a `paused` or stale mark) drops before `Reads/s` on a narrow row. A test that reads a note from the status line draws at a width where the note fits beside the uptime group.
 
-### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: todo
+### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: done
 
 **Depends on:** Phase 62a (order only; showrunner, 2026-11-15).
 
