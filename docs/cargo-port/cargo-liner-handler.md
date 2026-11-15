@@ -417,15 +417,15 @@ A shell command row draws `shell_command::short_command`, which cuts each path a
 
 Director decisions:
 1. Three theme roles replace the two-end blend: `reset_soonest`, `reset_middle` and `reset_latest`. Each theme file sets all three. No sRGB midpoint. `reset_nearest` and `reset_farthest` go.
-2. Each step is a different hue family: soonest green (the quota comes back soon), middle gold, latest blue. No step is red.
+2. Each step is a different hue family: soonest green (the quota comes back soon), middle blue, latest violet. No step is red. The user, 2026-11-14, on option B: "okay use B - whatever you do, make it different than this - i can't tell the difference between the colors". Gold failed the chroma and low-quota warning floors on the light themes. Reset inks have no hue floor from the account inks, so a blue reset can sit beside a blue account name in another column. On the light themes, the reset ink keeps 17 CIEDE2000 from the low-quota warning ink, not 20: no readable green keeps 20 from that olive and 15 from the Astra reviewer green.
 3. `ResetRank::color` keeps its rank rule: the first quarter of ranks takes `reset_soonest`, the last quarter takes `reset_latest`, and the rest take `reset_middle`. A single reset takes `reset_soonest`.
 4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
 5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
-6. One contrast measure (showrunner, 2026-11-13). The footer color tests use `tui_pane::contrast_ratio` (`crates/tui_pane/src/theme/blend.rs`). The `contrast_ratio` helper in `footer_colors/tests.rs` goes. The shared measure returns `Option<f64>`, which is `None` for `Color::Reset`; a test unwraps it with a message that names the two colors.
+6. One contrast measure (showrunner, 2026-11-13). The footer color tests use `tui_pane::contrast_ratio` (`crates/tui_pane/src/theme/blend.rs`). The shared measure returns `Option<f64>`, which is `None` for `Color::Reset`. `footer_colors/tests.rs` keeps `contrast_ratio` only as a thin wrapper that unwraps the shared measure with a message that names the two colors, so its 18 callers do not repeat the message.
 
 **Constraints from prior phases:**
 - Phase 5 extends the bundled theme loading with the `waiting` role. Extend that loader with the new reset roles; do not make a second load path. Keep the `waiting` inheritance and contrast tests green. Load the new reset roles from the bundled theme files, with inheritance and custom-override tests. The Phase 2 config reader handles emphasis only; themes use the theme-loading path.
-- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. The new inks keep their readability and differences at every emphasis; add these cases to `render/word_contrast_tests.rs`.
+- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. The new inks keep their readability and differences at every emphasis; add these cases to `render/word_contrast_tests.rs`. On a selected row, the 4.5 lift takes every matched ink near white, so the 20 CIEDE2000 step distance holds on plain matches only.
 - Keep `ResetRank` as the checked rank type, with its strict quarter edges and its single-reset rule. Measure the drawn colors, not only the theme role values. The current gradient test allows four steps and checks only neighbor pairs.
 - `accounts.md` names the new keys that replace `reset_nearest` and `reset_farthest` for custom themes.
 
@@ -439,7 +439,7 @@ Tests (red first, each under one second):
 
 **Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
 
-**Change-Review line:** Reset times in the accounts footer take three clearly different colors | On natedev, run cargo-handler and look at the resets column of the accounts footer | The soonest resets are green, the middle ones gold, and the latest ones blue, on dark and light themes
+**Change-Review line:** Reset times in the accounts footer take three clearly different colors | On natedev, run cargo-handler and look at the resets column of the accounts footer | The soonest resets are green, the middle ones blue, and the latest ones violet, on dark and light themes
 
 **Files:**
 - `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the theme role set
@@ -463,7 +463,55 @@ Tests (red first, each under one second):
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 19 — Twelve slow tests run in under one second  · status: todo
+### Phase 19 — Every busy shell row shows what it does  · status: todo
+
+**Depends on:** Phase 12 (it fills the busy activity cell of conversation lines)
+
+#### Work Order
+
+**Goal:** a busy shell command row draws an activity word, as every other busy row does.
+
+**Source:** the showrunner, 2026-11-14, on C346 (returned, Phase 12): the user said "i see a bunch of busy rows that don't have an activity". The user's screenshot shows four shell child rows with an empty activity cell: "cd hana_catalys…" under demo, "Run the P96 wo…" under fastest, and "Run the full C…" and "Run verify fin…" under hana-merges.
+
+**Spec:**
+
+Director decisions:
+1. A shell command row (`ShellPurpose::Command`) draws `running` (`Activity::Running`) in its activity cell. Its status is always `busy` (`TreeLine::session_status`), so the empty cell is the defect. The `running` word comes from the one `Activity::Running` text, not from a second string.
+2. A scanned activity that names work still wins: a shell row with a verification step or `waiting` keeps that word.
+3. Timer rows keep `timer` and their countdown. Subagent rows keep their role text.
+4. Phase 12 ruled that shell and subagent work lines take no `thinking`. This stays: `thinking` is a conversation word.
+
+**Constraints from prior phases:**
+- Phase 12: `TreeLine::conversation_activity` serves only conversation lines, and `activity_parts` takes no line-kind branch. Put the shell rule where the shell job text comes from (`TreeLine::activity_text`), not in a new branch of `activity_parts`.
+- Phase 16: `TreeLine::display_name` holds the short command and `TreeLine::name` the full one. Do not change either.
+- Status sorting uses the displayed activity text, so shell rows now sort under `running`.
+
+Tests (red first, each under one second):
+1. A shell command row with an idle or unreported scanned activity draws `running`.
+2. A shell command row with a verification step or `waiting` draws that word, once.
+3. A timer row draws `timer` and its countdown, unchanged.
+4. A tile with busy session, worker, unassigned, subagent, timer and shell command rows has no empty activity cell on a busy row.
+
+**Live check (director):** before the checkpoint, capture a tile with a busy shell child row from a build of this branch and from main, under the safety rule.
+
+**Change-Review line:** Every busy shell row shows what it does | On natedev, run cargo-handler while a session runs a background shell command | The shell child row reads `running` in its activity column, and no busy row has an empty activity
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::activity_text` for `ShellPurpose::Command`
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs` — the tests
+- `docs/cargo-handler/as-built/activity.md` — the shell row activity
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `running` on a busy shell child row.
+
+### Phase 20 — Twelve slow tests run in under one second  · status: todo
+
+**Numbering:** this phase was Phase 19 until 2026-11-14, when the new Phase 19 moved it to 20.
+
 
 **Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
 
