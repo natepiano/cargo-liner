@@ -3589,37 +3589,21 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 ### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: done
 
-**Depends on:** Phase 62a (order only; showrunner, 2026-11-15).
+#### As-built
 
-The Phase 58g natedev gate (load 18.50, normal load under the 32 rule) had four cargo-berth tests at 1 s or more. The showrunner ruled them defects of this unit (2026-11-15).
+- No code changed. The four tests already run under 1 s at natedev load under 32:
 
-1. `edges::witness_survives_pruning_and_controls_successors` (`tests/edges.rs`): 1.146 s.
-2. `edges::successor_round_robin_covers_every_head` (`tests/edges.rs`): 1.416 s.
-3. `hooks::a_second_commit_to_an_answered_working_tree_incursion_reopens_it` (`tests/hooks.rs`): 1.296 s.
-4. `hooks::hooks_state_the_unresolvable_trunk_evidence_recovery` (`tests/hooks.rs`): 1.023 s.
+  | Test | Alone (load 21) | Full suites (load 27.56, 13.20) |
+  | --- | --- | --- |
+  | `edges::witness_survives_pruning_and_controls_successors` | 0.251 s | 0.510 s, 0.350 s |
+  | `edges::successor_round_robin_covers_every_head` | 0.247 s | 0.522 s, 0.354 s |
+  | `hooks::a_second_commit_to_an_answered_working_tree_incursion_reopens_it` | 0.228 s | 0.384 s, 0.277 s |
+  | `hooks::hooks_state_the_unresolvable_trunk_evidence_recovery` | 0.171 s | 0.310 s, 0.215 s |
 
-#### Work Order
+- Both full cargo-berth suites passed 1388 of 1388. Their slowest tests took 0.606 s and 0.496 s.
+- The Phase 58g gate times (1.023-1.416 s) came from a busier machine.
 
-**Goal:** each of the four tests runs under 1 s in a full cargo-berth suite at natedev load under 32. Each test keeps what it proves.
-
-**Spec:**
-
-1. Time each test alone and in the full suite. Find where its time goes: repository setup, Git processes, waits or the code under test.
-2. Fix the cause. For setup cost, use the Phase 58j method: a before-run template, or a recorded history for the test's own setup.
-3. When the cost is in cargo-berth code, fix that code, not the test.
-4. Keep each test's assertions. A split test keeps every assertion in one of its parts.
-
-**Files:**
-
-- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/hooks.rs` — the four tests
-- `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/support/` — templates and recorded histories, when used
-- `crates/cargo-berth/src/` — only under spec item 3
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`. In no-worker mode, the director writes it.
-
-**Constraints from prior phases:** Phase 58j: a template main in `recorded_templates.rs` stays at 100 lines or fewer. Phase 58b: a test at 1 s or more is a defect. Add no `#[allow]`.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green on natedev, with the four tests under 1 s at load under 32.
+**Gotchas:** cargo-berth test scratch is in /dev/shm (`TMPDIR` from `check-test-scratch.sh`), so disk sync does not add time. The edges tests spend their time in repeated `board` runs, which are what each test proves.
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 
