@@ -25,14 +25,24 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 
 `FooterColorFile` reads `$HOME/.claude/config/statusline.conf`.
 It retains parsed `FooterColors` and `FooterFileRevision`.
-`Ticker` checks the file on completed local scans.
+`App::new` reads the file once on the startup path.
+The census scan thread owns a second `FooterColorFile` and checks it after each local round.
 Only a changed modification time triggers another read.
-Draw functions use the retained palette and never open the file.
+`FooterColorFile::send_changed` sends a changed palette on its own channel to `Ticker`.
+`Ticker::drain_footer_colors` applies the newest palette and requests a body frame.
+The UI thread never reads the file, and draw functions use the palette `App` holds.
 A missing file supplies plain theme text.
 
 The parser accepts `key=value`, comments, and blank lines.
+A `#` starts a comment at the start of a line, or after whitespace inside the value.
+The value itself may start with `#`, so `account.x = #a0522d # sienna` reads `#a0522d`.
 `FooterColor` parses recognized names into a closed enum.
-Unknown names leave the corresponding entry plain.
+`#rrggbb`, with six hex digits in either case, parses to `FooterColor::Rgb`.
+Unknown names and any other `#` value leave the corresponding entry plain.
+`ReadablePalette` resolves every name ahead of use and a hex color on first use.
+Both take the same readable and subdued forms on each theme.
+A hex color that is already readable draws unchanged.
+`FooterColors::account` gives the ink for the tree cell, the program line, and the accounts table.
 Account keys match the displayed label through `account.<label>`.
 A new account assignment needs no Rust change.
 

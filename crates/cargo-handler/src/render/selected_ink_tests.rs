@@ -206,8 +206,7 @@ fn check_theme(theme_name: &str) {
         app.loaded_config.config.tiles.initial_rows =
             serde_json::from_value(serde_json::json!(8)).expect("single column");
         app.loaded_config.config.tiles.widen_summary = false;
-        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(palette.clone());
-        app.footer_colors.refresh();
+        app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(palette.clone());
         app.census.apply(CensusUpdate::Local {
             rows:      fixture(),
             hierarchy: serde_json::from_value::<HierarchyEdges>(serde_json::json!([
@@ -291,8 +290,7 @@ fn selection_application(palette: &Path) -> App {
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("single column");
     app.loaded_config.config.tiles.widen_summary = false;
-    app.footer_colors = crate::footer_colors::FooterColorFile::fixture(palette.to_owned());
-    app.footer_colors.refresh();
+    app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(palette.to_owned());
     app.census.apply(CensusUpdate::Local {
         rows:      fixture(),
         hierarchy: serde_json::from_value::<HierarchyEdges>(serde_json::json!([
@@ -941,8 +939,7 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("single column");
     app.loaded_config.config.tiles.widen_summary = false;
-    app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
-    app.footer_colors.refresh();
+    app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path);
     let (rows, targets) = palette_rows(family);
     let hierarchy = match family {
         FullPaletteRows::Roles => serde_json::from_value::<HierarchyEdges>(serde_json::json!([

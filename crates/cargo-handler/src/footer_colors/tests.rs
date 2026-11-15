@@ -498,6 +498,69 @@ fn footer_color_names_are_exact() {
 }
 
 #[test]
+fn hex_footer_colors_parse_in_either_case() {
+    for text in ["#a0522d", "#A0522D"] {
+        let parsed = text.parse::<FooterColor>().expect("a hex footer color");
+        assert_eq!(parsed, FooterColor::Rgb(0xa0, 0x52, 0x2d), "{text}");
+        assert_eq!(Color::from(parsed), Color::Rgb(0xa0, 0x52, 0x2d), "{text}");
+    }
+}
+
+#[test]
+fn malformed_hex_footer_colors_are_unknown() {
+    for text in ["#a0522", "#gg0000", "a0522d", "#a0522d0", "#", "#+a0522"] {
+        assert!(text.parse::<FooterColor>().is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_comment_starts_only_at_the_line_start_or_after_whitespace() {
+    let colors = FooterColors::parse(
+        "account.sienna=#a0522d # sienna\n\
+         account.upper = #A0522D\n\
+         # account.commented=#a0522d\n\
+         \t# account.indented=#a0522d\n\
+         account.glued=#a0522d#note\n",
+    );
+    for account in ["sienna", "upper"] {
+        assert_eq!(
+            colors.account(account),
+            FooterTint::Footer(FooterColor::Rgb(0xa0, 0x52, 0x2d)),
+            "{account}"
+        );
+    }
+    for account in ["commented", "indented", "glued"] {
+        assert_eq!(colors.account(account), FooterTint::Plain, "{account}");
+    }
+}
+
+#[test]
+fn a_readable_hex_color_draws_unchanged() {
+    let previous = tui_pane::theme();
+    for variant in theme::builtins() {
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        let readable = FooterColors::parse("account.fixture=#a0522d")
+            .account("fixture")
+            .style(Style::default())
+            .fg
+            .expect("hex ink");
+        assert!(
+            matches!(readable, Color::Rgb(..)),
+            "{}: a hex ink stays RGB, got {readable:?}",
+            variant.id.as_str()
+        );
+        let [red, green, blue] = terminal_rgb(readable);
+        let drawn =
+            FooterColors::parse(&format!("account.fixture=#{red:02x}{green:02x}{blue:02x}"))
+                .account("fixture")
+                .style(Style::default())
+                .fg;
+        assert_eq!(drawn, Some(readable), "{}", variant.id.as_str());
+    }
+    tui_pane::set_active_theme(previous);
+}
+
+#[test]
 fn footer_configuration_accepts_comments_blanks_and_assignment_spacing() {
     let colors = FooterColors::parse(
         "\n # colors shared with the footer\n\

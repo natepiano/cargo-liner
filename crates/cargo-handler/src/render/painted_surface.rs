@@ -108,7 +108,7 @@ fn tree_pressed(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,

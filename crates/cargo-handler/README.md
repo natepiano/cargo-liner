@@ -481,6 +481,23 @@ column and each cell's title. A custom variant that leaves one out takes it from
 it replaces, or, under a new name, from `Default Dark` or `Default Light` to
 match its appearance.
 
+Account and role labels take their colors from the status line's file,
+`~/.claude/config/statusline.conf`, one `key=value` line each:
+
+```text
+account.claude1=cyan
+account.codex1=#a0522d   # sienna
+role.unit-director=bright-blue
+```
+
+A value is a color name or `#rrggbb` in either case. A `#` starts a comment at
+the start of a line, or after a space once the value has begun, so
+`account.codex1 = #a0522d` keeps its value. A name or a hex value that is not
+readable on the theme's ground is made readable at the same hue; a readable
+one draws unchanged. One account takes the same ink in the tree, on the
+program line and in the accounts table. The census scan checks the file each
+round, so a changed color shows at the next scan with no restart.
+
 A stale entry in `keymap.toml` is skipped rather than refusing to start.
 
 ### KDE Plasma

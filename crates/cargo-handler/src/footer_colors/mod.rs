@@ -1,10 +1,12 @@
-//! The footer's named colors, shared by account labels and management roles.
+//! The footer's colors, by name or `#rrggbb`, shared by account labels and management roles.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::mpsc::SendError;
+use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
 use ratatui::style::Color;
@@ -17,6 +19,8 @@ use self::constants::BLUE_LUMINANCE_WEIGHT;
 use self::constants::CONTRAST_LUMINANCE_OFFSET;
 use self::constants::FOOTER_CONFIG_PATH;
 use self::constants::GREEN_LUMINANCE_WEIGHT;
+use self::constants::HEX_COLOR_DIGITS;
+use self::constants::HEX_RADIX;
 use self::constants::LIGHTNESS_SEARCH_ITERATIONS;
 use self::constants::MINIMUM_CONTRAST;
 use self::constants::RED_LUMINANCE_WEIGHT;
@@ -30,7 +34,7 @@ use crate::theme::SessionRowInk;
 
 pub(crate) mod constants;
 
-/// A color name understood by the Claude Code footer.
+/// A color understood by the Claude Code footer: a name or a `#rrggbb` value.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum FooterColor {
     Black,
@@ -57,6 +61,8 @@ pub(crate) enum FooterColor {
     Mauve,
     Teal,
     Brown,
+    /// A `#rrggbb` value, drawn as this exact color when it is readable.
+    Rgb(u8, u8, u8),
 }
 
 /// D65 CIELAB coordinates for CIEDE2000 distance measurements.
@@ -221,8 +227,21 @@ impl FromStr for FooterColor {
             "mauve" => Self::Mauve,
             "teal" => Self::Teal,
             "brown" => Self::Brown,
-            _ => return Err(UnknownFooterColor),
+            _ => return Self::from_hex(name).ok_or(UnknownFooterColor),
         })
+    }
+}
+
+impl FooterColor {
+    /// `#` and six hex digits in either case; any other `#` value is unknown.
+    fn from_hex(text: &str) -> Option<Self> {
+        let digits = text.strip_prefix('#')?;
+        if digits.len() != HEX_COLOR_DIGITS || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let [_, red, green, blue] = u32::from_str_radix(digits, HEX_RADIX).ok()?.to_be_bytes();
+        Some(Self::Rgb(red, green, blue))
     }
 }
 
@@ -251,6 +270,7 @@ impl From<FooterColor> for Color {
             FooterColor::Mauve => Self::Indexed(139),
             FooterColor::Teal => Self::Indexed(30),
             FooterColor::Brown => Self::Indexed(137),
+            FooterColor::Rgb(red, green, blue) => Self::Rgb(red, green, blue),
         }
     }
 }
@@ -358,12 +378,24 @@ impl ReadablePalette {
         }
     }
 
-    fn current(&mut self) -> &Self {
+    fn current(&mut self) -> &mut Self {
         let theme = tui_pane::theme();
         if !Arc::ptr_eq(&self.theme, &theme) || self.grounds != InkGrounds::current(&theme) {
             *self = Self::new(theme);
         }
         self
+    }
+
+    /// Named colors resolve with the palette; a `#rrggbb` color resolves on first use.
+    fn ink(&mut self, purpose: InkPurpose, color: FooterColor) -> ReadableInk {
+        let grounds = self.grounds;
+        let inks = match purpose {
+            InkPurpose::Account => &mut self.colors,
+            InkPurpose::Management => &mut self.management,
+        };
+        *inks.entry(color).or_insert_with(|| {
+            ReadableInk::new(purpose.source(color), grounds, InkCoverage::Antialiased)
+        })
     }
 }
 
@@ -396,11 +428,21 @@ impl FooterColor {
 }
 
 fn resolved(color: FooterColor) -> ReadableInk {
-    PALETTE.with(|palette| palette.borrow_mut().current().colors[&color])
+    PALETTE.with(|palette| {
+        palette
+            .borrow_mut()
+            .current()
+            .ink(InkPurpose::Account, color)
+    })
 }
 
 fn resolved_management(color: FooterColor) -> ReadableInk {
-    PALETTE.with(|palette| palette.borrow_mut().current().management[&color])
+    PALETTE.with(|palette| {
+        palette
+            .borrow_mut()
+            .current()
+            .ink(InkPurpose::Management, color)
+    })
 }
 
 /// Read named channels through `tui_pane`'s xterm approximation.
@@ -933,11 +975,16 @@ impl FooterColors {
     pub(crate) fn parse(text: &str) -> Self {
         let mut colors = Self::default();
         for line in text.lines() {
-            let assignment = line.split('#').next().unwrap_or_default().trim();
-            let Some((key, value)) = assignment.split_once('=') else {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let color = value.trim().parse::<FooterColor>();
+            let color = without_comment(value.trim_start())
+                .trim()
+                .parse::<FooterColor>();
             let role = match key.trim() {
                 "role.showrunner" => FooterRole::Showrunner,
                 "role.unit-director" => FooterRole::UnitDirector,
@@ -1009,6 +1056,16 @@ impl FooterColors {
     }
 }
 
+/// A `#` after whitespace starts a comment, so a value such as `#a0522d` keeps its own `#`.
+fn without_comment(value: &str) -> &str {
+    let comment = value
+        .as_bytes()
+        .windows(2)
+        .position(|pair| pair[0].is_ascii_whitespace() && pair[1] == b'#')
+        .map_or(value.len(), |space| space + 1);
+    &value[..comment]
+}
+
 /// The last observed availability and modification time of the footer file.
 #[derive(Debug, Default, Eq, PartialEq)]
 enum FooterFileRevision {
@@ -1025,34 +1082,38 @@ enum FooterColorSource {
     File(PathBuf),
 }
 
-/// The app's parsed palette and file revision, refreshed on census scans.
+/// The footer file's parsed palette and revision. The census scan thread owns it and sends each
+/// changed palette to the app, so the UI thread never reads the file.
 #[derive(Debug, Default)]
 pub(crate) struct FooterColorFile {
-    source:          FooterColorSource,
-    revision:        FooterFileRevision,
-    colors:          FooterColors,
-    #[cfg(test)]
-    revision_checks: usize,
+    source:   FooterColorSource,
+    revision: FooterFileRevision,
+    colors:   FooterColors,
 }
 
 impl FooterColorFile {
-    /// Load `$HOME/.claude/config/statusline.conf`, or an uncolored palette.
+    /// Read `$HOME/.claude/config/statusline.conf` once, or give an uncolored palette.
     pub(crate) fn load() -> Self {
-        let source = std::env::var_os("HOME").map_or(FooterColorSource::Disabled, |home| {
-            FooterColorSource::File(PathBuf::from(home).join(FOOTER_CONFIG_PATH))
-        });
-        let mut file = Self {
-            source,
-            ..Self::default()
-        };
+        let mut file = Self::home();
         file.refresh();
         file
     }
 
-    /// The palette already in memory; drawing never opens the file.
+    /// Watch `$HOME/.claude/config/statusline.conf` without reading it yet.
+    pub(crate) fn home() -> Self {
+        let source = std::env::var_os("HOME").map_or(FooterColorSource::Disabled, |home| {
+            FooterColorSource::File(PathBuf::from(home).join(FOOTER_CONFIG_PATH))
+        });
+        Self {
+            source,
+            ..Self::default()
+        }
+    }
+
+    /// The palette from the last read.
     pub(crate) const fn colors(&self) -> &FooterColors { &self.colors }
 
-    /// Observe real file checks without using the user's footer in terminal tests.
+    /// Watch a fixture file instead of the user's footer.
     #[cfg(test)]
     pub(crate) fn fixture(path: PathBuf) -> Self {
         Self {
@@ -1061,19 +1122,32 @@ impl FooterColorFile {
         }
     }
 
-    /// Number of file revision checks, including unchanged revisions.
+    /// Read a fixture file once and give its palette.
     #[cfg(test)]
-    pub(crate) const fn revision_checks(&self) -> usize { self.revision_checks }
+    pub(crate) fn read_fixture(path: PathBuf) -> FooterColors {
+        let mut file = Self::fixture(path);
+        file.refresh();
+        file.colors
+    }
 
-    /// Check once per census scan, rereading only when the revision changes.
-    pub(crate) fn refresh(&mut self) -> bool {
+    /// Check the file and send the palette when it changed. An error means the receiver is
+    /// gone.
+    pub(crate) fn send_changed(
+        &mut self,
+        updates: &Sender<FooterColors>,
+    ) -> Result<(), SendError<FooterColors>> {
+        if self.refresh() {
+            updates.send(self.colors.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Check once per local census scan, rereading only when the revision changes. Answer
+    /// whether the palette changed.
+    fn refresh(&mut self) -> bool {
         let FooterColorSource::File(path) = &self.source else {
             return false;
         };
-        #[cfg(test)]
-        {
-            self.revision_checks += 1;
-        }
         let revision = std::fs::metadata(path)
             .and_then(|metadata| metadata.modified())
             .map_or(
