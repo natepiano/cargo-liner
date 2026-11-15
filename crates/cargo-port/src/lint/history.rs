@@ -10,9 +10,10 @@ use std::path::Path;
 
 use walkdir::WalkDir;
 
+use super::artifacts;
+use super::artifacts::LatestLintRecord;
 use super::cache_size_index;
 use super::paths;
-use super::read_write;
 use super::run::LintRun;
 use super::run::LintRunStatus;
 use super::status;
@@ -172,14 +173,13 @@ pub fn read_history(project_root: &Path) -> Vec<LintRun> {
 
 pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<LintRun> {
     let mut runs: Vec<LintRun> =
-        read_write::read_history_file(&paths::history_path_under(cache_root, project_root))
+        artifacts::read_history_file(&paths::history_path_under(cache_root, project_root))
             .into_iter()
             .filter(|run| !matches!(run.status, LintRunStatus::Running))
             .collect();
-    let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root))
-        .filter(|run| !matches!(run.status, LintRunStatus::Running));
-
-    if let Some(latest_run) = latest
+    if let LatestLintRecord::Readable(latest_run) =
+        artifacts::read_latest_file(&paths::latest_path_under(cache_root, project_root))
+        && !matches!(latest_run.status, LintRunStatus::Running)
         && runs
             .last()
             .is_none_or(|run| run.run_id != latest_run.run_id)
@@ -424,6 +424,7 @@ mod tests {
     use super::*;
     use crate::lint::run::LintCommand;
     use crate::lint::run::LintCommandStatus;
+    use crate::lint::runtime;
 
     fn run(status: LintRunStatus) -> LintRun {
         LintRun {
@@ -464,7 +465,7 @@ mod tests {
             .expect("append history");
         append_history_under(cache_dir.path(), project_dir.path(), &running, None)
             .expect("append running history");
-        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &running)
+        runtime::write_latest_under(cache_dir.path(), project_dir.path(), &running)
             .expect("write latest");
 
         let runs = read_history_under(cache_dir.path(), project_dir.path());
@@ -488,7 +489,7 @@ mod tests {
 
         append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
             .expect("append history");
-        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
+        runtime::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
             .expect("write latest");
 
         let runs = read_history_under(cache_dir.path(), project_dir.path());
@@ -502,7 +503,7 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = run(LintRunStatus::Passed);
 
-        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
+        runtime::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
             .expect("write latest");
         append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
             .expect("append history");

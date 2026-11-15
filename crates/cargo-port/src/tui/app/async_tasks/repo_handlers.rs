@@ -20,6 +20,7 @@ use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::CratesIoReleaseState;
+use crate::project::EntryRepository;
 use crate::project::FirstCommit;
 use crate::project::GitRepo;
 use crate::project::GitStatus;
@@ -297,7 +298,7 @@ impl App {
                 // `handle_repo_info`'s primary-only write policy.
                 return;
             }
-            let git_repo = entry.git_repo.get_or_insert_with(Default::default);
+            let git_repo = entry.git_repo.associate();
             git_repo.repo_info = RepositoryProbe::Repository(info);
         }
         if fetch_head_advanced
@@ -321,7 +322,7 @@ impl App {
         } else if let Some(entry) = self.project_list.entry_containing_mut(path)
             && entry.root_item.path().as_path() == path
         {
-            entry.git_repo = Some(GitRepo::without_repository());
+            entry.git_repo = EntryRepository::Associated(Box::new(GitRepo::without_repository()));
         }
     }
     /// Diff the current sync state for `path` against the tracker's

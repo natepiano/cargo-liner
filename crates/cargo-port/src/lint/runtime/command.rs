@@ -23,6 +23,7 @@ use super::FILE_LOCK_WAIT_MARKER;
 use super::FixedOffset;
 use super::HashMap;
 use super::Instant;
+use super::LatestLintRecord;
 use super::LintCommand;
 use super::LintCommandConfig;
 use super::LintCommandStatus;
@@ -38,13 +39,14 @@ use super::Path;
 use super::Read;
 use super::Sender;
 use super::Stdio;
+use super::artifacts;
 use super::cache_size_index;
 use super::history;
 use super::io;
+use super::io::ErrorKind;
 use super::paths;
 use super::project_still_runnable;
 use super::read_status_from_disk;
-use super::read_write;
 use super::status;
 use super::supervisor::PauseState;
 use super::thread;
@@ -223,9 +225,7 @@ impl RunFinalizeGuard<'_> {
 
 impl Drop for RunFinalizeGuard<'_> {
     fn drop(&mut self) {
-        let Ok(cleared) =
-            read_write::clear_latest_if_running_under(self.cache_root, self.project_root)
-        else {
+        let Ok(cleared) = clear_latest_if_running_under(self.cache_root, self.project_root) else {
             return;
         };
         if cleared {
@@ -234,6 +234,22 @@ impl Drop for RunFinalizeGuard<'_> {
             );
         }
     }
+}
+
+/// Remove `latest.json` only if it is still marked `Running`. Used to
+/// finalize a run that never reached a terminal write (the worker was joined
+/// mid-command on shutdown, an early return, or a panic). A completed run's
+/// record stays on disk. Returns whether a `Running` marker was cleared.
+fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> io::Result<bool> {
+    let path = paths::latest_path_under(cache_root, project_root);
+    let LatestLintRecord::Readable(run) = artifacts::read_latest_file(&path) else {
+        return Ok(false);
+    };
+    if matches!(run.status, LintRunStatus::Running) {
+        artifacts::clear_latest_under(cache_root, project_root)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// `CommandLabel` shares explicit or automatic naming between display and log paths.
@@ -288,6 +304,53 @@ pub(super) fn build_pending_run(commands: &[LintCommandConfig], started_at_str: 
     }
 }
 
+pub(in crate::lint) fn write_latest_under(
+    cache_root: &Path,
+    project_root: &Path,
+    run: &LintRun,
+) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(run)
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+    artifacts::write_latest_bytes_under(cache_root, project_root, &json)
+}
+
+/// `latest.json` as it was before a run, saved so a deferral can put it back.
+enum PriorLatestRecord {
+    /// The project had no `latest.json`.
+    Absent,
+    /// The exact bytes of the prior `latest.json`.
+    Bytes(Vec<u8>),
+}
+
+/// The bytes of `latest.json` as they are on disk, or
+/// `PriorLatestRecord::Absent` when the project has none. Paired with
+/// [`restore_latest_under`] to put a record back exactly.
+fn read_latest_bytes_under(
+    cache_root: &Path,
+    project_root: &Path,
+) -> io::Result<PriorLatestRecord> {
+    match std::fs::read(paths::latest_path_under(cache_root, project_root)) {
+        Ok(bytes) => Ok(PriorLatestRecord::Bytes(bytes)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(PriorLatestRecord::Absent),
+        Err(err) => Err(err),
+    }
+}
+
+/// Put back the `latest.json` [`read_latest_bytes_under`] returned: rewrite
+/// those bytes, or remove the file when there were none.
+fn restore_latest_under(
+    cache_root: &Path,
+    project_root: &Path,
+    prior_latest: &PriorLatestRecord,
+) -> io::Result<()> {
+    match prior_latest {
+        PriorLatestRecord::Absent => artifacts::clear_latest_under(cache_root, project_root),
+        PriorLatestRecord::Bytes(bytes) => {
+            artifacts::write_latest_bytes_under(cache_root, project_root, bytes)
+        },
+    }
+}
+
 pub(super) fn run_commands_for_project(
     project_root: &Path,
     project_label: &str,
@@ -312,8 +375,8 @@ pub(super) fn run_commands_for_project(
     // Read `prior_latest` with `read_latest_bytes_under` before
     // `write_latest_under` stores `LintRunStatus::Running`, so deferral can
     // restore the prior bytes exactly.
-    let prior_latest = read_write::read_latest_bytes_under(cache_root, project_root)?;
-    read_write::write_latest_under(cache_root, project_root, &run)?;
+    let prior_latest = read_latest_bytes_under(cache_root, project_root)?;
+    write_latest_under(cache_root, project_root, &run)?;
     let finalize = RunFinalizeGuard {
         cache_root,
         project_root,
@@ -354,28 +417,28 @@ pub(super) fn run_commands_for_project(
         CommandsResult::SomeFailed => LintRunStatus::Failed,
         CommandsResult::EnvUnavailable => LintRunStatus::EnvUnavailable,
         CommandsResult::ProjectRemoved => {
-            let _ = read_write::clear_latest_under(cache_root, project_root);
+            let _ = artifacts::clear_latest_under(cache_root, project_root);
             finalize.publish(LintStatus::NoLog);
             return Ok(RunAttempt::Ended);
         },
         CommandsResult::Interrupted => {
             // `CommandsResult::Interrupted` means a pause stopped this
             // source-change run before its outcome was known, so the prior
-            // terminal status is stale. `read_write::clear_latest_under`
+            // terminal status is stale. `artifacts::clear_latest_under`
             // removes `LintRunStatus::Running`, making `RunFinalizeGuard::drop`
             // a no-op, then `finalize.publish` sends `LintStatus::Stale`.
             // The supervisor retains the project through `remember_catch_up`
             // and retries it on resume.
-            let _ = read_write::clear_latest_under(cache_root, project_root);
+            let _ = artifacts::clear_latest_under(cache_root, project_root);
             finalize.publish(LintStatus::Stale);
             return Ok(RunAttempt::Ended);
         },
         CommandsResult::Deferred => {
-            // `read_write::restore_latest_under` restores a terminal record, so the
+            // `restore_latest_under` restores a terminal record, so the
             // `RunFinalizeGuard` drop is a no-op. Its `LintRun::started_at` predates
             // this run, so another instance waiting on the run lock never adopts the
             // deferral as a result.
-            read_write::restore_latest_under(cache_root, project_root, prior_latest.as_deref())?;
+            restore_latest_under(cache_root, project_root, &prior_latest)?;
             finalize.publish(LintStatus::Waiting);
             return Ok(RunAttempt::Deferred);
         },
@@ -415,7 +478,7 @@ fn write_terminal_run(
             "lint_archive_failed"
         ),
     }
-    read_write::write_latest_under(cache_root, project_root, &run)?;
+    write_latest_under(cache_root, project_root, &run)?;
     match history::append_history_under(cache_root, project_root, &run, cache_size_bytes) {
         Ok(prune_stats) if prune_stats.runs_evicted > 0 => {
             let _ = background_tx.send(BackgroundMsg::LintCachePruned {
@@ -520,7 +583,7 @@ fn execute_commands(
             command_run.duration_ms = Some(execution.duration_ms);
             command_run.exit_code = execution.exit_code;
         }
-        read_write::write_latest_under(context.cache_root, project_root, run)?;
+        write_latest_under(context.cache_root, project_root, run)?;
     }
     if !project_still_runnable(project_root) {
         return Ok(CommandsResult::ProjectRemoved);
@@ -1264,10 +1327,13 @@ mod tests {
             "no lint command may run once the environment probe fails"
         );
 
-        let run = read_write::read_latest_file(&paths::latest_path_under(
+        let run = match artifacts::read_latest_file(&paths::latest_path_under(
             &cache_root,
             project_dir.path(),
-        ))
+        )) {
+            LatestLintRecord::Readable(run) => Some(run),
+            LatestLintRecord::Unavailable => None,
+        }
         .expect("read latest");
         assert_eq!(run.status, LintRunStatus::EnvUnavailable);
         assert!(
@@ -1354,7 +1420,7 @@ mod tests {
         )
         .expect("write manifest");
         let run = build_pending_run(&[], Local::now().to_rfc3339());
-        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &run)
+        write_latest_under(cache_dir.path(), project_dir.path(), &run)
             .expect("write running latest");
         let status_cache = Arc::new(Mutex::new(HashMap::new()));
         let (background_tx, background_rx) = channel::unbounded();
@@ -1396,8 +1462,7 @@ mod tests {
             commands:      Vec::new(),
             archive_bytes: 0,
         };
-        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
-            .expect("write passed");
+        write_latest_under(cache_dir.path(), project_dir.path(), &completed).expect("write passed");
         let status_cache = Arc::new(Mutex::new(HashMap::new()));
         let (background_tx, _background_rx) = channel::unbounded();
 
@@ -1412,5 +1477,27 @@ mod tests {
         }
 
         assert!(paths::latest_path_under(cache_dir.path(), project_dir.path()).exists());
+    }
+
+    #[test]
+    fn clear_latest_if_running_removes_running_latest() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let running = LintRun {
+            run_id:        "run-1".to_string(),
+            started_at:    chrono::Utc::now().format("%+").to_string(),
+            finished_at:   None,
+            duration_ms:   Some(17_000),
+            status:        LintRunStatus::Running,
+            commands:      Vec::new(),
+            archive_bytes: 0,
+        };
+        write_latest_under(cache_dir.path(), project_dir.path(), &running).expect("write latest");
+
+        let cleared =
+            clear_latest_if_running_under(cache_dir.path(), project_dir.path()).expect("clear");
+
+        assert!(cleared);
+        assert!(!paths::latest_path_under(cache_dir.path(), project_dir.path()).exists());
     }
 }

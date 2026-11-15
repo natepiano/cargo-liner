@@ -39,7 +39,7 @@ impl App {
                 scan::pagination(owner_repo.owner(), owner_repo.repo())
             });
         if let Some(project_entry) = self.project_list.entry_containing_mut(path) {
-            let repo = project_entry.git_repo.get_or_insert_with(Default::default);
+            let repo = project_entry.git_repo.associate();
             let github_total = repo.ci_data.github_total().retain_known(github_total);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
@@ -165,7 +165,7 @@ impl App {
             .project_list
             .entry_containing_mut(absolute_path.as_path())
         {
-            let repo = project_entry.git_repo.get_or_insert_with(Default::default);
+            let repo = project_entry.git_repo.associate();
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs: merged,
                 github_total,

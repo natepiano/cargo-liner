@@ -17,21 +17,31 @@ use super::io;
 use super::paths;
 use crate::constants::LINTS_RUN_LOCK;
 
-/// Held for the duration of one lint run. Dropping it closes the file, which
-/// releases the lock.
-pub(super) struct RunLock {
-    _file: Option<File>,
+/// The project's run lock, held for the duration of one lint run. Dropping it
+/// closes the file, which releases the lock.
+pub(super) struct HeldRunLock {
+    _file: File,
 }
 
-impl RunLock {
-    /// A run that proceeds without cross-process exclusion, because the lock
+/// How one lint run is kept apart from the runs of other cargo-port instances.
+pub(super) enum LintRunExclusion {
+    /// The run holds the project's run lock.
+    Held { _lock: HeldRunLock },
+    /// The run proceeds without cross-process exclusion, because the lock
     /// file could not be opened or locked. Duplicate work beats no lint at all.
-    pub(super) const fn unlocked() -> Self { Self { _file: None } }
+    Unprotected,
 }
 
-/// Take the project's run lock without blocking. `Ok(None)` means another
-/// holder has it.
-pub(super) fn try_acquire(cache_root: &Path, project_root: &Path) -> io::Result<Option<RunLock>> {
+/// The result of one non-blocking attempt to take the project's run lock.
+pub(super) enum RunLockAttempt {
+    /// The lock was free and is now held.
+    Acquired(HeldRunLock),
+    /// Another holder has the lock.
+    Busy,
+}
+
+/// Take the project's run lock without blocking.
+pub(super) fn try_acquire(cache_root: &Path, project_root: &Path) -> io::Result<RunLockAttempt> {
     let project_dir = paths::project_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&project_dir)?;
     let file = OpenOptions::new()
@@ -40,8 +50,8 @@ pub(super) fn try_acquire(cache_root: &Path, project_root: &Path) -> io::Result<
         .truncate(false)
         .open(project_dir.join(LINTS_RUN_LOCK))?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(RunLock { _file: Some(file) })),
-        Err(TryLockError::WouldBlock) => Ok(None),
+        Ok(()) => Ok(RunLockAttempt::Acquired(HeldRunLock { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(RunLockAttempt::Busy),
         Err(TryLockError::Error(err)) => Err(err),
     }
 }
@@ -69,23 +79,27 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
 
-        let first = try_acquire(cache_dir.path(), project_dir.path())
-            .expect("lock io")
-            .expect("free lock is acquired");
+        let first = match try_acquire(cache_dir.path(), project_dir.path()).expect("lock io") {
+            RunLockAttempt::Acquired(lock) => Some(lock),
+            RunLockAttempt::Busy => None,
+        }
+        .expect("free lock is acquired");
         assert!(is_held(cache_dir.path(), project_dir.path()));
         assert!(
-            try_acquire(cache_dir.path(), project_dir.path())
-                .expect("lock io")
-                .is_none(),
+            matches!(
+                try_acquire(cache_dir.path(), project_dir.path()).expect("lock io"),
+                RunLockAttempt::Busy
+            ),
             "a held lock must refuse a second holder"
         );
 
         drop(first);
         assert!(!is_held(cache_dir.path(), project_dir.path()));
         assert!(
-            try_acquire(cache_dir.path(), project_dir.path())
-                .expect("lock io")
-                .is_some(),
+            matches!(
+                try_acquire(cache_dir.path(), project_dir.path()).expect("lock io"),
+                RunLockAttempt::Acquired(_)
+            ),
             "a released lock must be acquirable again"
         );
     }
