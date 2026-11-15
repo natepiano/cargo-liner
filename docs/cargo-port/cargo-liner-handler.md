@@ -466,7 +466,7 @@ A shell command row is always `busy`. With no scanned word, its activity cell re
 - The test `child()` helper defaults to `AgentActivity::Idle`, so a fixture subagent reads `idle` unless the test sets `Unreported` or an active word.
 - The tile root is the cell header, not a tree row; a busy-row scan of the tree rows does not include it.
 
-### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: todo
+### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: done
 
 **Depends on:** Phase 16 (it changes the column fit order and its restore step); Phase 19 (a shell row shows `running`)
 
@@ -489,6 +489,7 @@ Director decisions:
 3. Each name column has a floor in the tiles config: `session_cut_floor` and `branch_cut_floor` in `TilesConfig`, with their defaults in `constants.rs`. A cut never takes a column below its floor, its header or the session minimum. Set the defaults so that the 125 and 127 column tiles of the C352 screenshots keep model and effort.
 4. The activity column already takes its width from the visible cells (`visible_widths`). Keep that, and add a test that the column width follows the widest drawn cell.
 5. Phase 16 ruled that the restore uses the uncut session width. This ruling replaces that rule: a long session name now takes "…" before an optional column drops.
+6. A name cut never makes room for the directory. The directory fits only beside the uncut names; branch, type, model and effort fit beside the cut names. The live hana tile at 125 columns showed the reason: the cut freed 13 cells, the 36-cell directory took them, and model and effort dropped. Thus on a long-named tile, the directory drops before effort and model. Sent to the showrunner on 2026-11-15.
 
 **Constraints from prior phases:**
 - Phase 16: `ColumnDrop::ORDER` stays the priority order: effort, model, directory, type, branch. Added-back columns keep their display positions. Each tile adds back only columns its rows fill; the shared fit at one x adds back only columns one of its tiles keeps.

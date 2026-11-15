@@ -12,6 +12,7 @@ use super::*;
 use crate::app::App;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::HierarchyEdge;
 use crate::census::ShellTimerObservation;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::render;
@@ -155,9 +156,14 @@ fn column_forest() -> MachineState {
 
 /// Draw checks on a long-named showrunner tree with every optional column.
 fn with_long_session_cells(check: impl FnOnce(&AgentEntry<'_>, &[AgentEntry<'_>])) {
+    with_long_name_cells("feature/long-branch-name", check);
+}
+
+/// Draw checks on a long-named showrunner tree on `branch`, with every optional column.
+fn with_long_name_cells(branch: &str, check: impl FnOnce(&AgentEntry<'_>, &[AgentEntry<'_>])) {
     let mut rows = column_rows();
     rows[0].name = "natedev-showrunner-with-a-very-long-session-name-that-must-yield-space-to-the-activity-column".into();
-    rows[0].branch = Some("feature/long-branch-name".into());
+    rows[0].branch = Some(branch.into());
     rows[1].branch = rows[0].branch.clone();
     rows[0].session_id = SessionIdentity::Claude("showrunner-session".into());
     rows[1].session_id = SessionIdentity::Claude("unit-session".into());
@@ -169,7 +175,7 @@ fn with_long_session_cells(check: impl FnOnce(&AgentEntry<'_>, &[AgentEntry<'_>]
     .expect("account");
     let state = MachineState::Answered(
         rows,
-        HierarchyEdges(vec![crate::census::HierarchyEdge {
+        HierarchyEdges(vec![HierarchyEdge {
             manager: "showrunner-session".into(),
             member:  "unit-session".into(),
             role:    HierarchyRole::Unit,
@@ -202,19 +208,19 @@ fn long_sessions_keep_the_four_core_columns_before_their_names() {
         for width in [60, 70, 90, 92] {
             let buffer = drawn_into(owner, cells, width, 12);
             let spans = header_spans(owner, area(width, 12), NOW, AccountColumn::Shown);
-            let columns: Vec<_> = spans.iter().map(|span| span.column).collect();
-            assert_eq!(
-                columns,
-                [
-                    TreeColumn::Session,
-                    TreeColumn::Account,
-                    TreeColumn::Role,
-                    TreeColumn::Activity,
-                    TreeColumn::Status
-                ],
-                "{}",
-                lines(&buffer).join("\n")
-            );
+            let core = [
+                TreeColumn::Session,
+                TreeColumn::Account,
+                TreeColumn::Role,
+                TreeColumn::Activity,
+                TreeColumn::Status,
+            ];
+            let columns: Vec<_> = spans
+                .iter()
+                .map(|span| span.column)
+                .filter(|column| core.contains(column))
+                .collect();
+            assert_eq!(columns, core, "{}", lines(&buffer).join("\n"));
             assert!(
                 lines(&buffer)
                     .iter()
@@ -247,6 +253,172 @@ fn a_dropped_directory_gives_its_width_back_to_model_and_effort() {
                 .any(|row| row.contains("natedev-") && row.trim_end().ends_with("opus   high")),
             "{}",
             lines(&buffer).join("\n")
+        );
+    });
+}
+
+/// A branch long enough that a 125 column tile cuts it.
+const LONG_BRANCH: &str = "feature/a-long-branch-name-that-a-narrow-tile-cuts";
+
+/// The drawn header width of `column` at `width`, when the tile shows it.
+fn drawn_column_width(owner: &AgentEntry<'_>, width: u16, column: TreeColumn) -> Option<u16> {
+    header_spans(owner, area(width, 12), NOW, AccountColumn::Shown)
+        .into_iter()
+        .find(|span| span.column == column)
+        .map(|span| span.columns.end - span.columns.start)
+}
+
+/// Draw checks on a C352 showrunner tree: units with long branches and
+/// directories, each with a busy shell command.
+fn with_c352_cells(check: impl FnOnce(&AgentEntry<'_>, &[AgentEntry<'_>])) {
+    let units = ["assembly", "physical-cables", "frame-time"];
+    let mut rows = vec![agent(10, "hana", HOUR, None)];
+    rows[0].session_id = SessionIdentity::Claude("hana-session".into());
+    let shell = |pid| ChildRow {
+        activity: AgentActivity::Idle,
+        ..child(
+            0,
+            ChildKind::Shell(ShellTimerObservation::Untimed),
+            Some(pid),
+            "Chain lint, the confirmation check and the final gate",
+            MINUTE,
+        )
+    };
+    rows[0].children = vec![shell(110)];
+    for (pid, unit) in (20..).zip(units) {
+        let mut row = agent(pid, unit, HOUR, None);
+        row.branch = Some(format!("tool-based-ui-{unit}"));
+        row.directory = format!("~/rust/hana_catalyst-{unit}");
+        row.session_id = SessionIdentity::Claude(format!("{unit}-session"));
+        row.children = vec![shell(pid + 100)];
+        rows.push(row);
+    }
+    for row in &mut rows {
+        row.model = ModelName::Opus;
+        row.effort = ReasoningEffort::High;
+        row.account = serde_json::from_value(serde_json::json!({
+            "home":"~/.claude2", "label":"claude2"
+        }))
+        .expect("account");
+    }
+    let edges = units
+        .iter()
+        .map(|unit| HierarchyEdge {
+            manager: "hana-session".into(),
+            member:  format!("{unit}-session"),
+            role:    HierarchyRole::Unit,
+        })
+        .collect();
+    let state = MachineState::Answered(rows, HierarchyEdges(edges).into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
+    let cells: Vec<_> = tile_order_sorted(&placement, &HashMap::new(), NOW)
+        .into_iter()
+        .map(|mut tile| {
+            tile.apply_expansion(&HandlerExpansion::default());
+            tile
+        })
+        .filter_map(|tile| match tile {
+            AgentTile::Agent(entry) => Some(entry),
+            AgentTile::Pooled(_) => None,
+        })
+        .collect();
+    let owner = cells.iter().find(|cell| cell.row.pid == 10).expect("owner");
+    check(owner, &cells);
+}
+
+#[test]
+fn a_name_cut_makes_room_for_model_and_effort_but_not_the_directory() {
+    with_c352_cells(|owner, cells| {
+        for width in [125, 127] {
+            let buffer = drawn_into(owner, cells, width, 14);
+            let text = lines(&buffer).join("\n");
+            let columns = drawn_columns(owner, width);
+            assert!(
+                columns.contains(&TreeColumn::Model) && columns.contains(&TreeColumn::Effort),
+                "width={width}\n{text}"
+            );
+            assert!(
+                !columns.contains(&TreeColumn::Directory),
+                "width={width}\n{text}"
+            );
+            assert!(
+                text.contains("tool-based-ui-physical-cables"),
+                "width={width}\n{text}"
+            );
+        }
+    });
+}
+
+#[test]
+fn long_names_take_an_ellipsis_before_model_and_effort_drop() {
+    with_long_name_cells(LONG_BRANCH, |owner, cells| {
+        for width in [125, 127] {
+            let columns = drawn_columns(owner, width);
+            let buffer = drawn_into(owner, cells, width, 12);
+            let text = lines(&buffer).join("\n");
+            assert!(
+                columns.contains(&TreeColumn::Model) && columns.contains(&TreeColumn::Effort),
+                "width={width}\n{text}"
+            );
+            let row = |name| {
+                lines(&buffer)
+                    .into_iter()
+                    .find(|row| row.contains(name))
+                    .expect("drawn row")
+            };
+            assert!(row("natedev-showrunner").contains('…'), "{text}");
+            let member = row("free-session");
+            assert!(
+                member.contains("feature/a-long")
+                    && member.contains('…')
+                    && !member.contains(LONG_BRANCH),
+                "{text}"
+            );
+        }
+    });
+}
+
+#[test]
+fn name_cuts_stop_at_their_floors_and_effort_drops_before_model() {
+    let floors = NameCutFloors::default();
+    with_long_name_cells(LONG_BRANCH, |owner, _| {
+        let mut effort_gone = false;
+        let mut model_gone = false;
+        for width in (60..=125).rev() {
+            let columns = drawn_columns(owner, width);
+            let shows = |column| columns.contains(&column);
+            if shows(TreeColumn::Branch) {
+                let branch = drawn_column_width(owner, width, TreeColumn::Branch);
+                assert!(
+                    branch >= Some(floors.branch),
+                    "width={width} branch={branch:?}"
+                );
+            }
+            if shows(TreeColumn::Model) {
+                let session = drawn_column_width(owner, width, TreeColumn::Session);
+                assert!(
+                    session >= Some(floors.session),
+                    "width={width} session={session:?}"
+                );
+            }
+            assert!(
+                !shows(TreeColumn::Effort) || shows(TreeColumn::Model),
+                "width={width}"
+            );
+            effort_gone |= !shows(TreeColumn::Effort);
+            model_gone |= !shows(TreeColumn::Model);
+            assert!(
+                effort_gone || !model_gone,
+                "model dropped before effort at {width}"
+            );
+        }
+        assert!(
+            effort_gone && model_gone,
+            "both metadata columns drop by 60 columns"
         );
     });
 }
@@ -305,7 +477,8 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
             TreeColumn::Account,
             TreeColumn::Role,
             TreeColumn::Activity,
-            TreeColumn::Status
+            TreeColumn::Status,
+            TreeColumn::Branch
         ]
     );
     assert!(
@@ -315,14 +488,15 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
     );
 }
 
-/// Columns leave in the drop order. A dropped column returns only at a width
-/// where a column later in that order leaves, and it keeps its display position.
-/// A second draw at one width gives the same buffer.
+/// Columns leave in the drop order of a long-named tree: the directory fits only
+/// beside the uncut names, so it leaves first. A dropped column returns only at
+/// a width where a column later in that order leaves, and it keeps its display
+/// position. A second draw at one width gives the same buffer.
 fn assert_column_drop_sequence(owner: &AgentEntry<'_>, cells: &[AgentEntry<'_>]) {
     const DROP_ORDER: [TreeColumn; 9] = [
+        TreeColumn::Directory,
         TreeColumn::Effort,
         TreeColumn::Model,
-        TreeColumn::Directory,
         TreeColumn::Type,
         TreeColumn::Branch,
         TreeColumn::Account,

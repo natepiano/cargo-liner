@@ -27,8 +27,10 @@ use tui_pane::TileView;
 
 use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
+use crate::constants::DEFAULT_BRANCH_CUT_FLOOR;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::DEFAULT_SESSION_CUT_FLOOR;
 use crate::constants::DEFAULT_WIDEN_SUMMARY;
 use crate::constants::HERDR_PROBE_WAIT_LIMIT;
 use crate::constants::PROBE_TIMEOUT;
@@ -82,15 +84,23 @@ pub(crate) struct TilesConfig {
     /// Whether the summary widens over the next columns when its widest
     /// line does not fit its own; see [`TileGrowth::widen_summary`].
     pub(crate) widen_summary: bool,
+    /// The narrowest width, in cells, that a tile cuts its session column
+    /// to before an optional column drops.
+    session_cut_floor:        u16,
+    /// The narrowest width, in cells, that a tile cuts its branch column
+    /// to before an optional column drops.
+    branch_cut_floor:         u16,
 }
 
 impl Default for TilesConfig {
     fn default() -> Self {
         Self {
-            initial_rows:  InitialRows::default(),
-            fill:          TileFill::default(),
-            view:          TileView::default(),
-            widen_summary: DEFAULT_WIDEN_SUMMARY,
+            initial_rows:      InitialRows::default(),
+            fill:              TileFill::default(),
+            view:              TileView::default(),
+            widen_summary:     DEFAULT_WIDEN_SUMMARY,
+            session_cut_floor: DEFAULT_SESSION_CUT_FLOOR,
+            branch_cut_floor:  DEFAULT_BRANCH_CUT_FLOOR,
         }
     }
 }
@@ -106,6 +116,26 @@ impl TilesConfig {
             widen_summary: self.widen_summary,
         }
     }
+
+    /// The floors a tile cuts its session and branch names to.
+    pub(crate) const fn name_cut_floors(&self) -> NameCutFloors {
+        NameCutFloors {
+            session: self.session_cut_floor,
+            branch:  self.branch_cut_floor,
+        }
+    }
+}
+
+/// The narrowest widths, in cells, that a tile cuts its session and branch
+/// columns to before an optional column drops.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NameCutFloors {
+    pub(crate) session: u16,
+    pub(crate) branch:  u16,
+}
+
+impl Default for NameCutFloors {
+    fn default() -> Self { TilesConfig::default().name_cut_floors() }
 }
 
 /// The machines the summary lists besides this one.
@@ -364,6 +394,8 @@ initial_rows = 4
 fill = \"redistribute\"
 view = \"cells\"
 widen_summary = true
+session_cut_floor = 24
+branch_cut_floor = 16
 
 [machines]
 remote = []
@@ -516,6 +548,32 @@ herdr_read_timeout = 1000
         assert!(restated.contains("iterm2_profile = \"cargo-handler\""));
         assert!(restated.contains("light_theme = \"Default Light\""));
         assert!(restated.contains("[tiles]"));
+    }
+
+    /// `tiles.session_cut_floor` and `tiles.branch_cut_floor` load from the
+    /// file, and a `[tiles]` table that leaves them out gets the defaults.
+    #[test]
+    fn name_cut_floors_load_and_fall_back_to_their_defaults() {
+        let floors = |text: &str| {
+            toml::from_str::<Config>(text)
+                .expect("a config the test wrote should parse")
+                .tiles
+                .name_cut_floors()
+        };
+        assert_eq!(
+            floors("[tiles]\nsession_cut_floor = 30\nbranch_cut_floor = 12\n"),
+            NameCutFloors {
+                session: 30,
+                branch:  12,
+            }
+        );
+        assert_eq!(
+            floors("[tiles]\ninitial_rows = 3\n"),
+            NameCutFloors {
+                session: DEFAULT_SESSION_CUT_FLOOR,
+                branch:  DEFAULT_BRANCH_CUT_FLOOR,
+            }
+        );
     }
 
     /// The fill a config spelling `text` loads with.

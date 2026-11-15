@@ -118,6 +118,9 @@ With a scanned `idle` or unreported activity, it reads `running` (`RUNNING_JOB`,
 A subagent row is `busy`, except that a scanned `idle` makes its status `idle`, because its turn ended.
 A subagent row with no role word and an unreported activity reads `running`, the same as a shell command row.
 So no busy row has an empty activity cell.
+`TreeLine::job_and_live_word` adds the live word after the job, as in `reviewer · waiting`.
+A job never takes the live word `running` after it: a running reviewer reads `reviewer`.
+A row with no job and the live word `running` reads `running`.
 The type column identifies shell rows once.
 
 ### Wire compatibility
