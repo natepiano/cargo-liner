@@ -19,6 +19,15 @@ use crate::tui::panes;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
 
+/// What a screen position names in Cargo Port's own captured output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapturedOutputRow {
+    /// The position is not over a captured-output row.
+    Outside,
+    /// The buffer index of the captured-output row under the position.
+    Inside(usize),
+}
+
 pub struct OutputPane {
     pub focus: RenderFocus,
     selection: StreamingTextSelection,
@@ -70,15 +79,6 @@ impl Deref for OutputPane {
 
 impl DerefMut for OutputPane {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.selection }
-}
-
-/// What a screen position names in Cargo Port's own captured output.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CapturedOutputRow {
-    /// The position is not over a captured-output row.
-    Outside,
-    /// The buffer index of the captured-output row under the position.
-    Inside(usize),
 }
 
 impl Renderable<PaneRenderCtx<'_>> for OutputPane {

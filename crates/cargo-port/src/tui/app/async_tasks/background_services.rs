@@ -12,7 +12,6 @@ use super::constants::CRATES_IO_FETCH_WORKERS;
 use crate::config::CratesIoReleaseGroupConfig;
 use crate::project;
 use crate::project::AbsolutePath;
-use crate::project::GitRepoPresence;
 use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
@@ -22,7 +21,9 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
+use crate::scan::ProjectGitLayout;
 use crate::tui::app::App;
+use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::startup_services::StartupEffect;
 
 impl App {
@@ -51,31 +52,52 @@ impl App {
             return;
         }
 
+        // The Git layout reads touch the disk once per project, so a worker
+        // thread reads them and the frame only spawns the detail jobs.
+        let mut leaves = Vec::new();
+        self.project_list
+            .for_each_leaf_path(|path, _| leaves.push(AbsolutePath::from(path)));
         let sender = self.background.background_sender();
-        let fetch_context = std::sync::Arc::new(FetchContext {
-            source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
-            client:              self.net.http_client(),
-        });
-        self.project_list.for_each_leaf(|item| {
-            let abs_path = item.path().to_path_buf();
-            let repo_presence = if project::git_repo_root(&abs_path).is_some() {
-                GitRepoPresence::InRepo
-            } else {
-                GitRepoPresence::OutsideRepo
-            };
-            let sender = sender.clone();
-            let fetch_context = std::sync::Arc::clone(&fetch_context);
-            let request = ProjectDetailRequest {
-                sender: &sender,
-                fetch_context: fetch_context.as_ref(),
-                abs_path: &abs_path,
-                // The shared fetch plan supplies startup crate names.
-                name: None,
-                repo_presence,
-            };
-            rayon::spawn(scan::project_detail_job(&request));
+        rayon::spawn(move || {
+            let layouts = leaves
+                .into_iter()
+                .map(|path| {
+                    let layout = ProjectGitLayout::read(path.as_path());
+                    (path, layout)
+                })
+                .collect();
+            let _ = sender.send(BackgroundMsg::StartupGitLayouts { layouts });
         });
         self.dispatch_crates_io_fetches(crates_io_plan);
+    }
+    /// Spawn the startup detail job for each project that is still in the
+    /// list. A project that left the list before its layout arrived gets no
+    /// job, so its submodules never enter the source caches. It has no
+    /// details to declare, so startup marks it declared at once.
+    pub(super) fn spawn_startup_project_details(
+        &mut self,
+        layouts: Vec<(AbsolutePath, ProjectGitLayout)>,
+    ) {
+        let sender = self.background.background_sender();
+        let fetch_context = FetchContext {
+            source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
+            client:              self.net.http_client(),
+        };
+        for (path, layout) in layouts {
+            if !matches!(self.project_list.at_path(&path), Found(_)) {
+                self.mark_startup_project_details_declared(path);
+                continue;
+            }
+            let request = ProjectDetailRequest {
+                sender: &sender,
+                fetch_context: &fetch_context,
+                abs_path: path.as_path(),
+                // The shared fetch plan supplies startup crate names.
+                name: None,
+                layout,
+            };
+            rayon::spawn(scan::project_detail_job(request));
+        }
     }
     /// Walk every project root and collect the crates.io fetch plan:
     /// each publishable crate name mapped to every project path that

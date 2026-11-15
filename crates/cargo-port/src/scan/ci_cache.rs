@@ -10,6 +10,7 @@ use crate::ci::GhRun;
 use crate::constants::NO_MORE_RUNS_MARKER;
 use crate::http::HttpClient;
 use crate::http::ServiceSignal;
+use crate::http::WorkflowRunWindow;
 use crate::project::AbsolutePath;
 use crate::project::CiPagination;
 
@@ -174,7 +175,8 @@ pub(crate) fn fetch_ci_runs_cached(
     repo: &str,
     count: u32,
 ) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let (gh_list, list_signal) = client.list_runs(owner, repo, None, count, None);
+    let (gh_list, list_signal) =
+        client.list_runs(owner, repo, None, count, WorkflowRunWindow::Unrestricted);
     let (result, meta, detail_signal) = complete_ci_fetch(
         gh_list.map(|list| (list.runs, list.total_count)),
         load_all_cached_runs(owner, repo),
@@ -197,8 +199,13 @@ pub(crate) fn fetch_older_runs(
     oldest_created_at: &str,
     count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
-    let (gh_list, list_signal) =
-        client.list_runs(owner, repo, None, count, Some(oldest_created_at));
+    let (gh_list, list_signal) = client.list_runs(
+        owner,
+        repo,
+        None,
+        count,
+        WorkflowRunWindow::CreatedBefore(oldest_created_at),
+    );
     let (result, _, detail_signal) = complete_ci_fetch(
         gh_list.map(|list| (list.runs, list.total_count)),
         Vec::new(),

@@ -939,3 +939,34 @@ fn narrow_tree_names_keep_letters_and_align_with_the_projects_header() -> anyhow
 
     Ok(())
 }
+
+#[test]
+fn shown_name_width_counts_only_the_rows_on_screen() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let member = package(&scratch.path().join("proof/member"), "member", 1 << 30)?;
+    let workspace = Workspace {
+        path: AbsolutePath::from(scratch.path().join("proof")),
+        name: Some("proof".to_string()),
+        groups: vec![MemberGroup::Named {
+            name:    LONG_NAME.to_string(),
+            members: vec![member],
+        }],
+        ..Workspace::default()
+    };
+    let mut app = test_support::make_app(&[]);
+    app.project_list = ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(workspace))]);
+    app.ensure_visible_rows_cached();
+    app.ensure_fit_widths_cached();
+    let collapsed = app.project_list.cached_fit_widths.shown_table_width();
+
+    app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+    app.ensure_visible_rows_cached();
+    app.ensure_fit_widths_cached();
+    let expanded = app.project_list.cached_fit_widths.shown_table_width();
+
+    assert!(
+        collapsed + LONG_NAME.len() / 2 < expanded,
+        "the hidden long name widens the table only on screen: {collapsed} then {expanded}"
+    );
+    Ok(())
+}

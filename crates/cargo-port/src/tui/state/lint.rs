@@ -134,10 +134,6 @@ impl Lint {
         }
     }
 
-    pub(in crate::tui) fn set_row_rects(&mut self, rows: Vec<(Rect, usize)>) {
-        self.row_rects = rows;
-    }
-
     // `Lint::viewport` stores the Lints pane viewport.
 
     // `content`, `set_content` and `clear_content` manage cached `LintsData`.
@@ -147,6 +143,18 @@ impl Lint {
     pub(in crate::tui) fn set_content(&mut self, data: LintsData) { self.content = Some(data); }
 
     pub(in crate::tui) fn clear_content(&mut self) { self.content = None; }
+
+    /// The content, the viewport and the row hit rects, borrowed apart for
+    /// the pane render.
+    pub(in crate::tui) const fn render_parts(
+        &mut self,
+    ) -> (Option<&LintsData>, &mut Viewport, &mut Vec<(Rect, usize)>) {
+        (
+            self.content.as_ref(),
+            &mut self.viewport,
+            &mut self.row_rects,
+        )
+    }
 
     // `runtime`, `runtime_clone` and `set_runtime` expose or replace the lint `RuntimeHandle`.
 

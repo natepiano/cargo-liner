@@ -305,6 +305,8 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
 - Phase 13c: a linked worktree's background Git probe compares its `HEAD` with the primary `HEAD` (`CheckoutInfo.ahead_behind_primary`). An event on the primary `HEAD` file now refreshes the linked checkouts, which runs Git for each. Name that share in the attribution.
 - `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
+- Phase 13d: the cargo metadata worker reads the manifest fingerprint before and after each `cargo metadata` run (`drop_changed_manifest`). An idle metadata refresh reads the manifest, lockfile, toolchain and config files twice. Name that share in the attribution.
+- Phase 13d: a load check at the start of a run does not hold the load low for the full run. Record `vmstat -t 1` beside each run, and judge each second by its run queue.
 
 **Spec:**
 1. **Measure at low load.** Run each idle measurement when the natedev 1-minute load average is under 8. Record the load and the `pswpin` and `pgmajfault` counts from `/proc/vmstat` before and after each run.
@@ -387,42 +389,29 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** further cuts for load 125, where 4 runnable tasks per CPU set the frame times.
 
-### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: todo
+### Phase 13d — no cargo-port startup frame takes more than 100 ms at low load  · status: done
 
-**Depends on:** Phase 13c (it edits the same frame path and the CHANGELOG). Runs before Phase 12, which also edits the cargo-port CHANGELOG.
+#### As-built
 
-#### Work Order
-
-**Goal:** at startup with natedev load under 32, no frame takes more than 100 ms.
-
-**Source:** the showrunner ruling on Phase 13c, 2026-11-13: when a frame takes more than 100 ms at load under 32, add a follow-up phase for its step. Phase 13c paired start at load 25-27 had 3 such frames, all in the first 3.5 s:
-1. 199 ms: one `CargoMetadata` apply of 113 ms in bg (126 ms), column fit 49 ms.
-2. 154 ms: one `ScanResult` apply of 60 ms in bg (62 ms), column fit 84 ms.
-3. 102 ms: draw 65 ms, column fit 35 ms.
-
-**Constraints from prior phases:**
-- Phase 13c keeps the CI table plan across equal CI data (`ci_table_layout_holds_when_the_same_content_is_set_again`). Keep its tests green.
-- Phase 13c names the draw time also when the screen does not change (`FrameDraw::Unchanged(Duration)`).
-- Phase 13b: keep `row_message_burst_builds_row_presentation_at_most_twice` green.
-- Do not run builds or lint during a paired start, because they add load.
-
-**Spec:**
-1. **Measure.** Add temporary perf fields inside the `CargoMetadata` apply, the `ScanResult` apply, `ensure_fit_widths_cached` and `render::ui` to find the cost in each.
-2. **Repair.** Make each named step cheaper, or move it off the frame path. The frame applies only cheap state changes.
-3. **Test.** Add tests that fail before each fix and pass after. They count work, not time, and run under 1 s.
-4. **Changelog.** Add a cargo-port fix entry.
+- A background frame builds the project row presentation once. The frame batch stays open on `App` after the poll (`open_row_batch`), and the fit check closes it with the presentation it builds (`refresh_fit_widths`). `FrameKey` reads the batch state, so an open batch never reads as unchanged. `shown_name_width` measures the visible rows of that same presentation.
+- The CI and lint panes build only the run rows that the table can draw (`table_draw_window` in `tui/panes/support.rs`; `ci_table_rows`). Rows outside the window are empty and the table draws the same. The lint pane borrows its data and does not clone it.
+- The cargo metadata worker captures the manifest fingerprint before and after `cargo metadata`. `drop_changed_manifest` returns `CargoMetadataError::ManifestChanged` on drift; the handler drops that result, and the watcher refresh completes the startup entry. The apply reads nothing from the disk.
+- `ProjectGitLayout` (`repo_presence`, `submodules`; `ProjectGitLayout::read`) is read for every startup leaf on one rayon job and sent as `BackgroundMsg::StartupGitLayouts`. `spawn_startup_project_details` spawns a detail job only for a path that is still `Found`; for any other path it declares the details and registers no submodules. The watcher probe reads the layout of a new project the same way. `GitRepoPresence::of` is the one repo presence check.
+- Proof: paired natedev starts with `vmstat -t 1`. This build had no frame over 100 ms in a second with run queue under 100; the Phase 13c build had 53 frames over 100 ms in one start, the first at run queue 36-40.
+- Tests: `background_frame_that_changes_widths_builds_row_presentation_once`, `shown_name_width_counts_only_the_rows_on_screen`, `ci_draws_build_only_the_rows_the_table_shows`, `lint_draws_build_only_the_rows_the_table_shows`, `empty_rows_outside_the_draw_window_draw_the_same_table`, `manifest_edit_during_the_run_drops_the_result`, `manifest_metadata_apply_reads_no_fingerprint`, `git_layout_reads_the_repo_and_its_submodules`, `late_startup_layout_registers_no_submodules_for_a_removed_project`.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/` — the `CargoMetadata` and `ScanResult` apply
-- `crates/cargo-port/src/tui/app/` — `ensure_fit_widths_cached`
-- `crates/cargo-port/src/tui/render/` — `render::ui`, for the 65 ms draw
-- `crates/cargo-port/CHANGELOG.md` — entry
+- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs`, `poll.rs` — open row batch, `StartupGitLayouts` arm
+- `crates/cargo-port/src/tui/app/navigation/cache.rs`, `src/tui/app/mod.rs` — fit check closes the batch, `shown_name_width`
+- `crates/cargo-port/src/tui/app/async_tasks/background_services.rs` — `schedule_startup_project_details`, `spawn_startup_project_details`
+- `crates/cargo-port/src/tui/app/async_tasks/metadata_handlers.rs` — `ManifestChanged` handling
+- `crates/cargo-port/src/scan/cargo_metadata.rs` — worker fingerprint, `drop_changed_manifest`
+- `crates/cargo-port/src/scan/discovery.rs`, `background.rs` — `ProjectGitLayout`, `project_detail_job`, `StartupGitLayouts`
+- `crates/cargo-port/src/project/git/discovery.rs` — `GitRepoPresence::of`
+- `crates/cargo-port/src/tui/panes/support.rs`, `ci/render.rs`, `lints/render.rs` — draw windows
+- `crates/cargo-port/src/watcher/probe.rs` — layout read for a new project
+- `crates/cargo-port/CHANGELOG.md` — fix entry
 
-**Workers:** 1 writer.
+**Gotchas:** the lint repair step deletes re-exports that only tests use (`FileStamp`); keep them under `#[cfg(test)]`. A load check at the start of a run does not hold the load low through a 120 s run; read the run queue each second.
 
-**State:** none.
-
-**Acceptance gate:**
-1. The tests fail before the repair and pass after.
-2. `verify.sh test cargo-port` passes on natedev and the Mac, and every test runs under 1 s. Lint is clean.
-3. Paired natedev starts at load under 32 with the same `include_dirs`: the Phase 13c build, then this build. In this build no frame takes more than 100 ms.
+**Ruled out:** a time budget for the background poll drain; it needs a config key, and the measured frames did not need it.

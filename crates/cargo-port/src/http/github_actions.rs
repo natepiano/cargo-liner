@@ -28,10 +28,8 @@ pub(crate) struct GhRunsList {
     pub total_count: u32,
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlRunNode {
-    database_id: u64,
-    check_suite: Option<GqlCheckSuite>,
+struct GqlCheckRunConnection {
+    nodes: Vec<GqlCheckRun>,
 }
 
 #[derive(Deserialize)]
@@ -41,8 +39,19 @@ struct GqlCheckSuite {
 }
 
 #[derive(Deserialize)]
-struct GqlCheckRunConnection {
-    nodes: Vec<GqlCheckRun>,
+#[serde(rename_all = "camelCase")]
+struct GqlRunNode {
+    database_id: u64,
+    check_suite: Option<GqlCheckSuite>,
+}
+
+/// Creation window of a workflow-run listing.
+#[derive(Clone, Copy)]
+pub(crate) enum WorkflowRunWindow<'a> {
+    /// The most recent completed runs, with no creation bound.
+    Unrestricted,
+    /// Runs created strictly before this ISO 8601 timestamp from `CiRun.created_at`.
+    CreatedBefore(&'a str),
 }
 
 impl HttpClient {
@@ -52,16 +61,19 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-        created_before: Option<&str>,
+        run_window: WorkflowRunWindow<'_>,
     ) -> HttpOutcome<GhRunsList> {
         let mut path =
             format!("repos/{owner}/{repo}/actions/runs?per_page={count}&status=completed");
         if let Some(branch) = branch {
             let _ = write!(path, "&branch={branch}");
         }
-        // ISO 8601 timestamp from CiRun.created_at — strict less-than.
-        if let Some(date) = created_before {
-            let _ = write!(path, "&created=<{date}");
+        // `WorkflowRunWindow::CreatedBefore` is a strict less-than bound.
+        match run_window {
+            WorkflowRunWindow::Unrestricted => {},
+            WorkflowRunWindow::CreatedBefore(date) => {
+                let _ = write!(path, "&created=<{date}");
+            },
         }
         let (body, signal) = self.github_get_async(&path).await;
         let value = body.and_then(|body| {
@@ -150,10 +162,10 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-        created_before: Option<&str>,
+        run_window: WorkflowRunWindow<'_>,
     ) -> HttpOutcome<GhRunsList> {
         self.handle
-            .block_on(self.list_runs_async(owner, repo, branch, count, created_before))
+            .block_on(self.list_runs_async(owner, repo, branch, count, run_window))
     }
 
     /// Batch-fetch job details + repo metadata (sync wrapper).

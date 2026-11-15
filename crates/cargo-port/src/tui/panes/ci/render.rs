@@ -87,6 +87,16 @@ thread_local! {
     static COLUMN_INFERENCES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts the CI rows built with content, one per drawn run.
+    static CI_ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The CI rows built with content on this thread since the last call.
+#[cfg(test)]
+pub(super) fn take_ci_rows_built() -> usize { CI_ROWS_BUILT.with(|built| built.replace(0)) }
+
 /// The CI column inferences on this thread since the last call.
 #[cfg(test)]
 pub(super) fn take_column_inferences() -> usize {
@@ -864,6 +874,58 @@ fn render_ci_without_runs(
     }
 }
 
+/// Build one row per CI run. Only the rows that the table can draw get
+/// content; the other rows stay empty, so the table keeps its row count.
+fn ci_table_rows(
+    runs: &[CiRun],
+    plan: &CiTablePlan,
+    viewport: &Viewport,
+    focus_state: PaneFocusState,
+    mode: ColorMode,
+    table_height: u16,
+) -> Vec<Row<'static>> {
+    let layout = &plan.layout;
+    let widths = layout.widths();
+    let commit_width = constraint_width(widths.first()).unwrap_or(CI_COMMIT_MIN_WIDTH);
+    let branch_width = constraint_width(widths.get(1)).unwrap_or(CI_BRANCH_MIN_WIDTH);
+    let draw_window = support::table_draw_window(
+        runs.len(),
+        viewport.scroll_offset(),
+        viewport.pos(),
+        1,
+        table_height,
+    );
+    let mut rows = Vec::with_capacity(runs.len());
+    rows.extend(std::iter::repeat_n(Row::default(), draw_window.start));
+    rows.extend(
+        runs[draw_window.clone()]
+            .iter()
+            .zip(draw_window.clone())
+            .map(|(ci_run, row_index)| {
+                #[cfg(test)]
+                CI_ROWS_BUILT.with(|built| built.set(built.get() + 1));
+                if matches!(layout, CiTableLayout::Standard(_)) {
+                    build_ci_data_row(
+                        ci_run,
+                        &plan.columns,
+                        plan.durations,
+                        commit_width,
+                        branch_width,
+                        tui_pane::selection_state(viewport, row_index, focus_state),
+                        mode,
+                    )
+                } else {
+                    layout.summary_row(ci_run)
+                }
+            }),
+    );
+    rows.extend(std::iter::repeat_n(
+        Row::default(),
+        runs.len() - draw_window.end,
+    ));
+    rows
+}
+
 pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -904,36 +966,19 @@ pub fn render_ci_pane_body(
         *table_plan = None;
     }
     let plan = table_plan.get_or_insert_with(|| CiTablePlan::build(ci_data, inner.width));
-    let cols = &plan.columns;
-    let durations = plan.durations;
     let layout = &plan.layout;
     let widths = layout.widths();
-    let commit_width = constraint_width(widths.first()).unwrap_or(CI_COMMIT_MIN_WIDTH);
-    let branch_width = constraint_width(widths.get(1)).unwrap_or(CI_BRANCH_MIN_WIDTH);
+    let table_area = layout.table_area(inner);
+    let rows = ci_table_rows(
+        &ci_data.runs,
+        plan,
+        viewport,
+        ci_pane_focus_state,
+        mode,
+        table_area.height,
+    );
 
-    let viewport_ref: &Viewport = viewport;
-    let rows: Vec<Row> = ci_data
-        .runs
-        .iter()
-        .enumerate()
-        .map(|(row_index, ci_run)| {
-            if matches!(layout, CiTableLayout::Standard(_)) {
-                build_ci_data_row(
-                    ci_run,
-                    cols,
-                    durations,
-                    commit_width,
-                    branch_width,
-                    tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
-                    mode,
-                )
-            } else {
-                layout.summary_row(ci_run)
-            }
-        })
-        .collect();
-
-    let header = layout.header(cols);
+    let header = layout.header(&plan.columns);
 
     let spacing = u16::from(
         !(matches!(layout, CiTableLayout::BranchSummary(_))
@@ -950,7 +995,7 @@ pub fn render_ci_pane_body(
 
     let mut table_state = TableState::default().with_selected(Some(viewport.pos()));
     *table_state.offset_mut() = viewport.scroll_offset();
-    frame.render_stateful_widget(table, layout.table_area(inner), &mut table_state);
+    frame.render_stateful_widget(table, table_area, &mut table_state);
     viewport.set_scroll_offset(table_state.offset());
     paint_ci_row_selections(
         frame,

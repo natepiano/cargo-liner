@@ -3,6 +3,8 @@ use tui_pane::PERF_LOG_TARGET;
 use crate::scan::ProjectStorage;
 use crate::tui;
 use crate::tui::app::App;
+use crate::tui::app::ProjectListPresentation;
+use crate::tui::app::RowPresentationState;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::LintColumnStatus;
@@ -22,9 +24,18 @@ impl App {
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
     pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
 
+    /// Build the row presentation once for the frame. It closes the frame
+    /// batch, keys the fit widths, and stays stored for the next batch.
     pub(in crate::tui) fn ensure_fit_widths_cached(&mut self) {
+        let presentation = self.project_row_presentation();
+        self.close_row_batch(&presentation);
+        self.refresh_fit_widths(&presentation);
+        self.row_presentation = RowPresentationState::Built(presentation);
+    }
+
+    fn refresh_fit_widths(&mut self, presentation: &ProjectListPresentation) {
         let desired = FitWidthsCacheKey {
-            presentation:     self.project_row_presentation().width_inputs(),
+            presentation:     presentation.width_inputs(),
             summary_bytes:    self.project_list.visible_disk_total(),
             visible_rows:     self.visible_rows().to_vec(),
             include_non_rust: self.config.include_non_rust().includes_non_rust(),
@@ -45,7 +56,7 @@ impl App {
             0,
         );
         let mut widths = widths;
-        widths.set_shown_name_width(self.shown_name_width());
+        widths.set_shown_name_width(presentation.shown_name_width(self.visible_rows()));
         let total = self
             .project_list
             .visible_disk_total()

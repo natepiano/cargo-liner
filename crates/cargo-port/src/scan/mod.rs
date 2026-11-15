@@ -37,6 +37,7 @@ pub(crate) use ci_cache::pagination;
 pub(crate) use discovery::CachedRepoData;
 pub(crate) use discovery::FetchContext;
 pub(crate) use discovery::ProjectDetailRequest;
+pub(crate) use discovery::ProjectGitLayout;
 pub(crate) use discovery::RepoCache;
 pub(crate) use discovery::RepoMetaInfo;
 pub(crate) use discovery::discover_project_item;

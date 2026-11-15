@@ -1,4 +1,5 @@
 use ratatui::layout::Position;
+use strum::EnumIter;
 use tui_pane::FrameworkHit;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::HitTestRegistry;
@@ -10,9 +11,8 @@ use tui_pane::Viewport;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
+use super::constants::HITTABLE_Z_ORDER;
 use super::dismiss_target::DismissTarget;
-use super::hit_test::HITTABLE_Z_ORDER;
-use super::hit_test::HittableId;
 use super::hit_test::HoverTarget;
 use super::panes::PaneId;
 
@@ -20,6 +20,21 @@ use super::panes::PaneId;
 pub(super) enum ClickMode {
     FocusOnly,
     Dispatch,
+}
+
+/// Compile-time enumeration of every tiled pane that implements
+/// `tui_pane::Hittable`.
+#[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HittableId {
+    ProjectList,
+    Package,
+    Lang,
+    Cpu,
+    Git,
+    Targets,
+    Lints,
+    CiRuns,
+    Output,
 }
 
 pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> bool {

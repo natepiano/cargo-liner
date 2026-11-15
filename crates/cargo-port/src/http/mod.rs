@@ -16,6 +16,7 @@ pub(crate) use auth::GithubAuthGap;
 pub(crate) use client::HttpClient;
 pub(crate) use client::ServiceKind;
 pub(crate) use client::ServiceSignal;
+pub(crate) use github_actions::WorkflowRunWindow;
 pub(crate) use github_pull_requests::PullRequestFetch;
 pub(crate) use rate_limit::GitHubRateLimit;
 pub(crate) use rate_limit::RateLimitQuota;
