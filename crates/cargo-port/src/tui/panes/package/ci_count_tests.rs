@@ -12,6 +12,7 @@ use crate::project::WorkflowPresence;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionState;
 use crate::tui::panes::DetailField;
+use crate::tui::panes::PackageContent;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackageRow;
 use crate::tui::panes::PaneId;
@@ -69,8 +70,10 @@ fn ci_keeps_the_local_label_when_the_column_has_no_next_row() -> anyhow::Result<
         });
         test_support::draw_ui(&mut app, width)?;
         let pane_width = app.panes.tiled_layout.area(PaneId::Package).width;
-        let rows =
-            panes::package_rows_from_data(app.panes.package.content().context("Package data")?);
+        let PackageContent::Selected(package_data) = app.panes.package.content() else {
+            anyhow::bail!("Package data");
+        };
+        let rows = panes::package_rows_from_data(package_data);
         let ci = rows
             .iter()
             .position(|row| *row == PackageRow::Field(DetailField::Ci))

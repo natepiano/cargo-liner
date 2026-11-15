@@ -26,6 +26,8 @@ use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
+use crate::tui::panes::PackageContent;
+use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::targets;
@@ -449,12 +451,10 @@ fn project_width_keeps_the_workspace_member_title_whole() -> anyhow::Result<()> 
     let mut app = app_with_names(scratch.path(), LONG_NAME)?;
     app.config.current_mut().lint.enabled = LintIndicator::Disabled;
     install_targets(&mut app)?;
-    let mut data = app
-        .panes
-        .package
-        .content()
-        .context("Package content")?
-        .clone();
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("Package content");
+    };
+    let mut data = PackageData::clone(package_data);
     data.title = "Workspace Member".to_string();
     app.panes.package.set_content(data);
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
