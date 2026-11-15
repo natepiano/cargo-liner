@@ -1712,32 +1712,22 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 ### Phase 64 — A released phase's commits raise no incursion against the next reservation  · status: done
 
-**Depends on:** Phase 43j (order only; showrunner, 2026-11-15: tile owns the fix, after 43j)
+#### As-built
 
-#### Work Order
-
-**Goal:** A commit that a released reservation checkpointed does not count as phase history of another reservation in the same worktree. No incursion names that commit.
-
-**Spec:**
-1. The defect, seen 2026-11-15 in `cargo-liner-tile-43j`:
-   - Reservation 01a1def2 (43j) has `phase_start_head` 1b8497e1. Phases 62b and 62c ran in the same worktree after that commit.
-   - The 62c checkpoint a102bcca changed `crates/cargo-tile/src/render.rs`. Its release passed (checkpointed, protected tip a102bcca, mapping published).
-   - The 62c shrink commit e09e551c changed only the plan doc. Its post-commit drift raised incursion 01a1df18: 01a1def2 entered `render.rs`, held by 01a1c8b3 (parked 32j). The incursion named a102bcca.
-   - 43j never changed `render.rs`. The director resolved the incursion as `before`.
-2. Cause, by code reading: `observe_full` (`drift/observation.rs:540`) takes each reservation's committed paths from `phase_start_head..HEAD`. That range holds every commit a released sibling checkpointed. `commits_for_paths` (`drift/provenance.rs:669`) names them as the entering commits.
-3. Confirm the cause with the regression test first. Then fix it at its cause in `crates/cargo-berth`. A released reservation's checkpointed commits leave the other reservation's committed paths and its incursion commits. Keep incursions for commits the reservation made itself.
-4. Regression test: two reservations in one worktree claim from the same head. Reservation A changes a path, checkpoints and releases. A third reservation holds that path. Then reservation B makes a commit that changes only a different path. Drift raises no incursion for B, and names no commit of A.
-5. Keep every existing incursion test passing. A commit of B that enters a held path still raises an incursion.
+Drift incursion attribution skips the commits that a released reservation in the same worktree checkpointed.
+- `IncursionAnchorAttribution` (`drift/provenance.rs`) holds `released_checkpoints`: the anchor's range commits that a released sibling in a subject's worktree checkpointed.
+- `record_released_sibling_checkpoints` runs in `read_committed_foreign_paths`. For each non-active sibling with `RetainedProtectedTip::Retained(tip)` in a subject's worktree, it reads `phase_start..tip` only when the tip is inside an anchor's range.
+- `path_commit_authorship`, `latest_commit` and `commits_for_paths` skip those commits. A path whose only entering commits are a released sibling's classifies as Inherited and raises no incursion. A commit the staying reservation makes into a held path still raises an incursion that names only that commit.
+- The observation-level committed path set (`observe_full`) is unchanged.
 
 **Files:**
-- `crates/cargo-berth/src/drift/observation.rs` — the committed phase history.
-- `crates/cargo-berth/src/drift/provenance.rs` — the incursion commit names, if the cause reaches it.
-- The release record reader that gives a released reservation's checkpoint commits, where it lives.
-- The drift test module that holds the incursion tests — the regression test.
+- `crates/cargo-berth/src/drift/provenance.rs` — incursion attribution and the released-sibling interval read.
+- `crates/cargo-berth/tests/drift.rs` — `a_released_siblings_checkpoint_raises_no_incursion_against_the_reservation_that_stays`.
 
-**Workers:** none (no-worker mode); the director writes the fix.
-
-**Acceptance gate:** the regression test fails before the fix and passes after it; the cargo-berth full suite passes on natedev and the Mac with no test at 1 s or more; lint.
+**Gotchas:**
+- Sibling selection is by worktree only; `widening.rs` selects by worktree and run for its comparison end.
+- A commit the staying reservation makes inside an active sibling's later-released interval is also skipped. Phases in one worktree run one after the other.
+- The 1 s gate applied to cargo-berth on natedev only. The Mac suite passed with 490 tests at 1 s or more; a later phase owns them.
 
 ### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: todo
 
@@ -1808,6 +1798,55 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 **Workers:** none (no-worker mode); the director writes the fix.
 
 **Acceptance gate:** after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+
+### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
+
+**Depends on:** Phase 69 (order only; Phase 69 runs first, showrunner 2026-11-15)
+
+#### Work Order
+
+**Goal:** No cargo-berth test takes 1 s or more on the Mac when the suite starts at load under 12 (showrunner, 2026-11-15).
+
+**Spec:**
+1. The evidence: in the Phase 64 Mac suite (load 5.92, 12 threads), 490 of 1389 cargo-berth tests took 1 s or more, and 167 took 2 s or more (director, 2026-11-15). Phase 58b met the 1 s rule on natedev only; its Mac half never ran.
+2. Measure first. Run the cargo-berth full suite on the Mac at start load under 12. Group the slow tests by shared cost: git process starts, template setup, file system sync, first launch of a new executable (see the Phase 43j attempts).
+3. Cut each shared cost at its source, largest group first. Keep each test's behavior and assertions.
+4. Keep natedev at no test 1 s or more at load under 32. In the Phase 64 natedev suite (load 28.17), two board tests took 1.07 s and 1.04 s: `every_reachable_edge_readiness_has_its_own_action_or_settlement` and `retained_scoped_patch_verdicts_reuse_both_results_after_process_restart`. Alone they take 0.26 s and 0.21 s (load 15.99). Bring both under 1 s in the full suite.
+
+**Files:**
+- `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
+- `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
+
+**Workers:** Codex workers write the code; the director measures and reviews.
+
+**Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
+
+### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: todo
+
+**Depends on:** Phase 67 (order only; runs before Phase 68, showrunner 2026-11-15)
+
+#### Work Order
+
+**Goal:** A row for a build in a build slot names the slot, its holder and its purpose, for example `hana-slot2 · fps · <purpose>`. User rule, 2026-11-14: "it's important that in cargo tile we see human readable names for the path of the build ... we need to be able to know what the build is for".
+
+**Spec:**
+1. The layout (builds showrunner, user-approved): each checkout is a slot `/build/slot/<repo>-slotN` (Mac `~/build/slot/...`). Its compiled output is `/build/cargo/<repo>-slotN`. One lookup by the folder name serves both paths.
+2. Roots: `roots.slots.<machine>` and `roots.slot_cargo.<machine>` in `~/.claude/config/build_folders.conf`. A missing key means no slots. Read the keys at run time; hard-code no path.
+3. Beside each slot folder are `<repo>-slotN.lease.json` and `<repo>-slotN.lock`. The lease holds showrunner, unit, work, purpose, pid, start_time, machine, repository, slot, commit and last_use. Read the JSON in Rust; do not call Python.
+4. A holder is live only while a process holds the `.lock` (flock). With no lock held, the slot shows as free, never as its last holder.
+5. A build whose workspace or target directory is inside a slot or slot cargo root shows the slot name, the holder and the purpose. A build outside the roots shows as before.
+6. Read each lease once per change of the lease file, not once per frame. Keep the frame time rules of Phases 32b-32j.
+7. Send lease format questions to the queue unit through the builds showrunner.
+
+**Files:**
+- `crates/cargo-tile/src/census/scan/census.rs` — the build path read.
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `cargo_target_directory`.
+- `crates/cargo-tile/src/render.rs` — the row text.
+- `crates/cargo-tile/src/census/slot_lease.rs` — new: the slot lease reader and the lock check.
+
+**Workers:** Codex workers write the code; the director reviews.
+
+**Acceptance gate:** tests for a live lease, a free slot (lock not held), a missing roots key and a build outside the roots; one dark mode desktop screenshot of a slot row for the user; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
