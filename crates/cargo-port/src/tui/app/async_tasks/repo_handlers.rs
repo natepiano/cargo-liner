@@ -20,6 +20,7 @@ use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::CratesIoReleaseState;
+use crate::project::EntryRepository;
 use crate::project::FirstCommit;
 use crate::project::GitRepo;
 use crate::project::GitStatus;
@@ -45,6 +46,8 @@ use crate::tui::panes::DetailCacheState;
 use crate::tui::project_list::ProjectPathLookup;
 use crate::tui::project_list_state::SyncResolution;
 use crate::tui::state;
+use crate::tui::state::GitStatusObservation;
+use crate::tui::state::GitStatusToastTracking;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
@@ -207,7 +210,7 @@ impl App {
     /// baseline; on transition, push or extend the "Git status changes"
     /// task toast.
     fn record_git_status_observation(&mut self, path: &Path, status: GitStatus) {
-        let Some(git_status_transition) = self
+        let GitStatusObservation::Changed(git_status_transition) = self
             .git_status_tracker
             .observe(AbsolutePath::from(path), status)
         else {
@@ -229,16 +232,18 @@ impl App {
             },
             activity: TrackedItemActivity::Progressing,
         };
-        let reuse = self
-            .git_status_tracker
-            .current_toast()
-            .filter(|id| self.framework.toasts.tracked_item_count(*id) > 0);
-        let toast_id = reuse.unwrap_or_else(|| {
-            let toast_task_id = self.framework.toasts.push_task("Git status changes", "", 1);
-            self.git_status_tracker
-                .set_current_toast(Some(toast_task_id));
-            toast_task_id
-        });
+        let toast_id = match self.git_status_tracker.current_toast() {
+            GitStatusToastTracking::Tracked(id)
+                if self.framework.toasts.tracked_item_count(id) > 0 =>
+            {
+                id
+            },
+            GitStatusToastTracking::Tracked(_) | GitStatusToastTracking::Untracked => {
+                let toast_task_id = self.framework.toasts.push_task("Git status changes", "", 1);
+                self.git_status_tracker.set_current_toast(toast_task_id);
+                toast_task_id
+            },
+        };
         self.framework
             .toasts
             .add_new_tracked_items(toast_id, &[tracked_item]);
@@ -293,7 +298,7 @@ impl App {
                 // `handle_repo_info`'s primary-only write policy.
                 return;
             }
-            let git_repo = entry.git_repo.get_or_insert_with(Default::default);
+            let git_repo = entry.git_repo.associate();
             git_repo.repo_info = RepositoryProbe::Repository(info);
         }
         if fetch_head_advanced
@@ -317,7 +322,7 @@ impl App {
         } else if let Some(entry) = self.project_list.entry_containing_mut(path)
             && entry.root_item.path().as_path() == path
         {
-            entry.git_repo = Some(GitRepo::without_repository());
+            entry.git_repo = EntryRepository::Associated(Box::new(GitRepo::without_repository()));
         }
     }
     /// Diff the current sync state for `path` against the tracker's

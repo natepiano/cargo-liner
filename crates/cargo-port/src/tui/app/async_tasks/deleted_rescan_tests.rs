@@ -865,10 +865,9 @@ fn rescan_without_saved_choice_returns_to_first_visible_row() {
 fn startup_scan_restores_persisted_selection_without_input() {
     let mut app = test_support::make_app(&selection_roots());
     app.scan.state.phase = ScanPhase::Running;
-    let (persisted, expanded) =
-        terminal::parse_tree_state_for_test("selected = '/z-choice'\nexpanded = []\n");
-    app.project_list.paths.last_selected = persisted;
-    app.project_list.paths.pending_expanded = expanded;
+    let restored = terminal::parse_tree_state_for_test("selected = '/z-choice'\nexpanded = []\n");
+    app.project_list.paths.last_selected = restored.selection.into_saved_path();
+    app.project_list.paths.pending_expanded = restored.expanded;
     assert_eq!(
         app.project_list.selected_project_path(),
         Some(Path::new("/a-choice")),

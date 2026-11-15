@@ -10,12 +10,11 @@ pub(super) use processes::signal_owned_run;
 pub use run::run;
 #[cfg(test)]
 use toml::ser::Error;
+pub(super) use tree_state::RestoredTreeState;
 
 use super::app::App;
-use super::project_list::ExpandTarget;
 #[cfg(test)]
 use super::state::OwnedRunLaunchStart;
-use crate::project::AbsolutePath;
 
 pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
     processes::spawn_priority_fetch(app, path, abs_path, name);
@@ -30,9 +29,7 @@ pub(super) fn start_queued_target_for_test(app: &mut App) {
     }
 }
 
-pub(super) fn load_tree_state() -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
-    tree_state::load_tree_state()
-}
+pub(super) fn load_tree_state() -> RestoredTreeState { tree_state::load_tree_state() }
 
 #[cfg(test)]
 pub(super) fn serialize_tree_state_for_test(app: &App) -> Result<String, Error> {
@@ -40,6 +37,6 @@ pub(super) fn serialize_tree_state_for_test(app: &App) -> Result<String, Error> 
 }
 
 #[cfg(test)]
-pub(super) fn parse_tree_state_for_test(text: &str) -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
+pub(super) fn parse_tree_state_for_test(text: &str) -> RestoredTreeState {
     tree_state::parse_tree_state_for_test(text)
 }

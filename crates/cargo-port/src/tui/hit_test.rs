@@ -1,4 +1,3 @@
-use strum::EnumIter;
 use tui_pane::ToastId;
 
 use super::dismiss_target::DismissTarget;
@@ -13,42 +12,14 @@ pub enum HoverTarget {
     ToastCard(ToastId),
 }
 
-/// Compile-time enumeration of every tiled pane that implements
-/// `tui_pane::Hittable`.
-#[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum HittableId {
-    ProjectList,
-    Package,
-    Lang,
-    Cpu,
-    Git,
-    Targets,
-    Lints,
-    CiRuns,
-    Output,
-}
-
-/// Stacking order used for tiled-pane hit-test dispatch: top of stack first.
-pub const HITTABLE_Z_ORDER: [HittableId; 9] = [
-    HittableId::ProjectList,
-    HittableId::Package,
-    HittableId::Lang,
-    HittableId::Cpu,
-    HittableId::Git,
-    HittableId::Targets,
-    HittableId::Lints,
-    HittableId::CiRuns,
-    HittableId::Output,
-];
-
 #[cfg(test)]
 mod hit_test_tests {
     use std::collections::HashSet;
 
     use strum::IntoEnumIterator;
 
-    use super::HITTABLE_Z_ORDER;
-    use super::HittableId;
+    use crate::tui::constants::HITTABLE_Z_ORDER;
+    use crate::tui::interaction::HittableId;
 
     #[test]
     fn z_order_covers_every_hittable_id() {

@@ -13,7 +13,8 @@
 //! Std-only internal channels that never reach the loop deliberately
 //! stay on `std::sync::mpsc` (imported as `StdSender`/`StdReceiver`
 //! alongside this module where they coexist): the lint supervisor and
-//! trigger channels in `src/lint/runtime.rs`, and the watcher's notify /
+//! trigger channels in `src/lint/runtime/` (`handle.rs` and
+//! `supervisor.rs`), and the watcher's notify /
 //! disk-done / git-done channels in `src/watcher/`. Keeping them on std
 //! marks, at the type level, that they are not `Select` sources.
 

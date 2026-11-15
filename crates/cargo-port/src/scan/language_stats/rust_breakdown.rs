@@ -19,141 +19,6 @@ use super::constants::UNIT_TESTS_LABEL;
 use crate::project::LangEntry;
 use crate::scan::SourceFileMeasurements;
 
-#[derive(Default)]
-pub(super) struct RustBreakdownCache {
-    unit_totals: SourceFileMeasurements<Option<LineTotals>>,
-}
-
-impl RustBreakdownCache {
-    fn unit_totals_for_file(
-        &mut self,
-        path: &Path,
-        line_totals: LineTotals,
-        config: &Config,
-    ) -> Option<LineTotals> {
-        self.unit_totals
-            .measure(path, || Ok(unit_totals_for_file(path, line_totals, config)))
-            .ok()
-            .flatten()
-    }
-
-    pub(super) fn retain_seen(&mut self, paths: &HashSet<PathBuf>) {
-        self.unit_totals.retain_seen(paths);
-    }
-}
-
-pub(super) fn child_entries(
-    root: &Path,
-    language: &Language,
-    config: &Config,
-    rust_breakdown_cache: &mut RustBreakdownCache,
-) -> Vec<LangEntry> {
-    let mut rust_buckets = RustBuckets::default();
-    for report in &language.reports {
-        let line_totals = LineTotals::from(report);
-        match rust_file_bucket(root, report.name.as_path()) {
-            RustBucket::Code => {
-                add_code_file_with_unit_split(
-                    &mut rust_buckets,
-                    report,
-                    line_totals,
-                    config,
-                    rust_breakdown_cache,
-                );
-            },
-            bucket => rust_buckets.add_file(bucket, line_totals),
-        }
-    }
-    rust_buckets.entries()
-}
-
-fn add_code_file_with_unit_split(
-    rust_buckets: &mut RustBuckets,
-    report: &Report,
-    line_totals: LineTotals,
-    config: &Config,
-    rust_breakdown_cache: &mut RustBreakdownCache,
-) {
-    let Some(unit_line_totals) =
-        rust_breakdown_cache.unit_totals_for_file(report.name.as_path(), line_totals, config)
-    else {
-        rust_buckets.add_file(RustBucket::Code, line_totals);
-        return;
-    };
-
-    let code = line_totals.without(unit_line_totals);
-    rust_buckets.add_file(RustBucket::UnitTests, unit_line_totals);
-    if !code.is_empty() {
-        rust_buckets.add_file(RustBucket::Code, code);
-    }
-}
-
-fn unit_totals_for_file(
-    path: &Path,
-    line_totals: LineTotals,
-    config: &Config,
-) -> Option<LineTotals> {
-    let source = fs::read_to_string(path).ok()?;
-    let ranges = cfg_test_item_ranges(&source);
-    if ranges.is_empty() {
-        return None;
-    }
-    let unit_line_totals = ranges
-        .iter()
-        .map(|range| {
-            LineTotals::from(&LanguageType::Rust.parse_from_str(&source[range.clone()], config))
-        })
-        .fold(
-            LineTotals::default(),
-            |mut line_totals_accumulator, totals| {
-                line_totals_accumulator.add(totals);
-                line_totals_accumulator
-            },
-        )
-        .capped_by(line_totals);
-    (!unit_line_totals.is_empty()).then_some(unit_line_totals)
-}
-
-fn rust_file_bucket(root: &Path, path: &Path) -> RustBucket {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    let components = normal_components(relative);
-    if components.iter().any(|part| *part == "examples") {
-        RustBucket::Examples
-    } else if components.iter().any(|part| *part == "benches") {
-        RustBucket::Benches
-    } else if is_src_unit_test_path(&components) {
-        RustBucket::UnitTests
-    } else if components.iter().any(|part| *part == "tests") {
-        RustBucket::IntegrationTests
-    } else {
-        RustBucket::Code
-    }
-}
-
-fn normal_components(path: &Path) -> Vec<String> {
-    path.components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-            Component::Prefix(_)
-            | Component::RootDir
-            | Component::CurDir
-            | Component::ParentDir => None,
-        })
-        .collect()
-}
-
-fn is_src_unit_test_path(components: &[String]) -> bool {
-    let has_src_tests_dir = components.iter().enumerate().any(|(index, part)| {
-        part == "tests"
-            && components[..index]
-                .iter()
-                .any(|candidate| candidate == "src")
-    });
-    let is_tests_file = components.last().is_some_and(|file| file == "tests.rs")
-        && components.iter().any(|part| part == "src");
-    has_src_tests_dir || is_tests_file
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RustBucket {
     Code,
@@ -188,21 +53,6 @@ struct LineTotals {
     code:     usize,
     comments: usize,
     blanks:   usize,
-}
-
-impl From<&Report> for LineTotals {
-    fn from(report: &Report) -> Self { Self::from(&report.stats) }
-}
-
-impl From<&CodeStats> for LineTotals {
-    fn from(stats: &CodeStats) -> Self {
-        let stats = stats.summarise();
-        Self {
-            code:     stats.code,
-            comments: stats.comments,
-            blanks:   stats.blanks,
-        }
-    }
 }
 
 impl LineTotals {
@@ -241,6 +91,29 @@ impl LineTotals {
             blanks:   self.blanks.saturating_sub(other.blanks),
         }
     }
+}
+
+impl From<&Report> for LineTotals {
+    fn from(report: &Report) -> Self { Self::from(&report.stats) }
+}
+
+impl From<&CodeStats> for LineTotals {
+    fn from(stats: &CodeStats) -> Self {
+        let stats = stats.summarise();
+        Self {
+            code:     stats.code,
+            comments: stats.comments,
+            blanks:   stats.blanks,
+        }
+    }
+}
+
+/// Unit-test line totals of one Rust source file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnitTestMeasurement {
+    /// The read failed, no `#[cfg(test)]` range exists, or the capped totals are empty.
+    NoUsableUnitTotals,
+    Measured(LineTotals),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -314,13 +187,165 @@ impl RustBuckets {
     }
 }
 
+/// End of the item that a `#[cfg(test)]` attribute starts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestItemEnd {
+    /// Byte offset just past the item's `;` or matching `}`.
+    Located(usize),
+    /// The source ends before the item's terminator or closing brace.
+    Unresolved,
+}
+
+#[derive(Default)]
+pub(super) struct RustBreakdownCache {
+    unit_totals: SourceFileMeasurements<UnitTestMeasurement>,
+}
+
+impl RustBreakdownCache {
+    fn unit_totals_for_file(
+        &mut self,
+        path: &Path,
+        line_totals: LineTotals,
+        config: &Config,
+    ) -> UnitTestMeasurement {
+        self.unit_totals
+            .measure(path, || Ok(unit_totals_for_file(path, line_totals, config)))
+            .unwrap_or(UnitTestMeasurement::NoUsableUnitTotals)
+    }
+
+    pub(super) fn retain_seen(&mut self, paths: &HashSet<PathBuf>) {
+        self.unit_totals.retain_seen(paths);
+    }
+}
+
+pub(super) fn child_entries(
+    root: &Path,
+    language: &Language,
+    config: &Config,
+    rust_breakdown_cache: &mut RustBreakdownCache,
+) -> Vec<LangEntry> {
+    let mut rust_buckets = RustBuckets::default();
+    for report in &language.reports {
+        let line_totals = LineTotals::from(report);
+        match rust_file_bucket(root, report.name.as_path()) {
+            RustBucket::Code => {
+                add_code_file_with_unit_split(
+                    &mut rust_buckets,
+                    report,
+                    line_totals,
+                    config,
+                    rust_breakdown_cache,
+                );
+            },
+            bucket => rust_buckets.add_file(bucket, line_totals),
+        }
+    }
+    rust_buckets.entries()
+}
+
+fn add_code_file_with_unit_split(
+    rust_buckets: &mut RustBuckets,
+    report: &Report,
+    line_totals: LineTotals,
+    config: &Config,
+    rust_breakdown_cache: &mut RustBreakdownCache,
+) {
+    let unit_line_totals =
+        match rust_breakdown_cache.unit_totals_for_file(report.name.as_path(), line_totals, config)
+        {
+            UnitTestMeasurement::NoUsableUnitTotals => {
+                rust_buckets.add_file(RustBucket::Code, line_totals);
+                return;
+            },
+            UnitTestMeasurement::Measured(unit_line_totals) => unit_line_totals,
+        };
+
+    let code = line_totals.without(unit_line_totals);
+    rust_buckets.add_file(RustBucket::UnitTests, unit_line_totals);
+    if !code.is_empty() {
+        rust_buckets.add_file(RustBucket::Code, code);
+    }
+}
+
+fn unit_totals_for_file(
+    path: &Path,
+    line_totals: LineTotals,
+    config: &Config,
+) -> UnitTestMeasurement {
+    let Ok(source) = fs::read_to_string(path) else {
+        return UnitTestMeasurement::NoUsableUnitTotals;
+    };
+    let ranges = cfg_test_item_ranges(&source);
+    if ranges.is_empty() {
+        return UnitTestMeasurement::NoUsableUnitTotals;
+    }
+    let unit_line_totals = ranges
+        .iter()
+        .map(|range| {
+            LineTotals::from(&LanguageType::Rust.parse_from_str(&source[range.clone()], config))
+        })
+        .fold(
+            LineTotals::default(),
+            |mut line_totals_accumulator, totals| {
+                line_totals_accumulator.add(totals);
+                line_totals_accumulator
+            },
+        )
+        .capped_by(line_totals);
+    if unit_line_totals.is_empty() {
+        UnitTestMeasurement::NoUsableUnitTotals
+    } else {
+        UnitTestMeasurement::Measured(unit_line_totals)
+    }
+}
+
+fn rust_file_bucket(root: &Path, path: &Path) -> RustBucket {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let components = normal_components(relative);
+    if components.iter().any(|part| *part == "examples") {
+        RustBucket::Examples
+    } else if components.iter().any(|part| *part == "benches") {
+        RustBucket::Benches
+    } else if is_src_unit_test_path(&components) {
+        RustBucket::UnitTests
+    } else if components.iter().any(|part| *part == "tests") {
+        RustBucket::IntegrationTests
+    } else {
+        RustBucket::Code
+    }
+}
+
+fn normal_components(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => None,
+        })
+        .collect()
+}
+
+fn is_src_unit_test_path(components: &[String]) -> bool {
+    let has_src_tests_dir = components.iter().enumerate().any(|(index, part)| {
+        part == "tests"
+            && components[..index]
+                .iter()
+                .any(|candidate| candidate == "src")
+    });
+    let is_tests_file = components.last().is_some_and(|file| file == "tests.rs")
+        && components.iter().any(|part| part == "src");
+    has_src_tests_dir || is_tests_file
+}
+
 fn cfg_test_item_ranges(source: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         if is_cfg_test_attr(line.trim_start()) {
             let search_start = offset + line.len();
-            if let Some(end) = cfg_test_item_end(source, search_start) {
+            if let TestItemEnd::Located(end) = cfg_test_item_end(source, search_start) {
                 ranges.push(offset..end);
             }
         }
@@ -351,7 +376,7 @@ fn is_cfg_test_attr(trimmed: &str) -> bool {
         .any(|token| token == "test")
 }
 
-fn cfg_test_item_end(source: &str, search_start: usize) -> Option<usize> {
+fn cfg_test_item_end(source: &str, search_start: usize) -> TestItemEnd {
     let bytes = source.as_bytes();
     let mut index = search_start;
     while index < bytes.len() {
@@ -373,11 +398,11 @@ fn cfg_test_item_end(source: &str, search_start: usize) -> Option<usize> {
                 index = char_literal_end(bytes, index).unwrap_or(index + 1);
             },
             b'{' => return matching_brace_end(source, index),
-            b';' => return Some(index + 1),
+            b';' => return TestItemEnd::Located(index + 1),
             _ => index += 1,
         }
     }
-    None
+    TestItemEnd::Unresolved
 }
 
 fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
@@ -395,7 +420,7 @@ fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     merged
 }
 
-fn matching_brace_end(source: &str, open: usize) -> Option<usize> {
+fn matching_brace_end(source: &str, open: usize) -> TestItemEnd {
     let bytes = source.as_bytes();
     let mut index = open;
     let mut depth = 0usize;
@@ -425,13 +450,13 @@ fn matching_brace_end(source: &str, open: usize) -> Option<usize> {
                 depth = depth.saturating_sub(1);
                 index += 1;
                 if depth == 0 {
-                    return Some(index);
+                    return TestItemEnd::Located(index);
                 }
             },
             _ => index += 1,
         }
     }
-    None
+    TestItemEnd::Unresolved
 }
 
 fn starts_with(bytes: &[u8], index: usize, pattern: &[u8]) -> bool {

@@ -48,7 +48,9 @@ use crate::project::CratesIoRelease;
 use crate::project::CratesIoReleaseState;
 use crate::project::DiskMeasurement;
 use crate::project::DisplayPath;
+use crate::project::EntryRepository;
 use crate::project::GitHubInfo;
+use crate::project::GitHubMetadata;
 use crate::project::GitRepo;
 use crate::project::GitStatus;
 use crate::project::LanguageStats;
@@ -1115,12 +1117,9 @@ impl ProjectList {
     /// entry) and return a mutable reference to it.
     pub(in crate::tui) fn ensure_git_repo_for(&mut self, path: &Path) -> Option<&mut GitRepo> {
         match GitRepoLookup::find(self, path)? {
-            GitRepoLookup::Direct(key) | GitRepoLookup::Containing(key) => Some(
-                self.roots
-                    .get_mut(&key)?
-                    .git_repo
-                    .get_or_insert_with(Default::default),
-            ),
+            GitRepoLookup::Direct(key) | GitRepoLookup::Containing(key) => {
+                Some(self.roots.get_mut(&key)?.git_repo.associate())
+            },
             GitRepoLookup::Submodule { entry, submodule } => Some(
                 self.roots
                     .get_mut(&entry)?
@@ -1454,8 +1453,11 @@ impl ProjectList {
             .position(|existing| existing.root_item.list_order(&item) == Ordering::Greater)
             .unwrap_or(self.roots.len());
         let key = item.path().clone();
-        self.roots
-            .shift_insert(insert_index, key, ProjectEntry::with_repo(*item, None));
+        self.roots.shift_insert(
+            insert_index,
+            key,
+            ProjectEntry::with_repo(*item, EntryRepository::Unassociated),
+        );
         false
     }
 
@@ -2856,7 +2858,7 @@ impl ProjectList {
         description: Option<String>,
     ) {
         if let Some(repo) = self.ensure_git_repo_for(path) {
-            repo.github_info = Some(GitHubInfo { stars, description });
+            repo.github_info = GitHubMetadata::Loaded(GitHubInfo { stars, description });
         }
     }
 

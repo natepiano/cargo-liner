@@ -2117,7 +2117,16 @@ fn assert_deferred_retention(output: &Output) {
         "{envelope}"
     );
     assert!(message.contains("age:"), "{message}");
-    // Protected same-owner processes can make absence unprovable on this host.
+    assert_no_lock_holder(message);
+}
+
+/// Check the holder answer for a lock file that no process holds.
+fn assert_no_lock_holder(message: &str) {
+    #[cfg(target_os = "macos")]
+    assert!(message.contains("no process holds it"), "{message}");
+    // Linux hides the descriptors of a same-user process that is not dumpable, and other
+    // systems have no holder scan, so absence can be unprovable there.
+    #[cfg(not(target_os = "macos"))]
     assert!(
         message.contains("no process holds it") || message.contains("process holders unavailable"),
         "{message}"
@@ -2248,11 +2257,7 @@ fn explicit_retention_deletion_reports_the_stale_lock_and_preserves_its_durable_
         age >= 120.0,
         "mtime-derived age must be reported: {message}"
     );
-    // Protected same-owner processes can make absence unprovable on this host.
-    assert!(
-        message.contains("no process holds it") || message.contains("process holders unavailable"),
-        "{message}"
-    );
+    assert_no_lock_holder(&message);
     assert_eq!(fs::read(lock).expect("lock remains"), b"");
     assert_eq!(
         repo.journal()
@@ -2437,11 +2442,7 @@ fn explicit_retention_write_reports_its_lock_and_keeps_the_appended_checkpoint()
         "{message}"
     );
     assert!(message.contains("age:"), "{message}");
-    // Protected same-owner processes can make absence unprovable on this host.
-    assert!(
-        message.contains("no process holds it") || message.contains("process holders unavailable"),
-        "{message}"
-    );
+    assert_no_lock_holder(&message);
     assert!(lock.exists());
     assert_eq!(
         repo.journal()

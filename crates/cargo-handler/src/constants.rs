@@ -190,6 +190,12 @@ pub(crate) const CODEX_ROLE: &str = "codex";
 pub(crate) const BUSY_ROLE: &str = "busy";
 /// `[variants.roles]` key for a `waiting` status.
 pub(crate) const WAITING_ROLE: &str = "waiting";
+/// `[variants.roles]` key for the soonest reset times in the accounts footer.
+pub(crate) const RESET_SOONEST_ROLE: &str = "reset_soonest";
+/// `[variants.roles]` key for the middle reset times in the accounts footer.
+pub(crate) const RESET_MIDDLE_ROLE: &str = "reset_middle";
+/// `[variants.roles]` key for the latest reset times in the accounts footer.
+pub(crate) const RESET_LATEST_ROLE: &str = "reset_latest";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
 /// Role column text for a shell whose program is `sleep`.

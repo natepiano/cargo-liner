@@ -1,6 +1,6 @@
 use tui_pane::SettingsPane;
 
-use super::overlays::FinderPane;
+use super::finder::FinderPane;
 use super::panes::CpuPane;
 use super::panes::GitPane;
 use super::panes::LangPane;

@@ -12,16 +12,7 @@ use std::time::UNIX_EPOCH;
 
 use ratatui::style::Color;
 
-use super::constants::BLUE_LUMINANCE_WEIGHT;
-use super::constants::CONTRAST_LUMINANCE_OFFSET;
-use super::constants::GREEN_LUMINANCE_WEIGHT;
 use super::constants::MINIMUM_CONTRAST;
-use super::constants::RED_LUMINANCE_WEIGHT;
-use super::constants::SRGB_ENCODED_OFFSET;
-use super::constants::SRGB_ENCODED_SCALE;
-use super::constants::SRGB_LINEAR_DIVISOR;
-use super::constants::SRGB_LINEAR_THRESHOLD;
-use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
 use crate::theme::ResetThemeFixture;
@@ -316,37 +307,15 @@ pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
+/// The shared WCAG measure, `tui_pane::contrast_ratio`, for two drawn colors.
+#[expect(
+    clippy::panic,
+    reason = "a drawn color without channels fails the measurement"
+)]
 pub(crate) fn contrast_ratio(foreground: Color, background: Color) -> f64 {
-    fn luminance(color: Color) -> f64 {
-        let (red, green, blue) = measured_channels(color);
-        let linear = |channel: u8| {
-            let value = f64::from(channel) / 255.0;
-            if value <= SRGB_LINEAR_THRESHOLD {
-                value / SRGB_LINEAR_DIVISOR
-            } else {
-                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
-            }
-        };
-        RED_LUMINANCE_WEIGHT.mul_add(
-            linear(red),
-            GREEN_LUMINANCE_WEIGHT.mul_add(linear(green), BLUE_LUMINANCE_WEIGHT * linear(blue)),
-        )
-    }
-    assert_ne!(
-        foreground,
-        Color::Reset,
-        "text must have a measurable foreground"
-    );
-    assert_ne!(
-        background,
-        Color::Reset,
-        "the theme must supply a background"
-    );
-    let foreground = luminance(foreground);
-    let background = luminance(background);
-    (foreground.max(background) + CONTRAST_LUMINANCE_OFFSET)
-        / (foreground.min(background) + CONTRAST_LUMINANCE_OFFSET)
+    tui_pane::contrast_ratio(foreground, background).unwrap_or_else(|| {
+        panic!("contrast needs two measurable colors: {foreground:?} on {background:?}")
+    })
 }
 
 #[test]

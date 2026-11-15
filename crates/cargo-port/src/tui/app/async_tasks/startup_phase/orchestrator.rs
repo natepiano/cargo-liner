@@ -31,6 +31,54 @@ use crate::tui::state::StartupNetworkReadiness;
 use crate::tui::state::StartupNetworkReady;
 
 #[derive(Debug, Default)]
+struct PhaseToken;
+
+#[derive(Debug, Default)]
+pub(super) struct StartupPlanning {
+    phase_token: PhaseToken,
+}
+
+#[derive(Debug)]
+pub(super) struct StartupCollecting {
+    phase_token: PhaseToken,
+}
+
+#[derive(Debug)]
+enum StartupPhase {
+    Planning(StartupPlanning),
+    Collecting(StartupCollecting),
+    Closing,
+}
+
+impl Default for StartupPhase {
+    fn default() -> Self { Self::Planning(StartupPlanning::default()) }
+}
+
+/// Keep the last drawn width and time for a delayed detail refresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupToastLayout {
+    NotDrawn,
+    Drawn { width: usize, at: Instant },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StartupToast {
+    id:                ColoredToastId,
+    pub(super) layout: StartupToastLayout,
+}
+
+impl StartupToast {
+    pub(super) const fn new(id: ColoredToastId) -> Self {
+        Self {
+            id,
+            layout: StartupToastLayout::NotDrawn,
+        }
+    }
+
+    pub(super) const fn id(self) -> ColoredToastId { self.id }
+}
+
+#[derive(Debug, Default)]
 pub struct Startup {
     pub scan_complete_at: Option<Instant>,
     pub(super) toast:     Option<StartupToast>,
@@ -83,30 +131,6 @@ pub struct Startup {
     pub details_declared: KeyedPhase<AbsolutePath>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct StartupToast {
-    id:                ColoredToastId,
-    pub(super) layout: StartupToastLayout,
-}
-
-/// Keep the last drawn width and time for a delayed detail refresh.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum StartupToastLayout {
-    NotDrawn,
-    Drawn { width: usize, at: Instant },
-}
-
-impl StartupToast {
-    pub(super) const fn new(id: ColoredToastId) -> Self {
-        Self {
-            id,
-            layout: StartupToastLayout::NotDrawn,
-        }
-    }
-
-    pub(super) const fn id(self) -> ColoredToastId { self.id }
-}
-
 impl Startup {
     pub fn new() -> Self { Self::default() }
 
@@ -150,11 +174,6 @@ pub(super) struct StartupPlan {
     pub(super) detail_expected:     HashSet<AbsolutePath>,
     pub(super) github_running:      Vec<OwnerRepo>,
     pub(super) crates_io_running:   Vec<String>,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct StartupPlanning {
-    phase_token: PhaseToken,
 }
 
 impl StartupPlanning {
@@ -205,11 +224,6 @@ impl StartupPlanning {
         let Self { phase_token } = self;
         StartupCollecting { phase_token }
     }
-}
-
-#[derive(Debug)]
-pub(super) struct StartupCollecting {
-    phase_token: PhaseToken,
 }
 
 impl StartupCollecting {
@@ -275,20 +289,6 @@ impl StartupReady {
         }
     }
 }
-
-#[derive(Debug)]
-enum StartupPhase {
-    Planning(StartupPlanning),
-    Collecting(StartupCollecting),
-    Closing,
-}
-
-impl Default for StartupPhase {
-    fn default() -> Self { Self::Planning(StartupPlanning::default()) }
-}
-
-#[derive(Debug, Default)]
-struct PhaseToken;
 
 pub(super) enum StartupReadiness {
     Ready(StartupReady),
