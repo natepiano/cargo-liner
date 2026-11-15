@@ -2,7 +2,7 @@ mod history;
 mod info;
 mod push;
 mod remote;
-mod workflow;
+mod workflow_presence;
 
 pub(crate) use history::get_first_commit;
 pub(crate) use info::FirstCommit;
@@ -14,4 +14,4 @@ pub(crate) use remote::GitOrigin;
 pub(crate) use remote::RemoteInfo;
 pub(crate) use remote::RemoteKind;
 #[cfg(test)]
-pub(crate) use workflow::WorkflowPresence;
+pub(crate) use workflow_presence::WorkflowPresence;

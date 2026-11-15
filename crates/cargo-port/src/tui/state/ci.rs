@@ -490,10 +490,7 @@ mod tests {
                 .project_list
                 .entry_containing_mut(path.as_path())
                 .context("Project entry")?;
-            entry
-                .git_repo
-                .get_or_insert_with(Default::default)
-                .repo_info = RepositoryProbe::Repository(RepoInfo {
+            entry.git_repo.associate().repo_info = RepositoryProbe::Repository(RepoInfo {
                 workflows: WorkflowPresence::Present,
                 ..RepoInfo::default()
             });

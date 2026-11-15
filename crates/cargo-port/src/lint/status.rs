@@ -6,8 +6,9 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
+use super::artifacts;
+use super::artifacts::LatestLintRecord;
 use super::paths;
-use super::read_write;
 use super::run::LintRun;
 use super::run::LintRunStatus;
 use crate::config;
@@ -263,10 +264,10 @@ pub fn read_status_under(cache_root: &Path, project_root: &Path) -> LintStatus {
 }
 
 fn read_status_from_path(path: &Path) -> LintStatus {
-    let Some(run) = read_write::read_latest_file(path) else {
-        return LintStatus::NoLog;
-    };
-    parse_run(&run)
+    match artifacts::read_latest_file(path) {
+        LatestLintRecord::Readable(run) => parse_run(&run),
+        LatestLintRecord::Unavailable => LintStatus::NoLog,
+    }
 }
 
 pub(crate) fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
@@ -321,7 +322,7 @@ mod tests {
     use super::*;
     use crate::config::DiscoveryLint;
     use crate::lint::history;
-    use crate::lint::read_write;
+    use crate::lint::runtime;
 
     fn run(status: LintRunStatus) -> LintRun {
         LintRun {
@@ -431,7 +432,7 @@ mod tests {
     }
 
     fn write_latest(cache_root: &Path, project_root: &Path, run: &LintRun) {
-        read_write::write_latest_under(cache_root, project_root, run).expect("write latest");
+        runtime::write_latest_under(cache_root, project_root, run).expect("write latest");
     }
 
     #[test]

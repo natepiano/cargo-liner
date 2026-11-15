@@ -42,6 +42,8 @@ pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
 pub(crate) use cargo::manifest_targets;
+pub(crate) use entry::EntryRepository;
+pub(crate) use entry::GitHubMetadata;
 pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
 pub(crate) use entry::RepositoryProbe;

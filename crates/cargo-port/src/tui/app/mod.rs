@@ -18000,7 +18000,7 @@ mod tests {
             .project_list
             .entry_containing_mut(path)
             .expect("test project should exist in project list");
-        let repo = entry.git_repo.get_or_insert_with(Default::default);
+        let repo = entry.git_repo.associate();
         repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
             runs,
             github_total: GithubRunCount::Known(github_total),
