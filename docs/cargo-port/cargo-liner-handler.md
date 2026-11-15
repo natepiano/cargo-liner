@@ -498,58 +498,12 @@ A worker row whose job runs shows its job alone, such as `reviewer`, not `review
 
 ### Phase 21 — Twelve slow tests run in under one second  · status: done
 
-**Numbering:** this phase was Phase 19 until 2026-11-14. The new Phases 19 and 20 moved it to 21.
+#### As-built
 
+No code change: the twelve tests run in under one second in their full package runs, with their assertions unchanged. Natedev times at bd07521c1:
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
+- tui_pane, load 13 to 17: `startup_cells_leave_no_line_before_their_first_row` 0.452 s; `every_frame_of_a_key_keeps_the_motion_rules` 0.304 s.
+- cargo-handler, load 35 to 13: `astra_word_matches_keep_coverage_in_high_contrast_dark` 0.218 s, `astra_word_matches_keep_coverage_in_high_contrast_light` 0.232 s, `stacked_account_fact_clicks_select_the_account` 0.210 s, `row_details_key_shows_properties_and_long_age_then_escape_closes` 0.235 s; the six codex census tests in `census/codex.rs` and `census/codex_session_tests.rs` 0.017 to 0.043 s.
 
-#### Work Order
-
-**Goal:** twelve tests that took one second or more now run in under one second in the full package run, with the same assertions.
-
-**Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
-
-**Spec:**
-
-Director decisions:
-1. The Delegation Context invariant holds: no test takes one second or more. Each test below took one second or more in a full run on natedev.
-2. Keep every assertion and every case each test checks. Cut the work per case: shared setup built once, fewer redundant frames or renders, cheaper fixtures. Do not split a test into parts to hide its total time, and do not mark a test ignored or slow.
-3. Find the cost first: measure each test alone and in its full package run, and name the step that takes the time.
-
-The tests and their measured times:
-1. tui_pane `startup_cells_leave_no_line_before_their_first_row` (`crates/tui_pane/src/tiles/draw/paint_tests.rs`) — 1.081 s, Phase 3.
-2. tui_pane `every_frame_of_a_key_keeps_the_motion_rules` (`crates/tui_pane/src/tiles/grid/tests/motion_rules.rs`, through `assert_motion_rules`) — 1.081 s, Phase 3; 1.051 s, Phase 4.
-3. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_dark` (`crates/cargo-handler/src/render/word_contrast_tests.rs`, through `check_astra_word_matches`) — 1.125 s, Phase 4.
-4. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_light` (same file) — 1.324 s, Phase 4.
-5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
-6. cargo-handler `row_details_key_shows_properties_and_long_age_then_escape_closes` (`crates/cargo-handler/src/render/details_tests.rs`) — 1.06 to 1.24 s, Phase 5.
-7. cargo-handler `codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec` (`crates/cargo-handler/src/census/codex.rs`) — 1.047 s, tile Phase 62 gate.
-8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate; 1.573 s, tile unit workspace run 2026-11-13.
-9. cargo-handler `an_explicit_resume_id_cannot_name_an_unproven_non_user_thread` (same file) — 1.038 s, tile Phase 62 gate.
-10. cargo-handler `a_running_tui_changes_threads_only_after_its_child_confirms_resume` (same file) — 1.120 s, tile unit workspace run 2026-11-13.
-11. cargo-handler `a_picker_delay_does_not_pair_clients_by_start_order` (same file) — 1.043 s, tile unit workspace run 2026-11-13.
-12. cargo-handler `a_reconnect_does_not_transfer_a_detached_connection_to_a_tui` (same file) — 1.042 s, tile unit workspace run 2026-11-13.
-
-**Constraints from prior phases:**
-- `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 17 adds reset-step cases to `render/word_contrast_tests.rs`: `check_reset_step_match`, `RESET_STEP_RANKS` and the shared `EMPHASES` list. Keep them.
-- Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
-- Phase 16 adds `long_shell_application` and its two tests to `render/details_tests.rs`: the drawn short command, and `d` and `y` on the full command. Keep them.
-
-**Change-Review line:** none (test code only)
-
-**Files:**
-- `crates/tui_pane/src/tiles/draw/paint_tests.rs` — test 1
-- `crates/tui_pane/src/tiles/grid/tests/motion_rules.rs` — test 2 and `assert_motion_rules`
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — tests 3 and 4 and `check_astra_word_matches`
-- `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
-- `crates/cargo-handler/src/render/details_tests.rs` — test 6
-- `crates/cargo-handler/src/census/codex.rs` — test 7
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 to 12
-
-**Workers:** 1 writer.
-- `impl` — every file above.
-
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the twelve tests runs in under one second in its full package run, with its assertions unchanged.
+**Gotchas:**
+- The earlier times of 1.04 to 1.57 s came from runs on 2026-11-13 and earlier; the cause of the speed-up was not traced.
