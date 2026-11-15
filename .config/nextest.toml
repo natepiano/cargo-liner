@@ -57,9 +57,27 @@ binary_id(cargo-tile::unit_tests) & (
 )
 """
 test-group = "cargo-tile-readers"
-# The group runs one test at a time. Started in binary order, its chain of
-# about 16s ended the run; started first, it finishes alongside everything else.
+# Each test starts the reader, its writers and their guardians beside the scenario.
+# Alone on the Mac they take 0.3-0.4s (the CPU attribution test 0.9s). Beside other
+# tests the suite crowded them to 1.0-1.9s, also with four slots, so each runs alone.
+threads-required = "num-cpus"
+# The group runs one test at a time. Started first, its chain of about 2.5s on the
+# Mac runs before the other tests start; the suite time did not change.
 priority = 90
+
+# Each check starts an owner, a scenario, a server and a guarded writer together.
+# With one slot, the suite crowded them to about twice their time alone (0.35-0.52s
+# alone on the Mac); with two, the four still reached 0.93-1.01s at the suite's end.
+[[profile.default.overrides]]
+filter = """
+binary_id(cargo-tile::unit_tests) & (
+    test(=shim_registration::reader_scenarios::reader_scenario_pass_removes_its_processes_and_folder) |
+    test(=shim_registration::reader_scenarios::reader_scenario_assertion_removes_its_processes_and_folder) |
+    test(=shim_registration::reader_scenarios::reader_scenario_timeout_removes_its_processes_and_folder) |
+    test(=shim_registration::reader_scenarios::reader_scenario_sigkill_removes_its_processes_and_folder)
+)
+"""
+threads-required = 4
 
 # The capture shim's no-terminal path tees stderr through a FIFO. On macOS CI a
 # run once hung in that path for two hours; each of these tests finishes in
