@@ -9,8 +9,8 @@ use super::remote::GitOrigin;
 use super::remote::RemoteInfo;
 use super::remote::RemoteResolveContext;
 use super::remote::UpstreamRemote;
-use super::workflow;
-use super::workflow::WorkflowPresence;
+use super::workflow_presence;
+use super::workflow_presence::WorkflowPresence;
 use crate::config;
 use crate::project::git::branches;
 use crate::project::git::branches::ResolvedBranch;
@@ -146,7 +146,7 @@ impl RepoInfo {
 
         Some(Self {
             remotes,
-            workflows: workflow::get_workflow_presence(&repo_root),
+            workflows: workflow_presence::get_workflow_presence(&repo_root),
             first_commit: FirstCommit::AwaitingProbe,
             last_fetched: history::get_last_fetched(&repo_root),
             default_branch,

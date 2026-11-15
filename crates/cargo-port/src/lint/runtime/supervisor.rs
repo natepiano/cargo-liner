@@ -26,6 +26,7 @@ use super::JoinHandle;
 use super::LINT_DEBOUNCE;
 use super::LINTS_HISTORY_JSONL;
 use super::LINTS_LATEST_JSON;
+use super::LatestLintRecord;
 use super::LintCommandConfig;
 use super::LintConfig;
 use super::LintEventKind;
@@ -48,16 +49,17 @@ use super::Sender;
 use super::StdReceiver;
 use super::StdSender;
 use super::SupervisorMsg;
+use super::artifacts;
 use super::cache_paths;
 use super::handle::SpawnResult;
 use super::mpsc;
 use super::paths;
 use super::project;
 use super::publish_status;
-use super::read_write;
 use super::run_commands_for_project;
 use super::run_lock;
-use super::run_lock::RunLock;
+use super::run_lock::LintRunExclusion;
+use super::run_lock::RunLockAttempt;
 use super::status;
 use super::thread;
 use crate::lint;
@@ -365,17 +367,18 @@ fn cached_status_for_project(
 /// running that lint now, so its marker stays.
 pub(crate) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> CachedLintStatus {
     let project_dir = paths::project_dir_under(cache_root, project_root);
-    let terminal_latest = match read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON)) {
-        Some(run) if matches!(run.status, LintRunStatus::Running) => {
+    let terminal_latest = match artifacts::read_latest_file(&project_dir.join(LINTS_LATEST_JSON)) {
+        LatestLintRecord::Readable(run) if matches!(run.status, LintRunStatus::Running) => {
             if !run_lock::is_held(cache_root, project_root) {
-                let _ = read_write::clear_latest_under(cache_root, project_root);
+                let _ = artifacts::clear_latest_under(cache_root, project_root);
             }
             None
         },
-        other => other,
+        LatestLintRecord::Readable(run) => Some(run),
+        LatestLintRecord::Unavailable => None,
     };
     let run = terminal_latest.or_else(|| {
-        read_write::read_history_file(&project_dir.join(LINTS_HISTORY_JSONL))
+        artifacts::read_history_file(&project_dir.join(LINTS_HISTORY_JSONL))
             .into_iter()
             .rev()
             .find(|r| !matches!(r.status, LintRunStatus::Running))
@@ -752,6 +755,16 @@ struct WorkerContext {
     timing:           LintTiming,
 }
 
+/// What [`WorkerContext::claim_run`] decided for one scheduled run.
+enum RunClaim {
+    /// Run the commands under this exclusion, kept for the whole run.
+    Run(LintRunExclusion),
+    /// Another instance's run covered the request; its result was published.
+    Covered,
+    /// The worker was stopped or paused while it waited for the lock.
+    Cancelled,
+}
+
 impl WorkerContext {
     fn run(self) {
         let mut scheduled_run = self.start.initial_scheduled_run();
@@ -841,15 +854,16 @@ impl WorkerContext {
     }
 
     /// Take the project's run lock, waiting out a run another cargo-port
-    /// instance holds it for. Returns `None` when this worker must not run:
-    /// it was stopped or paused while waiting, or the other instance's run
-    /// started after this request and so already linted the change — that
-    /// run's result is published in place of a second run.
-    fn claim_run(&self, scheduled: ScheduledLintRun) -> Option<RunLock> {
+    /// instance holds it for. Returns `RunClaim::Covered` when the other
+    /// instance's run started after this request and so already linted the
+    /// change — that run's result is published in place of a second run —
+    /// and `RunClaim::Cancelled` when this worker was stopped or paused while
+    /// waiting.
+    fn claim_run(&self, scheduled: ScheduledLintRun) -> RunClaim {
         let mut waited = false;
         loop {
             match run_lock::try_acquire(&self.cache_root, &self.project_root) {
-                Ok(Some(lock)) => {
+                Ok(RunLockAttempt::Acquired(lock)) => {
                     if waited
                         && let Some(status) = covering_status(
                             &self.cache_root,
@@ -864,11 +878,11 @@ impl WorkerContext {
                             &self.background_tx,
                             scheduled.origin,
                         );
-                        return None;
+                        return RunClaim::Covered;
                     }
-                    return Some(lock);
+                    return RunClaim::Run(LintRunExclusion::Held { _lock: lock });
                 },
-                Ok(None) => {
+                Ok(RunLockAttempt::Busy) => {
                     if !waited {
                         waited = true;
                         self.publish_foreign_run(scheduled.origin);
@@ -880,16 +894,16 @@ impl WorkerContext {
                         error = %err,
                         "lint_run_lock_unavailable"
                     );
-                    return Some(RunLock::unlocked());
+                    return RunClaim::Run(LintRunExclusion::Unprotected);
                 },
             }
             thread::sleep(self.timing.stop_poll);
             if self.stop.load(Ordering::Relaxed) {
-                return None;
+                return RunClaim::Cancelled;
             }
             if self.pause_state.is_project_paused(&self.project_root) {
                 self.hold_for_pause(scheduled.origin);
-                return None;
+                return RunClaim::Cancelled;
             }
         }
     }
@@ -922,7 +936,9 @@ impl WorkerContext {
         if self.stop.load(Ordering::Relaxed) || !project_still_runnable(&self.project_root) {
             return None;
         }
-        let _run_lock = self.claim_run(scheduled)?;
+        let RunClaim::Run(_run_exclusion) = self.claim_run(scheduled) else {
+            return None;
+        };
         tracing::trace!(
             target: PERF_LOG_TARGET,
             path = %self.project_root.display(),
@@ -1055,7 +1071,11 @@ fn covering_status(
     project_root: &Path,
     requested_at: DateTime<FixedOffset>,
 ) -> Option<LintStatus> {
-    let run = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root))?;
+    let LatestLintRecord::Readable(run) =
+        artifacts::read_latest_file(&paths::latest_path_under(cache_root, project_root))
+    else {
+        return None;
+    };
     if matches!(run.status, LintRunStatus::Running) {
         return None;
     }
@@ -1092,6 +1112,8 @@ mod tests {
     use crate::lint::LintRun;
     use crate::lint::constants::DEFER_EXIT_CODE;
     use crate::lint::history;
+    use crate::lint::runtime;
+    use crate::lint::runtime::run_lock::HeldRunLock;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintEventKind::Remove;
     use crate::lint::trigger::LintTriggerKind::RustSource;
@@ -1433,12 +1455,14 @@ mod tests {
         project_root: &Path,
         foreign_started_at: DateTime<FixedOffset>,
         trigger: impl FnOnce(&RuntimeHandle, &Path),
-    ) -> (RunLock, RuntimeHandle, Receiver<BackgroundMsg>) {
+    ) -> (HeldRunLock, RuntimeHandle, Receiver<BackgroundMsg>) {
         let cache_root = cache_paths::lint_runs_root_for(cargo_port_config);
-        let foreign_lock = run_lock::try_acquire(cache_root.as_path(), project_root)
-            .expect("lock io")
-            .expect("lock is free");
-        read_write::write_latest_under(
+        let RunLockAttempt::Acquired(foreign_lock) =
+            run_lock::try_acquire(cache_root.as_path(), project_root).expect("lock io")
+        else {
+            panic!("lock is free");
+        };
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_root,
             &foreign_run(LintRunStatus::Running, foreign_started_at),
@@ -1468,7 +1492,7 @@ mod tests {
             source_trigger,
         );
 
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_dir.path(),
             &foreign_run(LintRunStatus::Passed, Local::now().fixed_offset()),
@@ -1502,7 +1526,7 @@ mod tests {
             source_trigger,
         );
 
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_dir.path(),
             &foreign_run(LintRunStatus::Passed, foreign_started_at),
@@ -1548,7 +1572,7 @@ mod tests {
             },
         );
 
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_dir.path(),
             &foreign_run(LintRunStatus::Passed, foreign_started_at),
@@ -1576,7 +1600,7 @@ mod tests {
         let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
         let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
         let prior_started_at = Local::now().fixed_offset() - chrono::Duration::seconds(5);
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_dir.path(),
             &foreign_run(LintRunStatus::Passed, prior_started_at),
@@ -1663,10 +1687,10 @@ mod tests {
     #[test]
     fn restart_relints_a_run_interrupted_by_exit() {
         // `write_latest_under` leaves a `LintRunStatus::Running` record without
-        // a held `RunLock` to model a previous process exiting mid-run.
+        // a held `HeldRunLock` to model a previous process exiting mid-run.
         let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
         let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_root.as_path(),
             project_dir.path(),
             &foreign_run(
@@ -1703,10 +1727,12 @@ mod tests {
     fn hydration_keeps_the_running_marker_of_a_held_run() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
-        let _foreign_lock = run_lock::try_acquire(cache_dir.path(), project_dir.path())
-            .expect("lock io")
-            .expect("lock is free");
-        read_write::write_latest_under(
+        let RunLockAttempt::Acquired(_foreign_lock) =
+            run_lock::try_acquire(cache_dir.path(), project_dir.path()).expect("lock io")
+        else {
+            panic!("lock is free");
+        };
+        runtime::write_latest_under(
             cache_dir.path(),
             project_dir.path(),
             &run(LintRunStatus::Running),
@@ -1970,7 +1996,7 @@ mod tests {
             None,
         )
         .expect("append history");
-        read_write::write_latest_under(
+        runtime::write_latest_under(
             cache_dir.path(),
             project_dir.path(),
             &run(LintRunStatus::Running),
@@ -2018,7 +2044,7 @@ mod tests {
             commands:      Vec::new(),
             archive_bytes: 0,
         };
-        read_write::write_latest_under(cache_root.as_path(), project_dir.path(), &cached_run)
+        runtime::write_latest_under(cache_root.as_path(), project_dir.path(), &cached_run)
             .expect("write cached latest");
 
         let (background_tx, background_rx) = channel::unbounded();

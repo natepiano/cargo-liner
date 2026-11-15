@@ -11,7 +11,9 @@ use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::OverlayAction;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
+use tui_pane::Renderable;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingCodecs;
@@ -1553,14 +1555,23 @@ pub(super) fn prepare_settings_render_inputs(
     }
 }
 
-/// Body fn invoked by `SettingsPane`'s [`tui_pane::Renderable`]
-/// impl. Reads precomputed inputs from `ctx`, viewport state from
-/// `pane`, and draws the popup into `area`.
-pub(super) fn render_settings_pane_body(
-    frame: &mut Frame,
-    pane: &mut SettingsPane,
-    ctx: &PaneRenderCtx<'_>,
-) {
+impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        _: Rect,
+        pane_render_ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        render_settings_pane_body(frame, self, pane_render_ctx);
+        // `SettingsPane` draws its own floating border in `render_settings_pane_body`, so `render`
+        // returns no `PaneFrameChrome` for the grid.
+        None
+    }
+}
+
+/// Body of `SettingsPane`'s [`Renderable`] impl. Reads precomputed inputs
+/// from `ctx` and viewport state from `pane`, and draws the popup.
+fn render_settings_pane_body(frame: &mut Frame, pane: &mut SettingsPane, ctx: &PaneRenderCtx<'_>) {
     let Some(inputs) = ctx.settings_render_inputs else {
         return;
     };
