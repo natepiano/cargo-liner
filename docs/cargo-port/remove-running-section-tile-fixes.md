@@ -3605,6 +3605,36 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 **Gotchas:** cargo-berth test scratch is in /dev/shm (`TMPDIR` from `check-test-scratch.sh`), so disk sync does not add time. The edges tests spend their time in repeated `board` runs, which are what each test proves.
 
+### Phase 62c — cargo-tile's status-row tests follow the Reads/s fit order  · status: done
+
+**Depends on:** Phase 62a
+
+A Mac cargo-tile suite on the 43j branch (2026-11-15, load 19) failed two render tests. Phase 62a ran the tui_pane and cargo-handler suites, but not the cargo-tile or cargo-port suites.
+
+1. `render::tests::an_arriving_attract_screen_draws_the_pinned_frame` expects ` Uptime: 0s CPU: —` and `enter expand` at 80 columns. The row now has `Reads/s: —` and no `enter expand`.
+2. `render::tests::the_frame_ends_with_toasts_then_favorites_then_the_framework_overlay` expects `cargo-tile <version>` at 60 columns. The row now has `Reads/s: —` and no version note.
+
+#### Work Order
+
+**Goal:** the cargo-tile and cargo-port suites pass on the Phase 62a status-line rule.
+
+**Spec:**
+
+1. Change the expected status rows in the two tests to the Phase 62a rule: `Reads/s` outranks the expand hint and the notes. Keep each test's other rows and assertions.
+2. Run the cargo-port suite. Fix each status-row test that expects the old fit order in the same way.
+3. Change no product code. The Phase 62a rule is the intended behavior.
+
+**Files:**
+
+- `crates/cargo-tile/src/render.rs` — the two tests
+- `crates/cargo-port/src/` — only status-row tests that the suite shows failing
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`. In no-worker mode, the director writes it.
+
+**Constraints from prior phases:** Phase 62a: a status note drops before `Reads/s` on a narrow row. Add no `#[allow]`.
+
+**Acceptance gate:** `verify.sh test cargo-tile` and `verify.sh test cargo-port` green; `verify.sh lint cargo-tile`.
+
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 
 **Depends on:** none (showrunner, 2026-11-13).

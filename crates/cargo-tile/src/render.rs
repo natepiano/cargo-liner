@@ -22144,7 +22144,8 @@ mod tests {
 
         let inner = usize::from(WIDTH) - 2;
         let title = SUMMARY_CELL_TITLE;
-        let notes = format!("cargo-tile {APP_VERSION} attract  enter expand  ? shortcuts ");
+        // `Reads/s` outranks the `enter expand` hint, so at 80 columns the hint gives way.
+        let notes = format!("cargo-tile {APP_VERSION} attract  ? shortcuts ");
         let mut expected = vec![format!(
             "┌{title}{}┐",
             "─".repeat(inner - title.chars().count())
@@ -22153,7 +22154,7 @@ mod tests {
         expected.push(format!("└{}┘", "─".repeat(inner)));
         expected.push(format!(
             "{:<width$}{notes}",
-            " Uptime: 0s CPU: —",
+            " Uptime: 0s CPU: — Reads/s: —",
             width = usize::from(WIDTH) - notes.chars().count()
         ));
         assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
@@ -22165,7 +22166,8 @@ mod tests {
     const FRAME_TAIL_HEIGHT: u16 = 14;
 
     /// The frames the tail test pins: the favorites overlay alone, then
-    /// each framework overlay.
+    /// each framework overlay. At this width `Reads/s` outranks the
+    /// `cargo-tile <version>` note, so the note gives way.
     #[cfg(feature = "attract")]
     const FRAME_TAIL_CASES: [(Option<GlobalAction>, [&str; FRAME_TAIL_HEIGHT as usize]); 4] = [
         (
@@ -22184,7 +22186,7 @@ mod tests {
                 "│ │                                                      │ │",
                 "│ └──────────────────────────────────────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: — Reads/s: —                   ? shortcuts ",
             ],
         ),
         (
@@ -22222,7 +22224,7 @@ mod tests {
                 "│ │   Focus the tile above                          up   │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: — Reads/s: —                   ? shortcuts ",
             ],
         ),
         (
@@ -22241,7 +22243,7 @@ mod tests {
                 "│ │  │   Focus the tile to the left        left      │   │ │",
                 "│ └──│   Focus the tile to the right       right     │───┘ │",
                 "└────└───────────────────1 of 3 ▼────────────────────┘─────┘",
-                " Uptime: 0s CPU: —       cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s CPU: — Reads/s: —                   ? shortcuts ",
             ],
         ),
     ];
