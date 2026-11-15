@@ -403,7 +403,7 @@ A shell command row draws `shell_command::short_command`, which cuts each path a
 
 **Ruled out:** moving effort later in the drop order, and deferring the column rule.
 
-### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: done
 
 **Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
 

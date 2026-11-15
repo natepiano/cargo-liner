@@ -109,9 +109,11 @@ A wrapped account's entire visible span receives its selection band.
 
 Distinct reset timestamps determine rank.
 `ResetRank::positions` gives equal times the same shade.
-`ResetRank::color` uses `reset_nearest` for the first quarter and `reset_farthest` for the last quarter.
-The middle uses their sRGB midpoint.
-A single reset uses `reset_nearest`.
+`ResetRank::color` uses `reset_soonest` for the first quarter of ranks and `reset_latest` for the last quarter.
+The other ranks use `reset_middle`.
+A single reset uses `reset_soonest`.
+Each built-in theme file sets the three roles.
+A custom theme file without them uses the Default Dark reset colors.
 `readable_status_style` corrects contrast after rank resolution.
 The failed-read mark keeps the error color.
 Missing reset times stay blank and do not change ranks.

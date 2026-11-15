@@ -20,6 +20,9 @@ use tui_pane::ThemeVariant;
 use tui_pane::ThemeVariantFile;
 
 use super::SessionHue;
+use crate::constants::RESET_LATEST_ROLE;
+use crate::constants::RESET_MIDDLE_ROLE;
+use crate::constants::RESET_SOONEST_ROLE;
 use crate::constants::WAITING_ROLE;
 
 /// `bundled_role_styles` returns the `StyleSpec` maps from the `STYLES` cache.
@@ -41,7 +44,15 @@ pub(super) fn bundled_role_styles() -> &'static BTreeMap<String, BTreeMap<String
                     .roles
                     .into_iter()
                     .filter(|(key, _)| {
-                        matches!(key.as_str(), "mauve" | "astra_reviewer" | WAITING_ROLE)
+                        matches!(
+                            key.as_str(),
+                            "mauve"
+                                | "astra_reviewer"
+                                | WAITING_ROLE
+                                | RESET_SOONEST_ROLE
+                                | RESET_MIDDLE_ROLE
+                                | RESET_LATEST_ROLE
+                        )
                     })
                     .collect(),
             )
