@@ -113,7 +113,8 @@ fn tree_pressed(
         app.summary_sort,
         &app.accounts.table,
     )
-    .with_expansion(&app.expansion);
+    .with_expansion(&app.expansion)
+    .with_name_cut_floors(app.loaded_config.config.tiles.name_cut_floors());
     let TileLookup::Current(tile) = cells.tile(id) else {
         return;
     };

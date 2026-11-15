@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A worker row whose job runs shows its job alone, such as `reviewer`, not `reviewer · running`.
+
+- Long session and branch names end in `…` before the effort and model columns drop.
+
 - A busy shell command row, or a subagent row with no role, shows `running` when no activity is scanned, so no busy row has an empty activity cell.
 
 - A subagent row whose turn ended shows `idle`, not `busy`.
@@ -36,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
 
 ### Added
+
+- `tiles.session_cut_floor` and `tiles.branch_cut_floor` set how far a narrow tile cuts long session and branch names.
 
 - Enter shows the focused tile on the full screen, and Esc returns it to the grid. Rows, details and word clicks work in it as in the grid.
 
