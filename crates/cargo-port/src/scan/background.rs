@@ -19,6 +19,7 @@ use crate::lint::LintRunOrigin;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::CheckoutRefs;
 use crate::project::CommitDate;
 use crate::project::CratesIoRelease;
 use crate::project::GithubRunCount;
@@ -73,6 +74,12 @@ pub(crate) enum BackgroundMsg {
     CheckoutInfo {
         path: AbsolutePath,
         info: CheckoutInfo,
+    },
+    /// Each `CheckoutInfo` field except `status`. The watcher sends it for a
+    /// branch or remote ref that the checkout's `HEAD` does not name.
+    CheckoutRefs {
+        path: AbsolutePath,
+        refs: CheckoutRefs,
     },
     /// Per-repo git state (remotes, workflows, default branch, last
     /// fetched, etc.). Sent by `RepoInfo::get` once per repo refresh.
@@ -270,6 +277,7 @@ impl BackgroundMsg {
             Self::DiskUsage { path, .. }              // package.disk
             | Self::CiRuns { path, .. }                // ci.runs
             | Self::CheckoutInfo { path, .. }          // git.branch / git.status
+            | Self::CheckoutRefs { path, .. }          // git.branch / git.ahead_behind
             | Self::RepoInfo { path, .. }              // git.remotes / git.workflows
             | Self::NoRepository { path }              // git.description
             | Self::GitFirstCommit { path, .. }        // git.inception

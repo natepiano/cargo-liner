@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver as StdReceiver;
@@ -42,6 +42,7 @@ use crate::lint::RuntimeHandle;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitEventVisibilityCache;
+use crate::project::GitRefreshScope;
 #[cfg(test)]
 use crate::project::ProjectFields;
 use crate::project::WorkspaceMetadataStore;
@@ -242,24 +243,39 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     })
 }
 
-/// `GitRefreshDemand` records a requested checkout probe until the watcher launches it.
+/// `GitRefreshDemand` records the widest requested checkout probe until the watcher launches it.
+/// A wider `GitRefreshScope` has a higher stored rank, so `fetch_max` keeps the widest request.
 #[derive(Default)]
-pub struct GitRefreshDemand(AtomicBool);
+pub struct GitRefreshDemand(AtomicU8);
 
 impl GitRefreshDemand {
-    pub(super) fn request(&self) { self.0.store(true, Ordering::Relaxed); }
+    /// The stored rank with no request.
+    const ABSENT: u8 = 0;
+    /// The stored rank of a `GitRefreshScope::Full` request.
+    const FULL: u8 = 2;
+    /// The stored rank of a `GitRefreshScope::RefsOnly` request.
+    const REFS_ONLY: u8 = 1;
+
+    pub(super) fn request(&self, scope: GitRefreshScope) {
+        let rank = match scope {
+            GitRefreshScope::RefsOnly => Self::REFS_ONLY,
+            GitRefreshScope::Full => Self::FULL,
+        };
+        self.0.fetch_max(rank, Ordering::Relaxed);
+    }
+
     pub(super) fn take(&self) -> GitRefreshRequest {
-        if self.0.swap(false, Ordering::Relaxed) {
-            GitRefreshRequest::Pending
-        } else {
-            GitRefreshRequest::Absent
+        match self.0.swap(Self::ABSENT, Ordering::Relaxed) {
+            Self::FULL => GitRefreshRequest::Pending(GitRefreshScope::Full),
+            Self::REFS_ONLY => GitRefreshRequest::Pending(GitRefreshScope::RefsOnly),
+            _ => GitRefreshRequest::Absent,
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum GitRefreshRequest {
-    Pending,
+    Pending(GitRefreshScope),
     Absent,
 }
 
@@ -2562,19 +2578,7 @@ mod tests {
     #[test]
     fn shared_common_git_dir_event_refreshes_all_projects() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let common_git_dir = tmp.path().join("main_repo").join(".git");
-        std::fs::create_dir_all(common_git_dir.join("refs").join("heads"))
-            .expect("create common refs dir");
-
-        let main_root = tmp.path().join("main_repo");
-        std::fs::write(main_root.join("Cargo.toml"), b"[package]").expect("write main Cargo.toml");
-        let wt_git_dir = common_git_dir.join("worktrees").join("style_fix");
-        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
-        let wt_root = tmp.path().join("main_repo_style_fix");
-        std::fs::create_dir_all(&wt_root).expect("create worktree root");
-        std::fs::write(wt_root.join("Cargo.toml"), b"[package]").expect("write wt Cargo.toml");
-
-        let projects = shared_git_projects(main_root, wt_root, &common_git_dir, wt_git_dir);
+        let (common_git_dir, projects) = shared_git_repo(&tmp);
 
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
@@ -2625,31 +2629,92 @@ mod tests {
         assert_eq!(affected_count, 2, "both projects affected by shared event");
         let key = AbsolutePath::from(common_git_dir.as_path());
         assert_eq!(refresh::requested_git_checkouts(&projects, &key).len(), 2);
+        let main_root = tmp.path().join("main_repo");
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        let both_full = vec![
+            (main_root, GitRefreshScope::Full),
+            (wt_root.clone(), GitRefreshScope::Full),
+        ];
+        // With no `HEAD` file to read, each event requests the full probe.
         for (event_path, expected) in [
             (
                 common_git_dir.join("worktrees/style_fix/index"),
-                vec![tmp.path().join("main_repo_style_fix")],
+                vec![(wt_root, GitRefreshScope::Full)],
+            ),
+            (common_git_dir.join("info/exclude"), both_full.clone()),
+            (common_git_dir.join("HEAD"), both_full.clone()),
+            (branch_ref.clone(), both_full),
+        ] {
+            assert_git_refresh_checkouts(
+                &event_context,
+                &background_tx,
+                &event_path,
+                &key,
+                &expected,
+            );
+        }
+    }
+
+    #[test]
+    fn branch_ref_event_runs_git_status_only_for_checkouts_on_that_branch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (common_git_dir, projects) = shared_git_repo(&tmp);
+        let wt_git_dir = common_git_dir.join("worktrees").join("style_fix");
+        std::fs::write(common_git_dir.join("HEAD"), "ref: refs/heads/main\n")
+            .expect("write main HEAD");
+        std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/style_fix\n")
+            .expect("write worktree HEAD");
+
+        let watch_roots = vec![AbsolutePath::from(tmp.path())];
+        let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
+        let discovered = HashSet::new();
+        let event_context = EventContext {
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (background_tx, _) = channel::unbounded();
+        let key = AbsolutePath::from(common_git_dir.as_path());
+        let main_root = tmp.path().join("main_repo");
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        let main = |scope| (main_root.clone(), scope);
+        let wt = |scope| (wt_root.clone(), scope);
+        // The worktree reads its reflogs from its own Git dir, so it ignores the primary reflogs.
+        for (event_path, expected) in [
+            (
+                common_git_dir.join("refs/heads/style_fix"),
+                vec![main(GitRefreshScope::RefsOnly), wt(GitRefreshScope::Full)],
             ),
             (
-                common_git_dir.join("info/exclude"),
+                common_git_dir.join("refs/heads/main"),
+                vec![main(GitRefreshScope::Full), wt(GitRefreshScope::RefsOnly)],
+            ),
+            (
+                common_git_dir.join("refs/heads/style"),
                 vec![
-                    tmp.path().join("main_repo"),
-                    tmp.path().join("main_repo_style_fix"),
+                    main(GitRefreshScope::RefsOnly),
+                    wt(GitRefreshScope::RefsOnly),
                 ],
             ),
             (
-                common_git_dir.join("HEAD"),
+                common_git_dir.join("logs/refs/heads/style_fix"),
+                vec![main(GitRefreshScope::RefsOnly)],
+            ),
+            (
+                common_git_dir.join("logs/refs/heads/main"),
+                vec![main(GitRefreshScope::Full)],
+            ),
+            (
+                common_git_dir.join("refs/remotes/origin/main"),
                 vec![
-                    tmp.path().join("main_repo"),
-                    tmp.path().join("main_repo_style_fix"),
+                    main(GitRefreshScope::RefsOnly),
+                    wt(GitRefreshScope::RefsOnly),
                 ],
             ),
             (
-                branch_ref.clone(),
-                vec![
-                    tmp.path().join("main_repo"),
-                    tmp.path().join("main_repo_style_fix"),
-                ],
+                common_git_dir.join("packed-refs"),
+                vec![main(GitRefreshScope::Full), wt(GitRefreshScope::Full)],
             ),
         ] {
             assert_git_refresh_checkouts(
@@ -2660,6 +2725,36 @@ mod tests {
                 &expected,
             );
         }
+
+        // An event can name the folder that holds the branch of `HEAD`.
+        std::fs::write(common_git_dir.join("HEAD"), "ref: refs/heads/team/main\n")
+            .expect("write main HEAD");
+        assert_git_refresh_checkouts(
+            &event_context,
+            &background_tx,
+            &common_git_dir.join("refs/heads/team"),
+            &key,
+            &[main(GitRefreshScope::Full), wt(GitRefreshScope::RefsOnly)],
+        );
+    }
+
+    /// A primary checkout `main_repo` and its linked worktree `main_repo_style_fix`,
+    /// with no `HEAD` files. Returns the common Git dir and both project entries.
+    fn shared_git_repo(tmp: &TempDir) -> (PathBuf, HashMap<AbsolutePath, ProjectEntry>) {
+        let common_git_dir = tmp.path().join("main_repo").join(".git");
+        std::fs::create_dir_all(common_git_dir.join("refs").join("heads"))
+            .expect("create common refs dir");
+
+        let main_root = tmp.path().join("main_repo");
+        std::fs::write(main_root.join("Cargo.toml"), b"[package]").expect("write main Cargo.toml");
+        let wt_git_dir = common_git_dir.join("worktrees").join("style_fix");
+        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        std::fs::create_dir_all(&wt_root).expect("create worktree root");
+        std::fs::write(wt_root.join("Cargo.toml"), b"[package]").expect("write wt Cargo.toml");
+
+        let projects = shared_git_projects(main_root, wt_root, &common_git_dir, wt_git_dir);
+        (common_git_dir, projects)
     }
 
     fn shared_git_projects(
@@ -2706,7 +2801,7 @@ mod tests {
         sender: &Sender<BackgroundMsg>,
         event_path: &Path,
         key: &AbsolutePath,
-        expected: &[PathBuf],
+        expected: &[(PathBuf, GitRefreshScope)],
     ) {
         let mut disk = HashMap::new();
         let mut git = HashMap::new();
@@ -2715,7 +2810,10 @@ mod tests {
         let actual: HashSet<_> = refresh::requested_git_checkouts(context.projects, key)
             .into_iter()
             .collect();
-        let expected: HashSet<_> = expected.iter().cloned().map(AbsolutePath::from).collect();
+        let expected: HashSet<_> = expected
+            .iter()
+            .map(|(path, scope)| (AbsolutePath::from(path.clone()), *scope))
+            .collect();
         assert_eq!(actual, expected, "{}", event_path.display());
     }
 
