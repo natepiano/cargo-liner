@@ -401,27 +401,15 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 14 — the startup toast contrast test runs under 1 s  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
-
-**Goal:** `tui::theme_roles::tests::startup_page_footer_meets_contrast_in_every_registered_theme` runs under 1 s on natedev and the Mac.
-
-**Source:** a defect that the tile unit routed through the showrunner on 2026-11-15. The test took 1.051 s on the Mac at load 8.84 (cargo-port 1546 of 1546 on `a102bcca3`).
-
-**Constraints from prior phases:** none.
-
-**Spec:**
-1. **Measure first.** Time the parts of one test run: app setup, theme install, each draw and each `test_support::contrast_failures` call. The test draws 4 toast styles × each registered theme × 2 background modes × 2 color modes × 2 widths.
-2. **Keep the coverage.** Keep every case and every assert. Do not loosen an assert or drop a case.
-3. **Fix the cost where it lives.** When a helper does work that the test does not use, change the helper. When the case count alone sets the time, split the test into one test for each toast style.
+- `tui::theme_roles::tests` has one test for each toast style: `normal_startup_footer_meets_contrast_in_every_registered_theme`, `warning_startup_footer_meets_contrast_in_every_registered_theme`, `error_startup_footer_meets_contrast_in_every_registered_theme` and `success_startup_footer_meets_contrast_in_every_registered_theme`. Each calls `assert_startup_footer_meets_contrast(ToastStyle)`.
+- The helper draws each registered theme × 2 background modes × 2 color modes × 2 widths, with the same asserts as the single test it replaces.
+- Proof: alone on natedev at load 17, the single test took 146 ms (app builds 53 ms, theme loop 90 ms, of which draws 70 ms). After the split, each test took 0.32-0.47 s on the Mac at load 21.66 on 12 CPUs and 0.12-0.36 s on natedev at load 26.27. Before: 1.051 s on the Mac at load 8.84.
 
 **Files:**
-- `crates/cargo-port/src/tui/theme_roles.rs` — the test
-- `crates/cargo-port/src/tui/test_support/mod.rs` — test helpers, if the cost is there
+- `crates/cargo-port/src/tui/theme_roles.rs` — the four tests and the helper
 
-**Workers:** 1 writer.
+**Gotchas:** in the full parallel suite this test runs about 7 times slower than alone; its time follows CPU load, not its own work.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+**Ruled out:** a smaller case set; every case and assert stays.
