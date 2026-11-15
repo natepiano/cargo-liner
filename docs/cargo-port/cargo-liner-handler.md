@@ -468,61 +468,33 @@ A shell command row is always `busy`. With no scanned word, its activity cell re
 
 ### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: done
 
-**Depends on:** Phase 16 (it changes the column fit order and its restore step); Phase 19 (a shell row shows `running`)
+#### As-built
 
-#### Work Order
+A worker row whose job runs shows its job alone, such as `reviewer`, not `reviewer · running`; other live words stay (`reviewer · waiting`). A row with no job and the live word `running` draws `running`, so a busy row never draws an empty cell. On a narrow tile, long session and branch names end in `…` before the effort and model columns drop. At 125 and 127 columns the hana, cargo-liner and natedev tiles show model and effort on every Claude row.
 
-**Goal:** at 125 columns a tile shows model and effort on Claude rows, and no activity cell ends in "· running".
-
-**Source:** the showrunner, 2026-11-14, on C352 (returned, Phase 16). The user said: "there is space to be had - the "reviewer - running" is entirely wasteful - running - the " - running" seems unnecessary if that's what it is doing. the model and effort only show when it's really wide or it is zoomed - so reclaiming some space is a good idea and maybe we could show it when it isn't as wide as this and still show more info". The screenshots: the natedev showrunner tile at 127 columns shows no type, model or effort, and its worker row reads "reviewer · running". The hana and cargo-liner tiles at 125 columns show type and model but no effort.
-
-**Spec:**
-
-Showrunner rulings (design authority, 2026-11-14):
-1. The activity cell never adds "· running". A worker row whose live word is `running` shows its job alone ("reviewer"). Other live words stay ("reviewer · waiting").
-2. Make room for model and effort in this order: size the activity column to its widest live cell, not a fixed width; then cut branch and session text with "…" before any column drops. This is the user's rule from C205: columns stay, and long names get "…" first.
-3. When model and effort still do not fit after step 2, drop effort first, then model, as now.
-
-Director decisions:
-1. Ruling 1 applies only when the row has a job. A row with no job text and the live word `running` draws `running`, so a busy row never draws an empty cell (Phases 12 and 19).
-2. `GroupFitStep` gets one cut step before the five optional drops: `CutNames` cuts the session and branch columns, each to its floor. Then the drops, the restore and the later steps run as now. The restore adds a column back only where it fits beside the cut names.
-3. Each name column has a floor in the tiles config: `session_cut_floor` and `branch_cut_floor` in `TilesConfig`, with their defaults in `constants.rs`. A cut never takes a column below its floor, its header or the session minimum. Set the defaults so that the 125 and 127 column tiles of the C352 screenshots keep model and effort.
-4. The activity column already takes its width from the visible cells (`visible_widths`). Keep that, and add a test that the column width follows the widest drawn cell.
-5. Phase 16 ruled that the restore uses the uncut session width. This ruling replaces that rule: a long session name now takes "…" before an optional column drops.
-6. A name cut never makes room for the directory. The directory fits only beside the uncut names; branch, type, model and effort fit beside the cut names. The live hana tile at 125 columns showed the reason: the cut freed 13 cells, the 36-cell directory took them, and model and effort dropped. Thus on a long-named tile, the directory drops before effort and model. Sent to the showrunner on 2026-11-15.
-
-**Constraints from prior phases:**
-- Phase 16: `ColumnDrop::ORDER` stays the priority order: effort, model, directory, type, branch. Added-back columns keep their display positions. Each tile adds back only columns its rows fill; the shared fit at one x adds back only columns one of its tiles keeps.
-- Phase 16: a shell row adds only its tree lead to the session demand. Keep it.
-- Phase 3: a long session name is cut before the required columns drop. Keep the later `CutSession` step for the cut below the floor.
-- Phase 12 and Phase 19: a busy row never draws an empty activity cell.
-- Phase 19: a shell command row, and a subagent row with no role and an unreported scan, take `RUNNING_JOB` (`constants.rs`) as their job, not as a live word. A subagent with an idle scan reads `idle` (`TreeLine::session_status`). Keep both.
-
-Tests (red first, each under one second):
-1. A worker row with the job "reviewer" and the live word `running` draws "reviewer". With `waiting`, it draws "reviewer · waiting".
-2. A row with no job and the live word `running` draws `running`.
-3. At 125 columns, a tile with a long session name and a long branch keeps model and effort, and the session and branch end in "…".
-4. A cut stops at each floor. Below the width where model and effort fit after the cut, effort drops first, then model.
-5. The activity column width equals the widest drawn activity cell.
-6. The `session_cut_floor` and `branch_cut_floor` keys load from the config, and their defaults apply when the keys are absent.
-7. The Phase 16 column visibility tests pass, with the uncut-session restore tests changed to the new rule.
-
-**Live check (director):** before the checkpoint, capture tiles at 125 and 127 columns from a build of this branch and from main, under the safety rule. The capture shows model and effort on Claude rows and no "· running".
-
-**Change-Review line:** At 125 columns, Claude rows show model and effort, and no activity reads "· running" | On natedev, run cargo-handler in a pane 125 to 127 columns wide | Claude rows show model and effort; long session and branch names end in "…"; a running worker reads "reviewer", not "reviewer · running"
+- `TreeLine::job_and_live_word` drops the live `running` word after a job. `RUNNING_JOB` is a job, so a busy shell row still reads `running`.
+- `GroupFitStep::ORDER` has 13 steps: `CutNames`, five optional drops (effort, model, directory, type, branch), `Restore`, `CutSession`, four required drops (account, role, activity, status), `FinalMerge`. `CutNames` cuts the session and branch columns to their floors (`NameCut`, `NameLimit`, `cut_names`, `uncut_names`, `name_limits`). `restore_columns` adds back each dropped optional column, most important first, while it fits, then gives free width back to the cut names.
+- A name cut never makes room for the directory: `ColumnDrop::fits_beside_cut_names` and `TreeMetrics::fits` let the directory fit only beside the uncut names, while branch, type, model and effort fit beside the cut names. So on a long-named tree the directory drops before effort and model; on a tree whose names fit, the order is unchanged.
+- `TilesConfig` keys `session_cut_floor` (default 24) and `branch_cut_floor` (default 16), defaults `DEFAULT_SESSION_CUT_FLOOR` and `DEFAULT_BRANCH_CUT_FLOOR` in `constants.rs`. The fields are private and read through `TilesConfig::name_cut_floors() -> NameCutFloors`. `Cells::with_name_cut_floors` passes them to every agent cell and tile in `render/mod.rs` and `render/painted_surface.rs`.
+- The activity column width follows the widest drawn activity cell (`visible_widths`).
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::job_and_live_word`, `GroupFitStep`, the name cut step
-- `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs` — the two floors and their defaults
-- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — the tests
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::job_and_live_word`, `GroupFitStep::CutNames`, `NameCut`, `TreeMetrics::fits`, `ColumnDrop::fits_beside_cut_names`, `restore_columns`
+- `crates/cargo-handler/src/config.rs` — `TilesConfig` floor keys, `NameCutFloors`
+- `crates/cargo-handler/src/constants.rs` — the two default floors
+- `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/render/painted_surface.rs` — pass the floors to the tiles
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs` — the activity text without `· running`
+- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — `with_c352_cells`, `a_name_cut_makes_room_for_model_and_effort_but_not_the_directory`, `long_names_take_an_ellipsis_before_model_and_effort_drop`, the drop order with the directory first on a long-named tree
+- `crates/cargo-handler/README.md`, `crates/cargo-handler/CHANGELOG.md` — the two config keys and the fixes
 - `docs/cargo-handler/as-built/tile-layout.md`, `docs/cargo-handler/as-built/activity.md` — the fit order and the activity text
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Gotchas:**
+- A shell row adds only its tree lead to the session demand, so shell names are cut by the column width, not by `CutNames`.
+- `CutSession` still cuts a session name below its floor before a required column drops.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check at 125 and 127 columns shows model and effort on Claude rows and no "· running".
+**Ruled out:**
+- The uncut-names check for branch and type: it hid the long branch, so it applies to the directory only.
+- The Phase 16 rule that the restore uses the uncut session width: a long session name now takes `…` before an optional column drops.
 
 ### Phase 21 — Twelve slow tests run in under one second  · status: todo
 
