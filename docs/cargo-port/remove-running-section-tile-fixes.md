@@ -3605,7 +3605,7 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 **Gotchas:** cargo-berth test scratch is in /dev/shm (`TMPDIR` from `check-test-scratch.sh`), so disk sync does not add time. The edges tests spend their time in repeated `board` runs, which are what each test proves.
 
-### Phase 62c — cargo-tile's status-row tests follow the Reads/s fit order  · status: todo
+### Phase 62c — cargo-tile's status-row tests follow the Reads/s fit order  · status: done
 
 **Depends on:** Phase 62a
 
