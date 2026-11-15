@@ -82,7 +82,8 @@ pub(super) const REPLAY_CHECKPOINT_INTERVAL_BYTES: u64 = 256 * 1_024;
 pub(super) const REPLAY_CHECKPOINT_INTERVAL_RECORDS: u64 = 256;
 
 // test deadlines
-/// Test-only milliseconds that can shorten the total gate deadline in debug builds.
+/// Test-only milliseconds that replace the total gate deadline in debug builds. The shorter
+/// deadline counts from the gate worker's first mutation lock wait, not from the gate's start.
 pub(crate) const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
 /// Test-only milliseconds that can shorten mutation lock contention in debug builds.
 pub(super) const MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str =
