@@ -443,54 +443,28 @@ Three theme roles set the reset times in the accounts footer: `reset_soonest`, `
 
 ### Phase 19 — Every busy shell row shows what it does  · status: done
 
-**Depends on:** Phase 12 (it fills the busy activity cell of conversation lines)
+#### As-built
 
-#### Work Order
+A shell command row is always `busy`. With no scanned word, its activity cell reads `running`; a scanned word, such as a verification step or `waiting`, shows alone. Subagent rows follow the showrunner ruling of 2026-11-15: a subagent whose scan says `idle` has ended its turn and reads `idle`; a subagent with no role word and an unreported scan stays `busy` and reads `running`; a subagent with a role keeps its role text. So no busy row draws an empty activity cell.
 
-**Goal:** every busy row draws an activity word. A shell command row or a subagent row never shows `busy` with an empty activity cell.
-
-**Source:** the showrunner, 2026-11-14, on C346 (returned, Phase 12): the user said "i see a bunch of busy rows that don't have an activity". The user's screenshot shows four shell child rows with an empty activity cell: "cd hana_catalys…" under demo, "Run the P96 wo…" under fastest, and "Run the full C…" and "Run verify fin…" under hana-merges.
-
-**Spec:**
-
-Director decisions:
-1. A shell command row (`ShellPurpose::Command`) draws `running` (`Activity::Running`) in its activity cell. Its status is always `busy` (`TreeLine::session_status`), so the empty cell is the defect. The `running` word comes from the one `Activity::Running` text, not from a second string.
-2. A scanned activity that names work still wins: a shell row with a verification step or `waiting` keeps that word.
-3. Timer rows keep `timer` and their countdown. Subagent rows keep their role text.
-4. Phase 12 ruled that shell and subagent work lines take no `thinking`. This stays: `thinking` is a conversation word.
-5. The showrunner, 2026-11-15, on subagent rows: a subagent whose scan says `idle` has ended its turn, so its status reads `idle` (`TreeLine::session_status`). A busy word on a finished turn is a wrong result.
-6. The showrunner, 2026-11-15: a subagent with no role word and an unreported scan stays `busy` and reads `running`, the same rule as a shell command row. Both rows take the one `RUNNING_JOB` text.
-
-**Constraints from prior phases:**
-- Phase 12: `TreeLine::conversation_activity` serves only conversation lines, and `activity_parts` takes no line-kind branch. Put the shell rule where the shell job text comes from (`TreeLine::activity_text`), not in a new branch of `activity_parts`.
-- Phase 16: `TreeLine::display_name` holds the short command and `TreeLine::name` the full one. Do not change either.
-- Status sorting uses the displayed activity text, so shell rows now sort under `running`.
-
-Tests (red first, each under one second):
-1. A shell command row with an idle or unreported scanned activity draws `running`.
-2. A shell command row with a verification step or `waiting` draws that word, once.
-3. A timer row draws `timer` and its countdown, unchanged.
-4. A tile with busy session, worker, unassigned, subagent, timer and shell command rows has no empty activity cell on a busy row.
-5. A subagent row reads its scanned word and `busy`, `running` and `busy` when unreported, and `idle` when its scan says idle.
-6. Update the tests that pinned the empty cell or a `busy` idle subagent.
-
-**Live check (director):** before the checkpoint, capture a tile with a busy shell child row from a build of this branch and from main, under the safety rule.
-
-**Change-Review line:** Every busy shell and subagent row shows what it does | On natedev, run cargo-handler while a session runs a background shell command and a subagent | The shell child row reads `running` in its activity column, a finished subagent reads `idle`, and no busy row has an empty activity
+- `TreeLine::activity_text` gives the shell command job and the role-less unreported subagent job the one `RUNNING_JOB` text. `RUNNING_JOB` is the `Activity::Running` text, in the agent cells section of `constants.rs`.
+- `TreeLine::session_status` gives an idle-scan subagent `SessionState::Idle`. The status cell, status sort, status ink and summary width all read it.
+- Work lines still take no `thinking`; `conversation_activity` serves conversation lines only.
+- Status sorting uses the displayed text, so shell rows sort under `running`.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::activity_text` for `ShellPurpose::Command` and role-less subagents, `TreeLine::session_status` for idle subagents
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::activity_text`, `TreeLine::session_status`
 - `crates/cargo-handler/src/constants.rs` — `RUNNING_JOB`
-- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs` — the new tests
-- `crates/cargo-handler/src/agent_cell/tests/{sort,subagent_row,tree,unassigned}_tests.rs` — the tests that pinned the old cells
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs` — shell rows, the busy-row tile, `activity_at`, `shell_command_owner`
+- `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs` — `subagent_rows_show_their_scanned_activity_and_status`
+- `crates/cargo-handler/src/agent_cell/tests/{sort,tree,unassigned}_tests.rs` — expectations for the new cells
 - `docs/cargo-handler/as-built/activity.md` — the shell and subagent row activity
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** Phase 20 cuts only a live `running` after a job; `RUNNING_JOB` is a job, so it stays.
 
-**State:** none
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `running` on a busy shell child row.
+**Gotchas:**
+- The test `child()` helper defaults to `AgentActivity::Idle`, so a fixture subagent reads `idle` unless the test sets `Unreported` or an active word.
+- The tile root is the cell header, not a tree row; a busy-row scan of the tree rows does not include it.
 
 ### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: todo
 
@@ -521,6 +495,7 @@ Director decisions:
 - Phase 16: a shell row adds only its tree lead to the session demand. Keep it.
 - Phase 3: a long session name is cut before the required columns drop. Keep the later `CutSession` step for the cut below the floor.
 - Phase 12 and Phase 19: a busy row never draws an empty activity cell.
+- Phase 19: a shell command row, and a subagent row with no role and an unreported scan, take `RUNNING_JOB` (`constants.rs`) as their job, not as a live word. A subagent with an idle scan reads `idle` (`TreeLine::session_status`). Keep both.
 
 Tests (red first, each under one second):
 1. A worker row with the job "reviewer" and the live word `running` draws "reviewer". With `waiting`, it draws "reviewer · waiting".
