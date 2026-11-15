@@ -399,7 +399,7 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Ruled out:** a time budget for the background poll drain; it needs a config key, and the measured frames did not need it.
 
-### Phase 14 — the startup toast contrast test runs under 1 s  · status: todo
+### Phase 14 — the startup toast contrast test runs under 1 s  · status: done
 
 **Depends on:** none.
 
