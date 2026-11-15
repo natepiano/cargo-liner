@@ -434,23 +434,18 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 16 — two cargo-mend fix tests run under 1 s  · status: done
 
-#### Work Order
+#### As-built
 
-**Source:** the showrunner, 2026-11-15: make the two slow cargo-mend tests a phase.
+- `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` ends with `cargo check --tests`. A check resolves `crate::inner_facade::helper` in the test target, which a removed re-export breaks. Nothing runs the test executable, so `cargo build --tests` added only code generation and a link.
+- `pub_use_fixes` has two facade tests of four independent cases each: `grouped_and_obsidian_facades_share_dry_run_and_apply` and `subtree_and_parent_facades_share_dry_run_and_apply`. Both call `assert_facades_share_dry_run_and_apply` with a `FacadeCase` list. Each case keeps its count, findings and applied asserts; the totals are the sum of the case counts.
+- Proof: the full natedev suite at load 14.02 gave 0.396 s, 0.384 s and 0.416 s, and no test reached 1 s. The Mac suite passed (1037 tests).
 
-**Failure:** on natedev at load 16.89 (phase 15 run), two bin unit tests take 1 s or more:
-1. `diagnostic_tests::narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` — 1.042 s.
-2. `diagnostic_tests::pub_use_fixes::grouped_facades_share_dry_run_and_apply` — 1.191 s.
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs` — cfg test ends with a check
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs` — facade cases in two tests
 
-**Change:**
-1. Measure each test alone and split its time into its process runs (cargo-mend, cargo fix, cargo build).
-2. Remove wasted work in cargo-mend or the test support first. Split a test only where its cases are independent.
-3. Keep every case and every assert.
+**Gotchas:**
+- Time in the full suite is about 3 times the time alone, from CPU contention. At load 39.49 the two facade tests took 1.7 to 1.8 s.
+- A cargo-mend `--fix-compiler` run from a cwd outside the fixture fails with cargo fix "no VCS found". The tests set the cwd.
 
-**Acceptance:** each test runs under 1 s on natedev at normal load (under 32), in the full cargo-mend suite. The full suite passes on natedev and the Mac.
-
-**Result:**
-1. Time alone, at load 27: the cfg test spent 155 ms in cargo-mend and 182 ms in `cargo build --tests`. The grouped test spent 198 ms in its dry run and 156 ms in its apply. The cargo-mend runs did no wasted work.
-2. The cfg test now ends with `cargo check --tests`. A check resolves `crate::inner_facade::helper` in the test target, which a removed re-export breaks. Nothing runs the test executable, so its code generation and link were waste.
-3. The grouped test is two tests of four independent cases: `grouped_and_obsidian_facades_share_dry_run_and_apply` and `subtree_and_parent_facades_share_dry_run_and_apply`. Both call `assert_facades_share_dry_run_and_apply` with a `FacadeCase` list. Each case keeps its count, findings and applied asserts; the totals are the sum of the case counts.
-4. The full natedev suite at load 14.02: 0.396 s, 0.384 s and 0.416 s, and no test reached 1 s. At load 39.49 the two facade tests took 1.7 to 1.8 s. The Mac suite passed (1037 tests).
+**Ruled out:** removing work in the cargo-mend runs; alone, they did no wasted work.
