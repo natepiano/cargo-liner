@@ -3563,7 +3563,7 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 
 **Files:** `crates/tui_pane/src/bar/{counter_rate,disk_reads,rate_label,cpu,constants,mod,status_line,status_line_gap_tests,status_bar_contrast_tests}.rs`, `crates/tui_pane/src/framework/mod.rs`, `crates/cargo-handler/src/render/mod.rs` (the `GRID_STATUS` test string).
 
-### Phase 62a — Reads/s stays beside CPU at 100 columns or more  · status: todo
+### Phase 62a — Reads/s stays beside CPU at 100 columns or more  · status: done
 
 **Depends on:** Phase 58g (order only). It runs next, before Phase 43j (change review fault; director, 2026-11-14).
 

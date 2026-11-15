@@ -15,6 +15,8 @@ use crate::ShortcutState;
 use crate::StatusLine;
 use crate::StatusLineNote;
 use crate::bar::BarPalette;
+use crate::bar::constants::CPU_LABEL;
+use crate::bar::constants::DISK_READ_LABEL;
 use crate::bar::support;
 
 #[test]
@@ -328,6 +330,71 @@ fn disk_cache_notes_drop_only_the_rightmost_hints_at_two_digit_uptimes()
                 assert!(row[..note_start].ends_with("   "), "{row:?}");
                 assert!(row.contains("? shortcuts"), "{row:?}");
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reads_per_second_stays_after_cpu_while_a_scan_runs_at_one_hundred_columns_or_more()
+-> Result<(), Box<dyn Error>> {
+    let palette = BarPalette::default();
+    let cpu = format!("{CPU_LABEL}447% ");
+    let disk_reads = format!("{DISK_READ_LABEL}77 MB ");
+    let note = "Disk cache: 10 GiB - hit rate 37.53 %";
+    let mut navigation = Vec::new();
+    for (key, label) in [("↑/↓", "nav"), ("=/-", "all"), ("tab", "pane")] {
+        support::push_hint(
+            &mut navigation,
+            key,
+            label,
+            ShortcutState::Enabled,
+            &palette,
+        );
+    }
+    let mut globals = Vec::new();
+    support::push_hint(
+        &mut globals,
+        "?",
+        "shortcuts",
+        ShortcutState::Enabled,
+        &palette,
+    );
+    for width in [100, 120] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1))?;
+        terminal.draw(|frame| {
+            render_sections(
+                frame,
+                Rect::new(0, 0, width, 1),
+                &palette,
+                StatusLineItems {
+                    uptime:     vec![
+                        Span::raw(" ⟳ scanning… "),
+                        Span::raw(" Uptime: 5s "),
+                        Span::raw(cpu.clone()),
+                    ],
+                    disk_reads: vec![Span::raw(disk_reads.clone())],
+                    navigation: navigation.clone(),
+                    center:     Vec::new(),
+                    notes:      vec![vec![Span::raw(format!(" {note} "))]],
+                    globals:    globals.clone(),
+                    with_hints: Vec::new(),
+                    hint_fit:   HintFit::IndividualHints,
+                },
+            );
+        })?;
+        let row: String = (0..width)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        assert!(
+            row.contains(&format!("{cpu}{disk_reads}")),
+            "{width}: {row:?}"
+        );
+        assert!(row.contains("? shortcuts"), "{width}: {row:?}");
+        if width == 120 {
+            assert!(row.contains(note), "{width}: {row:?}");
+        } else {
+            assert!(!row.contains(note), "{width}: {row:?}");
         }
     }
     Ok(())
