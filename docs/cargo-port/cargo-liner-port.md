@@ -413,3 +413,27 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Gotchas:** in the full parallel suite this test runs about 7 times slower than alone; its time follows CPU load, not its own work.
 
 **Ruled out:** a smaller case set; every case and assert stays.
+
+### Phase 15 — cargo-mend tests find the cargo-mend binary when Cargo sets a build directory  · status: done
+
+#### Work Order
+
+**Source:** the showrunner, 2026-11-15: urgent; the failure blocks the handler final gate and every natedev gate.
+
+**Failure:** the bin unit test `diagnostic_tests::allowances::attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature` panics `run cargo-mend --json: NotFound` at `crates/cargo-mend/tests/support/mend_json.rs`. It fails in every natedev worktree, main included.
+
+**Cause:** `mend_bin()` falls back to `current_exe()/../../cargo-mend` when `CARGO_BIN_EXE_cargo-mend` is not set, as in a bin unit test. Since 2026-11-14 19:06, `~/.cargo/config.toml` sets `build-dir = "/build/paths{workspace-root}"`. The test binary then runs from `/build/paths/<worktree>/debug/deps/`, but the cargo-mend binary is in `<worktree>/target/debug/`.
+
+**Change:** `mend_bin()` finds the binary in Cargo's target directory, not next to the test executable.
+
+1. Keep `CARGO_MEND_TEST_EXECUTABLE` first and `CARGO_BIN_EXE_cargo-mend` second.
+2. Otherwise read `target_directory` and `build_directory` from `cargo metadata --no-deps` once per test process.
+3. Take the path of the test executable relative to `build_directory`. The parts before the first `deps` or `build` part name the profile directory.
+4. Use `<target_directory>/<profile directory>/cargo-mend`.
+
+**Acceptance:**
+- The failing test passes on natedev with `build-dir` set.
+- The same lookup gives `target/debug/cargo-mend` when `build-dir` is not set.
+- The full cargo-mend suite passes on natedev and the Mac.
+
+**Cost:** one `cargo metadata --no-deps` call per test process, about 30 ms at load 48.
