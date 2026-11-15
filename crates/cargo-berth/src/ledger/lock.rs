@@ -9,6 +9,7 @@ use std::fs::TryLockError;
 use std::io::Write;
 use std::net::UdpSocket;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
@@ -27,6 +28,17 @@ use crate::test_work::Work;
 #[derive(Debug)]
 pub(super) struct MutationLock {
     descriptor: File,
+}
+
+/// The notice that `notify_mutation_lock_waits` registers for this process.
+static MUTATION_LOCK_WAIT_NOTICE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Run `notice` each time this process queues on a mutation lock.
+///
+/// Only the first registration in a process takes effect. The trunk gate registers one for its
+/// test deadline (`GATE_DEADLINE_ENVIRONMENT`), so that deadline counts from its worker's wait.
+pub(crate) fn notify_mutation_lock_waits(notice: impl Fn() + Send + Sync + 'static) {
+    std::mem::drop(MUTATION_LOCK_WAIT_NOTICE.set(Box::new(notice)));
 }
 
 /// An immediate grant or one kernel-queued acquisition, before applying the caller's deadline.
@@ -100,6 +112,9 @@ impl MutationLock {
                 let acquired = descriptor.lock().map(|()| Self { descriptor });
                 std::mem::drop(sender.send(acquired));
             })?;
+        if let Some(notice) = MUTATION_LOCK_WAIT_NOTICE.get() {
+            notice();
+        }
         if let Some(ready_path) = std::env::var_os(MUTATION_LOCK_READY_PATH_ENVIRONMENT) {
             std::fs::write(ready_path, b"ready")?;
         }
