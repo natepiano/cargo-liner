@@ -372,7 +372,10 @@ fn minimum_tile_width_reserves_depth_three_guides_and_status() {
             NOW,
             cell.sort,
             AccountColumn::Hidden,
-            SessionHeaderLead::Flush,
+            NameLayout {
+                lead:            SessionHeaderLead::Flush,
+                name_cut_floors: cell.name_cut_floors,
+            },
             TreeHeadingSpace {
                 offset: 0,
                 width:  0,

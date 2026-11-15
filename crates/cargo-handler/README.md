@@ -405,9 +405,11 @@ iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
 transparent    = true            # false paints the grid solid in the theme's background
 
 [tiles]
-initial_rows  = 4                # rows the first column grows to before the grid squares up
-fill          = "redistribute"   # redistribute / add_new: how the cells spread over the columns
-widen_summary = true             # the summary reaches across columns until its widest line fits
+initial_rows      = 4              # rows the first column grows to before the grid squares up
+fill              = "redistribute" # redistribute / add_new: how the cells spread over the columns
+widen_summary     = true           # the summary reaches across columns until its widest line fits
+session_cut_floor = 24             # a long session name is cut with … to this width before a column drops
+branch_cut_floor  = 16             # a long branch name is cut with … to this width before a column drops
 
 [machines]
 remote = []                      # ssh host names the summary probes, e.g. ["mac"]
@@ -441,6 +443,10 @@ edge; the cells of a column it covers divide what is left below it, and a column
 whose cells would no longer fit below it stops the summary there. Off, the
 summary stays in its own column and cuts a long directory short. The settings
 overlay steps `initial rows`, `fill` and `widen summary` under **Tiles**.
+
+`session_cut_floor` and `branch_cut_floor` set how far a narrow tile cuts long
+session and branch names, with `…`, before it drops the effort and model
+columns. A name cut never makes room for the directory.
 
 `transparent` paints nothing under the grid, so a transparent terminal window
 shows the desktop behind every cell, and the focused cell's border lights to
