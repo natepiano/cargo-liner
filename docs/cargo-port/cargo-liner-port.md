@@ -282,7 +282,9 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Gotchas:** `ResolvedKeymap.project_list` has no dispatch reader. It sets only the default file text, Vim conflict checks and load results.
 
-### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: todo
+### Phase 12 — an idle cargo-port reads from disk only for changes it shows, measured at low load  · status: done
+
+**Open:** the low-load acceptance run. Run 3 alternating 600 s idle pairs of this build against `bd55fde2d` when natedev holds a 1-minute load under 8 for each full run (judge each second by the `vmstat -t 1` run queue). The showrunner landed the phase on the test evidence on 2026-11-15, because natedev ran at load 10-48 with 1-4 GB of host swap-in for 9 hours.
 
 **Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), Phase 13c and Phase 13d (all edit cargo-port and its CHANGELOG).
 

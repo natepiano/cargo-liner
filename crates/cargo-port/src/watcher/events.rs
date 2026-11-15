@@ -24,6 +24,7 @@ use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::GitEventRefresh;
+use crate::project::GitRefreshScope;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -478,7 +479,7 @@ fn request_project_git_refresh(
             && (event_path.starts_with(&candidate.abs_path)
                 || candidate.abs_path.starts_with(event_path))
     }) {
-        affected.git_refresh_demand.request();
+        affected.git_refresh_demand.request(GitRefreshScope::Full);
     }
 }
 
@@ -565,7 +566,9 @@ fn queue_git_metadata_refresh(
             && let Some(refresh_key) = refresh::git_refresh_key(entry)
         {
             matched_git = true;
-            entry.git_refresh_demand.request();
+            entry
+                .git_refresh_demand
+                .request(refresh::git_refresh_scope(event_path, entry));
             tracing::trace!(
                 target: PERF_LOG_TARGET,
                 refresh_key = %refresh_key.display(),

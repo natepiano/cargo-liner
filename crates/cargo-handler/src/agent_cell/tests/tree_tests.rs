@@ -177,7 +177,11 @@ fn assert_shell_role(name: &str, observation: ShellTimerObservation, role: &str)
     };
     let cell = entry(&row, None);
     assert_eq!(cell.lines[0].value(TreeColumn::Role, NOW), "");
-    let activity = if role.is_empty() { "" } else { "timer 5:00" };
+    let activity = if role.is_empty() {
+        "running"
+    } else {
+        "timer 5:00"
+    };
     assert_eq!(cell.lines[0].value(TreeColumn::Activity, NOW), activity);
     let buffer = rendered(&cell, &[], 200, AccountColumn::Hidden);
     let shell_row = row_of(&buffer, name);
@@ -564,9 +568,9 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         ("unit-member", "", "", "", "claude1"),
         ("clock job", "", "timer 1:00", "busy", "claude1"),
         ("unheld worker", "worker", "", "", "codex1"),
-        ("review worker", "worker", "", "busy", "claude1"),
-        ("nested job", "", "", "busy", "claude1"),
-        ("root command", "", "", "busy", "claude2"),
+        ("review worker", "worker", "", "idle", "claude1"),
+        ("nested job", "", "running", "busy", "claude1"),
+        ("root command", "", "running", "busy", "claude2"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -623,7 +627,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             Role::Busy.style().fg
         );
     }
-    for (name, status) in [("unheld worker", ""), ("review worker", "busy")] {
+    for (name, status) in [("unheld worker", ""), ("review worker", "idle")] {
         assert_eq!(
             column_value(&buffer, "status", row_of(&buffer, name), &HEADERS),
             status

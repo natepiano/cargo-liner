@@ -2,6 +2,9 @@
 
 use std::time::Duration;
 
+use crate::census::Activity;
+use crate::census::AgentActivity;
+
 // configuration
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, `favorites.toml` and `themes/`.
@@ -82,6 +85,12 @@ pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 /// widens over the next columns until its widest row fits, so no
 /// directory is cut short while there is room to the right.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = true;
+/// `tiles.session_cut_floor` when `config.toml` says nothing: a tile cuts
+/// its session column to no fewer cells before an optional column drops.
+pub(crate) const DEFAULT_SESSION_CUT_FLOOR: u16 = 24;
+/// `tiles.branch_cut_floor` when `config.toml` says nothing: a tile cuts
+/// its branch column to no fewer cells before an optional column drops.
+pub(crate) const DEFAULT_BRANCH_CUT_FLOOR: u16 = 16;
 /// The summary cell's title, set into its top border. The leading space
 /// holds the word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
@@ -135,6 +144,9 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 /// Leads the agent's pid in an agent cell's header, and names a launcher
 /// known by its pid alone.
 pub(crate) const PID_LABEL: &str = "pid";
+/// Activity column text for a shell command, or a subagent with no role, that has no
+/// scanned word.
+pub(crate) const RUNNING_JOB: &str = AgentActivity::Active(Activity::Running).text();
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
 // summary table

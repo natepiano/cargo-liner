@@ -72,6 +72,7 @@ use crate::census::worker_dispatch::WorkerDispatch;
 use crate::census::worker_dispatch::WorkerRoleInput;
 use crate::census::worker_dispatch::WorkerRoleSource;
 use crate::census::worker_dispatch::WorkerTask;
+use crate::config::NameCutFloors;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::LAUNCHED_BY_LABEL;
 use crate::constants::MISSING_VALUE;
@@ -79,6 +80,7 @@ use crate::constants::NOTHING_RUNNING_HEIGHT;
 use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::PRODUCERS_CELL_TITLE;
+use crate::constants::RUNNING_JOB;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TIMER_ROLE;
@@ -145,9 +147,16 @@ pub(crate) struct AgentEntry<'a> {
     sort:                  TreeSort,
     /// Members and work, in the depth-first order the tile draws.
     lines:                 Vec<TreeLine<'a>>,
+    /// The floors this tile cuts its session and branch names to.
+    name_cut_floors:       NameCutFloors,
 }
 
 impl<'a> AgentEntry<'a> {
+    /// Set the floors this cell cuts its session and branch names to.
+    pub(crate) const fn set_name_cut_floors(&mut self, floors: NameCutFloors) {
+        self.name_cut_floors = floors;
+    }
+
     /// The identity of this tile's root session.
     const fn root_identity(&self) -> RowIdentity<'a> {
         RowIdentity {
@@ -628,6 +637,10 @@ impl ColumnDrop {
         )
     }
 
+    /// A name cut never makes room for the directory: the directory fits only
+    /// beside the uncut names, and each other optional column fits beside the cut names.
+    const fn fits_beside_cut_names(self) -> bool { !matches!(self, Self::Directory) }
+
     const fn column(self) -> TreeColumn {
         match self {
             Self::Effort => TreeColumn::Effort,
@@ -668,6 +681,33 @@ pub(crate) struct TreeMetrics {
     /// The activity width that keeps each live word whole and cuts only jobs.
     activity_floor:      u16,
     activity_fit:        ActivityFit,
+    /// The session and branch widths before any cut, and the cut floors.
+    names:               NameCut,
+}
+
+/// The session and branch widths before any cut, and the floors of a cut.
+#[derive(Clone, Copy, Debug)]
+struct NameCut {
+    uncut_session:      u16,
+    uncut_branch:       u16,
+    branch_label_width: u16,
+    floors:             NameCutFloors,
+}
+
+impl NameCut {
+    fn merge(&mut self, other: Self) {
+        self.uncut_session = self.uncut_session.max(other.uncut_session);
+        self.uncut_branch = self.uncut_branch.max(other.uncut_branch);
+        self.branch_label_width = self.branch_label_width.max(other.branch_label_width);
+    }
+}
+
+/// One name column: the floor a cut keeps and the width before the cut.
+#[derive(Clone, Copy)]
+struct NameLimit {
+    column: TreeColumn,
+    floor:  u16,
+    uncut:  u16,
 }
 
 /// How the activity column of a tile fits its width.
@@ -739,6 +779,7 @@ impl TreeMetrics {
         self.activity_fit = self
             .activity_fit
             .merged(other.activity_fit, self.activity_floor);
+        self.names.merge(other.names);
         self.presentation = match (self.presentation, other.presentation) {
             (TreePresentation::Compressed, _) | (_, TreePresentation::Compressed) => {
                 TreePresentation::Compressed
@@ -779,13 +820,32 @@ impl TreeMetrics {
         } else {
             1
         };
-        let full_fits = self.occupied_width(spacing) <= usize::from(width);
+        let full_fits = self.fits(step, width, spacing);
         if !full_fits || header_width(self.heading_width) > width {
             self.presentation = TreePresentation::Compressed;
         }
         if !full_fits {
             self.columns.remove(step);
         }
+    }
+
+    /// Whether the shown columns fit `width` for `step`. The directory fits
+    /// only beside the uncut names.
+    fn fits(&self, step: ColumnDrop, width: u16, spacing: u16) -> bool {
+        let cut = if step.is_optional() && !step.fits_beside_cut_names() {
+            self.name_limits()
+                .map(|limit| {
+                    usize::from(
+                        limit
+                            .uncut
+                            .saturating_sub(self.widths[limit.column as usize]),
+                    )
+                })
+                .sum()
+        } else {
+            0
+        };
+        self.occupied_width(spacing) + cut <= usize::from(width)
     }
 
     fn occupied_width(&self, spacing: u16) -> usize {
@@ -812,8 +872,60 @@ impl TreeMetrics {
             .max(self.minimum_session_width());
     }
 
+    /// The shown name columns, each with its cut floor and uncut width.
+    fn name_limits(&self) -> impl Iterator<Item = NameLimit> {
+        let session = NameLimit {
+            column: TreeColumn::Session,
+            floor:  self.names.floors.session.max(self.minimum_session_width()),
+            uncut:  self.names.uncut_session,
+        };
+        let branch = NameLimit {
+            column: TreeColumn::Branch,
+            floor:  self.names.floors.branch.max(self.names.branch_label_width),
+            uncut:  self.names.uncut_branch,
+        };
+        let branch_shown = self.columns.contains(ColumnDrop::Branch);
+        iter::once(session).chain(branch_shown.then_some(branch))
+    }
+
+    /// Cut the session and branch names, the wider name first, until the
+    /// columns fit or each name reaches its floor.
+    fn cut_names(&mut self, width: u16) {
+        let limits: Vec<_> = self.name_limits().collect();
+        let overflow = self
+            .occupied_width(TABLE_COLUMN_SPACING)
+            .saturating_sub(usize::from(width));
+        for _ in 0..overflow {
+            let Some(limit) = limits
+                .iter()
+                .filter(|limit| self.widths[limit.column as usize] > limit.floor)
+                .max_by_key(|limit| self.widths[limit.column as usize])
+            else {
+                break;
+            };
+            self.widths[limit.column as usize] -= 1;
+        }
+    }
+
+    /// Give free width back to cut names, the narrower name first.
+    fn uncut_names(&mut self, width: u16) {
+        let limits: Vec<_> = self.name_limits().collect();
+        let slack = usize::from(width).saturating_sub(self.occupied_width(TABLE_COLUMN_SPACING));
+        for _ in 0..slack {
+            let Some(limit) = limits
+                .iter()
+                .filter(|limit| self.widths[limit.column as usize] < limit.uncut)
+                .min_by_key(|limit| self.widths[limit.column as usize])
+            else {
+                break;
+            };
+            self.widths[limit.column as usize] += 1;
+        }
+    }
+
     /// Add back each dropped optional column, most important first, while it
     /// fits; a later drop can free the width that an earlier drop needed.
+    /// Width that remains goes back to the cut names.
     fn restore_columns(&mut self, width: u16) {
         for &step in ColumnDrop::ORDER.iter().rev() {
             if !step.is_optional()
@@ -823,14 +935,16 @@ impl TreeMetrics {
                 continue;
             }
             self.columns.add(step);
-            if self.occupied_width(TABLE_COLUMN_SPACING) > usize::from(width) {
+            if !self.fits(step, width, TABLE_COLUMN_SPACING) {
                 self.columns.remove(step);
             }
         }
+        self.uncut_names(width);
     }
 
     fn fit_step(&mut self, step: &GroupFitStep, width: u16) {
         match step {
+            GroupFitStep::CutNames => self.cut_names(width),
             GroupFitStep::Drop(column) => self.drop_step(*column, width),
             GroupFitStep::Restore => self.restore_columns(width),
             GroupFitStep::CutSession => self.cut_session(width),
@@ -853,6 +967,13 @@ impl<T: Copy> PresentationValues<T> {
             TreePresentation::Compressed | TreePresentation::HeightCompressed => self.compressed,
         }
     }
+}
+
+/// How a tree aligns its session header and cuts its names.
+#[derive(Clone, Copy)]
+struct NameLayout {
+    lead:            SessionHeaderLead,
+    name_cut_floors: NameCutFloors,
 }
 
 /// Rows reserved above the tree in either fitted presentation.
@@ -903,7 +1024,10 @@ impl TreeMeasurement {
             now,
             entry.sort,
             account_column,
-            SessionHeaderLead::OverBranch,
+            NameLayout {
+                lead:            SessionHeaderLead::OverBranch,
+                name_cut_floors: entry.name_cut_floors,
+            },
             TreeHeadingSpace {
                 offset: entry.viewport.borrow().scroll_offset(),
                 width:  u16::try_from(heading_width).unwrap_or(u16::MAX),
@@ -927,9 +1051,13 @@ impl TreeMeasurement {
         now: u64,
         sort: TreeSort,
         account_column: AccountColumn,
-        lead: SessionHeaderLead,
+        names: NameLayout,
         heading: TreeHeadingSpace,
     ) -> Self {
+        let NameLayout {
+            lead,
+            name_cut_floors,
+        } = names;
         let measured = tree_widths(lines, FULL_ACCOUNTS, now, sort, lead, &TreeSizing::Local);
         let mut widths = [0; TreeColumn::COUNT];
         for (column, width) in FULL_ACCOUNTS.iter().zip(measured) {
@@ -1003,6 +1131,14 @@ impl TreeMeasurement {
                 alignment: TreeColumnAlignment::Measured,
                 activity_floor,
                 activity_fit: ActivityFit::Whole,
+                names: NameCut {
+                    uncut_session:      widths[TreeColumn::Session as usize],
+                    uncut_branch:       widths[TreeColumn::Branch as usize],
+                    branch_label_width: summary::cell_width(
+                        &TreeColumn::Branch.sorted_header(sort),
+                    ),
+                    floors:             name_cut_floors,
+                },
             },
             ages,
             role_widths,
@@ -1123,7 +1259,10 @@ impl AgentTile<'_> {
                 now,
                 entry.sort,
                 account_column,
-                SessionHeaderLead::Flush,
+                NameLayout {
+                    lead:            SessionHeaderLead::Flush,
+                    name_cut_floors: entry.name_cut_floors,
+                },
                 TreeHeadingSpace {
                     offset: entry.viewport.borrow().scroll_offset(),
                     width:  0,
@@ -1207,6 +1346,7 @@ impl AgentTile<'_> {
 
 /// Every fitting pass either drops its named column or merges the final sets.
 enum GroupFitStep {
+    CutNames,
     Drop(ColumnDrop),
     Restore,
     CutSession,
@@ -1214,7 +1354,8 @@ enum GroupFitStep {
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 12] = [
+    const ORDER: [Self; 13] = [
+        Self::CutNames,
         Self::Drop(ColumnDrop::ORDER[0]),
         Self::Drop(ColumnDrop::ORDER[1]),
         Self::Drop(ColumnDrop::ORDER[2]),
@@ -1286,7 +1427,10 @@ impl MeasuredTreeGroup {
         group.metrics.widths[TreeColumn::Status as usize] =
             status_width(group.metrics.presentation);
         match step {
-            GroupFitStep::Drop(_) | GroupFitStep::Restore | GroupFitStep::CutSession => group
+            GroupFitStep::CutNames
+            | GroupFitStep::Drop(_)
+            | GroupFitStep::Restore
+            | GroupFitStep::CutSession => group
                 .members
                 .iter()
                 .map(|&index| {
@@ -1380,6 +1524,7 @@ fn align_screen_columns(groups: &mut [MeasuredTreeGroup]) {
             .session_guide_width
             .max(group.metrics.session_guide_width);
         common.activity_floor = common.activity_floor.max(group.metrics.activity_floor);
+        common.names.merge(group.metrics.names);
         // A tile draws only its own fitted columns, so the common fit adds back no other.
         common.measured_columns.union(group.metrics.columns);
         common.activity_fit = common
@@ -1840,10 +1985,12 @@ impl TreeLine<'_> {
         }
     }
 
-    /// The job, and the live word when the word adds to the job.
+    /// The job, and the live word when the word adds to the job. A job that
+    /// runs needs no `running` after it.
     fn job_and_live_word(&self, now: u64) -> ActivityParts {
         let job = self.activity_text(now);
         let live = match self.live_activity() {
+            AgentActivity::Active(Activity::Running) if !job.is_empty() => None,
             active @ AgentActivity::Active(activity) => (active.text() != job).then_some(activity),
             AgentActivity::Idle | AgentActivity::Unreported => None,
         };
@@ -1859,9 +2006,16 @@ impl TreeLine<'_> {
         }
         let text = match self.kind() {
             LineKind::Worker(source) => source.activity_text(),
-            LineKind::UnassignedSession | LineKind::Shell(ShellPurpose::Command) => "",
+            LineKind::UnassignedSession => "",
+            LineKind::Shell(ShellPurpose::Command) => match activity {
+                AgentActivity::Active(_) => "",
+                AgentActivity::Idle | AgentActivity::Unreported => RUNNING_JOB,
+            },
             LineKind::Session(role) => role.activity_text(),
-            LineKind::Subagent(role) => role.text(),
+            LineKind::Subagent(role) => match (role.text(), activity) {
+                ("", AgentActivity::Unreported) => RUNNING_JOB,
+                (text, _) => text,
+            },
             LineKind::Shell(ShellPurpose::Timer(timer)) => {
                 return match ShellState::resolve(
                     ShellTimerObservation::ObservedCountdown(timer),
@@ -1899,6 +2053,16 @@ impl TreeLine<'_> {
 
     fn session_status(&self) -> ReportedSessionState {
         match self.subject {
+            // A subagent whose scan says its turn ended is idle.
+            LineSubject::Work(Work {
+                kind: WorkKind::Subagent(_),
+                child:
+                    ChildRow {
+                        activity: AgentActivity::Idle,
+                        ..
+                    },
+                ..
+            }) => ReportedSessionState::Reported(SessionState::Idle),
             LineSubject::Work(Work {
                 kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
@@ -2168,6 +2332,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
             role_label: placement.role_label(root.identity),
             sort: TreeSort::default(),
             lines,
+            name_cut_floors: NameCutFloors::default(),
         });
     }
     cells
@@ -2344,6 +2509,8 @@ pub(crate) struct PooledEntry<'a> {
     sort:            TreeSort,
     /// Flat roots followed by the existing depth-first trees below them.
     lines:           Vec<TreeLine<'a>>,
+    /// The floors this tile cuts its session and branch names to.
+    name_cut_floors: NameCutFloors,
 }
 
 /// Classify live tile identities without building or ordering their rows.
@@ -2457,6 +2624,7 @@ fn pooled_tile<'a>(
         pool,
         sort,
         lines,
+        name_cut_floors: NameCutFloors::default(),
     }))
 }
 
@@ -3168,9 +3336,10 @@ pub(crate) fn draw(
                 now,
                 account_column,
                 TreeHeaderLayout {
-                    view:   &view,
-                    lead:   SessionHeaderLead::OverBranch,
-                    sizing: &entry.sizing.borrow(),
+                    view:            &view,
+                    lead:            SessionHeaderLead::OverBranch,
+                    sizing:          &entry.sizing.borrow(),
+                    name_cut_floors: entry.name_cut_floors,
                 },
             ),
             &TreeDraw {
@@ -3206,9 +3375,10 @@ fn pooled_header(
         now,
         account_column,
         TreeHeaderLayout {
-            view:   &view,
-            lead:   SessionHeaderLead::Flush,
-            sizing: &entry.sizing.borrow(),
+            view:            &view,
+            lead:            SessionHeaderLead::Flush,
+            sizing:          &entry.sizing.borrow(),
+            name_cut_floors: entry.name_cut_floors,
         },
     )
 }
@@ -3266,7 +3436,11 @@ fn tree_widths(
         .map(|&column| {
             if matches!(
                 column,
-                TreeColumn::Session | TreeColumn::Role | TreeColumn::Activity | TreeColumn::Status
+                TreeColumn::Session
+                    | TreeColumn::Branch
+                    | TreeColumn::Role
+                    | TreeColumn::Activity
+                    | TreeColumn::Status
             ) && let TreeSizing::Shared(metrics) = sizing
             {
                 return metrics.widths[column as usize];
@@ -3337,9 +3511,10 @@ struct TreeHeader {
 /// The fitted presentation and shared measurements used by drawing and hit testing.
 #[derive(Clone, Copy)]
 struct TreeHeaderLayout<'a> {
-    view:   &'a CellView,
-    lead:   SessionHeaderLead,
-    sizing: &'a TreeSizing,
+    view:            &'a CellView,
+    lead:            SessionHeaderLead,
+    sizing:          &'a TreeSizing,
+    name_cut_floors: NameCutFloors,
 }
 
 /// Measure and fit a tree when no shared group metrics were prepared.
@@ -3349,16 +3524,24 @@ fn local_tree_metrics(
     tree: Rect,
     now: u64,
     account_column: AccountColumn,
-    view: &CellView,
-    lead: SessionHeaderLead,
+    layout: TreeHeaderLayout<'_>,
 ) -> TreeMetrics {
+    let TreeHeaderLayout {
+        view,
+        lead,
+        name_cut_floors,
+        ..
+    } = layout;
     let mut measurement = TreeMeasurement::measure(
         lines,
         tree,
         now,
         sort,
         account_column,
-        lead,
+        NameLayout {
+            lead,
+            name_cut_floors,
+        },
         TreeHeadingSpace {
             offset: 0,
             width:  0,
@@ -3433,12 +3616,29 @@ fn tree_header(
     account_column: AccountColumn,
     layout: TreeHeaderLayout<'_>,
 ) -> TreeHeader {
-    let TreeHeaderLayout { view, lead, sizing } = layout;
+    let TreeHeaderLayout {
+        view,
+        lead,
+        sizing,
+        name_cut_floors,
+    } = layout;
     let local_metrics;
     let metrics = match sizing {
         TreeSizing::Shared(metrics) => metrics,
         TreeSizing::Local => {
-            local_metrics = local_tree_metrics(lines, sort, tree, now, account_column, view, lead);
+            local_metrics = local_tree_metrics(
+                lines,
+                sort,
+                tree,
+                now,
+                account_column,
+                TreeHeaderLayout {
+                    view,
+                    lead,
+                    sizing,
+                    name_cut_floors,
+                },
+            );
             &local_metrics
         },
     };
@@ -3548,9 +3748,10 @@ pub(crate) fn header_spans(
         now,
         account_column,
         TreeHeaderLayout {
-            view:   &view,
-            lead:   SessionHeaderLead::OverBranch,
-            sizing: &entry.sizing.borrow(),
+            view:            &view,
+            lead:            SessionHeaderLead::OverBranch,
+            sizing:          &entry.sizing.borrow(),
+            name_cut_floors: entry.name_cut_floors,
         },
     )
     .spans
@@ -3960,6 +4161,14 @@ fn time_left_label(left: u64) -> String {
 }
 
 impl AgentTile<'_> {
+    /// Set the floors this tile cuts its session and branch names to.
+    pub(crate) const fn set_name_cut_floors(&mut self, floors: NameCutFloors) {
+        match self {
+            Self::Agent(entry) => entry.name_cut_floors = floors,
+            Self::Pooled(entry) => entry.name_cut_floors = floors,
+        }
+    }
+
     /// Apply expansion after sorting and color assignment.
     pub(crate) fn apply_expansion(&mut self, expansion: &HandlerExpansion) {
         let level = expansion.level(&self.key());
@@ -4572,6 +4781,7 @@ mod tests {
             hue: SessionHue::First,
             role_label: RoleLabel::Unlabeled,
             sort: TreeSort::default(),
+            name_cut_floors: NameCutFloors::default(),
             lines: {
                 let mut lines = Vec::new();
                 let placement = AgentPlacement::from_machines(&[], &EMPTY_SESSION_STATES);
@@ -4736,10 +4946,10 @@ mod tests {
                     " ~/rust/tool-based-ui-trunk",
                     " launched by boss of bosses",
                     "     session                                                                                                                                     role    activity  status  type",
-                    " ├── Launch the Phase 1 implementation seat                                                                                                                        busy    shell",
+                    " ├── Launch the Phase 1 implementation seat                                                                                                              running   busy    shell",
                     " │ └── tool-based-ui-trunk-impl                                                                                                                  worker            idle",
-                    " └── Review the permission queue                                                                                                                 worker            busy    subagent",
-                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                          busy    shell",
+                    " └── Review the permission queue                                                                                                                 worker            idle    subagent",
+                    "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                                running   busy    shell",
                 ]
             );
             if let ReportedSessionState::Reported(state) = source_state {
@@ -4951,9 +5161,9 @@ mod tests {
             (status_x..status_x + 4)
                 .map(|x| cut[(x, subagent_y)].symbol())
                 .collect::<String>(),
-            "busy"
+            "idle"
         );
-        assert_eq!(Some(cut[(status_x, subagent_y)].fg), Role::Busy.style().fg);
+        assert_eq!(Some(cut[(status_x, subagent_y)].fg), Role::Idle.style().fg);
     }
 
     /// The text of each run of cells drawn in `color`, row by row,

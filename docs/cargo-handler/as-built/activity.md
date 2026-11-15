@@ -112,6 +112,15 @@ Only `ObservedCountdown` gives the activity `timer`.
 Expiry leaves the activity `timer`.
 The status remains `busy` with the Busy ink.
 An untimed row named `sleep 300`, or `sleep infinity`, has no timer activity.
+A shell command row is always `busy`.
+It shows its scanned word alone, such as a verification step or `waiting`.
+With a scanned `idle` or unreported activity, it reads `running` (`RUNNING_JOB`, the `Activity::Running` text).
+A subagent row is `busy`, except that a scanned `idle` makes its status `idle`, because its turn ended.
+A subagent row with no role word and an unreported activity reads `running`, the same as a shell command row.
+So no busy row has an empty activity cell.
+`TreeLine::job_and_live_word` adds the live word after the job, as in `reviewer · waiting`.
+A job never takes the live word `running` after it: a running reviewer reads `reviewer`.
+A row with no job and the live word `running` reads `running`.
 The type column identifies shell rows once.
 
 ### Wire compatibility

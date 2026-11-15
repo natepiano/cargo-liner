@@ -62,6 +62,7 @@ use crate::census::RoleLabel;
 use crate::census::accounts::AccountsTable;
 #[cfg(test)]
 use crate::census::scan::ScanStage;
+use crate::config::NameCutFloors;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
@@ -213,6 +214,7 @@ fn draw_panes_at(
     )
     .with_color_mode(app.framework.color_mode)
     .with_expansion(&app.expansion)
+    .with_name_cut_floors(app.loaded_config.config.tiles.name_cut_floors())
     .with_accounts_sort(app.accounts_sort)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
     let minimum = cells.measure_trees(area);
@@ -681,6 +683,17 @@ impl<'a> Cells<'a> {
     fn with_expansion(mut self, expansion: &HandlerExpansion) -> Self {
         for tile in &mut self.tiles {
             tile.apply_expansion(expansion);
+        }
+        self
+    }
+
+    /// Cut session and branch names to the configured floors in every tile.
+    fn with_name_cut_floors(mut self, floors: NameCutFloors) -> Self {
+        for agent in &mut self.agents {
+            agent.set_name_cut_floors(floors);
+        }
+        for tile in &mut self.tiles {
+            tile.set_name_cut_floors(floors);
         }
         self
     }

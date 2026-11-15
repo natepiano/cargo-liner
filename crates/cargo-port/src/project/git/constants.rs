@@ -50,23 +50,34 @@ pub(super) const GIT_STATUS_PORCELAIN_V1_ARG: &str = "--porcelain=v1";
 pub(super) const GIT_STATUS_UNTRACKED_ALL_ARG: &str = "--untracked-files=all";
 pub(super) const GIT_VERIFY_ARG: &str = "--verify";
 
-// `GIT_BISECT_BAD_REF`, local/remote reference constants and
-// `GIT_TREE_SUBMODULE_MODE` identify Git metadata paths and entries.
+// `GIT_BISECT_BAD_REF`, local/remote reference constants, `GIT_REFLOG_DIR`,
+// `GIT_SYMBOLIC_REF_PREFIX` and `GIT_TREE_SUBMODULE_MODE` identify Git metadata
+// paths and entries.
 pub(super) const GIT_BISECT_BAD_REF: &str = "refs/bisect/bad";
 pub(super) const GIT_BISECT_GOOD_REF_PREFIX: &str = "refs/bisect/good-";
 pub(super) const GIT_BISECT_REFS_PREFIX: &str = "refs/bisect/";
 pub(super) const GIT_BISECT_START_FILE: &str = "BISECT_START";
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
 pub(super) const GIT_ORIGIN_HEAD_REF: &str = "refs/remotes/origin/HEAD";
+pub(super) const GIT_REFLOG_DIR: &str = "logs";
 pub(super) const GIT_REMOTE_HEAD_REF_SUFFIX: &str = "/HEAD";
 pub(super) const GIT_REMOTE_REF_PREFIX: &str = "refs/remotes/";
+/// The start of a `HEAD` file that names a ref, as in `ref: refs/heads/main`.
+pub(super) const GIT_SYMBOLIC_REF_PREFIX: &str = "ref: ";
 pub(super) const GIT_TREE_SUBMODULE_MODE: &str = "160000";
 
-// `GIT_CHECK_IGNORE_COMMAND` and the status-code constants let
-// `checkout::read_git_status` classify a project path.
+// `GIT_CHECK_IGNORE_COMMAND`, the change-probe commands and the status-code
+// constants let `checkout::read_git_status` classify a project path.
 pub(super) const GIT_CHECK_IGNORE_COMMAND: &str = "check-ignore";
+pub(super) const GIT_DIFF_COMMAND: &str = "diff";
+pub(super) const GIT_DIFF_INDEX_COMMAND: &str = "diff-index";
 pub(super) const GIT_DOUBLE_DASH_ARG: &str = "--";
+pub(super) const GIT_EXCLUDE_STANDARD_ARG: &str = "--exclude-standard";
 pub(super) const GIT_IGNORED_STATUS_CODE: &str = "!!";
+pub(super) const GIT_LITERAL_PATHSPEC_PREFIX: &str = ":(literal)";
+pub(super) const GIT_NAME_ONLY_ARG: &str = "--name-only";
+pub(super) const GIT_NO_EXT_DIFF_ARG: &str = "--no-ext-diff";
+pub(super) const GIT_OTHERS_ARG: &str = "--others";
 pub(super) const GIT_QUIET_SHORT_ARG: &str = "-q";
 pub(super) const GIT_UNTRACKED_STATUS_CODE: &str = "??";
 
