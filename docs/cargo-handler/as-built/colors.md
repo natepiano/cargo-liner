@@ -106,10 +106,11 @@ Sorting happens after hue assignment.
 Unselected palettes also use CIEDE2000 separation checks.
 Their tests hold the measured floors for each built-in theme.
 Five hues cannot satisfy every proposed spacing floor with the other row inks fixed.
-The current light reset band retains measured session separation floors of 14.7 and 15.3.
+The light reset steps keep measured session separation floors of 14.7 and 15.3.
 Do not treat those floors as an unmeasured universal distance of 20.
-The dark reset steps differ mainly by hue.
-The light reset steps differ by violet lightness.
+The three reset steps are green, blue and violet in every built-in theme, and each pair is at least 20 CIEDE2000 apart.
+A reset ink keeps 20 CIEDE2000 from error red and the low-quota alarm, and 20 from the low-quota warning on dark themes and 17 on light themes.
+Reset inks have no hue floor from the account inks.
 `ResetRank` remains the only reset-color source.
 See [accounts](accounts.md) for rank assignment and the three steps.
 

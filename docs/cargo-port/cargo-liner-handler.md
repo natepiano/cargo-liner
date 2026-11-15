@@ -403,59 +403,37 @@ A shell command row draws `shell_command::short_command`, which cuts each path a
 
 **Ruled out:** moving effort later in the drop order, and deferring the column rule.
 
-### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: todo
+### Phase 17 — Reset times in the accounts footer take three clearly different colors  · status: done
 
-**Depends on:** Phase 5 (it extends the theme loader that Phase 5 extends with `waiting`)
+#### As-built
 
-#### Work Order
+Three theme roles set the reset times in the accounts footer: `reset_soonest`, `reset_middle` and `reset_latest`. Every built-in theme file sets all three, a custom theme can override each one, and a theme without them takes the Default Dark colors. `reset_nearest` and `reset_farthest` are gone. The steps are different hue families: soonest green (the quota comes back soon), middle blue, latest violet; no step is red.
 
-**Goal:** the soonest, middle and latest reset times in the accounts footer each draw in a different hue, so the step is plain at a glance.
+`ResetStep` (`Soonest`, `Middle`, `Latest`) holds the rank rule through `From<ResetRank>`: the first quarter of distinct ranks is `Soonest`, the last quarter is `Latest`, and the rest are `Middle`; a single reset is `Soonest`. `ResetRank` stays the checked rank type, with strict quarter edges. `ResetRank::color` reads the step's role from the active theme.
 
-**Source:** the user, via the showrunner, 2026-11-11, on C264 (returned): "they differ but it's still preetty subtle - i would prefer there being true  color differences". C264 is phase 53 of the earlier handler plan: three steps blended from `reset_nearest` to `reset_farthest`. Dark themes step from green to teal; light themes step in violet lightness.
-
-**Spec:**
-
-Director decisions:
-1. Three theme roles replace the two-end blend: `reset_soonest`, `reset_middle` and `reset_latest`. Each theme file sets all three. No sRGB midpoint. `reset_nearest` and `reset_farthest` go.
-2. Each step is a different hue family: soonest green (the quota comes back soon), middle gold, latest blue. No step is red.
-3. `ResetRank::color` keeps its rank rule: the first quarter of ranks takes `reset_soonest`, the last quarter takes `reset_latest`, and the rest take `reset_middle`. A single reset takes `reset_soonest`.
-4. Every pair of steps is at least 20 CIEDE2000 apart, in every built-in theme, with the pane tint on and off. This replaces the 5.0 floor of phase 53, which let the user see only a subtle change.
-5. The other phase 53 rules stay: each step stays readable on its ground after `readable_status_style`, and no step matches a session name color, at the measured floors that the tests hold.
-6. One contrast measure (showrunner, 2026-11-13). The footer color tests use `tui_pane::contrast_ratio` (`crates/tui_pane/src/theme/blend.rs`). The `contrast_ratio` helper in `footer_colors/tests.rs` goes. The shared measure returns `Option<f64>`, which is `None` for `Color::Reset`; a test unwraps it with a message that names the two colors.
-
-**Constraints from prior phases:**
-- Phase 5 extends the bundled theme loading with the `waiting` role. Extend that loader with the new reset roles; do not make a second load path. Keep the `waiting` inheritance and contrast tests green. Load the new reset roles from the bundled theme files, with inheritance and custom-override tests. The Phase 2 config reader handles emphasis only; themes use the theme-loading path.
-- Phase 2: `MatchInk::resolve` can change a foreground after selection and word highlight. The new inks keep their readability and differences at every emphasis; add these cases to `render/word_contrast_tests.rs`.
-- Keep `ResetRank` as the checked rank type, with its strict quarter edges and its single-reset rule. Measure the drawn colors, not only the theme role values. The current gradient test allows four steps and checks only neighbor pairs.
-- `accounts.md` names the new keys that replace `reset_nearest` and `reset_farthest` for custom themes.
-
-Tests (red first, each under one second):
-1. Each built-in theme file sets the three roles, and a theme file can override each one.
-2. The rank rule gives soonest, middle and latest in order; a single reset gives soonest.
-3. A footer with all three rank groups draws exactly three reset colors. Every pair is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, tint on and off.
-4. The existing contrast, no-red and session-color tests pass with the new colors.
-5. Equal reset times, one distinct reset and exact quarter edges keep the rank rule. A custom theme without the new roles takes the defaults.
-6. The footer color tests in `footer_colors/tests.rs` and `footer_colors/ground_tests.rs` pass with `tui_pane::contrast_ratio`, with their floors unchanged.
-
-**Live check (director):** before the checkpoint, capture the accounts footer with three or more distinct reset times from a build of this branch and from main, on the default theme and on one light theme, under the safety rule.
-
-**Change-Review line:** Reset times in the accounts footer take three clearly different colors | On natedev, run cargo-handler and look at the resets column of the accounts footer | The soonest resets are green, the middle ones gold, and the latest ones blue, on dark and light themes
+- Dark themes: soonest (0,203,123), middle (10,191,255), latest (204,158,255). Light themes: soonest (0,88,13), middle (2,78,124), latest (130,0,206).
+- Every pair of drawn steps is at least 20 CIEDE2000 apart after `readable_status_style`, in every built-in theme, with the pane tint on and off. On light themes each reset ink keeps 17 CIEDE2000 from the low-quota warning ink.
+- The footer color tests measure with `tui_pane::contrast_ratio`; `footer_colors/tests.rs` keeps `contrast_ratio` as a thin wrapper that names the two colors when the measure fails.
 
 **Files:**
-- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the theme role set
-- `crates/cargo-handler/themes/*.toml` — the three roles in each built-in theme
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order and distance
-- `crates/cargo-handler/src/theme/files_tests.rs` — theme file roles
-- `crates/cargo-handler/src/theme/files.rs` — custom theme role load and defaults
-- `crates/cargo-handler/src/footer_colors/tests.rs`, `crates/cargo-handler/src/footer_colors/ground_tests.rs` — the footer contrast tests on the shared measure
-- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset steps
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetStep`, `ResetRank`
+- `crates/cargo-handler/src/theme/files.rs` — the loader reads the three roles
+- `crates/cargo-handler/src/constants.rs` — `RESET_SOONEST_ROLE`, `RESET_MIDDLE_ROLE`, `RESET_LATEST_ROLE`
+- `crates/cargo-handler/themes/*.toml` — the three role colors in each built-in theme
+- `crates/cargo-handler/src/theme/files_tests.rs` — role load, override, distance and contrast floors
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — rank order and the drawn footer colors
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — reset step word matches at every emphasis
+- `crates/cargo-handler/src/footer_colors/tests.rs` — the shared contrast measure
+- `docs/cargo-handler/as-built/accounts.md`, `docs/cargo-handler/as-built/colors.md` — the reset roles
 
-**Workers:** 1 writer.
-- `impl` — every file above, and the tests.
+**Binds later work:** `render/word_contrast_tests.rs` holds the reset step cases (`check_reset_step_match`, `RESET_STEP_RANKS`, `EMPHASES`); the slow tests phase keeps them.
 
-**State:** none
+**Gotchas:**
+- On a selected row the 4.5 lift takes every matched ink near white, so the 20 CIEDE2000 step distance holds on plain matches only.
+- The session and reset color floors (14.7, 15.3) are in `render/role_title_tests.rs`.
+- No readable light green keeps 20 CIEDE2000 from the olive low-quota warning and 15 from the Astra reviewer green; the light floor is 17.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows three different hues in the resets column on both themes.
+**Ruled out:** a sRGB midpoint between two end roles; a gold step (it fails the chroma and warning floors on light themes); the 5.0 step floor of the earlier gradient, which the user could not see.
 
 ### Phase 18 — A worker that waits on a detached run reads "waiting" in its status cell  · status: done (accounts merge ce37d0e40)
 
@@ -463,7 +441,111 @@ Tests (red first, each under one second):
 
 **As-built:** the accounts unit built C324 on branch `accounts-board-states` (fix 7c85370c3), merged into main as ce37d0e40 and into this branch at the Phase 4 start. `SessionState::Waiting` reads the accounts report word `waiting`, and the status cell draws it. The `waiting` bright yellow ink for the status word is in Phase 5.
 
-### Phase 19 — Twelve slow tests run in under one second  · status: todo
+### Phase 19 — Every busy shell row shows what it does  · status: todo
+
+**Depends on:** Phase 12 (it fills the busy activity cell of conversation lines)
+
+#### Work Order
+
+**Goal:** a busy shell command row draws an activity word, as every other busy row does.
+
+**Source:** the showrunner, 2026-11-14, on C346 (returned, Phase 12): the user said "i see a bunch of busy rows that don't have an activity". The user's screenshot shows four shell child rows with an empty activity cell: "cd hana_catalys…" under demo, "Run the P96 wo…" under fastest, and "Run the full C…" and "Run verify fin…" under hana-merges.
+
+**Spec:**
+
+Director decisions:
+1. A shell command row (`ShellPurpose::Command`) draws `running` (`Activity::Running`) in its activity cell. Its status is always `busy` (`TreeLine::session_status`), so the empty cell is the defect. The `running` word comes from the one `Activity::Running` text, not from a second string.
+2. A scanned activity that names work still wins: a shell row with a verification step or `waiting` keeps that word.
+3. Timer rows keep `timer` and their countdown. Subagent rows keep their role text.
+4. Phase 12 ruled that shell and subagent work lines take no `thinking`. This stays: `thinking` is a conversation word.
+
+**Constraints from prior phases:**
+- Phase 12: `TreeLine::conversation_activity` serves only conversation lines, and `activity_parts` takes no line-kind branch. Put the shell rule where the shell job text comes from (`TreeLine::activity_text`), not in a new branch of `activity_parts`.
+- Phase 16: `TreeLine::display_name` holds the short command and `TreeLine::name` the full one. Do not change either.
+- Status sorting uses the displayed activity text, so shell rows now sort under `running`.
+
+Tests (red first, each under one second):
+1. A shell command row with an idle or unreported scanned activity draws `running`.
+2. A shell command row with a verification step or `waiting` draws that word, once.
+3. A timer row draws `timer` and its countdown, unchanged.
+4. A tile with busy session, worker, unassigned, subagent, timer and shell command rows has no empty activity cell on a busy row.
+
+**Live check (director):** before the checkpoint, capture a tile with a busy shell child row from a build of this branch and from main, under the safety rule.
+
+**Change-Review line:** Every busy shell row shows what it does | On natedev, run cargo-handler while a session runs a background shell command | The shell child row reads `running` in its activity column, and no busy row has an empty activity
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::activity_text` for `ShellPurpose::Command`
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs` — the tests
+- `docs/cargo-handler/as-built/activity.md` — the shell row activity
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `running` on a busy shell child row.
+
+### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: todo
+
+**Depends on:** Phase 16 (it changes the column fit order and its restore step); Phase 19 (a shell row shows `running`)
+
+#### Work Order
+
+**Goal:** at 125 columns a tile shows model and effort on Claude rows, and no activity cell ends in "· running".
+
+**Source:** the showrunner, 2026-11-14, on C352 (returned, Phase 16). The user said: "there is space to be had - the "reviewer - running" is entirely wasteful - running - the " - running" seems unnecessary if that's what it is doing. the model and effort only show when it's really wide or it is zoomed - so reclaiming some space is a good idea and maybe we could show it when it isn't as wide as this and still show more info". The screenshots: the natedev showrunner tile at 127 columns shows no type, model or effort, and its worker row reads "reviewer · running". The hana and cargo-liner tiles at 125 columns show type and model but no effort.
+
+**Spec:**
+
+Showrunner rulings (design authority, 2026-11-14):
+1. The activity cell never adds "· running". A worker row whose live word is `running` shows its job alone ("reviewer"). Other live words stay ("reviewer · waiting").
+2. Make room for model and effort in this order: size the activity column to its widest live cell, not a fixed width; then cut branch and session text with "…" before any column drops. This is the user's rule from C205: columns stay, and long names get "…" first.
+3. When model and effort still do not fit after step 2, drop effort first, then model, as now.
+
+Director decisions:
+1. Ruling 1 applies only when the row has a job. A row with no job text and the live word `running` draws `running`, so a busy row never draws an empty cell (Phases 12 and 19).
+2. `GroupFitStep` gets one cut step before the five optional drops: `CutNames` cuts the session and branch columns, each to its floor. Then the drops, the restore and the later steps run as now. The restore adds a column back only where it fits beside the cut names.
+3. Each name column has a floor in the tiles config: `session_cut_floor` and `branch_cut_floor` in `TilesConfig`, with their defaults in `constants.rs`. A cut never takes a column below its floor, its header or the session minimum. Set the defaults so that the 125 and 127 column tiles of the C352 screenshots keep model and effort.
+4. The activity column already takes its width from the visible cells (`visible_widths`). Keep that, and add a test that the column width follows the widest drawn cell.
+5. Phase 16 ruled that the restore uses the uncut session width. This ruling replaces that rule: a long session name now takes "…" before an optional column drops.
+
+**Constraints from prior phases:**
+- Phase 16: `ColumnDrop::ORDER` stays the priority order: effort, model, directory, type, branch. Added-back columns keep their display positions. Each tile adds back only columns its rows fill; the shared fit at one x adds back only columns one of its tiles keeps.
+- Phase 16: a shell row adds only its tree lead to the session demand. Keep it.
+- Phase 3: a long session name is cut before the required columns drop. Keep the later `CutSession` step for the cut below the floor.
+- Phase 12 and Phase 19: a busy row never draws an empty activity cell.
+
+Tests (red first, each under one second):
+1. A worker row with the job "reviewer" and the live word `running` draws "reviewer". With `waiting`, it draws "reviewer · waiting".
+2. A row with no job and the live word `running` draws `running`.
+3. At 125 columns, a tile with a long session name and a long branch keeps model and effort, and the session and branch end in "…".
+4. A cut stops at each floor. Below the width where model and effort fit after the cut, effort drops first, then model.
+5. The activity column width equals the widest drawn activity cell.
+6. The `session_cut_floor` and `branch_cut_floor` keys load from the config, and their defaults apply when the keys are absent.
+7. The Phase 16 column visibility tests pass, with the uncut-session restore tests changed to the new rule.
+
+**Live check (director):** before the checkpoint, capture tiles at 125 and 127 columns from a build of this branch and from main, under the safety rule. The capture shows model and effort on Claude rows and no "· running".
+
+**Change-Review line:** At 125 columns, Claude rows show model and effort, and no activity reads "· running" | On natedev, run cargo-handler in a pane 125 to 127 columns wide | Claude rows show model and effort; long session and branch names end in "…"; a running worker reads "reviewer", not "reviewer · running"
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::job_and_live_word`, `GroupFitStep`, the name cut step
+- `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs` — the two floors and their defaults
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — the tests
+- `docs/cargo-handler/as-built/tile-layout.md`, `docs/cargo-handler/as-built/activity.md` — the fit order and the activity text
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check at 125 and 127 columns shows model and effort on Claude rows and no "· running".
+
+### Phase 21 — Twelve slow tests run in under one second  · status: todo
+
+**Numbering:** this phase was Phase 19 until 2026-11-14. The new Phases 19 and 20 moved it to 21.
+
 
 **Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
 
@@ -496,7 +578,7 @@ The tests and their measured times:
 
 **Constraints from prior phases:**
 - `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 17 adds reset-ink cases to `render/word_contrast_tests.rs`. Keep them.
+- Phase 17 adds reset-step cases to `render/word_contrast_tests.rs`: `check_reset_step_match`, `RESET_STEP_RANKS` and the shared `EMPHASES` list. Keep them.
 - Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
 - Phase 16 adds `long_shell_application` and its two tests to `render/details_tests.rs`: the drawn short command, and `d` and `y` on the full command. Keep them.
 
