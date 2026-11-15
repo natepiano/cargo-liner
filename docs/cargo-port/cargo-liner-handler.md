@@ -508,9 +508,65 @@ Tests (red first, each under one second):
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check shows `running` on a busy shell child row.
 
-### Phase 20 — Twelve slow tests run in under one second  · status: todo
+### Phase 20 — The activity cell drops "· running", and long names take "…" before model and effort drop  · status: todo
 
-**Numbering:** this phase was Phase 19 until 2026-11-14, when the new Phase 19 moved it to 20.
+**Depends on:** Phase 16 (it changes the column fit order and its restore step); Phase 19 (a shell row shows `running`)
+
+#### Work Order
+
+**Goal:** at 125 columns a tile shows model and effort on Claude rows, and no activity cell ends in "· running".
+
+**Source:** the showrunner, 2026-11-14, on C352 (returned, Phase 16). The user said: "there is space to be had - the "reviewer - running" is entirely wasteful - running - the " - running" seems unnecessary if that's what it is doing. the model and effort only show when it's really wide or it is zoomed - so reclaiming some space is a good idea and maybe we could show it when it isn't as wide as this and still show more info". The screenshots: the natedev showrunner tile at 127 columns shows no type, model or effort, and its worker row reads "reviewer · running". The hana and cargo-liner tiles at 125 columns show type and model but no effort.
+
+**Spec:**
+
+Showrunner rulings (design authority, 2026-11-14):
+1. The activity cell never adds "· running". A worker row whose live word is `running` shows its job alone ("reviewer"). Other live words stay ("reviewer · waiting").
+2. Make room for model and effort in this order: size the activity column to its widest live cell, not a fixed width; then cut branch and session text with "…" before any column drops. This is the user's rule from C205: columns stay, and long names get "…" first.
+3. When model and effort still do not fit after step 2, drop effort first, then model, as now.
+
+Director decisions:
+1. Ruling 1 applies only when the row has a job. A row with no job text and the live word `running` draws `running`, so a busy row never draws an empty cell (Phases 12 and 19).
+2. `GroupFitStep` gets one cut step before the five optional drops: `CutNames` cuts the session and branch columns, each to its floor. Then the drops, the restore and the later steps run as now. The restore adds a column back only where it fits beside the cut names.
+3. Each name column has a floor in the tiles config: `session_cut_floor` and `branch_cut_floor` in `TilesConfig`, with their defaults in `constants.rs`. A cut never takes a column below its floor, its header or the session minimum. Set the defaults so that the 125 and 127 column tiles of the C352 screenshots keep model and effort.
+4. The activity column already takes its width from the visible cells (`visible_widths`). Keep that, and add a test that the column width follows the widest drawn cell.
+5. Phase 16 ruled that the restore uses the uncut session width. This ruling replaces that rule: a long session name now takes "…" before an optional column drops.
+
+**Constraints from prior phases:**
+- Phase 16: `ColumnDrop::ORDER` stays the priority order: effort, model, directory, type, branch. Added-back columns keep their display positions. Each tile adds back only columns its rows fill; the shared fit at one x adds back only columns one of its tiles keeps.
+- Phase 16: a shell row adds only its tree lead to the session demand. Keep it.
+- Phase 3: a long session name is cut before the required columns drop. Keep the later `CutSession` step for the cut below the floor.
+- Phase 12 and Phase 19: a busy row never draws an empty activity cell.
+
+Tests (red first, each under one second):
+1. A worker row with the job "reviewer" and the live word `running` draws "reviewer". With `waiting`, it draws "reviewer · waiting".
+2. A row with no job and the live word `running` draws `running`.
+3. At 125 columns, a tile with a long session name and a long branch keeps model and effort, and the session and branch end in "…".
+4. A cut stops at each floor. Below the width where model and effort fit after the cut, effort drops first, then model.
+5. The activity column width equals the widest drawn activity cell.
+6. The `session_cut_floor` and `branch_cut_floor` keys load from the config, and their defaults apply when the keys are absent.
+7. The Phase 16 column visibility tests pass, with the uncut-session restore tests changed to the new rule.
+
+**Live check (director):** before the checkpoint, capture tiles at 125 and 127 columns from a build of this branch and from main, under the safety rule. The capture shows model and effort on Claude rows and no "· running".
+
+**Change-Review line:** At 125 columns, Claude rows show model and effort, and no activity reads "· running" | On natedev, run cargo-handler in a pane 125 to 127 columns wide | Claude rows show model and effort; long session and branch names end in "…"; a running worker reads "reviewer", not "reviewer · running"
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine::job_and_live_word`, `GroupFitStep`, the name cut step
+- `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs` — the two floors and their defaults
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — the tests
+- `docs/cargo-handler/as-built/tile-layout.md`, `docs/cargo-handler/as-built/activity.md` — the fit order and the activity text
+
+**Workers:** 1 writer.
+- `impl` — every file above, and the tests.
+
+**State:** none
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass with all listed tests. The live check at 125 and 127 columns shows model and effort on Claude rows and no "· running".
+
+### Phase 21 — Twelve slow tests run in under one second  · status: todo
+
+**Numbering:** this phase was Phase 19 until 2026-11-14. The new Phases 19 and 20 moved it to 21.
 
 
 **Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
