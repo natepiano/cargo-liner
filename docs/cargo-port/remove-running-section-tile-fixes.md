@@ -2510,7 +2510,7 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Files:** `crates/cargo-berth/src/git/{lock_holders_macos.rs,error.rs,constants.rs}`, `crates/cargo-berth/Cargo.toml`, `crates/cargo-berth/tests/{hooks,board,edges,lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/proof_subject_templates.rs`, `crates/cargo-berth-test-support/src/{constants,git_trace,lib,recorded_history,repository_template}.rs`, `crates/cargo-berth-test-support/src/git_driver/mod.rs`.
 
-### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: todo
+### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: done
 
 **Depends on:** Phase 58d (order only; the same test files and the same lock causes).
 
@@ -3580,6 +3580,38 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 - Gate: lint for tui_pane (natedev and Mac), cargo-tile and cargo-handler; 1,389 tui_pane and 1,202 cargo-handler tests. Three cargo-handler tests that this phase does not edit took 1.04-1.15 s; the showrunner routes them.
 
 **Files:** `crates/tui_pane/src/bar/{counter_rate,disk_reads,rate_label,cpu,constants,mod,status_line,status_line_gap_tests,status_bar_contrast_tests}.rs`, `crates/tui_pane/src/framework/mod.rs`, `crates/cargo-handler/src/render/mod.rs` (the `GRID_STATUS` test string).
+
+### Phase 62a — Reads/s stays beside CPU at 100 columns or more  · status: todo
+
+**Depends on:** Phase 58g (order only). It runs next, before Phase 43j (change review fault; director, 2026-11-14).
+
+Change review C350 returned Phase 62 (merged 845e76993) as a fault (showrunner, 2026-11-14). The row promises `Reads/s` at 100 columns or more. At 120 columns, cargo-port showed `Uptime: 1s CPU: 48% Reads/s: 77 MB` at 1 s. From 2 s to 5 s, while the app scanned the disk, it showed `Uptime: 2s CPU: 340%` with no `Reads/s`. The navigation hints and the `Disk cache:` note stayed. At 160 and 220 columns the field showed. cargo-tile and cargo-handler at 120 columns showed the field. Evidence: `/tmp/claude/session/c27e8199-9b2d-4d7c-a824-e30b8c9db1fb/claude-1000/-home-natepiano-rust-cargo-liner-docs-cargo-port/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/c350/lines.txt`.
+
+Cause (director read of main): `fitted_left_spans` (`crates/tui_pane/src/bar/status_line.rs:568`) adds `Reads/s` only when uptime, every navigation hint and `Reads/s` fit in the left room. `render_sections` fits the right side (notes and globals) first, so the left room is what the notes leave. A wider CPU value (`340%`) then removes `Reads/s` before any hint or note. This is the Phase 62 rule "On a narrow row, `Reads/s` is added only after every navigation hint fits". The cause is in tui_pane, not in the cargo-port layout.
+
+#### Work Order
+
+**Goal:** at 100 columns or more, every app shows `Reads/s: <rate>` directly after `CPU:` on every frame. Lower-value text drops first.
+
+**Spec:**
+
+1. Make uptime, CPU and `Reads/s` one left group. Fit that group before the navigation hints and before the right-side notes.
+2. When the row is too narrow for all items, drop in this order: whole navigation hints from the right, then right-side notes from the left, as the current rules drop them. `Reads/s` drops only when the group itself does not fit.
+3. Keep the `? shortcuts` global and every other current rule. Keep the 80-column cargo-handler `GRID_STATUS` row as main has it, unless the new rule changes it; then update the test string and say why in the as-built.
+4. Add a test that draws a cargo-port-shaped row (scan indicator, a three-digit CPU value such as `447%`, the navigation hints and a `Disk cache:` note) at 100 and 120 columns. The test requires `Reads/s` after `CPU:`. It must fail on the code before the change.
+5. Change no app's status line content. cargo-port's notes and hints stay as port made them.
+
+**Files:**
+
+- `crates/tui_pane/src/bar/status_line.rs` — the fit order
+- `crates/tui_pane/src/bar/status_line_gap_tests.rs` — tests, when they fit there
+- `crates/cargo-handler/src/render/mod.rs` — the `GRID_STATUS` test string, only under spec item 3
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`. In no-worker mode, the director writes it.
+
+**Constraints from prior phases:** Phase 62: one `#[allow(clippy::cast_precision_loss)]` is user-approved; add no other allow. Phase 58b: a test at 1 s or more is a defect.
+
+**Acceptance gate:** `verify.sh lint tui_pane` and `verify.sh test tui_pane` green on natedev; `verify.sh test cargo-handler` green. The fix returns as a new change review row, and that review checks cargo-port at 120 columns.
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 

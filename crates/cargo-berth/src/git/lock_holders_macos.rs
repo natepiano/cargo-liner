@@ -30,12 +30,24 @@ struct VnodeFdInfoWithPath {
     vnode: libc::vnode_info_path,
 }
 
+/// Whether a process runs as the user that runs the scan.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessUser {
+    /// macOS refuses this user's own processes only for a descriptor path in a data vault.
+    Current,
+    /// macOS can refuse another user's processes on the user ID check alone.
+    Other,
+}
+
 /// Report absence only when every relevant process was inspected.
 pub(super) fn open_file_holders(path: &Path) -> GitLockHolders {
     let Ok(path) = path.canonicalize() else {
         return GitLockHolders::Unavailable;
     };
     let Ok(metadata) = path.metadata() else {
+        return GitLockHolders::Unavailable;
+    };
+    let Ok(current_user) = current_user() else {
         return GitLockHolders::Unavailable;
     };
     let Ok(processes) = process_ids() else {
@@ -52,7 +64,12 @@ pub(super) fn open_file_holders(path: &Path) -> GitLockHolders {
                 continue;
             },
         };
-        match process_holds_file(pid, &path) {
+        let process_user = if owner == current_user {
+            ProcessUser::Current
+        } else {
+            ProcessUser::Other
+        };
+        match process_holds_file(pid, &path, process_user) {
             Ok(true) => {
                 if let Ok(pid) = u32::try_from(pid) {
                     holders.push(pid);
@@ -70,6 +87,12 @@ pub(super) fn open_file_holders(path: &Path) -> GitLockHolders {
     } else {
         GitLockHolders::NoProcessHoldsIt
     }
+}
+
+fn current_user() -> io::Result<libc::uid_t> {
+    libc::pid_t::try_from(std::process::id())
+        .map_err(io::Error::other)
+        .and_then(process_owner)
 }
 
 #[allow(unsafe_code, reason = "libproc lists process IDs without a subprocess")]
@@ -124,7 +147,11 @@ fn process_owner(pid: libc::pid_t) -> io::Result<libc::uid_t> {
     Ok(unsafe { info.assume_init() }.pbsi_uid)
 }
 
-fn process_holds_file(pid: libc::pid_t, path: &Path) -> io::Result<bool> {
+fn process_holds_file(
+    pid: libc::pid_t,
+    path: &Path,
+    process_user: ProcessUser,
+) -> io::Result<bool> {
     let mut incomplete = false;
     for descriptor in process_descriptors(pid)? {
         if descriptor.proc_fdtype
@@ -135,8 +162,14 @@ fn process_holds_file(pid: libc::pid_t, path: &Path) -> io::Result<bool> {
         match descriptor_path(pid, descriptor.proc_fd) {
             Ok(target) if target == path.as_os_str().as_bytes() => return Ok(true),
             Ok(_) => {},
-            // A descriptor can close between the list and the path query.
-            Err(error) if error.raw_os_error() == Some(libc::EBADF) => {},
+            // A descriptor can close between the list and the path query. A revoked descriptor
+            // answers `ENOENT`: it names no file.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::EBADF | libc::ENOENT)) => {},
+            // `open_file_holders` reads the lock file's metadata first, so the lock file is not
+            // in a data vault.
+            Err(error)
+                if error.raw_os_error() == Some(libc::EPERM)
+                    && process_user == ProcessUser::Current => {},
             Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Err(error),
             Err(_) => incomplete = true,
         }
