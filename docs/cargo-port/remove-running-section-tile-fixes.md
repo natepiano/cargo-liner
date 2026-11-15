@@ -1710,7 +1710,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** the macOS Developer Tools entry and developer mode for the ssh session path (Tailscale's `tailscaled`) do not change the first-launch cost; a faster product scan pace.
 
-### Phase 64 — A released phase's commits raise no incursion against the next reservation  · status: todo
+### Phase 64 — A released phase's commits raise no incursion against the next reservation  · status: done
 
 **Depends on:** Phase 43j (order only; showrunner, 2026-11-15: tile owns the fix, after 43j)
 
