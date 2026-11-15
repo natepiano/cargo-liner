@@ -286,47 +286,28 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 **Open:** the low-load acceptance run. Run 3 alternating 600 s idle pairs of this build against `bd55fde2d` when natedev holds a 1-minute load under 8 for each full run (judge each second by the `vmstat -t 1` run queue). The showrunner landed the phase on the test evidence on 2026-11-15, because natedev ran at load 10-48 with 1-4 GB of host swap-in for 9 hours.
 
-**Depends on:** Phase 8 (its idle-read repairs), Phase 11 (both edit `crates/cargo-port/CHANGELOG.md`), Phase 13b (both edit the watcher and the CHANGELOG), Phase 13c and Phase 13d (all edit cargo-port and its CHANGELOG).
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-port reads almost nothing from disk, and each remaining read has a file change that the app shows as its cause.
-
-**Source:** the showrunner's landing call for Phase 8, 2026-11-13. Phase 8 landed with finding F001 open: the remaining idle reads are not all tied to a shown change. This phase starts with that finding.
-- Three idle pairs on natedev, Phase 7 binary against the Phase 8 binary: 496,861,184 → 149,938,176 bytes; 813,076,480 → 252,506,112 bytes; the third Phase 8 run read 47.7 MB. Shown events explain 30.3%, 22.8% and 21.3% of the Phase 8 reads.
-- Bounded trace run 20261113T134151-2254388-a1ec: 71,749,632 bytes over 120 s at load 40-48. 47,218,688 bytes during syscalls, 10,878,976 between syscalls, 13,651,968 in Git child processes. 1,882 of 1,908 major-fault samples hit heap or anonymous memory.
-- natedev had 16 GB of swap in use, and its swap-in count was close to its major-fault count. Swap-in of the app's own memory is not an app read.
-
-**Constraints from prior phases:**
-- Phase 8 added Git event visibility (`crates/cargo-port/src/project/git/event_visibility.rs`), measured Git output (`project/git/measured_output.rs`), disk read observation (`process_observation/disk_reads.rs`) and `scan/disk_totals.rs`. Keep their tests green.
-- Phase 7: `DiskUsageTracker` in `scan/disk_measurements.rs` measures only changed paths; `request_rescan` is the one full walk.
-- Phase 13: a hard-link alias group in `DiskUsageIndex` is a sorted set; a new link updates only its own and the counted link's totals. Keep `hard_link_group_scan_reads_each_alias_a_few_times` green.
-- Phase 13b drops Cargo home folder events other than the Cargo config file at the watcher (`RegisteredRoots::config_source_event_matters`). Events under `/tmp` and `~/.claude` stay, because they are user `include_dirs`. Idle reads against the `bd55fde2d` baseline then include that change; name its share apart from this phase's repairs.
-- A trace tool must stop at its time limit even when every traced thread is in a blocking syscall. Give each trace run a hard limit from outside the tool too.
-- Phase 8's trace tool was a session-local script that no longer exists. Keep the trace tool in the repository or in a path this Work Order's run records, so a later run can repeat it.
-- The traced app runs in its own process group. On normal exit, failure and SIGTERM, the tool stops every process group it started: the app, its Git children and the recorder. One Phase 8 trace hung and left an orphaned app.
-- Phase 13c: a linked worktree's background Git probe compares its `HEAD` with the primary `HEAD` (`CheckoutInfo.ahead_behind_primary`). An event on the primary `HEAD` file now refreshes the linked checkouts, which runs Git for each. Name that share in the attribution.
-- `measured_output::run` (`project/git/measured_output.rs`) captures Git output differently when trace logging turns on read measurement. `DiskReadBytes::Unavailable` means the measure is missing, not zero.
-- Phase 13d: the cargo metadata worker reads the manifest fingerprint before and after each `cargo metadata` run (`drop_changed_manifest`). An idle metadata refresh reads the manifest, lockfile, toolchain and config files twice. Name that share in the attribution.
-- Phase 13d: a load check at the start of a run does not hold the load low for the full run. Record `vmstat -t 1` beside each run, and judge each second by its run queue.
-
-**Spec:**
-1. **Measure at low load.** Run each idle measurement when the natedev 1-minute load average is under 8. Record the load and the `pswpin` and `pgmajfault` counts from `/proc/vmstat` before and after each run.
-2. **Swap apart from app reads.** Host counters cannot name the process that swapped in. Exclude bytes as swap-in only with per-process evidence, such as the app's own major-fault count or fault samples on its anonymous mappings. Report bytes with no attribution as unexplained; do not drop them.
-3. **Two run kinds.** Attribution runs turn on trace logging. Acceptance runs use normal logging, so the measure does not change Git capture. Count an unavailable measure as missing evidence.
-4. **Fixed baseline and workload.** The baseline is the Phase 8 checkpoint `bd55fde2d`. Keep a copy of each executable. Both binaries watch the same roots with the same configuration. Start each measured interval after the startup scans and deferred startup work finish.
-5. **Cause.** Attribute each remaining read to its source: a file syscall with its path, a Git child process with its command and trigger event, or a page fault with its mapping.
-6. **Fix only shown defects.** Remove each read that no change the app shows needs. For each removed read, add a test that fails while an event that the app does not show starts that read, and add a cargo-port changelog entry. If the low-load measurements show no such read, the phase closes on the measurements alone, with no code change.
+- `read_git_status` (`project/git/checkout.rs`) takes the `HeadState`. With a commit it runs `git diff-index --name-only -z HEAD`, then `git diff --quiet --no-ext-diff HEAD -- :(literal)<first>`, then `git ls-files --others --exclude-standard -z`. The clean filter runs for one file, not for each modified file. A failed probe or a stat-only first path runs the full `git status`.
+- `GitRefreshScope` (`RefsOnly`, `Full`; `project/git/refresh_scope.rs`) and `GitRefreshScope::of_event(event_path, git_dir, common_git_dir)` set the refresh for one Git event. A ref that the checkout's `HEAD` does not name (another branch, a remote ref, their reflogs) gives `RefsOnly`. The `HEAD` branch, a folder that holds it, `packed-refs`, a `HEAD` read error and each other Git path give `Full`. A checkout with no known Git dir gets `Full` (`watcher::refresh::git_refresh_scope`).
+- `GitRefreshDemand` (`watcher/runtime.rs`) keeps the widest request with `fetch_max` on its rank consts `ABSENT`, `REFS_ONLY` and `FULL`. `requested_git_checkouts` returns (path, scope) pairs. `spawn_git_refresh` sends `CheckoutInfo` for `Full` and `BackgroundMsg::CheckoutRefs` for `RefsOnly`.
+- `CheckoutRefs` holds each `CheckoutInfo` field except `status`. `handle_checkout_refs` merges it into the stored info with `apply_refs`. The shown Git fields do not change.
+- `crates/cargo-port/scripts/idle_read_trace.py` runs one binary in a systemd user scope. It records `vmstat -t 1`, scope reads and swap-in, and with `--trace` Git reads by operation, syscall reads by path and fault samples.
+- Proof at load 10-48: a traced idle pair read 46 KB per Git event against 57 KB for `bd55fde2d`. A remaining read older than this phase: after each fetch, `load_all_cached_runs` (`scan/ci_cache.rs`) reads all cached CI run JSON again (6.8 MB).
+- Tests: `branch_ref_event_runs_git_status_only_for_checkouts_on_that_branch`, `applied_refs_change_the_branch_and_keep_the_status`, `modified_status_filters_only_one_changed_file`, `staged_change_reverted_in_the_worktree_is_modified`, `untracked_file_alone_is_untracked`, `rewritten_file_with_the_same_content_is_clean`, `change_outside_a_member_leaves_the_member_clean`.
 
 **Files:**
-- `crates/cargo-port/src/` — the watcher, Git and disk code that the trace names
-- `crates/cargo-port/CHANGELOG.md` — entry for the removed idle reads
+- `crates/cargo-port/src/project/git/checkout.rs` — status probe sequence, `CheckoutRefs`, `apply_refs`
+- `crates/cargo-port/src/project/git/refresh_scope.rs` — `GitRefreshScope`, `of_event`
+- `crates/cargo-port/src/project/git/constants.rs`, `mod.rs`, `src/project/mod.rs` — Git constants, re-exports
+- `crates/cargo-port/src/watcher/refresh.rs`, `runtime.rs`, `events.rs` — scope per checkout, `GitRefreshDemand`
+- `crates/cargo-port/src/scan/background.rs`, `src/tui/app/async_tasks/dispatch.rs`, `poll.rs` — `CheckoutRefs` message
+- `crates/cargo-port/scripts/idle_read_trace.py` — idle read measure
+- `crates/cargo-port/CHANGELOG.md` — two fix entries
 
-**Workers:** 1 writer.
+**Gotchas:** a status test fixture must make its files 10 s older than the index; a new index smudges racily clean entries, and then `diff-index` filters each file. A linked worktree ignores reflog events in the common Git dir; only the primary checkout matches them. On a host with swap-in, disk read bytes follow page eviction, not Git work; judge an idle read run only at low load with no memory pressure.
 
-**State:** none.
-
-**Acceptance gate:** a 10-minute idle acceptance run on natedev at load under 8 reads almost nothing apart from swap-in that per-process evidence proves. Each remaining read has a file change that the app shows as its cause, and unexplained bytes are listed. Compare with the `bd55fde2d` binary in 3 alternating pairs at similar load and on the same workload. When the phase changes code: each new test fails before its repair, `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+**Ruled out:** a watcher-side status memo; startup probes run in `scan::background::emit_git_info`, so the first ref event of each checkout still runs `git status`.
 
 ### Phase 13 — cargo-port finishes its startup disk usage step  · status: done
 
@@ -417,3 +398,30 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 **Gotchas:** the lint repair step deletes re-exports that only tests use (`FileStamp`); keep them under `#[cfg(test)]`. A load check at the start of a run does not hold the load low through a 120 s run; read the run queue each second.
 
 **Ruled out:** a time budget for the background poll drain; it needs a config key, and the measured frames did not need it.
+
+### Phase 14 — the startup toast contrast test runs under 1 s  · status: done
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** `tui::theme_roles::tests::startup_page_footer_meets_contrast_in_every_registered_theme` runs under 1 s on natedev and the Mac.
+
+**Source:** a defect that the tile unit routed through the showrunner on 2026-11-15. The test took 1.051 s on the Mac at load 8.84 (cargo-port 1546 of 1546 on `a102bcca3`).
+
+**Constraints from prior phases:** none.
+
+**Spec:**
+1. **Measure first.** Time the parts of one test run: app setup, theme install, each draw and each `test_support::contrast_failures` call. The test draws 4 toast styles × each registered theme × 2 background modes × 2 color modes × 2 widths.
+2. **Keep the coverage.** Keep every case and every assert. Do not loosen an assert or drop a case.
+3. **Fix the cost where it lives.** When a helper does work that the test does not use, change the helper. When the case count alone sets the time, split the test into one test for each toast style.
+
+**Files:**
+- `crates/cargo-port/src/tui/theme_roles.rs` — the test
+- `crates/cargo-port/src/tui/test_support/mod.rs` — test helpers, if the cost is there
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
