@@ -7,21 +7,15 @@
 //! be `pub(crate)`; mend's `pub(crate)` policy forbids that visibility
 //! inside `tui/app/`.
 //!
-//! Module split:
-//! - `mod.rs` (this file) — Finder mode state, inline-error / status-flash, plus the `Overlays`
-//!   struct that owns all of the above.
-//! - `render_state.rs` — the Finder pane render-state type.
-//! - `pane.rs` — `Pane` and `Hittable` impls for Finder and the framework panes.
-
-mod pane_impls;
-mod render_state;
+//! `FinderPane`, the Finder render state, lives with its render code in
+//! `crate::tui::finder`.
 
 use std::time::Instant;
 
-pub(crate) use render_state::FinderPane;
 use tui_pane::FocusedPane;
 pub(super) use tui_pane::PopupFrame;
 
+use super::finder::FinderPane;
 use super::integration::AppPaneId;
 use super::sccache::SccachePane;
 

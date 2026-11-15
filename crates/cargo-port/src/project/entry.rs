@@ -33,11 +33,29 @@ impl RepositoryProbe {
     }
 }
 
+/// GitHub metadata stays `NotLoaded` until a repository metadata fetch stores it.
+/// Zero stars or an absent description are loaded values.
+#[derive(Clone, Default)]
+pub(crate) enum GitHubMetadata {
+    #[default]
+    NotLoaded,
+    Loaded(GitHubInfo),
+}
+
+impl GitHubMetadata {
+    pub(crate) const fn as_ref(&self) -> Option<&GitHubInfo> {
+        match self {
+            Self::Loaded(info) => Some(info),
+            Self::NotLoaded => None,
+        }
+    }
+}
+
 /// Store the repository probe and shared metadata on the containing entry.
 #[derive(Clone, Default)]
 pub(crate) struct GitRepo {
     pub repo_info:   RepositoryProbe,
-    pub github_info: Option<GitHubInfo>,
+    pub github_info: GitHubMetadata,
     pub ci_data:     ProjectCiData,
     pub pr_data:     ProjectPrData,
 }
@@ -51,16 +69,51 @@ impl GitRepo {
     }
 }
 
+/// Whether an entry carries repository data.
+///
+/// `Unassociated` covers an entry outside a Git checkout at construction
+/// and a synthetic entry without repository data. A completed probe
+/// outside Git stores `Associated` with `RepositoryProbe::NoRepository`.
+#[derive(Clone)]
+pub(crate) enum EntryRepository {
+    Unassociated,
+    Associated(Box<GitRepo>),
+}
+
+impl EntryRepository {
+    pub(crate) fn as_ref(&self) -> Option<&GitRepo> {
+        match self {
+            Self::Associated(repo) => Some(repo),
+            Self::Unassociated => None,
+        }
+    }
+
+    pub(crate) fn as_mut(&mut self) -> Option<&mut GitRepo> {
+        match self {
+            Self::Associated(repo) => Some(repo),
+            Self::Unassociated => None,
+        }
+    }
+
+    /// Promote `Unassociated` to an empty `Associated` repository and return it.
+    pub(crate) fn associate(&mut self) -> &mut GitRepo {
+        match self {
+            Self::Associated(repo) => repo,
+            Self::Unassociated => {
+                *self = Self::Associated(Box::default());
+                self.associate()
+            },
+        }
+    }
+}
+
 /// A top-level entry in the project list. Wraps a `RootItem` with the
 /// repo-level data that belongs to the entire entry (one repo, possibly
 /// multiple checkouts).
-///
-/// `git_repo` can be absent before the background probe completes.
-/// A completed probe outside Git stores `RepositoryProbe::NoRepository`.
 #[derive(Clone)]
 pub(crate) struct ProjectEntry {
     pub root_item: RootItem,
-    pub git_repo:  Option<GitRepo>,
+    pub git_repo:  EntryRepository,
 }
 
 impl ProjectEntry {
@@ -77,7 +130,7 @@ impl ProjectEntry {
 
     /// Construct with explicit repo data — used when a caller has just
     /// computed `git_repo` (e.g. preserving across refresh).
-    pub(crate) const fn with_repo(root_item: RootItem, git_repo: Option<GitRepo>) -> Self {
+    pub(crate) const fn with_repo(root_item: RootItem, git_repo: EntryRepository) -> Self {
         Self {
             root_item,
             git_repo,
@@ -105,6 +158,8 @@ impl DerefMut for ProjectEntry {
     fn deref_mut(&mut self) -> &mut RootItem { &mut self.root_item }
 }
 
-fn git_repo_for(item: &RootItem) -> Option<GitRepo> {
-    git::git_repo_root(item.path()).map(|_| GitRepo::default())
+fn git_repo_for(item: &RootItem) -> EntryRepository {
+    git::git_repo_root(item.path()).map_or(EntryRepository::Unassociated, |_| {
+        EntryRepository::Associated(Box::default())
+    })
 }

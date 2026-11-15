@@ -35,6 +35,8 @@ use command::RunAttempt;
 use command::RunCommandsConfig;
 use command::publish_status;
 use command::run_commands_for_project;
+#[cfg(test)]
+pub(super) use command::write_latest_under;
 use handle::ChildSlot;
 pub use handle::RuntimeHandle;
 use handle::SupervisorMsg;
@@ -44,6 +46,8 @@ use supervisor::project_still_runnable;
 pub(crate) use supervisor::read_status_from_disk;
 pub use supervisor::spawn;
 
+use super::artifacts;
+use super::artifacts::LatestLintRecord;
 use super::cache_size_index;
 use super::constants::DEFER_EXIT_CODE;
 use super::constants::DEFER_RETRY;
@@ -53,7 +57,6 @@ use super::constants::LINT_DEBOUNCE;
 use super::constants::STOP_POLL;
 use super::history;
 use super::paths;
-use super::read_write;
 use super::run::LintCommand;
 use super::run::LintCommandStatus;
 use super::run::LintRun;
