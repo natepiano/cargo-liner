@@ -2514,43 +2514,25 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Depends on:** Phase 58d (order only; the same test files and the same lock causes).
 
-On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ticket 1439 on an unchanged tree (base 5142c3ca4; nextest 6 of 12 threads, load 18.48 on 12 CPUs). 1363 tests ran and 3 failed; ticket 1438 passed all 1363 at the same base. Log (natedev): `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T184934-4073552-8f6b.log`.
+On 2026-11-11 a Mac run of the cargo-berth package on an unchanged tree (base 5142c3ca4, load 18.48) had 3 failures: `gate::hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` ("gate worker should report mutation lock contention"), `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 58d item 1), and `ledger::explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open` ("process holders unavailable").
 
-1. `gate::hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` failed after 6.363 s: "gate worker should report mutation lock contention" (`tests/gate.rs`, log line 518).
-2. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` failed after 1.225 s (log line 713). This is Phase 58d item 1. Phase 58d's three Mac full suites are its check.
-3. `ledger::explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open` failed after 1.813 s: "git ref write refused by lock .../packed-refs.lock (age: 0.458 seconds; process holders unavailable)" (`tests/ledger.rs`, log line 770).
+#### As-built
 
-#### Work Order
+- **Mac holder scan.** Only `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` fails on a Mac with no lock holder. EPERM comes from Apple agents of the current user (routined, ScreenTimeAgent, dmd, nsurlsessiond, lsd and others) for files in macOS data vaults. ENOENT comes from a revoked descriptor. `lsof` reads data-vault paths only through its private entitlement `com.apple.rootless.datavault.metadata`.
+- In `process_holds_file` (`git/lock_holders_macos.rs`), ENOENT means "not the lock file", as EBADF does. EPERM means "not the lock file" only for `ProcessUser::Current`: the scan reads the lock file's metadata first, so the lock file is not in a data vault. Other errors keep the answer "unavailable". `current_user` reads this process's owner through `process_owner`, with no new unsafe code. The Linux rule does not change.
+- Cold Mac scans: 10 scans at load 9.21 took 20.78-42.16 ms, each "no process holds it".
+- `assert_no_lock_holder` (`tests/ledger.rs`) checks the three ledger holder tests. On the Mac it accepts only "no process holds it". On other systems it also accepts "process holders unavailable".
+- **Gate deadline.** `GateDeadline` (`cli.rs`) has two values. `FromStart` is the 10 s total deadline from the gate start; release builds and debug builds without `CARGO_BERTH_TEST_GATE_DEADLINE_MS` use it. `AfterMutationLockWait(d)` counts the test deadline from the worker's first mutation-lock wait, and the 10 s total deadline still applies. `ledger::notify_mutation_lock_waits` registers one process-wide notice in a `OnceLock` (`ledger/lock.rs`); `MutationLock::request` calls it after its wait thread starts. The worker sends `GateWorkerEvent::MutationLockWait` or `GateWorkerEvent::Decided`.
+- The unrelated-process ledger failure came from the old `lsof` scan (the base came before Phase 58d's libproc scan). The hooks contention test passed in all three Mac suites with no change.
+- Gate: lint on natedev after the last change. Three Mac suites of 1,388 cargo-berth tests passed at load 20.2, 12.96 and 38.38 (report only), with the gate test at 0.388-0.553 s. natedev: 1,388 tests at load 18.50 (gate test 0.299 s, hooks 0.195 s, unrelated ledger 0.215 s).
+- Director review only (no workers). No findings.
+- Checkpoint: f8e9e6ba0 on `tile-phase-58g`.
 
-**Goal:** the gate deadline test and the unrelated-process ledger test pass on every run under load, and each takes less than 1 s. On the Mac, a lock file with no holder gets the answer "no process holds it".
+**Files:** `crates/cargo-berth/src/{cli,git/lock_holders_macos,ledger/constants,ledger/lock,ledger/mod}.rs`, `crates/cargo-berth/tests/ledger.rs`.
 
-**Spec:**
+**Gotchas:** Linux `/proc/<pid>/fd` is unreadable for a same-user process that is not dumpable (natedev has 9: sd-pam, upsmon, codex, python3, 1Password, the polkit agent, bash), so the Linux scan can answer "process holders unavailable" with no holder.
 
-0. **The Mac holder scan answers "unavailable" for a file with no holder** (Phase 58d review finding F007, moved here at the repair cap; showrunner, 2026-11-13). Phase 58d replaced lsof with an in-process libproc scan (`crates/cargo-berth/src/git/lock_holders_macos.rs`). A scan of a fresh file with no holder returned `Unavailable` in 71.9 ms at load 31.35. The scan answers `Unavailable` when it cannot read a process that has the lock file's owner (`lock_holders_macos.rs:46-63`). The Linux scan has the same rule (`git/error.rs:363-375`).
-   1. First, with no product change, find each same-user process that macOS refuses, and the call and errno it returns. Report the process names, the call and the errno to the director. The director sends them and a proposed rule change to the showrunner. Make no product change before the showrunner answers.
-   2. Then apply the rule that the showrunner approves.
-   3. Measure the scan once at load below 24. The target is under 50 ms.
-   4. Remove the acceptance of `process holders unavailable` from the ledger holder tests (`tests/ledger.rs:2440-2444`). A test of a file with no holder must fail on that answer.
-1. For item 1, find why the worker did not report mutation lock contention before the outer gate deadline. Quote the line that takes the mutation lock and the line that sets the deadline. Make the order of the two events fixed by the test, not by timing.
-2. For item 3, find why the holder of `packed-refs.lock` was unavailable. Use the cause and fix of Phase 58d item 2 when they apply; do not make a second copy of that fix.
-3. Make each test deterministic: no sleep, no retry, no longer wait, no raised limit. Keep every assertion.
-4. If Phase 58d's Mac suites show item 2 still fails, fix it here with the same rules.
-5. Before the fix, show each failure in a scratch run that forces the late order (for example, a held lock or a slow step in test support). Do not commit that scratch change.
-
-**Files:**
-
-- `crates/cargo-berth/tests/gate.rs` — item 1
-- `crates/cargo-berth/tests/ledger.rs` — item 3
-- `crates/cargo-berth/tests/hooks.rs` — item 2, only under spec item 4
-- `crates/cargo-berth-test-support/` — shared lock helpers
-- `crates/cargo-berth/src/` — the lock path or the holder diagnostic, when the cause is there
-- `crates/cargo-berth/src/git/lock_holders_macos.rs` — spec item 0
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect. Phase 58d: the four libproc unsafe functions are user-approved; add no other unsafe code without user approval.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
+**Ruled out:** an entitlement for data-vault reads; it is private to `lsof`.
 
 ### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: done
 
@@ -3612,6 +3594,40 @@ Cause (director read of main): `fitted_left_spans` (`crates/tui_pane/src/bar/sta
 **Constraints from prior phases:** Phase 62: one `#[allow(clippy::cast_precision_loss)]` is user-approved; add no other allow. Phase 58b: a test at 1 s or more is a defect.
 
 **Acceptance gate:** `verify.sh lint tui_pane` and `verify.sh test tui_pane` green on natedev; `verify.sh test cargo-handler` green. The fix returns as a new change review row, and that review checks cargo-port at 120 columns.
+
+### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: todo
+
+**Depends on:** Phase 62a (order only; showrunner, 2026-11-15).
+
+The Phase 58g natedev gate (load 18.50, normal load under the 32 rule) had four cargo-berth tests at 1 s or more. The showrunner ruled them defects of this unit (2026-11-15).
+
+1. `edges::witness_survives_pruning_and_controls_successors` (`tests/edges.rs`): 1.146 s.
+2. `edges::successor_round_robin_covers_every_head` (`tests/edges.rs`): 1.416 s.
+3. `hooks::a_second_commit_to_an_answered_working_tree_incursion_reopens_it` (`tests/hooks.rs`): 1.296 s.
+4. `hooks::hooks_state_the_unresolvable_trunk_evidence_recovery` (`tests/hooks.rs`): 1.023 s.
+
+#### Work Order
+
+**Goal:** each of the four tests runs under 1 s in a full cargo-berth suite at natedev load under 32. Each test keeps what it proves.
+
+**Spec:**
+
+1. Time each test alone and in the full suite. Find where its time goes: repository setup, Git processes, waits or the code under test.
+2. Fix the cause. For setup cost, use the Phase 58j method: a before-run template, or a recorded history for the test's own setup.
+3. When the cost is in cargo-berth code, fix that code, not the test.
+4. Keep each test's assertions. A split test keeps every assertion in one of its parts.
+
+**Files:**
+
+- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/hooks.rs` — the four tests
+- `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/support/` — templates and recorded histories, when used
+- `crates/cargo-berth/src/` — only under spec item 3
+
+**Workers:** 1 writer, a Codex worker through `assign.sh`. In no-worker mode, the director writes it.
+
+**Constraints from prior phases:** Phase 58j: a template main in `recorded_templates.rs` stays at 100 lines or fewer. Phase 58b: a test at 1 s or more is a defect. Add no `#[allow]`.
+
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green on natedev, with the four tests under 1 s at load under 32.
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 
