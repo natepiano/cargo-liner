@@ -205,14 +205,14 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     let work = work_buffer("ups");
     for (name, prefix) in [
         ("opened-session", "├── opened-session"),
-        ("ups-shell", "└── ups-shell busy shell"),
+        ("ups-shell", "└── ups-shell running busy shell"),
         ("ups-codex", "└── ups-codex worker"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));
     }
     assert!(
         row_text(&work_buffer("postmaster"), "post-task")
-            .starts_with("└── post-task worker busy subagent")
+            .starts_with("└── post-task worker idle subagent")
     );
 }
 

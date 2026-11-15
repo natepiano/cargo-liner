@@ -172,7 +172,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "alpha",
             "└── alpha a-account worker impl · thinking busy a-branch /a-directory",
         ),
-        ("a-shell", "└── a-shell a-account busy — shell —"),
+        ("a-shell", "└── a-shell a-account running busy — shell —"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
