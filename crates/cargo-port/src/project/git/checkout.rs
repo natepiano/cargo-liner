@@ -17,7 +17,10 @@ use super::constants::GIT_BISECT_START_FILE;
 use super::constants::GIT_BISECT_VARS_ARG;
 use super::constants::GIT_CHECK_IGNORE_COMMAND;
 use super::constants::GIT_COUNT_ARG;
+use super::constants::GIT_DIFF_COMMAND;
+use super::constants::GIT_DIFF_INDEX_COMMAND;
 use super::constants::GIT_DOUBLE_DASH_ARG;
+use super::constants::GIT_EXCLUDE_STANDARD_ARG;
 use super::constants::GIT_FOR_EACH_REF_COMMAND;
 use super::constants::GIT_FORMAT_ISO8601_ARG;
 use super::constants::GIT_FORMAT_REFNAME_ARG;
@@ -25,9 +28,16 @@ use super::constants::GIT_HEAD;
 use super::constants::GIT_HEAD_REVSPEC_PREFIX;
 use super::constants::GIT_IGNORED_STATUS_CODE;
 use super::constants::GIT_LEFT_RIGHT_ARG;
+use super::constants::GIT_LITERAL_PATHSPEC_PREFIX;
 use super::constants::GIT_LOG_COMMAND;
 use super::constants::GIT_LOG_LAST_COMMIT_ARG;
+use super::constants::GIT_LS_FILES_COMMAND;
+use super::constants::GIT_NAME_ONLY_ARG;
+use super::constants::GIT_NO_EXT_DIFF_ARG;
 use super::constants::GIT_NOT_ARG;
+use super::constants::GIT_NULL_ARG;
+use super::constants::GIT_OTHERS_ARG;
+use super::constants::GIT_QUIET_ARG;
 use super::constants::GIT_QUIET_SHORT_ARG;
 use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_REV_PARSE_COMMAND;
@@ -208,62 +218,124 @@ impl CheckoutInfo {
     /// `RepoInfo::get` call avoids redundant work.
     pub(crate) fn get(probe_path: &Path, local_main_branch: &ResolvedBranch) -> Option<Self> {
         let repo_root = discovery::git_repo_root(probe_path)?;
-
         let head = resolve_head_state(&repo_root);
-        let (current_upstream, last_commit, status, bisect, ahead_behind_primary) =
-            std::thread::scope(|scope| {
-                let upstream = scope.spawn(|| branches::get_upstream_branch(&repo_root, &head));
-                let commit = scope.spawn(|| last_commit_date(&repo_root, &head));
-                let status = scope.spawn(|| get_git_status(probe_path, &repo_root));
-                let bisect = scope.spawn(|| bisect_progress(&repo_root));
-                let primary = scope.spawn(|| {
-                    discovery::linked_primary_root(&repo_root)
-                        .map_or(Comparison::NotCompared, |primary_root| {
-                            worktree_ahead_behind_primary(&repo_root, &primary_root)
-                        })
-                });
-                (
-                    probes::finish_probe(upstream),
-                    probes::finish_probe(commit),
-                    probes::finish_probe(status),
-                    probes::finish_probe(bisect),
-                    probes::finish_probe(primary),
-                )
-            });
-        let ahead_behind_local = match (&head, local_main_branch) {
-            (
-                HeadState::Unreadable,
-                ResolvedBranch::Named(_) | ResolvedBranch::NotFound | ResolvedBranch::Unreadable,
-            )
-            | (
-                HeadState::Branch(_) | HeadState::Unborn | HeadState::Detached { .. },
-                ResolvedBranch::Unreadable,
-            ) => Comparison::Unreadable,
-            (HeadState::Unborn, ResolvedBranch::Named(_) | ResolvedBranch::NotFound)
-            | (HeadState::Branch(_) | HeadState::Detached { .. }, ResolvedBranch::NotFound) => {
-                Comparison::NotCompared
-            },
-            (HeadState::Branch(name), ResolvedBranch::Named(main)) if name == main => {
-                Comparison::NotCompared
-            },
-            (HeadState::Branch(_) | HeadState::Detached { .. }, ResolvedBranch::Named(main)) => {
-                parse_ahead_behind(
-                    &repo_root,
-                    &format!("{GIT_HEAD_REVSPEC_PREFIX}{main}"),
-                    "configured_local_main",
-                )
-                .map_or(Comparison::Unreadable, Comparison::Counted)
-            },
-        };
-        Some(Self {
+        let (status, refs) = std::thread::scope(|scope| {
+            let status = scope.spawn(|| get_git_status(probe_path, &repo_root, &head));
+            let refs = CheckoutRefs::probe(&repo_root, head.clone(), local_main_branch);
+            (probes::finish_probe(status), refs)
+        });
+        Some(Self::from_refs(status, refs))
+    }
+
+    /// Replace each field that `refs` holds, and keep the Git status.
+    pub(crate) fn apply_refs(&mut self, refs: CheckoutRefs) {
+        *self = Self::from_refs(self.status, refs);
+    }
+
+    fn from_refs(status: GitStatus, refs: CheckoutRefs) -> Self {
+        let CheckoutRefs {
+            head,
+            last_commit,
+            ahead_behind_local,
+            ahead_behind_primary,
+            primary_tracked_ref,
+            bisect,
+        } = refs;
+        Self {
             status,
             head,
             last_commit,
             ahead_behind_local,
             ahead_behind_primary,
-            primary_tracked_ref: current_upstream,
+            primary_tracked_ref,
             bisect,
-        })
+        }
+    }
+}
+
+/// The `CheckoutInfo` fields other than `status`. A change of a ref that
+/// `HEAD` does not name cannot change the Git status, so the watcher then
+/// probes only these fields.
+#[derive(Debug, Clone)]
+pub(crate) struct CheckoutRefs {
+    head:                 HeadState,
+    last_commit:          CommitDate,
+    ahead_behind_local:   Comparison,
+    ahead_behind_primary: Comparison,
+    primary_tracked_ref:  TrackedRef,
+    bisect:               Option<BisectProgress>,
+}
+
+impl CheckoutRefs {
+    /// Probe the fields of `CheckoutInfo` other than `status` for `probe_path`.
+    pub(crate) fn get(probe_path: &Path, local_main_branch: &ResolvedBranch) -> Option<Self> {
+        let repo_root = discovery::git_repo_root(probe_path)?;
+        let head = resolve_head_state(&repo_root);
+        Some(Self::probe(&repo_root, head, local_main_branch))
+    }
+
+    fn probe(repo_root: &Path, head: HeadState, local_main_branch: &ResolvedBranch) -> Self {
+        let (primary_tracked_ref, last_commit, bisect, ahead_behind_primary, ahead_behind_local) =
+            std::thread::scope(|scope| {
+                let upstream = scope.spawn(|| branches::get_upstream_branch(repo_root, &head));
+                let commit = scope.spawn(|| last_commit_date(repo_root, &head));
+                let bisect = scope.spawn(|| bisect_progress(repo_root));
+                let primary = scope.spawn(|| {
+                    discovery::linked_primary_root(repo_root)
+                        .map_or(Comparison::NotCompared, |primary_root| {
+                            worktree_ahead_behind_primary(repo_root, &primary_root)
+                        })
+                });
+                let local = local_main_comparison(repo_root, &head, local_main_branch);
+                (
+                    probes::finish_probe(upstream),
+                    probes::finish_probe(commit),
+                    probes::finish_probe(bisect),
+                    probes::finish_probe(primary),
+                    local,
+                )
+            });
+        Self {
+            head,
+            last_commit,
+            ahead_behind_local,
+            ahead_behind_primary,
+            primary_tracked_ref,
+            bisect,
+        }
+    }
+}
+
+/// Compare `HEAD` with the local main branch.
+fn local_main_comparison(
+    repo_root: &Path,
+    head: &HeadState,
+    local_main_branch: &ResolvedBranch,
+) -> Comparison {
+    match (head, local_main_branch) {
+        (
+            HeadState::Unreadable,
+            ResolvedBranch::Named(_) | ResolvedBranch::NotFound | ResolvedBranch::Unreadable,
+        )
+        | (
+            HeadState::Branch(_) | HeadState::Unborn | HeadState::Detached { .. },
+            ResolvedBranch::Unreadable,
+        ) => Comparison::Unreadable,
+        (HeadState::Unborn, ResolvedBranch::Named(_) | ResolvedBranch::NotFound)
+        | (HeadState::Branch(_) | HeadState::Detached { .. }, ResolvedBranch::NotFound) => {
+            Comparison::NotCompared
+        },
+        (HeadState::Branch(name), ResolvedBranch::Named(main)) if name == main => {
+            Comparison::NotCompared
+        },
+        (HeadState::Branch(_) | HeadState::Detached { .. }, ResolvedBranch::Named(main)) => {
+            parse_ahead_behind(
+                repo_root,
+                &format!("{GIT_HEAD_REVSPEC_PREFIX}{main}"),
+                "configured_local_main",
+            )
+            .map_or(Comparison::Unreadable, Comparison::Counted)
+        },
     }
 }
 
@@ -550,9 +622,9 @@ fn worktree_ahead_behind_primary(worktree_dir: &Path, primary_dir: &Path) -> Com
 
 /// Get git path state when the repo root is already known, avoiding a
 /// redundant `git_repo_root()` call.
-fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
+fn get_git_status(project_dir: &Path, repo_root: &Path, head: &HeadState) -> GitStatus {
     let started = std::time::Instant::now();
-    let state = read_git_status(project_dir, repo_root);
+    let state = read_git_status(project_dir, repo_root, head);
     tracing::trace!(
         target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
@@ -564,7 +636,10 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     state
 }
 
-fn read_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
+/// The state needs only one real change. `HEAD` with a commit lets
+/// `tracked_change` stop at the first changed path, so Git does not read or
+/// filter every modified file. Each other answer gets the full `git status`.
+fn read_git_status(project_dir: &Path, repo_root: &Path, head: &HeadState) -> GitStatus {
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
         match command::git_answer_logged(
@@ -582,6 +657,91 @@ fn read_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             Err(_) => return GitStatus::Unreadable,
         }
     }
+    match head {
+        HeadState::Branch(_) | HeadState::Detached { .. } => {
+            match tracked_change(repo_root, &relative_path) {
+                TrackedChange::Found => GitStatus::Modified,
+                TrackedChange::Absent => untracked_status(repo_root, &relative_path),
+                TrackedChange::Unproved => full_git_status(repo_root, &relative_path),
+            }
+        },
+        HeadState::Unborn | HeadState::Unreadable => full_git_status(repo_root, &relative_path),
+    }
+}
+
+/// What the change probe in `tracked_change` proves about tracked paths.
+enum TrackedChange {
+    /// A tracked path differs from `HEAD`.
+    Found,
+    /// No index entry differs from `HEAD`, and no file stat differs from the index.
+    Absent,
+    /// The probe failed, or its first listed path differs only in its file stat.
+    Unproved,
+}
+
+/// `git diff-index HEAD` lists each path whose index entry differs from `HEAD`
+/// or whose file stat differs from the index. It reads file content only for an
+/// index entry that is as new as the index itself.
+/// `git diff --quiet HEAD` then reads only the first listed path.
+fn tracked_change(repo_root: &Path, relative_path: &str) -> TrackedChange {
+    let Ok(listed) = command::git_output_logged(
+        repo_root,
+        "diff_index_changes",
+        &[
+            GIT_DIFF_INDEX_COMMAND,
+            GIT_NAME_ONLY_ARG,
+            GIT_NULL_ARG,
+            GIT_HEAD,
+            GIT_DOUBLE_DASH_ARG,
+            relative_path,
+        ],
+    ) else {
+        return TrackedChange::Unproved;
+    };
+    let Some(first_path) = listed.nul_paths().next() else {
+        return TrackedChange::Absent;
+    };
+    let pathspec = format!("{GIT_LITERAL_PATHSPEC_PREFIX}{}", first_path.display());
+    match command::git_answer_logged(
+        repo_root,
+        "diff_first_change",
+        &[
+            GIT_DIFF_COMMAND,
+            GIT_QUIET_ARG,
+            GIT_NO_EXT_DIFF_ARG,
+            GIT_HEAD,
+            GIT_DOUBLE_DASH_ARG,
+            &pathspec,
+        ],
+    ) {
+        Ok(GitAnswer::No) => TrackedChange::Found,
+        Ok(GitAnswer::Yes(_)) | Err(_) => TrackedChange::Unproved,
+    }
+}
+
+fn untracked_status(repo_root: &Path, relative_path: &str) -> GitStatus {
+    command::git_output_logged(
+        repo_root,
+        "untracked_paths",
+        &[
+            GIT_LS_FILES_COMMAND,
+            GIT_OTHERS_ARG,
+            GIT_EXCLUDE_STANDARD_ARG,
+            GIT_NULL_ARG,
+            GIT_DOUBLE_DASH_ARG,
+            relative_path,
+        ],
+    )
+    .map_or(GitStatus::Unreadable, |stdout| {
+        if stdout.nul_paths().next().is_some() {
+            GitStatus::Untracked
+        } else {
+            GitStatus::Clean
+        }
+    })
+}
+
+fn full_git_status(repo_root: &Path, relative_path: &str) -> GitStatus {
     let Ok(stdout) = command::git_output_logged(
         repo_root,
         "status",
@@ -591,7 +751,7 @@ fn read_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             GIT_STATUS_IGNORED_MATCHING_ARG,
             GIT_STATUS_UNTRACKED_ALL_ARG,
             GIT_DOUBLE_DASH_ARG,
-            &relative_path,
+            relative_path,
         ],
     ) else {
         return GitStatus::Unreadable;
@@ -670,6 +830,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    use tempfile::TempDir;
     use tracing::Event;
     use tracing::Metadata;
     use tracing::Subscriber;
@@ -845,7 +1006,10 @@ bisect_all=13
         std::fs::write(repo.path().join(".gitignore"), "ignored/\n").expect("ignore rule");
         let trace = GitStatusTrace::default();
         tracing::subscriber::with_default(trace.clone(), || {
-            assert_eq!(get_git_status(&ignored, repo.path()), GitStatus::Ignored);
+            assert_eq!(
+                get_git_status(&ignored, repo.path(), &resolve_head_state(repo.path())),
+                GitStatus::Ignored
+            );
         });
         let events = trace.events.lock().expect("trace lock");
         assert_eq!(
@@ -864,13 +1028,144 @@ bisect_all=13
         std::fs::create_dir(repo.path().join("member")).expect("member");
         std::fs::write(repo.path().join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
         assert_eq!(
-            get_git_status(repo.path(), repo.path()),
+            get_git_status(repo.path(), repo.path(), &resolve_head_state(repo.path())),
             GitStatus::Unreadable
         );
         assert_eq!(
-            get_git_status(&repo.path().join("member"), repo.path()),
+            get_git_status(
+                &repo.path().join("member"),
+                repo.path(),
+                &resolve_head_state(repo.path())
+            ),
             GitStatus::Unreadable
         );
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        assert!(
+            std::process::Command::new(crate::test_support::git_binary())
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+                .status
+                .success()
+        );
+    }
+
+    /// A repository on `main` with one commit that holds `files`. Each file is
+    /// 10 s older than the index. Git then trusts the file stats of the index
+    /// entries, as it does in a checkout that is not new.
+    fn committed_repo(files: &[(&str, &str)]) -> TempDir {
+        let repo = tempfile::tempdir().expect("fixture");
+        let older = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        for (name, text) in files {
+            let path = repo.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("fixture directory");
+            }
+            std::fs::write(&path, text).expect("fixture file");
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("fixture file")
+                .set_modified(older)
+                .expect("fixture time");
+        }
+        crate::test_support::init_git_repo(repo.path());
+        repo
+    }
+
+    fn status_of(project_dir: &Path, repo_root: &Path) -> GitStatus {
+        get_git_status(project_dir, repo_root, &resolve_head_state(repo_root))
+    }
+
+    #[test]
+    fn modified_status_filters_only_one_changed_file() {
+        let repo = committed_repo(&[
+            (".gitattributes", "*.md filter=count\n"),
+            ("a.md", "a\n"),
+            ("b.md", "b\n"),
+            ("c.md", "c\n"),
+            ("d.md", "d\n"),
+        ]);
+        let counter = tempfile::tempdir().expect("counter");
+        let count_file = counter.path().join("count");
+        let script = counter.path().join("count.sh");
+        std::fs::write(
+            &script,
+            format!("echo x >> '{}'\nexec cat\n", count_file.display()),
+        )
+        .expect("filter script");
+        let filter = format!("sh '{}'", script.display());
+        run_git(repo.path(), &["config", "filter.count.clean", &filter]);
+        // A change of the same size makes `git status` read and filter each file.
+        for (name, text) in [
+            ("a.md", "A\n"),
+            ("b.md", "B\n"),
+            ("c.md", "C\n"),
+            ("d.md", "D\n"),
+        ] {
+            std::fs::write(repo.path().join(name), text).expect("modify");
+        }
+
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Modified);
+        let filter_runs = std::fs::read_to_string(&count_file)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert!(filter_runs <= 1, "the clean filter ran {filter_runs} times");
+    }
+
+    #[test]
+    fn staged_change_reverted_in_the_worktree_is_modified() {
+        let repo = committed_repo(&[("lib.rs", "one\n")]);
+        std::fs::write(repo.path().join("lib.rs"), "two\n").expect("modify");
+        run_git(repo.path(), &["add", "lib.rs"]);
+        std::fs::write(repo.path().join("lib.rs"), "one\n").expect("revert");
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Modified);
+    }
+
+    #[test]
+    fn untracked_file_alone_is_untracked() {
+        let repo = committed_repo(&[("lib.rs", "one\n")]);
+        std::fs::write(repo.path().join("new.rs"), "new\n").expect("untracked");
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Untracked);
+    }
+
+    #[test]
+    fn rewritten_file_with_the_same_content_is_clean() {
+        let repo = committed_repo(&[("lib.rs", "one\n")]);
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Clean);
+        std::fs::write(repo.path().join("lib.rs"), "one\n").expect("rewrite");
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Clean);
+    }
+
+    #[test]
+    fn change_outside_a_member_leaves_the_member_clean() {
+        let repo = committed_repo(&[("member/lib.rs", "one\n"), ("other.rs", "one\n")]);
+        std::fs::write(repo.path().join("other.rs"), "two\n").expect("modify");
+        std::fs::write(repo.path().join("new.rs"), "new\n").expect("untracked");
+        assert_eq!(
+            status_of(&repo.path().join("member"), repo.path()),
+            GitStatus::Clean
+        );
+        assert_eq!(status_of(repo.path(), repo.path()), GitStatus::Modified);
+    }
+
+    #[test]
+    fn applied_refs_change_the_branch_and_keep_the_status() {
+        let repo = committed_repo(&[("lib.rs", "one\n")]);
+        std::fs::write(repo.path().join("lib.rs"), "two\n").expect("modify");
+        let mut info = CheckoutInfo::get(repo.path(), &ResolvedBranch::NotFound).expect("checkout");
+        assert_eq!(info.status, GitStatus::Modified);
+
+        run_git(repo.path(), &["switch", "--quiet", "-c", "feature"]);
+        let refs = CheckoutRefs::get(repo.path(), &ResolvedBranch::NotFound).expect("refs");
+        info.apply_refs(refs);
+
+        assert_eq!(info.head.branch_name(), Some("feature"));
+        assert_eq!(info.status, GitStatus::Modified);
     }
 
     #[test]
@@ -969,20 +1264,9 @@ bisect_all=13
         let linked = tmp.path().join("linked");
         std::fs::create_dir_all(&primary).expect("primary directory");
         crate::test_support::init_git_repo(&primary);
-        let git = |dir: &Path, args: &[&str]| {
-            assert!(
-                std::process::Command::new(crate::test_support::git_binary())
-                    .args(args)
-                    .current_dir(dir)
-                    .output()
-                    .expect("git")
-                    .status
-                    .success()
-            );
-        };
         let linked_arg = linked.to_string_lossy().into_owned();
-        git(&primary, &["worktree", "add", "-b", "fix", &linked_arg]);
-        git(
+        run_git(&primary, &["worktree", "add", "-b", "fix", &linked_arg]);
+        run_git(
             &linked,
             &[
                 "-c",

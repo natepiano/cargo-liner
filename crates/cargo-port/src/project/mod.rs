@@ -52,6 +52,7 @@ pub(crate) use git::AheadBehind;
 // `git` re-exports repository, checkout and discovery APIs used by project consumers.
 pub(crate) use git::BisectProgress;
 pub(crate) use git::CheckoutInfo;
+pub(crate) use git::CheckoutRefs;
 pub(crate) use git::CommitDate;
 pub(crate) use git::Comparison;
 pub(crate) use git::FirstCommit;
@@ -62,6 +63,7 @@ pub(crate) use git::GIT_COMMANDS;
 pub(crate) use git::GitEventRefresh;
 pub(crate) use git::GitEventVisibilityCache;
 pub(crate) use git::GitOrigin;
+pub(crate) use git::GitRefreshScope;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
 pub(crate) use git::HeadState;

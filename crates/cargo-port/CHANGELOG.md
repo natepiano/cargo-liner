@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep startup frames short at normal load. Build the project rows once per background frame and measure the name column from those rows. Build only the CI and lint run rows that the pane can show. Check for manifest edits and read project Git layouts on worker threads, not on the frame.
 - Bind row expand and collapse to plain Right and Left in a new keymap file.
 - Stop the timed full walks of every project and target tree in an idle session; file events update disk sizes from the changed paths.
+- Find the Git status of a project from its first real change. A checkout with many modified files no longer runs its Git clean filter on each file at each refresh.
+- Run `git status` for a worktree only when a branch change can change its status. A commit on one branch no longer reads the files of each other worktree of that repository.
 - Ignore Git lock files and ignored file events when scheduling Git refreshes. Keep ignore rules in watcher state. Refresh changed rules and affected checkouts once. Update disk totals from changed files and their hard-link aliases.
 - Keep the Worktrees title count at the top of each Git page.
 - Keep matched finder letters readable in High Contrast Dark. Preserve readable ink and every theme's match background.
