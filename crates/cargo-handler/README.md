@@ -278,10 +278,14 @@ and `name` is the value that the tile draws.
   word, as in `impl · thinking`. Other rows show the job.
 - `sessions` has one entry for each session that a tile shows, in session id
   order. Its `activity` is null when the session is not busy.
+- `shells` lists each shell row that the tile shows under the session, in tile
+  order, with the row name and the shell's `started_at`. A session with no
+  shell row has an empty list.
 - `pane` is `open`, `stopped`, `closed` or `unknown`. It is separate from
   `status`.
 - Each run `state` is `running`, `finished_queued` or `missing`.
-- Times are epoch seconds. A change to a key or a type increments `schema`.
+- Times are epoch seconds. A renamed or removed key, or a changed type,
+  increments `schema`. A new key does not.
 
 <!-- census-json-example: report_tests.rs checks these keys and types -->
 ```json
@@ -330,7 +334,10 @@ and `name` is the value that the tile draws.
       "session": "4dbdb78e-a83b-4248-b8f9-ff278dcbc60c",
       "machine": "natedev",
       "status": "busy",
-      "activity": "impl · waiting"
+      "activity": "impl · waiting",
+      "shells": [
+        { "name": "verify.sh test cargo-handler", "started_at": 1794600060 }
+      ]
     }
   ]
 }

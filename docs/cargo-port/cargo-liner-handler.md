@@ -507,3 +507,59 @@ No code change: the twelve tests run in under one second in their full package r
 
 **Gotchas:**
 - The earlier times of 1.04 to 1.57 s came from runs on 2026-11-13 and earlier; the cause of the speed-up was not traced.
+
+### Phase 22 — `census --json` lists each session's shell rows  · status: done
+
+**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. `/showrunner:units` reads `census --json` for Status and Workers. The census does not list a tile's shell rows, so a unit with a running background command looks idle on the board. The sdlc side (unit-board 025dec43b) reads the new field and treats a missing field as empty.
+
+#### Work Order
+
+1. Give `SessionCells` the shell rows of its session: one entry for each `WorkKind::Shell` tree line whose owning row has the session id. Each entry has the name the tile draws (`shell_command::short_command` of the line's session name, without the machine) and the shell's start in epoch seconds.
+2. Add `shells: [{ name, started_at }]` to each `sessions[]` entry of `census --json`, in tile line order. A session with no shell row has an empty list.
+3. Keep `schema` at 2: the key is new, and no key is renamed or removed. The sdlc reader accepts only schema 2.
+4. Update the README census section, its JSON example and the rule on when `schema` increments. Update `docs/cargo-handler/as-built/hierarchy.md`.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells`, `session_cells`
+- `crates/cargo-handler/src/census/report.rs`, `crates/cargo-handler/src/census/report_tests.rs` — `SessionReport`, `ShellReport` and their tests
+- `crates/cargo-handler/README.md` — the census section and example
+- `docs/cargo-handler/as-built/hierarchy.md` — the `sessions` entry
+
+**Verification:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
+- A test: a session with one untimed shell and one timer shell lists both, with the tile names and start times; a session with no shell lists `[]`.
+- The README example test passes with the new key.
+
+### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: todo
+
+**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. The user wants one account color everywhere, set from a color chooser on a new console Accounts page (sdlc devtools builds it). devtools writes hex values into `~/.claude/config/statusline.conf` after cargo-handler and the status line accept hex.
+
+**Current state:**
+- `FooterColors::parse` (`footer_colors/mod.rs`) cuts each line at the first `#`, so `account.claude1=#a0522d` reads as an empty value and the account loses its color.
+- `FooterColor` holds only names. `ReadablePalette` resolves each name once per theme into a `ReadableInk`.
+- `FooterColorFile::refresh` already reloads a changed file, but `TerminalApp::drain_census` calls it on the UI thread, where it reads the file metadata and the file. This breaks the plan invariant "Nothing on the UI thread runs a command or reads a file."
+- Three places draw an account label, all through `FooterColors::account`: the tree account cell (`agent_cell.rs`), the summary program line (`summary/mod.rs`) and the accounts table (`summary/accounts.rs`).
+
+#### Work Order
+
+1. Give `FooterColor` a hex form: a value `#rrggbb` (six hex digits, either case) parses to an RGB color. Any other `#` value stays an unknown color, as an unknown name does today.
+2. Change the comment rule in `FooterColors::parse`: a `#` starts a comment only at the start of the line or after whitespace. So `account.x=#a0522d # sienna` reads `#a0522d`.
+3. Resolve a hex color through the same `ReadablePalette` path as a name, so it takes the same readable and subdued forms on each theme. A hex color that is already readable draws unchanged.
+4. Move the file check off the UI thread: the local census scan checks the file revision, reads and parses a changed file, and sends the new `FooterColors` with its `CensusUpdate::Local`. `drain_census` only applies it. A changed value shows at the next local scan, with no restart.
+5. Check each place that draws an account label (tree cell, program line, accounts table, selected rows, stale rows). Each takes its ink from `FooterColors::account` for the same label. Fix any place that does not.
+6. Update the README footer color section and `docs/cargo-handler/as-built/colors.md`.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/footer_colors/tests.rs` — the hex form, the comment rule, the palette
+- `crates/cargo-handler/src/census/` (local scan, `CensusUpdate`), `crates/cargo-handler/src/terminal.rs` — the read off the UI thread
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs` — only if the check in step 5 finds a gap
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/colors.md`
+
+**Verification:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
+- Tests: `#a0522d` and `#A0522D` parse; `#a0522`, `#gg0000` and `a0522d` do not; a trailing `# comment` after a hex value is cut; a full-line comment is cut.
+- A test: a changed file reaches the app through a local census update, and `drain_census` reads no file.
+- A test: the tree cell, the program line and the accounts table draw one account with the same foreground.
+- Live check: start a handler with a scratch `HOME` whose `statusline.conf` names an account color. Change the value to a hex color and capture the screen after the next scan. The shot goes with the checkpoint notice.

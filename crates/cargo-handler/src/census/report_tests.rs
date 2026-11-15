@@ -463,6 +463,32 @@ fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
 }
 
 #[test]
+fn sessions_list_their_shell_rows_with_the_tile_name_and_start() {
+    let mut rows = rows();
+    let alpha = rows
+        .iter_mut()
+        .find(|row| row.pid == 30)
+        .expect("alpha row");
+    alpha.children = serde_json::from_value(serde_json::json!([
+        {"depth":0,"kind":"shell","pid":31,"name":"bash /fixture/scripts/verify.sh test",
+         "started":5},
+        {"depth":0,"kind":"shell","pid":32,"name":"sleep 60","started":7,
+         "timer":{"started":7,"deadline":67}}
+    ]))
+    .expect("fixture shells");
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let json = report_with(config(&directory, true), rows, facts());
+    assert_eq!(
+        session(&json, "alpha")["shells"],
+        serde_json::json!([
+            {"name":"bash verify.sh test","started_at":5},
+            {"name":"sleep 60","started_at":7}
+        ])
+    );
+    assert_eq!(session(&json, "beta")["shells"], serde_json::json!([]));
+}
+
+#[test]
 fn each_run_state_and_pane_value_is_named_and_unknown_gives_its_reason() {
     let directory = tempfile::tempdir().expect("fixture directory");
     let json = report(config(&directory, true), facts());
