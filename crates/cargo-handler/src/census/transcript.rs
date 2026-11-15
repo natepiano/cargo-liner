@@ -691,6 +691,16 @@ impl WatchedDirectoryIdentity {
     }
 }
 
+/// Whether a reader keeps a file watch between scans or lists each directory once.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum DirectoryWatching {
+    /// The live census keeps a watch, so a later scan lists a directory only after a change.
+    #[default]
+    Live,
+    /// A one-shot scan lists each directory once and installs no watch.
+    Once,
+}
+
 /// A directory watch also bounds recovery from lost events, replacement and missing paths.
 #[derive(Debug)]
 pub(super) struct InputDirectoryWatch {
@@ -709,6 +719,8 @@ enum InputWatchBackend {
         _watcher: RecommendedWatcher,
     },
     Unavailable,
+    /// A one-shot scan lists the directory and never installs a watch.
+    Listing,
     #[cfg(test)]
     Controlled,
 }
@@ -721,9 +733,16 @@ pub(super) enum DirectoryChange {
 }
 
 impl InputDirectoryWatch {
-    pub(super) fn new(directory: &Path, now: Instant) -> Self {
+    pub(super) fn new(
+        directory: &Path,
+        now: Instant,
+        directory_watching: DirectoryWatching,
+    ) -> Self {
         let mut watch = Self {
-            backend:                    InputWatchBackend::Unavailable,
+            backend:                    match directory_watching {
+                DirectoryWatching::Live => InputWatchBackend::Unavailable,
+                DirectoryWatching::Once => InputWatchBackend::Listing,
+            },
             changed:                    Arc::new(AtomicBool::new(true)),
             watch_lost:                 Arc::new(AtomicBool::new(false)),
             identity:                   WatchedDirectoryIdentity::Unavailable,
@@ -732,7 +751,7 @@ impl InputDirectoryWatch {
             installations:              0,
         };
         #[cfg(test)]
-        {
+        if directory_watching == DirectoryWatching::Live {
             watch.backend = InputWatchBackend::Controlled;
         }
         watch.rearm(directory, now);
@@ -740,6 +759,10 @@ impl InputDirectoryWatch {
     }
 
     fn rearm(&mut self, directory: &Path, now: Instant) {
+        if matches!(self.backend, InputWatchBackend::Listing) {
+            self.recovery = now + INPUT_WATCH_RECOVERY;
+            return;
+        }
         let identity = WatchedDirectoryIdentity::read(directory);
         if !self.watch_lost.swap(false, Ordering::AcqRel)
             && identity != WatchedDirectoryIdentity::Unavailable
@@ -800,6 +823,10 @@ impl InputDirectoryWatch {
                 INPUT_WATCH_RECOVERY
             };
     }
+
+    /// Watches this directory installed.
+    #[cfg(test)]
+    pub(super) const fn installations(&self) -> usize { self.installations }
 
     pub(super) fn take_changed(&mut self, directory: &Path, now: Instant) -> DirectoryChange {
         if now >= self.recovery || self.watch_lost.load(Ordering::Acquire) {
@@ -870,7 +897,7 @@ pub(super) fn running_subagents(
         .directories
         .entry(directory.clone())
         .or_insert_with(|| SubagentDirectory {
-            watch: InputDirectoryWatch::new(&directory, clock),
+            watch: InputDirectoryWatch::new(&directory, clock, reads.directory_watching),
             rows:  Vec::new(),
         })
         .watch
@@ -985,13 +1012,14 @@ struct TurnMessage {
 /// Tail positions and last turn outcomes retained for each subagent transcript.
 #[derive(Debug, Default)]
 pub(super) struct SubagentReads {
-    reads:           HashMap<PathBuf, SubagentRead>,
-    directories:     HashMap<PathBuf, SubagentDirectory>,
-    metadata:        HashMap<PathBuf, (SubagentMetaRevision, SubagentMeta)>,
+    directory_watching: DirectoryWatching,
+    reads:              HashMap<PathBuf, SubagentRead>,
+    directories:        HashMap<PathBuf, SubagentDirectory>,
+    metadata:           HashMap<PathBuf, (SubagentMetaRevision, SubagentMeta)>,
     #[cfg(test)]
-    metadata_parses: usize,
+    metadata_parses:    usize,
     #[cfg(test)]
-    directory_reads: usize,
+    directory_reads:    usize,
 }
 
 #[derive(Debug, Default)]
@@ -1008,6 +1036,23 @@ pub(super) enum SubagentTurn {
 }
 
 impl SubagentReads {
+    /// Reads for a one-shot scan: each subagent directory is listed once, with no watch.
+    pub(super) fn listing() -> Self {
+        Self {
+            directory_watching: DirectoryWatching::Once,
+            ..Self::default()
+        }
+    }
+
+    /// Watches installed across every subagent directory.
+    #[cfg(test)]
+    pub(super) fn watch_installations(&self) -> usize {
+        self.directories
+            .values()
+            .map(|directory| directory.watch.installations())
+            .sum()
+    }
+
     /// Keep watches and file reads only for the current session transcripts.
     pub(super) fn retain_sessions(&mut self, transcripts: &HashSet<PathBuf>) {
         let directories: HashSet<_> = transcripts
@@ -1659,7 +1704,7 @@ mod tests {
         let watched = directory.path().join("inputs");
         fs::create_dir(&watched)?;
         let now = Instant::now();
-        let mut watch = InputDirectoryWatch::new(&watched, now);
+        let mut watch = InputDirectoryWatch::new(&watched, now, DirectoryWatching::Live);
         assert!(matches!(
             watch.take_changed(&watched, now),
             DirectoryChange::Reconcile
@@ -1681,6 +1726,37 @@ mod tests {
         assert_eq!(
             watch.installations, 2,
             "a replaced directory installs its new watch"
+        );
+        Ok(())
+    }
+
+    /// A one-shot scan lists the subagent directory and installs no watch.
+    #[test]
+    fn one_shot_subagent_reads_list_the_directory_without_a_watch() -> std::io::Result<()> {
+        let root = TempDir::new()?;
+        let session = root.path().join("session.jsonl");
+        let directory = subagent_directory(&session);
+        fs::create_dir_all(&directory)?;
+        fs::write(
+            directory.join("agent-one.meta.json"),
+            r#"{"description":"Work"}"#,
+        )?;
+        fs::write(directory.join("agent-one.jsonl"), "{\"type\":\"user\"}\n")?;
+        let now = SystemTime::now();
+        let mut once = SubagentReads::listing();
+        assert_eq!(running_subagents(&session, now, &mut once).len(), 1);
+        assert_eq!(once.directory_reads, 1);
+        assert_eq!(
+            once.watch_installations(),
+            0,
+            "a one-shot scan installs no watch"
+        );
+        let mut live = SubagentReads::default();
+        assert_eq!(running_subagents(&session, now, &mut live).len(), 1);
+        assert_eq!(
+            live.watch_installations(),
+            1,
+            "the live census watches the directory"
         );
         Ok(())
     }

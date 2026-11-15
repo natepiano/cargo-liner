@@ -124,6 +124,55 @@ fn subagent_transcript_read_tool_reaches_the_drawn_status_and_append_updates_it(
     }
 }
 
+/// A one-shot scanner finds a running subagent and installs no file watch.
+#[test]
+fn a_one_shot_scan_finds_subagents_without_a_file_watch() {
+    let home = tempfile::tempdir().expect("fixture home");
+    let cwd = Path::new("/fixture");
+    let projects = home.path().join(".claude/projects");
+    let session_path = transcript::transcript_path(&projects, cwd, "fixture-session");
+    let subagents = session_path.with_extension("").join("subagents");
+    fs::create_dir_all(&subagents).expect("subagent directory");
+    fs::write(&session_path, "{\"type\":\"user\"}\n").expect("session transcript");
+    fs::write(
+        subagents.join("agent-reader.meta.json"),
+        "{\"description\":\"Inspect source files\"}",
+    )
+    .expect("metadata");
+    fs::write(subagents.join("agent-reader.jsonl"), ACTIVE_SUBAGENT_TURN)
+        .expect("subagent transcript");
+    let process = ProcessEntry {
+        pid:         10,
+        parent:      None,
+        name:        "claude".into(),
+        arguments:   vec!["claude".into()],
+        started:     10,
+        directory:   Some(cwd.into()),
+        claude_pid:  None,
+        config_home: ConfigHome::Unread,
+    };
+    let sessions: Vec<SessionRecord> = serde_json::from_value(
+        serde_json::json!([{"pid":10,"sessionId":"fixture-session","cwd":cwd,"name":"director"}]),
+    )
+    .expect("session record");
+    let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{"agent":"claude","name":"director","pid":10,"started":10,"directory":cwd,"children":[]}])).expect("session row");
+    let mut scanner =
+        LocalScanner::new(AccountLabels::new(&AccountsConfig::default(), None)).one_shot();
+    scanner.desktop_source = DesktopSource::Windows(Vec::new());
+    scanner.attach_details(
+        std::slice::from_ref(&process),
+        &sessions,
+        Some(home.path()),
+        &mut rows,
+    );
+    assert_eq!(rows[0].children.len(), 1, "{:?}", rows[0].children);
+    assert_eq!(
+        scanner.watch_installations(),
+        0,
+        "a one-shot scan installs no file watch"
+    );
+}
+
 /// Metadata precedence and the description vocabulary, including an unreadable role.
 const SUBAGENT_ROLE_CASES: [(&str, &str, &str, &str); 7] = [
     (

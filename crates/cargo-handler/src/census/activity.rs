@@ -32,6 +32,7 @@ use super::hierarchy::StaffRoster;
 use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
 use super::transcript;
+use super::transcript::DirectoryWatching;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
 use super::transcript::WatchedDirectoryIdentity;
@@ -1132,12 +1133,13 @@ pub(super) fn run_activity(
 /// Parsed detached-run records retained by one local census scanner.
 #[derive(Debug)]
 pub(super) struct RunRecords {
-    failures:        HashMap<PathBuf, super::UnknownReason>,
-    sessions:        HashMap<PathBuf, HashMap<OsString, RunFile>>,
-    watches:         HashMap<PathBuf, RunDirectoryWatch>,
-    install_watch:   fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
+    directory_watching: DirectoryWatching,
+    failures:           HashMap<PathBuf, super::UnknownReason>,
+    sessions:           HashMap<PathBuf, HashMap<OsString, RunFile>>,
+    watches:            HashMap<PathBuf, RunDirectoryWatch>,
+    install_watch:      fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
     #[cfg(test)]
-    directory_reads: usize,
+    directory_reads:    usize,
 }
 
 #[derive(Debug)]
@@ -1146,6 +1148,8 @@ enum RunWatchBackend {
         _watcher: RecommendedWatcher,
     },
     Unavailable,
+    /// A one-shot scan lists the directory and never installs a watch.
+    Listing,
     #[cfg(test)]
     Controlled,
 }
@@ -1209,6 +1213,20 @@ impl RunDirectoryWatch {
         watch
     }
 
+    /// A watch for a one-shot scan: the first read lists the directory, and no watch is installed.
+    fn listing(now: Instant) -> Self {
+        Self {
+            backend:                    RunWatchBackend::Listing,
+            changed:                    Arc::new(Mutex::new(RunChanges::Reconcile)),
+            watch_lost:                 Arc::new(AtomicBool::new(false)),
+            identity:                   WatchedDirectoryIdentity::Unavailable,
+            recovery:                   now + RUN_WATCH_RECOVERY,
+            install:                    |_, _, _| RunWatchBackend::Listing,
+            #[cfg(test)]
+            installations:              0,
+        }
+    }
+
     fn install(
         session: &Path,
         changed: Arc<Mutex<RunChanges>>,
@@ -1265,6 +1283,10 @@ impl RunDirectoryWatch {
     }
 
     fn rearm(&mut self, session: &Path, now: Instant) {
+        if matches!(self.backend, RunWatchBackend::Listing) {
+            self.recovery = now + RUN_WATCH_RECOVERY;
+            return;
+        }
         let identity = WatchedDirectoryIdentity::read(&session.join(DETACHED_RUNS_DIRECTORY));
         if !self.watch_lost.swap(false, Ordering::AcqRel)
             && identity != WatchedDirectoryIdentity::Unavailable
@@ -1286,7 +1308,7 @@ impl RunDirectoryWatch {
         );
         self.recovery = now
             + match self.backend {
-                RunWatchBackend::Watching { .. } => RUN_WATCH_RECOVERY,
+                RunWatchBackend::Watching { .. } | RunWatchBackend::Listing => RUN_WATCH_RECOVERY,
                 RunWatchBackend::Unavailable => RUN_WATCH_RETRY,
                 #[cfg(test)]
                 RunWatchBackend::Controlled => RUN_WATCH_RECOVERY,
@@ -1324,6 +1346,7 @@ impl RunDirectoryWatch {
 impl Default for RunRecords {
     fn default() -> Self {
         Self {
+            directory_watching:           DirectoryWatching::Live,
             failures:                     HashMap::new(),
             sessions:                     HashMap::new(),
             watches:                      HashMap::new(),
@@ -1371,6 +1394,20 @@ impl RunRecordsRead {
 }
 
 impl RunRecords {
+    /// Records for a one-shot scan: each run directory is listed once, with no watch.
+    pub(super) fn listing() -> Self {
+        Self {
+            directory_watching: DirectoryWatching::Once,
+            ..Self::default()
+        }
+    }
+
+    /// Watches installed across every run directory.
+    #[cfg(test)]
+    pub(super) fn watch_installations(&self) -> usize {
+        self.watches.values().map(|watch| watch.installations).sum()
+    }
+
     /// Read current records before supervisor validation selects activity.
     /// One unreadable record names the directory's failure and keeps its valid siblings.
     pub(super) fn current(&mut self, session: &Path) -> RunRecordsRead {
@@ -1499,10 +1536,12 @@ impl RunRecords {
         accept: impl Fn(&RunRecord) -> bool,
     ) -> Vec<RunRecord> {
         let now = Instant::now();
-        let watch = self
-            .watches
-            .entry(session.to_owned())
-            .or_insert_with(|| RunDirectoryWatch::new(session, now, self.install_watch));
+        let watch = self.watches.entry(session.to_owned()).or_insert_with(|| {
+            match self.directory_watching {
+                DirectoryWatching::Live => RunDirectoryWatch::new(session, now, self.install_watch),
+                DirectoryWatching::Once => RunDirectoryWatch::listing(now),
+            }
+        });
         let events = watch.take_changes(session, now);
         let records = self.sessions.entry(session.to_owned()).or_default();
         let directory = session.join(DETACHED_RUNS_DIRECTORY);

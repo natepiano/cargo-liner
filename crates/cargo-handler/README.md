@@ -226,7 +226,9 @@ one connection per host through a control socket under `~/.ssh/` (left out when
 that path would be too long for ssh). `probe` prints the host's own census as
 one line of JSON and exits, so cargo-handler must be installed on the remote and
 on the `PATH` ssh gives a non-interactive command -- `cargo install` puts it in
-`~/.cargo/bin/`.
+`~/.cargo/bin/`. A probe reads each directory once and watches no file. It exits
+with a failure when its scan runs past 19 seconds, or when the ssh session that
+started it is gone, so a hung probe does not stay on the remote.
 
 ### desktops
 

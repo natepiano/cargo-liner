@@ -1168,6 +1168,30 @@ fn idle_run_records_do_not_list_an_unchanged_watched_directory() -> TestResult {
     Ok(())
 }
 
+/// A one-shot scan lists the run directory and installs no watch.
+#[test]
+fn one_shot_run_records_list_the_directory_without_a_watch() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let live = HashSet::from([1]);
+    let mut once = RunRecords::listing();
+    assert_eq!(once.read_for_processes(directory.path(), &live).len(), 1);
+    assert_eq!(once.directory_reads, 1);
+    assert_eq!(
+        once.watch_installations(),
+        0,
+        "a one-shot scan installs no watch"
+    );
+    let mut watched = RunRecords::for_test();
+    assert_eq!(watched.read_for_processes(directory.path(), &live).len(), 1);
+    assert_eq!(
+        watched.watch_installations(),
+        1,
+        "the live census watches the directory"
+    );
+    Ok(())
+}
+
 /// Delivery, loss and unavailable watches use the same cache invalidation path.
 #[test]
 fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
