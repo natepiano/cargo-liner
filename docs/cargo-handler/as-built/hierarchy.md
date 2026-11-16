@@ -129,6 +129,7 @@ The local scan, the accounts read and each remote probe run at the same time.
 The report lists each unit director and current-run worker that a tile shows, from the staff listing facts.
 Schema 2 adds a `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, in session order.
 A `sessions` entry has a `null` activity when its status is not `busy`.
+Each `sessions` entry also has `shells: [{name, started_at}]`: the shell rows the tile shows under the session, in tile line order, from `SessionCells::shells`. The name is the drawn shell name without the machine. A new key keeps `schema` at 2.
 `agent_cell::session_cells` supplies each name, status and activity from the tile lines.
 A staff row with no tile line is not listed, so the JSON and the tiles name the same sessions.
 A session that two machines list takes its facts from the machine whose tile shows it.
