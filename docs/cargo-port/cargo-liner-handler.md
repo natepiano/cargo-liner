@@ -599,3 +599,25 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Gotchas:** the user config already holds `report_deadline`; a test config replaces the key. A 2000 ms bound under load 30 can miss the local scan.
 
 **Ruled out:** the `.publication.lock` flock as the cause (never held in 20 runs). A panic in a source reads as timed out, and a local scan that misses the bound can leave its herdr read child; both are unlikely for one user.
+
+### Phase 28 — The handler shows no accounts table  · status: todo
+
+#### Work Order
+
+**Goal:** cargo-handler no longer shows the accounts table. The user now reads account updates on the hana console's accounts page. Source: the user via the showrunner, 2026-11-16: "remove from cargo handler anything related to showing the accounts page - it is no longer necessary".
+
+**Spec:**
+1. Remove the summary's accounts section: its heading, rows, header sort, row selection, section pin, reset colors and gradients, the failure note and the `problems` lines.
+2. Remove what only that section uses: `summary/accounts.rs`, `AccountsColumn` and `AccountsSort` in `sort.rs`, `SummaryAccount` and `SectionPin` in `interaction.rs`, the `AccountReading` and `AccountResetDate` redraw times, `ResetRank`, and the constants and theme entries that only the table reads.
+3. The accounts command reads only what the handler still uses: the `sessions` states. Remove the decode of account usage, role counts, credits, resets, login ends and read status (`AccountUsage` and the types under it). Extra fields in the command's JSON are ignored.
+4. Keep `[census] accounts_command`, the session status in the tree and in `census --json`, the accounts source health, and the `[accounts]` label column and its ink.
+5. Remove the tests of removed code. Keep each test of kept behavior, rewritten where it builds an `AccountUsage`.
+6. Update the README and `docs/cargo-handler/as-built/` (`accounts.md`, `colors.md`, the summary layout) to match.
+
+**Files:** `crates/cargo-handler/src/` — `summary/` (`accounts.rs` and its tests, `mod.rs`), `census/accounts.rs` and `accounts_wire_tests.rs`, `sort.rs`, `interaction.rs`, `terminal.rs`, `app.rs`, `expansion.rs`, `details.rs`, `render/` (the pinned accounts and accounts grid tests), `theme/mod.rs`, `constants.rs`, `startup_log.rs`; `crates/cargo-handler/README.md`; `docs/cargo-handler/as-built/`.
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Check, lint, and the full `cargo-handler` test suite.
+- Live: on a private Xvfb, the handler draws its summary with no accounts table, and the tree's status column still fills.
