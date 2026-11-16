@@ -99,3 +99,11 @@ slow-timeout = { period = "20s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter       = 'package(cargo-berth) | package(cargo-berth-test-support)'
 slow-timeout = { period = "5s", terminate-after = 8 }
+
+# Each cargo-mend diagnostic test compiles a fixture through a chain of cargo
+# and cargo-mend compiler processes. Alone, one takes 0.13 to 0.29s; with 31 at
+# once on 32 CPUs, process start and kernel work made 20 of them take 1.0 to 1.3s.
+# Two slots for each test keeps that chain from overloading the machine.
+[[profile.default.overrides]]
+filter           = 'binary_id(cargo-mend::bin/cargo-mend) & test(/^diagnostic_tests::/)'
+threads-required = 2
