@@ -548,39 +548,15 @@ A one-shot scan installs no notify watch. `DirectoryWatching { Live, Once }` (`c
 
 ### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: done
 
-**Source:** the user, through the cargo-liner showrunner, 2026-11-15: "a shell is not running in a family account - it should probably just show a blank there and we should move the type column to be after the role and before the activity and the type column should be either agent, shell, or subagent." Then: "you are not reclaiming space in the description column for running shells when there is space."
+#### As-built
 
-**Current state:**
-- `agent_cell.rs` gives a `WorkKind::Shell` or `WorkKind::Subagent` line its parent's account when its own is `Account::Unrecorded`. So the natest shell row "Run the AWS pair for phase 302" shows `claude3`.
-- `TreeColumn` order is Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, Directory, Age. The Type cell is blank for session and worker rows.
-- In the sdlc tile at about 170 columns, shell rows read "Start the…" and "Run the st…": the name is cut to the shared session column width, while the branch cell is `—` and the row has free width.
-
-#### Work Order
-
-**Goal:** each tree row says what it is, a shell shows no account, and a shell or subagent name is cut only when the row has no free width.
-
-**Spec:**
-
-1. A shell row shows a blank account cell. A subagent row keeps its parent's account.
-2. Move `TreeColumn::Type` after `Role` and before `Activity`, in the column order, the column drop order and the details order.
-3. Every row's Type cell reads `agent`, `shell` or `subagent`. Session and worker rows read `agent`.
-4. A shell or subagent name uses the free width of its row before it takes an ellipsis.
-5. Update the README tree column section and the as-built docs.
+The tree's type column follows role and comes before activity, in `TreeColumn` order (session, account, role, type, activity, status, branch, model, effort, directory, age) and in the details pane hierarchy section. `RowType { Agent, Shell, Subagent }` gives the type cell the `ROW_TYPE_AGENT`, `ROW_TYPE_SHELL` or `ROW_TYPE_SUBAGENT` word (`constants.rs`); session, thread and worker rows read `agent`. `Work::account` returns `LineAccount { Runs(&Account), Shell }`: a shell row draws a blank account cell, sorts with empty text, and is left out of the account column measure; an unrecorded subagent runs under its session's account, and a thread or a subagent with its own account keeps it. `NameCut::whole_shell_session` holds the session width that shows every shell name whole, and shared tile groups take its maximum. `fill_tree_width` gives unused table width to the session column up to that width, then to the directory, or to the session when the directory is absent. A tile with no unused width still cuts a shell name with `…`. `ColumnDrop::ORDER` drops effort, model, type, directory, then branch, so the type column leaves before a path. Tests: `subagent_rows_inherit_the_session_account_shells_show_none_and_threads_keep_their_own` (subagent_row_tests.rs), the details `hierarchy_cases` (render/details_tests.rs), and `a_shell_row_shows_its_whole_command_in_the_free_width_beside_a_branch_column` (shell_command_tests.rs).
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — the account, the column order, the Type text, the name width
-- `crates/cargo-handler/src/details.rs` — the details order, if it lists columns
-- `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/render/` — tests next to the code under test
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
+- `crates/cargo-handler/src/agent_cell.rs` — `RowType`, `LineAccount`, `NameCut::whole_shell_session`, `fill_tree_width`, `ColumnDrop::ORDER`
+- `crates/cargo-handler/src/constants.rs` — the `ROW_TYPE_*` words
+- `crates/cargo-handler/src/details.rs` — the details property order
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/tile-layout.md`, `hierarchy.md`, `interaction.md` — column order, drop order, blank shell account
 
-**Workers:** 2 writers — cargo-handler has no `tests/` directory, so the second worker opens as a writer; split code from tests and docs.
-- `impl` — `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/details.rs`; hub: `crates/cargo-handler/src/agent_cell.rs` (it holds `TreeColumn` and every cell text)
-- `test` opens as impl — the tests in `crates/cargo-handler/src/agent_cell/tests/` and `crates/cargo-handler/src/render/`, `crates/cargo-handler/README.md` and `docs/cargo-handler/as-built/`; it asks `impl` for a new `#[path]` line in `agent_cell.rs`
-
-**Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a shell row's account cell is blank; a subagent row shows its parent's account.
-- A test: the header order is session, account, role, type, activity, and each row kind shows its type word.
-- A test: at about 170 columns, a shell row with a `—` branch shows its full name when the row has the width.
-- Live check: capture a tile with a shell row and a subagent row; the shot goes with the checkpoint notice.
+**Gotchas:**
+- A test that looks for a header word in drawn text must match whole words: "age" is inside "agent".
