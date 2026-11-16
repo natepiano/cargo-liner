@@ -484,26 +484,14 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 19 — the ignored worktree event test gets no stray event  · status: done
 
-#### Work Order
+#### As-built
 
-**Source:** the showrunner, 2026-11-16: a cargo-port flake stopped the handler 22 merge test.
+- `ignored_worktree_events_keep_disk_sizes_without_git_refresh` uses a tracked `src/lib.rs` in place of `src/main.rs`: `ignored_git_project` renames the file before Git starts, and the case list names `src/lib.rs`. Every assert stays the same.
+- Cause: `src/main.rs` matches `refresh::is_target_metadata_event`, so its event starts a Rayon project refresh that sends `ProjectRefreshed` and `DiskUsageBatch`. That product behavior is correct; the messages raced the test's empty-receiver assert.
+- Proof: stress of the single test, 2000 runs with 12 jobs under MemoryMax=2G: 19 failures before, 0 after. natedev suite 1552 pass; the test takes 0.374 s.
 
-**Failure:** `watcher::events::tests::ignored_worktree_events_keep_disk_sizes_without_git_refresh` panicked at `crates/cargo-port/src/watcher/events.rs:784` (`receiver.try_recv().is_err()`), case `src/main.rs`. A message reached the receiver. It failed once in the natedev merge suite (12 test threads). It passed in the next full run and alone.
+**Files:**
+- `crates/cargo-port/src/watcher/events.rs` — test fixture input
 
-**Change:**
-1. Find which code sends the stray message for the `src/main.rs` event. Suspect: work spawned on the shared test runtime through `dispatch_with_git_lock_check`, which sends on `sender` with a timing race.
-2. Fix the cause where it lives. If product code sends a message the test says it must not send, fix the product. If the test's own fixture shares state with other tests, isolate the fixture.
-3. Do not loosen the assert, and do not add a retry or a sleep.
-4. Prove the fix: make the race happen on demand (for example a stress loop of the single test under load), show it fails before and passes after.
-
-**Workers:** impl — `port-impl` finds the cause and writes the fix.
-
-**Verification:**
-1. `verify.sh test cargo-port` passes; the test takes under 1 s.
-
-#### Result
-
-- Cause: `src/main.rs` matches `refresh::is_target_metadata_event`, so its event starts a Rayon project refresh (`probe::spawn_project_refresh`). That refresh sends `ProjectRefreshed` and `DiskUsageBatch`. The product is correct; the test input was wrong. When the refresh sent before `try_recv`, the assert failed.
-- Fix: `ignored_git_project` renames the tracked `src/main.rs` to `src/lib.rs` before Git starts, and the case list uses `src/lib.rs`. The file stays tracked under the `*.rs` ignore rule. Every assert stays the same.
-- Proof: a stress run of the single test, 2000 runs with 12 jobs under MemoryMax=2G: before 19 failures, after 0. natedev suite 1552 pass; the test takes 0.374 s.
-- `target_event_refreshes_project_metadata` and `tracked_file_edit_and_revert_refresh_git_status` still cover the target refresh and `src/main.rs` events.
+**Gotchas:**
+- `target_event_refreshes_project_metadata` and `tracked_file_edit_and_revert_refresh_git_status` cover the target refresh and `src/main.rs` events.
