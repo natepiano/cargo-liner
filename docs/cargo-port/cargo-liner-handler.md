@@ -560,3 +560,19 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Gotchas:**
 - A test that looks for a header word in drawn text must match whole words: "age" is inside "agent".
+
+### Phase 26 — A tile never draws its readout or rows over a neighbor tile  · status: done
+
+**Source:** showrunner note 3 on the Phase 25 checkpoint (2026-11-15): at about 24 s uptime, a tile draws its "content rows" readout over a row of the next tile.
+
+**Current state:** the Phase 25 shot at 24 s shows the summary at full width. In the right column, the natedev tile's title, header and readout and the cargo-liner tile's title, header and first row are drawn inside the summary's rows, with no border lines. The natedev readout overwrites the cargo-liner row. The same run is correct at 60 s. Headless runs at other times did not show the fault, because the census data differs from run to run. The cause is not known: a mid-motion frame from a summary width change, or terminal cells that a diff draw left stale.
+
+**Work Order:**
+- **Goal:** no frame draws a tile's readout, title or rows over another tile, during motion or after it.
+- **Spec:**
+  1. Find the cause from a headless frame log of a live run.
+  2. Fix it where it lives (tile grid motion, tile draw, or the event loop's terminal writes).
+  3. Add a regression test that fails before the fix and passes after it.
+- **Files:** `crates/tui_pane/src/tiles/grid/` (motion, bands, layout), `crates/tui_pane/src/tiles/draw/` (paint, rows), `crates/tui_pane/src/runner/event_loop.rs`; the test beside the fixed code.
+- **Workers:** none (no-worker mode). The director does the work.
+- **Verification:** `verify.sh check`, `lint`, `test`; a headless live shot sequence over the first 40 s shows no overlap.

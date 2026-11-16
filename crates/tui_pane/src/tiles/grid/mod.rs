@@ -119,6 +119,8 @@ use bands::BandPiece;
 #[cfg(test)]
 use bands::BandPieceMotion;
 use bands::CellTransition;
+#[cfg(test)]
+use bands::SummaryReach;
 use bands::Turns;
 #[cfg(test)]
 use bands::band_piece_dividers;
@@ -131,6 +133,7 @@ use bands::moving_cell;
 #[cfg(test)]
 use bands::piece_frame;
 use bands::place_band_pieces;
+use bands::summary_reach;
 use column_order::ColumnRanks;
 pub use column_order::TileColumnOrder;
 pub use demands::TileDemand;

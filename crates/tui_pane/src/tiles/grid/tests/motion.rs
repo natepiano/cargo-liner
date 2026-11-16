@@ -497,28 +497,21 @@ fn nonmonotone_starting_dividers_keep_every_piece_inside_its_band() {
             },
         })
         .collect();
-    let held = HeldCellLayout {
-        rows: row_demands(&[4; 4]),
-        ..HeldCellLayout::default()
-    };
-    let grid = Grid::new(band, &held, TileGrowth::default(), &TileSettings::default());
     let indices = [0, 1, 2];
     let search = BandHeightSearch {
-        before_grid: &grid,
-        after_grid: &grid,
         pieces: &pieces,
         in_band: &indices,
         band,
+        summary_reach: SummaryReach::OwnColumn,
         min_tile_height: 1,
         height_snap: &HeightSnap::Off,
     };
     let dividers = band_piece_dividers(&search, band, band);
     for (position, piece) in pieces.iter().enumerate() {
         let rect = band_piece_rect(
-            &grid,
-            &grid,
             piece,
             band,
+            SummaryReach::OwnColumn,
             dividers[position],
             dividers[position + 1],
         );

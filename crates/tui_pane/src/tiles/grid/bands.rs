@@ -16,7 +16,6 @@ use super::draw;
 use super::frame_inner;
 use super::frame_painted_rows;
 use super::lerp;
-use super::lerp_rect;
 /// Where one cell stands at the two ends of a transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CellTransition {
@@ -162,12 +161,13 @@ impl Turns {
         }
     }
 
-    /// Whether the cell travelling `old` to `new` stands in one of the
-    /// columns the summary's edge crosses, at both ends of the step. A
-    /// cell changing columns is moving for its own reasons, on the
-    /// step's own clock.
+    /// Whether the cell travelling `old` to `new` stands, at both ends of
+    /// the step, in a column the summary covers or its edge crosses. A
+    /// cell under the summary trades rows with it, so the two change
+    /// height on the same clock. A cell changing columns is moving for
+    /// its own reasons, on the step's own clock.
     pub(super) fn covers(self, before: &Grid, after: &Grid, transition: CellTransition) -> bool {
-        let (Self::Widening { from, to } | Self::Narrowing { from, to }) = self else {
+        let (Self::Widening { to, .. } | Self::Narrowing { to, .. }) = self else {
             return false;
         };
         let CellTransition::PresentAtBothEnds {
@@ -178,8 +178,7 @@ impl Turns {
             return false;
         };
         let column = before.column_of(before_cell);
-        column.is_some_and(|column| (from..to).contains(&column))
-            && column == after.column_of(after_cell)
+        column.is_some_and(|column| column < to) && column == after.column_of(after_cell)
     }
 }
 
@@ -482,6 +481,7 @@ pub(super) fn place_band_pieces<Id: Clone + Eq>(
     before: &Grid,
     after: &Grid,
     bands: &[Rect],
+    summary_reach: SummaryReach,
     pieces: Vec<BandPiece<Id>>,
     height_snap: &HeightSnap<'_, Id>,
 ) -> Vec<TilePiece<Id>> {
@@ -498,11 +498,10 @@ pub(super) fn place_band_pieces<Id: Clone + Eq>(
         let from_band = from_bands[column];
         let to_band = to_bands[column];
         let search = BandHeightSearch {
-            before_grid: before,
-            after_grid: after,
             pieces: &pieces,
             in_band: &in_band,
             band,
+            summary_reach,
             min_tile_height: after.rules.min_tile_height.get(),
             height_snap,
         };
@@ -513,7 +512,7 @@ pub(super) fn place_band_pieces<Id: Clone + Eq>(
             let piece = &pieces[index];
             let divider = dividers[position];
             let bottom = dividers[position + 1];
-            rects[index] = band_piece_rect(before, after, piece, band, divider, bottom);
+            rects[index] = band_piece_rect(piece, band, summary_reach, divider, bottom);
             let last = position.saturating_add(1) == in_band.len();
             let before_bottom = if last {
                 from_band.bottom().saturating_sub(1)
@@ -559,30 +558,66 @@ pub(super) fn place_band_pieces<Id: Clone + Eq>(
         .collect()
 }
 
-/// The framed rect one pair of shared dividers gives `piece`.
-pub(super) fn band_piece_rect<Id>(
-    before_grid: &Grid,
-    after_grid: &Grid,
+/// How far right the summary reaches at one frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SummaryReach {
+    /// The summary covers one column at both ends and fills its band.
+    OwnColumn,
+    /// The summary covers more than one column at one end or both.
+    Spanning {
+        /// The summary's far edge at this frame.
+        right: u16,
+    },
+}
+
+/// The framed rect one pair of shared dividers gives `piece` in `band`.
+/// A spanning summary reaches to its own far edge instead of the band's.
+pub(super) const fn band_piece_rect<Id>(
     piece: &BandPiece<Id>,
     band: Rect,
+    summary_reach: SummaryReach,
     top: u16,
     bottom: u16,
 ) -> Rect {
-    let mut rect = Rect::new(
+    let right = match summary_reach {
+        SummaryReach::Spanning { right } if matches!(piece.drawn.content, TileContent::Summary) => {
+            right
+        },
+        SummaryReach::Spanning { .. } | SummaryReach::OwnColumn => band.right(),
+    };
+    Rect::new(
         band.x,
         top,
-        band.width,
+        right.saturating_sub(band.x),
         bottom.saturating_sub(top).saturating_add(1),
-    );
-    if matches!(piece.drawn.content, TileContent::Summary)
-        && (before_grid.span > 1 || after_grid.span > 1)
-        && let BandPieceMotion::Resident { before, after } = piece.motion
-    {
-        let horizontal = lerp_rect(before, after, piece.progress);
-        rect.x = horizontal.x;
-        rect.width = horizontal.width;
+    )
+}
+
+/// How far the summary reaches at one frame, given every column band at it.
+///
+/// A spanning summary's far edge stands on the divider after the last
+/// column it covers. The edge moves from its starting span to its final
+/// span by `progress`, the summary's own turn. The dividers move on the
+/// step's clock, the same as the cells beyond them, so the summary never
+/// reaches into a column it does not yet cover.
+pub(super) fn summary_reach(
+    before: &Grid,
+    after: &Grid,
+    bands: &[Rect],
+    progress: u32,
+) -> SummaryReach {
+    if before.span <= 1 && after.span <= 1 {
+        return SummaryReach::OwnColumn;
     }
-    rect
+    let far_edge = |span: usize| {
+        bands
+            .get(span.saturating_sub(1))
+            .copied()
+            .map_or(0, Rect::right)
+    };
+    SummaryReach::Spanning {
+        right: lerp(far_edge(before.span), far_edge(after.span), progress),
+    }
 }
 
 /// Which of a crossing cell's adjacent pieces owns its name.
@@ -625,16 +660,14 @@ fn piece_name<Id>(index: usize, pieces: &[BandPiece<Id>], frames: &[PaneFrame]) 
 
 /// Inputs shared throughout one band's height search.
 pub(super) struct BandHeightSearch<'a, Id> {
-    /// The arrangement from which the pieces move.
-    pub(super) before_grid:     &'a Grid,
-    /// The arrangement toward which the pieces move.
-    pub(super) after_grid:      &'a Grid,
     /// Every piece across all bands.
     pub(super) pieces:          &'a [BandPiece<Id>],
     /// Indices of the pieces resident in this band.
     pub(super) in_band:         &'a [usize],
     /// The band's interpolated bounds.
     pub(super) band:            Rect,
+    /// How far the summary reaches at this frame.
+    pub(super) summary_reach:   SummaryReach,
     /// The framed height retained by resident pieces.
     pub(super) min_tile_height: u16,
     /// Row-use answers gathered for the current frame.
@@ -1177,10 +1210,9 @@ fn piece_span_bounds<Id: Eq>(
     let mut lower = previous_span.min(after_span);
     let mut upper = previous_span.max(after_span);
     let previous_rect = band_piece_rect(
-        search.before_grid,
-        search.after_grid,
         piece,
         search.band,
+        search.summary_reach,
         search.band.top(),
         search.band.top().saturating_add(previous_span),
     );
@@ -1252,14 +1284,7 @@ fn snapped_piece_fit<Id: Eq>(
     if span > 0 && span.saturating_add(1) < MIN_TILE_HEIGHT {
         return PieceCandidateFit::InvalidGeometry;
     }
-    let rect = band_piece_rect(
-        search.before_grid,
-        search.after_grid,
-        piece,
-        search.band,
-        top,
-        bottom,
-    );
+    let rect = band_piece_rect(piece, search.band, search.summary_reach, top, bottom);
     let retained_span = if search.height_snap.previous_height(index).is_some() {
         lower.max(after[position + 1].saturating_sub(after[position]))
     } else {
