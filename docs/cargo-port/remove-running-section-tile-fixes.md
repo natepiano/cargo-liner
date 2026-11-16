@@ -1752,7 +1752,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Ruled out:** a smaller template worker cap, which hid the startup cost.
 
-### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: todo
+### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: done
 
 **Depends on:** Phase 65 (order only)
 

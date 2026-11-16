@@ -36,6 +36,17 @@ mod tests {
     use super::native_fixture;
     use super::parallel_cases;
 
+    /// `CAPTURE_FALLBACK_ENV` names the cause observed by the stand-in cargo.
+    const CAPTURE_FALLBACK_ENV: &str = "CARGOTILE_CAPTURE_FALLBACK";
+    /// `CAPTURE_FALLBACK_PUBLICATION_PREFIX` identifies a publication failure.
+    const CAPTURE_FALLBACK_PUBLICATION_PREFIX: &str = "publication: ";
+    /// `CAPTURE_FALLBACK_STARTUP_PREFIX` identifies a capture startup failure.
+    const CAPTURE_FALLBACK_STARTUP_PREFIX: &str = "capture startup: ";
+    /// `CAPTURE_FALLBACK_TERMINAL_PREFIX` identifies unavailable capture streams.
+    const CAPTURE_FALLBACK_TERMINAL_PREFIX: &str = "terminal: ";
+    /// `CAPTURE_SHIM_ARGUMENT` selects the native entry in the fixture runner.
+    const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
+
     /// The stand-in for the real cargo, run after `DESCRIPTOR_PROBE`. It records what it
     /// was given, then `SHIM_TEST_SCENARIO` selects what it does; unset, it writes one
     /// line to each stream.
@@ -45,6 +56,7 @@ printf '%s\000' "$(pwd -P)" "${HOME-}" > "$SHIM_TEST_OBSERVATIONS/directory-fiel
 printf '%s\000' "${CARGOTILE_NESTED-unset}" \
     "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" \
     > "$SHIM_TEST_OBSERVATIONS/environment"
+printf '%s' "${@CAPTURE_FALLBACK_ENV@-}" > "$SHIM_TEST_OBSERVATIONS/capture-fallback"
 if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
     printf '%s' pty > "$SHIM_TEST_OBSERVATIONS/streams"
 else
@@ -240,7 +252,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
                             "@CARGO_TILE_EXECUTABLE@",
                             &shell_word(env!("CARGO_BIN_EXE_cargo-tile")),
                         )
-                        .replace("@CAPTURE_SHIM_ARGUMENT@", "--capture-shim")
+                        .replace("@CAPTURE_SHIM_ARGUMENT@", CAPTURE_SHIM_ARGUMENT)
                         .replace(
                             "@CAPTURE_SHIM_PASSTHROUGH_ARGUMENT@",
                             "--capture-shim-passthrough",
@@ -344,6 +356,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 .env("PATH", search_path)
                 .env("POSIXLY_CORRECT", "1")
                 .env("SHELL", "/bin/sh")
+                .env_remove(CAPTURE_FALLBACK_ENV)
                 .env_remove("CARGOTILE_NESTED")
                 .env_remove("CARGO_TERM_PROGRESS_WHEN")
                 .env_remove("CARGO_TERM_PROGRESS_WIDTH")
@@ -630,6 +643,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
 
     /// Set fixture permissions explicitly, without changing the parent process's umask.
     fn write_executable(path: &Path, contents: &str) {
+        let contents = contents.replace("@CAPTURE_FALLBACK_ENV@", CAPTURE_FALLBACK_ENV);
         fs::write(path, contents).expect("write fixture executable");
         set_mode(path, 0o755);
     }
@@ -1261,12 +1275,15 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             },
         );
     }
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum MirrorStartup {
         MissingShell,
         MissingTee,
         FailedShell,
+        InheritedFallback,
         DescriptorLimit,
+        OccupiedDescriptors,
+        PublicationFailure,
     }
 
     #[test]
@@ -1276,6 +1293,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 MirrorStartup::MissingShell,
                 MirrorStartup::MissingTee,
                 MirrorStartup::FailedShell,
+                MirrorStartup::InheritedFallback,
             ],
             |startup| assert_mirror_startup(startup, &["build", "--", "a b", ""]),
         );
@@ -1285,17 +1303,69 @@ exec sh "$SHIM_TEST_SHIM" "$@"
     fn a_native_mirror_setup_failure_runs_original_cargo_without_artifacts() {
         parallel_cases::run(
             [
-                vec!["build", "--", "a b", ""],
-                vec!["build", "--quiet", "--message-format=json", "--", "a b", ""],
+                MirrorStartup::DescriptorLimit,
+                MirrorStartup::OccupiedDescriptors,
+                MirrorStartup::PublicationFailure,
             ],
-            |arguments| assert_mirror_startup(MirrorStartup::DescriptorLimit, &arguments),
+            |startup| {
+                for arguments in [
+                    vec!["build", "--", "a b", ""],
+                    vec!["build", "--quiet", "--message-format=json", "--", "a b", ""],
+                ] {
+                    assert_mirror_startup(startup, &arguments);
+                }
+            },
         );
+    }
+
+    /// `mirror_startup_command` supplies real stream and filesystem failures to the native entry.
+    fn mirror_startup_command(fixture: &InstalledToolchain, startup: MirrorStartup) -> Command {
+        let mut command = match startup {
+            MirrorStartup::DescriptorLimit | MirrorStartup::OccupiedDescriptors => {
+                let setup = if matches!(startup, MirrorStartup::DescriptorLimit) {
+                    "export SHIM_TEST_DESCRIPTOR_LIMIT=$(ulimit -Sn); ulimit -Sn 6; exec \"$@\""
+                } else {
+                    "exec 3</dev/null 4</dev/null 5</dev/null 6</dev/null 7</dev/null 8</dev/null 9</dev/null; exec \"$@\""
+                };
+                let mut shell = Command::new("/bin/sh");
+                shell.args(["-c", setup, "capture-failure"]);
+                shell.arg(env!("CARGO_BIN_EXE_cargo-tile"));
+                shell
+            },
+            MirrorStartup::PublicationFailure => Command::new(env!("CARGO_BIN_EXE_cargo-tile")),
+            MirrorStartup::MissingShell
+            | MirrorStartup::MissingTee
+            | MirrorStartup::FailedShell
+            | MirrorStartup::InheritedFallback => {
+                let mut shell = Command::new("/bin/sh");
+                shell.arg(fixture.bin.join("cargo"));
+                return shell;
+            },
+        };
+        command
+            .arg(CAPTURE_SHIM_ARGUMENT)
+            .arg(fixture.bin.join("cargo"))
+            .arg(&fixture.parent);
+        if matches!(
+            startup,
+            MirrorStartup::OccupiedDescriptors | MirrorStartup::PublicationFailure
+        ) {
+            fs::create_dir_all(fixture.root.join("state/pids"))
+                .expect("prepare empty capture directories");
+        }
+        if matches!(startup, MirrorStartup::PublicationFailure) {
+            let uid = fs::metadata(fixture.directory.path())
+                .expect("fixture owner")
+                .uid();
+            fs::create_dir(fixture.parent.join(format!(".setup-v4-{uid}")))
+                .expect("block the setup receipt");
+        }
+        command
     }
 
     fn assert_mirror_startup(startup: MirrorStartup, arguments: &[&str]) {
         let fixture = InstalledToolchain::for_live_capture();
-        // dash cannot open a script under a descriptor limit below 11, so the
-        // limited run starts its stand-in cargo under bash.
+        // `DescriptorLimit` uses bash because dash needs at least 11 descriptors to open a script.
         let interpreter = if matches!(startup, MirrorStartup::DescriptorLimit) {
             program_on_path("bash")
         } else {
@@ -1312,6 +1382,7 @@ fi
 printf 'call\n' >> "$SHIM_TEST_OBSERVATIONS/calls"
 printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
 printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
+printf '%s' "${@CAPTURE_FALLBACK_ENV@-}" > "$SHIM_TEST_OBSERVATIONS/capture-fallback"
 printf 'original stdout\n'
 printf 'original stderr\n' >&2
 exit 43
@@ -1324,20 +1395,10 @@ exit 43
         if matches!(startup, MirrorStartup::MissingTee) {
             symlink("/bin/sh", fixture.bin.join("sh")).expect("provide sh without tee");
         }
-        let mut command = Command::new("/bin/sh");
-        if matches!(startup, MirrorStartup::DescriptorLimit) {
-            command
-                .args([
-                    "-c",
-                    "export SHIM_TEST_DESCRIPTOR_LIMIT=$(ulimit -Sn); ulimit -Sn 6; exec \"$@\"",
-                    "pump-limit",
-                ])
-                .arg(env!("CARGO_BIN_EXE_cargo-tile"))
-                .arg("--capture-shim")
-                .arg(fixture.bin.join("cargo"))
-                .arg(&fixture.parent);
-        } else {
-            command.arg(fixture.bin.join("cargo"));
+        let mut command = mirror_startup_command(&fixture, startup);
+        command.env_remove(CAPTURE_FALLBACK_ENV);
+        if matches!(startup, MirrorStartup::InheritedFallback) {
+            command.env(CAPTURE_FALLBACK_ENV, "terminal: old");
         }
         let child = command
             .args(arguments)
@@ -1357,8 +1418,6 @@ exit 43
             .wait_with_output()
             .expect("run cargo with the selected pump startup condition");
         assert_eq!(output.status.code(), Some(43), "{output:?}");
-        assert_eq!(output.stdout, b"original stdout\n");
-        assert_eq!(output.stderr, b"original stderr\n");
         let expected: Vec<u8> = arguments
             .iter()
             .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
@@ -1369,16 +1428,65 @@ exit 43
             b"call\n",
             "cargo runs exactly once"
         );
-        if matches!(startup, MirrorStartup::DescriptorLimit) {
-            assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
-        } else {
+        assert_mirror_capture(&fixture, startup, native_pid, &output);
+        assert_eq!(output.stdout, b"original stdout\n");
+        assert_eq!(output.stderr, b"original stderr\n");
+        fixture.assert_cleaned_up();
+    }
+
+    /// `assert_mirror_capture` checks the transport and the cause recorded by cargo.
+    fn assert_mirror_capture(
+        fixture: &InstalledToolchain,
+        startup: MirrorStartup,
+        native_pid: u32,
+        output: &Output,
+    ) {
+        let fallback = fixture.observed("capture-fallback");
+        let fallback = String::from_utf8_lossy(&fallback);
+        let expected_cause = match startup {
+            MirrorStartup::OccupiedDescriptors => CAPTURE_FALLBACK_TERMINAL_PREFIX,
+            MirrorStartup::DescriptorLimit => {
+                // `DescriptorLimit` exhausts descriptors during publication on macOS and during
+                // pipe setup on Linux.
+                if cfg!(target_os = "macos") {
+                    CAPTURE_FALLBACK_PUBLICATION_PREFIX
+                } else {
+                    CAPTURE_FALLBACK_STARTUP_PREFIX
+                }
+            },
+            MirrorStartup::PublicationFailure => CAPTURE_FALLBACK_PUBLICATION_PREFIX,
+            MirrorStartup::MissingShell
+            | MirrorStartup::MissingTee
+            | MirrorStartup::FailedShell
+            | MirrorStartup::InheritedFallback => "",
+        };
+        if expected_cause.is_empty() {
+            assert_eq!(
+                fallback,
+                "",
+                "the {startup:?} row must capture without a cause; shim status: {}; shim stderr: {}; capture fallback: {fallback}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert_eq!(
                 fixture.observed("environment"),
                 format!("{native_pid}\0always\x00100\0").as_bytes(),
-                "the utility row must run native capture"
+                "the {startup:?} utility row must run native capture; shim status: {}; shim stderr: {}; capture fallback: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+                fallback
+            );
+        } else {
+            assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+            assert!(
+                fallback.starts_with(expected_cause),
+                "{startup:?}: {fallback}; {output:?}"
+            );
+            assert!(
+                fallback.len() > expected_cause.len(),
+                "the cause includes the error: {fallback}"
             );
         }
-        fixture.assert_cleaned_up();
     }
 
     #[test]
@@ -1393,6 +1501,7 @@ exit 43
             r#"#!/bin/sh
 printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
 printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
+printf '%s' "${@CAPTURE_FALLBACK_ENV@-}" > "$SHIM_TEST_OBSERVATIONS/capture-fallback"
 printf 'original stdout\n'
 printf 'original stderr\n' >&2
 exit 43

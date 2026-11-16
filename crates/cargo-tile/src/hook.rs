@@ -81,6 +81,12 @@ use crate::constants::ACCOUNT_GROUPS_INITIAL_CAPACITY;
 use crate::constants::ACCOUNT_GROUPS_MAX_CAPACITY;
 use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
+use crate::constants::CAPTURE_FALLBACK_ENV;
+use crate::constants::CAPTURE_FALLBACK_PUBLICATION;
+use crate::constants::CAPTURE_FALLBACK_SIGNALS;
+use crate::constants::CAPTURE_FALLBACK_STARTUP;
+use crate::constants::CAPTURE_FALLBACK_TERMINAL;
+use crate::constants::CAPTURE_HELPER_UNACKNOWLEDGED;
 use crate::constants::CAPTURE_RUNNER_NAME;
 use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_EXECUTABLE;
@@ -240,7 +246,10 @@ impl NativeCargoCall {
 
     fn command(&self) -> Command {
         let mut cargo = Command::new(&self.real);
-        cargo.args(&self.arguments).env("CARGO", &self.shim);
+        cargo
+            .args(&self.arguments)
+            .env("CARGO", &self.shim)
+            .env_remove(CAPTURE_FALLBACK_ENV);
         cargo
     }
 
@@ -254,17 +263,38 @@ impl NativeCargoCall {
         if !capture_requested(&self.arguments) || capture_is_nested() {
             return Err(cargo.exec());
         }
-        let Ok(terminal) = capture_terminal() else {
-            return Err(cargo.exec());
+        let terminal = match capture_terminal() {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                return Err(exec_uncaptured_cargo(
+                    cargo,
+                    CAPTURE_FALLBACK_TERMINAL,
+                    &error,
+                ));
+            },
         };
-        let Ok(signals) = DeferredCaptureSignals::new() else {
-            return Err(cargo.exec());
+        let signals = match DeferredCaptureSignals::new() {
+            Ok(signals) => signals,
+            Err(error) => {
+                return Err(exec_uncaptured_cargo(
+                    cargo,
+                    CAPTURE_FALLBACK_SIGNALS,
+                    &error,
+                ));
+            },
         };
-        let Ok(publication) = publish(&self.parent, &self.arguments) else {
-            if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
-                return Ok(status);
-            }
-            return Err(cargo.exec());
+        let publication = match publish(&self.parent, &self.arguments) {
+            Ok(publication) => publication,
+            Err(error) => {
+                if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
+                    return Ok(status);
+                }
+                return Err(exec_uncaptured_cargo(
+                    cargo,
+                    CAPTURE_FALLBACK_PUBLICATION,
+                    &error,
+                ));
+            },
         };
         if let CaptureInterruption::Signaled(status) = signals.before_cargo() {
             return Ok(status);
@@ -283,18 +313,29 @@ impl NativeCargoCall {
             },
             CaptureStartup::CargoStarted(running) => CargoCompletion::Finished(running.wait()?),
             CaptureStartup::HelperStarted(helper) => helper.wait()?,
-            CaptureStartup::PlainCargo => CargoCompletion::NotStarted,
+            CaptureStartup::PlainCargo(error) => CargoCompletion::NotStarted(error),
         };
         let status = match completion {
             CargoCompletion::Finished(status) => status,
-            CargoCompletion::NotStarted => {
+            CargoCompletion::NotStarted(error) => {
                 publication.finish();
-                return Err(cargo.exec());
+                return Err(exec_uncaptured_cargo(
+                    cargo,
+                    CAPTURE_FALLBACK_STARTUP,
+                    &error,
+                ));
             },
         };
         publication.finish();
         Ok(signals.exit_status(status))
     }
+}
+
+/// `exec_uncaptured_cargo` sets `CAPTURE_FALLBACK_ENV` without changing terminal output.
+fn exec_uncaptured_cargo(mut cargo: Command, path: &str, error: &Error) -> Error {
+    cargo
+        .env(CAPTURE_FALLBACK_ENV, format!("{path}: {error}"))
+        .exec()
 }
 
 /// Query commands have no compilation output to capture.
@@ -780,7 +821,7 @@ impl DeferredCaptureSignals {
 
 /// Startup failure permits passthrough only while cargo has not started.
 enum CaptureStartup {
-    PlainCargo,
+    PlainCargo(Error),
     Interrupted(i32),
     CargoStarted(RunningCapture),
     HelperStarted(PtyCaptureHelper),
@@ -799,10 +840,10 @@ impl CaptureStartup {
         match terminal {
             CaptureTerminal::Piped => {
                 capture_piped(captured, arguments, log, signals, after_readiness)
-                    .unwrap_or(Self::PlainCargo)
+                    .unwrap_or_else(Self::PlainCargo)
             },
             CaptureTerminal::Pty => {
-                capture_pty(&captured, log).map_or(Self::PlainCargo, Self::HelperStarted)
+                capture_pty(&captured, log).map_or_else(Self::PlainCargo, Self::HelperStarted)
             },
         }
     }
@@ -957,7 +998,7 @@ impl NativeStderrPump {
 
 /// A helper's exit is separate from an acknowledged cargo execution.
 enum CargoCompletion {
-    NotStarted,
+    NotStarted(Error),
     Finished(ExitStatus),
 }
 
@@ -978,10 +1019,16 @@ impl PtyCaptureHelper {
                 if acknowledgement == b"exec" {
                     CargoCompletion::Finished(status)
                 } else {
-                    CargoCompletion::NotStarted
+                    CargoCompletion::NotStarted(Error::other(format!(
+                        "{CAPTURE_HELPER_UNACKNOWLEDGED}: {status}"
+                    )))
                 }
             },
-            Err(error) if error.kind() == ErrorKind::WouldBlock => CargoCompletion::NotStarted,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                CargoCompletion::NotStarted(Error::other(format!(
+                    "{CAPTURE_HELPER_UNACKNOWLEDGED}: {status}; {error}"
+                )))
+            },
             Err(error) => return Err(error),
         };
         drop(self.socket);
