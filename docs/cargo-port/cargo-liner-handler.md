@@ -496,7 +496,7 @@ A worker row whose job runs shows its job alone, such as `reviewer`, not `review
 - The uncut-names check for branch and type: it hid the long branch, so it applies to the directory only.
 - The Phase 16 rule that the restore uses the uncut session width: a long session name now takes `…` before an optional column drops.
 
-### Phase 21 — Twelve slow tests run in under one second  · status: todo
+### Phase 21 — Twelve slow tests run in under one second  · status: done
 
 **Numbering:** this phase was Phase 19 until 2026-11-14. The new Phases 19 and 20 moved it to 21.
 
