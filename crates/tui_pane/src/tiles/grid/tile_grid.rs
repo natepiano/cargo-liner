@@ -128,6 +128,7 @@ use super::place_band_pieces;
 use super::queued_cells_keep_endpoint_columns;
 use super::share_borders;
 use super::summary_depth;
+use super::summary_reach;
 use super::summary_share;
 use super::summary_span;
 use super::travel_progress;
@@ -2935,7 +2936,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let turns = Turns::of(before, destination);
         let mut pieces = Vec::new();
         // The summary keeps cell one throughout, but the grid around it
-        // resizes, so it still has somewhere to travel.
+        // resizes, so it still has somewhere to travel. Its rows move with
+        // the cells under its moving edge and its width on its own turn, so
+        // it changes height only over the columns it covers at both ends.
         moving_cell(
             before,
             destination,
@@ -2943,7 +2946,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 before_cell: TABLE_CELL,
                 after_cell:  TABLE_CELL,
             },
-            eased(turns.summary(raw)),
+            eased(turns.covered(raw)),
             CellAppearance {
                 identity: CellIdentity::Summary,
                 content:  TileContent::Summary,
@@ -3011,7 +3014,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 &mut pieces,
             );
         }
-        let pieces = place_band_pieces(before, destination, &column_bands, pieces, height_snap);
+        let summary_reach = summary_reach(
+            before,
+            destination,
+            &column_bands,
+            eased(turns.summary(raw)),
+        );
+        let pieces = place_band_pieces(
+            before,
+            destination,
+            &column_bands,
+            summary_reach,
+            pieces,
+            height_snap,
+        );
         TileDrawing {
             pieces,
             column_bands,

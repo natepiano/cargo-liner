@@ -362,6 +362,67 @@ fn a_shrinking_summary_that_widens_keeps_resident_pieces_at_the_floor() {
     }
 }
 
+/// A summary that changes height as it widens or narrows changes it
+/// while it covers only the columns it keeps, so its border never runs
+/// through the top cell of a column it widens over or draws back from.
+#[test]
+fn a_summary_changing_height_and_span_never_covers_a_cell() {
+    let area = Rect::new(0, 0, 80, 21);
+    let growth = widening(3);
+    let slots = vec![
+        Slot::Group(1),
+        Slot::Group(2),
+        Slot::Group(3),
+        Slot::Group(4),
+    ];
+    let narrow = HeldCellLayout {
+        rows:          row_demands(&[11, 6, 6, 6, 6]),
+        focused:       FocusLocation::Departing,
+        summary_span:  1,
+        summary_depth: 1,
+    };
+    let wide = HeldCellLayout {
+        rows: row_demands(&[6, 6, 10, 6, 6]),
+        summary_span: 2,
+        ..narrow
+    };
+    for (before, after) in [(narrow.clone(), wide.clone()), (wide, narrow)] {
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.slots = slots.clone();
+        grid.held = after;
+        let source = Grid::new(area, &before, growth, &grid.settings);
+        grid.motion = GridMotion::Moving(Transition {
+            from:         slots.clone(),
+            held:         before,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       1,
+            depth_status: DestinationDepthStatus::Resolved,
+        });
+        for raw in motion_steps().chain([PROGRESS_SCALE / 2]) {
+            assert_no_piece_overlaps(&grid.drawing_at(area, growth, raw), raw);
+        }
+    }
+}
+
+/// Assert that no two pieces share more than one border row or column.
+fn assert_no_piece_overlaps(drawing: &TileDrawing<u32>, raw: u32) {
+    let clips: Vec<_> = drawing
+        .placements()
+        .map(|piece| (piece.content.clone(), piece.frame.clip()))
+        .collect();
+    for (index, (content, clip)) in clips.iter().enumerate() {
+        for (other, other_clip) in &clips[index + 1..] {
+            let overlap = clip.intersection(*other_clip);
+            assert!(
+                overlap.height <= 1 || overlap.width <= 1,
+                "{raw}: {content:?} {clip:?} overlaps {other:?} {other_clip:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn fits_holds_at_the_height_floor_and_fails_one_row_under() {
     let configured_floor = MIN_TILE_HEIGHT.saturating_mul(2);
@@ -574,6 +635,35 @@ fn a_widened_summary_keeps_its_height_and_the_next_column_starts_below_it() {
         "the next column starts where the summary ends"
     );
     assert_eq!(beside.x, wide.column_rect(1).x);
+}
+
+/// A new column narrows every column while the summary widens over the
+/// next one, and a closing column does the reverse. The dividers move on
+/// the step's clock while the summary takes its own turn, so its far edge
+/// follows the moving divider, and no frame draws a cell over the summary.
+#[test]
+fn a_summary_changing_span_as_a_column_opens_or_closes_never_covers_a_cell() {
+    let area = Rect::new(0, 0, 120, TEST_HEIGHT);
+    let growth = widening(3);
+    let summary_width = 50;
+    let two_columns: &[u32] = &[1, 2, 3, 4, 5];
+    let three_columns: &[u32] = &[1, 2, 3, 4, 5, 6];
+    for (from, to, span) in [
+        (two_columns, three_columns, 2),
+        (three_columns, two_columns, 1),
+    ] {
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&wide_summary(from, summary_width), growth);
+        grid.settle_for_test();
+        assert_ne!(grid.held.summary_span, span);
+        grid.sync(&wide_summary(to, summary_width), growth);
+        for raw in motion_steps() {
+            assert_no_piece_overlaps(&grid.drawing_at(area, growth, raw), raw);
+        }
+        grid.settle_for_test();
+        assert_eq!(grid.held.summary_span, span);
+    }
 }
 
 /// A column whose cells would not fit below the summary stops it,
@@ -1229,7 +1319,15 @@ fn a_wrapping_cell_shares_its_column_edges_with_the_cells_that_stay() {
         drawn(),
         &mut pieces,
     );
-    let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off);
+    let summary_reach = summary_reach(&before, &after, &bands, half);
+    let placed = place_band_pieces(
+        &before,
+        &after,
+        &bands,
+        summary_reach,
+        pieces,
+        &HeightSnap::Off,
+    );
 
     let column = |placement: &TilePlacement<u32>| {
         let rect = placement.frame.rect();
@@ -1327,10 +1425,18 @@ fn a_cell_leaving_a_column_that_stays_closes_onto_its_floor() {
         drawn(),
         &mut pieces,
     );
-    let closed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off)
-        .last()
-        .map(|piece| piece.placement.frame.clip())
-        .unwrap_or_default();
+    let summary_reach = summary_reach(&before, &after, &bands, PROGRESS_SCALE);
+    let closed = place_band_pieces(
+        &before,
+        &after,
+        &bands,
+        summary_reach,
+        pieces,
+        &HeightSnap::Off,
+    )
+    .last()
+    .map(|piece| piece.placement.frame.clip())
+    .unwrap_or_default();
     assert_eq!(closed.height, 1, "only its edge remains");
     assert_eq!(
         closed.y,
@@ -2794,10 +2900,18 @@ fn placed_motion(
         .collect();
     let mut pieces = Vec::new();
     moving_cell(before, after, transition, progress, drawn, &mut pieces);
-    place_band_pieces(before, after, &bands, pieces, &HeightSnap::Off)
-        .into_iter()
-        .map(|piece| piece.placement)
-        .collect()
+    let summary_reach = summary_reach(before, after, &bands, progress);
+    place_band_pieces(
+        before,
+        after,
+        &bands,
+        summary_reach,
+        pieces,
+        &HeightSnap::Off,
+    )
+    .into_iter()
+    .map(|piece| piece.placement)
+    .collect()
 }
 
 /// Render the new widths, then inspect the one motion the key started.

@@ -493,7 +493,15 @@ fn deepening_travels_the_way_a_closing_cell_does_in_reverse() {
             },
             &mut pieces,
         );
-        let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off);
+        let summary_reach = summary_reach(&before, &after, &bands, progress);
+        let placed = place_band_pieces(
+            &before,
+            &after,
+            &bands,
+            summary_reach,
+            pieces,
+            &HeightSnap::Off,
+        );
         let summary = &placed[0].placement;
         let second = &placed[1].placement;
         assert_eq!(summary.frame.rect().bottom() - 1, second.frame.rect().top());
