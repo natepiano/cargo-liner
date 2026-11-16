@@ -580,33 +580,22 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 27 — `census --json` finishes inside one configured bound  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo-handler census --json` always prints its report inside one bound from config. A source that does not answer in time is reported failed, and the census does not wait for it. Source: sdlc via the showrunner, 2026-11-16: the census took more than 10 s three times between 00:22 and 00:43 EST, and the units board gives it `units_census_seconds=10`.
-
-**Spec:**
-1. Add `[census] report_deadline` to `CensusConfig`, in milliseconds, as a checked newtype like `HerdrReadTimeout`. Zero is rejected. The default is 8000 ms, which leaves 2 s of the units board's 10 s for process start and output.
-2. `report::print_to` takes one start instant. Each source runs on its own thread and sends its result on a channel: the accounts command, the local scan, and each remote probe. The main thread receives until the bound ends, then builds the report from what arrived.
-3. A source that has not answered at the bound is failed: accounts as a timed-out command, a remote as `TimedOut`, and the local machine as `MachineState::Failed` with the timed-out reason. The report says which source failed.
-4. Each source stops its own child process before the bound, so no `accounts.py` or `ssh` process outlives the census. Sources get the bound minus a fixed stop reserve. The accounts command uses the smaller of `HIERARCHY_TIMEOUT` and that time. `RemoteRunner::probe` takes a deadline; the live TUI passes `PROBE_TIMEOUT` from now, as before. The local scan's herdr wait is the smaller of `herdr_probe_wait` and that time.
-5. The live TUI census keeps its timing.
-6. Measure the slow runs' cause. A cause in this crate is removed in this phase. A cause outside it (the `.publication.lock` flock in `~/.claude/scripts/herdr/pane_launch.py`, which `accounts.py status` takes) goes to the showrunner with the evidence.
+- `census --json` prints within `[census] report_deadline` ms (`CensusReportDeadline`, default 8000, zero refused). `print_to` takes one start instant.
+- `SourceAnswers::collect` runs each source on its own thread: the accounts command, the local scan (`probe::local_scan`) and each remote probe. It reads one channel until the bound. A source with no answer is timed out: `AccountsTable::timed_out`, `Census::record_local_failure`, or `ProbeOutcome::TimedOut`.
+- Sources get the bound minus `CENSUS_SOURCE_STOP_RESERVE` (500 ms). The accounts command runs for the smaller of that time and `HIERARCHY_TIMEOUT`. `RemoteRunner::probe` takes a deadline; the TUI passes `PROBE_TIMEOUT` from now. The herdr wait is `HerdrProbeWait::at_most` that time.
+- Cause of the slow runs: the `.publication.lock` wait was 0.000 s in 20 runs. A loaded Mac probe ran past 7.5 s in 6 of 10 live runs, and the old census waited up to 20 s for it. The flock with no time limit in `~/.claude/scripts/herdr/pane_launch.py` went to the showrunner.
 
 **Files:**
-- `crates/cargo-handler/src/config.rs` — `CensusReportDeadline`, the default config text test
-- `crates/cargo-handler/src/census/report.rs` — the bounded collection in `print_to`
-- `crates/cargo-handler/src/census/report_tests.rs` — a hung accounts command, a hung probe and a hung local scan each give a report inside the bound
-- `crates/cargo-handler/src/census/accounts.rs` — the accounts read with a time limit
-- `crates/cargo-handler/src/census/remote.rs` — `RemoteRunner::probe` with a deadline
-- `crates/cargo-handler/src/census/schedule.rs` — the TUI probe call and its test runners
-- `crates/cargo-handler/src/census/probe.rs` — `scan_local` with the herdr wait bound
-- `crates/cargo-handler/src/census/mod.rs` — a local failed state, if `Census` has none
-- `crates/cargo-handler/src/constants.rs` — the stop reserve
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/` — the new setting
+- `crates/cargo-handler/src/config.rs` — `CensusReportDeadline`, `HerdrProbeWait::at_most`
+- `crates/cargo-handler/src/census/report.rs` — `SourceAnswer`, `SourceAnswers::collect`, `print_to`
+- `crates/cargo-handler/src/census/report_tests.rs` — a hung accounts command, remote and local scan each give a report inside the bound
+- `crates/cargo-handler/src/census/accounts.rs` — `read_once` with a limit, `timed_out`
+- `crates/cargo-handler/src/census/remote.rs`, `schedule.rs` — `RemoteRunner::probe` with a deadline
+- `crates/cargo-handler/src/census/probe.rs` — `local_scan`
+- `crates/cargo-handler/src/constants.rs` — `CENSUS_SOURCE_STOP_RESERVE`
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:** the user config already holds `report_deadline`; a test config replaces the key. A 2000 ms bound under load 30 can miss the local scan.
 
-**Verification:**
-- Test: `verify.sh test cargo-handler --filter report`, `--filter config`, `--filter schedule`, then the full `cargo-handler` suite.
-- Lint and check: `verify.sh lint cargo-handler`, `verify.sh check cargo-handler`.
-- Live: an installed build runs `cargo-handler census --json` ten times. Each run takes less than the bound.
+**Ruled out:** the `.publication.lock` flock as the cause (never held in 20 runs). A panic in a source reads as timed out, and a local scan that misses the bound can leave its herdr read child; both are unlikely for one user.
