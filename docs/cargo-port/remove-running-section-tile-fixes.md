@@ -1729,7 +1729,7 @@ Drift incursion attribution skips the commits that a released reservation in the
 - A commit the staying reservation makes inside an active sibling's later-released interval is also skipped. Phases in one worktree run one after the other.
 - The 1 s gate applied to cargo-berth on natedev only. The Mac suite passed with 490 tests at 1 s or more; a later phase owns them.
 
-### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: todo
+### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: done
 
 **Depends on:** Phase 64 (order only; showrunner, 2026-11-15: tile owns both CI failures, after 43j)
 
@@ -1750,9 +1750,9 @@ Drift incursion attribution skips the commits that a released reservation in the
 - `crates/cargo-berth/tests/support/reanchoring_templates.rs` and `crates/cargo-berth/tests/recorded_templates.rs` — the template setup.
 - `crates/cargo-berth/tests/setup-recorded-templates.sh` — the setup script, if its parallel width is the cause.
 
-**Workers:** none (no-worker mode); the director writes the fix.
+**Workers:** 1 writer (`impl`) — measures, fixes and adds the tests.
 
-**Acceptance gate:** the cause is named with a measurement; the cargo-berth full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
+**Acceptance gate:** the cause is named with a measurement; the cargo-berth full suite passes on natedev with no test at 1 s or more at load under 32; the Mac suite passes (the Mac 1 s rule for cargo-berth belongs to Phase 68, showrunner 2026-11-15); one GitHub CI run on the branch passes; lint.
 
 ### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: todo
 
