@@ -67,8 +67,10 @@ use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CargoHandler;
 use crate::config::Config;
+use crate::config::HerdrProbeWait;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
+use crate::constants::HIERARCHY_TIMEOUT;
 use crate::constants::PROBE_CALLER_CHECK;
 use crate::constants::PROBE_DEADLINE;
 use crate::constants::PROBE_SCHEMA;
@@ -755,7 +757,8 @@ fn scan_configured(config: &Config) -> ProbeReport {
     let (rows, publication) = scan_local(config);
     let mut report = ProbeReport::from_answer(local_machine_name(), rows, publication.edges);
     let mut facts = *publication.facts;
-    facts.accounts = AccountsTable::read_once(&config.census.accounts_command).health();
+    facts.accounts =
+        AccountsTable::read_once(&config.census.accounts_command, HIERARCHY_TIMEOUT).health();
     report.facts = Some(facts);
     report
 }
@@ -763,21 +766,32 @@ fn scan_configured(config: &Config) -> ProbeReport {
 /// One completed scan of this machine with the configured staff file and timeouts.
 /// It lists each directory once and installs no file watch.
 pub(super) fn scan_local(config: &Config) -> (Vec<AgentRow>, super::HierarchySnapshot) {
+    local_scan(config, config.census.herdr_probe_wait)()
+}
+
+/// A one-shot scan of this machine that waits at most `herdr_wait` for herdr names, ready to
+/// run on another thread.
+pub(super) fn local_scan(
+    config: &Config,
+    herdr_wait: HerdrProbeWait,
+) -> impl FnOnce() -> (Vec<AgentRow>, super::HierarchySnapshot) + Send + use<> {
     let source = HierarchySource::from(config.census.staff_file.0.clone());
-    let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
+    let mut scanner = LocalScanner::new(AccountLabels::new(
         &config.accounts,
         dirs::home_dir().as_deref(),
     ))
     .one_shot()
     .with_codex_start_window(config.census.codex_thread_start_window)
-    .with_herdr_probe_wait(config.census.herdr_probe_wait)
+    .with_herdr_probe_wait(herdr_wait)
     .with_herdr_read_timeout(config.census.herdr_read_timeout)
     .with_staff_file(
         super::StaffFileSetting::new(source),
         StaffFileReader::default(),
-    )
-    .scan();
-    (rows, snapshot.publication())
+    );
+    move || {
+        let (rows, snapshot) = scanner.scan();
+        (rows, snapshot.publication())
+    }
 }
 
 /// Keep the JSON report separate from probe diagnostics.

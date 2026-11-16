@@ -276,6 +276,12 @@ and `name` is the value that the tile draws.
 - A bad config prints the error on stderr and exits non-zero.
 - An unreachable remote, an unreadable staff file or a failed accounts read
   exits 0. The machine's `error` names the cause.
+- The census prints within `[census] report_deadline` milliseconds (default
+  8000). The accounts command, this machine's scan and each remote probe run
+  at the same time. A source that does not answer in time is reported as
+  timed out, and the census prints without it. The accounts command and each
+  ssh probe stop 500 ms before the bound, so no child process outlives the
+  census.
 - A director or worker shows only while a tile shows its session. A worker
   also must be in its unit's current run.
 - A fact that the census cannot read is null, and `unknown.reason` names why.

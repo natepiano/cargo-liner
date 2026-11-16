@@ -56,6 +56,7 @@ use crate::constants::HIERARCHY_FIRST_PUBLISH_BUDGET;
 #[cfg(test)]
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::LOCAL_SCAN_INTERVAL;
+use crate::constants::PROBE_TIMEOUT;
 use crate::constants::REMOTE_PROBE_INTERVAL;
 use crate::footer_colors::FooterColorFile;
 use crate::footer_colors::FooterColors;
@@ -939,7 +940,7 @@ fn dispatch(
     let answers = Arc::clone(answers);
     let remotes = remotes.clone();
     thread::spawn(move || {
-        let outcome = runner.probe(&host);
+        let outcome = runner.probe(&host, Instant::now() + PROBE_TIMEOUT);
         let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
         let configured = remotes.snapshot();
         answers.retain(&configured);
@@ -1205,7 +1206,7 @@ mod tests {
     }
 
     impl RemoteRunner for Runner {
-        fn probe(&self, host: &str) -> ProbeOutcome {
+        fn probe(&self, host: &str, _: Instant) -> ProbeOutcome {
             *self
                 .started
                 .lock()
@@ -1235,7 +1236,7 @@ mod tests {
             started: Mutex::new(HashMap::new()),
         };
         assert!(matches!(
-            runner.probe(BLOCKED),
+            runner.probe(BLOCKED, Instant::now()),
             ProbeOutcome::Finished { .. }
         ));
         assert_eq!(
@@ -1494,7 +1495,7 @@ mod tests {
             reports: Mutex<Receiver<Vec<u8>>>,
         }
         impl RemoteRunner for GatedReports {
-            fn probe(&self, _: &str) -> ProbeOutcome {
+            fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
                 self.entered.send(()).expect("signal probe");
                 ProbeOutcome::Finished {
                     status: Some(0),
@@ -1588,7 +1589,7 @@ mod tests {
     fn remote_probe_hierarchy_failure_updates_rows_without_flattening_links() {
         struct Reports(Mutex<VecDeque<Vec<u8>>>);
         impl RemoteRunner for Reports {
-            fn probe(&self, _: &str) -> ProbeOutcome {
+            fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
                 ProbeOutcome::Finished {
                     status: Some(0),
                     stdout: self

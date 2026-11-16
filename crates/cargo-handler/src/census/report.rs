@@ -6,9 +6,11 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::io::Write;
-use std::panic;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -35,6 +37,7 @@ use super::herdr::PaneState;
 use super::hierarchy::StaffRunPointer;
 use super::local_machine_name;
 use super::probe;
+use super::remote::ProbeOutcome;
 use super::remote::RemoteRunner;
 use super::remote::SshRunner;
 use super::scan::ScanStage;
@@ -44,12 +47,15 @@ use crate::agent_cell::SessionCells;
 use crate::agent_cell::ShellCells;
 use crate::config::CargoHandler;
 use crate::config::Config;
+use crate::config::HerdrProbeWait;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::constants::CENSUS_COMMAND;
 use crate::constants::CENSUS_REASON_SEPARATOR;
 use crate::constants::CENSUS_SCHEMA;
+use crate::constants::CENSUS_SOURCE_STOP_RESERVE;
 use crate::constants::CENSUS_UNANSWERED_REASON;
+use crate::constants::TIMED_OUT_REASON;
 use crate::startup_log;
 
 /// The `census --json` document. A field rename or removal increments `schema`.
@@ -436,63 +442,124 @@ pub(crate) fn print() -> ExitCode {
     let loaded = LoadedConfig::load::<CargoHandler>();
     print_to(
         &loaded,
-        &SshRunner::new(),
-        probe::scan_local,
+        &(Arc::new(SshRunner::new()) as Arc<dyn RemoteRunner>),
+        probe::local_scan,
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
     )
 }
 
-/// A bad configuration exits non-zero; a failed source is in the report.
-fn print_to(
+/// One source's answer to the census.
+enum SourceAnswer {
+    /// This machine's rows and hierarchy.
+    Local((Vec<AgentRow>, HierarchySnapshot)),
+    /// The accounts command's table.
+    Accounts(AccountsTable),
+    /// The remote at this index of the configured remotes.
+    Remote(usize, ProbeOutcome),
+}
+
+/// What each source answered before the census bound; `None` did not answer in time.
+struct SourceAnswers {
+    local:    Option<(Vec<AgentRow>, HierarchySnapshot)>,
+    accounts: Option<AccountsTable>,
+    remotes:  Vec<Option<ProbeOutcome>>,
+}
+
+impl SourceAnswers {
+    /// Start every source on its own thread. Each source stops its own child process at
+    /// `stop`, and the answers are read until `deadline`.
+    fn collect(
+        config: &Config,
+        runner: &Arc<dyn RemoteRunner>,
+        scan: impl FnOnce() -> (Vec<AgentRow>, HierarchySnapshot) + Send + 'static,
+        stop: Instant,
+        deadline: Instant,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        for (index, host) in config.machines.remote.iter().enumerate() {
+            let runner = Arc::clone(runner);
+            let host = host.clone();
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(SourceAnswer::Remote(index, runner.probe(&host, stop)));
+            });
+        }
+        let command = config.census.accounts_command.clone();
+        let accounts = sender.clone();
+        thread::spawn(move || {
+            let limit = stop.saturating_duration_since(Instant::now());
+            let _ = accounts.send(SourceAnswer::Accounts(AccountsTable::read_once(
+                &command, limit,
+            )));
+        });
+        thread::spawn(move || {
+            let _ = sender.send(SourceAnswer::Local(scan()));
+        });
+        let mut answers = Self {
+            local:    None,
+            accounts: None,
+            remotes:  vec![None; config.machines.remote.len()],
+        };
+        for _ in 0..answers.remotes.len() + 2 {
+            let Ok(answer) =
+                receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            else {
+                break;
+            };
+            match answer {
+                SourceAnswer::Local(local) => answers.local = Some(local),
+                SourceAnswer::Accounts(table) => answers.accounts = Some(table),
+                SourceAnswer::Remote(index, outcome) => answers.remotes[index] = Some(outcome),
+            }
+        }
+        answers
+    }
+}
+
+/// A bad configuration exits non-zero; a failed source is in the report. The report is
+/// printed within the configured `report_deadline`, and a source that has not answered by
+/// then is reported as timed out.
+fn print_to<Scan>(
     loaded: &LoadedConfig,
-    runner: &dyn RemoteRunner,
-    scan: impl FnOnce(&Config) -> (Vec<AgentRow>, HierarchySnapshot),
+    runner: &Arc<dyn RemoteRunner>,
+    prepare_scan: impl FnOnce(&Config, HerdrProbeWait) -> Scan,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
-) -> ExitCode {
+) -> ExitCode
+where
+    Scan: FnOnce() -> (Vec<AgentRow>, HierarchySnapshot) + Send + 'static,
+{
+    let started = Instant::now();
     if let Some(error) = &loaded.error {
         let _ = writeln!(stderr, "{BINARY_NAME}: {CENSUS_COMMAND}: {error}");
         return ExitCode::FAILURE;
     }
     let config = &loaded.config;
     let remotes = &config.machines.remote;
-    let ((rows, hierarchy), accounts, outcomes) = thread::scope(|scope| {
-        #[expect(
-            clippy::needless_collect,
-            reason = "every probe starts before the local scan, so the probes run at the same time"
-        )]
-        let probes: Vec<_> = remotes
-            .iter()
-            .map(|host| scope.spawn(move || runner.probe(host)))
-            .collect();
-        let accounts = scope.spawn(|| AccountsTable::read_once(&config.census.accounts_command));
-        let local = scan(config);
-        let accounts = accounts
-            .join()
-            .unwrap_or_else(|failure| panic::resume_unwind(failure));
-        let outcomes: Vec<_> = probes
-            .into_iter()
-            .map(|probe| {
-                probe
-                    .join()
-                    .unwrap_or_else(|failure| panic::resume_unwind(failure))
-            })
-            .collect();
-        (local, accounts, outcomes)
-    });
+    let bound = config.census.report_deadline.duration();
+    let source_time = bound.saturating_sub(CENSUS_SOURCE_STOP_RESERVE);
+    let scan = prepare_scan(config, config.census.herdr_probe_wait.at_most(source_time));
+    let answers =
+        SourceAnswers::collect(config, runner, scan, started + source_time, started + bound);
+    let accounts = answers.accounts.unwrap_or_else(AccountsTable::timed_out);
     let mut census = Census::new(local_machine_name());
     census.record_local_accounts(&accounts);
-    census.apply(CensusUpdate::Local {
-        rows,
-        hierarchy,
-        stage: ScanStage::Completed,
-    });
-    let mut answers = RemoteHierarchyAnswers::default();
-    for (host, outcome) in remotes.iter().zip(outcomes) {
+    match answers.local {
+        Some((rows, hierarchy)) => {
+            census.apply(CensusUpdate::Local {
+                rows,
+                hierarchy,
+                stage: ScanStage::Completed,
+            });
+        },
+        None => census.record_local_failure(TIMED_OUT_REASON.to_owned()),
+    }
+    let mut hierarchy_answers = RemoteHierarchyAnswers::default();
+    for (host, outcome) in remotes.iter().zip(answers.remotes) {
         census.apply(CensusUpdate::Remote {
             host:  host.clone(),
-            state: answers.answer(host, outcome),
+            state: hierarchy_answers.answer(host, outcome.unwrap_or(ProbeOutcome::TimedOut)),
         });
     }
     let report = CensusReport::build(&census, remotes, accounts.session_states(), unix_now());

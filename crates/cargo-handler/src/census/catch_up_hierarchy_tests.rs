@@ -225,7 +225,7 @@ impl HierarchyRunner for Commands {
 struct Probes;
 
 impl RemoteRunner for Probes {
-    fn probe(&self, _: &str) -> ProbeOutcome {
+    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
         ProbeOutcome::Finished {
             status: Some(0),
             stdout: br#"{"schema":3,"machine":"remote","rows":[]}"#.to_vec(),
