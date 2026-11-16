@@ -466,3 +466,31 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - `.config/nextest.toml` lands after tile phase 43j, by the showrunner's answer.
 
 **Ruled out:** per-test waste in cargo-mend or the test support; alone, the tests run near their floor.
+
+### Phase 18 — the cargo-mend CI test job has nightly rustfmt  · status: done
+
+#### Work Order
+
+**Source:** the showrunner, 2026-11-15: the GitHub job "cargo-mend Test Suite" fails each time it runs.
+
+**Failure:** `fixes::runner::function_length::formatter::tests::batch_measurements_keep_configuration_edition_and_source_bytes` fails with "rustfmt could not measure the source group: error: 'rustfmt' is not installed for the toolchain 'nightly-x86_64-unknown-linux-gnu'". Seen in main run 43781409999 and twice in tile run 43802591940.
+
+**Cause:** the `mend_test` job in `.github/workflows/ci.yml` installs only 1.99.1. The test calls `Formatter::Nightly.formatted_batch`, which runs `rustup run nightly rustfmt`. natedev has nightly rustfmt; the runner does not.
+
+**Decision:** install nightly with the `rustfmt` component in `mend_test`. cargo-mend prefers nightly rustfmt when a user has it, and only that formatter runs the batch path. The test covers that real path. The PATH fallback has its own probe tests. `rust-toolchain.toml` pins 1.99.1, so the nightly install does not change the build toolchain.
+
+**Change:**
+1. In the `mend_test` job, add a step after "Install Rust 1.99.1": `dtolnay/rust-toolchain@master` with `toolchain: nightly` and `components: rustfmt`, the same form as the `format` job.
+2. Change no test and no product code.
+
+**Workers:** impl — `port-impl` writes the CI step.
+
+**Verification:**
+1. `cargo nextest run -p cargo-mend` batch test passes on natedev (it already has nightly rustfmt).
+2. The `mend_test` job passes on the branch push.
+
+#### Result
+
+- `mend_test` in `.github/workflows/ci.yml` installs nightly with the `rustfmt` component after 1.99.1, in the same form as the `format` job. No test or product code changes.
+- `rust-toolchain.toml` still selects 1.99.1 for the build; only `rustup run nightly rustfmt` uses nightly.
+- natedev already has nightly rustfmt and passes the test, so no local run proves the fix. The proof is the `mend_test` job on the checkpoint push: the `.github/workflows/ci.yml` change matches the job's path filter.

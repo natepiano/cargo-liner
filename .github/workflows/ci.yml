@@ -251,6 +251,13 @@ jobs:
           toolchain: "1.99.1"
           components: rust-src, rustc-dev, llvm-tools-preview
 
+      # The formatter batch test runs nightly rustfmt, which cargo-mend prefers when a user has it.
+      - name: Install Rust nightly rustfmt
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
