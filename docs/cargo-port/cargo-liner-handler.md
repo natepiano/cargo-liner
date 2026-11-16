@@ -546,7 +546,7 @@ A one-shot scan installs no notify watch. `DirectoryWatching { Live, Once }` (`c
 
 **Ruled out:** a patch to notify; the fix stays in cargo-handler.
 
-### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: todo
+### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: done
 
 **Source:** the user, through the cargo-liner showrunner, 2026-11-15: "a shell is not running in a family account - it should probably just show a blank there and we should move the type column to be after the role and before the activity and the type column should be either agent, shell, or subagent." Then: "you are not reclaiming space in the description column for running shells when there is space."
 

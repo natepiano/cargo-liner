@@ -189,7 +189,7 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
         );
     }
     assert!(find(&buffer, TREE_ROLE_HEADER).is_some());
-    assert!(find(&buffer, TREE_TYPE_HEADER).is_none());
+    assert!(find(&buffer, TREE_TYPE_HEADER).is_some());
     for name in ["ups", "postmaster"] {
         let (name_x, y) = find(&buffer, name).expect("root row");
         let session_x = find(&buffer, TREE_SESSION_HEADER)
@@ -205,14 +205,14 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     let work = work_buffer("ups");
     for (name, prefix) in [
         ("opened-session", "├── opened-session"),
-        ("ups-shell", "└── ups-shell running busy shell"),
+        ("ups-shell", "└── ups-shell shell running busy"),
         ("ups-codex", "└── ups-codex worker"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));
     }
     assert!(
         row_text(&work_buffer("postmaster"), "post-task")
-            .starts_with("└── post-task worker idle subagent")
+            .starts_with("└── post-task worker subagent idle")
     );
 }
 
@@ -435,7 +435,12 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
     let entry = pool(&tiles, "natedev");
     for width in [65, 220] {
         let buffer = draw_pool(entry, width);
-        assert!(find(&buffer, "age").is_none());
+        assert!(
+            !lines(&buffer)
+                .iter()
+                .any(|line| line.split_whitespace().any(|word| word == "age")),
+            "no age header"
+        );
         assert!(find(&buffer, "21:00").is_none());
         let line = entry
             .lines
@@ -449,7 +454,6 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
         let (header_x, header_y) = find(&buffer, "session").expect("session header");
         let (_, value_y) = find(&buffer, "free-session").expect("session row");
         assert!(value_y > header_y);
-        assert!(find(&buffer, "type").is_none());
         let spans = pooled_header_spans(entry, buffer.area, NOW, AccountColumn::Shown);
         assert_eq!(
             sort::header_hit(

@@ -161,6 +161,12 @@ by`. Values, the `pid` before a number, the ` · ` between facts and notes such
 as `nothing running` are drawn in plain text or their own colors, never in it,
 and every built-in theme gives labels a color nothing else uses.
 
+The tree's columns are session, account, role, type, activity, status,
+branch, model, effort and directory. Type reads `agent` for a session or a
+worker, `shell` for a shell and `subagent` for a subagent. A shell runs under
+no account, so its account cell is blank; a subagent shows its session's
+account. A shell name takes the table's free width before it is cut with `…`.
+
 Each kind of row comes from its own place:
 
 - **shell** running **command**: a command the agent's shell tool is running: a child of the

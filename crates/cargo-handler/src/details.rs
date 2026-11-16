@@ -49,12 +49,12 @@ pub(crate) enum DetailProperty {
     Account,
     Model,
     Effort,
-    Type,
     Showrunner,
     Unit,
     Worker,
     Name,
     Role,
+    Type,
     Directory,
     Branch,
     Desktop,
@@ -88,8 +88,10 @@ impl DetailProperty {
 
     const fn section(self) -> &'static str {
         match self {
-            Self::Account | Self::Model | Self::Effort | Self::Type => "agent",
-            Self::Showrunner | Self::Unit | Self::Worker | Self::Name | Self::Role => "hierarchy",
+            Self::Account | Self::Model | Self::Effort => "agent",
+            Self::Showrunner | Self::Unit | Self::Worker | Self::Name | Self::Role | Self::Type => {
+                "hierarchy"
+            },
             Self::Directory | Self::Branch | Self::Desktop | Self::Pid => "location",
             Self::Activity | Self::Status | Self::Age => "now",
         }
