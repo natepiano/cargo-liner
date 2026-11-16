@@ -471,13 +471,21 @@ impl AccountsTable {
         }
     }
 
-    /// One read of `command` for a process with no monitor; an empty command is not configured.
-    pub(super) fn read_once(command: &str) -> Self {
+    /// One read of `command` within `limit` for a process with no monitor; an empty command is
+    /// not configured.
+    pub(super) fn read_once(command: &str, limit: Duration) -> Self {
         if command.trim().is_empty() {
             return Self::NotConfigured;
         }
         let mut table = Self::AwaitingFirstReading;
-        table.apply(read_accounts(command));
+        table.apply(read_accounts_within(command, limit));
+        table
+    }
+
+    /// A one-time read that gave no answer in its time.
+    pub(super) fn timed_out() -> Self {
+        let mut table = Self::AwaitingFirstReading;
+        table.apply(Err(AccountsFailure::Command(HierarchyError::TimedOut)));
         table
     }
 
@@ -515,8 +523,17 @@ impl AccountsTable {
 
 /// Read and decode the configured stored-account command off the frame thread.
 pub(crate) fn read_accounts(command: &str) -> Result<AccountsReading, AccountsFailure> {
-    let bytes =
-        hierarchy::run_output(command, HIERARCHY_TIMEOUT).map_err(AccountsFailure::Command)?;
+    read_accounts_within(command, HIERARCHY_TIMEOUT)
+}
+
+/// Read and decode `command`, which is stopped at `HIERARCHY_TIMEOUT` or `limit`, whichever is
+/// sooner.
+fn read_accounts_within(
+    command: &str,
+    limit: Duration,
+) -> Result<AccountsReading, AccountsFailure> {
+    let bytes = hierarchy::run_output(command, limit.min(HIERARCHY_TIMEOUT))
+        .map_err(AccountsFailure::Command)?;
     AccountsReading::parse(&bytes)
 }
 

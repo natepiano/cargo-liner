@@ -618,6 +618,9 @@ const PROBE_EXIT_RESERVE: Duration = Duration::from_secs(1);
 /// A probe whose scan runs this long exits with a failure, so a hung scan
 /// cannot leak a process.
 pub(crate) const PROBE_DEADLINE: Duration = PROBE_TIMEOUT.saturating_sub(PROBE_EXIT_RESERVE);
+/// Time each `census --json` source leaves before the census bound to stop its own child
+/// process, so no child outlives the census.
+pub(crate) const CENSUS_SOURCE_STOP_RESERVE: Duration = Duration::from_millis(500);
 /// How often a probe checks that its caller is still its parent.
 pub(crate) const PROBE_CALLER_CHECK: Duration = Duration::from_millis(250);
 /// How often a probe that has closed its output is checked for having

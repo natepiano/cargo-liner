@@ -864,6 +864,11 @@ impl Census {
         }
     }
 
+    /// Record that this machine's scan gave no answer in its time, and why.
+    fn record_local_failure(&mut self, reason: String) {
+        self.local = MachineState::Failed(reason);
+    }
+
     /// Record `update`, answering whether anything it says changed.
     pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
         let (slot, state) = match update {

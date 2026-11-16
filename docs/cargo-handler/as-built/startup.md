@@ -105,6 +105,8 @@ The TUI uses `scan_staged` and does not wait for an initial herdr answer.
 | --- | --- | --- |
 | `census.herdr_probe_wait` | 12000 ms | Zero through 18000 ms. |
 | `census.herdr_read_timeout` | 1000 ms | Positive values through `PROBE_TIMEOUT`. |
+| `census.report_deadline` | 8000 ms | Positive values. Bounds one `census --json` run. |
+| `CENSUS_SOURCE_STOP_RESERVE` | 500 ms | Census sources stop their child processes this long before `report_deadline`. |
 | `PROBE_TIMEOUT` | 20 seconds | Includes scan and SSH allowance. |
 | `PROBE_DEADLINE` | 19 seconds | One second inside `PROBE_TIMEOUT`. |
 | `PROBE_CALLER_CHECK` | 250 ms | Interval of the parent process check. |
@@ -112,6 +114,11 @@ The TUI uses `scan_staged` and does not wait for an initial herdr answer.
 The deadline bounds the added wait, rather than total scan duration.
 A scan that exceeds it accepts only an already queued answer.
 The probe writes refused configuration diagnostics to stderr and still emits one JSON report on stdout.
+
+`census --json` runs the accounts command, the local scan and each remote probe on their own threads.
+The main thread reads their answers until `report_deadline`.
+A source with no answer by then is reported as timed out.
+The local scan's herdr wait is at most `report_deadline` minus `CENSUS_SOURCE_STOP_RESERVE`.
 
 `probe::scan_local` builds its scanner with `LocalScanner::one_shot`.
 A one-shot scanner reads with `DirectoryWatching::Once`: it lists each subagent, seat and run directory once and installs no file watch.

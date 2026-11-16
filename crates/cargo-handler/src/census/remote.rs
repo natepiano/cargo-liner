@@ -24,7 +24,6 @@ use crate::constants::NOT_INSTALLED_REASON;
 use crate::constants::PROBE_COMMAND;
 use crate::constants::PROBE_EXIT_CHECK;
 use crate::constants::PROBE_SIGNALLED_REASON;
-use crate::constants::PROBE_TIMEOUT;
 use crate::constants::SSH_BASE_OPTIONS;
 use crate::constants::SSH_CONNECTION_HASH_LENGTH;
 use crate::constants::SSH_CONNECTION_HASH_TOKEN;
@@ -41,21 +40,21 @@ use crate::constants::UNREACHABLE_REASON;
 
 /// Runs the probe on a remote machine.
 pub(super) trait RemoteRunner: Send + Sync {
-    /// Run `cargo-handler probe` on `host` and say how it went.
-    fn probe(&self, host: &str) -> ProbeOutcome;
+    /// Run `cargo-handler probe` on `host`, stop it at `deadline`, and say how it went.
+    fn probe(&self, host: &str, deadline: Instant) -> ProbeOutcome;
 }
 
 /// How one probe went.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProbeOutcome {
-    /// ssh exited within [`PROBE_TIMEOUT`].
+    /// ssh exited before its deadline.
     Finished {
         /// ssh's exit status; none when a signal ended it.
         status: Option<i32>,
         /// Everything it printed to stdout.
         stdout: Vec<u8>,
     },
-    /// ssh ran past [`PROBE_TIMEOUT`] and was killed.
+    /// ssh ran past its deadline and was killed.
     TimedOut,
     /// ssh could not be started.
     NotStarted,
@@ -151,8 +150,7 @@ impl RemoteRunner for SshRunner {
     /// terminal. Its stdout is read on a thread of its own, so a probe
     /// that stops answering holds that thread and not this one past the
     /// deadline.
-    fn probe(&self, host: &str) -> ProbeOutcome {
-        let deadline = Instant::now() + PROBE_TIMEOUT;
+    fn probe(&self, host: &str, deadline: Instant) -> ProbeOutcome {
         let Ok(mut child) = Command::new(SSH_PROGRAM)
             .args(ssh_arguments(host, self.control.as_deref()))
             .stdin(Stdio::null())
