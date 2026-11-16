@@ -1821,7 +1821,7 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 **Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
 
-### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: todo
+### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: done
 
 **Depends on:** Phase 67 (order only; runs before Phase 68, showrunner 2026-11-15)
 

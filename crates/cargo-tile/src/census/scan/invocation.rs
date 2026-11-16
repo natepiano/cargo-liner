@@ -38,6 +38,7 @@ use crate::census::process_identity::CaptureMembership;
 use crate::census::process_identity::InvocationId;
 use crate::census::process_identity::ProcessIdentity;
 use crate::census::process_identity::VisibleParent;
+use crate::census::slot_lease::SlotObservation;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_JSON_FORMAT_PREFIX;
@@ -347,8 +348,10 @@ pub(crate) struct CargoProcess {
     pub(crate) capture_membership:   CaptureMembership,
     /// Account and root qualification do not grant enclosing rows metadata ownership.
     pub(crate) provenance:           RowProvenance,
-    /// Working directory display, shortened only when the home prefix is unambiguous.
+    /// Directory text remains independent of slot ownership.
     pub(crate) path:                 String,
+    /// Live slot ownership belongs to this invocation only.
+    pub(crate) slot:                 SlotObservation,
     /// Raw absolute directory for grouping; display formatting cannot change membership.
     pub(crate) directory_identity:   WorkingDirectoryIdentity,
     /// Process id.
@@ -511,6 +514,7 @@ pub(super) fn row(
         }
     };
     Ok(CargoProcess {
+        slot: SlotObservation::default(),
         invocation_id,
         origin_start,
         execution: InvocationExecution::Command,
@@ -597,6 +601,7 @@ pub(super) fn registration_row(
     let record = direct.registration().record();
     let origin_start = OriginStart::registration(direct);
     Ok(CargoProcess {
+        slot: SlotObservation::default(),
         invocation_id: direct.invocation_id(),
         execution: InvocationExecution::RegistrationOnly,
         origin_start,

@@ -147,7 +147,9 @@ impl PaintedRowSource {
             && (Rc::ptr_eq(&self.snapshot, &row.snapshot())
                 || (before.invocation_id == after.invocation_id
                     && before.pid == after.pid
+                    // Slot ownership changes require a new cell painting.
                     && before.path == after.path
+                    && before.slot == after.slot
                     && before.directory_identity == after.directory_identity
                     && before.parent == after.parent
                     && before.provenance == after.provenance
@@ -940,6 +942,7 @@ mod cell_paint_tests {
     use crate::census::process_identity::CaptureMembership;
     use crate::census::scan::Compiler;
     use crate::census::scan::OriginStart;
+    use crate::census::slot_lease::SlotObservation;
     use crate::constants::BYTES_PER_GIBIBYTE;
     use crate::render;
     use crate::render::Buffer;
@@ -961,6 +964,8 @@ mod cell_paint_tests {
     use crate::render::frame_preparation::PreparedTables;
     use crate::render::tests;
     use crate::render::tests::CELL_CONTENT_PAINTS;
+
+    const SLOT: &str = "hana-slot2";
 
     #[test]
     fn roster_revisions_keep_only_unchanged_cell_paintings() {
@@ -1040,6 +1045,7 @@ mod cell_paint_tests {
             DisplayRevision::CpuShorterValue,
             DisplayRevision::MemoryWider,
             DisplayRevision::CompilerStarts,
+            DisplayRevision::SlotLease,
         ] {
             assert_display_revision(change);
         }
@@ -1059,6 +1065,7 @@ mod cell_paint_tests {
         CpuShorterValue,
         MemoryWider,
         CompilerStarts,
+        SlotLease,
     }
 
     /// Whether a revision changes what the cell shows.
@@ -1176,6 +1183,11 @@ mod cell_paint_tests {
                     count: 1,
                 });
             },
+            DisplayRevision::SlotLease => {
+                after.lead.slot = SlotObservation::Free {
+                    slot: SLOT.to_owned(),
+                };
+            },
         }
     }
 
@@ -1188,6 +1200,7 @@ mod cell_paint_tests {
             DisplayRevision::ProgressOwnership
                 | DisplayRevision::MemoryWider
                 | DisplayRevision::CompilerStarts
+                | DisplayRevision::SlotLease
         ));
         let displayed = if matches!(
             change,
@@ -1199,6 +1212,7 @@ mod cell_paint_tests {
                 | DisplayRevision::CpuShorterValue
                 | DisplayRevision::MemoryWider
                 | DisplayRevision::CompilerStarts
+                | DisplayRevision::SlotLease
         ) {
             DisplayedValue::Changes
         } else {

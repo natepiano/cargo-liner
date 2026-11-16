@@ -27,6 +27,8 @@ use crate::census::ExcludedCommands;
 use crate::census::cpu_observation::CpuScanPublication;
 use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 use crate::census::scan::FreeDiskSpace;
+#[cfg(test)]
+use crate::census::slot_lease::SlotObservation;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
@@ -460,6 +462,7 @@ fraying = "leading"
     /// A measured idle row isolates scan delivery from live process collection.
     fn scan_process(invocation_id: InvocationId, state: CaptureLookup) -> CargoProcess {
         CargoProcess {
+            slot: SlotObservation::default(),
             path: "/runner/project".to_owned(),
             directory_identity: WorkingDirectoryIdentity::Absolute("/runner/project".into()),
             pid: 11,

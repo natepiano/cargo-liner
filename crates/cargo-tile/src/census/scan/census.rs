@@ -13,6 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -20,6 +21,7 @@ use rustix::io::Errno;
 use rustix::process::Pid as KernelPid;
 use rustix::process::test_kill_process;
 use sysinfo::Pid;
+use tui_pane::AppIdentity;
 
 use super::invocation;
 use super::invocation::Ancestor;
@@ -81,7 +83,11 @@ use crate::census::process_identity::InvocationId;
 use crate::census::process_identity::ProcessIdentity;
 use crate::census::process_identity::RunId;
 use crate::census::process_identity::VisibleParent;
+use crate::census::slot_lease::SLOT_LEASES;
+use crate::census::slot_lease::SlotLeaseScan;
+use crate::config::CargoTile;
 use crate::constants::CARGO_DISPLAY_NAME;
+use crate::constants::CARGO_MANIFEST_PATH_FLAG;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::COMPILER_PROCESS_NAMES;
@@ -231,6 +237,8 @@ pub(in crate::census) struct Census {
     /// Every process's parent, for walking a compiler up to its cargo.
     pub(super) parents:                  HashMap<Pid, Pid>,
     pub(super) topology:                 OnceCell<PreparedCpuTopology>,
+    /// Compiler output paths are resolved once and shared with slot observation.
+    pub(super) observed_targets:         OnceCell<Rc<HashMap<Pid, HashSet<PathBuf>>>>,
     /// Cargo invocations retained for row construction after selection.
     pub(super) cargo:                    Vec<Pid>,
     /// Runs carried by hidden drivers to the process that represents their command.
@@ -537,6 +545,7 @@ impl Census {
             registration_eligibility:       HashMap::new(),
             parents:                        HashMap::with_capacity(process_count),
             topology:                       std::cell::OnceCell::new(),
+            observed_targets:               OnceCell::new(),
             cargo:                          Vec::new(),
             rowless_cargo:                  Vec::new(),
             dispatched_runs:                HashMap::new(),
@@ -1255,44 +1264,51 @@ impl Census {
         system: &ProcessObservations<'_>,
         owners: &HashMap<ProcessIdentity, InvocationId>,
         retained: &mut HashMap<InvocationId, HashSet<PathBuf>>,
-    ) -> HashMap<Pid, HashSet<PathBuf>> {
-        let mut targets: HashMap<_, _> = self
-            .live_cargo()
-            .map(|pid| {
-                let directories = self
-                    .cpu_identity(pid)
-                    .ok()
-                    .and_then(|process| owners.get(&process))
-                    .and_then(|identity| retained.get(identity))
-                    .cloned()
-                    .unwrap_or_default();
-                (pid, directories)
+    ) -> Rc<HashMap<Pid, HashSet<PathBuf>>> {
+        Rc::clone(self.observed_targets.get_or_init(|| {
+            Rc::new({
+                let mut targets: HashMap<_, _> = self
+                    .live_cargo()
+                    .map(|pid| {
+                        let directories = self
+                            .cpu_identity(pid)
+                            .ok()
+                            .and_then(|process| owners.get(&process))
+                            .and_then(|identity| retained.get(identity))
+                            .cloned()
+                            .unwrap_or_default();
+                        (pid, directories)
+                    })
+                    .collect();
+                for pid in self.live_cargo() {
+                    if let Some(process) = system.process(pid)
+                        && let Ok(directory) =
+                            invocation_cpu_accounting::cargo_target_directory(process)
+                    {
+                        targets.entry(pid).or_default().insert(directory);
+                    }
+                }
+                for &(pid, _) in &self.compilers {
+                    if let Some(owner) = self.cpu_owners(pid).next()
+                        && let Some(process) = system.process(pid)
+                        && let Ok(directory) = invocation_cpu_accounting::process_argument_path(
+                            process,
+                            RUSTC_OUT_DIR_FLAG,
+                        )
+                    {
+                        targets.entry(owner).or_default().insert(directory);
+                    }
+                }
+                for (&pid, directories) in &targets {
+                    if let Ok(process) = self.cpu_identity(pid)
+                        && let Some(identity) = owners.get(&process)
+                    {
+                        retained.insert(identity.clone(), directories.clone());
+                    }
+                }
+                targets
             })
-            .collect();
-        for pid in self.live_cargo() {
-            if let Some(process) = system.process(pid)
-                && let Ok(directory) = invocation_cpu_accounting::cargo_target_directory(process)
-            {
-                targets.entry(pid).or_default().insert(directory);
-            }
-        }
-        for &(pid, _) in &self.compilers {
-            if let Some(owner) = self.cpu_owners(pid).next()
-                && let Some(process) = system.process(pid)
-                && let Ok(directory) =
-                    invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
-            {
-                targets.entry(owner).or_default().insert(directory);
-            }
-        }
-        for (&pid, directories) in &targets {
-            if let Ok(process) = self.cpu_identity(pid)
-                && let Some(identity) = owners.get(&process)
-            {
-                retained.insert(identity.clone(), directories.clone());
-            }
-        }
-        targets
+        }))
     }
 
     /// Only a detached rustc beneath sccache may use output-directory ownership.
@@ -2040,7 +2056,59 @@ impl Census {
                 row.subtree_resource_use = total;
             }
         }
+        SLOT_LEASES.with_borrow_mut(|reader| {
+            let Some(home) = dirs::home_dir() else {
+                return;
+            };
+            let machine = sysinfo::System::host_name().unwrap_or_default();
+            let config = CargoTile::config_path().unwrap_or_default();
+            let mut scan = reader.begin_scan(&home, &machine, &config);
+            self.observe_slots(system, &mut groups, &mut scan);
+        });
         groups
+    }
+
+    /// Effective manifests and compiler outputs qualify rows without changing their grouping
+    /// directory.
+    fn observe_slots(
+        &self,
+        system: &ProcessObservations<'_>,
+        groups: &mut [CargoGroup],
+        scan: &mut SlotLeaseScan<'_>,
+    ) {
+        let targets = self.observe_targets(system, &HashMap::new(), &mut HashMap::new());
+        let row_pids: HashMap<_, _> = self
+            .identities
+            .iter()
+            .map(|(pid, identity)| (identity, *pid))
+            .collect();
+        for row in groups
+            .iter_mut()
+            .flat_map(|group| std::iter::once(&mut group.lead).chain(&mut group.rest))
+        {
+            let process_pid = row_pids
+                .get(&row.invocation_id)
+                .copied()
+                .unwrap_or_else(|| Pid::from_u32(row.pid));
+            let workspace = system.process(process_pid).and_then(|process| {
+                invocation_cpu_accounting::process_argument_path(process, CARGO_MANIFEST_PATH_FLAG)
+                    .ok()
+                    .and_then(|path| path.parent().map(Path::to_path_buf))
+            });
+            let directory = match &row.directory_identity {
+                WorkingDirectoryIdentity::Absolute(path) => Some(path.as_path()),
+                WorkingDirectoryIdentity::Unavailable => None,
+            };
+            row.slot = scan.observe(
+                workspace.as_deref().or(directory).into_iter().chain(
+                    targets
+                        .get(&process_pid)
+                        .into_iter()
+                        .flatten()
+                        .map(PathBuf::as_path),
+                ),
+            );
+        }
     }
 
     /// Enclosing membership never suppresses the invocation represented by a proof.
@@ -2578,5 +2646,134 @@ impl CensusSequence {
             ScannerHome::Known(Path::new("/writer")),
             capture,
         )
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use std::fs;
+    use std::io;
+
+    use super::*;
+    use crate::census::slot_lease::SlotLeaseReader;
+    use crate::constants::BUILD_FOLDERS_CONFIG;
+    use crate::constants::SLOT_CARGO_ROOT_KEY;
+    use crate::constants::SLOT_LABEL_SEPARATOR;
+    use crate::constants::SLOT_LEASE_SUFFIX;
+    use crate::constants::SLOT_LOCK_SUFFIX;
+    use crate::constants::SLOT_ROOT_KEY;
+
+    const SLOT: &str = "hana-slot2";
+    const WORKING_DIRECTORY_SLOT: &str = "hana-slot1";
+    const MACHINE: &str = "test-host";
+    const HOLDER: &str = "fps";
+    const PURPOSE: &str = "gate";
+    const CONFIG_FILE: &str = "tile.toml";
+    const CONFIG_DIRECTORY: &str = ".claude/config";
+    const CHECKOUT_FOLDER: &str = "slots";
+    const OUTPUT_FOLDER: &str = "cargo";
+    const MANIFEST_FILE: &str = "Cargo.toml";
+    const OUTPUT_SUFFIX: &str = "debug/deps";
+    const OUTSIDE: &str = "outside";
+    const CARGO_PID: u32 = 41_000;
+    const COMPILER_PID: u32 = 41_001;
+
+    #[test]
+    fn slot_rows_use_effective_manifests_and_compiler_observed_targets() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let home = temporary.path().canonicalize()?;
+        let slots = home.join(CHECKOUT_FOLDER);
+        let workspace = slots.join(SLOT);
+        let other_workspace = slots.join(WORKING_DIRECTORY_SLOT);
+        let output = home.join(OUTPUT_FOLDER).join(SLOT).join(OUTPUT_SUFFIX);
+        let outside = home.join(OUTSIDE);
+        for directory in [
+            home.join(CONFIG_DIRECTORY),
+            workspace.clone(),
+            other_workspace.clone(),
+            output.clone(),
+            outside.clone(),
+        ] {
+            fs::create_dir_all(directory)?;
+        }
+        let manifest = workspace.join(MANIFEST_FILE);
+        fs::write(&manifest, "[workspace]\n")?;
+        fs::write(outside.join(MANIFEST_FILE), "[workspace]\n")?;
+        fs::write(
+            home.join(BUILD_FOLDERS_CONFIG),
+            format!(
+                "{SLOT_ROOT_KEY}=~/{CHECKOUT_FOLDER}\n{SLOT_CARGO_ROOT_KEY}=~/{OUTPUT_FOLDER}\n"
+            ),
+        )?;
+        let config = home.join(CONFIG_FILE);
+        fs::write(&config, "")?;
+        let lease = slots.join(format!("{SLOT}{SLOT_LEASE_SUFFIX}"));
+        fs::write(
+            lease,
+            serde_json::json!({"unit": HOLDER, "purpose": PURPOSE}).to_string(),
+        )?;
+        let guard = fs::File::create(slots.join(format!("{SLOT}{SLOT_LOCK_SUFFIX}")))?;
+        guard.lock()?;
+        let mut reader = SlotLeaseReader::default();
+        let compiler_argv = vec![
+            OsString::from("rustc"),
+            OsString::from(RUSTC_OUT_DIR_FLAG),
+            output.as_os_str().to_owned(),
+        ];
+        for (argv, with_compiler, directory) in [
+            (
+                vec![
+                    OsString::from("cargo"),
+                    OsString::from("check"),
+                    OsString::from(CARGO_MANIFEST_PATH_FLAG),
+                    manifest.as_os_str().to_owned(),
+                ],
+                false,
+                &outside,
+            ),
+            (
+                vec![OsString::from("cargo"), OsString::from("check")],
+                true,
+                &outside,
+            ),
+            (
+                vec![
+                    OsString::from("cargo"),
+                    OsString::from("check"),
+                    OsString::from(CARGO_MANIFEST_PATH_FLAG),
+                    outside.join(MANIFEST_FILE).into_os_string(),
+                ],
+                true,
+                &other_workspace,
+            ),
+        ] {
+            let mut cargo = ProcessObservation::cargo(CARGO_PID, &argv);
+            cargo.directory = ProcessField::Observed(directory);
+            let mut records = vec![cargo];
+            if with_compiler {
+                let mut compiler = ProcessObservation::cargo(COMPILER_PID, &compiler_argv);
+                compiler.name = ProcessField::Observed(OsStr::new("rustc"));
+                compiler.directory = ProcessField::Observed(&outside);
+                compiler.parent = ProcessField::Observed(Pid::from_u32(CARGO_PID));
+                records.push(compiler);
+            }
+            let records = ProcessObservations::new(records);
+            let capture = Capture::default();
+            let mut groups = CensusSequence::default().sample_capture(&records, &capture);
+            let mut census = Census::take(records.records.values());
+            census.prepare(&records, &capture, &[]);
+            assert_eq!(groups.len(), 1);
+            let mut scan = reader.begin_scan(&home, MACHINE, &config);
+            census.observe_slots(&records, &mut groups, &mut scan);
+            assert_eq!(
+                groups[0].lead.slot.display_path(&outside.to_string_lossy()),
+                format!("{SLOT}{SLOT_LABEL_SEPARATOR}{HOLDER}{SLOT_LABEL_SEPARATOR}{PURPOSE}")
+            );
+            assert_eq!(
+                groups[0].lead.directory_identity,
+                WorkingDirectoryIdentity::Absolute(directory.clone())
+            );
+        }
+        Ok(())
     }
 }
