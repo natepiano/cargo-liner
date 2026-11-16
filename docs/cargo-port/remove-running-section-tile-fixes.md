@@ -1758,23 +1758,25 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 **Depends on:** Phase 65 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** `a_native_mirror_keeps_cargo_streams_without_shell_utilities` does not fall back to uncaptured cargo on the GitHub macOS runner.
-
-**Spec:**
-1. The failure: GitHub run 43717017527, "Merge handler phase 19 (0aa61ba) into main", 2026-11-15 13:03 UTC, job "macOS cargo-tile" (image macos-26-arm64). The next main run passed.
-   - `crates/cargo-tile/tests/shim_modes.rs:1375`: "the utility row must run native capture". The stand-in cargo saw `CARGOTILE_NESTED`, `CARGO_TERM_PROGRESS_WHEN` and `CARGO_TERM_PROGRESS_WIDTH` all unset; the test expected `<pid>`, `always`, `100`. The shim ran cargo with no capture. The test took 0.063 s.
-2. This is the same failure class as Phase 63 (`attempts-63-shim-mode-not-found` in the unit's memory): under load, the shim takes a fallback path that runs cargo with no capture. The fallback paths are in `hook.rs` (no terminal, no signal guard, failed publication). Phase 63 did not reproduce the trigger.
-3. Make the fallback name its cause: the test prints the shim's stderr and status when the environment shows no capture. Then force each fallback path in a scratch run to find which one matches the CI evidence. Fix the cause in the shim or the fixture. Keep every assertion.
+Each capture fallback in the shim names its path and error to the cargo it runs uncaptured.
+- `exec_uncaptured_cargo` (`hook.rs`) sets `CARGOTILE_CAPTURE_FALLBACK` to `<path>: <error>` and execs cargo. The paths are `terminal`, `signal guard`, `publication` and `capture startup`.
+- `command()` removes an inherited `CARGOTILE_CAPTURE_FALLBACK`, so a successful capture never passes a stale value to cargo.
+- `CaptureStartup::PlainCargo(Error)` and `CargoCompletion::NotStarted(Error)` carry the error. An unacknowledged PTY helper reports `CAPTURE_HELPER_UNACKNOWLEDGED: <status>`.
+- The `MirrorStartup` rows in `shim_modes.rs` force real faults: descriptor limit, occupied descriptors, publication failure, inherited fallback, missing shell, missing tee and failed shell. The first assertion prints the shim status, stderr and fallback value.
+- The CI fallback cause in GitHub run 43717017527 is not known. The next CI failure names it.
 
 **Files:**
-- `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
-- `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
+- `crates/cargo-tile/src/hook.rs` — the fallback exec and the inherited-value removal.
+- `crates/cargo-tile/src/constants.rs` — `CAPTURE_FALLBACK_ENV`, the fallback path names and `CAPTURE_HELPER_UNACKNOWLEDGED`.
+- `crates/cargo-tile/tests/shim_modes.rs` — the `MirrorStartup` rows and their test-local fallback prefixes.
 
-**Workers:** none (no-worker mode); the director writes the fix.
+**Gotchas:**
+- The descriptor-limit row fails in publication on macOS and in capture startup on Linux.
 
-**Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
+**Ruled out:**
+- A C fault library that injects signal-guard and pump failures: it configures a mock instead of a real fault.
 
 ### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: todo
 
@@ -1795,7 +1797,8 @@ Drift incursion attribution skips the commits that a released reservation in the
 - `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture` and the removal.
 - `crates/cargo-tile/src/shim_registration/native_fixture.rs` — only if the receipt must name the recorded identity.
 
-**Workers:** none (no-worker mode); the director writes the fix.
+**Workers:** 1 writer; the director reviews.
+- impl: `setup_reader.py`, and `native_fixture.rs` if the receipt changes.
 
 **Acceptance gate:** after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
 
