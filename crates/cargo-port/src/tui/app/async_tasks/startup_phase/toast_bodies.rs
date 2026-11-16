@@ -8,7 +8,7 @@ use crate::tui::constants::STARTUP_BAR_FILLED;
 use crate::tui::constants::STARTUP_BAR_WIDTH;
 
 /// Render startup rows using Cargo Port's existing bar and colors.
-pub(super) fn startup_panel_body(
+pub(in crate::tui::app) fn startup_panel_body(
     rows: &[ProgressRow],
     body_width: usize,
 ) -> (Vec<String>, Vec<Color>) {

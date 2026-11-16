@@ -13,6 +13,8 @@ use crate::project::Visibility;
 use crate::sccache::StatsResult;
 use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitData;
+use crate::tui::panes::PackageContent;
+use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::render;
 use crate::tui::test_support;
@@ -296,12 +298,10 @@ fn selected_description_reverses_every_inner_cell_without_color() -> anyhow::Res
         app.ensure_visible_rows_cached();
         app.ensure_detail_cached();
         if pane == PaneId::Package {
-            let mut package = app
-                .panes
-                .package
-                .content()
-                .cloned()
-                .context("Package content")?;
+            let PackageContent::Selected(package_data) = app.panes.package.content() else {
+                anyhow::bail!("Package content");
+            };
+            let mut package = PackageData::clone(package_data);
             package.description = DescriptionState::KnownEmpty;
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().cloned().context("Git content")?;

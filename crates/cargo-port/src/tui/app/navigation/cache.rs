@@ -5,6 +5,7 @@ use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::ProjectListPresentation;
 use crate::tui::app::RowPresentationState;
+use crate::tui::app::SelectedPaneData;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::LintColumnStatus;
@@ -101,10 +102,11 @@ impl App {
         let pane_started = std::time::Instant::now();
         let pane = match desired {
             DetailCacheState::Current(key) => self.build_selected_pane_data(key.visible_row),
-            DetailCacheState::Cleared => None,
+            DetailCacheState::Cleared => SelectedPaneData::Unavailable,
         };
         let pane_ms = tui_pane::perf_log_ms(pane_started.elapsed().as_millis());
-        if let (DetailCacheState::Current(key), Some(data)) = (desired, pane) {
+        if let (DetailCacheState::Current(key), SelectedPaneData::Available(data)) = (desired, pane)
+        {
             let ci_started = std::time::Instant::now();
             let ci = tui::panes::build_ci_data(self);
             let ci_ms = tui_pane::perf_log_ms(ci_started.elapsed().as_millis());

@@ -72,6 +72,7 @@ pub(super) use output::OutputPresentation;
 /// Named outside `panes` only where a test asserts the Output pane's selected rows.
 #[cfg(test)]
 pub(super) use output::OutputSelectionRange;
+pub(super) use package::PackageContent;
 pub(super) use package::PackagePane;
 pub(super) use pane_data::CargoPackageInvocation;
 pub(super) use pane_data::CiFetchKind;
@@ -140,6 +141,7 @@ pub(super) use targets::TargetAvailability;
 pub(super) use targets::TargetEntry;
 #[cfg(test)]
 pub(super) use targets::TargetSource;
+pub(super) use targets::TargetsContent;
 pub(super) use targets::TargetsData;
 pub(super) use targets::TargetsPane;
 pub(super) use targets::build_target_list_from_data;

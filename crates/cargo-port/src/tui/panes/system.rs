@@ -167,7 +167,9 @@ mod detail_set_tests {
     use super::Panes;
     use crate::config::CpuConfig;
     use crate::tui::panes::GitData;
+    use crate::tui::panes::PackageContent;
     use crate::tui::panes::PackageData;
+    use crate::tui::panes::TargetsContent;
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
     use crate::tui::panes::data::DetailCacheState;
@@ -228,9 +230,15 @@ mod detail_set_tests {
                 .pane_data
                 .detail_is_current(DetailCacheState::Current(key))
         );
-        assert!(panes.package.content().is_some());
+        assert!(matches!(
+            panes.package.content(),
+            PackageContent::Selected(_)
+        ));
         assert!(panes.git.content().is_some());
-        assert!(panes.targets.content().is_some());
+        assert!(matches!(
+            panes.targets.content(),
+            TargetsContent::Available(_)
+        ));
 
         // The cache rejects cleared details and keys with a different generation or row.
         assert!(!panes.pane_data.detail_is_current(DetailCacheState::Cleared));
@@ -272,9 +280,15 @@ mod detail_set_tests {
                 .pane_data
                 .detail_is_current(DetailCacheState::Current(clear_key))
         );
-        assert!(panes.package.content().is_none());
+        assert!(matches!(
+            panes.package.content(),
+            PackageContent::NoProjectSelected
+        ));
         assert!(panes.git.content().is_none());
-        assert!(panes.targets.content().is_none());
+        assert!(matches!(
+            panes.targets.content(),
+            TargetsContent::Unavailable
+        ));
     }
 
     #[test]
@@ -292,9 +306,15 @@ mod detail_set_tests {
         );
         let mut app = test_support::make_app(&[project]);
         app.ensure_detail_cached();
-        assert!(app.panes.package.content().is_some());
+        assert!(matches!(
+            app.panes.package.content(),
+            PackageContent::Selected(_)
+        ));
         assert!(app.panes.git.content().is_some());
-        assert!(app.panes.targets.content().is_some());
+        assert!(matches!(
+            app.panes.targets.content(),
+            TargetsContent::Available(_)
+        ));
         let populated = app.panes.pane_data.detail_build_count();
 
         app.project_list.clear();
@@ -306,9 +326,15 @@ mod detail_set_tests {
                 .pane_data
                 .detail_is_current(DetailCacheState::Cleared)
         );
-        assert!(app.panes.package.content().is_none());
+        assert!(matches!(
+            app.panes.package.content(),
+            PackageContent::NoProjectSelected
+        ));
         assert!(app.panes.git.content().is_none());
-        assert!(app.panes.targets.content().is_none());
+        assert!(matches!(
+            app.panes.targets.content(),
+            TargetsContent::Unavailable
+        ));
         assert_eq!(app.panes.pane_data.detail_build_count(), populated + 1);
 
         app.ensure_detail_cached();
@@ -337,16 +363,28 @@ mod detail_set_tests {
                 .pane_data
                 .detail_is_current(DetailCacheState::Current(key))
         );
-        assert!(app.panes.package.content().is_none());
+        assert!(matches!(
+            app.panes.package.content(),
+            PackageContent::NoProjectSelected
+        ));
         assert!(app.panes.git.content().is_none());
-        assert!(app.panes.targets.content().is_none());
+        assert!(matches!(
+            app.panes.targets.content(),
+            TargetsContent::Unavailable
+        ));
         assert_eq!(app.panes.pane_data.detail_build_count(), cleared);
 
         app.scan.bump_generation();
         app.ensure_detail_cached();
         assert_eq!(app.panes.pane_data.detail_build_count(), cleared + 1);
-        assert!(app.panes.package.content().is_some());
+        assert!(matches!(
+            app.panes.package.content(),
+            PackageContent::Selected(_)
+        ));
         assert!(app.panes.git.content().is_some());
-        assert!(app.panes.targets.content().is_some());
+        assert!(matches!(
+            app.panes.targets.content(),
+            TargetsContent::Available(_)
+        ));
     }
 }
