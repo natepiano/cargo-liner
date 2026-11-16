@@ -1731,28 +1731,26 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 ### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: done
 
-**Depends on:** Phase 64 (order only; showrunner, 2026-11-15: tile owns both CI failures, after 43j)
+#### As-built
 
-#### Work Order
-
-**Goal:** The cargo-berth recorded-template setup does not fail when one git `update-ref --stdin` reply is slow on the GitHub runner.
-
-**Spec:**
-1. The failure: GitHub run 43723942593, "Merge tile phase 62c shrink (e09e551) into main", 2026-11-15 14:21 UTC. The next main run passed.
-   - `crates/cargo-berth/tests/support/reanchoring_templates.rs:700` (`board_with_rewrite_trace`): `board --json` returned `ledger_unreadable` (exit 4): "could not run git: git --no-optional-locks update-ref --stdin: deadline exceeded while waiting for protocol reply".
-   - Then `crates/cargo-berth/tests/recorded_templates.rs:459`: "cold single-target setup failed".
-2. The deadline comes from `crates/cargo-berth/src/git/protocol.rs:46` and `:69` (`ChildDeadline`, "protocol reply"). Measure first: find the deadline value, the reply times on the runner and on natedev under load, and why one `board` read runs `update-ref` at all.
-3. Fix the cause. Do not raise a limit to hide a slow reply. If the cause is the runner's load, make the template setup run fewer git processes at the same time, or move the write out of the read path.
-4. Keep every template assertion and the setup's single-target probe.
+The first reply of a persistent Git child includes process startup, so it uses the whole-command deadline.
+- `read_startup_line` (`git/protocol.rs`) reads the first reply under `GIT_COMMAND_DEADLINE` (30 s, `git/child.rs`) with the deadline label "protocol startup". The `update-ref --stdin` retention transaction (`git/refs.rs`) reads its `start: ok` reply with it.
+- The installation probe (`git/installation.rs`) uses `GIT_COMMAND_DEADLINE`. The 750 ms `CONTROL_REPLY_DEADLINE` is removed.
+- The recorded-template setup runs four template workers. `run_selected_setup_test` returns `SetupTestSelection` (`Completed`, `NoSelection`).
 
 **Files:**
-- `crates/cargo-berth/src/git/protocol.rs` — the protocol reply deadline, if the cause is there.
-- `crates/cargo-berth/tests/support/reanchoring_templates.rs` and `crates/cargo-berth/tests/recorded_templates.rs` — the template setup.
-- `crates/cargo-berth/tests/setup-recorded-templates.sh` — the setup script, if its parallel width is the cause.
+- `crates/cargo-berth/src/git/protocol.rs` — `read_startup_line` and the startup deadline.
+- `crates/cargo-berth/src/git/refs.rs` — the retention transaction's first reply.
+- `crates/cargo-berth/src/git/installation.rs` — the installation probe deadline.
+- `crates/cargo-berth/tests/recorded_templates.rs` — `SetupTestSelection` and the template worker count.
 
-**Workers:** 1 writer (`impl`) — measures, fixes and adds the tests.
+**Binds later work:** No shorter deadline wraps Git startup, and the template setup keeps four workers; the cargo-berth Mac test speed work keeps both.
 
-**Acceptance gate:** the cause is named with a measurement; the cargo-berth full suite passes on natedev with no test at 1 s or more at load under 32; the Mac suite passes (the Mac 1 s rule for cargo-berth belongs to Phase 68, showrunner 2026-11-15); one GitHub CI run on the branch passes; lint.
+**Gotchas:**
+- Git startup takes 0.7-2.1 ms normally and 1,231 ms with a valid 83 MB repository config; warm replies stay under 24 ms. Holding packed-refs.lock does not delay `start`.
+- The cargo-mend formatter test `batch_measurements_keep_configuration_edition_and_source_bytes` fails each time the GitHub cargo-mend job runs: the job installs no nightly rustfmt. It is not a cargo-berth failure.
+
+**Ruled out:** a smaller template worker cap, which hid the startup cost.
 
 ### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: todo
 
@@ -1772,7 +1770,7 @@ Drift incursion attribution skips the commits that a released reservation in the
 - `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
 - `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
 
-**Workers:** none (no-worker mode); the director writes the fix.
+**Workers:** 1 writer (`impl`) — owns `shim_modes.rs`, the named `hook.rs` fallback and the scratch runs.
 
 **Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
 
@@ -1787,17 +1785,22 @@ Drift incursion attribution skips the commits that a released reservation in the
 **Spec:**
 1. The evidence: on the Mac, `~/Library/Caches/cargo-tile/test-readers/native-fixtures` holds 129 fixtures, 2.1 GB, about 17 MB each, and one `.lock` file for each (director, 2026-11-15). Measure the count and size on natedev too.
 2. The cause: `native_fixture` in `setup_reader.py` names each fixture by a hash of its source identity (path, device, inode, size, mtime, ctime, strip options). Each build makes a new identity and a new fixture. Nothing removes the old ones. `remove_retired_readers` removes readers whose owner process ended; fixtures have no such rule.
-3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file. Take each fixture's own lock before removal, so a run that prepares or reads it keeps it.
-4. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
-5. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
+3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file.
+4. The lock rule. Today `native_fixture.rs` `executable` reuses a receipt without a fixture lock (architect review, 2026-11-16; confirm in the code first).
+   - A reader takes the fixture lock shared from the receipt check until the fixture process starts. A removed file does not stop a process that already started.
+   - Removal takes the fixture lock exclusive and non-blocking. A busy lock means the fixture stays for a later publication.
+   - Removal deletes the fixture, then unlinks the lock file while it still holds the lock.
+   - Each lock taker, publisher or reader, compares the locked file's inode with the inode at the lock path after it gets the lock. On a difference it opens the path again and retries.
+5. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
+6. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture` and the removal.
-- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — only if the receipt must name the recorded identity.
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture`, the removal and the publisher lock retry.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the shared reader lock and its retry.
 
-**Workers:** none (no-worker mode); the director writes the fix.
+**Workers:** 1 writer (`impl`) — owns both files and their tests.
 
-**Acceptance gate:** after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+**Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
 
 ### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
 
@@ -1817,7 +1820,11 @@ Drift incursion attribution skips the commits that a released reservation in the
 - `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
 - `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
 
-**Workers:** Codex workers write the code; the director measures and reviews.
+**Constraints from prior phases:**
+- Phase 65: the first reply of a persistent Git child (`read_startup_line`) and the installation probe use the 30 s `GIT_COMMAND_DEADLINE` (`crates/cargo-berth/src/git/child.rs`). Do not add a shorter deadline around Git startup. A valid 83 MB repository config made Git startup take 1,231 ms.
+- Phase 65: the recorded-template setup runs four template workers (`recorded_templates.rs`). Do not cut the worker count to make a slow reply pass.
+
+**Workers:** 1 writer (`impl`) — measures on both machines and owns the named test and support files.
 
 **Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
 
@@ -1836,7 +1843,8 @@ Drift incursion attribution skips the commits that a released reservation in the
 4. A holder is live only while a process holds the `.lock` (flock). With no lock held, the slot shows as free, never as its last holder.
 5. A build whose workspace or target directory is inside a slot or slot cargo root shows the slot name, the holder and the purpose. A build outside the roots shows as before.
 6. Read each lease once per change of the lease file, not once per frame. Keep the frame time rules of Phases 32b-32j.
-7. Send lease format questions to the queue unit through the builds showrunner.
+7. Check the lock on its own, apart from the lease cache. A holder can release the lock and leave the lease file unchanged. Check it once per census scan, not once per frame. Name the slot states in a type: free, held with its lease, and unreadable.
+8. Send lease format questions to the queue unit through the builds showrunner.
 
 **Files:**
 - `crates/cargo-tile/src/census/scan/census.rs` — the build path read.
@@ -1844,9 +1852,9 @@ Drift incursion attribution skips the commits that a released reservation in the
 - `crates/cargo-tile/src/render.rs` — the row text.
 - `crates/cargo-tile/src/census/slot_lease.rs` — new: the slot lease reader and the lock check.
 
-**Workers:** Codex workers write the code; the director reviews.
+**Workers:** 1 writer (`impl`) — owns the named files and their tests.
 
-**Acceptance gate:** tests for a live lease, a free slot (lock not held), a missing roots key and a build outside the roots; one dark mode desktop screenshot of a slot row for the user; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; lint.
+**Acceptance gate:** tests for a live lease, a free slot (lock not held), a missing roots key, a build outside the roots, and a released lock with an unchanged lease file whose row stops showing the old holder; one dark mode desktop screenshot of a slot row for the user; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
