@@ -76,6 +76,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
   - A command cell is never narrower than 40 cells in cargo-tile. A window that cannot hold the grid at that width shows the summary alone, filling the window (user, 2026-10-08: cells are useless when too small).
   - Every literal the code names lives in its crate's `constants.rs` (existing crate convention).
   - No test takes a second. Render tests are pure and run on buffers; none waits on the clock (user rule, memory `no-multi-second-tests`).
+  - A timing gate counts only from a full suite that runs with no other run of the writer active on that machine, lint included. A concurrent compile puts unchanged tests over 1 s, and the start load does not show it (Phase 67).
   - A `tui_pane` change reaches `cargo-handler` and `cargo-port`; a gate that touches `tui_pane` also runs `verify.sh test` for both (production doc, Merge tests). No existing `tui_pane` public signature changes, and `cargo-handler`'s cell sizes do not change (author's calls). The approved exceptions (the user, from the Phase 12 review) are the public signatures Phase 18 names — toast timing, toast action, toast focus and tracked-item timing — and `TileCells::group_title`, which Phase 36 changes. Phase 36's other public items are additions only: `draw_tile_grid` keeps its signature, and a retained boundary that answers `Option`, such as `cell_at`, converts from a named internal answer at that boundary alone.
   - Format with `cargo +nightly fmt` only (user rule, memory `rustfmt-nightly-only`).
   - No UX guide covers cargo-tile (production doc, Production rules): design checks judge by the three gods in `~/.claude/docs/decision_criteria.md`.
@@ -1780,24 +1781,23 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 **Depends on:** Phase 66 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** The cargo-tile native fixture cache holds only fixtures whose source build still exists. Unbounded cache growth is a defect (showrunner, 2026-11-15).
-
-**Spec:**
-1. The evidence: on the Mac, `~/Library/Caches/cargo-tile/test-readers/native-fixtures` holds 129 fixtures, 2.1 GB, about 17 MB each, and one `.lock` file for each (director, 2026-11-15). Measure the count and size on natedev too.
-2. The cause: `native_fixture` in `setup_reader.py` names each fixture by a hash of its source identity (path, device, inode, size, mtime, ctime, strip options). Each build makes a new identity and a new fixture. Nothing removes the old ones. `remove_retired_readers` removes readers whose owner process ended; fixtures have no such rule.
-3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file. Take each fixture's own lock before removal, so a run that prepares or reads it keeps it.
-4. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
-5. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
+Each native test fixture records its source identity, and each publication removes the fixtures whose source changed or is gone.
+- `native_fixture` (`setup_reader.py`) writes `<name>.source` beside each fixture: the resolved source path, a NUL byte, and the repr of device, inode, size, mtime_ns, ctime_ns and strip options. The fixture name is the SHA-256 of that record.
+- `remove_retired_native_fixtures` runs after each publication. For each other fixture, it takes `LOCK_EX|LOCK_NB` on `<name>.lock` and checks the lock inode. It removes the fixture, record and lock when the source identity changed, the source is unreadable (any `OSError`), or the record is missing (a legacy fixture).
+- `native_fixture::executable()` keeps `RetainedNativeExecutable::{Direct, Locked}`. `Locked` holds a shared flock on `<fixture>.lock` for the process lifetime, so cleanup skips a fixture in use. `lock_fixture` opens only an existing lock and never creates one.
+- The cache fell from 162 fixtures (3.7 GB) on natedev and 164 (2.7 GB) on the Mac to one fixture and one lock on each.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture` and the removal.
-- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — only if the receipt must name the recorded identity.
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — publication, the identity record and cleanup.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the retained fixture, its shared lock, and the Rust lock test.
+- `crates/cargo-tile/src/shim_registration/reader_staging_cases.py` — private-cache cleanup cases: stale, legacy, held lock, live source, orphan lock, unreadable source parent.
+- `crates/cargo-tile/src/shim_registration/reader_executable.rs` — the case registrations.
 
-**Workers:** none (no-worker mode); the director writes the fix.
-
-**Acceptance gate:** after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+**Gotchas:**
+- A publisher in a worktree without this phase can lock a deleted lock inode and publish beside a new one. This stops when each worktree merges main.
+- A full suite that runs beside lint puts unchanged reader tests over 1 s. The start load does not show it.
 
 ### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
 
@@ -1816,8 +1816,13 @@ Drift incursion attribution skips the commits that a released reservation in the
 **Files:**
 - `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
 - `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
+- `crates/cargo-berth-test-support/src/repository_template.rs` — `LedgerTemplate::instantiate`, the shared template restore.
+- `crates/cargo-berth/tests/recorded_templates.rs` — the template setup scheduler; keep its cold-setup assertions.
+- `crates/cargo-berth/tests/setup-recorded-templates.sh` — the template setup script.
 
-**Workers:** Codex workers write the code; the director measures and reviews.
+**Workers:** 1 writer (`impl`) — all source, shared fixture changes and regression tests the measurement selects. The director measures and reviews.
+
+**Constraints from prior phases:** Run each full suite with no other run of the writer active, lint included. In Phase 67, a natedev suite that ran beside lint put 12 unchanged tests at 1.05-2.33 s at start load 18.36; alone, none reached 1 s. The start load does not show a concurrent compile.
 
 **Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
 
@@ -1833,18 +1838,28 @@ Drift incursion attribution skips the commits that a released reservation in the
 1. The layout (builds showrunner, user-approved): each checkout is a slot `/build/slot/<repo>-slotN` (Mac `~/build/slot/...`). Its compiled output is `/build/cargo/<repo>-slotN`. One lookup by the folder name serves both paths.
 2. Roots: `roots.slots.<machine>` and `roots.slot_cargo.<machine>` in `~/.claude/config/build_folders.conf`. A missing key means no slots. Read the keys at run time; hard-code no path.
 3. Beside each slot folder are `<repo>-slotN.lease.json` and `<repo>-slotN.lock`. The lease holds showrunner, unit, work, purpose, pid, start_time, machine, repository, slot, commit and last_use. Read the JSON in Rust; do not call Python.
-4. A holder is live only while a process holds the `.lock` (flock). With no lock held, the slot shows as free, never as its last holder.
-5. A build whose workspace or target directory is inside a slot or slot cargo root shows the slot name, the holder and the purpose. A build outside the roots shows as before.
-6. Read each lease once per change of the lease file, not once per frame. Keep the frame time rules of Phases 32b-32j.
-7. Send lease format questions to the queue unit through the builds showrunner.
+4. A holder is live only while a process holds the `.lock` (flock). With no lock held, the slot shows as free, never as its last holder. Observe the lock with a non-blocking probe on each scan, apart from the lease cache: a killed holder frees the lock and leaves the lease JSON unchanged. Name the outcomes in one domain enum: outside the roots, free, held (with its lease), and unreadable.
+5. A build whose workspace or target directory is inside a slot or slot cargo root shows the slot name, the holder and the purpose, in the Grid and Expanded views. A lease change repaints a retained row (`PaintedRowSource::matches`). Grouping keeps the raw directory identity. A build outside the roots shows as before.
+6. The lease's `unit` holds a staff id. Resolve it to the current staff `name` by reading the staff file directly (rows with `id` and `name`). Show the id only when no row matches (showrunner design call, 2026-11-16). The staff file path is a cargo-tile config value with the default `~/.local/state/staff/staff.json`, as cargo-handler's `staff_file` (`crates/cargo-handler/src/config.rs`). Show `purpose` as written; builds will write a specific purpose per lease (showrunner, 2026-11-16).
+7. Read each lease once per change of the lease file, not once per frame. Keep the frame time rules of Phases 32b-32j.
+8. Send lease format questions to the queue unit through the builds showrunner.
 
 **Files:**
 - `crates/cargo-tile/src/census/scan/census.rs` — the build path read.
 - `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `cargo_target_directory`.
 - `crates/cargo-tile/src/render.rs` — the row text.
 - `crates/cargo-tile/src/census/slot_lease.rs` — new: the slot lease reader and the lock check.
+- `crates/cargo-tile/src/census/mod.rs` — the new module's registration.
+- `crates/cargo-tile/src/census/scan/invocation.rs` — `CargoProcess`, which carries the displayed metadata.
+- `crates/cargo-tile/src/render/cell_paint.rs` — `PaintedRowSource::matches`, retained painting.
+- `crates/cargo-tile/src/config.rs` — the staff file path setting.
 
-**Workers:** Codex workers write the code; the director reviews.
+**Workers:** 1 writer (`impl`) — all census, row model, rendering and regression test changes. The director reviews and takes the live screenshot.
+
+**Constraints from prior phases:**
+- The build slot pools are on `~/.claude` main at 0d8d885fc: natedev gates use `/build/slot` (limit 5), and the Mac uses `~/build/slot` (limit 2) (showrunner, 2026-11-16). Read real lease and lock files from these pools for the live check.
+- `build_folders.conf` today: `roots.slots.natedev=/build/slot`, `roots.slots.Nates-MacBook-Pro-2023=~/build/slot`, `roots.slot_cargo.natedev=/build/cargo`, and a key with no machine part, `roots.slot_cargo=~/build/cargo`. `<machine>` is the host name. A key with no machine part is the default for any host. Expand `~`.
+- Run each full suite with no other run of the writer active, lint included. In Phase 67, a suite beside lint put 12 unchanged tests over 1 s.
 
 **Acceptance gate:** tests for a live lease, a free slot (lock not held), a missing roots key and a build outside the roots; one dark mode desktop screenshot of a slot row for the user; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; lint.
 
