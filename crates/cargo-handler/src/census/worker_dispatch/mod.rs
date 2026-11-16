@@ -30,6 +30,7 @@ use super::hierarchy::StaffWorkerRole;
 use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
 use super::transcript::DirectoryChange;
+use super::transcript::DirectoryWatching;
 use super::transcript::InputDirectoryWatch;
 use crate::constants::DISPATCH_ASSIGN_PYTHON_SCRIPT;
 use crate::constants::DISPATCH_ASSIGN_SHELL_SCRIPT;
@@ -567,18 +568,19 @@ struct SeatClaim {
 /// One shared staff snapshot and the current prompt and seat documents.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
-    staff:            Arc<StaffRoster>,
-    unit_workers:     BTreeMap<PathBuf, UnitWorkerCandidates>,
+    directory_watching: DirectoryWatching,
+    staff:              Arc<StaffRoster>,
+    unit_workers:       BTreeMap<PathBuf, UnitWorkerCandidates>,
     #[cfg(test)]
-    candidate_builds: usize,
+    candidate_builds:   usize,
     #[cfg(test)]
-    prompt_parses:    usize,
-    prompts:          BTreeMap<String, WorkerPrompt>,
-    directories:      BTreeMap<PathBuf, SeatDirectory>,
-    jobs:             BTreeMap<String, JobText>,
+    prompt_parses:      usize,
+    prompts:            BTreeMap<String, WorkerPrompt>,
+    directories:        BTreeMap<PathBuf, SeatDirectory>,
+    jobs:               BTreeMap<String, JobText>,
     #[cfg(test)]
-    directory_reads:  usize,
-    seats:            BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
+    directory_reads:    usize,
+    seats:              BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
 }
 
 /// A watch owns the identity documents currently present in one session.
@@ -598,6 +600,23 @@ struct WorkerPrompt {
 }
 
 impl WorkerNames {
+    /// Names for a one-shot scan: each seat directory is listed once, with no watch.
+    pub(super) fn listing() -> Self {
+        Self {
+            directory_watching: DirectoryWatching::Once,
+            ..Self::default()
+        }
+    }
+
+    /// Watches installed across every seat directory.
+    #[cfg(test)]
+    pub(super) fn watch_installations(&self) -> usize {
+        self.directories
+            .values()
+            .map(|directory| directory.watch.installations())
+            .sum()
+    }
+
     /// Use the staff snapshot from this scan.
     pub(super) fn set_staff(&mut self, staff: Arc<StaffRoster>) {
         if !Arc::ptr_eq(&self.staff, &staff) {
@@ -745,7 +764,7 @@ impl WorkerNames {
             .directories
             .entry(directory.to_path_buf())
             .or_insert_with(|| SeatDirectory {
-                watch:     InputDirectoryWatch::new(directory, now),
+                watch:     InputDirectoryWatch::new(directory, now, self.directory_watching),
                 documents: Arc::default(),
             })
             .watch
@@ -2425,6 +2444,31 @@ mod idle_prompt_tests {
         names.retain_sessions(&HashSet::new());
         assert_eq!(names.directories.len(), 0);
         assert_eq!(names.seats.len(), 0);
+        Ok(())
+    }
+
+    /// A one-shot scan lists a seat directory and installs no watch.
+    #[test]
+    fn one_shot_worker_seats_list_the_directory_without_a_watch() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("impl_worker_test.json"),
+            r#"{"name":"test","slot":"test","family":"claude","worker_id":"session"}"#,
+        )?;
+        let mut once = WorkerNames::listing();
+        assert_eq!(once.seat_documents(directory.path()).len(), 1);
+        assert_eq!(
+            once.watch_installations(),
+            0,
+            "a one-shot scan installs no watch"
+        );
+        let mut live = WorkerNames::default();
+        assert_eq!(live.seat_documents(directory.path()).len(), 1);
+        assert_eq!(
+            live.watch_installations(),
+            1,
+            "the live census watches the directory"
+        );
         Ok(())
     }
 

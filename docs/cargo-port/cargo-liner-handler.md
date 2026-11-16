@@ -527,7 +527,7 @@ An account or role value in `~/.claude/config/statusline.conf` can be `#rrggbb` 
 - The summary draws a program line only for hierarchy roots, and a selected tree row lifts its ink for the selection ground. A same-ink test puts the account on an unselected row.
 - The Mac `cargo mend` pass made the `UnknownReason` field private. Only census submodules build the type.
 
-### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: todo
+### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: done
 
 **Source:** the cargo-liner showrunner, 2026-11-15. `cargo-handler probe` hangs forever on the Mac: 9 probes were alive there, the oldest 20 h, and each natedev census that hits the hang leaks one more. Stack: `probe::print` → `LocalScanner::attach_details` → `transcript::running_subagents` → `InputDirectoryWatch::new` → `rearm` → notify `FsEventWatcher::watch` → `FsEventWatcher::stop` → `JoinInner::join` → `pthread_join` (blocked). notify 9.0.0-rc.4.
 

@@ -607,6 +607,13 @@ const PROBE_SSH_OUTPUT_RESERVE: Duration = Duration::from_secs(2);
 /// Maximum scan span that leaves time for ssh and output.
 pub(crate) const HERDR_PROBE_WAIT_LIMIT: Duration =
     PROBE_TIMEOUT.saturating_sub(PROBE_SSH_OUTPUT_RESERVE);
+/// Time a probe leaves before [`PROBE_TIMEOUT`], so it exits before its caller gives up.
+const PROBE_EXIT_RESERVE: Duration = Duration::from_secs(1);
+/// A probe whose scan runs this long exits with a failure, so a hung scan
+/// cannot leak a process.
+pub(crate) const PROBE_DEADLINE: Duration = PROBE_TIMEOUT.saturating_sub(PROBE_EXIT_RESERVE);
+/// How often a probe checks that its caller is still its parent.
+pub(crate) const PROBE_CALLER_CHECK: Duration = Duration::from_millis(250);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);
