@@ -39,6 +39,8 @@ use crate::ledger::ClaimSource;
 use crate::ledger::EnteringCommitSet;
 use crate::ledger::IncursionPathSet;
 use crate::ledger::IntegrationTarget;
+use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedProtectedTip;
 use crate::reservation::RetainedReservationSet;
 
 struct IncursionAttributionSubjectAnchor {
@@ -54,8 +56,10 @@ struct IncursionAttributionSubjects {
 }
 
 struct IncursionAnchorAttribution {
-    state:         IncursionAttributionAnchorState,
-    range_commits: HashSet<GitObjectId>,
+    state:                IncursionAttributionAnchorState,
+    range_commits:        HashSet<GitObjectId>,
+    /// Range commits that a released sibling in the subject's worktree checkpointed.
+    released_checkpoints: HashSet<GitObjectId>,
 }
 
 /// The commits behind every path a phase committed into a foreign holder's scope.
@@ -70,6 +74,62 @@ pub(super) struct IncursionAttributionBatch {
     origin_targets:      HashMap<ReservationId, IntegrationTarget>,
     origin_membership:   BTreeMap<IntegrationTarget, IncursionCommitOriginMembership>,
     covered_integration: CoveredIntegrationHistory,
+}
+
+/// Record, on each anchor, the range commits that released siblings checkpointed.
+///
+/// Two reservations can claim at one head in one worktree. When one of them checkpoints
+/// and releases, its commits stay inside the other's `phase_start..HEAD` range, but they
+/// are the released reservation's work, not the other's. Each released reservation's
+/// interval is its own `phase_start..protected_tip`, read only when that tip is inside a
+/// subject's range.
+fn record_released_sibling_checkpoints(
+    repository_root: &Path,
+    reservations: &RetainedReservationSet,
+    committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
+    anchors: &mut HashMap<GitObjectId, IncursionAnchorAttribution>,
+) -> Result<(), DriftFingerprintError> {
+    let subject_ids = committed_foreign_paths
+        .iter()
+        .map(|(reservation_id, _)| *reservation_id)
+        .collect::<HashSet<_>>();
+    let worktrees = subject_ids
+        .iter()
+        .filter_map(|reservation_id| reservations.reservation(*reservation_id).ok())
+        .map(|subject| subject.actor().worktree)
+        .collect::<HashSet<_>>();
+    for sibling in reservations.iter() {
+        if subject_ids.contains(&sibling.id())
+            || matches!(sibling.lifecycle(), ReservationLifecycle::Active)
+            || !worktrees.contains(&sibling.actor().worktree)
+        {
+            continue;
+        }
+        let RetainedProtectedTip::Retained(tip) = sibling.protected_checkpoint() else {
+            continue;
+        };
+        if !anchors
+            .values()
+            .any(|anchor| anchor.range_commits.contains(tip.as_ref()))
+        {
+            continue;
+        }
+        let interval = git::incursion_range_commits(
+            repository_root,
+            std::slice::from_ref(sibling.phase_start_head().as_ref()),
+            tip.as_ref(),
+        )?;
+        for anchor in anchors.values_mut() {
+            anchor.released_checkpoints.extend(
+                interval
+                    .iter()
+                    .flatten()
+                    .filter(|commit| anchor.range_commits.contains(*commit))
+                    .cloned(),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Whether the pre-lock pass could read committed foreign-path history.
@@ -354,6 +414,12 @@ pub(super) fn read_committed_foreign_paths(
             })
             .collect();
     }
+    record_released_sibling_checkpoints(
+        repository_root,
+        reservations,
+        committed_foreign_paths,
+        &mut batch.anchors,
+    )?;
     batch.origin_targets = origin_targets;
     Ok(CommittedForeignPathHistory::Read(batch))
 }
@@ -423,6 +489,7 @@ pub(super) fn path_commit_authorship(
     }
     let entering = commits
         .iter()
+        .filter(|commit| !anchor.released_checkpoints.contains(&commit.commit))
         .filter(|commit| {
             origin_for_commit(batch, reservation_id, &commit.commit)
                 != IncursionCommitOrigin::AlreadyOnTrunk
@@ -475,6 +542,7 @@ pub(super) fn latest_commit(
         .iter()
         .filter(|commit| anchor.range_commits.contains(&commit.commit))
         .filter(|commit| commit.paths.contains(path))
+        .filter(|commit| !anchor.released_checkpoints.contains(&commit.commit))
         .filter(|commit| {
             origin_for_commit(batch, reservation_id, &commit.commit)
                 != IncursionCommitOrigin::AlreadyOnTrunk
@@ -568,8 +636,9 @@ fn attribution_batch(
             (
                 anchor.object_id.clone(),
                 IncursionAnchorAttribution {
-                    state:         anchor.state,
-                    range_commits: HashSet::new(),
+                    state:                anchor.state,
+                    range_commits:        HashSet::new(),
+                    released_checkpoints: HashSet::new(),
                 },
             )
         })
@@ -683,6 +752,7 @@ fn commits_for_paths(
         .commits
         .iter()
         .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter(|commit| !anchor.released_checkpoints.contains(&commit.commit))
         .filter(|commit| {
             origin_for_commit(batch, reservation_id, &commit.commit)
                 != IncursionCommitOrigin::AlreadyOnTrunk
