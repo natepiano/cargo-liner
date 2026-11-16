@@ -496,60 +496,70 @@ A worker row whose job runs shows its job alone, such as `reviewer`, not `review
 - The uncut-names check for branch and type: it hid the long branch, so it applies to the directory only.
 - The Phase 16 rule that the restore uses the uncut session width: a long session name now takes `…` before an optional column drops.
 
-### Phase 21 — Twelve slow tests run in under one second  · status: todo
+### Phase 21 — Twelve slow tests run in under one second  · status: done
 
-**Numbering:** this phase was Phase 19 until 2026-11-14. The new Phases 19 and 20 moved it to 21.
+#### As-built
 
+No code change: the twelve tests run in under one second in their full package runs, with their assertions unchanged. Natedev times at bd07521c1:
 
-**Depends on:** Phase 6 (it changes `render/details_tests.rs` and `census/codex_session_tests.rs`); Phase 17 (it changes `render/word_contrast_tests.rs`)
+- tui_pane, load 13 to 17: `startup_cells_leave_no_line_before_their_first_row` 0.452 s; `every_frame_of_a_key_keeps_the_motion_rules` 0.304 s.
+- cargo-handler, load 35 to 13: `astra_word_matches_keep_coverage_in_high_contrast_dark` 0.218 s, `astra_word_matches_keep_coverage_in_high_contrast_light` 0.232 s, `stacked_account_fact_clicks_select_the_account` 0.210 s, `row_details_key_shows_properties_and_long_age_then_escape_closes` 0.235 s; the six codex census tests in `census/codex.rs` and `census/codex_session_tests.rs` 0.017 to 0.043 s.
+
+**Gotchas:**
+- The earlier times of 1.04 to 1.57 s came from runs on 2026-11-13 and earlier; the cause of the speed-up was not traced.
+
+### Phase 22 — `census --json` lists each session's shell rows  · status: done
+
+**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. `/showrunner:units` reads `census --json` for Status and Workers. The census does not list a tile's shell rows, so a unit with a running background command looks idle on the board. The sdlc side (unit-board 025dec43b) reads the new field and treats a missing field as empty.
 
 #### Work Order
 
-**Goal:** twelve tests that took one second or more now run in under one second in the full package run, with the same assertions.
-
-**Source:** the showrunner, 2026-11-13, on the handler add-ons from Phases 3 and 4: "A test over 1 s is a defect also under load; a quiet run does not settle it."
-
-**Spec:**
-
-Director decisions:
-1. The Delegation Context invariant holds: no test takes one second or more. Each test below took one second or more in a full run on natedev.
-2. Keep every assertion and every case each test checks. Cut the work per case: shared setup built once, fewer redundant frames or renders, cheaper fixtures. Do not split a test into parts to hide its total time, and do not mark a test ignored or slow.
-3. Find the cost first: measure each test alone and in its full package run, and name the step that takes the time.
-
-The tests and their measured times:
-1. tui_pane `startup_cells_leave_no_line_before_their_first_row` (`crates/tui_pane/src/tiles/draw/paint_tests.rs`) — 1.081 s, Phase 3.
-2. tui_pane `every_frame_of_a_key_keeps_the_motion_rules` (`crates/tui_pane/src/tiles/grid/tests/motion_rules.rs`, through `assert_motion_rules`) — 1.081 s, Phase 3; 1.051 s, Phase 4.
-3. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_dark` (`crates/cargo-handler/src/render/word_contrast_tests.rs`, through `check_astra_word_matches`) — 1.125 s, Phase 4.
-4. cargo-handler `astra_word_matches_keep_coverage_in_high_contrast_light` (same file) — 1.324 s, Phase 4.
-5. cargo-handler `stacked_account_fact_clicks_select_the_account` (`crates/cargo-handler/src/render/accounts_grid_tests.rs`, through `assert_account_continuations_select`) — 1.222 s, Phase 4.
-6. cargo-handler `row_details_key_shows_properties_and_long_age_then_escape_closes` (`crates/cargo-handler/src/render/details_tests.rs`) — 1.06 to 1.24 s, Phase 5.
-7. cargo-handler `codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec` (`crates/cargo-handler/src/census/codex.rs`) — 1.047 s, tile Phase 62 gate.
-8. cargo-handler `a_detached_daemon_without_an_exact_join_shows_the_pid` (`crates/cargo-handler/src/census/codex_session_tests.rs`) — 1.150 s, tile Phase 62 gate; 1.573 s, tile unit workspace run 2026-11-13.
-9. cargo-handler `an_explicit_resume_id_cannot_name_an_unproven_non_user_thread` (same file) — 1.038 s, tile Phase 62 gate.
-10. cargo-handler `a_running_tui_changes_threads_only_after_its_child_confirms_resume` (same file) — 1.120 s, tile unit workspace run 2026-11-13.
-11. cargo-handler `a_picker_delay_does_not_pair_clients_by_start_order` (same file) — 1.043 s, tile unit workspace run 2026-11-13.
-12. cargo-handler `a_reconnect_does_not_transfer_a_detached_connection_to_a_tui` (same file) — 1.042 s, tile unit workspace run 2026-11-13.
-
-**Constraints from prior phases:**
-- `check_astra_word_matches` and `assert_motion_rules` also serve tests that are not in the list. A change to a shared helper keeps those tests' assertions and keeps them under one second.
-- Phase 17 adds reset-step cases to `render/word_contrast_tests.rs`: `check_reset_step_match`, `RESET_STEP_RANKS` and the shared `EMPHASES` list. Keep them.
-- Phase 6 changes `render/details_tests.rs` and `census/codex_session_tests.rs`. Keep its changes.
-- Phase 16 adds `long_shell_application` and its two tests to `render/details_tests.rs`: the drawn short command, and `d` and `y` on the full command. Keep them.
-
-**Change-Review line:** none (test code only)
+1. Give `SessionCells` the shell rows of its session: one entry for each `WorkKind::Shell` tree line whose owning row has the session id. Each entry has the name the tile draws (`shell_command::short_command` of the line's session name, without the machine) and the shell's start in epoch seconds.
+2. Add `shells: [{ name, started_at }]` to each `sessions[]` entry of `census --json`, in tile line order. A session with no shell row has an empty list.
+3. Keep `schema` at 2: the key is new, and no key is renamed or removed. The sdlc reader accepts only schema 2.
+4. Update the README census section, its JSON example and the rule on when `schema` increments. Update `docs/cargo-handler/as-built/hierarchy.md`.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw/paint_tests.rs` — test 1
-- `crates/tui_pane/src/tiles/grid/tests/motion_rules.rs` — test 2 and `assert_motion_rules`
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — tests 3 and 4 and `check_astra_word_matches`
-- `crates/cargo-handler/src/render/accounts_grid_tests.rs` — test 5 and `assert_account_continuations_select`
-- `crates/cargo-handler/src/render/details_tests.rs` — test 6
-- `crates/cargo-handler/src/census/codex.rs` — test 7
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — tests 8 to 12
+- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells`, `session_cells`
+- `crates/cargo-handler/src/census/report.rs`, `crates/cargo-handler/src/census/report_tests.rs` — `SessionReport`, `ShellReport` and their tests
+- `crates/cargo-handler/README.md` — the census section and example
+- `docs/cargo-handler/as-built/hierarchy.md` — the `sessions` entry
 
-**Workers:** 1 writer.
-- `impl` — every file above.
+**Verification:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
+- A test: a session with one untimed shell and one timer shell lists both, with the tile names and start times; a session with no shell lists `[]`.
+- The README example test passes with the new key.
 
-**State:** none
+### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: todo
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` pass. Each of the twelve tests runs in under one second in its full package run, with its assertions unchanged.
+**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. The user wants one account color everywhere, set from a color chooser on a new console Accounts page (sdlc devtools builds it). devtools writes hex values into `~/.claude/config/statusline.conf` after cargo-handler and the status line accept hex.
+
+**Current state:**
+- `FooterColors::parse` (`footer_colors/mod.rs`) cuts each line at the first `#`, so `account.claude1=#a0522d` reads as an empty value and the account loses its color.
+- `FooterColor` holds only names. `ReadablePalette` resolves each name once per theme into a `ReadableInk`.
+- `FooterColorFile::refresh` already reloads a changed file, but `TerminalApp::drain_census` calls it on the UI thread, where it reads the file metadata and the file. This breaks the plan invariant "Nothing on the UI thread runs a command or reads a file."
+- Three places draw an account label, all through `FooterColors::account`: the tree account cell (`agent_cell.rs`), the summary program line (`summary/mod.rs`) and the accounts table (`summary/accounts.rs`).
+
+#### Work Order
+
+1. Give `FooterColor` a hex form: a value `#rrggbb` (six hex digits, either case) parses to an RGB color. Any other `#` value stays an unknown color, as an unknown name does today.
+2. Change the comment rule in `FooterColors::parse`: a `#` starts a comment only at the start of the line or after whitespace. So `account.x=#a0522d # sienna` reads `#a0522d`.
+3. Resolve a hex color through the same `ReadablePalette` path as a name, so it takes the same readable and subdued forms on each theme. A hex color that is already readable draws unchanged.
+4. Move the file check off the UI thread: the local census scan checks the file revision, reads and parses a changed file, and sends the new `FooterColors` with its `CensusUpdate::Local`. `drain_census` only applies it. A changed value shows at the next local scan, with no restart.
+5. Check each place that draws an account label (tree cell, program line, accounts table, selected rows, stale rows). Each takes its ink from `FooterColors::account` for the same label. Fix any place that does not.
+6. Update the README footer color section and `docs/cargo-handler/as-built/colors.md`.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/footer_colors/tests.rs` — the hex form, the comment rule, the palette
+- `crates/cargo-handler/src/census/` (local scan, `CensusUpdate`), `crates/cargo-handler/src/terminal.rs` — the read off the UI thread
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs` — only if the check in step 5 finds a gap
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/colors.md`
+
+**Verification:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
+- Tests: `#a0522d` and `#A0522D` parse; `#a0522`, `#gg0000` and `a0522d` do not; a trailing `# comment` after a hex value is cut; a full-line comment is cut.
+- A test: a changed file reaches the app through a local census update, and `drain_census` reads no file.
+- A test: the tree cell, the program line and the accounts table draw one account with the same foreground.
+- Live check: start a handler with a scratch `HOME` whose `statusline.conf` names an account color. Change the value to a hex color and capture the screen after the next scan. The shot goes with the checkpoint notice.

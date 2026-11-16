@@ -2349,14 +2349,27 @@ pub(crate) struct SessionCells {
     pub(crate) status:   ReportedSessionState,
     /// The activity cell text.
     pub(crate) activity: String,
+    /// The session's shell rows, in tile line order.
+    pub(crate) shells:   Vec<ShellCells>,
 }
 
-/// Each session's first tile line, by session id. Shell and subagent work has no session.
+/// One shell row of a session, as its tile line draws it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ShellCells {
+    /// The name cell: the shell's description or command, with each path
+    /// argument cut to its file name, without the machine.
+    pub(crate) name:    String,
+    /// When the shell started, in unix seconds.
+    pub(crate) started: u64,
+}
+
+/// Each session's first tile line, by session id. A shell row goes into the
+/// `SessionCells::shells` of its owning row's sessions; subagent work has no session.
 pub(crate) fn session_cells(
     placement: &AgentPlacement<'_>,
     now: u64,
 ) -> BTreeMap<String, SessionCells> {
-    let mut cells = BTreeMap::new();
+    let mut cells: BTreeMap<String, SessionCells> = BTreeMap::new();
     for entry in cell_order_placed(placement) {
         let root = match root_tile(placement, entry.root_identity()) {
             RootTile::Own => tile_root_line(&entry),
@@ -2374,7 +2387,22 @@ pub(crate) fn session_cells(
                     ..
                 }) => Some(&child.thread_id),
                 LineSubject::Work(Work {
-                    kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
+                    kind: WorkKind::Shell(_),
+                    ..
+                }) => {
+                    let shell_cells = ShellCells {
+                        name:    shell_command::short_command(&line.session_name()),
+                        started: line.started(),
+                    };
+                    for id in line.row.session_id.ids() {
+                        if let Some(cell) = cells.get_mut(id) {
+                            cell.shells.push(shell_cells.clone());
+                        }
+                    }
+                    continue;
+                },
+                LineSubject::Work(Work {
+                    kind: WorkKind::Subagent(_),
                     ..
                 }) => continue,
             };
@@ -2389,6 +2417,7 @@ pub(crate) fn session_cells(
                     name:     line.session_name(),
                     status:   line.session_status(),
                     activity: line.value(TreeColumn::Activity, now),
+                    shells:   Vec::new(),
                 });
             }
         }
