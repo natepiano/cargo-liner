@@ -587,7 +587,7 @@ impl PreparedRetentionRefTransaction {
                 .ok_or_else(|| std::io::Error::other("retention input was not piped"))?;
             stdin.write_all(b"start\n")?;
             stdin.flush()?;
-            let response = child.read_line(super::protocol::CONTROL_REPLY_DEADLINE)?;
+            let response = child.read_startup_line()?;
             if response != "start: ok\n" {
                 return Err(GitError::CommandFailed {
                     command: GIT_UPDATE_REF_COMMAND,

@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 
 use gix::open::Options;
 
+use super::child;
 use super::child::ChildProcess;
 use super::command;
 
@@ -126,9 +127,5 @@ fn probe(show_scope: bool) -> io::Result<Output> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // open_options owns the spawn lock, including this dependency-replacement probe.
-    ChildProcess::spawn(&mut command)?.output(
-        Vec::new(),
-        super::protocol::CONTROL_REPLY_DEADLINE,
-        |_| {},
-    )
+    ChildProcess::spawn(&mut command)?.output(Vec::new(), child::GIT_COMMAND_DEADLINE, |_| {})
 }
