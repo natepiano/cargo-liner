@@ -1776,7 +1776,7 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 **Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
 
-### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: todo
+### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: done
 
 **Depends on:** Phase 66 (order only)
 
