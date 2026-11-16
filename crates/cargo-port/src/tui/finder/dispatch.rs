@@ -20,6 +20,7 @@ use crate::tui::keymap::FinderAction;
 use crate::tui::panes;
 use crate::tui::panes::GitRow;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::panes::TargetsContent;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
 pub(super) fn search_finder(
@@ -206,7 +207,9 @@ fn repopulate_selected_detail_panes(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     repopulate_selected_detail_panes(app);
-    let Some(targets_data) = app.panes.targets.available_content(&app.project_list) else {
+    let TargetsContent::Available(targets_data) =
+        app.panes.targets.available_content(&app.project_list)
+    else {
         return;
     };
     if !targets_data.has_targets() {

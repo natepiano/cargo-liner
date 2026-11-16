@@ -491,7 +491,10 @@ impl App {
     /// Backwards-compatible shim. Existing callers (rescan, config
     /// reload) still call `refresh_lint_runtime_from_config`; the
     /// real orchestration lives in [`Self::apply_lint_config_change`].
-    pub(super) fn refresh_lint_runtime_from_config(&mut self, cargo_port_config: &CargoPortConfig) {
+    pub(in crate::tui::app) fn refresh_lint_runtime_from_config(
+        &mut self,
+        cargo_port_config: &CargoPortConfig,
+    ) {
         self.apply_lint_config_change(cargo_port_config);
     }
 }

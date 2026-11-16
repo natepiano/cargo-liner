@@ -11,6 +11,7 @@ use super::TargetsAction;
 use super::Visibility;
 use super::panes;
 use super::targets_is_tabbable;
+use crate::tui::panes::TargetsContent;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Targets pane.
 pub(super) struct TargetsPane;
@@ -45,7 +46,9 @@ impl Shortcuts<App> for TargetsPane {
 
 impl CopySelection<App> for TargetsPane {
     fn copy_selection(app: &App) -> CopySelectionResult {
-        let Some(targets_data) = app.panes.targets.available_content(&app.project_list) else {
+        let TargetsContent::Available(targets_data) =
+            app.panes.targets.available_content(&app.project_list)
+        else {
             return CopySelectionResult::Nothing;
         };
         panes::copy_payload_for_targets(&targets_data, app.panes.targets.viewport.pos())

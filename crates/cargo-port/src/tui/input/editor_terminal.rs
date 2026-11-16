@@ -14,6 +14,7 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::tui::app::App;
+use crate::tui::app::SelectedRootItem;
 use crate::tui::finder;
 use crate::tui::integration::AppGlobalAction;
 use crate::tui::integration::AppPaneId;
@@ -165,7 +166,11 @@ pub(in crate::tui) fn open_terminal(app: &mut App) {
 }
 
 fn selected_project_display_name(app: &App) -> String {
-    if let Some(name) = app.selected_item().and_then(RootItem::name) {
+    let root_name = match app.selected_item() {
+        SelectedRootItem::Root(item) => item.name(),
+        SelectedRootItem::Unavailable => None,
+    };
+    if let Some(name) = root_name {
         return name.to_owned();
     }
     app.project_list

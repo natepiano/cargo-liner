@@ -23,6 +23,7 @@ use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
+use crate::tui::panes::PackageContent;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageSection;
@@ -821,8 +822,10 @@ fn wrapped_package_values_share_selection_and_row_hits() -> anyhow::Result<()> {
     });
     app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
     test_support::draw_pane(&mut app, PaneId::Package, 17)?;
-    let rows =
-        panes::package_rows_from_data(app.panes.package.content().context("Package content")?);
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("Package content");
+    };
+    let rows = panes::package_rows_from_data(package_data);
     let index = rows
         .iter()
         .position(|row| {
@@ -1001,7 +1004,10 @@ fn package_selection_stays_in_its_own_column() -> anyhow::Result<()> {
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(workspace_data());
     app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
-    let rows = panes::package_rows_from_data(app.panes.package.content().context("package")?);
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("package");
+    };
+    let rows = panes::package_rows_from_data(package_data);
     let path_index = rows
         .iter()
         .position(|row| {
@@ -1119,8 +1125,10 @@ fn narrow_test_counts_keep_the_whole_label_above_the_count() -> anyhow::Result<(
     for mode in [ColorMode::Colored, ColorMode::NoColor] {
         app.framework.color_mode = mode;
         for (width, height) in [(16, 45), (17, 45), (16, 9), (17, 10), (17, 11)] {
-            let rows =
-                panes::package_rows_from_data(app.panes.package.content().context("Package")?);
+            let PackageContent::Selected(package_data) = app.panes.package.content() else {
+                anyhow::bail!("Package");
+            };
+            let rows = panes::package_rows_from_data(package_data);
             let index = rows
                 .iter()
                 .position(|row| matches!(row, crate::tui::panes::PackageRow::Tests(0)))
@@ -1328,8 +1336,10 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
         ..PackageData::default()
     });
     app.set_focus_to_pane(PaneId::Package);
-    let count =
-        panes::package_rows_from_data(app.panes.package.content().context("Package data")?).len();
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("Package data");
+    };
+    let count = panes::package_rows_from_data(package_data).len();
     let mut seen = std::collections::HashSet::new();
     for cursor in 0..count {
         app.panes.package.viewport.set_pos(cursor);

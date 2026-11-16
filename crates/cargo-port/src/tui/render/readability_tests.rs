@@ -30,6 +30,7 @@ use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::GitProbe;
 use crate::tui::panes::HeadRelation;
+use crate::tui::panes::PackageContent;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageVersion;
@@ -407,12 +408,10 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
     let mut app = app_with_narrow_detail_fields();
     app.framework.color_mode = ColorMode::Colored;
     let description = "A collection of tools for Rust projects with builds, tests, worktrees, caches and continuous integration";
-    let mut package = app
-        .panes
-        .package
-        .content()
-        .context("Package content")?
-        .clone();
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("Package content");
+    };
+    let mut package = PackageData::clone(package_data);
     package.description = DescriptionState::Known(description.to_string());
     app.panes.package.set_content(package);
     let mut git = app.panes.git.content().context("Git content")?.clone();
@@ -823,8 +822,10 @@ fn assert_visible_field_is_whole(
 fn package_pages_keep_wrapped_labels_with_values_at_eighty_columns() -> anyhow::Result<()> {
     let mut app = app_with_narrow_detail_fields();
     app.set_focus_to_pane(PaneId::Package);
-    let rows =
-        panes::package_rows_from_data(app.panes.package.content().context("Package content")?);
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
+        anyhow::bail!("Package content");
+    };
+    let rows = panes::package_rows_from_data(package_data);
     let mut saw_type = false;
     let mut saw_version = false;
     for index in 0..rows.len() {

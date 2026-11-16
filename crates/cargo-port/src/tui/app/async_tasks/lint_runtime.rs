@@ -20,7 +20,7 @@ use crate::tui::startup_services::WatcherStartup;
 use crate::watcher::WatcherMsg;
 
 impl App {
-    pub(super) fn respawn_watcher(&mut self) {
+    pub(in crate::tui::app) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let watcher_handle = self.startup_services.spawn_watcher(WatcherStartup {
             watch_roots:         &watch_roots,
@@ -55,7 +55,7 @@ impl App {
     /// [`Self::refresh_lint_runs_from_disk`] and the startup panel's "Lint
     /// history" row, so the row's denominator is identical to the set the
     /// load reports back and the row always completes.
-    pub(super) fn lint_history_project_paths(&self) -> HashSet<AbsolutePath> {
+    pub(in crate::tui::app) fn lint_history_project_paths(&self) -> HashSet<AbsolutePath> {
         let mut paths = HashSet::new();
         self.project_list.for_each_leaf_path(|path, is_rust| {
             if is_rust {
@@ -112,7 +112,7 @@ impl App {
         self.scan.bump_generation();
         self.maybe_log_startup_phase_completions();
     }
-    pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
+    pub(in crate::tui::app) fn reload_lint_history(&mut self, project_path: &Path) {
         if self.config.lint_enabled() == LintIndicator::Disabled {
             return;
         }
@@ -247,7 +247,7 @@ impl App {
                 .with_linked_primary_root(linked_primary_root),
         );
     }
-    pub(super) fn register_lint_for_path(&self, path: &Path) {
+    pub(in crate::tui::app) fn register_lint_for_path(&self, path: &Path) {
         if let Some(item) = self.project_list.iter().find(|i| i.path() == path) {
             self.register_lint_project_if_eligible(item);
         }
@@ -260,7 +260,7 @@ impl App {
     /// per project comes from the disk walk (`Startup::source_mtimes`); the
     /// same-run start time is retained by `LintRuns::cached_status` at hydration.
     /// Surfaces the batch in a one-shot toast naming the projects.
-    pub(super) fn kick_off_startup_lints(&mut self) {
+    pub(in crate::tui::app) fn kick_off_startup_lints(&mut self) {
         let Some(runtime) = self.lint.runtime().cloned() else {
             return;
         };

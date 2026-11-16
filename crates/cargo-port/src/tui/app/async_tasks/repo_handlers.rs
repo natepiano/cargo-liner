@@ -50,7 +50,11 @@ use crate::tui::state::GitStatusObservation;
 use crate::tui::state::GitStatusToastTracking;
 
 impl App {
-    pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
+    pub(in crate::tui::app) fn spawn_repo_fetch_for_git_info(
+        &mut self,
+        path: &Path,
+        repo_url: &str,
+    ) {
         let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
             return;
         };

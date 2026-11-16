@@ -72,8 +72,10 @@ use super::panes;
 use super::panes::DescriptionState;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputPaneVisibility;
+use super::panes::PackageContent;
 use super::panes::PaneId;
 use super::panes::SyncedDescriptionHeight;
+use super::panes::TargetsContent;
 use super::render_context::PaneRenderCtx;
 use super::sccache;
 use super::settings;
@@ -127,10 +129,10 @@ fn sync_description_floor(
     empty_package_description: EmptyDescriptionBehavior,
 ) -> SyncedDescriptionHeight {
     let pkg_block = panes::DescriptionBlock::for_pane(
-        app.panes
-            .package
-            .content()
-            .map_or(&DescriptionState::Pending, |d| &d.description),
+        match app.panes.package.content() {
+            PackageContent::Selected(data) => &data.description,
+            PackageContent::NoProjectSelected => &DescriptionState::Pending,
+        },
         tiled.area(PaneId::Package),
         empty_package_description,
     );
@@ -262,10 +264,10 @@ fn resolve_tiled_layout(
         rows.top_inner,
         middle.with_rows(
             app.project_list.most_language_rows(),
-            app.panes
-                .targets
-                .content()
-                .map_or(0, panes::TargetsData::inner_rows),
+            match app.panes.targets.content() {
+                TargetsContent::Available(data) => data.inner_rows(),
+                TargetsContent::Unavailable => 0,
+            },
         ),
     )
 }

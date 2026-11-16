@@ -14,6 +14,7 @@ use super::Shortcuts;
 use super::TabStop;
 use super::package_is_tabbable;
 use super::panes;
+use crate::tui::panes::PackageContent;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Package detail pane.
 pub struct PackagePane;
@@ -55,7 +56,7 @@ impl Shortcuts<App> for PackagePane {
 
 impl CopySelection<App> for PackagePane {
     fn copy_selection(app: &App) -> CopySelectionResult {
-        let Some(package_data) = app.panes.package.content() else {
+        let PackageContent::Selected(package_data) = app.panes.package.content() else {
             return CopySelectionResult::Nothing;
         };
         panes::copy_payload_for_package(package_data, app.panes.package.viewport.pos())
@@ -70,7 +71,7 @@ impl CopySelection<App> for PackagePane {
 /// projects with data (see `build_crates_io_rows`), so `Activate` is
 /// implicitly disabled on packages without crates.io data too.
 pub(super) fn activate_state(app: &App) -> ShortcutState {
-    let Some(package_data) = app.panes.package.content() else {
+    let PackageContent::Selected(package_data) = app.panes.package.content() else {
         return ShortcutState::Disabled;
     };
     let pos = app.panes.package.viewport.pos();

@@ -1,9 +1,14 @@
 mod orchestrator;
 mod start;
 mod toast_bodies;
-mod tracker;
 
 pub use orchestrator::Startup;
+pub(in crate::tui::app) use orchestrator::StartupFetchDetail;
+pub(in crate::tui::app) use orchestrator::StartupPlan;
+pub(in crate::tui::app) use orchestrator::StartupReadiness;
+pub(in crate::tui::app) use orchestrator::StartupToast;
+pub(in crate::tui::app) use orchestrator::StartupToastLayout;
+pub(in crate::tui::app) use toast_bodies::startup_panel_body;
 
 use crate::tui::app::App;
 
