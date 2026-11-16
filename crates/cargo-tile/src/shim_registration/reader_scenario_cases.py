@@ -72,11 +72,58 @@ def fork_owned_terminal() -> tuple[int, int]:
         os.close(slave)
     return pid, master
 
+def darwin_listed_pids(selection: int, value: int) -> list[int]:
+    """List the PIDs that libproc.h's `proc_listpids` selects, without a utility process."""
+    # The owner and guardian run before the module's own imports.
+    import ctypes
+    from typing import cast
+    function = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_listpids
+    function.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
+    function.restype = ctypes.c_int
+    list_pids = cast('Callable[..., int]', function)
+    size = list_pids(selection, value, None, 0)
+    if size < 0:
+        raise OSError(ctypes.get_errno(), 'size the process list', selection, value)
+    if size == 0:
+        return []
+    pids = (ctypes.c_uint32 * (size // ctypes.sizeof(ctypes.c_uint32)))()
+    written = list_pids(selection, value, pids, ctypes.sizeof(pids))
+    if written < 0:
+        raise OSError(ctypes.get_errno(), 'read the process list', selection, value)
+    listed: list[int] = pids[:written // ctypes.sizeof(ctypes.c_uint32)]
+    return [pid for pid in listed if pid]
+
+def darwin_process_is_live(pid: int) -> bool:
+    """Whether the process exists and is not a zombie."""
+    import ctypes
+    from typing import cast
+    function = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_pidinfo
+    function.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+    function.restype = ctypes.c_int
+    read_info = cast('Callable[..., int]', function)
+    # sys/proc_info.h::proc_bsdshortinfo, selected by PROC_PIDT_SHORTBSDINFO (13).
+    # Its fourth 32-bit field is the status; sys/proc.h::SZOMB is 5.
+    info = ctypes.create_string_buffer(64)
+    if read_info(pid, 13, 0, info, len(info)) == len(info):
+        return int.from_bytes(info.raw[12:16], sys.byteorder) != 5
+    # The kernel gives no short information for a zombie or an ended process.
+    import errno
+    if ctypes.get_errno() == errno.ESRCH:
+        return False
+    raise OSError(ctypes.get_errno(), 'read process status', pid)
+
+def darwin_group_members(group: int) -> list[int]:
+    """List the live members of one process group; libproc.h::PROC_PGRP_ONLY is 2."""
+    return [pid for pid in darwin_listed_pids(2, group) if darwin_process_is_live(pid)]
+
 def live_group_members(groups: set[int]) -> list[tuple[int, int]]:
     """List each process, with its group, that is in one of the groups and is not a zombie.
 
-    Linux reads each process's stat file in this process. Other systems ask ps.
+    Linux reads each process's stat file in this process. macOS asks libproc for each group;
+    a `ps` process costs 25-70 ms there.
     """
+    if sys.platform == 'darwin':
+        return [(pid, group) for group in groups for pid in darwin_group_members(group)]
     if sys.platform != 'linux':
         result = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat='],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -359,6 +406,11 @@ def required(value: T | None, description: str) -> T:
     return value
 
 def copy_named_shell(path: Path) -> None:
+    if sys.platform == 'darwin' and 'CARGO_TILE_TEST_NAMED_SHELL' in os.environ:
+        # `setup_reader.py` loads this signed inode before the reader scenarios start.
+        os.link(os.environ['CARGO_TILE_TEST_NAMED_SHELL'], path)
+        record_timestamp('linked prepared shell ' + path.name)
+        return
     # Darwin's /bin/sh re-execs another shell, losing the fixture process name.
     shell = '/bin/bash' if sys.platform == 'darwin' else required(shutil.which('sh'), 'sh is not on PATH')
     _ = shutil.copyfile(shell, path)
@@ -892,24 +944,8 @@ def process_children(pid: int) -> list[int]:
     if sys.platform == 'linux':
         children = Path(f'/proc/{pid}/task/{pid}/children')
         return [int(child) for child in children.read_text().split()]
-    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
-    function = library.proc_listpids
-    function.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
-    function.restype = ctypes.c_int
-    list_pids = cast('Callable[..., int]', function)
-    # libproc.h: PROC_PPID_ONLY selects direct children. Results contain PID bytes.
-    parent_filter = 6
-    size = list_pids(parent_filter, pid, None, 0)
-    if size < 0:
-        raise OSError(ctypes.get_errno(), 'size fixture child process list', pid)
-    if size == 0:
-        return []
-    children = (ctypes.c_uint32 * (size // ctypes.sizeof(ctypes.c_uint32)))()
-    written = list_pids(parent_filter, pid, children, ctypes.sizeof(children))
-    if written < 0:
-        raise OSError(ctypes.get_errno(), 'read fixture child process list', pid)
-    listed: list[int] = children[:written // ctypes.sizeof(ctypes.c_uint32)]
-    return [child for child in listed if child]
+    # libproc.h: PROC_PPID_ONLY (6) selects direct children.
+    return darwin_listed_pids(6, pid)
 
 def cpu_readings_in_frame(rendered: str, writers: tuple[StartedWriter, ...]
                           ) -> list[tuple[StartedWriter, int]]:

@@ -1683,7 +1683,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - The Mac source-switch fixture's readiness cost (about 400 ms) is outside the files above: native capture exec to constructor, and native fixture preparation on first use.
 - A probe that writes a log before its timestamp, or injects a library, adds its own cost; its startup number is not a product number.
 
-### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: todo
+### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: done
 
 **Depends on:** Phase 43i
 
@@ -1736,6 +1736,86 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 **Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it. Phase 59: a reader scenario runs under an owner process that holds a lifetime pipe (`reader_scenarios.rs:180-222`). A group registers before its session is created, and the owner ends the groups before it removes the folder. Keep this order and the four ownership tests (`reader_scenarios.rs:265-286`).
 
 **Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests, of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) and of each item 10 test below 1 s, and no leaky test; lint.
+
+**Director call (2026-11-15):** `.config/nextest.toml` is outside the Files list. The six cargo-tile-readers tests take every slot, and the four `*_removes_its_processes_and_folder` tests take four slots. Alone on the Mac they take 0.3-0.5 s; beside other tests the suite crowded them to 1.0-1.9 s. Risk: other tests wait while a reader test runs; the Mac suite time did not change (12.9 s before, 12.8 s after). Revert is one line per override.
+
+**Director call (2026-11-15):** a Mac gate suite counts only when its start load is under the Mac's 12 CPUs. This scales the natedev rule (load under 32 on 32 cores; 36 or more reports only). Risk: if the rule is a fixed 32 on every machine, Mac suite 4 (load 19.23) counts, and it had reader tests over 1 s.
+
+### Phase 64 — A released phase's commits raise no incursion against the next reservation  · status: todo
+
+**Depends on:** Phase 43j (order only; showrunner, 2026-11-15: tile owns the fix, after 43j)
+
+#### Work Order
+
+**Goal:** A commit that a released reservation checkpointed does not count as phase history of another reservation in the same worktree. No incursion names that commit.
+
+**Spec:**
+1. The defect, seen 2026-11-15 in `cargo-liner-tile-43j`:
+   - Reservation 01a1def2 (43j) has `phase_start_head` 1b8497e1. Phases 62b and 62c ran in the same worktree after that commit.
+   - The 62c checkpoint a102bcca changed `crates/cargo-tile/src/render.rs`. Its release passed (checkpointed, protected tip a102bcca, mapping published).
+   - The 62c shrink commit e09e551c changed only the plan doc. Its post-commit drift raised incursion 01a1df18: 01a1def2 entered `render.rs`, held by 01a1c8b3 (parked 32j). The incursion named a102bcca.
+   - 43j never changed `render.rs`. The director resolved the incursion as `before`.
+2. Cause, by code reading: `observe_full` (`drift/observation.rs:540`) takes each reservation's committed paths from `phase_start_head..HEAD`. That range holds every commit a released sibling checkpointed. `commits_for_paths` (`drift/provenance.rs:669`) names them as the entering commits.
+3. Confirm the cause with the regression test first. Then fix it at its cause in `crates/cargo-berth`. A released reservation's checkpointed commits leave the other reservation's committed paths and its incursion commits. Keep incursions for commits the reservation made itself.
+4. Regression test: two reservations in one worktree claim from the same head. Reservation A changes a path, checkpoints and releases. A third reservation holds that path. Then reservation B makes a commit that changes only a different path. Drift raises no incursion for B, and names no commit of A.
+5. Keep every existing incursion test passing. A commit of B that enters a held path still raises an incursion.
+
+**Files:**
+- `crates/cargo-berth/src/drift/observation.rs` — the committed phase history.
+- `crates/cargo-berth/src/drift/provenance.rs` — the incursion commit names, if the cause reaches it.
+- The release record reader that gives a released reservation's checkpoint commits, where it lives.
+- The drift test module that holds the incursion tests — the regression test.
+
+**Workers:** none (no-worker mode); the director writes the fix.
+
+**Acceptance gate:** the regression test fails before the fix and passes after it; the cargo-berth full suite passes on natedev and the Mac with no test at 1 s or more; lint.
+
+### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: todo
+
+**Depends on:** Phase 64 (order only; showrunner, 2026-11-15: tile owns both CI failures, after 43j)
+
+#### Work Order
+
+**Goal:** The cargo-berth recorded-template setup does not fail when one git `update-ref --stdin` reply is slow on the GitHub runner.
+
+**Spec:**
+1. The failure: GitHub run 43723942593, "Merge tile phase 62c shrink (e09e551) into main", 2026-11-15 14:21 UTC. The next main run passed.
+   - `crates/cargo-berth/tests/support/reanchoring_templates.rs:700` (`board_with_rewrite_trace`): `board --json` returned `ledger_unreadable` (exit 4): "could not run git: git --no-optional-locks update-ref --stdin: deadline exceeded while waiting for protocol reply".
+   - Then `crates/cargo-berth/tests/recorded_templates.rs:459`: "cold single-target setup failed".
+2. The deadline comes from `crates/cargo-berth/src/git/protocol.rs:46` and `:69` (`ChildDeadline`, "protocol reply"). Measure first: find the deadline value, the reply times on the runner and on natedev under load, and why one `board` read runs `update-ref` at all.
+3. Fix the cause. Do not raise a limit to hide a slow reply. If the cause is the runner's load, make the template setup run fewer git processes at the same time, or move the write out of the read path.
+4. Keep every template assertion and the setup's single-target probe.
+
+**Files:**
+- `crates/cargo-berth/src/git/protocol.rs` — the protocol reply deadline, if the cause is there.
+- `crates/cargo-berth/tests/support/reanchoring_templates.rs` and `crates/cargo-berth/tests/recorded_templates.rs` — the template setup.
+- `crates/cargo-berth/tests/setup-recorded-templates.sh` — the setup script, if its parallel width is the cause.
+
+**Workers:** none (no-worker mode); the director writes the fix.
+
+**Acceptance gate:** the cause is named with a measurement; the cargo-berth full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
+
+### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: todo
+
+**Depends on:** Phase 65 (order only)
+
+#### Work Order
+
+**Goal:** `a_native_mirror_keeps_cargo_streams_without_shell_utilities` does not fall back to uncaptured cargo on the GitHub macOS runner.
+
+**Spec:**
+1. The failure: GitHub run 43717017527, "Merge handler phase 19 (0aa61ba) into main", 2026-11-15 13:03 UTC, job "macOS cargo-tile" (image macos-26-arm64). The next main run passed.
+   - `crates/cargo-tile/tests/shim_modes.rs:1375`: "the utility row must run native capture". The stand-in cargo saw `CARGOTILE_NESTED`, `CARGO_TERM_PROGRESS_WHEN` and `CARGO_TERM_PROGRESS_WIDTH` all unset; the test expected `<pid>`, `always`, `100`. The shim ran cargo with no capture. The test took 0.063 s.
+2. This is the same failure class as Phase 63 (`attempts-63-shim-mode-not-found` in the unit's memory): under load, the shim takes a fallback path that runs cargo with no capture. The fallback paths are in `hook.rs` (no terminal, no signal guard, failed publication). Phase 63 did not reproduce the trigger.
+3. Make the fallback name its cause: the test prints the shim's stderr and status when the environment shows no capture. Then force each fallback path in a scratch run to find which one matches the CI evidence. Fix the cause in the shim or the fixture. Keep every assertion.
+
+**Files:**
+- `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
+- `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
+
+**Workers:** none (no-worker mode); the director writes the fix.
+
+**Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
