@@ -452,53 +452,17 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 17 — twenty cargo-mend diagnostic tests run under 1 s  · status: done
 
-#### Work Order
+#### As-built
 
-**Source:** the showrunner, 2026-11-15: open a phase for the 20 cargo-mend tests that reached 1 s at normal load.
+- `.config/nextest.toml` gives each test that matches `binary_id(cargo-mend::bin/cargo-mend) & test(/^diagnostic_tests::/)` two test slots (`threads-required = 2`). No test, case or assert changes.
+- Cause: concurrency, not per-test work. Alone, each of the 20 tests takes 0.13 to 0.29 s at load 10. Each fixture test runs a chain of cargo and cargo-mend compiler processes, and about half of its CPU time is system time. With 31 at once on 32 CPUs, 20 took 1.0 to 1.3 s.
+- Proof: full natedev suite, 1039 pass. Load 17.50 and 25.87 at 31 threads: no test at 1 s (max 0.557 and 0.780 s), suite 4.7 and 6.3 s against 6.3 s before. One run at load 19.00 had one test at 1.049 s; that test took 0.485 and 0.624 s in the next runs. Mac 1037 pass.
 
-**Failure:** on natedev at load 11.88 (31 test threads, phase 16 run), 20 bin unit tests in `diagnostic_tests` take 1.004 s to 1.331 s:
-1. `allowances::attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature` — 1.249 s.
-2. `allowances::suspicious_pub_is_suppressed_for_tool_contract_attribute_output_type` — 1.066 s.
-3. `facade_subjects::a_facade_a_proc_macro_reaches_is_not_reported_as_internal` — 1.179 s.
-4. `facade_subjects::facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place` — 1.179 s.
-5. `facade_subjects::same_line_facades_in_separate_namespaces_keep_macro_callers` — 1.185 s.
-6. `imports_at_top::moves_and_deduplicates_uses_in_independent_files` — 1.018 s.
-7. `imports_at_top::moves_use_from_cfg_gated_block_carrying_the_gate` — 1.074 s.
-8. `narrow_pub_crate::fix_narrows_visibility_spellings` — 1.272 s.
-9. `overbroad_pub_crate::facade_less_method_is_rewritten_to_its_caller_boundary` — 1.145 s.
-10. `overbroad_pub_crate::named_fields_are_rewritten_to_their_caller_boundaries` — 1.331 s.
-11. `pub_use_fixes::fix_pub_use_reports_import_cleanup_suggestion_after_summary` — 1.033 s.
-12. `pub_use_outside_subtree_fixes::reexport_of_another_owner_module_is_fixed_on_a_later_pass` — 1.085 s.
-13. `pub_use_outside_subtree_fixes::shared_reexport_with_different_mount_edits_is_reported_once` — 1.004 s.
-14. `pub_use_outside_subtree_fixes::test_module_caller_through_a_glob_of_a_module_import_is_rewritten` — 1.069 s.
-15. `pub_use_outside_subtree_fixes::test_module_caller_keeps_its_glob_used` — 1.089 s.
-16. `pub_use_outside_subtree_fixes::shared_reexport_with_agreeing_packages_is_rewritten` — 1.221 s.
-17. `rendering::successive_json_runs_reuse_cached_findings_for_same_scope` — 1.158 s.
-18. `suspicious_pub_fixes::fix_keeps_pub_required_by_a_wider_declarations_own_signature` — 1.071 s.
-19. `suspicious_pub_fixes::fixes_crate_ancestor_private_and_dependent_signature_boundaries_together` — 1.133 s.
-20. `suspicious_pub_fixes::fix_keeps_pub_required_by_public_trait_impl_interface` — 1.216 s.
+**Files:**
+- `.config/nextest.toml` — slot count for cargo-mend diagnostic tests
 
-**Change:**
-1. Measure each test alone and split its time into its process runs (cargo-mend, cargo fix, cargo check or build).
-2. Find a cost that many tests share. Remove wasted work in cargo-mend or the test support first.
-3. Split a test only where its cases are independent.
-4. Keep every case and every assert.
+**Gotchas:**
+- The 390 diagnostic tests take most of the suite's test-seconds; the slot override halved their sum (161 to 61-82) at the same suite time.
+- `.config/nextest.toml` lands after tile phase 43j, by the showrunner's answer.
 
-**Files:** `crates/cargo-mend/tests/` and, where the waste is in the tool, `crates/cargo-mend/src/`.
-
-**Acceptance:** each of the 20 tests runs under 1 s on natedev in the full cargo-mend suite, at load under 32. State the load with each time. The full suite passes on natedev and the Mac.
-
-**Result:**
-1. Alone, each of the 20 tests takes 0.13 to 0.29 s at load 10. No test wastes work; the cost is concurrency. With 31 tests at once on 32 CPUs, each fixture test runs a chain of cargo and cargo-mend compiler processes, and about half of its CPU time is system time.
-2. `.config/nextest.toml` gives each `diagnostic_tests::` test in the cargo-mend binary two test slots (`threads-required = 2`). No test, case or assert changes. The claim on that file lands after tile phase 43j, by the showrunner's answer.
-3. Full natedev suite, 1039 tests pass in each run:
-
-   | Load | Threads | Suite | Slowest test | Tests at 1 s+ |
-   | --- | --- | --- | --- | --- |
-   | 11.88 (before) | 31 | 6.263 s | 1.331 s | 20 |
-   | 19.00 | 30 | 6.207 s | 1.049 s | 1 |
-   | 17.50 | 31 | 4.748 s | 0.557 s | 0 |
-   | 25.87 | 31 | 6.319 s | 0.780 s | 0 |
-
-   The one test at 1.049 s (`suspicious_pub_fixes::fixes_crate_ancestor_private_and_dependent_signature_boundaries_together`) took 0.485 and 0.624 s in the next runs.
-4. The Mac suite passes (1037 tests, load 6.21). Its suite time, 46 s at 12 threads, stays in its earlier 21 to 49 s range.
+**Ruled out:** per-test waste in cargo-mend or the test support; alone, the tests run near their floor.
