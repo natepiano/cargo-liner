@@ -401,27 +401,56 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 
 ### Phase 14 — the startup toast contrast test runs under 1 s  · status: done
 
-**Depends on:** none.
+#### As-built
+
+- `tui::theme_roles::tests` has one test for each toast style: `normal_startup_footer_meets_contrast_in_every_registered_theme`, `warning_startup_footer_meets_contrast_in_every_registered_theme`, `error_startup_footer_meets_contrast_in_every_registered_theme` and `success_startup_footer_meets_contrast_in_every_registered_theme`. Each calls `assert_startup_footer_meets_contrast(ToastStyle)`.
+- The helper draws each registered theme × 2 background modes × 2 color modes × 2 widths, with the same asserts as the single test it replaces.
+- Proof: alone on natedev at load 17, the single test took 146 ms (app builds 53 ms, theme loop 90 ms, of which draws 70 ms). After the split, each test took 0.32-0.47 s on the Mac at load 21.66 on 12 CPUs and 0.12-0.36 s on natedev at load 26.27. Before: 1.051 s on the Mac at load 8.84.
+
+**Files:**
+- `crates/cargo-port/src/tui/theme_roles.rs` — the four tests and the helper
+
+**Gotchas:** in the full parallel suite this test runs about 7 times slower than alone; its time follows CPU load, not its own work.
+
+**Ruled out:** a smaller case set; every case and assert stays.
+
+### Phase 15 — cargo-mend tests find the cargo-mend binary when Cargo sets a build directory  · status: done
+
+#### As-built
+
+- `mend_bin()` in `crates/cargo-mend/tests/support/mend_json.rs` uses `CARGO_MEND_TEST_EXECUTABLE`, then `CARGO_BIN_EXE_cargo-mend`, then `CargoDirectories::mend_binary`. Bin unit tests take the last path.
+- `CargoDirectories` reads `build_directory` and `target_directory` from one `cargo metadata --no-deps --offline` call per test process (`OnceLock`, about 30 ms). `mend_binary` takes the parts of the canonical test executable path below `build_directory` and before the first `deps` or `build` part (`PROFILE_OUTPUT_DIRECTORIES`), and joins them to `target_directory`. This gives `debug`, `<target triple>/debug` and the newer `debug/build/<pkg>/<hash>/out` layout. Without `build.build-dir`, both directories are the same.
+- `cargo_program()` is the one place that picks `$CARGO` or `cargo`.
+- Proof: natedev 1038 of 1038 pass at load 16.89 with `build-dir` set; the failing test passes in 0.69 s. Mac 1036 of 1036 pass.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mend_json.rs` — test-support lookup of the cargo-mend binary
+
+**Gotchas:**
+- The `cargo metadata` call is not isolated by `isolate_cargo`: it must read the developer's Cargo config and `CARGO_TARGET_DIR`, as the build of cargo-mend does.
+- A `--target-dir` flag given on the command line does not reach the test process; use `CARGO_TARGET_DIR`.
+
+**Ruled out:** finding the target directory from the test executable path; the build directory path does not name the target directory.
+
+### Phase 16 — two cargo-mend fix tests run under 1 s  · status: done
 
 #### Work Order
 
-**Goal:** `tui::theme_roles::tests::startup_page_footer_meets_contrast_in_every_registered_theme` runs under 1 s on natedev and the Mac.
+**Source:** the showrunner, 2026-11-15: make the two slow cargo-mend tests a phase.
 
-**Source:** a defect that the tile unit routed through the showrunner on 2026-11-15. The test took 1.051 s on the Mac at load 8.84 (cargo-port 1546 of 1546 on `a102bcca3`).
+**Failure:** on natedev at load 16.89 (phase 15 run), two bin unit tests take 1 s or more:
+1. `diagnostic_tests::narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` — 1.042 s.
+2. `diagnostic_tests::pub_use_fixes::grouped_facades_share_dry_run_and_apply` — 1.191 s.
 
-**Constraints from prior phases:** none.
+**Change:**
+1. Measure each test alone and split its time into its process runs (cargo-mend, cargo fix, cargo build).
+2. Remove wasted work in cargo-mend or the test support first. Split a test only where its cases are independent.
+3. Keep every case and every assert.
 
-**Spec:**
-1. **Measure first.** Time the parts of one test run: app setup, theme install, each draw and each `test_support::contrast_failures` call. The test draws 4 toast styles × each registered theme × 2 background modes × 2 color modes × 2 widths.
-2. **Keep the coverage.** Keep every case and every assert. Do not loosen an assert or drop a case.
-3. **Fix the cost where it lives.** When a helper does work that the test does not use, change the helper. When the case count alone sets the time, split the test into one test for each toast style.
+**Acceptance:** each test runs under 1 s on natedev at normal load (under 32), in the full cargo-mend suite. The full suite passes on natedev and the Mac.
 
-**Files:**
-- `crates/cargo-port/src/tui/theme_roles.rs` — the test
-- `crates/cargo-port/src/tui/test_support/mod.rs` — test helpers, if the cost is there
-
-**Workers:** 1 writer.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` passes on natedev and the Mac with every test under 1 s, and lint is clean.
+**Result:**
+1. Time alone, at load 27: the cfg test spent 155 ms in cargo-mend and 182 ms in `cargo build --tests`. The grouped test spent 198 ms in its dry run and 156 ms in its apply. The cargo-mend runs did no wasted work.
+2. The cfg test now ends with `cargo check --tests`. A check resolves `crate::inner_facade::helper` in the test target, which a removed re-export breaks. Nothing runs the test executable, so its code generation and link were waste.
+3. The grouped test is two tests of four independent cases: `grouped_and_obsidian_facades_share_dry_run_and_apply` and `subtree_and_parent_facades_share_dry_run_and_apply`. Both call `assert_facades_share_dry_run_and_apply` with a `FacadeCase` list. Each case keeps its count, findings and applied asserts; the totals are the sum of the case counts.
+4. The full natedev suite at load 14.02: 0.396 s, 0.384 s and 0.416 s, and no test reached 1 s. At load 39.49 the two facade tests took 1.7 to 1.8 s. The Mac suite passed (1037 tests).
