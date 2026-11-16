@@ -109,7 +109,7 @@ pub(super) fn ranks(app: &App) -> TileColumnOrder<TileKey> {
     Cells::new(
         app.census.machines(&[]),
         NOW,
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,

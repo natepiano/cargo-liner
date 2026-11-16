@@ -34,6 +34,7 @@ use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::config_watch::WordHighlightUpdates;
 use crate::constants::BINARY_NAME;
+use crate::footer_colors::FooterColors;
 use crate::startup_log;
 use crate::summary::age::AgeWidthChange;
 use crate::theme;
@@ -80,6 +81,7 @@ pub(crate) fn run() -> ExitCode {
         },
     };
     run_terminal(&mut app, &iterm2_profile, |app| {
+        let (footer_sender, footer_updates) = mpsc::channel();
         Ticker::new(
             census::schedule::spawn(
                 app.remote_machines.clone(),
@@ -90,9 +92,11 @@ pub(crate) fn run() -> ExitCode {
                 ),
                 app.loaded_config.config.census.codex_thread_start_window,
                 app.loaded_config.config.census.herdr_read_timeout,
+                footer_sender,
             ),
             appearance_updates,
         )
+        .with_footer_color_updates(footer_updates)
         .with_word_highlight_updates(
             CargoHandler::config_path()
                 .map_or_else(WordHighlightUpdates::default, WordHighlightUpdates::spawn),
@@ -300,15 +304,18 @@ struct Ticker {
     /// Deadlines for visible body text and the independent Uptime clock.
     display_time:           DisplayTime,
     word_highlight_updates: WordHighlightUpdates,
+    /// Footer palettes the census scan thread read after a file change.
+    footer_colors:          Receiver<FooterColors>,
 }
 
 impl Ticker {
     /// Poll `updates` for census answers.
-    const fn new(updates: Receiver<CensusUpdate>, appearances: Receiver<Appearance>) -> Self {
+    fn new(updates: Receiver<CensusUpdate>, appearances: Receiver<Appearance>) -> Self {
         Self {
             updates,
             appearances,
             word_highlight_updates: WordHighlightUpdates::Disabled,
+            footer_colors: mpsc::channel().1,
             display_time: DisplayTime {
                 body:   BodyDisplayTime::Unobserved,
                 uptime: UptimeDisplayTime::Unobserved,
@@ -319,6 +326,19 @@ impl Ticker {
     fn with_word_highlight_updates(mut self, updates: WordHighlightUpdates) -> Self {
         self.word_highlight_updates = updates;
         self
+    }
+
+    fn with_footer_color_updates(mut self, updates: Receiver<FooterColors>) -> Self {
+        self.footer_colors = updates;
+        self
+    }
+
+    /// Apply the newest footer palette that arrived since the last pass.
+    fn drain_footer_colors(&self, app: &mut App) -> bool {
+        self.footer_colors
+            .try_iter()
+            .last()
+            .is_some_and(|colors| app.apply_footer_colors(colors))
     }
 
     fn drain_word_highlight(&self, app: &mut App) -> Repaint {
@@ -348,10 +368,7 @@ impl Ticker {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
             match &update {
-                CensusUpdate::Local { rows, stage, .. } => {
-                    if matches!(stage, ScanStage::Completed) {
-                        changed |= app.footer_colors.refresh();
-                    }
+                CensusUpdate::Local { rows, .. } => {
                     startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
                 },
                 CensusUpdate::Remote { host, .. } => {
@@ -433,10 +450,12 @@ impl Ticker {
             app.census.record_local_accounts(&app.accounts.table);
         }
         let appearance_changed = self.drain_appearances(app);
+        let footer_changed = self.drain_footer_colors(app);
         let emphasis_changed = self.drain_word_highlight(app);
         if accounts_changed
             || census_changed
             || appearance_changed
+            || footer_changed
             || emphasis_changed == Repaint::Needed
         {
             self.display_time.body = BodyDisplayTime::Unobserved;
@@ -456,6 +475,7 @@ impl Ticker {
         if accounts_changed
             || census_changed
             || appearance_changed
+            || footer_changed
             || emphasis_changed == Repaint::Needed
             || ages_moved
             || favorites == Repaint::Needed
@@ -487,6 +507,8 @@ impl PollWork<App> for Ticker {
 )]
 mod tests {
     use std::sync::mpsc;
+    use std::time::Duration;
+    use std::time::SystemTime;
 
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
@@ -515,6 +537,9 @@ mod tests {
     use crate::census::accounts::AccountsTable;
     use crate::census::model::ModelName;
     use crate::census::model::ReasoningEffort;
+    use crate::footer_colors::FooterColor;
+    use crate::footer_colors::FooterColorFile;
+    use crate::footer_colors::FooterTint;
     use crate::sort::TreeSort;
     use crate::tiles::TileKey;
 
@@ -963,49 +988,64 @@ mod tests {
         KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL)
     }
 
-    /// Classification and cached links do not each trigger a footer file check.
+    /// A changed footer file reaches the app from the scan thread; `drain_census` reads no file.
     #[test]
-    fn a_completed_local_scan_checks_the_footer_once() {
+    fn a_changed_footer_file_reaches_the_app_without_a_ui_thread_read() {
         let directory = tempfile::tempdir().expect("a fixture footer directory");
         let path = directory.path().join("statusline.conf");
         std::fs::write(&path, "account.codex1=teal").expect("write a fixture footer");
+        let mut footer = FooterColorFile::fixture(path.clone());
         let mut app = App::new_for_test().expect("test app should build");
-        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
-        let (sender, updates) = mpsc::channel();
-        let (_appearance_sender, appearances) = mpsc::channel();
-        let ticker = Ticker::new(updates, appearances);
+        let (census_sender, census_updates) = mpsc::channel();
+        let (footer_sender, footer_updates) = mpsc::channel();
+        let ticker = Ticker::new(census_updates, mpsc::channel().1)
+            .with_footer_color_updates(footer_updates);
 
-        for interim_answers in [2, 1] {
-            let before = app.footer_colors.revision_checks();
-            for _ in 0..interim_answers {
-                sender
-                    .send(CensusUpdate::Local {
-                        rows:      Vec::new(),
-                        hierarchy: HierarchyEdges::default().into(),
-                        stage:     ScanStage::Classified,
-                    })
-                    .expect("publish an interim local answer");
-            }
-            ticker.drain_census(&mut app);
-            assert_eq!(app.footer_colors.revision_checks(), before);
+        footer
+            .send_changed(&footer_sender)
+            .expect("send the first palette");
+        assert!(ticker.drain_footer_colors(&mut app));
+        assert_eq!(
+            app.footer_colors.account("codex1"),
+            FooterTint::Footer(FooterColor::Teal)
+        );
+        footer
+            .send_changed(&footer_sender)
+            .expect("check the unchanged file");
+        assert!(
+            !ticker.drain_footer_colors(&mut app),
+            "an unchanged file sends nothing"
+        );
 
-            sender
-                .send(CensusUpdate::Local {
-                    rows:      Vec::new(),
-                    hierarchy: HierarchyEdges::default().into(),
-                    stage:     ScanStage::Completed,
-                })
-                .expect("publish the completed scan");
-            let changed = ticker.drain_census(&mut app);
-            assert_eq!(app.footer_colors.revision_checks(), before + 1);
-            assert_eq!(
-                app.footer_colors.colors().account("codex1"),
-                crate::footer_colors::FooterTint::Footer(crate::footer_colors::FooterColor::Teal)
-            );
-            assert_eq!(changed, before == 0, "only the first palette changes");
-            assert!(!ticker.drain_census(&mut app));
-            assert_eq!(app.footer_colors.revision_checks(), before + 1);
-        }
+        std::fs::write(&path, "account.codex1=#a0522d # sienna").expect("rewrite the footer");
+        let later = SystemTime::now() + Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(later))
+            .expect("move the footer revision");
+        census_sender
+            .send(CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Completed,
+            })
+            .expect("publish the completed scan");
+        ticker.drain_census(&mut app);
+        assert_eq!(
+            app.footer_colors.account("codex1"),
+            FooterTint::Footer(FooterColor::Teal),
+            "the census drain leaves the palette alone"
+        );
+
+        footer
+            .send_changed(&footer_sender)
+            .expect("send the changed palette");
+        assert!(ticker.drain_footer_colors(&mut app));
+        assert_eq!(
+            app.footer_colors.account("codex1"),
+            FooterTint::Footer(FooterColor::Rgb(0xa0, 0x52, 0x2d))
+        );
     }
 
     /// Interim answers preserve preferences; completed scans prune departed roots.

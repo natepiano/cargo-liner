@@ -510,56 +510,88 @@ No code change: the twelve tests run in under one second in their full package r
 
 ### Phase 22 — `census --json` lists each session's shell rows  · status: done
 
-**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. `/showrunner:units` reads `census --json` for Status and Workers. The census does not list a tile's shell rows, so a unit with a running background command looks idle on the board. The sdlc side (unit-board 025dec43b) reads the new field and treats a missing field as empty.
+#### As-built
 
-#### Work Order
+Each `sessions` entry of `census --json` has `shells: [{name, started_at}]`. `agent_cell::session_cells` puts each `WorkKind::Shell` line into `SessionCells::shells` of its owning row's sessions, in tile line order. `census/report.rs` maps each `ShellCells` to a `ShellReport`. The name is the tile name cell without the machine (`shell_command::short_command`). `started_at` is the child row's start in epoch seconds and is never null. A session with no shell row has `[]`. The schema stays 2: a new key does not increment it, and the sdlc census reader accepts only 2. Test: `sessions_list_their_shell_rows_with_the_tile_name_and_start` in `census/report_tests.rs`.
 
-1. Give `SessionCells` the shell rows of its session: one entry for each `WorkKind::Shell` tree line whose owning row has the session id. Each entry has the name the tile draws (`shell_command::short_command` of the line's session name, without the machine) and the shell's start in epoch seconds.
-2. Add `shells: [{ name, started_at }]` to each `sessions[]` entry of `census --json`, in tile line order. A session with no shell row has an empty list.
-3. Keep `schema` at 2: the key is new, and no key is renamed or removed. The sdlc reader accepts only schema 2.
-4. Update the README census section, its JSON example and the rule on when `schema` increments. Update `docs/cargo-handler/as-built/hierarchy.md`.
+**Gotchas:**
+- A Codex process with several recorded threads puts each shell under each thread of the row. One worker runs one thread per process, so this case was left as is.
 
-**Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells`, `session_cells`
-- `crates/cargo-handler/src/census/report.rs`, `crates/cargo-handler/src/census/report_tests.rs` — `SessionReport`, `ShellReport` and their tests
-- `crates/cargo-handler/README.md` — the census section and example
-- `docs/cargo-handler/as-built/hierarchy.md` — the `sessions` entry
+### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: done
 
-**Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a session with one untimed shell and one timer shell lists both, with the tile names and start times; a session with no shell lists `[]`.
-- The README example test passes with the new key.
+#### As-built
 
-### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: todo
+An account or role value in `~/.claude/config/statusline.conf` can be `#rrggbb` in either case: `FooterColor::from_hex` gives `FooterColor::Rgb`, and any other `#` value is unknown, so its entry draws plain. In `FooterColors::parse` a trimmed line that starts with `#` is a comment; otherwise the line splits at the first `=`, and `without_comment` cuts the value at a `#` that follows whitespace. So `account.x = #a0522d # sienna` reads `#a0522d`. `ReadablePalette::ink` resolves a hex color on first use through the same readable path as a name, and a readable hex color draws unchanged. The census scan thread owns a `FooterColorFile::home()` and calls `send_changed` after each local round; the palette goes on its own channel to `Ticker::drain_footer_colors`, which applies the newest one through `App::apply_footer_colors` and asks for a frame. The UI thread reads no file. `App::new` reads the file once at startup. Tests: `hex_footer_colors_parse_in_either_case`, `malformed_hex_footer_colors_are_unknown`, `a_comment_starts_only_at_the_line_start_or_after_whitespace`, `a_readable_hex_color_draws_unchanged` (footer_colors/tests.rs), `a_changed_footer_file_reaches_the_app_without_a_ui_thread_read` (terminal.rs), and `one_hex_account_draws_the_same_ink_in_the_tree_program_line_and_accounts_table` (render/accounts_grid_tests.rs).
 
-**Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. The user wants one account color everywhere, set from a color chooser on a new console Accounts page (sdlc devtools builds it). devtools writes hex values into `~/.claude/config/statusline.conf` after cargo-handler and the status line accept hex.
+**Gotchas:**
+- The summary draws a program line only for hierarchy roots, and a selected tree row lifts its ink for the selection ground. A same-ink test puts the account on an unselected row.
+- The Mac `cargo mend` pass made the `UnknownReason` field private. Only census submodules build the type.
+
+### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: todo
+
+**Source:** the cargo-liner showrunner, 2026-11-15. `cargo-handler probe` hangs forever on the Mac: 9 probes were alive there, the oldest 20 h, and each natedev census that hits the hang leaks one more. Stack: `probe::print` → `LocalScanner::attach_details` → `transcript::running_subagents` → `InputDirectoryWatch::new` → `rearm` → notify `FsEventWatcher::watch` → `FsEventWatcher::stop` → `JoinInner::join` → `pthread_join` (blocked). notify 9.0.0-rc.4.
 
 **Current state:**
-- `FooterColors::parse` (`footer_colors/mod.rs`) cuts each line at the first `#`, so `account.claude1=#a0522d` reads as an empty value and the account loses its color.
-- `FooterColor` holds only names. `ReadablePalette` resolves each name once per theme into a `ReadableInk`.
-- `FooterColorFile::refresh` already reloads a changed file, but `TerminalApp::drain_census` calls it on the UI thread, where it reads the file metadata and the file. This breaks the plan invariant "Nothing on the UI thread runs a command or reads a file."
-- Three places draw an account label, all through `FooterColors::account`: the tree account cell (`agent_cell.rs`), the summary program line (`summary/mod.rs`) and the accounts table (`summary/accounts.rs`).
+- `transcript::running_subagents` (`census/transcript.rs`) makes an `InputDirectoryWatch` for each subagent directory the first time it sees it. `InputDirectoryWatch::rearm` installs a notify `RecommendedWatcher` on the directory and its parent. On the Mac this is an FSEvents watcher, and its `watch` call can block forever in `FsEventWatcher::stop`.
+- `probe::scan_local` (`census/probe.rs`) builds a `LocalScanner` and calls `scan()` once. The scan reaches `running_subagents` through `LocalScanner::read_active_subagents` (`census/scan.rs`), so a one-shot scan installs watchers it never reads again.
+- natedev runs the Mac probe through ssh (`census/remote.rs` `SshProbe::probe`) and kills its own ssh child after `PROBE_TIMEOUT`. The remote probe is not told, so a hung probe stays alive on the Mac.
 
 #### Work Order
 
-1. Give `FooterColor` a hex form: a value `#rrggbb` (six hex digits, either case) parses to an RGB color. Any other `#` value stays an unknown color, as an unknown name does today.
-2. Change the comment rule in `FooterColors::parse`: a `#` starts a comment only at the start of the line or after whitespace. So `account.x=#a0522d # sienna` reads `#a0522d`.
-3. Resolve a hex color through the same `ReadablePalette` path as a name, so it takes the same readable and subdued forms on each theme. A hex color that is already readable draws unchanged.
-4. Move the file check off the UI thread: the local census scan checks the file revision, reads and parses a changed file, and sends the new `FooterColors` with its `CensusUpdate::Local`. `drain_census` only applies it. A changed value shows at the next local scan, with no restart.
-5. Check each place that draws an account label (tree cell, program line, accounts table, selected rows, stale rows). Each takes its ink from `FooterColors::account` for the same label. Fix any place that does not.
-6. Update the README footer color section and `docs/cargo-handler/as-built/colors.md`.
+**Goal:** a one-shot `probe` or `census` never blocks on a file watch, and a hung probe cannot leak a process.
+
+**Spec:**
+
+1. Give `LocalScanner` a subagent listing mode: the live census keeps the directory watch; a one-shot scan reads each subagent directory once with `read_subagents` and makes no `InputDirectoryWatch`. `probe::scan_local` and the `census` command use the one-shot mode.
+2. The probe ends by itself: it runs the scan off the main thread, and the main thread exits the process with a failure code when a probe deadline passes or when its parent process is gone (the parent pid changes). Name the deadline in constants, below `PROBE_TIMEOUT`.
+3. Fix the cause in cargo-handler. Do not patch notify.
+4. Do not stop the leaked probes on the Mac. Report them to the showrunner; the user stops them.
+5. Update the README probe section and the census as-built doc.
 
 **Files:**
-- `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/footer_colors/tests.rs` — the hex form, the comment rule, the palette
-- `crates/cargo-handler/src/census/` (local scan, `CensusUpdate`), `crates/cargo-handler/src/terminal.rs` — the read off the UI thread
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs` — only if the check in step 5 finds a gap
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/colors.md`
+- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/scan.rs` — the one-shot listing mode
+- `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/constants.rs` — the deadline and parent check
+- `crates/cargo-handler/src/census/` — tests next to the code under test
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
+
+**Verification:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` (natedev and the Mac)
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
+- A test: a one-shot scan lists running subagents and installs no directory watch.
+- A test: the probe guard ends the probe when the deadline passes, and when the parent pid changes.
+- Live check on the Mac: run `cargo-handler probe` with a build of this phase; it prints a report and exits.
+
+### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: todo
+
+**Source:** the user, through the cargo-liner showrunner, 2026-11-15: "a shell is not running in a family account - it should probably just show a blank there and we should move the type column to be after the role and before the activity and the type column should be either agent, shell, or subagent." Then: "you are not reclaiming space in the description column for running shells when there is space."
+
+**Current state:**
+- `agent_cell.rs` gives a `WorkKind::Shell` or `WorkKind::Subagent` line its parent's account when its own is `Account::Unrecorded`. So the natest shell row "Run the AWS pair for phase 302" shows `claude3`.
+- `TreeColumn` order is Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, Directory, Age. The Type cell is blank for session and worker rows.
+- In the sdlc tile at about 170 columns, shell rows read "Start the…" and "Run the st…": the name is cut to the shared session column width, while the branch cell is `—` and the row has free width.
+
+#### Work Order
+
+**Goal:** each tree row says what it is, a shell shows no account, and a shell or subagent name is cut only when the row has no free width.
+
+**Spec:**
+
+1. A shell row shows a blank account cell. A subagent row keeps its parent's account.
+2. Move `TreeColumn::Type` after `Role` and before `Activity`, in the column order, the column drop order and the details order.
+3. Every row's Type cell reads `agent`, `shell` or `subagent`. Session and worker rows read `agent`.
+4. A shell or subagent name uses the free width of its row before it takes an ellipsis.
+5. Update the README tree column section and the as-built docs.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — the account, the column order, the Type text, the name width
+- `crates/cargo-handler/src/details.rs` — the details order, if it lists columns
+- `crates/cargo-handler/src/render/` — render tests next to the code under test
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
 
 **Verification:**
 - `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- Tests: `#a0522d` and `#A0522D` parse; `#a0522`, `#gg0000` and `a0522d` do not; a trailing `# comment` after a hex value is cut; a full-line comment is cut.
-- A test: a changed file reaches the app through a local census update, and `drain_census` reads no file.
-- A test: the tree cell, the program line and the accounts table draw one account with the same foreground.
-- Live check: start a handler with a scratch `HOME` whose `statusline.conf` names an account color. Change the value to a hex color and capture the screen after the next scan. The shot goes with the checkpoint notice.
+- A test: a shell row's account cell is blank; a subagent row shows its parent's account.
+- A test: the header order is session, account, role, type, activity, and each row kind shows its type word.
+- A test: at about 170 columns, a shell row with a `—` branch shows its full name when the row has the width.
+- Live check: capture a tile with a shell row and a subagent row; the shot goes with the checkpoint notice.

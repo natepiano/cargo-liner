@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use tui_pane::ColorMode;
 
 use super::constants::SOURCE_HEADER;
-use super::render;
+use super::pane;
 use crate::tui::columns;
 use crate::tui::columns::LintColumnStatus;
 use crate::tui::columns::ProjectColumnLayout;
@@ -133,7 +133,7 @@ fn preferred_width_measures_all_target_kinds_without_heap_allocations() {
         ..data.binaries[0].clone()
     });
     let allocations = crate::test_support::count_allocations(|| {
-        std::hint::black_box(render::preferred_width(&data))
+        std::hint::black_box(pane::preferred_width(&data))
     })
     .1;
     assert_eq!(allocations, 0);
@@ -142,7 +142,7 @@ fn preferred_width_measures_all_target_kinds_without_heap_allocations() {
 #[test]
 fn empty_targets_keep_the_project_column_at_its_measured_width() {
     let data = panes::TargetsData::default();
-    let preferred = render::preferred_width(&data);
+    let preferred = pane::preferred_width(&data);
     assert_eq!(preferred, super::minimum_width());
     for project_width in [66, 69, 80] {
         let layout = panes::resolve_layout(

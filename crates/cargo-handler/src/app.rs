@@ -67,6 +67,7 @@ use crate::constants::KEYMAP_TOML_HEADER;
 use crate::details::DetailsOverlay;
 use crate::details::DetailsPane;
 use crate::footer_colors::FooterColorFile;
+use crate::footer_colors::FooterColors;
 use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
 use crate::keymap;
@@ -218,8 +219,8 @@ pub(crate) struct App {
     pub(crate) census:                       Census,
     /// Account readings refreshed independently of the frame and census scan.
     pub(crate) accounts:                     AccountsMonitor,
-    /// Footer colors cached between census scans.
-    pub(crate) footer_colors:                FooterColorFile,
+    /// Footer colors as the census scan last sent them; drawing never reads the file.
+    pub(crate) footer_colors:                FooterColors,
     /// `machines.remote` as the census scheduler reads it.
     pub(crate) remote_machines:              RemoteMachines,
     /// `census.staff_file` as the census scheduler reads it.
@@ -285,8 +286,18 @@ impl App {
             census,
             ColorMode::from_environment(),
         )?;
-        app.footer_colors = FooterColorFile::load();
+        app.footer_colors = FooterColorFile::load().colors().clone();
         Ok(app)
+    }
+
+    /// Apply the footer colors the census scan read from a changed file, answering whether
+    /// they differ from the colors on screen.
+    pub(crate) fn apply_footer_colors(&mut self, colors: FooterColors) -> bool {
+        if self.footer_colors == colors {
+            return false;
+        }
+        self.footer_colors = colors;
+        true
     }
 
     /// Apply a system appearance reported by the background watcher.
@@ -374,7 +385,7 @@ impl App {
             accounts,
             remote_machines,
             staff_file,
-            footer_colors: FooterColorFile::default(),
+            footer_colors: FooterColors::default(),
         })
     }
 

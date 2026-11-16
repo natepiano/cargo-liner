@@ -994,8 +994,7 @@ fn ink_application() -> TestResult<App> {
         &path,
         "account.claude1=brown\naccount.codex1=magenta\nrole.unit-director=bright-blue\n",
     )?;
-    app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
-    app.footer_colors.refresh();
+    app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path);
     let machine = app.census.machines(&[])[0];
     let mut rows = machine.state.rows().to_vec();
     let hierarchy = HierarchyEdges(machine.state.edges().to_vec());

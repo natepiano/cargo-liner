@@ -20,7 +20,7 @@ impl App {
             self.sync_running_toast(toast_slot, "cargo clean", &tracked_items[..]);
         self.inflight.clean_mut().toast = next_toast_task_id;
     }
-    pub(super) fn sync_running_lint_toast(&mut self) {
+    pub(in crate::tui::app) fn sync_running_lint_toast(&mut self) {
         self.sync_running_lint_toast_for_origin(LintRunOrigin::CatchUp);
         self.sync_running_lint_toast_for_origin(LintRunOrigin::Normal);
     }
@@ -36,7 +36,7 @@ impl App {
     /// steady-state network-toast stage: while the startup panel owns the
     /// GitHub row, `Net::network_toasts` returns `None`, so there is nowhere
     /// to store a toast id and this no-ops.
-    pub(super) fn sync_running_repo_fetch_toast(&mut self) {
+    pub(in crate::tui::app) fn sync_running_repo_fetch_toast(&mut self) {
         let Some(toast_slot) = self
             .net
             .network_toasts()
@@ -58,7 +58,7 @@ impl App {
     /// in-flight crates.io fetches. Mirrors the GitHub repo-fetch toast: the
     /// slot exists only in steady state, so while the startup panel owns the
     /// crates.io row this no-ops and no standalone toast can be created.
-    pub(super) fn sync_running_crates_io_toast(&mut self) {
+    pub(in crate::tui::app) fn sync_running_crates_io_toast(&mut self) {
         let Some(toast_slot) = self
             .net
             .network_toasts()
@@ -81,7 +81,7 @@ impl App {
     /// discarded, so their ids would otherwise strand), then drop the slots.
     /// Called when a rescan re-opens the consolidated panel, which takes back
     /// ownership of those rows.
-    pub(super) fn enter_startup_owned_network_stage(&mut self) {
+    pub(in crate::tui::app) fn enter_startup_owned_network_stage(&mut self) {
         if let Some(slots) = self.net.network_toasts().map(|network_running_toasts| {
             [
                 network_running_toasts.crates_io,

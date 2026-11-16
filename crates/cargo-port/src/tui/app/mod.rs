@@ -75,6 +75,7 @@ mod quota_transition_tests;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,6 +108,8 @@ pub(super) use phase_state::KeyedPhase;
 pub(super) use phase_state::LanguagePhase;
 pub(super) use poll_background_stats::PollBackgroundStats;
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
 #[cfg(test)]
 pub(super) use scan_state::RetrySpawnMode;
 pub(super) use scan_state::ScanState;
@@ -121,6 +124,7 @@ use tui_pane::ClipboardBackend;
 use tui_pane::ColorMode;
 use tui_pane::CopyOutcome;
 use tui_pane::CopySelectionResult;
+use tui_pane::ExpansionChange;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
@@ -128,6 +132,7 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
 use tui_pane::KeyBind;
 use tui_pane::Keymap as FrameworkKeymap;
+use tui_pane::PERF_LOG_TARGET;
 use tui_pane::PaneFocusState;
 use tui_pane::SystemClipboard;
 use tui_pane::ThemeRuntime;
@@ -138,7 +143,17 @@ use tui_pane::ToastTaskId;
 use tui_pane::ToastVisualDeadline;
 use tui_pane::TrackedItem;
 
+use self::async_tasks::CratesIoFetchPlan;
+use self::async_tasks::PriorityCratesIoQuery;
+use self::async_tasks::PriorityFetchSelection;
+use self::async_tasks::StartupFetchDetail;
+use self::async_tasks::StartupPlan;
+use self::async_tasks::StartupReadiness;
+use self::async_tasks::StartupToast;
+use self::async_tasks::StartupToastLayout;
+use self::async_tasks::startup_panel_body;
 use self::constants::ANIMATION_TICK;
+use self::constants::CRATES_IO_NEW_RELEASE_TITLE;
 use self::constants::LINT_CANCELLED_TOAST_TITLE;
 use self::constants::LINT_PAUSED_TOAST_BODY;
 use self::constants::LINT_PAUSED_TOAST_TITLE;
@@ -146,6 +161,11 @@ use self::constants::LINT_PROJECT_PAUSED_TOAST_TITLE;
 use self::constants::LINT_PROJECT_RESUMED_TOAST_TITLE;
 use self::constants::LINT_RESUMED_TOAST_BODY;
 use self::constants::LINT_RESUMED_TOAST_TITLE;
+use self::constants::PROJECT_STORAGE_REFRESH_SECS;
+use self::phase_state::FailureReason;
+use self::phase_state::PhaseCompletion;
+use self::scan_state::ScanPhase;
+use self::startup::StartupPlanEffects;
 use super::app_render_state::FinderSplit;
 use super::app_render_state::OverlayRenderInputs;
 use super::app_render_state::RenderBorrows;
@@ -155,6 +175,15 @@ use super::background::Background;
 use super::columns::LintCell;
 #[cfg(test)]
 use super::columns::StyledSegment;
+use super::constants::STARTUP_PHASE_CRATES_IO;
+use super::constants::STARTUP_PHASE_DISK;
+use super::constants::STARTUP_PHASE_GIT;
+use super::constants::STARTUP_PHASE_GITHUB;
+use super::constants::STARTUP_PHASE_LANGUAGES;
+use super::constants::STARTUP_PHASE_LINT;
+use super::constants::STARTUP_PHASE_METADATA;
+use super::constants::STARTUP_PHASE_TESTS;
+use super::constants::STARTUP_ROW_TIMEOUT;
 use super::integration;
 use super::integration::AppPaneId;
 use super::interaction;
@@ -163,6 +192,7 @@ use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
 use super::panes::DescriptionState;
+use super::panes::DetailPaneData;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputPane;
@@ -174,9 +204,13 @@ use super::panes::Panes;
 use super::panes::ProjectRowPresentation;
 use super::panes::ProjectRowWidthInput;
 use super::panes::SyncedDescriptionHeight;
+use super::project_list::ExpandTarget;
+use super::project_list::ProjectListRowDisplayPathResolution;
 use super::project_list::ProjectPathLookup::Found;
 use super::project_list::ProjectPathLookup::StaleRoute;
 use super::project_list::ProjectPathLookup::UnknownPath;
+#[cfg(test)]
+use super::project_list::ReplacementExpansion;
 use super::project_list::VisibleRow;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
@@ -184,10 +218,12 @@ use super::sccache::SccacheStatusLine;
 use super::settings;
 use super::settings::SettingOption;
 use super::settings::StartupSettings;
+use super::startup_services::StartupEffect;
 #[cfg(test)]
 use super::startup_services::StartupEffectCounts;
 use super::startup_services::StartupEnvironment;
 use super::startup_services::StartupServices;
+use super::startup_services::StreamingScanStartup;
 #[cfg(test)]
 use super::state;
 use super::state::Ci;
@@ -200,6 +236,7 @@ use super::state::Lint;
 use super::state::Net;
 use super::state::Scan;
 use super::state::SyncTracker;
+use super::terminal;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
 use crate::channel::Receiver;
@@ -207,19 +244,47 @@ use crate::channel::Sender;
 use crate::ci::OwnerRepo;
 use crate::config;
 use crate::constants::TARGET_DIR;
+use crate::http::ServiceKind;
 use crate::lint;
+use crate::lint::CacheUsage;
+use crate::lint::CachedLintStatus;
+use crate::lint::LintRunOrigin;
 use crate::lint::LintRuns;
-#[cfg(test)]
 use crate::lint::LintStatus;
+use crate::lint::LintStatusKind;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 #[cfg(test)]
 use crate::project::GitStatus;
+use crate::project::LanguageStats;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
+use crate::project::RustProject;
+use crate::project::TestCounts;
 use crate::project::Visibility;
+use crate::project::Visibility::Deleted;
+use crate::project::Visibility::Dismissed;
+use crate::project::Visibility::Visible;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::DirSizes;
 use crate::scan::MetadataDispatchContext;
+use crate::scan::ProjectStorage;
+
+/// The root project of the selected row, or none when the selection is not
+/// a root row or its entry is gone.
+pub(super) enum SelectedRootItem<'a> {
+    Unavailable,
+    Root(&'a RootItem),
+}
+
+/// The detail-pane data for the selected row, or none when the row's
+/// project or index lookups no longer resolve.
+enum SelectedPaneData {
+    Unavailable,
+    Available(Box<DetailPaneData>),
+}
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -1495,6 +1560,1371 @@ impl App {
             self.scan.bump_generation();
             self.maybe_priority_fetch();
         }
+    }
+
+    /// Insert `name` into the live crates.io fetch tracker. Drives the
+    /// "Fetching crates.io info" running toast — single toast that grows
+    /// as fetches enqueue and finishes when the tracker drains. Mirrors
+    /// the GitHub repo-fetch lifecycle.
+    fn handle_crates_io_fetch_queued(&mut self, name: String) {
+        let now = Instant::now();
+        // While startup.is_collecting, startup.crates_io.expected gains name and seen loses it,
+        // including submodule/priority/recovery requests outside the initial plan. This prevents
+        // done while a refetch is active; after panel closure sync_running_crates_io_toast owns the
+        // standalone toast. This matches handle_repo_fetch_queued.
+        if self.startup.is_collecting() {
+            self.startup.crates_io.expected.insert(name.clone());
+            self.startup.crates_io.seen.remove(&name);
+            // Reopening `startup.crates_io.lifecycle` invalidates any earlier completion because
+            // `name` is now expected but unseen.
+            self.startup.crates_io.lifecycle.reopen();
+        } else if let Some(scan_complete_at) = self.startup.scan_complete_at {
+            // sync_running_crates_io_toast owns the standalone toast after startup;
+            // since_scan_complete_ms distinguishes a recovery refetch leak just after handoff from
+            // later user/file-change fetches.
+            tracing::trace!(
+                target: PERF_LOG_TARGET,
+                crate_name = %name,
+                since_scan_complete_ms =
+                    tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+                "crates_io_steady_state_fetch_queued"
+            );
+        }
+        self.net.crates_io_running_mut().insert(name, now);
+        self.sync_running_crates_io_toast();
+    }
+
+    /// Remove `name` from the live tracker; the toast finishes when
+    /// the tracker drains. Also advances the startup panel's crates.io row
+    /// (`seen` marked here, denominator seeded upfront at startup).
+    fn handle_crates_io_fetch_complete(&mut self, name: &str) {
+        self.net.crates_io_running_mut().remove(name);
+        self.startup.crates_io.seen.insert(name.to_string());
+        // `handle_crates_io_fetch_complete` stamps `crates_io_checked_at` for startup, watcher
+        // discovery and priority fetches. Otherwise `refresh_crates_io_if_due` would query a minute
+        // after startup rather than an hour after the name's last query.
+        self.crates_io_checked_at
+            .insert(name.to_string(), Instant::now());
+        self.maybe_log_startup_phase_completions();
+        self.sync_running_crates_io_toast();
+    }
+
+    /// A background refresh found a crate published at a version other than
+    /// the one on display. The new version is already applied by the
+    /// accompanying `BackgroundMsg::CratesIoVersion` messages; this raises
+    /// the persistent toast using either the crate name or its configured
+    /// release-group label.
+    fn handle_crates_io_new_release(
+        &mut self,
+        display_name: &str,
+        previous_version: &str,
+        version: &str,
+    ) {
+        self.framework.toasts.push(
+            CRATES_IO_NEW_RELEASE_TITLE,
+            format!("{display_name} {previous_version} → {version}"),
+        );
+    }
+
+    /// Dispatch the per-service "refetch rows that didn't land during
+    /// the outage" pass. Called from [`App::apply_recovery_outcome`]
+    /// on every reachable transition (silent grace window or
+    /// user-visible recovery), so background fetches that failed
+    /// during the outage are retried without waiting for an
+    /// unrelated trigger.
+    fn refetch_missing_after_recovery(&mut self, service_kind: ServiceKind) {
+        match service_kind {
+            ServiceKind::CratesIo => self.refetch_missing_crates_io_targets(),
+            ServiceKind::GitHub => self.refetch_missing_github_repos(),
+        }
+    }
+    /// Identify cached GitHub repo entries that look like failed
+    /// fetches (`meta.is_none()` — a successful `batch_fetch_jobs_and_meta`
+    /// always returns a meta payload, even for repos with zero CI
+    /// runs), invalidate them, then re-fire
+    /// [`App::spawn_repo_fetch_for_git_info`] for every leaf with a
+    /// parseable URL. The existing in-flight dedup absorbs duplicate
+    /// calls; cache hits for entries we left alone return immediately
+    /// without spending a request.
+    fn refetch_missing_github_repos(&mut self) {
+        self.invalidate_failed_github_cache_entries();
+        let leaves = self.collect_leaves_with_repo_urls();
+        for (path, url) in leaves {
+            self.spawn_repo_fetch_for_git_info(&path, &url);
+        }
+    }
+    /// Walk the repo cache and drop entries whose `meta.is_none()` —
+    /// the marker for a fetch that ran during the outage and stored
+    /// empty data. Successful entries (any prior good fetch) keep
+    /// their cached meta and are not refetched.
+    fn invalidate_failed_github_cache_entries(&self) {
+        let to_invalidate: Vec<OwnerRepo> = match self.net.github.fetch_cache.lock() {
+            Ok(cache) => cache
+                .iter()
+                .filter(|(_, cached_repo_data)| cached_repo_data.meta.is_none())
+                .map(|(owner_repo, _)| owner_repo.clone())
+                .collect(),
+            Err(_) => return,
+        };
+        for owner_repo in &to_invalidate {
+            scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, owner_repo);
+        }
+    }
+    /// Collect `(path, url)` pairs for every leaf in the tree that
+    /// resolves to a parseable GitHub repo. Deduped by `OwnerRepo` so
+    /// linked worktrees on the same repo don't enqueue redundant
+    /// fetches — the per-spawn dedup would catch them, but skipping
+    /// the work earlier saves a few clones.
+    fn collect_leaves_with_repo_urls(&self) -> Vec<(PathBuf, String)> {
+        let mut seen: HashSet<OwnerRepo> = HashSet::new();
+        let mut out: Vec<(PathBuf, String)> = Vec::new();
+        self.project_list.for_each_leaf_path(|path, _| {
+            let Some(url) = self.project_list.fetch_url_for(path) else {
+                return;
+            };
+            let Some(owner_repo) = crate::ci::parse_owner_repo(&url) else {
+                return;
+            };
+            if seen.insert(owner_repo) {
+                out.push((path.to_path_buf(), url));
+            }
+        });
+        out
+    }
+
+    #[cfg(test)]
+    pub fn apply_tree_build(&mut self, projects: ProjectList) {
+        let selected_path = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from)
+            .or_else(|| self.project_list.paths.last_selected.clone());
+        let expanded = self.project_list.export_expanded();
+        self.mutate_tree()
+            .projects
+            .replace_roots_from(projects, ReplacementExpansion::RestoreSavedTargets);
+        self.restore_expanded(&expanded);
+        self.prune_inactive_project_state(&[]);
+        self.register_lint_for_root_items();
+        self.refresh_lint_runs_from_disk();
+        self.scan.bump_generation();
+
+        self.restore_selection(selected_path.as_deref());
+        self.sync_selected_project();
+    }
+
+    fn restore_expanded(&mut self, expanded: &[ExpandTarget]) {
+        self.project_list.expanded.reset();
+        self.project_list.apply_expanded(expanded);
+        self.rebuild_visible_rows_now();
+    }
+
+    fn restore_selection(&mut self, path: Option<&Path>) {
+        self.project_list.set_cursor(0);
+        if let Some(path) = path {
+            self.project_list
+                .select_project_in_tree(path, self.config.include_non_rust().includes_non_rust());
+        }
+    }
+
+    fn rebuild_visible_rows_now(&mut self) {
+        let include_non_rust = self.config.include_non_rust().includes_non_rust();
+        self.project_list.recompute_visibility(include_non_rust);
+    }
+
+    fn prepare_rescan(&mut self) {
+        // Keep selection and expansion identities across root reordering.
+        let preserved_expanded = self.project_list.export_expanded();
+        let selected_path = self.project_list.paths.last_selected.clone();
+        // `scan.manifest_metadata` survives row replacement. Rediscovered manifests
+        // retain their last diagnostic until an accepted metadata reply replaces it.
+        self.mutate_tree().projects.clear();
+        self.ci.fetch_tracker.clear();
+        self.ci.clear_display_modes();
+        self.clear_all_lint_state();
+        self.lint.set_cache_usage(CacheUsage::default());
+        self.net.clear_for_tree_change();
+        // `enter_startup_owned_network_stage` finishes live standalone GitHub and crates.io task
+        // toasts and restores startup ownership before `startup.reset()` reopens the consolidated
+        // panel, so fetches during rescan cannot create standalone network toasts.
+        self.enter_startup_owned_network_stage();
+        self.scan.discovery_shimmers_mut().clear();
+        self.scan.state.phase = ScanPhase::Running;
+        self.scan.state.started_at = Instant::now();
+        self.scan.state.run_count += 1;
+        self.retire_startup_toast();
+        self.startup.reset();
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            kind = "rescan",
+            run = self.scan.state.run_count,
+            "scan_start"
+        );
+        self.scan.set_priority_fetch_path(None);
+        self.set_focus_to_pane(PaneId::ProjectList);
+        let _ = self.overlays.take_finder_return();
+        self.overlays.close_settings();
+        self.overlays.close_finder();
+        self.reset_project_panes();
+        self.project_list.clear_selected_project();
+        self.inflight.clear_pending_ci_fetch();
+        self.restore_expanded(&preserved_expanded);
+        self.project_list.paths.pending_expanded = preserved_expanded;
+        self.restore_selection(selected_path.as_deref());
+        self.panes.project_list.viewport.set_scroll_offset(0);
+        self.scan.bump_generation();
+    }
+
+    pub(in crate::tui) fn rescan(&mut self) {
+        self.prepare_rescan();
+        let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
+        let scan_start = self
+            .startup_services
+            .spawn_streaming_scan(StreamingScanStartup {
+                source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
+                scan_dirs,
+                inline_dirs: &self.config.current().tui.inline_dirs,
+                exclude_dirs: self.config.exclude_dirs(),
+                non_rust: self.config.include_non_rust(),
+                client: self.net.http_client(),
+                metadata_store: self.scan.metadata_store_handle(),
+            });
+        let scan_effect = scan_start.effect;
+        self.background
+            .swap_background_channel(scan_start.sender, scan_start.receiver);
+        self.respawn_watcher();
+        let current_config = self.config.current().clone();
+        self.refresh_lint_runtime_from_config(&current_config);
+        if scan_effect == StartupEffect::Suppressed {
+            self.handle_scan_result(Vec::new(), &[]);
+        }
+    }
+
+    fn handle_lint_startup_status_msg(&mut self, path: &AbsolutePath, status: CachedLintStatus) {
+        if let Some(lr) = self.project_list.lint_at_path_mut(path)
+            && !matches!(lr.status(), LintStatus::Running(..))
+        {
+            lr.set_cached_status(status);
+        }
+        self.startup.lint_count.seen += 1;
+        self.maybe_complete_startup_lint_cache();
+    }
+    fn maybe_complete_startup_lint_cache(&mut self) {
+        let now = Instant::now();
+        if !self.startup.lint_count.complete_once(now) {
+            return;
+        }
+        // `App::maybe_complete_startup_lint_cache` calls `App::refresh_lint_cache_usage_from_disk`
+        // exactly once after all startup lint statuses are collected. `self.startup.lint_count` is
+        // internal cardinality (the cached-status load), not a panel row; the lint row tracks
+        // `self.startup.lint_phase`. `App::maybe_complete_startup_ready` closes the panel, not
+        // here.
+        self.refresh_lint_cache_usage_from_disk();
+        if let Some(scan_complete_at) = self.startup.scan_complete_at {
+            tracing::trace!(
+                target: PERF_LOG_TARGET,
+                phase = "lint_startup_applied",
+                since_scan_complete_ms =
+                    tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.startup.lint_count.seen,
+                expected = self.startup.lint_count.expected.unwrap_or(0),
+                "startup_phase_complete"
+            );
+        }
+        self.maybe_log_startup_phase_completions();
+    }
+    fn handle_lint_status_msg(&mut self, path: &Path, status: LintStatus, origin: LintRunOrigin) {
+        let status_kind = status.kind();
+        let Some(owner_absolute_path) = self.project_list.lint_owner_path(path) else {
+            tracing::warn!(
+                path = %path.display(),
+                status = ?status_kind,
+                origin = ?origin,
+                "lint_status_dropped_no_owner"
+            );
+            if !matches!(status_kind, LintStatusKind::Running(_)) {
+                self.lint.clear_running_path(path);
+            }
+            self.sync_running_lint_toast();
+            return;
+        };
+        let owner_abs = owner_absolute_path;
+        // Include `LintStatus::Waiting` in `status_is_terminal`, so
+        // `App::reload_lint_history` replaces the deferred run's `lint::LintRunStatus::Running`
+        // history entry with its restored prior result.
+        let status_is_terminal = matches!(
+            status,
+            LintStatus::Passed(_)
+                | LintStatus::Failed(_)
+                | LintStatus::EnvUnavailable(_)
+                | LintStatus::Stale
+                | LintStatus::Waiting
+                | LintStatus::NoLog
+        );
+        let eligible = lint::project_is_eligible(
+            &self.config.current().lint,
+            &owner_abs.as_path().to_string_lossy(),
+            owner_abs.as_path(),
+            true,
+        );
+        let applied_to_model = self
+            .project_list
+            .lint_at_path_mut(owner_abs.as_path())
+            .is_some_and(|lr| {
+                lr.set_status(status);
+                true
+            });
+        if status_is_terminal {
+            self.reload_lint_history(owner_abs.as_path());
+        }
+        if applied_to_model {
+            self.scan.bump_generation();
+            self.lint
+                .apply_lint_status(owner_abs.clone(), status_kind, origin);
+        } else {
+            if !matches!(status_kind, LintStatusKind::Running(_)) {
+                self.lint.clear_running_path(owner_abs.as_path());
+            }
+            tracing::warn!(
+                path = %path.display(),
+                owner = %owner_abs,
+                status = ?status_kind,
+                origin = ?origin,
+                eligible,
+                "lint_status_owner_missing_model_slot"
+            );
+        }
+        self.sync_running_lint_toast();
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            path = %path.display(),
+            owner = %owner_abs,
+            status = ?status_kind,
+            origin = ?origin,
+            eligible,
+            applied_to_model,
+            running_lints = self.lint.running_toast_path_count(),
+            generation = self.scan.generation(),
+            "lint_status_applied"
+        );
+    }
+    fn handle_lint_cache_pruned(&mut self, runs_evicted: usize, bytes_reclaimed: u64) {
+        let noun = if runs_evicted == 1 { "run" } else { "runs" };
+        self.show_timed_toast(
+            "Lint cache",
+            format!(
+                "Evicted {runs_evicted} {noun}, reclaimed {}",
+                crate::tui::render::format_bytes(bytes_reclaimed),
+            ),
+        );
+        self.refresh_lint_cache_usage_from_disk();
+    }
+
+    /// Refresh the mounted-volume capacity for the roots represented in the
+    /// project-pane summary without doing filesystem work on the render path.
+    fn refresh_project_storage(&mut self) {
+        self.storage_refresh_at = Instant::now();
+        #[cfg(test)]
+        if matches!(
+            self.startup_services.background_query_source(),
+            crate::tui::startup_services::BackgroundQuerySource::QueuedReplies
+        ) {
+            return;
+        }
+        let paths = self.project_list.visible_project_storage_paths();
+        let sender = self.background.background_sender();
+        let handle = self.net.http_client().handle;
+        handle.spawn(async move {
+            let paths_for_probe = paths.clone();
+            let storage =
+                tokio::task::spawn_blocking(move || scan::project_storage(&paths_for_probe))
+                    .await
+                    .unwrap_or_default();
+            let _ = sender.send(BackgroundMsg::ProjectStorage { paths, storage });
+        });
+    }
+
+    /// Refresh free capacity periodically so non-project disk activity is
+    /// reflected even when no watched path changes.
+    fn refresh_project_storage_if_due(&mut self, now: Instant) {
+        if Self::project_storage_refresh_due(self.storage_refresh_at, now) {
+            self.refresh_project_storage();
+        }
+    }
+
+    fn project_storage_refresh_due(last_refresh: Instant, now: Instant) -> bool {
+        now.saturating_duration_since(last_refresh)
+            >= Duration::from_secs(PROJECT_STORAGE_REFRESH_SECS)
+    }
+
+    fn set_project_storage(&mut self, paths: &[AbsolutePath], storage: ProjectStorage) {
+        self.project_list.set_project_storage(paths, storage);
+    }
+
+    fn handle_disk_usage(&mut self, path: &Path, bytes: u64) { self.apply_disk_usage(path, bytes); }
+    fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {
+        for (path, sizes) in entries {
+            self.apply_disk_usage_breakdown(path.as_path(), sizes);
+        }
+    }
+    /// Store the total and its parts from the same measurement.
+    fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
+        self.apply_disk_usage(path, sizes.total);
+        if let Found(project) = self.project_list.at_path_mut(path) {
+            project.disk = DiskMeasurement::Measured {
+                total:  sizes.total,
+                target: sizes.in_project_target,
+                other:  sizes.in_project_non_target,
+            };
+        }
+    }
+    fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
+        // Update the measurement and visibility for this path.
+        // Refresh lint registration when visibility changes.
+        let mut lint_runtime_changed = false;
+        match self.project_list.at_path_mut(path) {
+            Found(project) => {
+                if !matches!(project.disk, DiskMeasurement::Measured { .. })
+                    || (bytes == 0 && !path.exists())
+                {
+                    project.disk = DiskMeasurement::TotalOnly(bytes);
+                }
+                // Periodic probes also include dismissed roots. Their result must
+                // not undo the user's explicit dismissal of a deleted project.
+                if project.visibility == Dismissed {
+                    return;
+                }
+                if bytes == 0 && !path.exists() && project.visibility != Deleted {
+                    project.visibility = Deleted;
+                    lint_runtime_changed = true;
+                } else if bytes > 0 && project.visibility != Visible {
+                    project.visibility = Visible;
+                    lint_runtime_changed = true;
+                }
+            },
+            UnknownPath | StaleRoute => {},
+        }
+        if lint_runtime_changed {
+            if let Some(runtime) = self.lint.runtime()
+                && bytes == 0
+            {
+                runtime.unregister_project(AbsolutePath::from(path));
+            }
+            if bytes > 0 {
+                self.register_lint_for_path(path);
+            }
+        }
+    }
+    fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
+        self.startup.disk.seen.insert(AbsolutePath::from(path));
+        self.handle_disk_usage(path, bytes);
+        self.refresh_project_storage();
+        self.maybe_log_startup_phase_completions();
+    }
+    fn handle_disk_usage_batch_msg(
+        &mut self,
+        root_path: &AbsolutePath,
+        entries: Vec<(AbsolutePath, DirSizes)>,
+    ) {
+        // Dispatch compares the applied bytes, breakdown and visibility for
+        // each path. An unchanged poll must retain both row and detail caches.
+        // Insert root_path and each entries path into startup.disk.seen: group_disk_usage_trees
+        // groups flat disk_entries under shallow ancestors while ProjectList::iter follows
+        // build_tree workspaces/worktree groups, so root-only marking could leave expected paths
+        // permanently pending; untracked keys are harmless.
+        self.startup.disk.seen.insert(root_path.clone());
+        for (path, sizes) in &entries {
+            if path != root_path {
+                self.startup.disk.seen.insert(path.clone());
+            }
+            if let Some(mtime) = sizes.max_source_mtime {
+                self.startup.source_mtimes.insert(path.clone(), mtime);
+            }
+        }
+        self.handle_disk_usage_batch(entries);
+        self.refresh_project_storage();
+        self.maybe_log_startup_phase_completions();
+    }
+
+    fn selected_is_expandable(&self) -> bool {
+        let selected = self.project_list.cursor();
+        self.visible_rows()
+            .get(selected)
+            .copied()
+            .and_then(|row| self.project_list.expand_key_for_row(row))
+            .is_some()
+    }
+
+    pub(in crate::tui) fn expand(&mut self) -> bool {
+        if !self.selected_is_expandable() {
+            return false;
+        }
+        let selected = self.project_list.cursor();
+        let Some(row) = self.visible_rows().get(selected).copied() else {
+            return false;
+        };
+        let Some(key) = self.project_list.expand_key_for_row(row) else {
+            return false;
+        };
+        self.project_list.expanded.expand(key, 0) == ExpansionChange::Changed
+    }
+
+    pub(in crate::tui) fn record_selection_choice(&mut self) {
+        self.ensure_visible_rows_cached();
+        if let Some(path) = self.project_list.selected_project_path()
+            && self.project_list.paths.last_selected.as_deref() != Some(path)
+        {
+            self.project_list.paths.last_selected = Some(path.into());
+            self.project_list.mark_sync_changed();
+        }
+    }
+
+    /// Returns the `RootItem` when a root row is selected.
+    pub(in crate::tui) fn selected_item(&self) -> SelectedRootItem<'_> {
+        match self.project_list.selected_row() {
+            Some(VisibleRow::Root { node_index }) => self
+                .project_list
+                .get(node_index)
+                .map_or(SelectedRootItem::Unavailable, |entry| {
+                    SelectedRootItem::Root(&entry.root_item)
+                }),
+            Some(_) | None => SelectedRootItem::Unavailable,
+        }
+    }
+
+    /// Resolve the display path of the currently selected row using `project_list_items`.
+    fn selected_display_path(&self) -> ProjectListRowDisplayPathResolution {
+        let rows = self.visible_rows();
+        let selected = self.project_list.cursor();
+        rows.get(selected)
+            .map_or(ProjectListRowDisplayPathResolution::Unavailable, |row| {
+                self.project_list.display_path_for_row(*row)
+            })
+    }
+
+    /// Build per-pane data for the currently selected row, resolving through
+    /// the `project_list_items` hierarchy.
+    fn build_selected_pane_data(&self, row: VisibleRow) -> SelectedPaneData {
+        match row {
+            // Group headers show the parent project's detail.
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                let Some(item) = self.project_list.get(node_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                SelectedPaneData::Available(Box::new(panes::build_pane_data(self, item)))
+            },
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let Some(item) = self.project_list.get(node_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                let Some(pkg) = item.resolve_member(group_index, member_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                SelectedPaneData::Available(Box::new(panes::build_pane_data_for_member(self, pkg)))
+            },
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self.build_member_vendored_detail(
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            ),
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let Some(item) = self.project_list.get(node_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                let Some(vendored) = item.resolve_vendored(vendored_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                SelectedPaneData::Available(Box::new(panes::build_pane_data_for_vendored(
+                    self, vendored,
+                )))
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => {
+                let Some(item) = self.project_list.get(node_index) else {
+                    return SelectedPaneData::Unavailable;
+                };
+                self.build_worktree_detail(item, worktree_index)
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => self.build_worktree_member_detail(
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            ),
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self.build_worktree_member_vendored_detail(
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            ),
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => self.build_worktree_vendored_detail(node_index, worktree_index, vendored_index),
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => self.build_submodule_detail(node_index, submodule_index),
+        }
+    }
+
+    fn build_submodule_detail(
+        &self,
+        node_index: usize,
+        submodule_index: usize,
+    ) -> SelectedPaneData {
+        let Some(item) = self.project_list.get(node_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        let Some(submodule) = item.submodules().get(submodule_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        SelectedPaneData::Available(Box::new(panes::build_pane_data_for_submodule(
+            self, submodule,
+        )))
+    }
+
+    fn build_member_vendored_detail(
+        &self,
+        node_index: usize,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> SelectedPaneData {
+        let Some(item) = self.project_list.get(node_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        let Some(vendored) =
+            item.resolve_member_vendored(group_index, member_index, vendored_index)
+        else {
+            return SelectedPaneData::Unavailable;
+        };
+        SelectedPaneData::Available(Box::new(panes::build_pane_data_for_vendored(
+            self, vendored,
+        )))
+    }
+
+    /// Build pane data for a worktree entry (a linked workspace or package).
+    fn build_worktree_detail(&self, item: &RootItem, worktree_index: usize) -> SelectedPaneData {
+        match item {
+            RootItem::Worktrees(group) => match group.entry(worktree_index) {
+                Some(RustProject::Workspace(ws)) => {
+                    let display_path = ws.display_path();
+                    SelectedPaneData::Available(Box::new(panes::build_pane_data_for_workspace_ref(
+                        self,
+                        ws,
+                        display_path.as_str(),
+                    )))
+                },
+                Some(RustProject::Package(pkg)) => SelectedPaneData::Available(Box::new(
+                    panes::build_pane_data_for_member(self, pkg),
+                )),
+                None => SelectedPaneData::Unavailable,
+            },
+            _ => SelectedPaneData::Unavailable,
+        }
+    }
+
+    fn build_worktree_member_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+    ) -> SelectedPaneData {
+        let Some(item) = self.project_list.get(node_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        let RootItem::Worktrees(worktree_group) = &**item else {
+            return SelectedPaneData::Unavailable;
+        };
+        let Some(pkg) = worktree_group.member_ref(worktree_index, group_index, member_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        SelectedPaneData::Available(Box::new(panes::build_pane_data_for_member(self, pkg)))
+    }
+
+    fn build_worktree_member_vendored_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> SelectedPaneData {
+        let Some(item) = self.project_list.get(node_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        let RootItem::Worktrees(worktree_group) = &**item else {
+            return SelectedPaneData::Unavailable;
+        };
+        let Some(vendored) = worktree_group.member_vendored_ref(
+            worktree_index,
+            group_index,
+            member_index,
+            vendored_index,
+        ) else {
+            return SelectedPaneData::Unavailable;
+        };
+        SelectedPaneData::Available(Box::new(panes::build_pane_data_for_vendored(
+            self, vendored,
+        )))
+    }
+
+    fn build_worktree_vendored_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        vendored_index: usize,
+    ) -> SelectedPaneData {
+        let Some(item) = self.project_list.get(node_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        let RootItem::Worktrees(worktree_group) = &**item else {
+            return SelectedPaneData::Unavailable;
+        };
+        let Some(vendored) = worktree_group.vendored_ref(worktree_index, vendored_index) else {
+            return SelectedPaneData::Unavailable;
+        };
+        SelectedPaneData::Available(Box::new(panes::build_pane_data_for_vendored(
+            self, vendored,
+        )))
+    }
+
+    fn detail_path_is_affected(&self, path: &Path) -> bool {
+        let Some(selected_path) = self.project_list.selected_project_path() else {
+            return false;
+        };
+        if selected_path == path {
+            return true;
+        }
+        if self.selected_worktree_group_contains(path) {
+            return true;
+        }
+        // `project_list.lint_at_path` resolves `selected_path` and `path` to `LintRuns`;
+        // `std::ptr::eq` includes shared workspace-owner rows without widening unrelated watcher
+        // invalidations.
+        self.project_list
+            .lint_at_path(selected_path)
+            .zip(self.project_list.lint_at_path(path))
+            .is_some_and(|(a, b)| std::ptr::eq(a, b))
+    }
+
+    fn selected_worktree_group_contains(&self, path: &Path) -> bool {
+        let Some(VisibleRow::Root { node_index }) = self.project_list.selected_row() else {
+            return false;
+        };
+        let Some(entry) = self.project_list.get(node_index) else {
+            return false;
+        };
+        let RootItem::Worktrees(group) = &entry.root_item else {
+            return false;
+        };
+        group
+            .iter_paths()
+            .any(|group_path| group_path.as_path() == path)
+    }
+
+    /// The selected project paired with the crates.io name to query for it.
+    /// Both come from the project list at one path. The detail pane is not
+    /// a source here: it keeps rendering the previously selected row until
+    /// the next draw, and this runs from the background poll on a tree
+    /// rebuild, so a pane-sourced name queries one crate and stores its
+    /// version on another crate's row.
+    fn priority_fetch_target(&self) -> PriorityFetchSelection {
+        self.project_list.selected_project_path().map_or(
+            PriorityFetchSelection::NoProject,
+            |path| {
+                PriorityFetchSelection::Selected(
+                    self.collect_crates_io_fetch_plan()
+                        .priority_target(path.into()),
+                )
+            },
+        )
+    }
+
+    /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
+    pub(in crate::tui) fn maybe_priority_fetch(&mut self) {
+        let target = match self.priority_fetch_target() {
+            PriorityFetchSelection::NoProject => return,
+            PriorityFetchSelection::Selected(target) => target,
+        };
+        let abs_key = target.path;
+        let display_path = match self.selected_display_path() {
+            ProjectListRowDisplayPathResolution::Resolved(display_path) => display_path,
+            ProjectListRowDisplayPathResolution::Unavailable => abs_key.display_path(),
+        };
+        if match self.project_list.at_path(abs_key.as_path()) {
+            Found(p) => p.disk.total().is_none(),
+            UnknownPath | StaleRoute => true,
+        } && self.scan.priority_fetch_path() != Some(&abs_key)
+        {
+            let effect = self.startup_services.priority_detail_fetch_effect();
+            self.startup_services.record_priority_detail_fetch(effect);
+            if effect == StartupEffect::Suppressed {
+                return;
+            }
+            let abs_str = abs_key.as_path().display().to_string();
+            self.scan.set_priority_fetch_path(Some(abs_key));
+            let crates_io_name = match &target.crates_io_query {
+                PriorityCratesIoQuery::Skip => None,
+                PriorityCratesIoQuery::Fetch(name) => Some(name),
+            };
+            terminal::spawn_priority_fetch(self, display_path.as_str(), &abs_str, crates_io_name);
+        }
+    }
+
+    fn begin_startup_phase_tracker(&mut self, lint_registered: usize) {
+        let plan_effects = StartupPlanEffects::from_startup_services(&self.startup_services);
+        let crates_io_plan = match plan_effects.project_details {
+            StartupEffect::Real => self.collect_crates_io_fetch_plan(),
+            StartupEffect::Suppressed => CratesIoFetchPlan::default(),
+        };
+        let startup_plan =
+            self.build_startup_plan(lint_registered, crates_io_plan.names(), plan_effects);
+        self.initialize_startup_phase_tracker_with_plan(&startup_plan);
+        // When `lint_registered == 0` (runtime disabled or no eligible projects), no later message
+        // increments `startup.lint_count.seen`; call `maybe_complete_startup_lint_cache`
+        // after `initialize_startup_phase_tracker_with_plan`, so readiness follows
+        // declaration of all startup obligations.
+        if lint_registered == 0 {
+            self.maybe_complete_startup_lint_cache();
+        }
+        self.schedule_startup_project_details(crates_io_plan);
+        self.schedule_git_first_commit_refreshes();
+    }
+
+    fn build_startup_plan(
+        &self,
+        lint_registered: usize,
+        crates_io_expected: HashSet<String>,
+        plan_effects: StartupPlanEffects,
+    ) -> StartupPlan {
+        let disk_expected = match plan_effects.streaming_scan {
+            StartupEffect::Real => startup::initial_disk_roots(&self.project_list),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let git_expected = match plan_effects.project_details {
+            StartupEffect::Real => self
+                .project_list
+                .git_directories()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let git_seen = match plan_effects.project_details {
+            StartupEffect::Real => self
+                .project_list
+                .iter()
+                .filter(|entry| entry.root_item.git_info().is_some())
+                .filter_map(|entry| entry.root_item.git_directory())
+                .collect::<HashSet<_>>(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let metadata_expected = match plan_effects.streaming_scan {
+            StartupEffect::Real => startup::initial_metadata_roots(&self.project_list),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let lint_history = match plan_effects.lint_history {
+            StartupEffect::Real => self.lint_history_project_paths(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let mut detail_expected = HashSet::new();
+        if plan_effects.project_details == StartupEffect::Real {
+            self.project_list.for_each_leaf_path(|path, _| {
+                detail_expected.insert(AbsolutePath::from(path));
+            });
+        }
+        StartupPlan {
+            disk_expected,
+            git_expected,
+            git_seen,
+            metadata_expected,
+            lint_history,
+            lint_count_expected: lint_registered,
+            crates_io_expected,
+            detail_expected,
+            github_running: match plan_effects.project_details {
+                StartupEffect::Real => self.net.startup_github_running_repos(),
+                StartupEffect::Suppressed => Vec::new(),
+            },
+            crates_io_running: match plan_effects.project_details {
+                StartupEffect::Real => self.net.startup_crates_io_running_names(),
+                StartupEffect::Suppressed => Vec::new(),
+            },
+        }
+    }
+
+    fn initialize_startup_phase_tracker_with_plan(&mut self, startup_plan: &StartupPlan) {
+        self.reset_startup_phase_state(startup_plan);
+        self.start_startup_toast();
+        self.startup.log_phase_plan();
+        self.maybe_log_startup_phase_completions();
+    }
+
+    #[cfg(test)]
+    pub fn initialize_startup_phase_tracker(&mut self) {
+        let crates_io_plan = self.collect_crates_io_fetch_plan();
+        let mut startup_plan =
+            self.build_startup_plan(0, crates_io_plan.names(), StartupPlanEffects::production());
+        startup_plan.detail_expected.clear();
+        self.initialize_startup_phase_tracker_with_plan(&startup_plan);
+    }
+    fn reset_startup_phase_state(&mut self, startup_plan: &StartupPlan) {
+        self.retire_startup_toast();
+        self.startup.reset();
+        self.startup.scan_complete_at = Some(Instant::now());
+        self.startup.toast = None;
+        if let Some(planning) = self.startup.take_planning() {
+            planning.install(&mut self.startup, startup_plan);
+        }
+    }
+    fn retire_startup_toast(&mut self) {
+        if let Some(toast) = self.startup.toast.take() {
+            self.framework
+                .toasts
+                .start_colored_countdown(toast.id(), std::time::Duration::ZERO);
+            self.prune_toasts();
+        }
+    }
+    fn start_startup_toast(&mut self) {
+        let now = Instant::now();
+        // Call `stamp_first_seen(now)` for each startup row at panel creation to establish its
+        // minimum-visible floor; `startup.repo` initially renders `ProgressState::Waiting`.
+        self.startup.disk.stamp_first_seen(now);
+        self.startup.git.stamp_first_seen(now);
+        self.startup.repo.stamp_first_seen(now);
+        self.startup.crates_io.stamp_first_seen(now);
+        self.startup.metadata.stamp_first_seen(now);
+        self.startup.lint_phase.stamp_first_seen(now);
+        self.startup.languages.stamp_first_seen(now);
+        self.startup.tests.stamp_first_seen(now);
+        let toast_id =
+            self.framework
+                .toasts
+                .push_colored_persistent("Startup", Vec::new(), Vec::new());
+        self.startup.toast = Some(StartupToast::new(toast_id));
+    }
+    /// Build the panel's per-line text and matching per-line colors from the
+    /// current phase states and the live in-flight network fetches.
+    fn startup_panel_lines(&self, now: Instant, width: usize) -> (Vec<String>, Vec<Color>) {
+        let github_detail = self.in_flight_github_label();
+        let crates_io_detail = self.in_flight_crates_io_label();
+        let rows = self
+            .startup
+            .startup_panel_rows(now, &github_detail, &crates_io_detail);
+        startup_panel_body(&rows, width)
+    }
+    /// The GitHub repo fetch that has been in flight longest — the row's
+    /// "currently working on" detail.
+    fn in_flight_github_label(&self) -> StartupFetchDetail {
+        self.net
+            .github_running()
+            .running
+            .iter()
+            .min_by_key(|(_, entry)| entry.started_at)
+            .map_or(StartupFetchDetail::Idle, |(repo, _)| {
+                StartupFetchDetail::InFlight(repo.to_string())
+            })
+    }
+    /// The crates.io fetch in flight (one at a time) — the row's detail.
+    fn in_flight_crates_io_label(&self) -> StartupFetchDetail {
+        self.net
+            .crates_io_running()
+            .running
+            .iter()
+            .min_by_key(|(_, entry)| entry.started_at)
+            .map_or(StartupFetchDetail::Idle, |(name, _)| {
+                StartupFetchDetail::InFlight(name.clone())
+            })
+    }
+    fn maybe_log_startup_phase_completions(&mut self) {
+        let Some(scan_complete_at) = self.startup.scan_complete_at else {
+            return;
+        };
+        let now = Instant::now();
+        self.maybe_complete_startup_disk(now, scan_complete_at);
+        self.maybe_complete_startup_git(now, scan_complete_at);
+        self.maybe_complete_startup_repo(now, scan_complete_at);
+        self.maybe_complete_startup_metadata(now, scan_complete_at);
+        self.maybe_complete_startup_lint_history(now, scan_complete_at);
+        // `startup.crates_io`, `startup.languages` and `startup.tests` need no special logging;
+        // `complete_once(now)` records completion after every expected entry is seen, establishing
+        // the minimum-visible floor.
+        self.startup.crates_io.complete_once(now);
+        self.startup.languages.complete_once(now);
+        self.startup.tests.complete_once(now);
+        self.startup.details_declared.complete_once(now);
+        // Late work can complete timed-out phases during the countdown.
+        // Only collecting startup can begin the readiness handoff.
+        if !self.startup.is_collecting() {
+            return;
+        }
+        self.maybe_complete_startup_ready(now, scan_complete_at);
+    }
+
+    /// Fit startup rows once after the current frame resolves its pane layout.
+    pub(in crate::tui) fn refresh_startup_panel_for_layout(&mut self, bounds: Rect) {
+        if self.startup.toast.is_none() {
+            return;
+        }
+        let area = self.toast_area(bounds);
+        let width = self.framework.toasts.body_width_for_area(area);
+        self.refresh_startup_panel_at_width(width, Instant::now());
+    }
+
+    fn refresh_startup_panel_at_width(&mut self, width: usize, now: Instant) {
+        let Some(mut toast) = self.startup.toast else {
+            return;
+        };
+        let (lines, colors) = self.startup_panel_lines(now, width);
+        self.startup.toast = if self
+            .framework
+            .toasts
+            .update_colored(toast.id(), lines, colors)
+        {
+            toast.layout = StartupToastLayout::Drawn { width, at: now };
+            Some(toast)
+        } else {
+            None
+        };
+    }
+
+    fn refresh_startup_details_if_due(&mut self, now: Instant) {
+        let Some(StartupToast {
+            layout: StartupToastLayout::Drawn { width, at },
+            ..
+        }) = self.startup.toast
+        else {
+            return;
+        };
+        if self.startup.detail_visibility_changed(at, now) {
+            self.refresh_startup_panel_at_width(width, now);
+        }
+    }
+    /// Re-evaluate the panel each frame so the minimum-visible floor and
+    /// the per-row timeout can close it even when no new `BackgroundMsg`
+    /// arrives.
+    pub(in crate::tui) fn tick_startup_panel(&mut self) {
+        self.tick_startup_panel_at(Instant::now());
+    }
+
+    fn tick_startup_panel_at(&mut self, now: Instant) {
+        if !self.startup.is_collecting() {
+            return;
+        }
+        let Some(scan_complete_at) = self.startup.scan_complete_at else {
+            return;
+        };
+        self.sweep_startup_timeouts(now);
+        self.refresh_startup_details_if_due(now);
+        self.maybe_complete_startup_ready(now, scan_complete_at);
+    }
+    /// Fail any phase that has been visible past `STARTUP_ROW_TIMEOUT`
+    /// without completing — the backstop that guarantees startup always
+    /// finishes. A newly-timed-out phase pops one warning toast.
+    fn sweep_startup_timeouts(&mut self, now: Instant) {
+        let timeout = STARTUP_ROW_TIMEOUT;
+        let timed_out: [(bool, &'static str); 8] = [
+            (
+                self.startup.disk.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_DISK,
+            ),
+            (
+                self.startup.git.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_GIT,
+            ),
+            (
+                self.startup.repo.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_GITHUB,
+            ),
+            (
+                self.startup.crates_io.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_CRATES_IO,
+            ),
+            (
+                self.startup.metadata.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_METADATA,
+            ),
+            (
+                self.startup.lint_phase.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_LINT,
+            ),
+            (
+                self.startup.languages.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_LANGUAGES,
+            ),
+            (
+                self.startup.tests.time_out(now, timeout).is_some(),
+                STARTUP_PHASE_TESTS,
+            ),
+        ];
+        for (newly_failed, label) in timed_out {
+            if newly_failed {
+                self.show_timed_warning_toast(
+                    "Startup timed out",
+                    format!("{label} did not finish in time"),
+                );
+            }
+        }
+    }
+    /// Mark the repo row failed (rate-limited or unreachable GitHub) so the
+    /// panel finishes without waiting out the timeout. No-op once startup
+    /// has completed or the repo row is already terminal; the accompanying
+    /// service-unavailable toast already names the reason.
+    fn fail_startup_repo_phase(&mut self, reason: FailureReason) {
+        if !self.startup.is_collecting() {
+            return;
+        }
+        let repo = &mut self.startup.repo;
+        if repo.is_terminal() || repo.expected.is_unknown() {
+            return;
+        }
+        repo.lifecycle.fail(reason);
+        self.maybe_log_startup_phase_completions();
+    }
+    /// Add counted language scan work to the startup row. The final stats still
+    /// arrive as project-root batches; these counted tokens only make progress
+    /// reflect long scans without flooding the main queue with one path per file.
+    const fn mark_startup_languages_expected(&mut self, units: usize) {
+        self.startup.languages.add_work_expected(units);
+    }
+    /// Mark the project-root language tokens from a `LanguageStatsBatch`.
+    /// Runs alongside the `ProjectList` handler, which owns the actual stats.
+    /// Each batch also completes the counted scan work that produced it.
+    fn mark_startup_languages_seen(&mut self, entries: &[(AbsolutePath, LanguageStats)]) {
+        self.startup.languages.add_work_seen(entries.len());
+        for (path, _) in entries {
+            self.startup.languages.seen.insert(path.clone());
+        }
+        if self.startup.languages.is_complete() {
+            self.maybe_log_startup_phase_completions();
+        }
+    }
+    /// Mark the tests row's `seen` from a `TestCountsBatch`. Runs alongside
+    /// the `ProjectList` handler, which owns the actual counts.
+    fn mark_startup_tests_seen(&mut self, entries: &[(AbsolutePath, TestCounts)]) {
+        for (path, _) in entries {
+            self.startup.tests.seen.insert(path.clone());
+        }
+        self.maybe_log_startup_phase_completions();
+    }
+    fn mark_startup_project_details_declared(&mut self, path: AbsolutePath) {
+        self.startup.details_declared.seen.insert(path);
+        self.maybe_log_startup_phase_completions();
+    }
+    fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self.startup.disk.complete_once(now) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            phase = "disk_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.disk.seen.len(),
+            expected = self.startup.disk.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    fn maybe_complete_startup_git(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self.startup.git.complete_once(now) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            phase = "git_local_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.git.seen.len(),
+            expected = self.startup.git.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    fn maybe_complete_startup_repo(&mut self, now: Instant, scan_complete_at: Instant) {
+        // `startup.git.is_terminal()` gates completion of `startup.repo` on complete or failed Git.
+        // Otherwise, a scan finishing before `crate::scan::BackgroundMsg::RepoFetchQueued` could
+        // satisfy `repo.seen (0) >= repo.expected (0)` prematurely, stranding repository fetches
+        // from staggered Git arrivals outside the startup panel. Timed-out Git is terminal too,
+        // releasing the repository phase so the panel finishes.
+        if !self.startup.git.is_terminal() {
+            return;
+        }
+        // Once `startup.git` is terminal, local Git has resolved the discovered GitHub remotes or
+        // given up. `startup.repo.expected.stabilize()` freezes the denominator so
+        // `ProgressState::Waiting` becomes a determinate bar. Stabilization is idempotent; a later
+        // `crate::scan::BackgroundMsg::RepoFetchQueued` still joins the stable denominator and
+        // reopens the row while startup is open.
+        self.startup.repo.expected.stabilize();
+        // `net.github.has_repo_fetch_in_flight()` holds `startup.repo` open between worker spawn
+        // and `RepoFetchQueued` joining its denominator, preventing early steady-state
+        // handoff and a stranded standalone fetch toast outside its owning panel. FIFO
+        // delivery on the same channel puts `RepoInfo` before the `CheckoutInfo` that makes
+        // git terminal, so every repo's first fetch is already tracked here.
+        if self.net.github.has_repo_fetch_in_flight() {
+            return;
+        }
+        if !self.startup.repo.complete_once(now) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            phase = "repo_fetch_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.repo.seen.len(),
+            expected = self.startup.repo.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    fn maybe_complete_startup_metadata(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self.startup.metadata.complete_once(now) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            phase = "metadata_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.metadata.seen.len(),
+            expected = self.startup.metadata.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    /// Mark the "Lint history" row complete once every Rust project's history
+    /// has been read from disk (the single `BackgroundMsg::LintHistoryLoaded`
+    /// batch). The row is seeded with the same project set the load reports,
+    /// so `seen` always catches up — the panel can't strand on it.
+    fn maybe_complete_startup_lint_history(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self.startup.lint_phase.complete_once(now) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            phase = "lint_history_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.lint_phase.seen.len(),
+            expected = self.startup.lint_phase.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
+        let lint_seen = self.startup.lint_phase.seen.len();
+        let lint_expected = self.startup.lint_phase.expected_len();
+        if !self.startup.is_collecting() {
+            return;
+        }
+        let network = self.net.startup_network_readiness(
+            self.startup.repo.is_failed(),
+            self.startup.crates_io.is_failed(),
+        );
+        let Some(collecting) = self.startup.take_collecting() else {
+            return;
+        };
+        let ready = match collecting.try_ready(&self.startup, now, scan_complete_at, network) {
+            StartupReadiness::Ready(ready) => ready,
+            StartupReadiness::RowsPending(collecting)
+            | StartupReadiness::DeclarationsPending(collecting) => {
+                collecting.restore(&mut self.startup);
+                return;
+            },
+            StartupReadiness::NetworkPending {
+                pending,
+                collecting,
+            } => {
+                tracing::debug!(
+                    github_running = pending.github,
+                    crates_io_running = pending.crates_io,
+                    "startup_waiting_for_network_work"
+                );
+                collecting.restore(&mut self.startup);
+                return;
+            },
+        };
+        let closing = ready.begin_closing(&mut self.startup);
+        self.net.begin_steady_state_network_toasts(&closing.network);
+        // Keep the handle in Startup so each closing frame can fit its rows.
+        if let Some(toast) = self.startup.toast {
+            self.finish_startup_toast_with_countdown(toast);
+        }
+        // Call `sync_running_crates_io_toast` and `sync_running_repo_fetch_toast` only after
+        // `begin_steady_state_network_toasts` drains startup-owned trackers or abandons work for a
+        // failed startup row, since the panel no longer owns these rows.
+        self.sync_running_crates_io_toast();
+        self.sync_running_repo_fetch_toast();
+        // Startup is fully closed: every disk walk has reported, so each
+        // project's newest source mtime is in `Startup::source_mtimes`. Now
+        // lint the projects that changed since their last run without
+        // contending with the startup window.
+        self.kick_off_startup_lints();
+        let since_scan_ms = tui_pane::perf_log_ms(
+            closing
+                .completed_at
+                .duration_since(closing.scan_complete_at)
+                .as_millis(),
+        );
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            since_scan_complete_ms = since_scan_ms,
+            disk_seen = self.startup.disk.seen.len(),
+            disk_expected = self.startup.disk.expected_len(),
+            git_seen = self.startup.git.seen.len(),
+            git_expected = self.startup.git.expected_len(),
+            repo_seen = self.startup.repo.seen.len(),
+            repo_expected = self.startup.repo.expected_len(),
+            lint_seen = lint_seen,
+            lint_expected = lint_expected,
+            metadata_seen = self.startup.metadata.seen.len(),
+            metadata_expected = self.startup.metadata.expected_len(),
+            "startup_complete"
+        );
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            since_scan_complete_ms = since_scan_ms,
+            "steady_state_begin"
+        );
+    }
+
+    fn finish_startup_toast_with_countdown(&mut self, toast: StartupToast) {
+        let linger = self.framework.toast_settings().finished_task_visible.get();
+        self.framework
+            .toasts
+            .start_colored_countdown(toast.id(), linger);
+        self.prune_toasts();
     }
 }
 
@@ -4901,6 +6331,8 @@ mod tests {
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
+        use crate::tui::panes::PackageContent;
+        use crate::tui::panes::PackageData;
         use crate::tui::panes::PackageRow;
         use crate::tui::panes::PaneId;
         use crate::tui::panes::SyncedDescriptionHeight;
@@ -6269,7 +7701,10 @@ mod tests {
             let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
-            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            let mut package = match app.panes.package.content() {
+                PackageContent::Selected(data) => PackageData::clone(data),
+                PackageContent::NoProjectSelected => PackageData::default(),
+            };
             package.description = DescriptionState::KnownEmpty;
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().cloned().unwrap_or_default();
@@ -6373,7 +7808,10 @@ mod tests {
             app.set_focus_to_pane(PaneId::Package);
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
-            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            let mut package = match app.panes.package.content() {
+                PackageContent::Selected(data) => PackageData::clone(data),
+                PackageContent::NoProjectSelected => PackageData::default(),
+            };
             package.description = DescriptionState::KnownEmpty;
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().cloned().unwrap_or_default();
@@ -6382,7 +7820,9 @@ mod tests {
             app.panes.package.viewport.set_pos(1);
             render_ui(&mut app);
 
-            let package = app.panes.package.content().expect("package pane content");
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             assert!(matches!(
                 panes::package_rows_from_data(package).get(1),
                 Some(panes::PackageRow::Section(_))
@@ -6424,7 +7864,10 @@ mod tests {
             app.set_focus_to_pane(PaneId::Package);
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
-            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            let mut package = match app.panes.package.content() {
+                PackageContent::Selected(data) => PackageData::clone(data),
+                PackageContent::NoProjectSelected => PackageData::default(),
+            };
             package.description = DescriptionState::KnownEmpty;
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().cloned().unwrap_or_default();
@@ -6432,7 +7875,9 @@ mod tests {
             app.panes.git.set_content(git);
             render_ui(&mut app);
 
-            let package = app.panes.package.content().expect("package pane content");
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             let rows = panes::package_rows_from_data(package);
             assert!(matches!(rows.get(1), Some(panes::PackageRow::Section(_))));
             assert!(matches!(rows.get(5), Some(panes::PackageRow::Section(_))));
@@ -6474,7 +7919,9 @@ mod tests {
             app.set_focus_to_pane(PaneId::Package);
             render_ui(&mut app);
 
-            let package = app.panes.package.content().expect("package pane content");
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             let rows = panes::package_rows_from_data(package);
             let structure_row = rows
                 .iter()
@@ -7474,12 +8921,10 @@ mod tests {
             app.ensure_disk_cache();
             app.ensure_fit_widths_cached();
             app.ensure_detail_cached();
-            let mut package = app
-                .panes
-                .package
-                .content()
-                .expect("selected package")
-                .clone();
+            let PackageContent::Selected(package_data) = app.panes.package.content() else {
+                panic!("selected package");
+            };
+            let mut package = PackageData::clone(package_data);
             package.description = DescriptionState::Known(description.to_string());
             let rows = panes::package_rows_from_data(&package);
             let (field_row, field) = rows
@@ -9154,6 +10599,8 @@ mod tests {
         use crate::tui::columns::ProjectRow;
         use crate::tui::columns::RowLifecycle;
         use crate::tui::input;
+        use crate::tui::panes::PackageContent;
+        use crate::tui::panes::TargetsContent;
         fn test_submodule(name: &str, path: &str) -> Submodule {
             Submodule {
                 name:          name.to_string(),
@@ -9288,11 +10735,9 @@ mod tests {
             apply_items(&mut app, &[root]);
             app.ensure_detail_cached();
 
-            let package = app
-                .panes
-                .package
-                .content()
-                .expect("pane should have rendered test content");
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("pane should have rendered test content");
+            };
             assert_eq!(
                 package.stats_rows,
                 vec![
@@ -9330,11 +10775,9 @@ mod tests {
             apply_items(&mut app, &[root]);
             app.ensure_detail_cached();
 
-            let package = app
-                .panes
-                .package
-                .content()
-                .expect("pane should have rendered test content");
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("pane should have rendered test content");
+            };
             assert_eq!(package.stats_rows, vec![("vendored", 2), ("binary", 1)]);
         }
 
@@ -9527,7 +10970,10 @@ mod tests {
             app.sync_selected_project();
 
             app.ensure_detail_cached();
-            let example_count = app.panes.targets.content().map(|d| d.examples.len());
+            let example_count = match app.panes.targets.content() {
+                TargetsContent::Available(data) => Some(data.examples.len()),
+                TargetsContent::Unavailable => None,
+            };
             assert_eq!(
                 example_count,
                 Some(0),
@@ -9588,7 +11034,10 @@ mod tests {
                 result: Ok(workspace_metadata),
             });
             app.ensure_detail_cached();
-            let example_count = app.panes.targets.content().map(|d| d.examples.len());
+            let example_count = match app.panes.targets.content() {
+                TargetsContent::Available(data) => Some(data.examples.len()),
+                TargetsContent::Unavailable => None,
+            };
             assert_eq!(
                 example_count,
                 Some(1),
@@ -11602,6 +13051,7 @@ mod tests {
         use crate::tui::keymap::LintsAction;
         use crate::tui::messages::CleanMsg;
         use crate::tui::panes;
+        use crate::tui::panes::PackageContent;
         use crate::tui::state::CiApplicability;
         use crate::tui::state::CiDisplay;
         use crate::tui::state::StartupNetworkReadiness;
@@ -12725,8 +14175,11 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             assert!(matches!(
-                &app.panes.package.content().unwrap().lint_display,
+                &package.lint_display,
                 crate::tui::state::LintDisplay::NoRuns
             ));
             let generation_before = app.scan.generation();
@@ -12751,7 +14204,10 @@ mod tests {
             assert!(app.lint.running_toast_contains_path(project_path.as_path()));
 
             app.ensure_detail_cached();
-            let display = app.panes.package.content().unwrap().lint_display.clone();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
+            let display = package.lint_display.clone();
             assert!(
                 matches!(
                     display,
@@ -13382,12 +14838,10 @@ mod tests {
                     .project_list
                     .ci_status_using_lookup(project.path(), &app.ci.status_lookup());
                 app.ensure_detail_cached();
-                let display = app
-                    .panes
-                    .package
-                    .content()
-                    .expect("package content")
-                    .ci_display;
+                let PackageContent::Selected(package_data) = app.panes.package.content() else {
+                    panic!("package content");
+                };
+                let display = package_data.ci_display;
                 match expected {
                     CiApplicability::UnreadableEvidence => {
                         assert!(status.is_none());
@@ -13462,12 +14916,10 @@ mod tests {
             );
             app.ensure_detail_cached();
 
-            let display = app
-                .panes
-                .package
-                .content()
-                .expect("package pane should have rendered test content")
-                .ci_display;
+            let PackageContent::Selected(package_data) = app.panes.package.content() else {
+                panic!("package pane should have rendered test content");
+            };
+            let display = package_data.ci_display;
 
             assert_eq!(display, crate::tui::state::CiDisplay::UnpublishedBranch);
         }
@@ -13894,7 +15346,10 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
-            let display = app.panes.package.content().unwrap().lint_display.clone();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
+            let display = package.lint_display.clone();
             assert!(
                 matches!(
                     display,
@@ -14247,7 +15702,10 @@ mod tests {
             ));
             app.scan.bump_generation();
             app.ensure_detail_cached();
-            let running_display = app.panes.package.content().unwrap().lint_display.clone();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
+            let running_display = package.lint_display.clone();
             assert!(
                 matches!(
                     running_display,
@@ -14268,7 +15726,10 @@ mod tests {
                 },
             );
             app.ensure_detail_cached();
-            let finished_display = app.panes.package.content().unwrap().lint_display.clone();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
+            let finished_display = package.lint_display.clone();
 
             assert!(
                 !matches!(
@@ -16623,6 +18084,8 @@ mod tests {
         use crate::scan;
         use crate::tui::keymap::TargetsAction;
         use crate::tui::panes;
+        use crate::tui::panes::PackageContent;
+        use crate::tui::panes::TargetsContent;
         fn metadata_with_example(
             root: &AbsolutePath,
             package_name: &str,
@@ -16917,7 +18380,9 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
-            let package = app.panes.package.content().unwrap();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             assert_eq!(package.title, "Worktree Group");
             assert_eq!(package.name, "bevy_brp");
             assert_eq!(
@@ -16973,7 +18438,9 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
-            let targets = app.panes.targets.content().unwrap();
+            let TargetsContent::Available(targets) = app.panes.targets.content() else {
+                panic!("targets pane content");
+            };
             let labels: Vec<String> = targets
                 .examples
                 .iter()
@@ -17048,11 +18515,10 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
-            let target_index = app
-                .panes
-                .targets
-                .content()
-                .expect("workspace targets should be loaded")
+            let TargetsContent::Available(targets_data) = app.panes.targets.content() else {
+                panic!("workspace targets should be loaded");
+            };
+            let target_index = targets_data
                 .examples
                 .iter()
                 .position(|entry| entry.package_name == "wasm_node_demo")
@@ -17096,9 +18562,8 @@ mod tests {
             app.project_list.set_cursor(0);
             app.sync_selected_project();
             app.ensure_detail_cached();
-            assert_eq!(
-                app.panes.package.content().map(|p| p.title.as_str()),
-                Some("Worktree Group")
+            assert!(
+                matches!(app.panes.package.content(), PackageContent::Selected(p) if p.title == "Worktree Group")
             );
             assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(2));
 
@@ -17115,7 +18580,9 @@ mod tests {
             app.dismiss(target);
             app.ensure_detail_cached();
 
-            let package = app.panes.package.content().unwrap();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             assert_eq!(package.title, "Package");
             assert_eq!(package.name, "cargo-mend");
             assert!(package.worktree_group_summary.is_none());
@@ -17142,7 +18609,9 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
 
-            let package = app.panes.package.content().unwrap();
+            let PackageContent::Selected(package) = app.panes.package.content() else {
+                panic!("package pane content");
+            };
             assert_eq!(package.title, "Worktree Group");
             assert_eq!(
                 package.worktree_group_summary.as_ref().map(|s| s.worktrees),
@@ -17199,9 +18668,8 @@ mod tests {
             let git = app.panes.git.content().unwrap();
             let names: Vec<&str> = git.worktrees.iter().map(|wt| wt.name.as_str()).collect();
             assert_eq!(names, vec!["cargo-mend", "cargo-mend_style_fix"]);
-            assert_eq!(
-                app.panes.package.content().map(|p| p.title.as_str()),
-                Some("Worktree Group")
+            assert!(
+                matches!(app.panes.package.content(), PackageContent::Selected(p) if p.title == "Worktree Group")
             );
         }
 
@@ -17258,9 +18726,8 @@ mod tests {
                     .map(Path::to_path_buf),
                 Some(linked_ws.path().to_path_buf())
             );
-            assert_eq!(
-                app.panes.package.content().map(|p| p.path.as_str()),
-                Some("~/rust/cargo-port_speedup")
+            assert!(
+                matches!(app.panes.package.content(), PackageContent::Selected(p) if p.path == "~/rust/cargo-port_speedup")
             );
             assert!(
                 app.tabbable_panes().contains(&PaneId::Package),
@@ -18910,5 +20377,227 @@ mod tests {
         app.dismiss(target);
         app.ensure_visible_rows_cached();
         assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);
+    }
+
+    mod disk_usage {
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use crate::project::AbsolutePath;
+        use crate::project::Package;
+        use crate::project::RootItem;
+        use crate::project::RustProject;
+        use crate::project::Visibility;
+        use crate::tui::app::App;
+        use crate::tui::app::constants::PROJECT_STORAGE_REFRESH_SECS;
+        use crate::tui::test_support;
+
+        #[test]
+        #[allow(clippy::expect_used, reason = "fixture paths must be present")]
+        fn disk_poll_preserves_deleted_rows_and_explicit_dismissal() {
+            let scratch = tempfile::tempdir().expect("scratch project");
+            let path = AbsolutePath::from(scratch.path().join("removed-project"));
+            let item = RootItem::Rust(RustProject::Package(Package {
+                path: path.clone(),
+                ..Package::default()
+            }));
+            let mut app = test_support::make_app(&[item]);
+            app.apply_disk_usage(&path, 0);
+            assert_eq!(
+                (app.project_list
+                    .at_path(&path)
+                    .expect_found("deleted row remains"))
+                .visibility,
+                Visibility::Deleted
+            );
+            (app.project_list
+                .at_path_mut(&path)
+                .expect_found("row to dismiss"))
+            .visibility = Visibility::Dismissed;
+            app.apply_disk_usage(&path, 0);
+            assert_eq!(
+                (app.project_list
+                    .at_path(&path)
+                    .expect_found("dismissed row remains stored"))
+                .visibility,
+                Visibility::Dismissed
+            );
+            app.apply_disk_usage(&path, 42);
+            assert_eq!(
+                (app.project_list
+                    .at_path(&path)
+                    .expect_found("late result retains dismissal"))
+                .visibility,
+                Visibility::Dismissed
+            );
+        }
+
+        #[test]
+        fn project_storage_refresh_is_due_after_two_seconds() {
+            let start = Instant::now();
+            let interval = Duration::from_secs(PROJECT_STORAGE_REFRESH_SECS);
+
+            assert!(!App::project_storage_refresh_due(
+                start,
+                start + interval.saturating_sub(Duration::from_millis(1))
+            ));
+            assert!(App::project_storage_refresh_due(start, start + interval));
+        }
+    }
+
+    mod priority_fetch {
+        use crate::project::AbsolutePath;
+        use crate::project::Package;
+        use crate::project::RootItem;
+        use crate::project::RustProject;
+        use crate::tui::app::PriorityCratesIoQuery;
+        use crate::tui::app::PriorityFetchSelection;
+        use crate::tui::app::async_tasks::PriorityFetchTarget;
+        use crate::tui::panes::PackageContent;
+        use crate::tui::test_support;
+
+        fn package(name: &str, path: &str) -> RootItem {
+            RootItem::Rust(RustProject::Package(Package {
+                path: AbsolutePath::from(path),
+                name: Some(name.to_string()),
+                ..Package::default()
+            }))
+        }
+
+        /// The name a priority fetch queries and the path it writes the answer
+        /// to must name one project. The detail pane keeps rendering the
+        /// previously selected row until the next draw, so sourcing the name
+        /// from it stores one crate's crates.io version on another crate's row
+        /// — which then reads as a release the next background refresh
+        /// "discovers".
+        #[test]
+        fn priority_fetch_names_the_selected_project_not_the_stale_detail_pane() {
+            let mut app = test_support::make_app(&[
+                package("alpha_crate", "/tmp/alpha_crate"),
+                package("beta_crate", "/tmp/beta_crate"),
+            ]);
+
+            app.project_list.select_root_row(0);
+            app.ensure_detail_cached();
+            assert!(
+                matches!(app.panes.package.content(), PackageContent::Selected(d) if d.name == "alpha_crate"),
+                "the pane holds the first row's package before the selection moves"
+            );
+
+            app.project_list.select_root_row(1);
+
+            assert_eq!(
+                app.priority_fetch_target(),
+                PriorityFetchSelection::Selected(PriorityFetchTarget {
+                    path:            AbsolutePath::from("/tmp/beta_crate"),
+                    crates_io_query: PriorityCratesIoQuery::Fetch("beta_crate".to_string()),
+                }),
+                "the queried name follows the selected path, not the unredrawn pane"
+            );
+        }
+    }
+
+    mod startup_panel {
+        use std::collections::HashSet;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use anyhow::Context;
+        use ratatui::layout::Rect;
+        use tui_pane::ColorMode;
+        use tui_pane::ToastDuration;
+        use tui_pane::ToastVisualDeadline;
+        use tui_pane::Toasts;
+
+        use crate::project::AbsolutePath;
+        use crate::scan::BackgroundMsg;
+        use crate::tui::app::App;
+        use crate::tui::app::LanguagePhase;
+        use crate::tui::app::async_tasks::StartupToastLayout;
+        use crate::tui::constants::STARTUP_ROW_DETAIL_DELAY;
+        use crate::tui::test_support;
+
+        fn pending_startup(now: Instant) -> anyhow::Result<App> {
+            let mut app = test_support::make_app(&[]);
+            app.framework.color_mode = ColorMode::Colored;
+            app.background
+                .background_sender()
+                .send(BackgroundMsg::ScanResult {
+                    projects:     Vec::new(),
+                    disk_entries: Vec::new(),
+                })?;
+            app.poll_background();
+            app.framework.toasts = Toasts::with_settings(app.framework.toasts.settings().clone());
+            app.framework
+                .toasts
+                .settings_mut()
+                .animation
+                .entrance_duration = ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+            app.initialize_startup_phase_tracker();
+            app.startup.disk.reset_unknown();
+            app.startup.git.reset_unknown();
+            app.startup.repo.reset_unknown();
+            app.startup.crates_io.reset_unknown();
+            app.startup.lint_phase.reset_unknown();
+            app.startup.tests.reset_unknown();
+            app.startup.languages = LanguagePhase::default();
+            app.startup
+                .metadata
+                .reset_with_expected(HashSet::from([AbsolutePath::from("/idle")]));
+            app.startup.metadata.stamp_first_seen(now);
+            Ok(app)
+        }
+
+        fn startup_body(app: &App, now: Instant) -> anyhow::Result<String> {
+            Ok(app
+                .framework
+                .toasts
+                .active_views(now)
+                .first()
+                .context("startup toast")?
+                .body()
+                .to_owned())
+        }
+
+        #[test]
+        fn idle_startup_tick_reveals_the_pending_detail_after_its_delay() -> anyhow::Result<()> {
+            let now = Instant::now();
+            let mut app = pending_startup(now)?;
+            app.refresh_startup_panel_for_layout(Rect::new(0, 0, 160, 45));
+            let before = startup_body(&app, now)?;
+            assert_eq!(before.lines().count(), 1);
+            assert!(!before.contains("/idle"), "{before}");
+            let layout = app.startup.toast.context("startup handle")?.layout;
+            app.tick_startup_panel_at(now);
+            assert_eq!(app.startup.toast.context("startup handle")?.layout, layout);
+            let later = now + STARTUP_ROW_DETAIL_DELAY;
+            assert_eq!(app.animation_timeout_at(later), Duration::from_secs(1));
+            assert_eq!(
+                app.framework.toasts.next_visual_change_deadline(later),
+                ToastVisualDeadline::NoVisualChangeScheduled
+            );
+            app.tick_startup_panel_at(later);
+            let after = startup_body(&app, later)?;
+            assert!(after.contains("/idle"), "{after}");
+            assert_ne!(before, after);
+            let layout = app.startup.toast.context("startup handle")?.layout;
+            app.tick_startup_panel_at(later + Duration::from_nanos(1));
+            assert_eq!(app.startup.toast.context("startup handle")?.layout, layout);
+            Ok(())
+        }
+
+        #[test]
+        fn startup_ticks_keep_the_body_empty_before_the_first_layout() -> anyhow::Result<()> {
+            let now = Instant::now();
+            let mut app = pending_startup(now)?;
+            let later = now + STARTUP_ROW_DETAIL_DELAY;
+            app.tick_startup_panel_at(later);
+            assert_eq!(startup_body(&app, later)?, "");
+            assert_eq!(
+                app.startup.toast.context("startup handle")?.layout,
+                StartupToastLayout::NotDrawn
+            );
+            Ok(())
+        }
     }
 }

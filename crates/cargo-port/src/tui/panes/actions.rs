@@ -15,6 +15,7 @@ use super::BuildMode;
 use super::CargoPackageInvocation;
 use super::CiFetchKind;
 use super::GitRow;
+use super::PackageContent;
 use super::PackageRow;
 use super::PaneId;
 use super::PendingCiFetch;
@@ -412,7 +413,7 @@ fn navigate_detail(app: &mut App, action: NavAction) {
 }
 
 pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
-    let Some(package) = app.panes.package.content() else {
+    let PackageContent::Selected(package) = app.panes.package.content() else {
         app.panes.package.viewport.navigate(action);
         return;
     };
@@ -614,7 +615,7 @@ fn handle_detail_enter(app: &mut App) {
     if app.focus_is(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        if let Some(pkg) = app.panes.package.content()
+        if let PackageContent::Selected(pkg) = app.panes.package.content()
             && matches!(
                 super::package_rows_from_data(pkg).get(app.panes.package.viewport.pos()),
                 Some(PackageRow::CratesIo(_))

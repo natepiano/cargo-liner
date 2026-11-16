@@ -147,8 +147,7 @@ fn glyph_contrast(ink: Color, ground: Color) -> TestResult<f64> {
 fn palette_application(path: &Path) -> TestResult<App> {
     std::fs::write(path, FOOTER)?;
     let mut app = word_click_tests::application()?;
-    app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.to_owned());
-    app.footer_colors.refresh();
+    app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path.to_owned());
     let mut rows = Vec::new();
     for (index, account) in ACCOUNTS.iter().enumerate() {
         let pid = 100 + u32::try_from(index)? * 10;
@@ -2128,8 +2127,7 @@ fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
         tui_pane::set_focused_pane_tint(tint);
         let mut app = selection_tests::astra_application();
         app.loaded_config.config.word_highlight.emphasis = WordHighlightEmphasis::Subtle;
-        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.clone());
-        app.footer_colors.refresh();
+        app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path.clone());
         let mut renderer = Renderer::new(&mut app, 180, 60)?;
         let initial = renderer.paint(&mut app)?;
         {

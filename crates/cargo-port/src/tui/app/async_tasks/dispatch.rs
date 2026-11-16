@@ -46,7 +46,7 @@ impl App {
             self.scan.bump_generation();
         }
     }
-    pub(super) fn handle_scan_result(
+    pub(in crate::tui::app) fn handle_scan_result(
         &mut self,
         projects: Vec<RootItem>,
         disk_entries: &[(String, AbsolutePath)],

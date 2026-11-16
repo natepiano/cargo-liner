@@ -45,7 +45,10 @@ impl App {
     }
     /// Dispatch the startup project-detail workers and the crates.io fetch
     /// plan that was already installed into the startup ledger.
-    pub(super) fn schedule_startup_project_details(&self, crates_io_plan: CratesIoFetchPlan) {
+    pub(in crate::tui::app) fn schedule_startup_project_details(
+        &self,
+        crates_io_plan: CratesIoFetchPlan,
+    ) {
         let effect = self.startup_services.startup_project_details_effect();
         self.startup_services.record_startup_project_details(effect);
         if effect == StartupEffect::Suppressed {
@@ -105,7 +108,7 @@ impl App {
     /// vendored crates all land in one plan; a worktree copy of a
     /// workspace contributes the same names under different paths — one
     /// query each, fanned out to every path.
-    pub(super) fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
+    pub(in crate::tui::app) fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
         let mut plan = CratesIoFetchPlan::default();
         let release_groups = &self.config.current().crates_io.release_groups;
         for entry in &self.project_list {
@@ -117,7 +120,7 @@ impl App {
     /// version data didn't land during a prior outage. Called from the
     /// service-recovery path so the warning placeholder rows fill in
     /// once the network is back.
-    pub(super) fn refetch_missing_crates_io_targets(&self) {
+    pub(in crate::tui::app) fn refetch_missing_crates_io_targets(&self) {
         let mut plan = self.collect_crates_io_fetch_plan();
         plan.retain_paths(|path| self.displayed_crates_io_version(path).is_none());
         self.dispatch_crates_io_fetches(plan);
@@ -164,7 +167,7 @@ impl App {
             });
         }
     }
-    pub(super) fn schedule_git_first_commit_refreshes(&self) {
+    pub(in crate::tui::app) fn schedule_git_first_commit_refreshes(&self) {
         let effect = self.startup_services.startup_git_first_commit_effect();
         self.startup_services
             .record_startup_git_first_commit(effect);
@@ -214,13 +217,39 @@ impl App {
 /// has completed. Worktree copies of a workspace land as extra paths
 /// under one name — one query, fanned out to every path.
 #[derive(Default)]
-pub(super) struct CratesIoFetchPlan {
+pub(in crate::tui::app) struct CratesIoFetchPlan {
     by_name: BTreeMap<String, CratesIoFetchTarget>,
 }
 
 struct CratesIoFetchTarget {
     paths:        Vec<AbsolutePath>,
     notification: ReleaseNotification,
+}
+
+/// The crates.io query a priority fetch issues for its project: none for a
+/// project that publishes no crate, else the name published from its path.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::tui::app) enum PriorityCratesIoQuery {
+    Skip,
+    Fetch(String),
+}
+
+/// The project a priority fetch loads: the path its results are written
+/// back to, and the crates.io query it issues for that path. Both name one
+/// project, so a `BackgroundMsg::CratesIoVersion` can never store one
+/// crate's version on another crate's row.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::tui::app) struct PriorityFetchTarget {
+    pub(in crate::tui::app) path:            AbsolutePath,
+    pub(in crate::tui::app) crates_io_query: PriorityCratesIoQuery,
+}
+
+/// The priority fetch for the selected project, or none when no project
+/// is selected.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::tui::app) enum PriorityFetchSelection {
+    NoProject,
+    Selected(PriorityFetchTarget),
 }
 
 pub(super) struct CratesIoRefreshTarget {
@@ -274,7 +303,9 @@ impl CratesIoFetchPlan {
     }
 
     /// The deduplicated name set — the startup row's denominator.
-    pub(super) fn names(&self) -> HashSet<String> { self.by_name.keys().cloned().collect() }
+    pub(in crate::tui::app) fn names(&self) -> HashSet<String> {
+        self.by_name.keys().cloned().collect()
+    }
 
     /// The crates.io name published from `path`. Callers that already hold
     /// a path and need the name to query for it must resolve it here, so
@@ -290,6 +321,20 @@ impl CratesIoFetchPlan {
                     .any(|candidate| candidate.as_path() == path)
             })
             .map(|(name, _)| name.as_str())
+    }
+
+    /// The priority fetch target for `path`: the path paired with the
+    /// crates.io query for the name published from it.
+    pub(in crate::tui::app) fn priority_target(&self, path: AbsolutePath) -> PriorityFetchTarget {
+        let crates_io_query = self
+            .name_for_path(path.as_path())
+            .map_or(PriorityCratesIoQuery::Skip, |name| {
+                PriorityCratesIoQuery::Fetch(name.to_string())
+            });
+        PriorityFetchTarget {
+            path,
+            crates_io_query,
+        }
     }
 
     /// Drop every path failing `keep`, then every name left with no

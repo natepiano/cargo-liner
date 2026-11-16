@@ -412,7 +412,7 @@ fn a_scrolled_marker_keeps_its_painted_row_after_a_wheel_step() -> TestResult {
         let cells = Cells::new(
             app.census.machines(&[]),
             100,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
             &AccountsTable::NotConfigured,
@@ -673,7 +673,7 @@ fn pressing_the_root_row_replaces_the_child_selection() -> TestResult {
         let cells = Cells::new(
             app.census.machines(&[]),
             100,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
             &AccountsTable::NotConfigured,
@@ -765,7 +765,7 @@ fn demand_frame(app: &mut App, area: Rect, rows: u16) -> Buffer {
         cells: Cells::new(
             app.census.machines(&[]),
             100,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
             &AccountsTable::NotConfigured,
@@ -856,7 +856,7 @@ fn a_live_marker_outside_the_painted_width_does_not_toggle() -> TestResult {
     let cells = Cells::new(
         app.census.machines(&[]),
         100,
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &AccountsTable::NotConfigured,

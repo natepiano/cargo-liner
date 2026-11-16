@@ -143,7 +143,7 @@ mod tests {
     use crate::project::RustProject;
     use crate::project::Workspace;
     use crate::scan::BackgroundMsg;
-    use crate::tui::app::async_tasks::constants::CRATES_IO_NEW_RELEASE_TITLE;
+    use crate::tui::app::constants::CRATES_IO_NEW_RELEASE_TITLE;
     use crate::tui::test_support;
 
     #[test]

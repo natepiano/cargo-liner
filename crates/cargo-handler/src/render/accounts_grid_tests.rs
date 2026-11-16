@@ -34,6 +34,7 @@ use crate::interaction::SelectionSurface;
 use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
+use crate::summary;
 
 const NOW: u64 = 1_792_166_400;
 const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
@@ -68,7 +69,7 @@ fn draw_grid(app: &mut App) -> Buffer {
     let cells = Cells::new(
         app.census.machines(&[]),
         NOW,
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,
@@ -975,4 +976,92 @@ fn end_reveals_total_after_six_two_role_accounts_without_selecting_it() {
             "the total is not selectable"
         );
     }
+}
+
+/// Every cell that starts the label, so each place that draws it is measured.
+fn label_inks(buffer: &Buffer, label: &str) -> Vec<(CellPoint, Color)> {
+    let width = u16::try_from(label.chars().count()).expect("short label");
+    let mut inks = Vec::new();
+    for y in buffer.area.y..buffer.area.bottom() {
+        for x in buffer.area.x..buffer.area.right().saturating_sub(width) {
+            let text: String = (x..x + width).map(|x| buffer[(x, y)].symbol()).collect();
+            if text == label {
+                let point = CellPoint {
+                    column: x,
+                    row:    y,
+                };
+                inks.push((point, buffer[(x, y)].fg));
+            }
+        }
+    }
+    inks
+}
+
+#[test]
+fn one_hex_account_draws_the_same_ink_in_the_tree_program_line_and_accounts_table() {
+    // The selected tree row lifts its ink for the selection ground, so codex1 sorts second.
+    let mut app = App::new_for_test().expect("test app");
+    app.loaded_config.config.tiles.initial_rows =
+        serde_json::from_value(serde_json::json!(8)).expect("one screen column");
+    app.loaded_config.config.tiles.widen_summary = false;
+    app.footer_colors = crate::footer_colors::FooterColors::parse("account.codex1=#a0522d");
+    let rows: Vec<AgentRow> = [(10, "codex1", "second"), (20, "codex2", "first")]
+        .map(|(pid, label, name)| {
+            serde_json::from_value(serde_json::json!({
+                "agent":"codex","name":name,"pid":pid,"started":100,"directory":"/fixture",
+                "desktop":null,"branch":null,"launched_by":null,"children":[],
+                "account":{"home":format!("~/.{label}"),"label":label}
+            }))
+            .expect("agent fixture")
+        })
+        .into();
+    let program_line = summary::agent_label(
+        &rows[0],
+        crate::census::AccountColumn::Shown,
+        &app.footer_colors,
+    );
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: HierarchyEdges::default().into(),
+        stage: ScanStage::Completed,
+    });
+    let accounts: Vec<_> = ["codex1", "codex2"]
+        .map(|label| {
+            serde_json::json!({
+                "label":label, "tool":"codex", "roles":["workers"], "weekly_left_percent":60,
+                "credits":null, "use_credits":false,
+                "read_ok":true, "read_at":"2026-10-16T15:57:53Z", "resets_at":ACCOUNT_RESET
+            })
+        })
+        .into();
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({"accounts":accounts,"problems":[]}))
+                .expect("account JSON"),
+        )
+        .expect("account reading"),
+    );
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(180, 60)).expect("test terminal");
+    let keymap = app.keymap();
+    for _ in 0..2 {
+        terminal
+            .draw(|frame| draw_at_for_test(frame, &mut app, &keymap, NOW))
+            .expect("frame");
+        app.tiles.settle_for_test();
+    }
+    let inks = label_inks(terminal.backend().buffer(), "codex1");
+    assert_eq!(
+        inks.len(),
+        2,
+        "the accounts table and the tree each draw the label once: {inks:?}"
+    );
+    let program_ink = program_line.spans[0].style.fg;
+    for (point, ink) in &inks {
+        assert_eq!(Some(*ink), program_ink, "codex1 at {point:?}");
+    }
+    assert!(
+        matches!(program_ink, Some(Color::Rgb(..))),
+        "a hex account draws in RGB: {program_ink:?}"
+    );
 }
