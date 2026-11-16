@@ -1754,7 +1754,7 @@ Drift incursion attribution skips the commits that a released reservation in the
 
 **Acceptance gate:** the cause is named with a measurement; the cargo-berth full suite passes on natedev with no test at 1 s or more at load under 32; the Mac suite passes (the Mac 1 s rule for cargo-berth belongs to Phase 68, showrunner 2026-11-15); one GitHub CI run on the branch passes; lint.
 
-### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: todo
+### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: done
 
 **Depends on:** Phase 65 (order only)
 
