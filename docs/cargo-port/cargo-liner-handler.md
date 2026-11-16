@@ -529,37 +529,22 @@ An account or role value in `~/.claude/config/statusline.conf` can be `#rrggbb` 
 
 ### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: done
 
-**Source:** the cargo-liner showrunner, 2026-11-15. `cargo-handler probe` hangs forever on the Mac: 9 probes were alive there, the oldest 20 h, and each natedev census that hits the hang leaks one more. Stack: `probe::print` → `LocalScanner::attach_details` → `transcript::running_subagents` → `InputDirectoryWatch::new` → `rearm` → notify `FsEventWatcher::watch` → `FsEventWatcher::stop` → `JoinInner::join` → `pthread_join` (blocked). notify 9.0.0-rc.4.
+#### As-built
 
-**Current state:**
-- `transcript::running_subagents` (`census/transcript.rs`) makes an `InputDirectoryWatch` for each subagent directory the first time it sees it. `InputDirectoryWatch::rearm` installs a notify `RecommendedWatcher` on the directory and its parent. On the Mac this is an FSEvents watcher, and its `watch` call can block forever in `FsEventWatcher::stop`.
-- `probe::scan_local` (`census/probe.rs`) builds a `LocalScanner` and calls `scan()` once. The scan reaches `running_subagents` through `LocalScanner::read_active_subagents` (`census/scan.rs`), so a one-shot scan installs watchers it never reads again.
-- natedev runs the Mac probe through ssh (`census/remote.rs` `SshProbe::probe`) and kills its own ssh child after `PROBE_TIMEOUT`. The remote probe is not told, so a hung probe stays alive on the Mac.
+A one-shot scan installs no notify watch. `DirectoryWatching { Live, Once }` (`census/transcript.rs`, default `Live`) is a field of `SubagentReads`, `WorkerNames` and `RunRecords`; each type's `listing()` sets `Once`. With `Once`, `InputDirectoryWatch` and `RunDirectoryWatch` use a `Listing` backend: `rearm` returns at once and the directory is read each round. `LocalScanner::one_shot` (`census/scan.rs`) sets all three listings, and `probe::scan_local` calls it. The live census keeps `Live`.
 
-#### Work Order
-
-**Goal:** a one-shot `probe` or `census` never blocks on a file watch, and a hung probe cannot leak a process.
-
-**Spec:**
-
-1. Give `LocalScanner` a subagent listing mode: the live census keeps the directory watch; a one-shot scan reads each subagent directory once with `read_subagents` and makes no `InputDirectoryWatch`. `probe::scan_local` and the `census` command use the one-shot mode.
-2. The probe ends by itself: it runs the scan off the main thread, and the main thread exits the process with a failure code when a probe deadline passes or when its parent process is gone (the parent pid changes). Name the deadline in constants, below `PROBE_TIMEOUT`.
-3. Fix the cause in cargo-handler. Do not patch notify.
-4. Do not stop the leaked probes on the Mac. Report them to the showrunner; the user stops them.
-5. Update the README probe section and the census as-built doc.
+`probe::print` runs the scan on the thread `probe-scan`. The main thread calls `wait_for_scan`, which returns a `ProbeWait`: `Finished` exits with the scan's code; `DeadlinePassed` writes one stderr line and exits with failure; `CallerGone` (the parent pid changed) and `ScanEnded` (the thread ended with no result) exit with failure. `PROBE_DEADLINE` is `PROBE_TIMEOUT` minus `PROBE_EXIT_RESERVE` (1 s), so 19 s; `PROBE_CALLER_CHECK` is 250 ms (`constants.rs`). Tests: `one_shot_subagent_reads_list_the_directory_without_a_watch`, `one_shot_worker_seats_list_the_directory_without_a_watch`, `one_shot_run_records_list_the_directory_without_a_watch`, `a_one_shot_scan_finds_subagents_without_a_file_watch`, and the four `wait_for_scan` outcome tests in `probe.rs`.
 
 **Files:**
-- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/scan.rs` — the one-shot listing mode
-- `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/constants.rs` — the deadline and parent check
-- `crates/cargo-handler/src/census/` — tests next to the code under test
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
+- `crates/cargo-handler/src/census/transcript.rs` — `DirectoryWatching`, the `Listing` input watch backend
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/activity.rs` — the worker seat and run record listing modes
+- `crates/cargo-handler/src/census/scan.rs` — `LocalScanner::one_shot`
+- `crates/cargo-handler/src/census/probe.rs` — the `probe-scan` thread, `wait_for_scan`, `ProbeWait`
 
-**Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` (natedev and the Mac)
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a one-shot scan lists running subagents and installs no directory watch.
-- A test: the probe guard ends the probe when the deadline passes, and when the parent pid changes.
-- Live check on the Mac: run `cargo-handler probe` with a build of this phase; it prints a report and exits.
+**Gotchas:**
+- A one-shot reader must call `one_shot()`. The default `LocalScanner` installs watches for the live census, and on macOS an FSEvents `watch` call can block forever in `FsEventWatcher::stop`.
+
+**Ruled out:** a patch to notify; the fix stays in cargo-handler.
 
 ### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: todo
 
@@ -585,8 +570,12 @@ An account or role value in `~/.claude/config/statusline.conf` can be `#rrggbb` 
 **Files:**
 - `crates/cargo-handler/src/agent_cell.rs` — the account, the column order, the Type text, the name width
 - `crates/cargo-handler/src/details.rs` — the details order, if it lists columns
-- `crates/cargo-handler/src/render/` — render tests next to the code under test
+- `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/render/` — tests next to the code under test
 - `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
+
+**Workers:** 2 writers — cargo-handler has no `tests/` directory, so the second worker opens as a writer; split code from tests and docs.
+- `impl` — `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/details.rs`; hub: `crates/cargo-handler/src/agent_cell.rs` (it holds `TreeColumn` and every cell text)
+- `test` opens as impl — the tests in `crates/cargo-handler/src/agent_cell/tests/` and `crates/cargo-handler/src/render/`, `crates/cargo-handler/README.md` and `docs/cargo-handler/as-built/`; it asks `impl` for a new `#[path]` line in `agent_cell.rs`
 
 **Verification:**
 - `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
