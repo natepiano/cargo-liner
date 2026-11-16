@@ -563,16 +563,17 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 26 — A tile never draws its readout or rows over a neighbor tile  · status: done
 
-**Source:** showrunner note 3 on the Phase 25 checkpoint (2026-11-15): at about 24 s uptime, a tile draws its "content rows" readout over a row of the next tile.
+#### As-built
 
-**Current state:** the Phase 25 shot at 24 s shows the summary at full width. In the right column, the natedev tile's title, header and readout and the cargo-liner tile's title, header and first row are drawn inside the summary's rows, with no border lines. The natedev readout overwrites the cargo-liner row. The same run is correct at 60 s. Headless runs at other times did not show the fault, because the census data differs from run to run. The cause is not known: a mid-motion frame from a summary width change, or terminal cells that a diff draw left stale.
+- A summary that covers more than one column at either end of a step reaches to the divider after its last covered column at each frame. The edge moves from the start span to the end span on the summary's own turn (`Turns::summary`). The dividers move on the step's clock, so no cell slides under the summary.
+- `SummaryReach` (`OwnColumn` | `Spanning { right }`) in `bands.rs` carries the reach into `place_band_pieces` and `BandHeightSearch`. `band_piece_rect` applies it only to the summary piece. A summary that covers one column at both ends fills its band.
+- The summary's height, and every cell that stays in a column under the summary or its moving edge (`Turns::covers`: column below `to`), move on `Turns::covered`. So the summary changes height only over the columns it covers at both ends.
 
-**Work Order:**
-- **Goal:** no frame draws a tile's readout, title or rows over another tile, during motion or after it.
-- **Spec:**
-  1. Find the cause from a headless frame log of a live run.
-  2. Fix it where it lives (tile grid motion, tile draw, or the event loop's terminal writes).
-  3. Add a regression test that fails before the fix and passes after it.
-- **Files:** `crates/tui_pane/src/tiles/grid/` (motion, bands, layout), `crates/tui_pane/src/tiles/draw/` (paint, rows), `crates/tui_pane/src/runner/event_loop.rs`; the test beside the fixed code.
-- **Workers:** none (no-worker mode). The director does the work.
-- **Verification:** `verify.sh check`, `lint`, `test`; a headless live shot sequence over the first 40 s shows no overlap.
+**Files:**
+- `crates/tui_pane/src/tiles/grid/bands.rs` — `SummaryReach`, `summary_reach`, `band_piece_rect`, `Turns::covers`
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs` — the clocks in `drawing_from_destination`
+- `crates/tui_pane/src/tiles/grid/allocation_tests.rs` — `a_summary_changing_span_as_a_column_opens_or_closes_never_covers_a_cell`, `a_summary_changing_height_and_span_never_covers_a_cell`, `assert_no_piece_overlaps`
+
+**Gotchas:** the summary's height changes only as row transfers with the next piece in its band (`monotone_band_dividers` takes the smaller of the grown and shrunk rows). The summary and the cells under it must share one clock.
+
+**Ruled out:** stale terminal cells from a diff draw; a text dump of each drawn buffer shows the overlap in the buffer itself.
