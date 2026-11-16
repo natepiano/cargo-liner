@@ -1,10 +1,13 @@
 use std::env;
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::sync::OnceLock;
 
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::DiagnosticCode;
@@ -22,6 +25,10 @@ const FIXTURE_DEBUG_INFO: &str = "0";
 
 /// Tiny fixture crates do not need incremental cache files.
 const FIXTURE_INCREMENTAL: &str = "0";
+
+/// The Cargo directories inside a profile directory that hold test executables:
+/// `deps` before Cargo's new build directory layout, `build` after it.
+const PROFILE_OUTPUT_DIRECTORIES: [&str; 2] = ["deps", "build"];
 
 /// Each test thread owns an empty Cargo home.
 /// Cargo holds cache locks during compilation.
@@ -61,13 +68,16 @@ fn isolate_cargo(command: &mut Command) -> &mut Command {
 }
 
 pub(super) fn cargo_command() -> Command {
-    let mut command = Command::new(
-        env::var_os("CARGO")
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| "cargo".into()),
-    );
+    let mut command = Command::new(cargo_program());
     isolate_cargo(&mut command);
     command
+}
+
+/// The `cargo` that runs this test, or `cargo` from `PATH`.
+fn cargo_program() -> OsString {
+    env::var_os("CARGO")
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| "cargo".into())
 }
 
 pub(crate) fn mend_command() -> Command {
@@ -81,19 +91,89 @@ fn mend_bin() -> PathBuf {
         || {
             option_env!("CARGO_BIN_EXE_cargo-mend").map_or_else(
                 || {
-                    env::current_exe()
-                        .expect("find the compiler test executable")
-                        .parent()
-                        .expect("compiler test executable has a directory")
-                        .parent()
-                        .expect("compiler test directory has a profile directory")
-                        .join(format!("cargo-mend{}", env::consts::EXE_SUFFIX))
+                    CargoDirectories::current().mend_binary(
+                        &env::current_exe().expect("find the compiler test executable"),
+                    )
                 },
                 PathBuf::from,
             )
         },
         PathBuf::from,
     )
+}
+
+/// The directories `cargo metadata` reports for this workspace.
+///
+/// Cargo writes test executables under `build_directory` and the `cargo-mend`
+/// binary under `target_directory`. The two differ when Cargo config sets
+/// `build.build-dir`.
+#[derive(Deserialize)]
+struct CargoDirectories {
+    build_directory:  PathBuf,
+    target_directory: PathBuf,
+}
+
+impl CargoDirectories {
+    /// Runs `cargo metadata --no-deps` once for each test process.
+    ///
+    /// The call inherits the test environment, so `CARGO_TARGET_DIR` and the
+    /// developer's Cargo config apply, as they do for the build of `cargo-mend`.
+    fn current() -> &'static Self {
+        static CARGO_DIRECTORIES: OnceLock<CargoDirectories> = OnceLock::new();
+        CARGO_DIRECTORIES.get_or_init(|| {
+            let output = Command::new(cargo_program())
+                .args([
+                    "metadata",
+                    "--no-deps",
+                    "--format-version",
+                    "1",
+                    "--offline",
+                ])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .expect("run cargo metadata to find the cargo-mend binary");
+            assert!(
+                output.status.success(),
+                "cargo metadata failed: status {}; stderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+            );
+            let cargo_directories: Self = serde_json::from_slice(&output.stdout)
+                .expect("parse the target and build directories from cargo metadata");
+            Self {
+                build_directory:  cargo_directories
+                    .build_directory
+                    .canonicalize()
+                    .expect("canonicalize the Cargo build directory"),
+                target_directory: cargo_directories.target_directory,
+            }
+        })
+    }
+
+    /// The `cargo-mend` binary for the profile that built `test_executable`.
+    ///
+    /// The parts of `test_executable` below `build_directory` and before the
+    /// first [`PROFILE_OUTPUT_DIRECTORIES`] part name the profile directory, such
+    /// as `debug` or `<target triple>/debug`. The binary is in that profile
+    /// directory under `target_directory`.
+    fn mend_binary(&self, test_executable: &Path) -> PathBuf {
+        let test_executable = test_executable
+            .canonicalize()
+            .expect("canonicalize the compiler test executable");
+        let profile_directory: PathBuf = test_executable
+            .strip_prefix(&self.build_directory)
+            .expect("compiler test executable is under the Cargo build directory")
+            .components()
+            .take_while(|component| {
+                !PROFILE_OUTPUT_DIRECTORIES
+                    .iter()
+                    .any(|directory| component.as_os_str() == *directory)
+            })
+            .collect();
+        self.target_directory
+            .join(profile_directory)
+            .join(format!("cargo-mend{}", env::consts::EXE_SUFFIX))
+    }
 }
 
 pub(super) fn strip_ansi(input: &str) -> String {
