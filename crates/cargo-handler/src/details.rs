@@ -255,7 +255,7 @@ pub(crate) fn open_selected(app: &mut App) {
         &placement,
         &selected,
         census::unix_now(),
-        app.footer_colors.colors(),
+        &app.footer_colors,
     ) {
         app.details_overlay.open(details);
     }

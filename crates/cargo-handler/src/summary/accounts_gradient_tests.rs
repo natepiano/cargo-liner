@@ -109,7 +109,7 @@ fn drawn_in(app: &App, area: Rect) -> Buffer {
         cells:          &cells,
         now:            NOW,
         account_column: agent_cell::account_column(&cells),
-        footer_colors:  app.footer_colors.colors(),
+        footer_colors:  &app.footer_colors,
         sort:           app.summary_sort,
     };
     let mut buffer = Buffer::empty(area);

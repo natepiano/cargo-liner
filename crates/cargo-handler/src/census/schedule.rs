@@ -57,6 +57,8 @@ use crate::constants::HIERARCHY_FIRST_PUBLISH_BUDGET;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::LOCAL_SCAN_INTERVAL;
 use crate::constants::REMOTE_PROBE_INTERVAL;
+use crate::footer_colors::FooterColorFile;
+use crate::footer_colors::FooterColors;
 use crate::startup_log;
 
 /// How often the scheduler looks at each machine.
@@ -680,10 +682,12 @@ pub(crate) fn spawn(
     account_labels: AccountLabels,
     codex_start_window: CodexStartWindow,
     herdr_read_timeout: HerdrReadTimeout,
+    footer_colors: Sender<FooterColors>,
 ) -> Receiver<CensusUpdate> {
     let staff = StaffFileReader::default();
     let mut scanner = local_scanner(account_labels, codex_start_window, herdr_read_timeout)
         .with_staff_file(hierarchy.clone(), staff.clone());
+    let mut footer = FooterColorFile::home();
     spawn_staged_with(
         remotes,
         hierarchy,
@@ -696,6 +700,9 @@ pub(crate) fn spawn(
                     schedule = ScanSchedule::Finished;
                 }
             });
+            if footer.send_changed(&footer_colors).is_err() {
+                schedule = ScanSchedule::Finished;
+            }
             schedule
         },
         Cadence::LIVE,

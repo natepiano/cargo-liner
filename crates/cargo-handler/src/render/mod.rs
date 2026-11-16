@@ -207,7 +207,7 @@ fn draw_panes_at(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         now,
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,
@@ -398,7 +398,7 @@ pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &AccountsTable::NotConfigured,
@@ -417,7 +417,7 @@ pub(crate) fn draw_summary_for_test(app: &mut App, area: Rect) -> Buffer {
     let cells = Cells::new(
         app.census.machines(&[]),
         census::unix_now(),
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,
@@ -1627,7 +1627,7 @@ fraying = "leading"
         let cells = Cells::new(
             app.census.machines(&[]),
             NOW,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &HashMap::new(),
             SummarySort::default(),
             &AccountsTable::NotConfigured,
@@ -1903,7 +1903,7 @@ fraying = "leading"
             let cells = Cells::new(
                 app.census.machines(&[]),
                 census::unix_now(),
-                app.footer_colors.colors(),
+                &app.footer_colors,
                 &app.tree_sorts,
                 app.summary_sort,
                 &AccountsTable::NotConfigured,
@@ -2006,7 +2006,7 @@ fraying = "leading"
             let cells = Cells::new(
                 app.census.machines(&[]),
                 NOW,
-                app.footer_colors.colors(),
+                &app.footer_colors,
                 &HashMap::new(),
                 SummarySort::default(),
                 &AccountsTable::NotConfigured,
@@ -2074,7 +2074,7 @@ fraying = "leading"
             app.census
                 .machines(&app.loaded_config.config.machines.remote),
             NOW,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &HashMap::new(),
             SummarySort::default(),
             &AccountsTable::NotConfigured,

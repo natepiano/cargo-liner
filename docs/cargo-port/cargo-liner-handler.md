@@ -517,7 +517,7 @@ Each `sessions` entry of `census --json` has `shells: [{name, started_at}]`. `ag
 **Gotchas:**
 - A Codex process with several recorded threads puts each shell under each thread of the row. One worker runs one thread per process, so this case was left as is.
 
-### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: todo
+### Phase 23 — An account color can be a `#rrggbb` value, shows the same in every place, and changes without a restart  · status: done
 
 **Source:** the sdlc showrunner, through the cargo-liner showrunner, 2026-11-15. The user wants one account color everywhere, set from a color chooser on a new console Accounts page (sdlc devtools builds it). devtools writes hex values into `~/.claude/config/statusline.conf` after cargo-handler and the status line accept hex.
 
