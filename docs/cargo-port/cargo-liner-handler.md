@@ -655,23 +655,19 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cli_smoke::fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` runs under 1 s and leaves no child process. Source: the showrunner, 2026-11-16, after the Phase 30 suite timed it at 1.48 s with a LEAK mark. Order: after the final gate.
-
-**Spec:**
-1. Measure the test alone and in the full `cargo-mend` suite, and find where its time goes (`run_with_refusing_project_rustc`).
-2. Remove the cost at its cause, and make the test wait for every process it starts.
-3. Keep what the test proves: `--fix` uses the build compiler when the project rustc refuses to run.
+- Each `cli_smoke` test holds two nextest slots. Each one runs cargo, a new mend wrapper copy and rustc, and one slot let the suite crowd the `--fix` tests to 0.99-1.48 s.
+- Mac suite at load 7.68: `fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` 0.822 s, `fix_all_…` 0.849 s, `all_targets_fix_edits_shared_path_module_once` 0.961 s, no LEAK mark.
 
 **Files:**
-- `crates/cargo-mend/tests/cli_smoke.rs`
+- `.config/nextest.toml` — the `binary_id(cargo-mend::cli_smoke)` override
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- Alone on the Mac the test takes 0.81 s. Of that, 217 ms is the first launch of mend's per-target wrapper copy (a new inode), and 78 ms is cargo's rustc probe in a fresh target. Real use pays both once per target folder.
+- `verify.sh test` refuses `--filter` with `--test <target>`; use `--filter` alone.
 
-**Verification:**
-- Lint and the full `cargo-mend` test suite.
-- The test runs under 1 s with no LEAK mark.
+**Ruled out:** a test-side LEAK fix. The test waits for every process it starts; `build_info`, which starts no cargo or git, also had a LEAK mark.
 
 ### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
 
