@@ -727,3 +727,24 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 - DYLD_PRINT_LIBRARIES and DYLD_PRINT_TO_FILE do not reach cargo's child processes. Do not use them to count loads.
 
 **Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
+
+### Phase 35 — Worker role labels take the `role.worker` color  · status: todo
+
+#### Work Order
+
+**Goal:** the role label of a worker row (impl, test, review, fix, worker) takes the color in `role.worker`. Source: a user request through sdlc (Images page, images 9548b3e68998 and 64f58b09e489), sent by the showrunner 2026-11-17. The user sets the color on the Accounts page; devtools adds `role.worker` (default white) to `~/.claude/config/statusline.conf` in its rolecolor phase.
+
+**Spec:**
+1. Add `FooterRole::Worker`. `FooterColors::parse` reads it from the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys.
+2. `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint. `Agent` and `Producer` stay plain.
+3. A missing or invalid `role.worker` key leaves these labels plain, as today.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs`
+- `crates/cargo-handler/src/footer_colors/tests.rs`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Tests: `role.worker` parses with comments and spacing; each of the five worker roles takes the tint; `Agent` and `Producer` stay plain; a missing or empty key stays plain.
+- `verify.sh lint cargo-handler` and `verify.sh test cargo-handler`.
