@@ -692,26 +692,26 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** every cargo-mend `diagnostic_tests` test runs under 1 s in the Mac suite at normal load. Source: the showrunner, 2026-11-16. The Phase 31 Mac suite at start load 7.68 timed 53 of them at 1.0 to 1.75 s: 27 in `pub_use_outside_subtree_fixes`, 11 in `pub_use_fixes`, and 1 to 3 in each of 9 other modules. Tests over 1 s at normal load are defects. Order: after Phase 32, before the as-built.
-
-**Spec:**
-1. Measure the slowest tests alone on the Mac, and find where each one spends its time: fixture setup, each cargo and compiler process, each fix pass, and the validation compile.
-2. Remove the cost at its cause. More nextest slots are not the fix.
-3. Keep what each test proves.
+- Cause: each start of a binary that links librustc_driver (mend, rustc, rustfmt) costs 25-50 ms on the Mac. A fix test started about 25 processes, 15 of them such starts. The suite made each fix test about 1.9 times slower than alone.
+- `nightly_probe` returns Available without a `rustfmt --version` run when `rustup which` names an existing file. `nightly_executable` holds the one lookup for the command and the probe.
+- `ToolchainProbes` is `Retained` (the shared wrapper cache, `toolchain-queries/`) or `RunLocal` (a temporary directory when the wrapper is project-local). `RunWrapper::toolchain_probes` picks it, so `main` resolves the wrapper first.
+- `ProbeRequest` keys a query by the compiler path, `CompilerIdentity` (size and modified time), the arguments and the toolchain variables. It holds no working directory, so every project shares the result. Only successful queries are kept.
+- Mac suite at load 5.27: 1038/1038 in 21.4 s (43-47 s before), no test at 1 s or more, slowest diagnostic test 0.792 s.
 
 **Files:**
-- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
-- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
-- `crates/cargo-mend/tests/support/`
-- `crates/cargo-mend/src/`
+- `crates/cargo-mend/src/compiler/toolchain_probes.rs` — `ToolchainProbes`, `ProbeRequest`, `CompilerIdentity`, `read_or_run`
+- `crates/cargo-mend/src/compiler/build/execute.rs` — `WrapperRetention::SharedCache` carries its directory; `RunWrapper::toolchain_probes`
+- `crates/cargo-mend/src/compiler/constants.rs` — `TOOLCHAIN_PROBES_ENV`, `WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY`
+- `crates/cargo-mend/src/fixes/runner/function_length/formatter.rs` — `nightly_executable`, `nightly_probe`
+- `crates/cargo-mend/src/main.rs` — wrapper before probes
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- Alone, almost no diagnostic test was over 1 s. Time a slow test alone and in the suite, and count its process starts, before a change.
+- The test fixtures use the real user cache directory, so the kept query results serve every fixture of a run.
 
-**Verification:**
-- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
-- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
+**Ruled out:** more nextest slots (showrunner rule); fixture changes in the tests, which were about 0.7 s alone.
 
 ### Phase 34 — The cargo-mend CLI starts without the compiler library  · status: todo
 
@@ -736,7 +736,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
-- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- Lint and one full `cargo-mend` test suite run. A Mac pass ends the test gate.
 - A test for the missing-driver error.
 - Three pairs against main on a mend run in a real crate on the Mac (median and spread): wall time and CPU time. The new build must not be slower.
 - No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
