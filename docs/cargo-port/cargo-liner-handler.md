@@ -636,7 +636,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a `SummaryFrame` field for the notice; the census facts already carry the source health.
 
-### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: todo
+### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: done
 
 #### Work Order
 

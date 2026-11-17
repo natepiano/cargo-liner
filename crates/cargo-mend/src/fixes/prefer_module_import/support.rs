@@ -246,9 +246,10 @@ fn reexports_module(
 }
 
 /// The absolute crate path `item_use` binds `name` to, when it binds `name` at
-/// all. `module_path` is the module holding the `use`, which anchors `self::`
-/// and `super::` targets; a bare-name target is another crate and resolves to
-/// `None`.
+/// all. `module_path` is the module holding the `use`, which anchors `self::`,
+/// `super::` and bare-name targets: a bare first segment, as in
+/// `pub(crate) use source::run;`, names a child module of `module_path`. An
+/// external crate named this way resolves to a path that no crate module mounts.
 fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Option<Vec<String>> {
     let flattened_import = flatten_use_tree(&item_use.tree)?;
     let bound = flattened_import
@@ -267,7 +268,15 @@ fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Op
             }
             Some(absolute)
         },
-        PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType | PathAnchor::Name => {
+        PathAnchor::Name => Some(
+            module_path
+                .iter()
+                .chain(&flattened_import.prefix)
+                .chain(std::iter::once(&flattened_import.leaf))
+                .cloned()
+                .collect(),
+        ),
+        PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType => {
             flattened_import.absolute_path(module_path)
         },
     }
@@ -278,6 +287,104 @@ fn find_mod_item<'a>(items: &'a [Item], name: &str) -> Option<&'a ItemMod> {
         Item::Mod(item_mod) if item_mod.ident == name => Some(item_mod),
         _ => None,
     })
+}
+
+/// `function_definition` returns `FunctionDefinition::Defined` when the module at `module_path`
+/// defines a `fn` named `name`, and `FunctionDefinition::NotDefined` for any other item.
+/// A `snake_case` name alone does not make a function: a macro can make a `snake_case` trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FunctionDefinition {
+    Defined,
+    NotDefined,
+}
+
+/// Classifies `name` in the module at `module_path` through `defines_function`, with a fresh
+/// cycle check.
+pub(super) fn function_definition(
+    crate_sources: CrateSources<'_>,
+    module_path: &[String],
+    name: &str,
+) -> FunctionDefinition {
+    let mut visited = BTreeSet::new();
+    defines_function(crate_sources, module_path, name, &mut visited)
+}
+
+/// Read each file that mounts an ancestor of `module_path`, enter its inline `mod` blocks
+/// to the module, and look for the `fn` there or behind a `pub` re-export of `name`.
+/// `visited` prevents cycles through re-exports.
+fn defines_function(
+    crate_sources: CrateSources<'_>,
+    module_path: &[String],
+    name: &str,
+    visited: &mut BTreeSet<Vec<String>>,
+) -> FunctionDefinition {
+    let mut item_path = module_path.to_vec();
+    item_path.push(name.to_owned());
+    if !visited.insert(item_path) {
+        return FunctionDefinition::NotDefined;
+    }
+
+    if crate_sources
+        .sources
+        .module_map(crate_sources.source_root)
+        .module_ancestors(module_path)
+        .any(|(file, mount)| {
+            let Ok(parsed_source) = crate_sources.sources.source(file) else {
+                return false;
+            };
+            if !parsed_source.text().contains(name) {
+                return false;
+            }
+            let Ok(parsed_file) = parsed_source.syntax() else {
+                return false;
+            };
+            inline_module_items(&parsed_file.items, &module_path[mount.len()..]).is_some_and(
+                |items| {
+                    items_define_function(crate_sources, items, module_path, name, visited)
+                        == FunctionDefinition::Defined
+                },
+            )
+        })
+    {
+        FunctionDefinition::Defined
+    } else {
+        FunctionDefinition::NotDefined
+    }
+}
+
+/// The items of the inline module that `segments` names below `items`; an empty `segments`
+/// names `items` itself.
+fn inline_module_items<'a>(items: &'a [Item], segments: &[String]) -> Option<&'a [Item]> {
+    segments.iter().try_fold(items, |items, segment| {
+        find_mod_item(items, segment)
+            .and_then(|item_mod| item_mod.content.as_ref())
+            .map(|(_, content)| content.as_slice())
+    })
+}
+
+fn items_define_function(
+    crate_sources: CrateSources<'_>,
+    items: &[Item],
+    module_path: &[String],
+    name: &str,
+    visited: &mut BTreeSet<Vec<String>>,
+) -> FunctionDefinition {
+    if items.iter().any(|item| match item {
+        Item::Fn(item_fn) => item_fn.sig.ident == name,
+        Item::Use(item_use) if !matches!(item_use.vis, Visibility::Inherited) => {
+            reexport_target(item_use, module_path, name).is_some_and(|target| {
+                target.split_last().is_some_and(|(leaf, target_module)| {
+                    defines_function(crate_sources, target_module, leaf, visited)
+                        == FunctionDefinition::Defined
+                })
+            })
+        },
+        _ => false,
+    }) {
+        FunctionDefinition::Defined
+    } else {
+        FunctionDefinition::NotDefined
+    }
 }
 
 pub(super) fn shorten_module_path(
@@ -603,8 +710,12 @@ mod tests {
                 None,
                 Some(vec!["a", "b", "c", "named_leaf"]),
             ),
-            ("external", None, None),
-            ("external::named_leaf", None, None),
+            ("external", None, Some(vec!["a", "b", "c", "external"])),
+            (
+                "external::named_leaf",
+                None,
+                Some(vec!["a", "b", "c", "external", "named_leaf"]),
+            ),
         ] {
             let item: ItemUse = syn::parse_str(&format!("pub use {path} as ancestor;"))?;
             let flat = super::flatten_use_tree(&item.tree)
