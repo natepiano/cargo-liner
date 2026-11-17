@@ -638,25 +638,37 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo mend --fix` never rewrites the import of a trait with a snake_case name. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). `use crate::tables::client_version;` became `use crate::tables;`, where `client_version` is a trait made by `#[spacetimedb::table(accessor = client_version, ...)]`. The call `ctx.db.client_version()` then lost its trait: 14 E0599 errors, mend rolled back, and lint stopped in `hana_catalyst-spacetime-spacetime-server` (`crates/hana_agora_server/src/command.rs`, `lifecycle.rs`, `tool.rs`).
-
-**Spec:**
-1. `analyze_function_import` decides that an import names a function only from its spelling (`support::import_name_case`). A snake_case name can also be a trait, a macro output or another item.
-2. Make the function-import fix rewrite an import only when the target module defines a function with that name. An import whose name has no function definition there (a trait, a macro output, any other item) stays as written.
-3. Keep every current rewrite of a real function import.
-4. Add a regression test: a crate where a macro makes a trait with a snake_case name, a file imports that trait by name and calls its method. `cargo mend --fix` keeps the import, and the crate still compiles.
+- `cargo mend --fix` rewrites a function import only when the target module defines a `fn` of that name: in the module, in an inline `mod` block, or behind a `pub` re-export. A trait, type or macro output with a snake_case name keeps its import, so `use crate::tables::client_version;` stays.
+- `support::function_definition` returns `FunctionDefinition::Defined | NotDefined`; `analyze_function_import` returns no candidate for `NotDefined`.
+- `reexport_target` reads a bare first segment, as in `pub(crate) use source::run;`, as a child module of the holding module. The module check and the function check share it.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/prefer_module_import/function_imports.rs`
-- `crates/cargo-mend/src/fixes/prefer_module_import/support.rs`
-- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs`
-- `crates/cargo-mend/tests/support`
-- `crates/cargo-mend/src/diagnostic_tests.rs`
+- `crates/cargo-mend/src/fixes/prefer_module_import/support.rs` — `function_definition`, `defines_function`, `inline_module_items`, `items_define_function`, `reexport_target`
+- `crates/cargo-mend/src/fixes/prefer_module_import/function_imports.rs` — the check call, unit cases for the macro-made trait and a bare re-export
+- `crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` — `skips_snake_case_trait_made_by_a_macro`
+
+**Gotchas:** a glob or grouped `pub use` is not followed, so an import through one is kept.
+
+**Ruled out:** a second re-export resolver for the function check; it read bare names differently from the module check.
+
+### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: todo
+
+#### Work Order
+
+**Goal:** `cli_smoke::fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` runs under 1 s and leaves no child process. Source: the showrunner, 2026-11-16, after the Phase 30 suite timed it at 1.48 s with a LEAK mark. Order: after the final gate.
+
+**Spec:**
+1. Measure the test alone and in the full `cargo-mend` suite, and find where its time goes (`run_with_refusing_project_rustc`).
+2. Remove the cost at its cause, and make the test wait for every process it starts.
+3. Keep what the test proves: `--fix` uses the build compiler when the project rustc refuses to run.
+
+**Files:**
+- `crates/cargo-mend/tests/cli_smoke.rs`
 
 **Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
-- Check, lint, and the full `cargo-mend` test suite.
-- The regression test fails before the fix and passes after it.
+- Lint and the full `cargo-mend` test suite.
+- The test runs under 1 s with no LEAK mark.
