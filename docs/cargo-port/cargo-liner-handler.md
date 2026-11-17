@@ -622,32 +622,19 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 29 — The summary names an accounts command failure  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** while the accounts command fails, the summary shows one notice line under the local machine heading that names the failure. Today a failed command leaves the tree status column blank with no reason. Source: the showrunner, 2026-11-16: "Show one notice line under the local machine heading, only while the accounts command fails, naming the failure. A blank status column with no reason is a wrong result for the user."
-
-**Spec:**
-1. While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one notice line under the local machine heading. The line names the `AccountsFailure` reason.
-2. In every other `AccountsSource` state, the summary draws no accounts notice line.
-3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count.
-4. `MachineState::notices` gives the lines under a machine's agents: the hierarchy notice, then the accounts failure read from `hierarchy.facts.accounts` (`Observed::Known(SourceHealth::Unreadable)`). Only the local census records an accounts read; a remote probe's facts hold `Unknown`, so remotes show no accounts notice. The summary height, width, drawing, the notice redraw time and `Census::has_hierarchy_notice` read `notices`.
-5. Update `docs/cargo-handler/as-built/accounts.md` and the summary layout doc.
+- While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one dim line under the local machine's agents that names the failure, for example `accounts: command failed`. No other state draws it.
+- `MachineState::notices` gives the lines under a machine's agents: the hierarchy notice, then the accounts failure read from `hierarchy.facts.accounts` (`Observed::Known(SourceHealth::Unreadable)`). The summary height, width and drawing, the notice redraw time and `Census::has_notice` read it.
 
 **Files:**
-- `crates/cargo-handler/src/census/mod.rs`
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/render/mod.rs`
-- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`
-- `docs/cargo-handler/as-built/accounts.md`
-- `docs/cargo-handler/as-built/tile-layout.md`
+- `crates/cargo-handler/src/census/mod.rs` — `MachineState::notices`, `Census::has_notice`
+- `crates/cargo-handler/src/summary/mod.rs` — notice lines in the summary height, width and drawing
+- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs` — `draw_at_measured_demand`, the accounts notice test
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:** only the local census records an accounts read. A remote probe's facts hold `Observed::Unknown`, so a remote draws no accounts line.
 
-**Verification:**
-- Check, lint, and the full `cargo-handler` test suite.
-- A render test: a failed source shows the notice line with its reason under the local heading; a ready source shows none.
-- Live: on a private Xvfb, a handler with a failing `accounts_command` shows the notice line.
+**Ruled out:** a `SummaryFrame` field for the notice; the census facts already carry the source health.
 
 ### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: todo
 
