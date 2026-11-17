@@ -690,7 +690,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** reading the source text for the order. rustc's expansion record and the spans give the answer without a file read.
 
-### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: done
 
 #### Work Order
 

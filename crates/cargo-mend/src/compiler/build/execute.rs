@@ -173,12 +173,12 @@ pub(crate) struct RunWrapper {
 /// A shared lock protects a cached driver until its run ends.
 enum WrapperRetention {
     ProjectLocal,
-    SharedCache(File),
+    SharedCache { lock: File, directory: PathBuf },
 }
 
 impl Drop for RunWrapper {
     fn drop(&mut self) {
-        if let WrapperRetention::SharedCache(lock) = &self.retention {
+        if let WrapperRetention::SharedCache { lock, .. } = &self.retention {
             drop(lock.unlock());
         }
     }
@@ -205,6 +205,14 @@ impl RunWrapper {
                 target_directory.display()
             )
         })
+    }
+
+    /// Query results kept in the shared cache serve every later run of this build.
+    pub(crate) fn toolchain_probes(&self) -> Result<ToolchainProbes> {
+        match &self.retention {
+            WrapperRetention::SharedCache { directory, .. } => ToolchainProbes::retained(directory),
+            WrapperRetention::ProjectLocal => ToolchainProbes::run_local(),
+        }
     }
 
     fn configure(&self, command: &mut Command) -> Result<()> {
@@ -292,7 +300,10 @@ fn retained_wrapper_alias(
         let path = retained_wrapper_link(&target_alias, &alias)?;
         Ok(RunWrapper {
             path,
-            retention: WrapperRetention::SharedCache(lock),
+            retention: WrapperRetention::SharedCache {
+                lock,
+                directory: cache.clone(),
+            },
         })
     };
     cached().or_else(|_| local_wrapper(target_directory, executable))
@@ -1494,7 +1505,7 @@ mod tests {
         let live_path = live.path.canonicalize()?;
         assert!(matches!(
             reused.retention,
-            super::WrapperRetention::SharedCache(_)
+            super::WrapperRetention::SharedCache { .. }
         ));
         assert!(unused_path.try_exists()?);
         assert_eq!(fs::read(&reused.path)?, b"unused build");
@@ -1587,7 +1598,7 @@ mod tests {
         );
         assert!(matches!(
             second.retention,
-            super::WrapperRetention::SharedCache(_)
+            super::WrapperRetention::SharedCache { .. }
         ));
         assert_eq!(second.path.canonicalize()?, shared);
         assert_eq!(fs::read(&second.path)?, b"shared build");

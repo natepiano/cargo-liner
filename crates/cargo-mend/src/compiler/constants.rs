@@ -68,8 +68,8 @@ pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 
 // `ANALYZING_DIR_ENV`, `CARGO_PRIMARY_PACKAGE_ENV`, `CONFIG_FINGERPRINT_ENV`,
 // `CONFIG_JSON_ENV`, `CONFIG_ROOT_ENV`, `DRIVER_ENV`, `DRIVER_ENV_ENABLED`,
-// `PACKAGE_ROOT_ENV`, `PASSTHROUGH_RUSTC_WRAPPER_ENV`, `RUSTC_WORKSPACE_WRAPPER_ENV`
-// and `SCOPE_FINGERPRINT_ENV` define driver environment communication.
+// `PACKAGE_ROOT_ENV`, `PASSTHROUGH_RUSTC_WRAPPER_ENV`, `RUSTC_WORKSPACE_WRAPPER_ENV`,
+// `SCOPE_FINGERPRINT_ENV` and `TOOLCHAIN_PROBES_ENV` define driver environment communication.
 pub(super) const ANALYZING_DIR_ENV: &str = "MEND_ANALYZING_DIR";
 pub(super) const CARGO_PRIMARY_PACKAGE_ENV: &str = "CARGO_PRIMARY_PACKAGE";
 pub(super) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
@@ -82,6 +82,7 @@ pub(super) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_W
 pub(super) const RUSTC_ENV: &str = "RUSTC";
 pub(super) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(super) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
+pub(super) const TOOLCHAIN_PROBES_ENV: &str = "MEND_TOOLCHAIN_PROBES";
 
 // `METADATA_FILE_EXTENSION` and `REPORT_FILE_EXTENSION` identify compiler metadata and mend
 // reports.
@@ -126,6 +127,8 @@ pub(super) const WRAPPER_CACHE_DIRECTORY_PREFIX: &str = "driver-";
 pub(super) const WRAPPER_CACHE_RETENTION_LOCK_FILE: &str = "retention.lock";
 // The source link lets cache collection recognize another installed build.
 pub(super) const WRAPPER_CACHE_SOURCE_LINK: &str = "source";
+// `WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY` keeps compiler query results for later runs.
+pub(super) const WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY: &str = "toolchain-queries";
 // `WRAPPER_CACHE_PUBLICATION_LOCK_FILE` serializes publication of a driver copy.
 pub(super) const WRAPPER_CACHE_PUBLICATION_LOCK_FILE: &str = "publication.lock";
 // `WRAPPER_DIR_NAME` names the wrapper alias directory.
