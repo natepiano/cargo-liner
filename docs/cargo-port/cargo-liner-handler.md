@@ -713,30 +713,23 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** more nextest slots (showrunner rule); fixture changes in the tests, which were about 0.7 s alone.
 
-### Phase 34 — The cargo-mend CLI starts without the compiler library  · status: todo
+### Phase 34 — A real mend run loads the compiler library only where it must  · status: todo
 
 #### Work Order
 
-**Goal:** the `cargo-mend` CLI binary does not link librustc_driver. A second binary, `cargo-mend-driver`, holds the compiler analysis. Source: the showrunner, 2026-11-17. Each process that links librustc_driver costs 25-50 ms to start on the Mac. A mend run with fixes loads it about 5 times only for the CLI and for cargo's toolchain queries. CPU cost ranks first. Order: after Phase 33, before the as-built. Do this phase even when Phase 33 brings the tests under 1 s.
+**Goal:** count and time the librustc_driver loads of a real mend run, and remove the avoidable ones only when they cost 100 ms or more. Source: the showrunner, 2026-11-17. The full CLI/driver split is dropped: it widens hundreds of internal items to public API for about one load per run. Order: after Phase 33, before the as-built.
 
 **Spec:**
-1. Keep one package. `cargo install --path crates/cargo-mend` installs both binaries in one command.
-2. Name the driver binary `cargo-mend-driver`, as clippy names `clippy-driver`.
-3. Move all `rustc_private` code (now under `src/compiler/`) to the driver binary. Code that both binaries use goes in a shared library target. The CLI binary has no `#![feature(rustc_private)]` and no `extern crate rustc_*`.
-4. The CLI is cargo's workspace wrapper. It answers cargo's toolchain queries (`-vV`, `--print`) from the Phase 33 query cache, passes unselected units to rustc, and starts `cargo-mend-driver` only for the selected crates.
-5. The CLI finds `cargo-mend-driver` in the directory of its own executable. When the driver is missing, mend stops with an error that names the expected path and the install command.
-6. Keep the wrapper copy in the mend cache, the analysis results, and the report format the same.
+1. Measure 3 pairs on the Mac on a real crate: main against Phase 33, a warm target, one dirty crate. Report the median and spread of wall time, and the count of librustc_driver loads in each run.
+2. Name each avoidable load: a process that loads librustc_driver only to answer a toolchain query or to pass a unit to rustc.
+3. When the avoidable loads add 100 ms or more to the median run, add a small rustc-free `cargo-mend-wrapper` binary. It answers the toolchain queries, passes unselected units to rustc, and starts the full binary only for selected crates. Otherwise make no code change.
 
 **Files:**
 - `crates/cargo-mend/Cargo.toml`
 - `crates/cargo-mend/src/`
-- `crates/cargo-mend/tests/`
-- `crates/cargo-mend/README.md`
 
 **Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
-- Lint and one full `cargo-mend` test suite run. A Mac pass ends the test gate.
-- A test for the missing-driver error.
-- Three pairs against main on a mend run in a real crate on the Mac (median and spread): wall time and CPU time. The new build must not be slower.
-- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
+- The 3 pairs: median and spread of wall time, and the load count per run.
+- With a code change: lint, one full `cargo-mend` test suite run, and 3 new pairs that show the change is not slower.
