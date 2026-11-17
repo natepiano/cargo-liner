@@ -5,7 +5,6 @@ mod status_bar_contrast_tests;
 
 use std::collections::HashSet;
 use std::num::NonZeroU16;
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -58,7 +57,7 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::app::ConfirmAction;
 use super::app::ConfirmationModalState;
-use super::app_render_state::OverlayRenderInputs;
+use super::app::OverlayRenderInputs;
 use super::columns::ProjectColumnLayout;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
@@ -77,9 +76,12 @@ use super::panes::PaneId;
 use super::panes::SyncedDescriptionHeight;
 use super::panes::TargetsContent;
 use super::render_context::PaneRenderCtx;
+use super::render_context::RenderProjectSelection;
 use super::sccache;
 use super::settings;
+use super::settings::SettingsRenderPreparation;
 use super::state::CiStatusLookup;
+use super::state::TargetDirectoryResolution;
 use crate::ci::CiStatus;
 use crate::constants::TARGET_DIR;
 use crate::project;
@@ -151,7 +153,7 @@ fn sync_description_floor(
 /// the render borrows it mutably.
 #[derive(Clone, Copy)]
 struct TiledRenderInputs<'a> {
-    selected_path:             Option<&'a Path>,
+    selected_path:             RenderProjectSelection<'a>,
     empty_package_description: EmptyDescriptionBehavior,
     animation_elapsed:         Duration,
     ci_status_lookup:          &'a CiStatusLookup,
@@ -241,12 +243,14 @@ fn resolve_tiled_layout(
         lint_column:     app.config.current().lint.enabled.into(),
     };
     let targets_width = app.panes.targets.preferred_width();
-    let middle =
-        panes::selected_language_stats(&app.project_list, app.selected_project_path_for_render())
-            .map_or_else(
-                || panes::MiddlePaneNeeds::minimum(targets_width),
-                |stats| panes::MiddlePaneNeeds::for_selected(stats, targets_width),
-            );
+    let middle = panes::selected_language_stats(
+        &app.project_list,
+        RenderProjectSelection::from(app.selected_project_path_for_render()),
+    )
+    .map_or_else(
+        || panes::MiddlePaneNeeds::minimum(targets_width),
+        |stats| panes::MiddlePaneNeeds::for_selected(stats, targets_width),
+    );
     let (package_width, git_width) = panes::top_pane_widths(top_area, project_column, middle);
     let key = (app.scan.generation(), package_width, git_width);
     let rows = if let Some(rows) = app.panes.cached_top_row_height(key) {
@@ -386,7 +390,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app,
         &tiled,
         TiledRenderInputs {
-            selected_path: selected_path.as_deref(),
+            selected_path: RenderProjectSelection::from(selected_path.as_deref()),
             empty_package_description,
             animation_elapsed,
             ci_status_lookup: &ci_status_lookup,
@@ -440,10 +444,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
     match action {
         ConfirmAction::Clean(project_path) => {
-            let target = app
-                .scan
-                .resolve_target_dir(project_path)
-                .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join(TARGET_DIR)));
+            let target = match app.scan.resolve_target_dir(project_path) {
+                TargetDirectoryResolution::Resolved(path) => path,
+                TargetDirectoryResolution::MetadataMissing
+                | TargetDirectoryResolution::MetadataStorePoisoned => {
+                    AbsolutePath::from(project_path.as_path().join(TARGET_DIR))
+                },
+            };
             let mut lines = vec![project::home_relative_path(target.as_path())];
 
             // `app.scan.target_dir_index.siblings` finds projects sharing this target
@@ -475,10 +482,13 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             let selection: Vec<AbsolutePath> = all_paths.iter().copied().cloned().collect();
             let mut seen_targets: HashSet<AbsolutePath> = std::collections::HashSet::new();
             for path in &all_paths {
-                let target = app
-                    .scan
-                    .resolve_target_dir(path)
-                    .unwrap_or_else(|| AbsolutePath::from(path.as_path().join(TARGET_DIR)));
+                let target = match app.scan.resolve_target_dir(path) {
+                    TargetDirectoryResolution::Resolved(target) => target,
+                    TargetDirectoryResolution::MetadataMissing
+                    | TargetDirectoryResolution::MetadataStorePoisoned => {
+                        AbsolutePath::from(path.as_path().join(TARGET_DIR))
+                    },
+                };
                 if seen_targets.insert(target.clone()) {
                     append_sibling_lines(app, &target, &selection, &mut lines);
                 }
@@ -622,7 +632,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         .map(std::path::Path::to_path_buf);
     let ci_status_lookup = app.ci.status_lookup();
     let split = app.split_for_render(
-        selected_path.as_deref(),
+        RenderProjectSelection::from(selected_path.as_deref()),
         animation_elapsed,
         &ci_status_lookup,
         OverlayRenderInputs::settings(&inputs),
@@ -667,10 +677,10 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         animation_elapsed,
         config: split.config,
         project_list: split.project_list,
-        selected_project_path: selected_project_path.as_deref(),
+        selected_project_path: RenderProjectSelection::from(selected_project_path.as_deref()),
         scan: split.scan,
         ci_status_lookup: &ci_status_lookup,
-        settings_render_inputs: None,
+        settings_render_inputs: SettingsRenderPreparation::NotPrepared,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
         empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
         output_presentation: split.output_presentation,

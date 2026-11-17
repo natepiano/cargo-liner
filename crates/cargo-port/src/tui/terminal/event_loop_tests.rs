@@ -59,6 +59,7 @@ use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
 use crate::tui::app::ROW_PRESENTATION_BUILDS;
 use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::state::KeymapFilePath;
 use crate::tui::test_support;
 
 fn project(path: &str) -> RootItem {
@@ -787,7 +788,7 @@ fn production_frame_decision_ignores_mouse_in_confirmation_and_draws_dismissal()
 }
 
 #[test]
-fn valid_keymap_reload_changes_the_frame_key() {
+fn valid_keymap_reload_changes_the_frame_key() -> anyhow::Result<()> {
     let mut app = test_support::make_app(&[]);
     for toast in app.framework.toasts.active_now() {
         app.framework.toasts.dismiss(toast.id());
@@ -795,11 +796,10 @@ fn valid_keymap_reload_changes_the_frame_key() {
     let now = Instant::now();
     let mut frames = FrameState::default();
     assert!(frames.needs_draw(&app, now));
-    let path = app
-        .keymap
-        .path()
-        .expect("fixture keymap path")
-        .to_path_buf();
+    let path = match app.keymap.path() {
+        KeymapFilePath::Resolved(path) => path.to_path_buf(),
+        KeymapFilePath::Unavailable => anyhow::bail!("the fixture keymap path is unavailable"),
+    };
     std::fs::write(&path, "[output]\ncancel = \"q\"\n").expect("write new keymap");
     app.maybe_reload_keymap_from_disk();
     // Reload diagnostics are separate visible inputs. A clean label update
@@ -809,6 +809,7 @@ fn valid_keymap_reload_changes_the_frame_key() {
     }
     assert!(frames.needs_draw(&app, now));
     assert!(!frames.needs_draw(&app, now));
+    Ok(())
 }
 
 #[test]

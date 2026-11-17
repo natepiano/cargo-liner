@@ -32,6 +32,7 @@ use tui_pane::ToastSettings;
 
 use super::App;
 use super::ConfirmationModalState;
+use super::OwnedRunEvent;
 use super::RowPresentationState;
 use super::async_tasks::Startup;
 use super::scan_state::ScanState;
@@ -52,9 +53,6 @@ use crate::tui::columns::LintColumnStatus;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
-use crate::tui::messages::CiFetchMsg;
-use crate::tui::messages::CleanMsg;
-use crate::tui::messages::OwnedRunEvent;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
 use crate::tui::project_list_state::ProjectList;
@@ -68,10 +66,13 @@ use crate::tui::state::Config;
 use crate::tui::state::GitStatusTracker;
 use crate::tui::state::Inflight;
 use crate::tui::state::Keymap;
+use crate::tui::state::KeymapFilePath;
 use crate::tui::state::Lint;
 use crate::tui::state::Net;
 use crate::tui::state::Scan;
 use crate::tui::state::SyncTracker;
+use crate::tui::terminal::CiFetchMsg;
+use crate::tui::terminal::CleanMsg;
 use crate::tui::theme_roles;
 
 /// Caller's raw arguments. Held by value (the slice and config
@@ -260,7 +261,6 @@ impl AppBuilder<Started> {
         let lint = Lint::new(started.lint_runtime);
         let inflight = Inflight::new();
         let config = Config::new(started.config_path_resolution, inputs.cargo_port_config);
-        let keymap_path = started.keymap_path_resolution.clone().into_external_path();
         let keymap = Keymap::new(
             started.keymap_path_resolution,
             keymap::ResolvedKeymap::defaults(),
@@ -280,7 +280,8 @@ impl AppBuilder<Started> {
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
-        let framework_builder = if let Some(path) = keymap_path {
+        let framework_builder = if let KeymapFilePath::Resolved(path) = keymap.path() {
+            let path = path.to_path_buf();
             let display_path = path.display().to_string();
             keymap::migrate_removed_action_keys_on_disk(&path)
                 .with_context(|| format!("migrating removed keymap actions in {display_path}"))?;

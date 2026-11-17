@@ -36,6 +36,7 @@ use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::render_context::RenderProjectSelection;
 use crate::tui::theme_roles;
 
 /// Map a tokei language name to an icon for the Lang column.
@@ -110,9 +111,13 @@ pub(in crate::tui::panes) fn inner_rows(language_rows: usize) -> u16 {
 /// The language stats of the selected project, when the scan has them.
 pub(in crate::tui) fn selected_language_stats<'a>(
     projects: &'a ProjectList,
-    selected: Option<&Path>,
+    selected: RenderProjectSelection<'_>,
 ) -> Option<&'a LanguageStats> {
-    match projects.at_path(selected.unwrap_or_else(|| Path::new(""))) {
+    let path = match selected {
+        RenderProjectSelection::Selected(path) => path,
+        RenderProjectSelection::NoResolvedProject => Path::new(""),
+    };
+    match projects.at_path(path) {
         Found(project) => project.language_stats.as_ref(),
         UnknownPath | StaleRoute => None,
     }

@@ -30,6 +30,8 @@ pub(super) fn reclaim_project_cache_under(cache_root: &Path, project_root: &Path
 )]
 mod tests {
     use super::reclaim_project_cache_under;
+    use crate::lint::LintRunDuration;
+    use crate::lint::LintRunFinishTime;
     use crate::lint::history;
     use crate::lint::paths;
     use crate::lint::run::LintRun;
@@ -39,8 +41,8 @@ mod tests {
         LintRun {
             run_id: "run-1".to_string(),
             started_at: "2026-03-30T14:22:01-05:00".to_string(),
-            finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
-            duration_ms: Some(17_000),
+            finished_at: LintRunFinishTime::Recorded("2026-03-30T14:22:18-05:00".to_string()),
+            duration_ms: LintRunDuration::MeasuredMilliseconds(17_000),
             status,
             commands: Vec::new(),
             archive_bytes: 0,

@@ -20,6 +20,7 @@ use super::TrackedItemKey;
 use super::lints_pane::LintsPane;
 use super::project_list_pane::ProjectListPane;
 use super::targets_pane::TargetsPane;
+use crate::tui::app::FocusedDismissal;
 
 /// Assemble the framework keymap from a configured builder. Called
 /// once during App construction after the builder has loaded the
@@ -65,11 +66,13 @@ pub fn build_framework_keymap(
 }
 
 fn dismiss_fallback(app: &mut App) -> bool {
-    let Some(dismiss_target) = app.focused_dismiss_target() else {
-        return false;
-    };
-    app.dismiss(dismiss_target);
-    true
+    match app.focused_dismiss_target() {
+        FocusedDismissal::Unavailable => false,
+        FocusedDismissal::Target(target) => {
+            app.dismiss(target);
+            true
+        },
+    }
 }
 
 pub fn path_key(path: &AbsolutePath) -> TrackedItemKey { TrackedItemKey::new(path.to_string()) }

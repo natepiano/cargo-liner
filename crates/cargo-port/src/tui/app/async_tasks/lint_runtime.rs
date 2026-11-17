@@ -6,6 +6,7 @@ use tui_pane::PERF_LOG_TARGET;
 
 use crate::config::LintIndicator;
 use crate::lint;
+use crate::lint::CachedLintAvailability;
 use crate::lint::LintRun;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
@@ -281,8 +282,9 @@ impl App {
             };
             // `LintRuns::cached_status` excludes live and pending lint states,
             // so startup never triggers a second run for those projects.
-            let Some(cached_lint_status) = runs.cached_status() else {
-                continue;
+            let cached_lint_status = match runs.cached_status() {
+                CachedLintAvailability::Available(status) => status,
+                CachedLintAvailability::SupersededByLiveOrPending => continue,
             };
             let max_source_mtime = self.startup.source_mtimes.get(&request.abs_path).copied();
             if cached_lint_status.should_lint_on_startup(max_source_mtime, discovery_lint) {

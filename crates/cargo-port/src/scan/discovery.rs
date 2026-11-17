@@ -34,7 +34,7 @@ use crate::project::Submodule;
 
 /// Build a normalized project item for a discovered root directory.
 ///
-/// Unlike `cargo_parse_result_to_item(from_cargo_toml(...))`, this walks nested
+/// Unlike `RootItem::from(from_cargo_toml(...))`, this scans nested
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
@@ -56,7 +56,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             )
         {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            root_items.push(tree::cargo_parse_result_to_item(parsed));
+            root_items.push(RootItem::from(parsed));
         }
     }
 
@@ -382,7 +382,7 @@ pub(super) fn phase1_discover(
                     "phase1_manifest_parse"
                 );
                 stats.projects += 1;
-                let item = tree::cargo_parse_result_to_item(cargo_parse_result);
+                let item = RootItem::from(cargo_parse_result);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = GitRepoPresence::of(&abs_path);

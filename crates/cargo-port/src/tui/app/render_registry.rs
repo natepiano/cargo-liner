@@ -3,6 +3,28 @@ use tui_pane::PaneRegistry;
 use crate::tui::app_render_state::RenderRegistry;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::settings::SettingsRenderInputs;
+use crate::tui::settings::SettingsRenderPreparation;
+
+/// The prepared data for framework overlays.
+#[derive(Clone, Copy)]
+pub(in crate::tui) struct OverlayRenderInputs<'a> {
+    pub(super) settings: SettingsRenderPreparation<'a>,
+}
+
+impl<'a> OverlayRenderInputs<'a> {
+    pub(in crate::tui) const fn none() -> Self {
+        Self {
+            settings: SettingsRenderPreparation::NotPrepared,
+        }
+    }
+
+    pub(in crate::tui) const fn settings(inputs: &'a SettingsRenderInputs) -> Self {
+        Self {
+            settings: SettingsRenderPreparation::Prepared(inputs),
+        }
+    }
+}
 
 impl PaneRegistry for RenderRegistry<'_> {
     type Ctx<'ctx> = PaneRenderCtx<'ctx>;

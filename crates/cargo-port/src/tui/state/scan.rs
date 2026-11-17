@@ -28,6 +28,18 @@ use crate::tui::app::RetrySpawnMode;
 use crate::tui::app::ScanState;
 use crate::tui::app::TargetDirIndex;
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PriorityFetchHistory<T> {
+    NotRequested,
+    LastRequested(T),
+}
+
+pub(crate) enum TargetDirectoryResolution {
+    Resolved(AbsolutePath),
+    MetadataMissing,
+    MetadataStorePoisoned,
+}
+
 pub(crate) struct Scan {
     pub(in crate::tui) source_measurements: Arc<SourceMeasurements>,
     pub(in crate::tui) state:               ScanState,
@@ -37,7 +49,7 @@ pub(crate) struct Scan {
     metadata_store:                         Arc<Mutex<WorkspaceMetadataStore>>,
     pub(in crate::tui) manifest_metadata:   ManifestMetadataStates,
     pub(in crate::tui) target_dir_index:    TargetDirIndex,
-    priority_fetch_path:                    Option<AbsolutePath>,
+    priority_fetch_path:                    PriorityFetchHistory<AbsolutePath>,
     #[cfg(test)]
     retry_spawn_mode:                       RetrySpawnMode,
 }
@@ -56,7 +68,7 @@ impl Scan {
             metadata_store,
             manifest_metadata: ManifestMetadataStates::default(),
             target_dir_index: TargetDirIndex::new(),
-            priority_fetch_path: None,
+            priority_fetch_path: PriorityFetchHistory::NotRequested,
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
         }
@@ -132,24 +144,32 @@ impl Scan {
 
     /// Resolve the owning workspace's `target_directory` for any path
     /// inside a known workspace.
-    pub(crate) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
-        self.metadata_store
-            .lock()
-            .ok()
-            .and_then(|store| store.resolved_target_dir(path).cloned())
+    pub(crate) fn resolve_target_dir(&self, path: &AbsolutePath) -> TargetDirectoryResolution {
+        let Ok(store) = self.metadata_store.lock() else {
+            return TargetDirectoryResolution::MetadataStorePoisoned;
+        };
+        store
+            .resolved_target_dir(path)
+            .map_or(TargetDirectoryResolution::MetadataMissing, |path| {
+                TargetDirectoryResolution::Resolved(path.clone())
+            })
     }
 
     // `Scan::target_dir_index` indexes workspace target directories.
 
-    // `priority_fetch_path` and `set_priority_fetch_path` read and update the priority fetch
-    // selection.
-
-    pub(crate) const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
-        self.priority_fetch_path.as_ref()
+    pub(crate) const fn priority_fetch_path(&self) -> PriorityFetchHistory<&AbsolutePath> {
+        match &self.priority_fetch_path {
+            PriorityFetchHistory::NotRequested => PriorityFetchHistory::NotRequested,
+            PriorityFetchHistory::LastRequested(path) => PriorityFetchHistory::LastRequested(path),
+        }
     }
 
-    pub(crate) fn set_priority_fetch_path(&mut self, path: Option<AbsolutePath>) {
-        self.priority_fetch_path = path;
+    pub(crate) fn record_priority_fetch(&mut self, path: AbsolutePath) {
+        self.priority_fetch_path = PriorityFetchHistory::LastRequested(path);
+    }
+
+    pub(crate) fn reset_priority_fetch_history(&mut self) {
+        self.priority_fetch_path = PriorityFetchHistory::NotRequested;
     }
 
     // Test-only `retry_spawn_mode` and `set_retry_spawn_mode` control retry spawning.
@@ -231,7 +251,10 @@ mod tests {
         assert_eq!(scan.generation(), 0);
         assert!(scan.discovery_shimmers().is_empty());
         assert!(scan.pending_git_first_commit().is_empty());
-        assert!(scan.priority_fetch_path().is_none());
+        assert_eq!(
+            scan.priority_fetch_path(),
+            PriorityFetchHistory::NotRequested
+        );
     }
 
     #[test]
@@ -246,10 +269,16 @@ mod tests {
     fn priority_fetch_path_round_trip() {
         let mut scan = fresh();
         let p = abs("/tmp/proj");
-        scan.set_priority_fetch_path(Some(p.clone()));
-        assert_eq!(scan.priority_fetch_path(), Some(&p));
-        scan.set_priority_fetch_path(None);
-        assert!(scan.priority_fetch_path().is_none());
+        scan.record_priority_fetch(p.clone());
+        assert_eq!(
+            scan.priority_fetch_path(),
+            PriorityFetchHistory::LastRequested(&p)
+        );
+        scan.reset_priority_fetch_history();
+        assert_eq!(
+            scan.priority_fetch_path(),
+            PriorityFetchHistory::NotRequested
+        );
     }
 
     #[test]
