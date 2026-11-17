@@ -671,28 +671,24 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** mend never reports or fixes the visibility of an item that a macro expansion makes. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). In `hana_agora_server` (`crates/hana_agora_server/src/tables.rs`, repo `hana`, branch `spacetime-spacetime-server`), SpacetimeDB 2.15.0 `#[table(accessor = <name>, public)]` makes one `pub` trait per table, named by the accessor. mend gave 12 `unused_pub` warnings on those traits, and `mend --fix` applied 4 `pub` removals there. The written source has no `pub` that a person can remove.
-
-**Spec:**
-1. Find why `scan::visit::visit_item` reports these traits: its `from_expansion` check on `item.span` and `item.vis_span` does not skip them. A proc macro can give its output tokens the spans of the written input.
-2. Make every visibility finding and fix skip an item that a macro expansion makes, also when the macro reuses a written span. Read the expansion from rustc data, not from the source text.
-3. Keep every finding and fix on a written item, also on a written item that an attribute macro keeps.
-4. Add a regression test: a proc-macro fixture crate whose attribute macro makes a `pub` trait named by an argument, with the written spans. mend reports no visibility finding on the trait, and a `pub` item written beside it is still reported.
+- `source::visibility_origin` decides whether a person wrote a declaration's visibility. Items, impl items, foreign items and fields call it in place of their `from_expansion` checks. A `MacroMade` result skips every visibility finding and fix.
+- Rules in order: a span from an expansion is macro-made; a definition outside any expansion (`tcx.expn_that_defined` is root) is written; a derive output is macro-made; any other macro output is macro-made when its visibility ends after its name starts.
+- Regression test `diagnostic_tests::unused_pub::macro_made_traits_on_written_spans_are_not_flagged`: an attribute macro makes a trait on the accessor span with the struct's `pub`, and a derive makes a trait on the struct-name span. Before the fix the left set held `trait client_version`, and with the derive rule off it held `trait SessionAccess`.
 
 **Files:**
-- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs`
-- `crates/cargo-mend/src/compiler/visibility/source.rs`
-- `crates/cargo-mend/src/compiler/visibility/field.rs`
-- `crates/cargo-mend/tests/diagnostics/unused_pub.rs`
+- `crates/cargo-mend/src/compiler/visibility/source.rs` — `VisibilityOrigin`, `DeclarationSpans`, `visibility_origin`
+- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs` — the three item visitors
+- `crates/cargo-mend/src/compiler/visibility/field.rs` — `field_visibility_origin`
+- `crates/cargo-mend/tests/diagnostics/unused_pub.rs` — `MACROS_FIXTURE_SOURCE` and the test
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- spacetimedb-bindings-macro 2.15.0 `table.rs` makes `<accessor>`, `<accessor>__view` and `<accessor>__query` traits with `quote_spanned!` on the accessor span and the struct's `#vis`. No span has an expansion context, so `from_expansion` cannot see them.
+- A fixture with a proc-macro dependency needs `run_mend_json`; `compiled_report` refuses fixtures that compile dependencies.
+- The real-crate check waits for the merge to main and a new cargo-mend install. The 12 reported locations all have the accessor name before the struct's `pub`.
 
-**Verification:**
-- Lint and the full `cargo-mend` test suite.
-- The regression test fails before the fix and passes after it.
-- `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
+**Ruled out:** reading the source text for the order. rustc's expansion record and the spans give the answer without a file read.
 
 ### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
 
