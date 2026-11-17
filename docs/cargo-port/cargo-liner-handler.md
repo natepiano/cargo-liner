@@ -697,3 +697,26 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 - Lint and the full `cargo-mend` test suite.
 - The regression test fails before the fix and passes after it.
 - `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
+
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+
+#### Work Order
+
+**Goal:** every cargo-mend `diagnostic_tests` test runs under 1 s in the Mac suite at normal load. Source: the showrunner, 2026-11-16. The Phase 31 Mac suite at start load 7.68 timed 53 of them at 1.0 to 1.75 s: 27 in `pub_use_outside_subtree_fixes`, 11 in `pub_use_fixes`, and 1 to 3 in each of 9 other modules. Tests over 1 s at normal load are defects. Order: after Phase 32, before the as-built.
+
+**Spec:**
+1. Measure the slowest tests alone on the Mac, and find where each one spends its time: fixture setup, each cargo and compiler process, each fix pass, and the validation compile.
+2. Remove the cost at its cause. More nextest slots are not the fix.
+3. Keep what each test proves.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/support/`
+- `crates/cargo-mend/src/`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
