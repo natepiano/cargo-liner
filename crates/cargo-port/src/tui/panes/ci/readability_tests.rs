@@ -15,6 +15,7 @@ use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::PaneId;
 use crate::tui::render;
+use crate::tui::render_context::RenderProjectSelection;
 use crate::tui::test_support;
 
 /// Branch CI data with one timed run, for the table layout tests.
@@ -336,10 +337,10 @@ fn status_only_ci_total_header_aligns_in_an_eighty_column_frame() -> anyhow::Res
     let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
     terminal.draw(|frame| {
         let mut split = app.split_for_render(
-            None,
+            RenderProjectSelection::NoResolvedProject,
             std::time::Duration::ZERO,
             &lookup,
-            crate::tui::app_render_state::OverlayRenderInputs::none(),
+            crate::tui::app::OverlayRenderInputs::none(),
             crate::tui::panes::SyncedDescriptionHeight::default(),
             app.empty_package_description(),
         );

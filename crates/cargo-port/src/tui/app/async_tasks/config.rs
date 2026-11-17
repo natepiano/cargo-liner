@@ -26,6 +26,10 @@ use crate::tui::keymap::KeymapError;
 use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::startup_services::StartupEffect;
+use crate::tui::state::KeymapDiagnosticsNotice;
+use crate::tui::state::KeymapFilePath;
+use crate::tui::state::KeymapReloadCheck;
+use crate::tui::state::KeymapWarningsNotice;
 use crate::tui::theme_roles;
 
 /// The backdrop color to paint when the resolved theme appearance
@@ -52,7 +56,8 @@ impl App {
     }
     pub(in crate::tui::app) fn load_initial_keymap(&mut self) {
         let vim_mode = self.config.current().tui.navigation_keys;
-        let keymap_missing = self.keymap.path().is_some_and(|path| !path.exists());
+        let keymap_missing =
+            matches!(self.keymap.path(), KeymapFilePath::Resolved(path) if !path.exists());
         let result = keymap::load_keymap(vim_mode);
         self.keymap.replace_current(result.keymap);
         self.keymap.sync_stamp();
@@ -94,7 +99,7 @@ impl App {
         }
     }
     pub(in crate::tui) fn maybe_reload_keymap_from_disk(&mut self) {
-        let Some(path) = self.keymap.take_stamp_change() else {
+        let KeymapReloadCheck::Changed(path) = self.keymap.take_stamp_change() else {
             return;
         };
         let path = path.to_path_buf();
@@ -147,24 +152,24 @@ impl App {
         self.dismiss_keymap_diagnostics();
 
         let body = messages.join("\n");
-        let action_path = self
-            .keymap
-            .path()
-            .map(|p| AbsolutePath::from(p.to_path_buf()));
+        let activation = match self.keymap.path() {
+            KeymapFilePath::Unavailable => ToastActivation::Informational,
+            KeymapFilePath::Resolved(path) => ToastActivation::Opens(CargoPortToastAction::from(
+                AbsolutePath::from(path.to_path_buf()),
+            )),
+        };
 
         let id = self.framework.toasts.push_persistent(
             "Keymap errors (using defaults)",
             body,
             Error,
-            action_path.map_or(ToastActivation::Informational, |path| {
-                ToastActivation::Opens(CargoPortToastAction::from(path))
-            }),
+            activation,
             1,
         );
-        self.keymap.set_diagnostics_id(Some(id));
+        self.keymap.set_diagnostics_id(id);
     }
     pub(super) fn dismiss_keymap_diagnostics(&mut self) {
-        if let Some(id) = self.keymap.take_diagnostics_id() {
+        if let KeymapDiagnosticsNotice::Tracked(id) = self.keymap.take_diagnostics_id() {
             self.framework.toasts.dismiss(id);
         }
     }
@@ -172,24 +177,21 @@ impl App {
         self.dismiss_keymap_warnings();
 
         let body = messages.join("\n");
-        let action_path = self
-            .keymap
-            .path()
-            .map(|p| AbsolutePath::from(p.to_path_buf()));
+        let activation = match self.keymap.path() {
+            KeymapFilePath::Unavailable => ToastActivation::Informational,
+            KeymapFilePath::Resolved(path) => ToastActivation::Opens(CargoPortToastAction::from(
+                AbsolutePath::from(path.to_path_buf()),
+            )),
+        };
 
-        let id = self.framework.toasts.push_persistent(
-            "Keymap warnings",
-            body,
-            Warning,
-            action_path.map_or(ToastActivation::Informational, |path| {
-                ToastActivation::Opens(CargoPortToastAction::from(path))
-            }),
-            1,
-        );
-        self.keymap.set_warnings_id(Some(id));
+        let id =
+            self.framework
+                .toasts
+                .push_persistent("Keymap warnings", body, Warning, activation, 1);
+        self.keymap.set_warnings_id(id);
     }
     pub(super) fn dismiss_keymap_warnings(&mut self) {
-        if let Some(id) = self.keymap.take_warnings_id() {
+        if let KeymapWarningsNotice::Tracked(id) = self.keymap.take_warnings_id() {
             self.framework.toasts.dismiss(id);
         }
     }

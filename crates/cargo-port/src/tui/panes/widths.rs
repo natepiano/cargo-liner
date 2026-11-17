@@ -45,6 +45,12 @@ use crate::tui::columns::ProjectListWidths;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 
+#[derive(Clone, Copy)]
+enum OriginSyncRepoContext<'a> {
+    MetadataUnavailable,
+    Metadata(&'a RepoInfo),
+}
+
 /// Walk the project tree and produce a `ProjectListWidths`.
 /// Single entry point used by `App::ensure_fit_widths`.
 pub(in crate::tui) fn compute_project_list_widths(
@@ -80,6 +86,12 @@ fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
     );
 }
 
+#[derive(Clone, Copy)]
+enum DiskFitSize {
+    Unmeasured,
+    Measured(u64),
+}
+
 /// Project state shared by the name-marker and deletion-aware disk measurements.
 #[derive(Clone, Copy)]
 struct ProjectFitContext<'a> {
@@ -93,7 +105,13 @@ impl ProjectFitContext<'_> {
         let deleted =
             self.projects.is_deleted(self.ancestor) || self.projects.is_deleted(entry.path());
         DiskCell::for_row(
-            formatted_disk(entry.info().disk.total()),
+            formatted_disk(
+                entry
+                    .info()
+                    .disk
+                    .total()
+                    .map_or(DiskFitSize::Unmeasured, DiskFitSize::Measured),
+            ),
             columns::RowLifecycle::from(deleted),
             entry.info().worktree_health,
         )
@@ -121,7 +139,11 @@ fn observe_item_fit_widths(
     let repo_info = entry
         .git_repo
         .as_ref()
-        .and_then(|repo| repo.repo_info.as_ref());
+        .and_then(|repo| repo.repo_info.as_ref())
+        .map_or(
+            OriginSyncRepoContext::MetadataUnavailable,
+            OriginSyncRepoContext::Metadata,
+        );
 
     observe_name_width(
         widths,
@@ -130,7 +152,10 @@ fn observe_item_fit_widths(
             + dw(metadata.for_project(item.path()).name_marker()),
     );
     let cell = DiskCell::for_row(
-        formatted_disk(item.disk_usage_bytes()),
+        formatted_disk(
+            item.disk_usage_bytes()
+                .map_or(DiskFitSize::Unmeasured, DiskFitSize::Measured),
+        ),
         columns::RowLifecycle::from(projects.is_deleted(item.path())),
         item.worktree_health(),
     );
@@ -227,7 +252,11 @@ fn observe_new_member_group_fit_widths(
                         .name_marker()),
             );
             let cell = DiskCell::for_row(
-                formatted_disk(member.disk_usage_bytes()),
+                formatted_disk(
+                    member
+                        .disk_usage_bytes()
+                        .map_or(DiskFitSize::Unmeasured, DiskFitSize::Measured),
+                ),
                 columns::RowLifecycle::from(
                     disk_context.projects.is_deleted(disk_context.ancestor)
                         || disk_context.projects.is_deleted(member.path()),
@@ -271,7 +300,11 @@ fn observe_typed_vendored_fit_widths(
                     .name_marker()),
         );
         let cell = DiskCell::for_row(
-            formatted_disk(project.disk_usage_bytes()),
+            formatted_disk(
+                project
+                    .disk_usage_bytes()
+                    .map_or(DiskFitSize::Unmeasured, DiskFitSize::Measured),
+            ),
             columns::RowLifecycle::from(
                 disk_context.projects.is_deleted(disk_context.ancestor)
                     || disk_context.projects.is_deleted(project.path()),
@@ -286,7 +319,7 @@ fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ProjectListWidths,
     ws: &Workspace,
     worktree_name: &str,
-    repo_info: Option<&RepoInfo>,
+    repo_info: OriginSyncRepoContext<'_>,
     projects: &ProjectList,
     metadata: &ManifestMetadataStates,
 ) {
@@ -314,7 +347,7 @@ fn observe_package_worktree_entry_fit_widths(
     widths: &mut ProjectListWidths,
     pkg: &Package,
     worktree_name: &str,
-    repo_info: Option<&RepoInfo>,
+    repo_info: OriginSyncRepoContext<'_>,
     projects: &ProjectList,
     metadata: &ManifestMetadataStates,
 ) {
@@ -362,7 +395,7 @@ fn observe_worktree_group_fit_widths(
     projects: &ProjectList,
     metadata: &ManifestMetadataStates,
     worktree_group: &WorktreeGroup,
-    repo_info: Option<&RepoInfo>,
+    repo_info: OriginSyncRepoContext<'_>,
 ) {
     // Use `worktree_group.renders_as_group()` just as rendering does: with one live checkout,
     // `single_live()` is the root itself, so its children have no intervening worktree ancestor.
@@ -411,14 +444,25 @@ fn observe_worktree_group_fit_widths(
     }
 }
 
-fn formatted_disk(bytes: Option<u64>) -> String {
-    bytes.map_or_else(|| "…".to_string(), render::format_bytes)
+fn formatted_disk(disk_fit_size: DiskFitSize) -> String {
+    match disk_fit_size {
+        DiskFitSize::Unmeasured => "…".to_string(),
+        DiskFitSize::Measured(bytes) => render::format_bytes(bytes),
+    }
 }
 
-fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
-    super::GitSyncLabels::of(checkout, repo).origin
+fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: OriginSyncRepoContext<'_>) -> String {
+    match repo {
+        OriginSyncRepoContext::Metadata(repo) => super::GitSyncLabels::of(checkout, Some(repo)),
+        OriginSyncRepoContext::MetadataUnavailable => super::GitSyncLabels::of(checkout, None),
+    }
+    .origin
 }
 
-fn git_main_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
-    super::GitSyncLabels::of(checkout, repo).main
+fn git_main_sync_label(checkout: Option<&CheckoutInfo>, repo: OriginSyncRepoContext<'_>) -> String {
+    match repo {
+        OriginSyncRepoContext::Metadata(repo) => super::GitSyncLabels::of(checkout, Some(repo)),
+        OriginSyncRepoContext::MetadataUnavailable => super::GitSyncLabels::of(checkout, None),
+    }
+    .main
 }

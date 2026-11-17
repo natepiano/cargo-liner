@@ -54,6 +54,13 @@ impl SubmodulePins {
     }
 }
 
+struct SubmoduleDeclaration {
+    name:          String,
+    relative_path: String,
+    url:           Option<String>,
+    branch:        Option<String>,
+}
+
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
 pub(crate) struct Submodule {
@@ -113,26 +120,31 @@ pub(crate) fn get_submodules(project_root: &Path) -> Vec<Submodule> {
         return Vec::new();
     };
 
-    let mut entries = parse_gitmodules(&content);
-    if entries.is_empty() {
+    let declarations = parse_gitmodules(&content);
+    if declarations.is_empty() {
         return Vec::new();
     }
 
-    // Set `entry.path` from `project_root` plus `entry.relative_path`, then set
-    // `entry.commit` from `SubmodulePins::for_path`.
     let commits = ls_tree_submodule_commits(project_root);
-    for entry in &mut entries {
-        entry.path = AbsolutePath::from(project_root.join(&entry.relative_path));
-        entry.commit = commits.for_path(&entry.relative_path);
-    }
-
-    entries
+    declarations
+        .into_iter()
+        .map(|declaration| Submodule {
+            path:          AbsolutePath::from(project_root.join(&declaration.relative_path)),
+            commit:        commits.for_path(&declaration.relative_path),
+            name:          declaration.name,
+            relative_path: declaration.relative_path,
+            url:           declaration.url,
+            branch:        declaration.branch,
+            project_info:  ProjectInfo::default(),
+            git_repo:      None,
+        })
+        .collect()
 }
 
-/// Parse the INI-like `.gitmodules` format into partially filled entries.
-fn parse_gitmodules(content: &str) -> Vec<Submodule> {
-    let mut entries: Vec<Submodule> = Vec::new();
-    let mut current: Option<Submodule> = None;
+/// Parse the INI-like `.gitmodules` format into declarations.
+fn parse_gitmodules(content: &str) -> Vec<SubmoduleDeclaration> {
+    let mut entries: Vec<SubmoduleDeclaration> = Vec::new();
+    let mut current: Option<SubmoduleDeclaration> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -143,15 +155,11 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
             if let Some(entry) = current.take() {
                 entries.push(entry);
             }
-            current = Some(Submodule {
+            current = Some(SubmoduleDeclaration {
                 name:          header.to_string(),
-                path:          "/".into(),
                 relative_path: String::new(),
                 url:           None,
                 branch:        None,
-                commit:        PinnedCommit::Absent,
-                project_info:  ProjectInfo::default(),
-                git_repo:      None,
             });
         } else if let Some(ref mut entry) = current
             && let Some((key, value)) = parse_key_value(trimmed)

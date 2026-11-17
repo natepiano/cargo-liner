@@ -1,10 +1,17 @@
-use super::AbsolutePath;
-use super::ProjectFields;
-use super::RootItem;
-use super::RustProject;
-use super::VendoredPackage;
-use super::package_path_dependencies;
-use super::workspace_path_dependencies;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
+
+use toml::Table;
+use toml::Value;
+use tui_pane::normalize_path_components;
+
+use crate::constants::CARGO_TOML;
+use crate::project::AbsolutePath;
+use crate::project::ProjectFields;
+use crate::project::RootItem;
+use crate::project::RustProject;
+use crate::project::VendoredPackage;
 
 #[derive(Clone, Copy)]
 enum VendoredDestination {
@@ -58,6 +65,121 @@ enum DependencyVendoringDecision {
 enum ContainmentVendoringDecision {
     MoveUnderRoot { node_index: usize },
     KeepAtRoot,
+}
+
+enum DependencyManifestInput {
+    Parsed(Table),
+    Unavailable,
+}
+
+enum LocalDependencyPathResolution {
+    Resolved(AbsolutePath),
+    NoResolvedLocalPath,
+}
+
+fn workspace_path_dependencies(workspace_path: &Path) -> HashMap<String, AbsolutePath> {
+    let DependencyManifestInput::Parsed(table) = manifest_table(&workspace_path.join(CARGO_TOML))
+    else {
+        return HashMap::new();
+    };
+    let Some(dependencies) = table
+        .get("workspace")
+        .and_then(Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(Value::as_table)
+    else {
+        return HashMap::new();
+    };
+
+    dependencies
+        .iter()
+        .filter_map(|(name, value)| {
+            match dependency_path(value, workspace_path, name, &HashMap::new()) {
+                LocalDependencyPathResolution::Resolved(path) => Some((name.clone(), path)),
+                LocalDependencyPathResolution::NoResolvedLocalPath => None,
+            }
+        })
+        .collect()
+}
+
+fn package_path_dependencies(
+    package_path: &Path,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+) -> HashSet<AbsolutePath> {
+    let DependencyManifestInput::Parsed(table) = manifest_table(&package_path.join(CARGO_TOML))
+    else {
+        return HashSet::new();
+    };
+    let mut paths = HashSet::new();
+    collect_dependency_paths(&table, package_path, workspace_dependencies, &mut paths);
+    if let Some(targets) = table.get("target").and_then(Value::as_table) {
+        for target in targets.values().filter_map(Value::as_table) {
+            collect_dependency_paths(target, package_path, workspace_dependencies, &mut paths);
+        }
+    }
+    paths
+}
+
+fn manifest_table(manifest_path: &Path) -> DependencyManifestInput {
+    let Ok(contents) = std::fs::read_to_string(manifest_path) else {
+        return DependencyManifestInput::Unavailable;
+    };
+    contents.parse().map_or(
+        DependencyManifestInput::Unavailable,
+        DependencyManifestInput::Parsed,
+    )
+}
+
+fn collect_dependency_paths(
+    table: &Table,
+    package_path: &Path,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+    paths: &mut HashSet<AbsolutePath>,
+) {
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(dependencies) = table.get(section).and_then(Value::as_table) else {
+            continue;
+        };
+        for (name, value) in dependencies {
+            if let LocalDependencyPathResolution::Resolved(path) =
+                dependency_path(value, package_path, name, workspace_dependencies)
+            {
+                paths.insert(path);
+            }
+        }
+    }
+}
+
+fn dependency_path(
+    value: &Value,
+    base_path: &Path,
+    name: &str,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+) -> LocalDependencyPathResolution {
+    let Some(table) = value.as_table() else {
+        return LocalDependencyPathResolution::NoResolvedLocalPath;
+    };
+    if let Some(path) = table.get("path").and_then(Value::as_str) {
+        return LocalDependencyPathResolution::Resolved(resolve_dependency_path(path, base_path));
+    }
+    if table.get("workspace").and_then(Value::as_bool) == Some(true) {
+        return workspace_dependencies
+            .get(name)
+            .map_or(LocalDependencyPathResolution::NoResolvedLocalPath, |path| {
+                LocalDependencyPathResolution::Resolved(path.clone())
+            });
+    }
+    LocalDependencyPathResolution::NoResolvedLocalPath
+}
+
+fn resolve_dependency_path(path: &str, base_path: &Path) -> AbsolutePath {
+    let raw_path = Path::new(path);
+    let resolved = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        base_path.join(raw_path)
+    };
+    AbsolutePath::from(normalize_path_components(&resolved))
 }
 
 /// Find standalone items whose path lives inside another item's directory

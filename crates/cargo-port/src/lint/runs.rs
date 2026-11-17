@@ -1,9 +1,25 @@
 use std::collections::HashMap;
 
 use super::run::LintRun;
+#[cfg(test)]
+use super::run::LintRunDuration;
+#[cfg(test)]
+use super::run::LintRunFinishTime;
 use super::status;
 use super::status::CachedLintStatus;
 use super::status::LintStatus;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachedLintAvailability<'a> {
+    SupersededByLiveOrPending,
+    Available(&'a CachedLintStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveSizeLookup {
+    UnknownRun,
+    KnownBytes(u64),
+}
 
 /// Per-project lint state: run history and current status.
 ///
@@ -27,10 +43,12 @@ impl LintRuns {
 
     /// Hydrated status with its same-run start time, unless a live or pending
     /// lint supersedes the historical result.
-    pub const fn cached_status(&self) -> Option<&CachedLintStatus> {
+    pub const fn cached_status(&self) -> CachedLintAvailability<'_> {
         match self.status {
-            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => None,
-            _ => Some(&self.cached_status),
+            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => {
+                CachedLintAvailability::SupersededByLiveOrPending
+            },
+            _ => CachedLintAvailability::Available(&self.cached_status),
         }
     }
 
@@ -40,14 +58,16 @@ impl LintRuns {
         self.cached_status = status;
     }
 
-    /// Archive byte size for a single run. `None` means we have no entry
-    /// for this `run_id` (run not yet seen by `set_runs`); `Some(0)` means
-    /// the entry exists and the archive directory is empty. Callers must
-    /// distinguish these — rendering "—" vs "0 B" — because they signal
-    /// different states (missing vs known-empty) and conflating them
-    /// hides bugs in the watcher/archive pipeline.
-    pub fn archive_bytes(&self, run_id: &str) -> Option<u64> {
-        self.archive_bytes.get(run_id).copied()
+    /// Return `KnownBytes` for an indexed run, including an empty archive with zero bytes.
+    /// Return `UnknownRun` when `set_runs` has no entry for `run_id`.
+    /// Renderers distinguish the missing archive from the empty archive to expose watcher or
+    /// archive errors.
+    pub fn archive_bytes(&self, run_id: &str) -> ArchiveSizeLookup {
+        self.archive_bytes
+            .get(run_id)
+            .map_or(ArchiveSizeLookup::UnknownRun, |bytes| {
+                ArchiveSizeLookup::KnownBytes(*bytes)
+            })
     }
 
     /// Replace run history and derive status from the latest run. Archive
@@ -114,8 +134,8 @@ mod tests {
         LintRun {
             run_id:        run_id.to_string(),
             started_at:    "2026-04-24T12:00:00Z".to_string(),
-            finished_at:   Some("2026-04-24T12:00:01Z".to_string()),
-            duration_ms:   Some(1000),
+            finished_at:   LintRunFinishTime::Recorded("2026-04-24T12:00:01Z".to_string()),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(1000),
             status:        LintRunStatus::Passed,
             commands:      Vec::new(),
             archive_bytes: 0,
@@ -133,20 +153,25 @@ mod tests {
     }
 
     #[test]
-    fn archive_bytes_returns_none_for_unknown_run_id() {
+    fn archive_bytes_returns_unknown_for_unknown_run_id() {
         let lr = LintRuns::default();
-        assert_eq!(lr.archive_bytes("nonexistent"), None);
+        assert_eq!(
+            lr.archive_bytes("nonexistent"),
+            ArchiveSizeLookup::UnknownRun
+        );
     }
 
     #[test]
     fn archive_bytes_returns_the_size_persisted_on_the_run() {
-        // `LintRuns::archive_bytes` has an entry for every run in the set, storing
-        // `LintRun::archive_bytes`. Its `Option` API distinguishes a present
-        // entry from an unknown run.
+        // `LintRuns::archive_bytes` stores each run's `LintRun::archive_bytes` value.
+        // `ArchiveSizeLookup` distinguishes an indexed archive from an unknown run.
         let mut lr = LintRuns::default();
         lr.set_runs(vec![make_run("a")]);
-        assert_eq!(lr.archive_bytes("a"), Some(0));
-        assert_eq!(lr.archive_bytes("not-a-real-run"), None);
+        assert_eq!(lr.archive_bytes("a"), ArchiveSizeLookup::KnownBytes(0));
+        assert_eq!(
+            lr.archive_bytes("not-a-real-run"),
+            ArchiveSizeLookup::UnknownRun
+        );
     }
 
     #[test]
@@ -184,22 +209,40 @@ mod tests {
     #[test]
     fn cached_status_keeps_the_hydrated_run_start_and_skips_live_status() {
         let mut lr = LintRuns::default();
-        assert_eq!(lr.cached_status(), Some(&CachedLintStatus::NoLog));
+        assert_eq!(
+            lr.cached_status(),
+            CachedLintAvailability::Available(&CachedLintStatus::NoLog)
+        );
         let terminal = make_run("terminal");
         let expected = CachedLintStatus::from_run(&terminal);
         lr.set_runs(vec![terminal]);
-        assert_eq!(lr.cached_status(), expected.as_ref());
+        assert_eq!(
+            lr.cached_status(),
+            expected.as_ref().map_or(
+                CachedLintAvailability::SupersededByLiveOrPending,
+                CachedLintAvailability::Available,
+            )
+        );
 
         let mut running = make_run("running");
         running.status = LintRunStatus::Running;
         running.started_at = chrono::Utc::now().to_rfc3339();
-        running.finished_at = None;
+        running.finished_at = LintRunFinishTime::NotRecorded;
         lr.set_runs(vec![running, make_run("prior-pass")]);
-        assert_eq!(lr.cached_status(), None);
+        assert_eq!(
+            lr.cached_status(),
+            CachedLintAvailability::SupersededByLiveOrPending
+        );
 
         lr.set_status(LintStatus::Stale);
-        assert_eq!(lr.cached_status(), None);
+        assert_eq!(
+            lr.cached_status(),
+            CachedLintAvailability::SupersededByLiveOrPending
+        );
         lr.set_hydrated_runs(vec![make_run("prior-pass")]);
-        assert_eq!(lr.cached_status(), None);
+        assert_eq!(
+            lr.cached_status(),
+            CachedLintAvailability::SupersededByLiveOrPending
+        );
     }
 }
