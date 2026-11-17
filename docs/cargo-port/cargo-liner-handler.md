@@ -690,7 +690,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** reading the source text for the order. rustc's expansion record and the spans give the answer without a file read.
 
-### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: done
 
 #### Work Order
 
@@ -711,4 +711,32 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Verification:**
 - Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
+
+### Phase 34 — The cargo-mend CLI starts without the compiler library  · status: todo
+
+#### Work Order
+
+**Goal:** the `cargo-mend` CLI binary does not link librustc_driver. A second binary, `cargo-mend-driver`, holds the compiler analysis. Source: the showrunner, 2026-11-17. Each process that links librustc_driver costs 25-50 ms to start on the Mac. A mend run with fixes loads it about 5 times only for the CLI and for cargo's toolchain queries. CPU cost ranks first. Order: after Phase 33, before the as-built. Do this phase even when Phase 33 brings the tests under 1 s.
+
+**Spec:**
+1. Keep one package. `cargo install --path crates/cargo-mend` installs both binaries in one command.
+2. Name the driver binary `cargo-mend-driver`, as clippy names `clippy-driver`.
+3. Move all `rustc_private` code (now under `src/compiler/`) to the driver binary. Code that both binaries use goes in a shared library target. The CLI binary has no `#![feature(rustc_private)]` and no `extern crate rustc_*`.
+4. The CLI is cargo's workspace wrapper. It answers cargo's toolchain queries (`-vV`, `--print`) from the Phase 33 query cache, passes unselected units to rustc, and starts `cargo-mend-driver` only for the selected crates.
+5. The CLI finds `cargo-mend-driver` in the directory of its own executable. When the driver is missing, mend stops with an error that names the expected path and the install command.
+6. Keep the wrapper copy in the mend cache, the analysis results, and the report format the same.
+
+**Files:**
+- `crates/cargo-mend/Cargo.toml`
+- `crates/cargo-mend/src/`
+- `crates/cargo-mend/tests/`
+- `crates/cargo-mend/README.md`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- A test for the missing-driver error.
+- Three pairs against main on a mend run in a real crate on the Mac (median and spread): wall time and CPU time. The new build must not be slower.
 - No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
