@@ -672,3 +672,28 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Verification:**
 - Lint and the full `cargo-mend` test suite.
 - The test runs under 1 s with no LEAK mark.
+
+### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
+
+#### Work Order
+
+**Goal:** mend never reports or fixes the visibility of an item that a macro expansion makes. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). In `hana_agora_server` (`crates/hana_agora_server/src/tables.rs`, repo `hana`, branch `spacetime-spacetime-server`), SpacetimeDB 2.15.0 `#[table(accessor = <name>, public)]` makes one `pub` trait per table, named by the accessor. mend gave 12 `unused_pub` warnings on those traits, and `mend --fix` applied 4 `pub` removals there. The written source has no `pub` that a person can remove.
+
+**Spec:**
+1. Find why `scan::visit::visit_item` reports these traits: its `from_expansion` check on `item.span` and `item.vis_span` does not skip them. A proc macro can give its output tokens the spans of the written input.
+2. Make every visibility finding and fix skip an item that a macro expansion makes, also when the macro reuses a written span. Read the expansion from rustc data, not from the source text.
+3. Keep every finding and fix on a written item, also on a written item that an attribute macro keeps.
+4. Add a regression test: a proc-macro fixture crate whose attribute macro makes a `pub` trait named by an argument, with the written spans. mend reports no visibility finding on the trait, and a `pub` item written beside it is still reported.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs`
+- `crates/cargo-mend/src/compiler/visibility/source.rs`
+- `crates/cargo-mend/src/compiler/visibility/field.rs`
+- `crates/cargo-mend/tests/diagnostics/unused_pub.rs`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite.
+- The regression test fails before the fix and passes after it.
+- `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
