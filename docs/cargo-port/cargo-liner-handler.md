@@ -620,7 +620,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a reduced accounts table in the handler; the hana console accounts page owns account usage.
 
-### Phase 29 — The summary names an accounts command failure  · status: todo
+### Phase 29 — The summary names an accounts command failure  · status: done
 
 #### Work Order
 
@@ -629,18 +629,16 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Spec:**
 1. While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one notice line under the local machine heading. The line names the `AccountsFailure` reason.
 2. In every other `AccountsSource` state, the summary draws no accounts notice line.
-3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count (`summary/mod.rs` near `hierarchy_notice`).
-4. `SummaryFrame` gets the notice from `app.accounts.source`; remote machines show no accounts notice.
+3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count.
+4. `MachineState::notices` gives the lines under a machine's agents: the hierarchy notice, then the accounts failure read from `hierarchy.facts.accounts` (`Observed::Known(SourceHealth::Unreadable)`). Only the local census records an accounts read; a remote probe's facts hold `Unknown`, so remotes show no accounts notice. The summary height, width, drawing, the notice redraw time and `Census::has_hierarchy_notice` read `notices`.
 5. Update `docs/cargo-handler/as-built/accounts.md` and the summary layout doc.
 
 **Files:**
+- `crates/cargo-handler/src/census/mod.rs`
 - `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/census/accounts.rs`
-- `crates/cargo-handler/src/render/mod.rs`
 - `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/expansion.rs`
-- `crates/cargo-handler/src/details.rs`
-- `crates/cargo-handler/src/render/accounts_notice_tests.rs`
+- `crates/cargo-handler/src/render/mod.rs`
+- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`
 - `docs/cargo-handler/as-built/accounts.md`
 - `docs/cargo-handler/as-built/tile-layout.md`
 
@@ -650,3 +648,28 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 - Check, lint, and the full `cargo-handler` test suite.
 - A render test: a failed source shows the notice line with its reason under the local heading; a ready source shows none.
 - Live: on a private Xvfb, a handler with a failing `accounts_command` shows the notice line.
+
+### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo mend --fix` never rewrites the import of a trait with a snake_case name. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). `use crate::tables::client_version;` became `use crate::tables;`, where `client_version` is a trait made by `#[spacetimedb::table(accessor = client_version, ...)]`. The call `ctx.db.client_version()` then lost its trait: 14 E0599 errors, mend rolled back, and lint stopped in `hana_catalyst-spacetime-spacetime-server` (`crates/hana_agora_server/src/command.rs`, `lifecycle.rs`, `tool.rs`).
+
+**Spec:**
+1. `analyze_function_import` decides that an import names a function only from its spelling (`support::import_name_case`). A snake_case name can also be a trait, a macro output or another item.
+2. Make the function-import fix rewrite an import only when the target module defines a function with that name. An import whose name has no function definition there (a trait, a macro output, any other item) stays as written.
+3. Keep every current rewrite of a real function import.
+4. Add a regression test: a crate where a macro makes a trait with a snake_case name, a file imports that trait by name and calls its method. `cargo mend --fix` keeps the import, and the crate still compiles.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/prefer_module_import/function_imports.rs`
+- `crates/cargo-mend/src/fixes/prefer_module_import/support.rs`
+- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs`
+- `crates/cargo-mend/tests/support`
+- `crates/cargo-mend/src/diagnostic_tests.rs`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Check, lint, and the full `cargo-mend` test suite.
+- The regression test fails before the fix and passes after it.

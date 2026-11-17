@@ -76,7 +76,7 @@ pub(crate) fn height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -
         .map(|machine| {
             usize::from(GROUP_HEADER_HEIGHT)
                 + table_height(root_rows(*machine, placement).count())
-                + usize::from(machine.state.hierarchy_notice().is_visible())
+                + machine.state.notices().count()
         })
         .sum();
     let gaps = machines.len().saturating_sub(1) * usize::from(GROUP_GAP_HEIGHT);
@@ -101,7 +101,14 @@ pub(crate) fn width(
         .map(|machine| {
             heading(machine, root_rows(*machine, placement).count())
                 .width()
-                .max(SECTION_ITEM_INDENT.len() + machine.state.hierarchy_notice().text().len())
+                .max(
+                    machine
+                        .state
+                        .notices()
+                        .map(|notice| SECTION_ITEM_INDENT.len() + notice.len())
+                        .max()
+                        .unwrap_or(0),
+                )
         })
         .max()
         .map_or(0, |widest| u16::try_from(widest).unwrap_or(u16::MAX));
@@ -290,14 +297,10 @@ impl SummaryMachines {
                 usize::from(GROUP_HEADER_HEIGHT),
             ));
             result.push_session_table(frame, machine, &rows, &table, &ages);
-            if machine.state.hierarchy_notice().is_visible() {
+            for notice in machine.state.notices() {
                 result.lines.push(truncated_line(
                     Line::styled(
-                        format!(
-                            "{}{}",
-                            SECTION_ITEM_INDENT,
-                            machine.state.hierarchy_notice().text()
-                        ),
+                        format!("{SECTION_ITEM_INDENT}{notice}"),
                         Style::default()
                             .fg(text_default())
                             .add_modifier(Modifier::DIM),
@@ -366,12 +369,12 @@ impl SummaryMachines {
 fn whole_machine_width(machine: &Machine<'_>, roots: usize, whole_table_width: u16) -> u16 {
     let heading = u16::try_from(heading(machine, roots).width()).unwrap_or(u16::MAX);
     let table = if roots == 0 { 0 } else { whole_table_width };
-    let notice = machine.state.hierarchy_notice();
-    let notice = if notice.is_visible() {
-        cell_width(SECTION_ITEM_INDENT).saturating_add(cell_width(&notice.text()))
-    } else {
-        0
-    };
+    let notice = machine
+        .state
+        .notices()
+        .map(|notice| cell_width(SECTION_ITEM_INDENT).saturating_add(cell_width(&notice)))
+        .max()
+        .unwrap_or(0);
     heading.max(table).max(notice)
 }
 
