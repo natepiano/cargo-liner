@@ -653,7 +653,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a second re-export resolver for the function check; it read bare names differently from the module check.
 
-### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: todo
+### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: done
 
 #### Work Order
 
@@ -672,3 +672,51 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Verification:**
 - Lint and the full `cargo-mend` test suite.
 - The test runs under 1 s with no LEAK mark.
+
+### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
+
+#### Work Order
+
+**Goal:** mend never reports or fixes the visibility of an item that a macro expansion makes. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). In `hana_agora_server` (`crates/hana_agora_server/src/tables.rs`, repo `hana`, branch `spacetime-spacetime-server`), SpacetimeDB 2.15.0 `#[table(accessor = <name>, public)]` makes one `pub` trait per table, named by the accessor. mend gave 12 `unused_pub` warnings on those traits, and `mend --fix` applied 4 `pub` removals there. The written source has no `pub` that a person can remove.
+
+**Spec:**
+1. Find why `scan::visit::visit_item` reports these traits: its `from_expansion` check on `item.span` and `item.vis_span` does not skip them. A proc macro can give its output tokens the spans of the written input.
+2. Make every visibility finding and fix skip an item that a macro expansion makes, also when the macro reuses a written span. Read the expansion from rustc data, not from the source text.
+3. Keep every finding and fix on a written item, also on a written item that an attribute macro keeps.
+4. Add a regression test: a proc-macro fixture crate whose attribute macro makes a `pub` trait named by an argument, with the written spans. mend reports no visibility finding on the trait, and a `pub` item written beside it is still reported.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs`
+- `crates/cargo-mend/src/compiler/visibility/source.rs`
+- `crates/cargo-mend/src/compiler/visibility/field.rs`
+- `crates/cargo-mend/tests/diagnostics/unused_pub.rs`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite.
+- The regression test fails before the fix and passes after it.
+- `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
+
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+
+#### Work Order
+
+**Goal:** every cargo-mend `diagnostic_tests` test runs under 1 s in the Mac suite at normal load. Source: the showrunner, 2026-11-16. The Phase 31 Mac suite at start load 7.68 timed 53 of them at 1.0 to 1.75 s: 27 in `pub_use_outside_subtree_fixes`, 11 in `pub_use_fixes`, and 1 to 3 in each of 9 other modules. Tests over 1 s at normal load are defects. Order: after Phase 32, before the as-built.
+
+**Spec:**
+1. Measure the slowest tests alone on the Mac, and find where each one spends its time: fixture setup, each cargo and compiler process, each fix pass, and the validation compile.
+2. Remove the cost at its cause. More nextest slots are not the fix.
+3. Keep what each test proves.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/support/`
+- `crates/cargo-mend/src/`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
