@@ -16,8 +16,6 @@ use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::config::WordHighlightEmphasis;
@@ -68,17 +66,6 @@ pub(super) fn application() -> TestResult<App> {
             session(30, "pool-session", "")?,
             other_account,
         ],
-    );
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(
-            br#"{
-        "accounts":[{"label":"claude1","tool":"claude","roles":["showrunners","units"],
-        "weekly_left_percent":50,"use_credits":false,"read_ok":true,
-        "role_counts":[{"busy":1,"idle":3,"paused":2,"exited":0,"total":6},
-        {"busy":4,"idle":6,"paused":5,"exited":0,"total":15}]}],"problems":[]
-    }"#,
-        )
-        .map_err(|error| error.to_string())?,
     );
     Ok(app)
 }
@@ -163,20 +150,6 @@ pub(super) fn locate(buffer: &Buffer, text: &str) -> TestResult<Position> {
         .ok_or_else(|| format!("missing painted {text}").into())
 }
 
-fn header_word(buffer: &Buffer, text: &str) -> TestResult<Position> {
-    let heading = locate(buffer, "accounts")?;
-    positions(buffer, text)
-        .into_iter()
-        .find(|point| {
-            let end = point.x + u16::try_from(text.len()).unwrap_or(u16::MAX);
-            point.y > heading.y
-                && (point.x == buffer.area.x || buffer[(point.x - 1, point.y)].symbol() == " ")
-                && end < buffer.area.right()
-                && buffer[(end, point.y)].symbol() == " "
-        })
-        .ok_or_else(|| format!("missing header {text}").into())
-}
-
 fn tree_word(buffer: &Buffer, text: &str) -> TestResult<Position> {
     positions(buffer, text)
         .into_iter()
@@ -248,15 +221,12 @@ pub(super) fn assert_matches(buffer: &Buffer, word: &str, background: Color) -> 
 }
 
 #[test]
-fn a_word_press_marks_two_agent_tiles_the_pool_the_summary_and_accounts() -> TestResult {
+fn a_word_press_marks_two_agent_tiles_the_pool_and_the_summary() -> TestResult {
     let mut app = application()?;
     let mut renderer = Renderer::new(&mut app, WIDTH, HEIGHT)?;
     let before = renderer.paint(&mut app)?;
     let points = positions(&before, ACCOUNT);
-    assert!(
-        points.len() >= 7,
-        "two trees, pool, summary rows, and account table"
-    );
+    assert!(points.len() >= 6, "two trees, pool, and summary rows");
     app.click(points[0]);
     let marked = renderer.paint(&mut app)?;
     assert_ne!(app.word_highlight, WordHighlight::Off);
@@ -426,33 +396,6 @@ fn an_overlay_receives_the_press_and_escape_before_the_word_state() -> TestResul
     Ok(())
 }
 
-#[test]
-fn account_continuation_words_and_pinned_headers_use_the_painted_line() -> TestResult {
-    let mut app = application()?;
-    app.loaded_config.config.tiles.view = TileView::Summary;
-    let mut renderer = Renderer::new(&mut app, 99, HEIGHT)?;
-    let before = renderer.paint(&mut app)?;
-    let point = locate(&before, "units")?;
-    let account = locate(&before, ACCOUNT)?;
-    assert!(
-        point.y > account.y,
-        "the second account role is a continuation"
-    );
-    app.click(point);
-    let marked = renderer.paint(&mut app)?;
-    assert_matches(&marked, "units", match_background()?)?;
-    let old_sort = app.accounts_sort;
-    app.click(header_word(&marked, "account")?);
-    let header = renderer.paint(&mut app)?;
-    assert_ne!(
-        app.accounts_sort, old_sort,
-        "the word press preserves header sorting"
-    );
-    assert_matches(&header, "account", match_background()?)?;
-    app.click(locate(&header, "accounts")?);
-    assert_matches(&renderer.paint(&mut app)?, "accounts", match_background()?)
-}
-
 fn branch_application() -> TestResult<App> {
     let mut app = application()?;
     let root = session(10, "branch-owner", "")?;
@@ -478,7 +421,7 @@ fn a_marker_press_toggles_the_branch_and_sets_no_word() -> TestResult {
         positions(&before, "branch-leaf"),
         [] as [ratatui::prelude::Position; 0]
     );
-    app.click(locate(&before, ACCOUNT)?);
+    app.click(locate(&before, "branch-owner")?);
     renderer.paint(&mut app)?;
     assert_ne!(app.word_highlight, WordHighlight::Off);
     app.click(Position::new(column, child.y));
@@ -726,57 +669,6 @@ fn a_real_truncation_ellipsis_resolves_only_the_visible_name() -> TestResult {
     assert_eq!(word.text(), visible);
     assert_ne!(word.text(), FULL_NAME);
     assert_matches(&renderer.paint(&mut app)?, &visible, match_background()?)
-}
-
-#[test]
-fn pinned_account_headers_mark_words_without_breaking_the_sort_or_selection() -> TestResult {
-    let mut app = application()?;
-    app.loaded_config.config.tiles.view = TileView::Summary;
-    let accounts: Vec<_> = (0..6)
-        .map(|index| {
-            serde_json::json!({
-                "label":format!("pinned-account-{index}"),"roles":["showrunners","units"],
-                "weekly_left_percent":50,"use_credits":false
-            })
-        })
-        .collect();
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(&serde_json::to_vec(
-            &serde_json::json!({"accounts":accounts,"problems":[]}),
-        )?)
-        .map_err(|error| error.to_string())?,
-    );
-    let mut renderer = Renderer::new(&mut app, 99, 16)?;
-    let before = renderer.paint(&mut app)?;
-    app.click(locate(&before, "pinned-account-0")?);
-    key(&mut app, KeyCode::End);
-    let pinned = renderer.paint(&mut app)?;
-    let state = app
-        .selections
-        .surface(&SelectionSurface::Summary)
-        .map_or(None, Some)
-        .ok_or("summary selection")?;
-    assert!(
-        matches!(state.painted_mapping(), ViewportMapping::Pinned { .. }),
-        "the header must be pinned"
-    );
-    let selected = state.selection();
-    let old_sort = app.accounts_sort;
-    app.click(header_word(&pinned, "account")?);
-    assert_ne!(app.accounts_sort, old_sort);
-    let marked = renderer.paint(&mut app)?;
-    assert_matches(&marked, "account", match_background()?)?;
-    app.click(locate(&marked, "accounts")?);
-    let heading = renderer.paint(&mut app)?;
-    assert_matches(&heading, "accounts", match_background()?)?;
-    assert_eq!(
-        app.selections.surface(&SelectionSurface::Summary).map_or(
-            TileSelection::NoRows,
-            super::super::interaction::SurfaceSelection::selection
-        ),
-        selected
-    );
-    Ok(())
 }
 
 #[test]

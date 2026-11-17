@@ -20,7 +20,7 @@ use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::transcript::SubagentRole;
 use crate::theme;
 use crate::theme::Role;
@@ -134,8 +134,8 @@ fn covered_contrast(ink: Color, ground: Color) -> f64 {
 }
 
 fn source_states(app: &mut App) {
-    app.accounts.table = AccountsTable::Ready(
-        crate::census::accounts::AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        crate::census::accounts::SessionStates::parse(
             br#"{
             "accounts":[{"label":"claude1","roles":[],"use_credits":false,"sessions":[
                 {"session":"owner","state":"busy"},{"session":"colored","state":"busy"},

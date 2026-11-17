@@ -11,7 +11,6 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::details::DetailProperty;
 use crate::details::RowDetailsLookup;
-use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
 use crate::sort::TreeSort;
@@ -75,8 +74,7 @@ fn summary_and_tree_ages_right_align_values_and_header() {
         &mut summary,
         area,
         &SummaryFrame {
-            accounts:       &AccountsTable::NotConfigured,
-            accounts_sort:  AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -142,8 +140,7 @@ fn summary_pid_digits_end_under_the_right_aligned_pid_header() {
         &mut buffer,
         area,
         &SummaryFrame {
-            accounts:       &AccountsTable::NotConfigured,
-            accounts_sort:  AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -200,8 +197,7 @@ fn summary_age_header_ends_at_the_last_digit_used_by_its_rows() {
         &mut buffer,
         area,
         &SummaryFrame {
-            accounts:       &AccountsTable::NotConfigured,
-            accounts_sort:  AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,

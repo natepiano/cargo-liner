@@ -9,7 +9,6 @@ use super::*;
 use crate::census::AccountColumn;
 use crate::census::AgentActivity;
 use crate::census::RoleFallback;
-use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
@@ -19,7 +18,6 @@ use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_STATUS_HEADER;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 
 /// A remote probe's account value, independent of the runner's home directory.
@@ -951,20 +949,14 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             NOW,
             frame_account_column,
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
-            AccountsSort::SourceOrder,
         );
-        let rect = area(
-            width,
-            summary::height(&machines, &placement, &AccountsTable::NotConfigured),
-        );
+        let rect = area(width, summary::height(&machines, &placement));
         let mut buffer = Buffer::empty(rect);
         summary::draw(
             &mut buffer,
             rect,
             &SummaryFrame {
-                accounts_sort:  AccountsSort::SourceOrder,
-                accounts:       &AccountsTable::NotConfigured,
+                session_states: &EMPTY_SESSION_STATES,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &cells,

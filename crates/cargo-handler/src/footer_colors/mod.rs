@@ -10,7 +10,6 @@ use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
 use ratatui::style::Color;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
 use tui_pane::Theme;
 
@@ -303,23 +302,12 @@ impl FooterTint {
             Self::Plain => theme,
         }
     }
-
-    /// Subdue a label without delegating its contrast to terminal dimming.
-    pub(crate) fn subdued_style(self, theme: Style) -> Style {
-        let foreground = match self {
-            Self::Footer(color) => resolved(color).subdued,
-            Self::Management(color) => resolved_management(color).subdued,
-            Self::Plain => PALETTE.with(|palette| palette.borrow_mut().current().plain.subdued),
-        };
-        theme.remove_modifier(Modifier::DIM).fg(foreground)
-    }
 }
 
-/// Footer ink resolved against the theme's ground, including a readable muted form.
+/// Footer ink resolved against the theme's ground.
 #[derive(Clone, Copy, Debug)]
 struct ReadableInk {
     foreground: Color,
-    subdued:    Color,
 }
 
 /// One palette belongs to one active theme; drawing only looks up its colors.
@@ -327,7 +315,6 @@ struct ReadablePalette {
     theme:         Arc<Theme>,
     colors:        BTreeMap<FooterColor, ReadableInk>,
     management:    BTreeMap<FooterColor, ReadableInk>,
-    plain:         ReadableInk,
     grounds:       InkGrounds,
     glyph_inks:    Vec<(Color, Color)>,
     selected_inks: Vec<(Color, Color, SelectedGroundInk)>,
@@ -345,11 +332,7 @@ impl ReadablePalette {
             .map(|color| {
                 (
                     color,
-                    ReadableInk::new(
-                        InkPurpose::Account.source(color),
-                        grounds,
-                        InkCoverage::Antialiased,
-                    ),
+                    ReadableInk::new(InkPurpose::Account.source(color), grounds),
                 )
             })
             .collect();
@@ -358,20 +341,14 @@ impl ReadablePalette {
             .map(|color| {
                 (
                     color,
-                    ReadableInk::new(
-                        InkPurpose::Management.source(color),
-                        grounds,
-                        InkCoverage::Antialiased,
-                    ),
+                    ReadableInk::new(InkPurpose::Management.source(color), grounds),
                 )
             })
             .collect();
-        let plain = ReadableInk::new(theme.text.default.color, grounds, InkCoverage::Opaque);
         Self {
             theme,
             colors,
             management,
-            plain,
             grounds,
             glyph_inks: Vec::new(),
             selected_inks: Vec::new(),
@@ -393,9 +370,9 @@ impl ReadablePalette {
             InkPurpose::Account => &mut self.colors,
             InkPurpose::Management => &mut self.management,
         };
-        *inks.entry(color).or_insert_with(|| {
-            ReadableInk::new(purpose.source(color), grounds, InkCoverage::Antialiased)
-        })
+        *inks
+            .entry(color)
+            .or_insert_with(|| ReadableInk::new(purpose.source(color), grounds))
     }
 }
 
@@ -474,12 +451,6 @@ fn channel_luminance([red, green, blue]: [f64; 3]) -> f64 {
     )
 }
 
-fn contrast(ink: Color, ground: Color) -> f64 {
-    let ink = luminance(ink);
-    let ground = luminance(ground);
-    (ink.max(ground) + CONTRAST_LUMINANCE_OFFSET) / (ink.min(ground) + CONTRAST_LUMINANCE_OFFSET)
-}
-
 /// The actual pane grounds on which one foreground must remain readable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InkGrounds {
@@ -497,10 +468,11 @@ impl InkGrounds {
         }
     }
 
+    /// The lowest stem contrast over the three grounds.
     fn contrast(self, ink: Color) -> f64 {
         [self.base, self.unfocused, self.focused]
             .into_iter()
-            .map(|ground| contrast(ink, ground))
+            .map(|ground| antialiased_contrast(ink, ground))
             .fold(f64::INFINITY, f64::min)
     }
 }
@@ -535,27 +507,7 @@ impl InkPurpose {
 /// Live xterm stems measured about 216; 208 leaves a small rasterization margin.
 const ANTIALIASED_GLYPH_COVERAGE: u8 = 208;
 
-/// The minimum glyph coverage for which an ink must retain the contrast floor.
-#[derive(Clone, Copy)]
-enum InkCoverage {
-    Opaque,
-    /// Stem contrast under both fractional and byte-rounded terminal coverage.
-    Antialiased,
-}
-
-impl InkCoverage {
-    fn contrast(self, grounds: InkGrounds, ink: Color) -> f64 {
-        match self {
-            Self::Opaque => grounds.contrast(ink),
-            Self::Antialiased => [grounds.base, grounds.unfocused, grounds.focused]
-                .into_iter()
-                .map(|ground| antialiased_contrast(ink, ground))
-                .fold(f64::INFINITY, f64::min),
-        }
-    }
-}
-
-/// Measure fractional and byte-rounded glyph stems with `InkCoverage::Antialiased` coverage.
+/// Measure fractional and byte-rounded glyph stems at `ANTIALIASED_GLYPH_COVERAGE`.
 pub(crate) fn antialiased_contrast(ink: Color, ground: Color) -> f64 {
     let (red, green, blue) = rgb(ink);
     let (ground_red, ground_green, ground_blue) = rgb(ground);
@@ -596,7 +548,7 @@ fn readable_style(style: Style) -> Style {
         if let Some((_, foreground)) = inks.iter().find(|(ink, _)| *ink == color) {
             return *foreground;
         }
-        let foreground = ReadableInk::new(color, grounds, InkCoverage::Antialiased).foreground;
+        let foreground = ReadableInk::new(color, grounds).foreground;
         inks.push((color, foreground));
         foreground
     });
@@ -604,18 +556,13 @@ fn readable_style(style: Style) -> Style {
 }
 
 impl ReadableInk {
-    fn new(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Self {
-        let foreground = if coverage.contrast(grounds, color) >= MINIMUM_CONTRAST {
+    fn new(color: Color, grounds: InkGrounds) -> Self {
+        let foreground = if grounds.contrast(color) >= MINIMUM_CONTRAST {
             color
         } else {
-            readable_lightness(color, grounds, coverage)
+            readable_lightness(color, grounds)
         };
-        // `subdued` approaches the contrast boundary along the same hue.
-        let subdued = readable_lightness(foreground, grounds, coverage);
-        Self {
-            foreground,
-            subdued,
-        }
+        Self { foreground }
     }
 }
 
@@ -653,31 +600,26 @@ impl SelectedGroundInk {
 /// Pane inks choose the nearest readable lightness; selected inks move away from their ground.
 #[derive(Clone, Copy)]
 enum LightnessTarget {
-    Pane {
-        grounds:  InkGrounds,
-        coverage: InkCoverage,
-    },
+    Pane(InkGrounds),
     Selected(Color),
 }
 
 impl LightnessTarget {
     fn contrast(self, color: Color) -> f64 {
         match self {
-            Self::Pane { grounds, coverage } => coverage.contrast(grounds, color),
-            Self::Selected(ground) => InkCoverage::Antialiased.contrast(
-                InkGrounds {
-                    base:      ground,
-                    unfocused: ground,
-                    focused:   ground,
-                },
-                color,
-            ),
+            Self::Pane(grounds) => grounds.contrast(color),
+            Self::Selected(ground) => InkGrounds {
+                base:      ground,
+                unfocused: ground,
+                focused:   ground,
+            }
+            .contrast(color),
         }
     }
 
     fn endpoints(self) -> &'static [f64] {
         match self {
-            Self::Pane { .. } => &[0.0, 1.0],
+            Self::Pane(_) => &[0.0, 1.0],
             Self::Selected(ground) => {
                 let (red, green, blue) = rgb(ground);
                 let lightness =
@@ -686,35 +628,26 @@ impl LightnessTarget {
             },
         }
     }
-
-    const fn ground(self) -> Color {
-        match self {
-            Self::Pane { grounds, .. } => grounds.base,
-            Self::Selected(ground) => ground,
-        }
-    }
 }
 
 /// Keep HSL hue and saturation, choosing the closest readable lightness.
-fn readable_lightness(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Color {
-    lightness_for(color, LightnessTarget::Pane { grounds, coverage })
+fn readable_lightness(color: Color, grounds: InkGrounds) -> Color {
+    lightness_for(color, LightnessTarget::Pane(grounds))
 }
 
 /// Search HSL lightness for pane inks and gamut-mapped OKLCH lightness for selected inks.
 fn lightness_for(color: Color, target: LightnessTarget) -> Color {
     match target {
-        LightnessTarget::Pane { grounds, coverage } => pane_lightness_for(color, grounds, coverage),
+        LightnessTarget::Pane(grounds) => pane_lightness_for(color, grounds),
         LightnessTarget::Selected(_) => {
             let path = SelectedHueChroma::from_color(color);
-            search_lightness(color, target, path.lightness, |light| {
-                path.at_lightness(light)
-            })
+            search_lightness(target, path.lightness, |light| path.at_lightness(light))
         },
     }
 }
 
 /// Pane mapping retains the original HSL arithmetic and byte rounding.
-fn pane_lightness_for(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Color {
+fn pane_lightness_for(color: Color, grounds: InkGrounds) -> Color {
     let channels = <[u8; 3]>::from(rgb(color)).map(|value| f64::from(value) / 255.0);
     let maximum = channels.into_iter().fold(0.0, f64::max);
     let minimum = channels.into_iter().fold(1.0, f64::min);
@@ -738,21 +671,11 @@ fn pane_lightness_for(color: Color, grounds: InkGrounds, coverage: InkCoverage) 
         });
         Color::Rgb(values[0], values[1], values[2])
     };
-    search_lightness(
-        color,
-        LightnessTarget::Pane { grounds, coverage },
-        lightness,
-        at,
-    )
+    search_lightness(LightnessTarget::Pane(grounds), lightness, at)
 }
 
 /// Bisect the readable interval using the caller's color-space mapping.
-fn search_lightness(
-    color: Color,
-    target: LightnessTarget,
-    lightness: f64,
-    at: impl Fn(f64) -> Color,
-) -> Color {
+fn search_lightness(target: LightnessTarget, lightness: f64, at: impl Fn(f64) -> Color) -> Color {
     // Each side of `ground` has a monotone readable interval. Find its boundary.
     let mut best = (f64::INFINITY, at(lightness));
     for &endpoint in target.endpoints() {
@@ -760,13 +683,7 @@ fn search_lightness(
             continue;
         }
         let mut readable = endpoint;
-        let mut unreadable = if target.contrast(color) >= MINIMUM_CONTRAST {
-            // Subdued ink chooses the boundary nearest `ground`'s lightness.
-            let (red, green, blue) = rgb(target.ground());
-            (f64::from(red.max(green).max(blue)) + f64::from(red.min(green).min(blue))) / 510.0
-        } else {
-            lightness
-        };
+        let mut unreadable = lightness;
         for _ in 0..LIGHTNESS_SEARCH_ITERATIONS {
             let middle = readable.midpoint(unreadable);
             if target.contrast(at(middle)) >= MINIMUM_CONTRAST {

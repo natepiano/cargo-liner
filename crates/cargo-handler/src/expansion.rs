@@ -327,7 +327,7 @@ fn expansion_trees(app: &App) -> Vec<(TileKey, HandlerTree)> {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
+    let placement = AgentPlacement::from_machines(&machines, app.accounts.source.session_states());
     let agents = agent_cell::cell_order_placed(&placement);
     agent_cell::group_tiles(&placement, &agents, &app.tree_sorts, census::unix_now())
         .into_iter()

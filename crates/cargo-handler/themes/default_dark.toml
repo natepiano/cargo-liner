@@ -58,9 +58,6 @@ secondary = "Gray"
 [variants.roles]
 astra_reviewer = { r = 145, g = 189, b = 131 }
 mauve          = { r = 175, g = 135, b = 175 }
-reset_latest   = { r = 204, g = 158, b = 255 }
-reset_middle   = { r = 10, g = 191, b = 255 }
-reset_soonest  = { r = 0, g = 203, b = 123 }
 waiting        = { r = 255, g = 255, b = 0 }
 word_match     = { r = 38, g = 38, b = 38 }
 

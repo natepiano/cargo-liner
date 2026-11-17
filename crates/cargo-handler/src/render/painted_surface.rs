@@ -20,7 +20,6 @@ use crate::interaction::SurfaceLookup;
 use crate::interaction::SurfaceSelection;
 use crate::interaction::ViewportLine;
 use crate::sort;
-use crate::sort::AccountsColumn;
 use crate::sort::HeaderHit;
 use crate::sort::HeaderSpan;
 use crate::sort::SummaryColumn;
@@ -44,8 +43,7 @@ pub(super) enum PaintedSurfaceContent {
         default: TreeSort,
     },
     Summary {
-        agents:   Vec<HeaderSpan<SummaryColumn>>,
-        accounts: Vec<HeaderSpan<AccountsColumn>>,
+        agents: Vec<HeaderSpan<SummaryColumn>>,
     },
 }
 
@@ -90,8 +88,8 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellPointer<TileKey>) {
         } => {
             tree_pressed(app, key, &painted, spans, *default, point);
         },
-        PaintedSurfaceContent::Summary { agents, accounts } => {
-            summary_pressed(app, &painted, agents, accounts, point);
+        PaintedSurfaceContent::Summary { agents } => {
+            summary_pressed(app, &painted, agents, point);
         },
     }
 }
@@ -111,7 +109,7 @@ fn tree_pressed(
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &app.accounts.table,
+        app.accounts.source.session_states(),
     )
     .with_expansion(&app.expansion)
     .with_name_cut_floors(app.loaded_config.config.tiles.name_cut_floors());
@@ -143,7 +141,6 @@ fn summary_pressed(
     app: &mut App,
     painted: &PaintedSurface,
     agents: &[HeaderSpan<SummaryColumn>],
-    accounts: &[HeaderSpan<AccountsColumn>],
     point: CellPoint,
 ) {
     let source = painted
@@ -151,7 +148,7 @@ fn summary_pressed(
         .painted_mapping()
         .source_line(usize::from(point.row));
     let row = match source {
-        ViewportLine::Header(row) | ViewportLine::Body(row) => row,
+        ViewportLine::Body(row) => row,
         ViewportLine::Outside => return,
     };
     let source_point = CellPoint {
@@ -160,10 +157,6 @@ fn summary_pressed(
     };
     if let HeaderHit::Column(column) = sort::header_hit(agents, source_point) {
         app.summary_sort.select(column);
-        return;
-    }
-    if let HeaderHit::Column(column) = sort::header_hit(accounts, source_point) {
-        app.accounts_sort.select(column);
         return;
     }
     let mut rows = painted.rows.clone();

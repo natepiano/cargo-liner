@@ -125,7 +125,7 @@ An open pass with a kind other than impl, test, fix or review is unknown with it
 `cargo-handler census --json` prints one census as JSON and exits.
 `census::report::print` loads the config, then scans once with the TUI sources.
 The local scan, the accounts read and each remote probe run at the same time.
-`probe::scan_local`, `AccountsTable::read_once` and `RemoteHierarchyAnswers::answer` are the same calls that the probe and the TUI use.
+`probe::scan_local`, `AccountsSource::read_once` and `RemoteHierarchyAnswers::answer` are the same calls that the probe and the TUI use.
 The report lists each unit director and current-run worker that a tile shows, from the staff listing facts.
 Schema 2 adds a `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, in session order.
 A `sessions` entry has a `null` activity when its status is not `busy`.

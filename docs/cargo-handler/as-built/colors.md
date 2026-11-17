@@ -40,16 +40,16 @@ The value itself may start with `#`, so `account.x = #a0522d # sienna` reads `#a
 `#rrggbb`, with six hex digits in either case, parses to `FooterColor::Rgb`.
 Unknown names and any other `#` value leave the corresponding entry plain.
 `ReadablePalette` resolves every name ahead of use and a hex color on first use.
-Both take the same readable and subdued forms on each theme.
+Both take the same readable form on each theme.
 A hex color that is already readable draws unchanged.
-`FooterColors::account` gives the ink for the tree cell, the program line, and the accounts table.
+`FooterColors::account` gives the ink for the tree cell and the program line.
 Account keys match the displayed label through `account.<label>`.
 A new account assignment needs no Rust change.
 
 `FooterRole` covers Showrunner, UnitDirector, AstraDesigner, and AstraReviewer.
 Their keys are `role.showrunner`, `role.unit-director`, `role.astra-designer`, and `role.astra-reviewer`.
 `FooterColors::hierarchy_role` resolves hierarchy tints.
-The same role tint serves tile suffixes, tree roles, and accounts role spans where applicable.
+The same role tint serves tile suffixes and tree roles.
 Ordinary worker and subagent roles retain their current plain style.
 A Showrunner subagent uses the Showrunner tint.
 
@@ -97,15 +97,15 @@ Its variants cover text, launcher labels, program labels, activity, shell timers
 The palette cache checks theme `Arc` identity and the current grounds.
 It recomputes readable colors when either changes.
 The resolver preserves a valid ink and otherwise changes lightness along its color path.
-Subdued labels use a computed readable RGB color instead of terminal DIM.
 
-`InkCoverage::Antialiased` models foreground coverage of 208/255.
+`ANTIALIASED_GLYPH_COVERAGE` models foreground coverage of 208/255.
+`InkGrounds::contrast` gives the lowest stem contrast over the three grounds.
 `antialiased_contrast` checks both fractional channels and byte-rounded channels.
 The lower ratio determines whether an ink meets the 4.5:1 floor.
 Opaque contrast alone cannot prove that a thin terminal glyph is readable.
 Tests use an independent literal coverage value to check the drawn output.
 
-### Session hues and reset shades
+### Session hues
 
 Each theme supplies exactly five `session_hues`.
 `SessionHue::of_agent` cycles through them by root ordinal.
@@ -116,13 +116,7 @@ Sorting happens after hue assignment.
 Unselected palettes also use CIEDE2000 separation checks.
 Their tests hold the measured floors for each built-in theme.
 Five hues cannot satisfy every proposed spacing floor with the other row inks fixed.
-The light reset steps keep measured session separation floors of 14.7 and 15.3.
 Do not treat those floors as an unmeasured universal distance of 20.
-The three reset steps are green, blue and violet in every built-in theme, and each pair is at least 20 CIEDE2000 apart.
-A reset ink keeps 20 CIEDE2000 from error red and the low-quota alarm, and 20 from the low-quota warning on dark themes and 17 on light themes.
-Reset inks have no hue floor from the account inks.
-`ResetRank` remains the only reset-color source.
-See [accounts](accounts.md) for rank assignment and the three steps.
 
 ### Selection and word matches
 

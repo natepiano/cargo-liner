@@ -15,12 +15,10 @@ use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::StaffRowNames;
-use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::model::ModelName;
 use crate::census::model::ReasoningEffort;
 use crate::footer_colors::FooterColors;
-use crate::sort::AccountsSort;
 
 /// Fixed census time for deterministic age labels.
 const NOW: u64 = 1_000_000;
@@ -116,19 +114,15 @@ fn rendered_with_colors(
             NOW,
             account_column,
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
-            AccountsSort::SourceOrder,
         ),
-        u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
-            .expect("fixture height"),
+        u16::try_from(height(&machines, &placement)).expect("fixture height"),
     );
     let mut buffer = Buffer::empty(area);
     draw(
         &mut buffer,
         area,
         &SummaryFrame {
-            accounts_sort: AccountsSort::SourceOrder,
-            accounts: &AccountsTable::NotConfigured,
+            session_states: &EMPTY_SESSION_STATES,
             machines: &machines,
             placement: &placement,
             cells: &agent_cell::cell_order_placed(&placement),

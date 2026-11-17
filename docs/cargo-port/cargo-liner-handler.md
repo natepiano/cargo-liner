@@ -600,7 +600,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** the `.publication.lock` flock as the cause (never held in 20 runs). A panic in a source reads as timed out, and a local scan that misses the bound can leave its herdr read child; both are unlikely for one user.
 
-### Phase 28 — The handler shows no accounts table  · status: todo
+### Phase 28 — The handler shows no accounts table  · status: done
 
 #### Work Order
 

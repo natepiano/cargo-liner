@@ -29,8 +29,8 @@ use crate::census::RoleFallback;
 use crate::census::RowIdentity;
 use crate::census::StaffFileSetting;
 use crate::census::account::ConfigHome;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
+use crate::census::accounts::SessionStates;
 use crate::census::hierarchy::WorkerReference;
 use crate::census::placement::DispatchWorker;
 use crate::census::tier::ThreadWorktree;
@@ -263,8 +263,8 @@ fn assert_drawn_worker_details(rows: Vec<AgentRow>, expected: &str) -> Result<()
         hierarchy: HierarchyEdges::default().into(),
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(&serde_json::to_vec(
+    app.accounts.source = AccountsSource::Ready(
+        SessionStates::parse(&serde_json::to_vec(
             &serde_json::json!({"accounts":[{"label":"fixture","roles":[],"use_credits":false,
             "sessions":[{"session":THREAD,"state":"idle"}]}],"problems":[]}),
         )?)

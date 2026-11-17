@@ -252,7 +252,7 @@ pub(crate) fn open_selected(app: &mut App) {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
+    let placement = AgentPlacement::from_machines(&machines, app.accounts.source.session_states());
     if let RowDetailsLookup::Found(details) = agent_cell::row_details_with_inks(
         &placement,
         &selected,

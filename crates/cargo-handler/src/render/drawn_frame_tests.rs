@@ -13,7 +13,6 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
 use crate::census::HierarchyEdges;
-use crate::census::accounts::AccountsTable;
 use crate::census::model::ModelName;
 use crate::census::model::ReasoningEffort;
 use crate::census::scan::ScanStage;
@@ -415,7 +414,7 @@ fn a_scrolled_marker_keeps_its_painted_row_after_a_wheel_step() -> TestResult {
             &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         )
         .with_expansion(&app.expansion);
         let tile = cells.tiles.first().ok_or("missing scroll tile")?;
@@ -676,7 +675,7 @@ fn pressing_the_root_row_replaces_the_child_selection() -> TestResult {
             &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         )
         .with_expansion(&app.expansion);
         cells
@@ -768,7 +767,7 @@ fn demand_frame(app: &mut App, area: Rect, rows: u16) -> Buffer {
             &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         )
         .with_expansion(&app.expansion)
         .with_selections(app.selections.clone(), SelectableSurface::EmptyCell),
@@ -859,7 +858,7 @@ fn a_live_marker_outside_the_painted_width_does_not_toggle() -> TestResult {
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &AccountsTable::NotConfigured,
+        &EMPTY_SESSION_STATES,
     )
     .with_expansion(&app.expansion)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);

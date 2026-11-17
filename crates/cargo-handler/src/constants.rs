@@ -208,12 +208,6 @@ pub(crate) const CODEX_ROLE: &str = "codex";
 pub(crate) const BUSY_ROLE: &str = "busy";
 /// `[variants.roles]` key for a `waiting` status.
 pub(crate) const WAITING_ROLE: &str = "waiting";
-/// `[variants.roles]` key for the soonest reset times in the accounts footer.
-pub(crate) const RESET_SOONEST_ROLE: &str = "reset_soonest";
-/// `[variants.roles]` key for the middle reset times in the accounts footer.
-pub(crate) const RESET_MIDDLE_ROLE: &str = "reset_middle";
-/// `[variants.roles]` key for the latest reset times in the accounts footer.
-pub(crate) const RESET_LATEST_ROLE: &str = "reset_latest";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
 /// Role column text for a shell whose program is `sleep`.
@@ -648,12 +642,8 @@ pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";
 /// Title of the one pool that holds the producer sessions of every machine.
 pub(crate) const PRODUCERS_CELL_TITLE: &str = "producers";
 
-/// Stored account usage is refreshed independently of the census scan.
+/// The accounts command's session states refresh independently of the census scan.
 pub(crate) const ACCOUNTS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
-/// Readings older than one hour are visibly stale.
-pub(crate) const ACCOUNTS_STALE_SECONDS: u64 = 60 * 60;
-/// Remaining weekly usage at or below this percentage needs attention.
-pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 
 // reviewer discovery
 /// Claude print-mode arguments.

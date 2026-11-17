@@ -23,7 +23,7 @@ use serde::Deserialize;
 
 use super::account::AccountLabels;
 use super::account::ConfigHome;
-use super::accounts::AccountsTable;
+use super::accounts::AccountsSource;
 use super::accounts::EMPTY_SESSION_STATES;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -38,7 +38,6 @@ use crate::agent_cell::AgentTile;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::LOCAL_SCAN_INTERVAL;
 use crate::footer_colors::FooterColors;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -119,11 +118,10 @@ fn summary_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
     }];
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
-    let accounts = AccountsTable::NotConfigured;
+    let accounts = AccountsSource::NotConfigured;
     let colors = FooterColors::default();
     let frame = SummaryFrame {
-        accounts_sort:  AccountsSort::SourceOrder,
-        accounts:       &accounts,
+        session_states: accounts.session_states(),
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
@@ -141,10 +139,8 @@ fn summary_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
             1000,
             AccountColumn::Hidden,
             SummarySort::default(),
-            &accounts,
-            AccountsSort::SourceOrder,
         ),
-        u16::try_from(summary::height(&machines, &placement, &accounts)).expect("small summary"),
+        u16::try_from(summary::height(&machines, &placement)).expect("small summary"),
     );
     let mut buffer = Buffer::empty(area);
     summary::draw(&mut buffer, area, &frame);
