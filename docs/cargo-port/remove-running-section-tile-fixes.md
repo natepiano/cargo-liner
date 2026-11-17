@@ -1886,7 +1886,7 @@ A row for a cargo build in a build slot reads `slot · holder · purpose`, for e
 **Gotchas:**
 - A staff file that does not parse becomes `ScanStaffNames::Loaded` with an empty map, so the holder shows the unit id.
 
-### Phase 69a — A staff file that does not parse keeps its own state  · status: todo
+### Phase 69a — A staff file that does not parse keeps its own state  · status: done
 
 **Depends on:** Phase 69. Runs before Phase 68 (director, 2026-11-16: a defect in the type that Phase 69 shipped).
 

@@ -173,6 +173,7 @@ enum ConfiguredSlotRoots {
 enum ScanStaffNames {
     #[default]
     Unread,
+    Unreadable,
     Loaded(HashMap<String, String>),
 }
 
@@ -364,7 +365,7 @@ impl SlotLeaseScan<'_> {
                     |config| config.census.staff_file.clone(),
                 );
             let staff_path = expand_home(&staff_path, &self.home);
-            let names = self
+            self.staff = self
                 .reader
                 .staff
                 .entry(staff_path.clone())
@@ -372,19 +373,19 @@ impl SlotLeaseScan<'_> {
                 .read(&staff_path, |text| {
                     serde_json::from_str(text).map_err(|_| ())
                 })
-                .map(|staff| {
-                    staff
-                        .rows
-                        .iter()
-                        .map(|row| (row.id.clone(), row.name.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.staff = ScanStaffNames::Loaded(names);
+                .map_or(ScanStaffNames::Unreadable, |staff| {
+                    ScanStaffNames::Loaded(
+                        staff
+                            .rows
+                            .iter()
+                            .map(|row| (row.id.clone(), row.name.clone()))
+                            .collect(),
+                    )
+                });
         }
         let holder = match &self.staff {
             ScanStaffNames::Loaded(names) => names.get(&unit).cloned().unwrap_or(unit),
-            ScanStaffNames::Unread => unit,
+            ScanStaffNames::Unread | ScanStaffNames::Unreadable => unit,
         };
         SlotObservation::Held {
             slot,
@@ -488,6 +489,7 @@ mod tests {
     const CONFIG_FILE: &str = "config.toml";
     const STAFF_FILE: &str = "staff.json";
     const INVALID_LEASE: &str = "invalid JSON";
+    const INVALID_STAFF: &str = "invalid staff JSON";
     const CONFIG_DIRECTORY: &str = ".claude/config";
     const UNASSIGNED_OUTPUT_FOLDER: &str = "scratch";
     const OTHER_DIRECTORY: &str = "other";
@@ -498,6 +500,11 @@ mod tests {
     const HOME_VARIABLE: &str = "${HOME}";
     const PARENT_COMPONENT: &str = "..";
     const EMPTY_SECTION: &str = "[roots]\n";
+
+    enum ExpectedStaffState {
+        Loaded,
+        Unreadable,
+    }
 
     fn label(holder: &str, purpose: &str) -> String {
         format!("{SLOT}{SLOT_LABEL_SEPARATOR}{holder}{SLOT_LABEL_SEPARATOR}{purpose}")
@@ -621,13 +628,28 @@ mod tests {
                 .display_path(ORIGINAL),
             label(RENAMED_HOLDER, CHANGED_PURPOSE)
         );
-        fs::write(staff, serde_json::json!({"rows": []}).to_string())?;
-        assert_eq!(
-            reader
-                .observe_in([checkout], home, MACHINE, config)
-                .display_path(ORIGINAL),
-            label(STAFF_ID, CHANGED_PURPOSE)
-        );
+        for (contents, expected) in [
+            (
+                serde_json::json!({"rows": []}).to_string(),
+                ExpectedStaffState::Loaded,
+            ),
+            (INVALID_STAFF.to_owned(), ExpectedStaffState::Unreadable),
+        ] {
+            fs::write(staff, contents)?;
+            let mut scan = reader.begin_scan(home, MACHINE, config);
+            assert_eq!(
+                scan.observe([checkout]).display_path(ORIGINAL),
+                label(STAFF_ID, CHANGED_PURPOSE)
+            );
+            match expected {
+                ExpectedStaffState::Loaded => {
+                    assert!(matches!(scan.staff, ScanStaffNames::Loaded(_)));
+                },
+                ExpectedStaffState::Unreadable => {
+                    assert!(matches!(scan.staff, ScanStaffNames::Unreadable));
+                },
+            }
+        }
         fs::write(lease, INVALID_LEASE)?;
         assert_eq!(
             reader
