@@ -26,7 +26,7 @@ Paths below are relative to `crates/cargo-handler/src/` unless they start with `
 
 `SelectionSurface::{Summary, Tile(TileKey)}` identifies each selectable surface.
 `SurfaceSelection` owns its `Viewport` and `TileSelection::{NoRows, Row(RowIdentity)}`.
-`RowIdentity` distinguishes sessions, seats, threads, subagents, shells, legacy work, accounts, and machine groups.
+`RowIdentity` distinguishes sessions, seats, threads, subagents, shells, legacy work, and machine groups.
 Session identity includes the process start, rather than the mutable conversation age.
 Pidless legacy work uses its owner and an ordinal among otherwise identical rows.
 
@@ -48,10 +48,8 @@ The wheel scrolls the surface under the pointer without moving tile focus.
 All action bindings remain in the keymap.
 
 `RowSpan` can cover several display lines for one row.
-`SectionPin` and `ViewportMapping` keep accounts headings outside the scrolling body.
-Navigation uses the body height below pinned lines.
-Selection bands and presses use that same mapping.
-See [accounts](accounts.md) for wrapped account groups.
+`ViewportMapping` maps viewport rows to source lines.
+Navigation, selection bands, and presses use that same mapping.
 
 ### Expansion
 
@@ -87,7 +85,7 @@ A retired tile cannot select or sort its replacement.
 
 `Cells::draw` records `PaintedSurface` entries in `App::painted_surfaces`.
 Each entry binds the painted area, `SurfaceSelection`, and `PaintedSurfaceContent`.
-The content records tree header spans or summary agent and account spans.
+The content records tree header spans or summary agent header spans.
 Presses and wheel steps use those saved spans and viewport mappings.
 They do not rebuild hit regions from a newer census.
 `TileLookup::{Retired, Current}` rejects content that has left the current tile model.
@@ -145,8 +143,8 @@ The status-clock path reuses a body only while Reusable.
 The modal retains a snapshot of the row's values.
 The modal groups its values into four sections:
 
-1. The `agent` section contains account, model, effort, and type.
-2. The `hierarchy` section contains showrunner, unit, worker, and role.
+1. The `agent` section contains account, model, and effort.
+2. The `hierarchy` section contains showrunner, unit, worker, role, and type.
 3. The `location` section contains directory, branch, desktop, and pid.
 4. The `now` section contains activity, status, and age.
 
@@ -215,7 +213,7 @@ The mouse parity audit covers each handler view:
 | View | Selection and wheel path |
 | --- | --- |
 | Agent tiles and unassigned tiles | Painted row mapping selects rows and scrolls the surface under the pointer. |
-| Agents and accounts summary | Painted row spans include continuation lines and pinned headings. |
+| Agents summary | Painted row spans select machine groups and session rows. |
 | Row details | `Viewport`, `table_row_at`, and rendered value spans select values. The wheel uses arrow navigation. |
 | Favorites | The existing viewport and navigation line map select favorites. The wheel uses the same navigation actions. |
 | Settings | Framework hit testing selects settings rows. Framework wheel handling uses settings navigation. |
@@ -241,7 +239,6 @@ This keeps wheel, keyboard, and painted row selection consistent.
 
 A collapsed parent can make a previously painted child unavailable before repaint.
 Such a press has no row action.
-Selected account spans can exceed one line.
 A layout-only hit test cannot reproduce the visible input target during motion.
 
 ## Why

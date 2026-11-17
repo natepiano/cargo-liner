@@ -125,7 +125,7 @@ An open pass with a kind other than impl, test, fix or review is unknown with it
 `cargo-handler census --json` prints one census as JSON and exits.
 `census::report::print` loads the config, then scans once with the TUI sources.
 The local scan, the accounts read and each remote probe run at the same time.
-`probe::scan_local`, `AccountsTable::read_once` and `RemoteHierarchyAnswers::answer` are the same calls that the probe and the TUI use.
+`probe::scan_local`, `AccountsSource::read_once` and `RemoteHierarchyAnswers::answer` are the same calls that the probe and the TUI use.
 The report lists each unit director and current-run worker that a tile shows, from the staff listing facts.
 Schema 2 adds a `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, in session order.
 A `sessions` entry has a `null` activity when its status is not `busy`.
@@ -166,12 +166,13 @@ Plan-mode Claude processes use `ReviewFallback` only without a stronger mapping.
 
 ### Row columns and details
 
-The tile tree draws account, session, role, activity, and status in that order.
-Optional type, model, effort, branch, and directory columns follow.
+The tile tree draws session, account, role, type, activity, and status in that order.
+Optional branch, model, effort, and directory columns follow.
+Type is optional too; it drops after model and before directory.
 The session column retains its tree guides.
 Recorded accounts remain visible when one account supplies every row.
-Narrow tiles remove optional columns before they truncate session names.
-Directory, branch, activity, and account leave in that relative order.
+Narrow tiles cut session names to their floor before they remove optional columns.
+Type, directory, branch, account, and activity leave in that relative order.
 
 `RowRole` limits named roles to `unit`, `showrunner`, `worker`, and `producer`.
 Subagents and threads show `worker`.
@@ -218,7 +219,8 @@ Its hierarchy section shows the accepted showrunner, unit, and worker names.
 Unassigned sessions and shells show their full name instead.
 A shell's name value is its full command, and `y` copies it.
 The details view shows the long age last in the now section.
-The agent section contains account, model, effort, and type.
+The agent section contains account, model, and effort.
+The hierarchy section ends with role, then type.
 The now section contains activity, status, and age, in that order.
 The activity value joins the job and the live activity without repeated words, for every status.
 It omits the live word when it is `idle` or `—`.

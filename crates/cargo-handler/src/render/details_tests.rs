@@ -27,9 +27,8 @@ use crate::census::HierarchyRole;
 use crate::census::RunLocation;
 use crate::census::ShellTimerObservation;
 use crate::census::VerifyStep;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
-use crate::census::accounts::Reading;
+use crate::census::accounts::AccountsSource;
+use crate::census::accounts::SessionStates;
 use crate::census::model::ReasoningEffort;
 use crate::details::DetailsOverlay;
 use crate::theme;
@@ -55,7 +54,7 @@ fn application(now: u64, age: u64) -> TestResult<App> {
         ]))?.into(),
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(AccountsReading::parse(br#"{
+    app.accounts.source = AccountsSource::Ready(SessionStates::parse(br#"{
         "accounts":[{"label":"claude1","roles":["showrunners"],"weekly_left_percent":50,
         "use_credits":false,"role_counts":[{"busy":1,"idle":1,"paused":1,"exited":1,"total":4}],
         "sessions":[{"session":"director","state":"busy"},{"session":"unit","state":"paused"},
@@ -63,6 +62,57 @@ fn application(now: u64, age: u64) -> TestResult<App> {
         {"label":"claude2","roles":[],"use_credits":false,"sessions":[{"session":"second-account","state":"exited"}]}],"problems":[]
     }"#).map_err(|error| error.to_string())?);
     Ok(app)
+}
+
+/// Each details row and the hierarchy section it draws.
+fn hierarchy_cases() -> [(&'static str, Vec<(&'static str, &'static str)>); 6] {
+    [
+        (
+            "worker-with-a-very-long-session-name-that-stays-complete",
+            vec![
+                ("showrunner", "director-name"),
+                ("unit", "unit-name"),
+                (
+                    "worker",
+                    "worker-with-a-very-long-session-name-that-stays-complete",
+                ),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "director-name",
+            vec![
+                ("showrunner", "director-name"),
+                ("role", "showrunner"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "unassigned-name",
+            vec![("name", "unassigned-name"), ("type", "agent")],
+        ),
+        (
+            "timer-name",
+            vec![("name", "timer-name"), ("type", "shell")],
+        ),
+        (
+            "review-name",
+            vec![
+                ("name", "review-name"),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+        (
+            "fix · repair the seat",
+            vec![
+                ("worker", "fix · repair the seat"),
+                ("role", "worker"),
+                ("type", "agent"),
+            ],
+        ),
+    ]
 }
 
 #[test]
@@ -89,34 +139,7 @@ fn details_sections_align_values_and_keep_effort() -> TestResult {
         stage: ScanStage::Completed,
     });
     let mut renderer = Renderer::new(&mut app, 160, 70)?;
-    for (name, hierarchy) in [
-        (
-            "worker-with-a-very-long-session-name-that-stays-complete",
-            vec![
-                ("showrunner", "director-name"),
-                ("unit", "unit-name"),
-                (
-                    "worker",
-                    "worker-with-a-very-long-session-name-that-stays-complete",
-                ),
-                ("role", "worker"),
-            ],
-        ),
-        (
-            "director-name",
-            vec![("showrunner", "director-name"), ("role", "showrunner")],
-        ),
-        ("unassigned-name", vec![("name", "unassigned-name")]),
-        ("timer-name", vec![("name", "timer-name")]),
-        (
-            "review-name",
-            vec![("name", "review-name"), ("role", "worker")],
-        ),
-        (
-            "fix · repair the seat",
-            vec![("worker", "fix · repair the seat"), ("role", "worker")],
-        ),
-    ] {
+    for (name, hierarchy) in hierarchy_cases() {
         if name == "fix · repair the seat" {
             let machine = app.census.machines(&[])[0];
             let mut rows = machine.state.rows().to_vec();
@@ -332,7 +355,7 @@ fn row_columns_put_session_first_and_separate_role_activity_and_timer() -> TestR
         .collect();
     assert_eq!(
         &columns[..5],
-        ["session", "account", "role", "activity", "status"]
+        ["session", "account", "role", "type", "activity"]
     );
     assert!(!columns.contains(&"age"));
     for (name, role, activity, status) in [
@@ -358,12 +381,8 @@ fn row_status_uses_the_accounts_source_and_leaves_missing_states_empty() -> Test
     ] {
         let now = census::unix_now();
         let mut app = application(now, 86400)?;
-        app.accounts.table = AccountsTable::Ready(AccountsReading::parse(&serde_json::to_vec(
-            &serde_json::json!({"accounts":[{"label":"claude1","roles":["workers"],
-                "weekly_left_percent":50,"use_credits":false,"role_counts":[{
-                    "busy":u64::from(state=="busy"),"idle":u64::from(state=="idle"),
-                    "paused":u64::from(state=="paused"),"exited":u64::from(state=="exited"),"total":1
-                }],"sessions":[{"session":"worker","state":state}]},
+        app.accounts.source = AccountsSource::Ready(SessionStates::parse(&serde_json::to_vec(
+            &serde_json::json!({"accounts":[{"label":"claude1","sessions":[{"session":"worker","state":state}]},
                 {"label":"claude2","roles":[],"use_credits":false,"sessions":if conflict {vec![
                     serde_json::json!({"session":"director","state":"busy"}),
                     serde_json::json!({"session":"worker","state":"idle"}),
@@ -376,20 +395,6 @@ fn row_status_uses_the_accounts_source_and_leaves_missing_states_empty() -> Test
         assert_eq!(actual, if conflict { "" } else { state });
         assert_eq!(field(&buffer, "unit-name", "status")?, "");
         assert_eq!(field(&buffer, "director-name", "status")?, "busy");
-        let AccountsTable::Ready(reading) = &app.accounts.table else {
-            return Err("missing reading".into());
-        };
-        let Reading::Known(counts) = &reading.accounts[0].roles[0].counts else {
-            return Err("missing counts".into());
-        };
-        let count = match state {
-            "busy" => counts.busy,
-            "idle" => counts.idle,
-            "paused" => counts.paused,
-            "exited" => counts.exited,
-            _ => return Err("unexpected status".into()),
-        };
-        assert_eq!(count, counts.total);
     }
     assert_unrecorded_statuses()?;
     Ok(())
@@ -525,6 +530,7 @@ fn assert_selected_details(app: &mut App, renderer: &mut Renderer, expected: &st
             "effort",
             "showrunner",
             "role",
+            "type",
             "directory",
             "branch",
             "desktop",
@@ -770,6 +776,7 @@ fn assert_wrapped_details_navigation() -> TestResult {
     use tui_pane::CopySelection;
 
     use crate::details::DetailsPane;
+
     let now = census::unix_now();
     let mut app = application(now, 86400)?;
     let machine = app.census.machines(&[])[0];
@@ -795,7 +802,7 @@ fn assert_wrapped_details_navigation() -> TestResult {
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
     );
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12))?;
-    for _ in 0..4 {
+    for _ in 0..5 {
         tui_pane::dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         paint_details(&mut app, &mut terminal)?;
     }
@@ -883,7 +890,7 @@ fn assert_full_frame_copy_notice(under: DetailsUnder) -> TestResult {
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
     );
     let mut renderer = Renderer::new(&mut app, 40, 12)?;
-    for _ in 0..4 {
+    for _ in 0..5 {
         DetailsAction::Down.apply(&mut app, &mut CopiedValues::default());
         renderer.paint(&mut app)?;
     }
@@ -1023,8 +1030,8 @@ fn ink_application() -> TestResult<App> {
         hierarchy: hierarchy.into(),
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        SessionStates::parse(
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,
         "sessions":[{"session":"director","state":"busy"},
@@ -1399,10 +1406,11 @@ fn a_shell_row_draws_its_short_command_and_d_shows_and_copies_the_full_command()
     let mut renderer = Renderer::new(&mut app, 160, 40)?;
     let buffer = renderer.paint(&mut app)?;
     let text = drawn_details(&buffer).join("\n");
-    // The shell row takes the agent rows' width and ends in the mark.
-    assert!(text.contains("python3 a-…"), "{text}");
+    // The shell row takes the free width and shows its whole short command.
+    let short = "python3 a-long-watch-script.py --interval 30 2>&1";
+    assert!(text.contains(short), "{text}");
     assert!(!text.contains("scratchpad/"), "{text}");
-    app.click(details_test_locate(&buffer, "python3 a-…")?);
+    app.click(details_test_locate(&buffer, short)?);
     tui_pane::dispatch_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),

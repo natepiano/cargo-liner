@@ -18,7 +18,7 @@ use std::time::Instant;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::accounts::AccountsTable;
+use super::accounts::AccountsSource;
 use super::accounts::EMPTY_SESSION_STATES;
 use super::hierarchy::HierarchyError;
 use super::hierarchy::HierarchyRunner;
@@ -30,7 +30,6 @@ use crate::agent_cell;
 use crate::agent_cell::AgentTile;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::footer_colors::FooterColors;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -84,11 +83,10 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
     }];
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
-    let accounts = AccountsTable::NotConfigured;
+    let accounts = AccountsSource::NotConfigured;
     let colors = FooterColors::default();
     let frame = SummaryFrame {
-        accounts_sort:  AccountsSort::SourceOrder,
-        accounts:       &accounts,
+        session_states: accounts.session_states(),
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
@@ -106,10 +104,8 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
             1000,
             AccountColumn::Hidden,
             SummarySort::default(),
-            &accounts,
-            AccountsSort::SourceOrder,
         ),
-        u16::try_from(summary::height(&machines, &placement, &accounts)).expect("small summary"),
+        u16::try_from(summary::height(&machines, &placement)).expect("small summary"),
     );
     let mut buffer = Buffer::empty(area);
     summary::draw(&mut buffer, area, &frame);
@@ -225,7 +221,7 @@ impl HierarchyRunner for Commands {
 struct Probes;
 
 impl RemoteRunner for Probes {
-    fn probe(&self, _: &str) -> ProbeOutcome {
+    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
         ProbeOutcome::Finished {
             status: Some(0),
             stdout: br#"{"schema":3,"machine":"remote","rows":[]}"#.to_vec(),

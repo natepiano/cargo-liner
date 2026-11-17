@@ -449,3 +449,49 @@ The cargo-mend suite has fewer tests at 1 s or more than main, but the 1 s goal 
 - A cargo-mend `--fix-compiler` run from a cwd outside the fixture fails with cargo fix "no VCS found". The tests set the cwd.
 
 **Ruled out:** removing work in the cargo-mend runs; alone, they did no wasted work.
+
+### Phase 17 — twenty cargo-mend diagnostic tests run under 1 s  · status: done
+
+#### As-built
+
+- `.config/nextest.toml` gives each test that matches `binary_id(cargo-mend::bin/cargo-mend) & test(/^diagnostic_tests::/)` two test slots (`threads-required = 2`). No test, case or assert changes.
+- Cause: concurrency, not per-test work. Alone, each of the 20 tests takes 0.13 to 0.29 s at load 10. Each fixture test runs a chain of cargo and cargo-mend compiler processes, and about half of its CPU time is system time. With 31 at once on 32 CPUs, 20 took 1.0 to 1.3 s.
+- Proof: full natedev suite, 1039 pass. Load 17.50 and 25.87 at 31 threads: no test at 1 s (max 0.557 and 0.780 s), suite 4.7 and 6.3 s against 6.3 s before. One run at load 19.00 had one test at 1.049 s; that test took 0.485 and 0.624 s in the next runs. Mac 1037 pass.
+
+**Files:**
+- `.config/nextest.toml` — slot count for cargo-mend diagnostic tests
+
+**Gotchas:**
+- The 390 diagnostic tests take most of the suite's test-seconds; the slot override halved their sum (161 to 61-82) at the same suite time.
+- `.config/nextest.toml` lands after tile phase 43j, by the showrunner's answer.
+
+**Ruled out:** per-test waste in cargo-mend or the test support; alone, the tests run near their floor.
+
+### Phase 18 — the cargo-mend CI test job has nightly rustfmt  · status: done
+
+#### As-built
+
+- The `mend_test` job in `.github/workflows/ci.yml` installs nightly with the `rustfmt` component after 1.99.1, in the same form as the `format` job. No test or product code changes.
+- Cause: `formatter::tests::batch_measurements_keep_configuration_edition_and_source_bytes` runs nightly rustfmt (`Formatter::Nightly.formatted_batch`). The job had only 1.99.1. cargo-mend prefers nightly rustfmt when a user has it, and only that formatter runs the batch path.
+- `rust-toolchain.toml` still selects 1.99.1 for the build; only the rustfmt call uses nightly.
+- Proof: branch CI run 43805606152, all 12 jobs green, cargo-mend Test Suite included.
+
+**Files:**
+- `.github/workflows/ci.yml` — nightly rustfmt step in `mend_test`
+
+**Gotchas:**
+- natedev has nightly rustfmt, so local gates pass without it; only CI shows a missing toolchain.
+
+### Phase 19 — the ignored worktree event test gets no stray event  · status: done
+
+#### As-built
+
+- `ignored_worktree_events_keep_disk_sizes_without_git_refresh` uses a tracked `src/lib.rs` in place of `src/main.rs`: `ignored_git_project` renames the file before Git starts, and the case list names `src/lib.rs`. Every assert stays the same.
+- Cause: `src/main.rs` matches `refresh::is_target_metadata_event`, so its event starts a Rayon project refresh that sends `ProjectRefreshed` and `DiskUsageBatch`. That product behavior is correct; the messages raced the test's empty-receiver assert.
+- Proof: stress of the single test, 2000 runs with 12 jobs under MemoryMax=2G: 19 failures before, 0 after. natedev suite 1552 pass; the test takes 0.374 s.
+
+**Files:**
+- `crates/cargo-port/src/watcher/events.rs` — test fixture input
+
+**Gotchas:**
+- `target_event_refreshes_project_metadata` and `tracked_file_edit_and_revert_refresh_git_status` cover the target refresh and `src/main.rs` events.

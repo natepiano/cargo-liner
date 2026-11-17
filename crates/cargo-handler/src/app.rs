@@ -74,7 +74,6 @@ use crate::keymap;
 use crate::render;
 use crate::render::PaintedSurface;
 use crate::settings;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::startup_log;
@@ -202,8 +201,6 @@ pub(crate) struct App {
     pub(crate) painted_summary:              RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:                 SummarySort,
-    /// Account ordering is independent of the machine-group agent ordering.
-    pub(crate) accounts_sort:                AccountsSort,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:                            Option<String>,
@@ -267,7 +264,7 @@ impl App {
             .census
             .machines(&self.loaded_config.config.machines.remote);
         let placement =
-            AgentPlacement::from_machines(&machines, self.accounts.table.session_states());
+            AgentPlacement::from_machines(&machines, self.accounts.source.session_states());
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
         self.expansion.retain(&placement);
@@ -376,7 +373,6 @@ impl App {
             painted_surfaces: Vec::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
-            accounts_sort: AccountsSort::SourceOrder,
             inline_error: None,
             started: Instant::now(),
             attract: Attract::new(),
@@ -669,7 +665,7 @@ mod tests {
     fn no_color_full_and_status_frames_keep_the_focused_title_bold() {
         let mut app = App::new_for_test().expect("test app");
         app.framework.color_mode = ColorMode::NoColor;
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        app.census.notice_without_agents();
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
         for expected_full_frames in [1, 1] {
@@ -853,7 +849,7 @@ mod tests {
     #[test]
     fn idle_status_frames_do_not_repeat_body_layout() {
         let mut app = App::new_for_test().expect("test app");
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        app.census.notice_without_agents();
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
             .expect("test terminal");
@@ -882,7 +878,7 @@ mod tests {
     #[test]
     fn idle_visual_status_frames_leave_the_grid_paint_record_unchanged() {
         let mut app = App::new_for_test().expect("test app");
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        app.census.notice_without_agents();
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         terminal
@@ -960,8 +956,6 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
-    use crate::census::accounts::AccountsFailure;
-    use crate::census::accounts::AccountsTable;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
     use crate::interaction::SelectionSurface;

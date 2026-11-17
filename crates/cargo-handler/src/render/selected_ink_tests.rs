@@ -20,7 +20,7 @@ use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::transcript::SubagentRole;
 use crate::theme;
 use crate::theme::Role;
@@ -134,8 +134,8 @@ fn covered_contrast(ink: Color, ground: Color) -> f64 {
 }
 
 fn source_states(app: &mut App) {
-    app.accounts.table = AccountsTable::Ready(
-        crate::census::accounts::AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        crate::census::accounts::SessionStates::parse(
             br#"{
             "accounts":[{"label":"claude1","roles":[],"use_credits":false,"sessions":[
                 {"session":"owner","state":"busy"},{"session":"colored","state":"busy"},
@@ -248,8 +248,8 @@ fn check_theme(theme_name: &str) {
                     .map(|x| drawn[(x, point.y)].symbol())
                     .collect();
                 assert!(row.contains(word), "{label} at {now}: {row}");
-                assert!(row.contains("claude1"), "selected account: {row}");
                 if label == "colored-session" {
+                    assert!(row.contains("claude1"), "selected account: {row}");
                     assert!(row.contains("unit"), "selected management role: {row}");
                 }
                 for x in 0..drawn.area.width {
@@ -644,21 +644,9 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
                         ("claude1", 4),
                     ],
                 ),
-                (
-                    CLOCK - 1,
-                    "timed-shell",
-                    vec![("0:01", 2), ("shell", 5), ("claude1", 4)],
-                ),
-                (
-                    CLOCK,
-                    "timed-shell",
-                    vec![("busy", 1), ("shell", 5), ("claude1", 4)],
-                ),
-                (
-                    CLOCK + 90,
-                    "timed-shell",
-                    vec![("busy", 1), ("shell", 5), ("claude1", 4)],
-                ),
+                (CLOCK - 1, "timed-shell", vec![("0:01", 2), ("shell", 5)]),
+                (CLOCK, "timed-shell", vec![("busy", 1), ("shell", 5)]),
+                (CLOCK + 90, "timed-shell", vec![("busy", 1), ("shell", 5)]),
             ] {
                 let buffer = renderer.paint(&mut app, now);
                 let point = position(&buffer, label);

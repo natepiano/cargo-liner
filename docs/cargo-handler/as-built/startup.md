@@ -105,11 +105,34 @@ The TUI uses `scan_staged` and does not wait for an initial herdr answer.
 | --- | --- | --- |
 | `census.herdr_probe_wait` | 12000 ms | Zero through 18000 ms. |
 | `census.herdr_read_timeout` | 1000 ms | Positive values through `PROBE_TIMEOUT`. |
+| `census.report_deadline` | 8000 ms | Positive values. Bounds one `census --json` run. |
+| `CENSUS_SOURCE_STOP_RESERVE` | 500 ms | Census sources stop their child processes this long before `report_deadline`. |
 | `PROBE_TIMEOUT` | 20 seconds | Includes scan and SSH allowance. |
+| `PROBE_DEADLINE` | 19 seconds | One second inside `PROBE_TIMEOUT`. |
+| `PROBE_CALLER_CHECK` | 250 ms | Interval of the parent process check. |
 
 The deadline bounds the added wait, rather than total scan duration.
 A scan that exceeds it accepts only an already queued answer.
 The probe writes refused configuration diagnostics to stderr and still emits one JSON report on stdout.
+
+`census --json` runs the accounts command, the local scan and each remote probe on their own threads.
+The main thread reads their answers until `report_deadline`.
+A source with no answer by then is reported as timed out.
+The local scan's herdr wait is at most `report_deadline` minus `CENSUS_SOURCE_STOP_RESERVE`.
+
+`probe::scan_local` builds its scanner with `LocalScanner::one_shot`.
+A one-shot scanner reads with `DirectoryWatching::Once`: it lists each subagent, seat and run directory once and installs no file watch.
+The `probe` and `census` commands both use `probe::scan_local`.
+
+`probe::print` runs the scan and its output on a `probe-scan` thread.
+The main thread calls `wait_for_scan`, which returns one `ProbeWait`:
+
+1. `Finished` gives the scan's exit code.
+2. `DeadlinePassed` writes one stderr line and exits with a failure at `PROBE_DEADLINE`.
+3. `CallerGone` exits with a failure when the parent pid changes.
+4. `ScanEnded` exits with a failure when the scan thread ends without a result.
+
+A probe on a remote machine thus exits by itself when ssh is gone or the scan hangs.
 
 ### Incremental conversations and metadata
 
@@ -154,6 +177,7 @@ The scanner retains process rows and refreshes changed identities and details.
 Same-pid exec changes must update names.
 Linux uses process evidence; macOS also uses libproc for process revisions.
 Directory watches cover transcript subagents, seat documents, and run records.
+Only the live census installs them; a one-shot scan lists each directory once.
 Watch failure uses a 30-second recovery scan and a two-second retry.
 Process recovery also runs every 30 seconds.
 `retain_session_caches` removes departed run, subagent, and worker-directory state.

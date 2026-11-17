@@ -55,9 +55,6 @@ secondary = "White"
 [variants.roles]
 astra_reviewer = { r = 166, g = 179, b = 135 }
 mauve          = { r = 188, g = 167, b = 188 }
-reset_latest   = { r = 204, g = 158, b = 255 }
-reset_middle   = { r = 10, g = 191, b = 255 }
-reset_soonest  = { r = 0, g = 203, b = 123 }
 waiting        = { r = 255, g = 255, b = 0 }
 word_match     = { r = 38, g = 38, b = 38 }
 
@@ -121,9 +118,6 @@ secondary = "Black"
 [variants.roles]
 astra_reviewer = { r = 15, g = 43, b = 6 }
 mauve          = { r = 106, g = 60, b = 65 }
-reset_latest   = { r = 130, g = 0, b = 206 }
-reset_middle   = { r = 2, g = 78, b = 124 }
-reset_soonest  = { r = 0, g = 88, b = 13 }
 waiting        = { r = 122, g = 122, b = 0 }
 word_match     = { r = 240, g = 240, b = 240 }
 

@@ -689,6 +689,23 @@ impl LocalScanner {
         }
     }
 
+    /// A scanner for one scan: it lists each directory once and installs no file watch.
+    /// A watch only saves reads on later scans, and installing one can block.
+    pub(super) fn one_shot(mut self) -> Self {
+        self.subagent_reads = SubagentReads::listing();
+        self.worker_names = WorkerNames::listing();
+        self.run_records = activity::RunRecords::listing();
+        self
+    }
+
+    /// File watches installed by every directory reader.
+    #[cfg(test)]
+    pub(super) fn watch_installations(&self) -> usize {
+        self.subagent_reads.watch_installations()
+            + self.worker_names.watch_installations()
+            + self.run_records.watch_installations()
+    }
+
     /// Use the same startup setting as the host or probe configuration.
     pub(super) const fn with_codex_start_window(mut self, window: CodexStartWindow) -> Self {
         self.codex_start_window = window;

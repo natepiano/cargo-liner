@@ -18,7 +18,7 @@ fn accounts_source_retains_absence_loaded_rows_and_command_failure_reason() {
         ),
     ] {
         assert_eq!(
-            AccountsTable::read_once(command).health(),
+            AccountsSource::read_once(command, HIERARCHY_TIMEOUT).health(),
             Observed::Known(expected),
             "{command}"
         );

@@ -131,3 +131,36 @@ fn a_long_shell_row_leaves_its_neighbor_tile_widths_unchanged() {
     let expected = drawn_into(&baseline[1], &baseline, width, 12);
     assert_eq!(lines(&drawn), lines(&expected));
 }
+
+#[test]
+fn a_shell_row_shows_its_whole_command_in_the_free_width_beside_a_branch_column() {
+    let mut owner = agent(10, "owner-session", HOUR, None);
+    owner.children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(11),
+        LONG_SHELL,
+        MINUTE,
+    ));
+    let member = AgentRow {
+        branch: Some("feature/member".into()),
+        ..agent(20, "member-session", MINUTE, Some(10))
+    };
+    let state = MachineState::Answered(vec![owner, member], HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let cells = cell_order(&machines);
+    let buffer = drawn_into(&cells[0], &cells, 170, 12);
+    let text = lines(&buffer);
+    let short = shell_command::short_command(LONG_SHELL);
+    let (branch_x, _) = find(&buffer, "branch").expect("the branch column");
+    let (_, y) = find(&buffer, &short).expect("the whole shell command");
+    assert_eq!(
+        buffer[(branch_x, y)].symbol(),
+        MISSING_VALUE,
+        "the shell row has no branch: {text:?}"
+    );
+    assert!(!text[usize::from(y)].contains(TRUNCATION_MARK), "{text:?}");
+}

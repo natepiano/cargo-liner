@@ -7,6 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -27,11 +30,10 @@ use crate::census::CensusFacts;
 use crate::census::HierarchyEdges;
 use crate::census::PassAssignment;
 use crate::census::UnknownReason;
-use crate::census::accounts::AccountsReading;
+use crate::census::accounts::SessionStates;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::RunId;
 use crate::census::remote;
-use crate::census::remote::ProbeOutcome;
 
 const README: &str = include_str!("../../README.md");
 const EXAMPLE_MARKER: &str = "<!-- census-json-example";
@@ -58,7 +60,7 @@ const ACTIVITY_WORDS: [&str; 11] = [
 struct Unreachable;
 
 impl RemoteRunner for Unreachable {
-    fn probe(&self, _: &str) -> ProbeOutcome { ProbeOutcome::TimedOut }
+    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome { ProbeOutcome::TimedOut }
 }
 
 fn rows() -> Vec<AgentRow> { rows_with("waiting") }
@@ -226,8 +228,8 @@ fn print_census_with(
     let mut stderr = Vec::new();
     let status = print_to(
         loaded,
-        &Unreachable,
-        |_| (rows, snapshot(facts)),
+        &(Arc::new(Unreachable) as Arc<dyn RemoteRunner>),
+        |_, _| move || (rows, snapshot(facts)),
         &mut stdout,
         &mut stderr,
     );
@@ -294,7 +296,7 @@ fn painted_with(directory: &TempDir, rows: Vec<AgentRow>) -> Vec<String> {
         stage: ScanStage::Completed,
     });
     let bytes = std::fs::read(directory.path().join("accounts.json")).expect("accounts fixture");
-    app.accounts.table = AccountsTable::Ready(AccountsReading::parse(&bytes).expect("accounts"));
+    app.accounts.source = AccountsSource::Ready(SessionStates::parse(&bytes).expect("accounts"));
     let mut terminal = Terminal::new(TestBackend::new(200, 60)).expect("terminal");
     let keymap = app.keymap();
     terminal
@@ -594,6 +596,118 @@ fn source_failures_exit_zero_with_the_machine_error_and_a_bad_config_fails() {
     assert_eq!(status, ExitCode::FAILURE);
     assert_eq!(json, Value::Null);
     assert!(stderr.contains(&error), "{stderr}");
+}
+
+/// A remote whose probe answers only after the census ends.
+struct Hung(Mutex<Receiver<()>>);
+
+impl RemoteRunner for Hung {
+    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
+        let _ = self.0.lock().expect("the release should lock").recv();
+        ProbeOutcome::NotStarted
+    }
+}
+
+/// Print a census bounded by `bound` whose scan, when `hung_scan`, answers only after the
+/// census ends, and say how long it took.
+fn print_hung_census(
+    mut config: Config,
+    bound: Duration,
+    hung_scan: bool,
+    remote: impl RemoteRunner + 'static,
+) -> (Value, Duration) {
+    let remote: Arc<dyn RemoteRunner> = Arc::new(remote);
+    config.census.report_deadline = toml::from_str::<Config>(&format!(
+        "[census]\nreport_deadline = {}\n",
+        bound.as_millis()
+    ))
+    .expect("census bound")
+    .census
+    .report_deadline;
+    let (release, scan_held) = mpsc::channel::<()>();
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    let status = print_to(
+        &LoadedConfig {
+            config,
+            error: None,
+        },
+        &remote,
+        move |_, _| {
+            move || {
+                if hung_scan {
+                    let _ = scan_held.recv();
+                }
+                (rows(), snapshot(facts()))
+            }
+        },
+        &mut stdout,
+        &mut Vec::new(),
+    );
+    let elapsed = started.elapsed();
+    drop(release);
+    assert_eq!(status, ExitCode::SUCCESS);
+    (
+        serde_json::from_slice(&stdout).expect("census JSON"),
+        elapsed,
+    )
+}
+
+/// A bound that leaves the accounts command 200 ms before the source stop reserve.
+const ACCOUNTS_CENSUS_BOUND: Duration = Duration::from_millis(700);
+/// A bound for a source that never answers; the census prints at this bound.
+const HUNG_CENSUS_BOUND: Duration = Duration::from_millis(300);
+/// Time past the bound that the census may take to build and print its report.
+const PRINT_ALLOWANCE: Duration = Duration::from_millis(150);
+
+#[test]
+fn a_slow_accounts_command_is_stopped_before_the_bound_and_reported_timed_out() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let mut config = config(&directory, true);
+    config.census.accounts_command = "exec sleep 30".to_owned();
+    let (json, elapsed) = print_hung_census(config, ACCOUNTS_CENSUS_BOUND, false, Unreachable);
+    assert!(elapsed < ACCOUNTS_CENSUS_BOUND, "census took {elapsed:?}");
+    assert_eq!(json["machines"][0]["reachable"], true);
+    assert_eq!(json["machines"][0]["error"], "accounts: command timed out");
+}
+
+#[test]
+fn a_remote_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let (held, release) = mpsc::channel();
+    let mut config = config(&directory, true);
+    config.machines.remote = vec!["far".to_owned()];
+    let (json, elapsed) =
+        print_hung_census(config, HUNG_CENSUS_BOUND, false, Hung(Mutex::new(release)));
+    drop(held);
+    assert!(
+        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
+        "census took {elapsed:?}"
+    );
+    assert_eq!(json["machines"][0]["reachable"], true);
+    assert_eq!(
+        json["machines"][1],
+        serde_json::json!({"name":"far","reachable":false,"error":TIMED_OUT_REASON})
+    );
+}
+
+#[test]
+fn a_local_scan_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let (json, elapsed) = print_hung_census(
+        config(&directory, true),
+        HUNG_CENSUS_BOUND,
+        true,
+        Unreachable,
+    );
+    assert!(
+        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
+        "census took {elapsed:?}"
+    );
+    assert_eq!(
+        json["machines"][0],
+        serde_json::json!({"name":local_machine_name(),"reachable":false,"error":TIMED_OUT_REASON})
+    );
 }
 
 #[test]

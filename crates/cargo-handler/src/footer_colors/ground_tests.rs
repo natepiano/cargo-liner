@@ -43,16 +43,11 @@ fn configured_role_and_account_ink_is_readable_on_every_drawn_pane_ground() {
                 let tint = FooterTint::Footer(color);
                 for focused in [false, true] {
                     let ground = tui_pane::pane_background(focused);
-                    for style in [
+                    assert_drawn_ink(
                         tint.style(Style::default()),
-                        tint.subdued_style(Style::default()),
-                    ] {
-                        assert_drawn_ink(
-                            style,
-                            ground,
-                            &format!("{} {color:?}", variant.id.as_str()),
-                        );
-                    }
+                        ground,
+                        &format!("{} {color:?}", variant.id.as_str()),
+                    );
                 }
             }
         }

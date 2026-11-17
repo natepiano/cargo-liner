@@ -8,7 +8,14 @@
 
 use std::io;
 use std::io::Write;
+use std::os::unix::process::parent_id;
 use std::process::ExitCode;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde::Deserializer;
@@ -42,7 +49,7 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
-use super::accounts::AccountsTable;
+use super::accounts::AccountsSource;
 #[cfg(test)]
 use super::accounts::EMPTY_SESSION_STATES;
 use super::activity::Activity;
@@ -60,8 +67,12 @@ use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CargoHandler;
 use crate::config::Config;
+use crate::config::HerdrProbeWait;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
+use crate::constants::HIERARCHY_TIMEOUT;
+use crate::constants::PROBE_CALLER_CHECK;
+use crate::constants::PROBE_DEADLINE;
 use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
 use crate::startup_log;
@@ -662,15 +673,83 @@ struct SchemaHeader {
 }
 
 /// Scan this machine once and print the report to stdout.
+///
+/// The scan runs on its own thread. The probe exits with a failure at
+/// [`PROBE_DEADLINE`], or when its caller is gone, also when the scan
+/// hangs, so a hang cannot leak a process.
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
-    let loaded = LoadedConfig::load::<CargoHandler>();
-    print_to(
-        &loaded,
-        scan_configured,
-        &mut io::stdout().lock(),
-        &mut io::stderr().lock(),
-    )
+    let caller = parent_id();
+    let (finished, result) = mpsc::channel();
+    let started = thread::Builder::new()
+        .name("probe-scan".into())
+        .spawn(move || {
+            let loaded = LoadedConfig::load::<CargoHandler>();
+            // Each write takes the lock by itself, so the guard below can still write.
+            let code = print_to(
+                &loaded,
+                scan_configured,
+                &mut io::stdout(),
+                &mut io::stderr(),
+            );
+            let _ = finished.send(code);
+        });
+    if let Err(error) = started {
+        let _ = writeln!(io::stderr(), "{BINARY_NAME}: probe: {error}");
+        return ExitCode::FAILURE;
+    }
+    match wait_for_scan(
+        &result,
+        Instant::now() + PROBE_DEADLINE,
+        PROBE_CALLER_CHECK,
+        || parent_id() == caller,
+    ) {
+        ProbeWait::Finished(code) => code,
+        ProbeWait::DeadlinePassed => {
+            let _ = writeln!(
+                io::stderr(),
+                "{BINARY_NAME}: probe: the scan did not finish within {} s",
+                PROBE_DEADLINE.as_secs()
+            );
+            ExitCode::FAILURE
+        },
+        ProbeWait::CallerGone | ProbeWait::ScanEnded => ExitCode::FAILURE,
+    }
+}
+
+/// How the wait for a probe's scan ended.
+#[derive(Debug, Eq, PartialEq)]
+enum ProbeWait<T> {
+    /// The scan sent its result.
+    Finished(T),
+    /// The deadline passed before the scan finished.
+    DeadlinePassed,
+    /// The parent process changed, so no caller reads the result.
+    CallerGone,
+    /// The scan thread ended without a result.
+    ScanEnded,
+}
+
+/// Wait for the scan's result until `deadline`, and check at each
+/// `check` that the caller is still present.
+fn wait_for_scan<T>(
+    result: &Receiver<T>,
+    deadline: Instant,
+    check: Duration,
+    caller_present: impl Fn() -> bool,
+) -> ProbeWait<T> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return ProbeWait::DeadlinePassed;
+        }
+        match result.recv_timeout(check.min(deadline.saturating_duration_since(now))) {
+            Ok(value) => return ProbeWait::Finished(value),
+            Err(RecvTimeoutError::Disconnected) => return ProbeWait::ScanEnded,
+            Err(RecvTimeoutError::Timeout) if !caller_present() => return ProbeWait::CallerGone,
+            Err(RecvTimeoutError::Timeout) => {},
+        }
+    }
 }
 
 /// Scan with the configuration that remains valid after loading.
@@ -678,27 +757,41 @@ fn scan_configured(config: &Config) -> ProbeReport {
     let (rows, publication) = scan_local(config);
     let mut report = ProbeReport::from_answer(local_machine_name(), rows, publication.edges);
     let mut facts = *publication.facts;
-    facts.accounts = AccountsTable::read_once(&config.census.accounts_command).health();
+    facts.accounts =
+        AccountsSource::read_once(&config.census.accounts_command, HIERARCHY_TIMEOUT).health();
     report.facts = Some(facts);
     report
 }
 
 /// One completed scan of this machine with the configured staff file and timeouts.
+/// It lists each directory once and installs no file watch.
 pub(super) fn scan_local(config: &Config) -> (Vec<AgentRow>, super::HierarchySnapshot) {
+    local_scan(config, config.census.herdr_probe_wait)()
+}
+
+/// A one-shot scan of this machine that waits at most `herdr_wait` for herdr names, ready to
+/// run on another thread.
+pub(super) fn local_scan(
+    config: &Config,
+    herdr_wait: HerdrProbeWait,
+) -> impl FnOnce() -> (Vec<AgentRow>, super::HierarchySnapshot) + Send + use<> {
     let source = HierarchySource::from(config.census.staff_file.0.clone());
-    let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
+    let mut scanner = LocalScanner::new(AccountLabels::new(
         &config.accounts,
         dirs::home_dir().as_deref(),
     ))
+    .one_shot()
     .with_codex_start_window(config.census.codex_thread_start_window)
-    .with_herdr_probe_wait(config.census.herdr_probe_wait)
+    .with_herdr_probe_wait(herdr_wait)
     .with_herdr_read_timeout(config.census.herdr_read_timeout)
     .with_staff_file(
         super::StaffFileSetting::new(source),
         StaffFileReader::default(),
-    )
-    .scan();
-    (rows, snapshot.publication())
+    );
+    move || {
+        let (rows, snapshot) = scanner.scan();
+        (rows, snapshot.publication())
+    }
 }
 
 /// Keep the JSON report separate from probe diagnostics.
@@ -770,6 +863,10 @@ mod hierarchy_transport_tests;
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use serde_json::Value;
 
     use super::*;
@@ -786,6 +883,53 @@ mod tests {
     use crate::census::WorkIdentity;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
+
+    /// A scan result that arrives first ends the wait with that result.
+    #[test]
+    fn a_finished_scan_ends_the_probe_wait_with_its_result() {
+        let (finished, result) = mpsc::channel();
+        finished.send(7).expect("result");
+        let far = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            wait_for_scan(&result, far, Duration::from_secs(1), || true),
+            ProbeWait::Finished(7)
+        );
+    }
+
+    /// A scan that hangs past the deadline ends the wait, so the probe exits.
+    #[test]
+    fn a_hung_scan_ends_the_probe_wait_at_the_deadline() {
+        let (_finished, result) = mpsc::channel::<u8>();
+        let deadline = Instant::now() + Duration::from_millis(40);
+        assert_eq!(
+            wait_for_scan(&result, deadline, Duration::from_millis(10), || true),
+            ProbeWait::DeadlinePassed
+        );
+        assert!(Instant::now() >= deadline);
+    }
+
+    /// A changed parent process ends the wait before the deadline.
+    #[test]
+    fn a_gone_caller_ends_the_probe_wait_before_the_deadline() {
+        let (_finished, result) = mpsc::channel::<u8>();
+        let far = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            wait_for_scan(&result, far, Duration::from_millis(10), || false),
+            ProbeWait::CallerGone
+        );
+    }
+
+    /// A scan thread that ends without a result ends the wait.
+    #[test]
+    fn a_scan_that_ends_without_a_result_ends_the_probe_wait() {
+        let (finished, result) = mpsc::channel::<u8>();
+        drop(finished);
+        let far = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            wait_for_scan(&result, far, Duration::from_secs(1), || true),
+            ProbeWait::ScanEnded
+        );
+    }
 
     #[test]
     fn compacting_probe_extension_preserves_legacy_thinking() {

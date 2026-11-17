@@ -19,8 +19,8 @@ use crate::census::AgentActivity;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
+use crate::census::accounts::SessionStates;
 use crate::census::activity::RunLocation;
 use crate::census::activity::VerifyStep;
 use crate::census::scan::ScanStage;
@@ -32,7 +32,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const NOW: u64 = 1_794_096_000;
 const LINER_PID: u32 = 346_919;
 
-fn source_accounts() -> TestResult<AccountsTable> {
+fn source_accounts() -> TestResult<AccountsSource> {
     let mut accounts = [
         json!({"label":"claude1","tool":"claude","weekly_left_percent":0,"roles":[]}),
         json!({"label":"claude2","tool":"claude","weekly_left_percent":1,"roles":[]}),
@@ -50,8 +50,8 @@ fn source_accounts() -> TestResult<AccountsTable> {
         account["read_ok"] = json!(true);
         account["resets_at"] = json!("2026-11-14T06:00:00Z");
     }
-    Ok(AccountsTable::Ready(
-        AccountsReading::parse(&serde_json::to_vec(
+    Ok(AccountsSource::Ready(
+        SessionStates::parse(&serde_json::to_vec(
             &json!({"accounts":accounts,"problems":[]}),
         )?)
         .map_err(|error| error.to_string())?,
@@ -149,7 +149,7 @@ impl SourceFrameState {
                 "branch":"remove-running-section-handler", "children":[]
             }))?);
         }
-        app.accounts.table = source_accounts()?;
+        app.accounts.source = source_accounts()?;
         let mut source = Self {
             app,
             rows,
@@ -251,7 +251,7 @@ fn paint(app: &mut App, width: u16, height: u16) -> TestResult<DrawnLayout> {
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &app.accounts.table,
+        app.accounts.source.session_states(),
     )
     .with_expansion(&app.expansion);
     let width_floor = cells.measure_trees(app.selection_area);

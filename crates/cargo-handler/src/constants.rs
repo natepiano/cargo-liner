@@ -119,8 +119,14 @@ pub(crate) const TREE_EFFORT_HEADER: &str = "effort";
 pub(crate) const TREE_MODEL_HEADER: &str = "model";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
-/// The work type column of an agent tile tree.
+/// The type column of an agent tile tree.
 pub(crate) const TREE_TYPE_HEADER: &str = "type";
+/// The type cell of a session or worker row.
+pub(crate) const ROW_TYPE_AGENT: &str = "agent";
+/// The type cell of a shell row.
+pub(crate) const ROW_TYPE_SHELL: &str = "shell";
+/// The type cell of a subagent row.
+pub(crate) const ROW_TYPE_SUBAGENT: &str = "subagent";
 
 /// The session column of an agent tile tree.
 pub(crate) const TREE_SESSION_HEADER: &str = "session";
@@ -202,12 +208,6 @@ pub(crate) const CODEX_ROLE: &str = "codex";
 pub(crate) const BUSY_ROLE: &str = "busy";
 /// `[variants.roles]` key for a `waiting` status.
 pub(crate) const WAITING_ROLE: &str = "waiting";
-/// `[variants.roles]` key for the soonest reset times in the accounts footer.
-pub(crate) const RESET_SOONEST_ROLE: &str = "reset_soonest";
-/// `[variants.roles]` key for the middle reset times in the accounts footer.
-pub(crate) const RESET_MIDDLE_ROLE: &str = "reset_middle";
-/// `[variants.roles]` key for the latest reset times in the accounts footer.
-pub(crate) const RESET_LATEST_ROLE: &str = "reset_latest";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
 /// Role column text for a shell whose program is `sleep`.
@@ -607,6 +607,16 @@ const PROBE_SSH_OUTPUT_RESERVE: Duration = Duration::from_secs(2);
 /// Maximum scan span that leaves time for ssh and output.
 pub(crate) const HERDR_PROBE_WAIT_LIMIT: Duration =
     PROBE_TIMEOUT.saturating_sub(PROBE_SSH_OUTPUT_RESERVE);
+/// Time a probe leaves before [`PROBE_TIMEOUT`], so it exits before its caller gives up.
+const PROBE_EXIT_RESERVE: Duration = Duration::from_secs(1);
+/// A probe whose scan runs this long exits with a failure, so a hung scan
+/// cannot leak a process.
+pub(crate) const PROBE_DEADLINE: Duration = PROBE_TIMEOUT.saturating_sub(PROBE_EXIT_RESERVE);
+/// Time each `census --json` source leaves before the census bound to stop its own child
+/// process, so no child outlives the census.
+pub(crate) const CENSUS_SOURCE_STOP_RESERVE: Duration = Duration::from_millis(500);
+/// How often a probe checks that its caller is still its parent.
+pub(crate) const PROBE_CALLER_CHECK: Duration = Duration::from_millis(250);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);
@@ -632,12 +642,8 @@ pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";
 /// Title of the one pool that holds the producer sessions of every machine.
 pub(crate) const PRODUCERS_CELL_TITLE: &str = "producers";
 
-/// Stored account usage is refreshed independently of the census scan.
+/// The accounts command's session states refresh independently of the census scan.
 pub(crate) const ACCOUNTS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
-/// Readings older than one hour are visibly stale.
-pub(crate) const ACCOUNTS_STALE_SECONDS: u64 = 60 * 60;
-/// Remaining weekly usage at or below this percentage needs attention.
-pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 
 // reviewer discovery
 /// Claude print-mode arguments.

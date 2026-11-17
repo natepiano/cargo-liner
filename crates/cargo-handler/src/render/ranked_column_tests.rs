@@ -112,7 +112,7 @@ pub(super) fn ranks(app: &App) -> TileColumnOrder<TileKey> {
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &app.accounts.table,
+        app.accounts.source.session_states(),
     )
     .with_expansion(&app.expansion)
     .column_order()

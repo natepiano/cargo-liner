@@ -88,7 +88,7 @@ fn sorting_forest() -> MachineState {
 
 /// The fixture's source statuses.
 static SOURCE_STATES: LazyLock<SessionStates> = LazyLock::new(|| {
-    crate::census::accounts::AccountsReading::parse(
+    crate::census::accounts::SessionStates::parse(
         br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
         {"session":"older-id","state":"idle"},{"session":"younger-id","state":"busy"},
         {"session":"id-20","state":"idle"},{"session":"id-30","state":"paused"},
@@ -96,7 +96,6 @@ static SOURCE_STATES: LazyLock<SessionStates> = LazyLock::new(|| {
     ]}],"problems":[]}"#,
     )
     .expect("source statuses")
-    .sessions
 });
 
 /// The fixture cells with their source statuses, sorted by `sort`.
@@ -164,15 +163,15 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "├── zeta z-account worker fix idle z-branch /z-directory",
+            "├── zeta z-account worker agent fix idle z-branch /z-directory",
         ),
-        ("nested", "│ └── nested — — ~/rust/nested"),
-        ("z-thread", "│ └── z-thread — worker exited — —"),
+        ("nested", "│ └── nested — agent — ~/rust/nested"),
+        ("z-thread", "│ └── z-thread — worker agent exited — —"),
         (
             "alpha",
-            "└── alpha a-account worker impl · thinking busy a-branch /a-directory",
+            "└── alpha a-account worker agent impl · thinking busy a-branch /a-directory",
         ),
-        ("a-shell", "└── a-shell a-account running busy — shell —"),
+        ("a-shell", "└── a-shell shell running busy — —"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -303,8 +302,10 @@ fn tree_header_clicks_match_drawn_columns_and_ignore_gaps_and_data_rows() {
             ),
             width == 60
         );
+        let header_y = find(&buffer, "session").expect("tree header").1;
         for column in COLUMNS {
-            let Some((x, y)) = find(&buffer, column.header()) else {
+            let Some((x, y)) = find(&buffer, column.header()).filter(|&(_, y)| y == header_y)
+            else {
                 continue;
             };
             let spans = header_spans(&cells[0], buffer.area, NOW, AccountColumn::Shown);

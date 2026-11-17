@@ -13,9 +13,9 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::census::accounts::SessionStates;
 use crate::census::scan::ScanStage;
 use crate::census::transcript::SubagentRole;
 use crate::interaction::LegacyWorkKind;
@@ -517,7 +517,7 @@ fn body_clicks_open_close_and_select_the_painted_branch() {
                 hierarchy: HierarchyEdges::default().into(),
                 stage: ScanStage::Completed,
             });
-            let Ok(reading) = AccountsReading::parse(
+            let Ok(reading) = SessionStates::parse(
                 br#"{
             "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
                 {"session":"session-10","state":"exited"},
@@ -529,7 +529,7 @@ fn body_clicks_open_close_and_select_the_painted_branch() {
             ) else {
                 panic!("the account status fixture must parse");
             };
-            app.accounts.table = AccountsTable::Ready(reading);
+            app.accounts.source = AccountsSource::Ready(reading);
             for (key, _) in expansion_trees(&app) {
                 app.tree_sorts.insert(
                     key,

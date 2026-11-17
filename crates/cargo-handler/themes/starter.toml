@@ -56,11 +56,8 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
-reset_latest  = { r = 204, g = 158, b = 255 }
-reset_middle  = { r = 10, g = 191, b = 255 }
-reset_soonest = { r = 0, g = 203, b = 123 }
-waiting       = { r = 255, g = 255, b = 0 }
-word_match    = { r = 38, g = 38, b = 38 }
+waiting    = { r = 255, g = 255, b = 0 }
+word_match = { r = 38, g = 38, b = 38 }
 
 busy   = { r = 100, g = 220, b = 100 }
 claude = { r = 217, g = 119, b = 87 }

@@ -161,6 +161,12 @@ by`. Values, the `pid` before a number, the ` · ` between facts and notes such
 as `nothing running` are drawn in plain text or their own colors, never in it,
 and every built-in theme gives labels a color nothing else uses.
 
+The tree's columns are session, account, role, type, activity, status,
+branch, model, effort and directory. Type reads `agent` for a session or a
+worker, `shell` for a shell and `subagent` for a subagent. A shell runs under
+no account, so its account cell is blank; a subagent shows its session's
+account. A shell name takes the table's free width before it is cut with `…`.
+
 Each kind of row comes from its own place:
 
 - **shell** running **command**: a command the agent's shell tool is running: a child of the
@@ -226,7 +232,9 @@ one connection per host through a control socket under `~/.ssh/` (left out when
 that path would be too long for ssh). `probe` prints the host's own census as
 one line of JSON and exits, so cargo-handler must be installed on the remote and
 on the `PATH` ssh gives a non-interactive command -- `cargo install` puts it in
-`~/.cargo/bin/`.
+`~/.cargo/bin/`. A probe reads each directory once and watches no file. It exits
+with a failure when its scan runs past 19 seconds, or when the ssh session that
+started it is gone, so a hung probe does not stay on the remote.
 
 ### desktops
 
@@ -268,6 +276,12 @@ and `name` is the value that the tile draws.
 - A bad config prints the error on stderr and exits non-zero.
 - An unreachable remote, an unreadable staff file or a failed accounts read
   exits 0. The machine's `error` names the cause.
+- The census prints within `[census] report_deadline` milliseconds (default
+  8000). The accounts command, this machine's scan and each remote probe run
+  at the same time. A source that does not answer in time is reported as
+  timed out, and the census prints without it. The accounts command and each
+  ssh probe stop 500 ms before the bound, so no child process outlives the
+  census.
 - A director or worker shows only while a tile shows its session. A worker
   also must be in its unit's current run.
 - A fact that the census cannot read is null, and `unknown.reason` names why.
@@ -494,8 +508,8 @@ A value is a color name or `#rrggbb` in either case. A `#` starts a comment at
 the start of a line, or after a space once the value has begun, so
 `account.codex1 = #a0522d` keeps its value. A name or a hex value that is not
 readable on the theme's ground is made readable at the same hue; a readable
-one draws unchanged. One account takes the same ink in the tree, on the
-program line and in the accounts table. The census scan checks the file each
+one draws unchanged. One account takes the same ink in the tree and on the
+program line. The census scan checks the file each
 round, so a changed color shows at the next scan with no restart.
 
 A stale entry in `keymap.toml` is skipped rather than refusing to start.

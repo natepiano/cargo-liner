@@ -161,6 +161,8 @@ pub(crate) struct CensusConfig {
     pub(crate) herdr_probe_wait:          HerdrProbeWait,
     /// Milliseconds allowed for each herdr socket read or write.
     pub(crate) herdr_read_timeout:        HerdrReadTimeout,
+    /// Milliseconds in which `census --json` prints its report.
+    pub(crate) report_deadline:           CensusReportDeadline,
 }
 
 /// The configured staff file path, including its default location.
@@ -198,6 +200,14 @@ impl Default for HerdrProbeWait {
 
 impl HerdrProbeWait {
     pub(crate) const fn duration(self) -> Duration { Duration::from_millis(self.0) }
+
+    /// This wait, or `limit` when `limit` is shorter.
+    pub(crate) fn at_most(self, limit: Duration) -> Self {
+        Self(
+            self.0
+                .min(u64::try_from(limit.as_millis()).unwrap_or(u64::MAX)),
+        )
+    }
 }
 
 impl TryFrom<u64> for HerdrProbeWait {
@@ -249,6 +259,36 @@ impl TryFrom<u64> for HerdrReadTimeout {
 
 impl From<HerdrReadTimeout> for u64 {
     fn from(timeout: HerdrReadTimeout) -> Self { timeout.0 }
+}
+
+/// A positive bound in milliseconds for one `census --json` run.
+/// The units board waits 10 s for the census; the 8,000 ms default leaves
+/// 2 s of that for process start and output.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub(crate) struct CensusReportDeadline(u64);
+
+impl Default for CensusReportDeadline {
+    fn default() -> Self { Self(8_000) }
+}
+
+impl CensusReportDeadline {
+    pub(crate) const fn duration(self) -> Duration { Duration::from_millis(self.0) }
+}
+
+impl TryFrom<u64> for CensusReportDeadline {
+    type Error = String;
+
+    fn try_from(milliseconds: u64) -> Result<Self, Self::Error> {
+        if milliseconds == 0 {
+            return Err("report_deadline must be at least 1 ms".to_owned());
+        }
+        Ok(Self(milliseconds))
+    }
+}
+
+impl From<CensusReportDeadline> for u64 {
+    fn from(deadline: CensusReportDeadline) -> Self { deadline.0 }
 }
 
 /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
@@ -406,6 +446,7 @@ accounts_command = \"\"
 codex_thread_start_window = 60
 herdr_probe_wait = 12000
 herdr_read_timeout = 1000
+report_deadline = 8000
 
 [accounts]
 ";
@@ -470,6 +511,26 @@ herdr_read_timeout = 1000
             toml::from_str::<Config>(&format!("[census]\nherdr_probe_wait = {}\n", limit + 1))
                 .expect_err("wait beyond the scan limit");
         assert!(rejected.to_string().contains(&format!("{limit} ms")));
+    }
+
+    #[test]
+    fn report_deadline_defaults_to_eight_seconds_rejects_zero_and_survives_serialization() {
+        let missing: Config = toml::from_str("[census]\n").expect("missing keys");
+        assert_eq!(
+            missing.census.report_deadline.duration(),
+            Duration::from_secs(8)
+        );
+        let configured: Config =
+            toml::from_str("[census]\nreport_deadline = 2500\n").expect("configured bound");
+        let restored: Config = toml::from_str(&toml::to_string(&configured).expect("saved bound"))
+            .expect("restored bound");
+        assert_eq!(
+            restored.census.report_deadline.duration(),
+            Duration::from_millis(2500)
+        );
+        let rejected = toml::from_str::<Config>("[census]\nreport_deadline = 0\n")
+            .expect_err("a zero bound is refused");
+        assert!(rejected.to_string().contains("report_deadline"));
     }
 
     #[test]

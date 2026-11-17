@@ -527,71 +527,126 @@ An account or role value in `~/.claude/config/statusline.conf` can be `#rrggbb` 
 - The summary draws a program line only for hierarchy roots, and a selected tree row lifts its ink for the selection ground. A same-ink test puts the account on an unselected row.
 - The Mac `cargo mend` pass made the `UnknownReason` field private. Only census submodules build the type.
 
-### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: todo
+### Phase 24 — A one-shot `probe` or `census` reads the subagent directory once and never hangs on a file watch  · status: done
 
-**Source:** the cargo-liner showrunner, 2026-11-15. `cargo-handler probe` hangs forever on the Mac: 9 probes were alive there, the oldest 20 h, and each natedev census that hits the hang leaks one more. Stack: `probe::print` → `LocalScanner::attach_details` → `transcript::running_subagents` → `InputDirectoryWatch::new` → `rearm` → notify `FsEventWatcher::watch` → `FsEventWatcher::stop` → `JoinInner::join` → `pthread_join` (blocked). notify 9.0.0-rc.4.
+#### As-built
 
-**Current state:**
-- `transcript::running_subagents` (`census/transcript.rs`) makes an `InputDirectoryWatch` for each subagent directory the first time it sees it. `InputDirectoryWatch::rearm` installs a notify `RecommendedWatcher` on the directory and its parent. On the Mac this is an FSEvents watcher, and its `watch` call can block forever in `FsEventWatcher::stop`.
-- `probe::scan_local` (`census/probe.rs`) builds a `LocalScanner` and calls `scan()` once. The scan reaches `running_subagents` through `LocalScanner::read_active_subagents` (`census/scan.rs`), so a one-shot scan installs watchers it never reads again.
-- natedev runs the Mac probe through ssh (`census/remote.rs` `SshProbe::probe`) and kills its own ssh child after `PROBE_TIMEOUT`. The remote probe is not told, so a hung probe stays alive on the Mac.
+A one-shot scan installs no notify watch. `DirectoryWatching { Live, Once }` (`census/transcript.rs`, default `Live`) is a field of `SubagentReads`, `WorkerNames` and `RunRecords`; each type's `listing()` sets `Once`. With `Once`, `InputDirectoryWatch` and `RunDirectoryWatch` use a `Listing` backend: `rearm` returns at once and the directory is read each round. `LocalScanner::one_shot` (`census/scan.rs`) sets all three listings, and `probe::scan_local` calls it. The live census keeps `Live`.
+
+`probe::print` runs the scan on the thread `probe-scan`. The main thread calls `wait_for_scan`, which returns a `ProbeWait`: `Finished` exits with the scan's code; `DeadlinePassed` writes one stderr line and exits with failure; `CallerGone` (the parent pid changed) and `ScanEnded` (the thread ended with no result) exit with failure. `PROBE_DEADLINE` is `PROBE_TIMEOUT` minus `PROBE_EXIT_RESERVE` (1 s), so 19 s; `PROBE_CALLER_CHECK` is 250 ms (`constants.rs`). Tests: `one_shot_subagent_reads_list_the_directory_without_a_watch`, `one_shot_worker_seats_list_the_directory_without_a_watch`, `one_shot_run_records_list_the_directory_without_a_watch`, `a_one_shot_scan_finds_subagents_without_a_file_watch`, and the four `wait_for_scan` outcome tests in `probe.rs`.
+
+**Files:**
+- `crates/cargo-handler/src/census/transcript.rs` — `DirectoryWatching`, the `Listing` input watch backend
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/activity.rs` — the worker seat and run record listing modes
+- `crates/cargo-handler/src/census/scan.rs` — `LocalScanner::one_shot`
+- `crates/cargo-handler/src/census/probe.rs` — the `probe-scan` thread, `wait_for_scan`, `ProbeWait`
+
+**Gotchas:**
+- A one-shot reader must call `one_shot()`. The default `LocalScanner` installs watches for the live census, and on macOS an FSEvents `watch` call can block forever in `FsEventWatcher::stop`.
+
+**Ruled out:** a patch to notify; the fix stays in cargo-handler.
+
+### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: done
+
+#### As-built
+
+The tree's type column follows role and comes before activity, in `TreeColumn` order (session, account, role, type, activity, status, branch, model, effort, directory, age) and in the details pane hierarchy section. `RowType { Agent, Shell, Subagent }` gives the type cell the `ROW_TYPE_AGENT`, `ROW_TYPE_SHELL` or `ROW_TYPE_SUBAGENT` word (`constants.rs`); session, thread and worker rows read `agent`. `Work::account` returns `LineAccount { Runs(&Account), Shell }`: a shell row draws a blank account cell, sorts with empty text, and is left out of the account column measure; an unrecorded subagent runs under its session's account, and a thread or a subagent with its own account keeps it. `NameCut::whole_shell_session` holds the session width that shows every shell name whole, and shared tile groups take its maximum. `fill_tree_width` gives unused table width to the session column up to that width, then to the directory, or to the session when the directory is absent. A tile with no unused width still cuts a shell name with `…`. `ColumnDrop::ORDER` drops effort, model, type, directory, then branch, so the type column leaves before a path. Tests: `subagent_rows_inherit_the_session_account_shells_show_none_and_threads_keep_their_own` (subagent_row_tests.rs), the details `hierarchy_cases` (render/details_tests.rs), and `a_shell_row_shows_its_whole_command_in_the_free_width_beside_a_branch_column` (shell_command_tests.rs).
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `RowType`, `LineAccount`, `NameCut::whole_shell_session`, `fill_tree_width`, `ColumnDrop::ORDER`
+- `crates/cargo-handler/src/constants.rs` — the `ROW_TYPE_*` words
+- `crates/cargo-handler/src/details.rs` — the details property order
+- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/tile-layout.md`, `hierarchy.md`, `interaction.md` — column order, drop order, blank shell account
+
+**Gotchas:**
+- A test that looks for a header word in drawn text must match whole words: "age" is inside "agent".
+
+### Phase 26 — A tile never draws its readout or rows over a neighbor tile  · status: done
+
+#### As-built
+
+- A summary that covers more than one column at either end of a step reaches to the divider after its last covered column at each frame. The edge moves from the start span to the end span on the summary's own turn (`Turns::summary`). The dividers move on the step's clock, so no cell slides under the summary.
+- `SummaryReach` (`OwnColumn` | `Spanning { right }`) in `bands.rs` carries the reach into `place_band_pieces` and `BandHeightSearch`. `band_piece_rect` applies it only to the summary piece. A summary that covers one column at both ends fills its band.
+- The summary's height, and every cell that stays in a column under the summary or its moving edge (`Turns::covers`: column below `to`), move on `Turns::covered`. So the summary changes height only over the columns it covers at both ends.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid/bands.rs` — `SummaryReach`, `summary_reach`, `band_piece_rect`, `Turns::covers`
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs` — the clocks in `drawing_from_destination`
+- `crates/tui_pane/src/tiles/grid/allocation_tests.rs` — `a_summary_changing_span_as_a_column_opens_or_closes_never_covers_a_cell`, `a_summary_changing_height_and_span_never_covers_a_cell`, `assert_no_piece_overlaps`
+
+**Gotchas:** the summary's height changes only as row transfers with the next piece in its band (`monotone_band_dividers` takes the smaller of the grown and shrunk rows). The summary and the cells under it must share one clock.
+
+**Ruled out:** stale terminal cells from a diff draw; a text dump of each drawn buffer shows the overlap in the buffer itself.
+
+### Phase 27 — `census --json` finishes inside one configured bound  · status: done
+
+#### As-built
+
+- `census --json` prints within `[census] report_deadline` ms (`CensusReportDeadline`, default 8000, zero refused). `print_to` takes one start instant.
+- `SourceAnswers::collect` runs each source on its own thread: the accounts command, the local scan (`probe::local_scan`) and each remote probe. It reads one channel until the bound. A source with no answer is timed out: `AccountsTable::timed_out`, `Census::record_local_failure`, or `ProbeOutcome::TimedOut`.
+- Sources get the bound minus `CENSUS_SOURCE_STOP_RESERVE` (500 ms). The accounts command runs for the smaller of that time and `HIERARCHY_TIMEOUT`. `RemoteRunner::probe` takes a deadline; the TUI passes `PROBE_TIMEOUT` from now. The herdr wait is `HerdrProbeWait::at_most` that time.
+- Cause of the slow runs: the `.publication.lock` wait was 0.000 s in 20 runs. A loaded Mac probe ran past 7.5 s in 6 of 10 live runs, and the old census waited up to 20 s for it. The flock with no time limit in `~/.claude/scripts/herdr/pane_launch.py` went to the showrunner.
+
+**Files:**
+- `crates/cargo-handler/src/config.rs` — `CensusReportDeadline`, `HerdrProbeWait::at_most`
+- `crates/cargo-handler/src/census/report.rs` — `SourceAnswer`, `SourceAnswers::collect`, `print_to`
+- `crates/cargo-handler/src/census/report_tests.rs` — a hung accounts command, remote and local scan each give a report inside the bound
+- `crates/cargo-handler/src/census/accounts.rs` — `read_once` with a limit, `timed_out`
+- `crates/cargo-handler/src/census/remote.rs`, `schedule.rs` — `RemoteRunner::probe` with a deadline
+- `crates/cargo-handler/src/census/probe.rs` — `local_scan`
+- `crates/cargo-handler/src/constants.rs` — `CENSUS_SOURCE_STOP_RESERVE`
+
+**Gotchas:** the user config already holds `report_deadline`; a test config replaces the key. A 2000 ms bound under load 30 can miss the local scan.
+
+**Ruled out:** the `.publication.lock` flock as the cause (never held in 20 runs). A panic in a source reads as timed out, and a local scan that misses the bound can leave its herdr read child; both are unlikely for one user.
+
+### Phase 28 — The handler shows no accounts table  · status: done
+
+#### As-built
+
+- The summary lists only the machines and their sessions. It has no accounts section, sort, row selection, section pin, reset colors or failure note. The hana console accounts page shows account usage.
+- `SessionStates::parse` decodes only `accounts[].sessions[]` (`{session, state}`) and ignores every other field. `AccountsSource` keeps five states (`NotConfigured`, `AwaitingFirstReading`, `Ready`, `Failed`, `FailedKeepingLast`); `health` gives the census its source health and `session_states` gives the tree its states.
+- `[census] accounts_command`, the tree status column, the `census --json` status, the `[accounts]` label column and `FooterColors::account` stay.
+- `SummaryLayout::preferred_width()` gives the whole (uncut) width. A narrow frame no longer carries its cut width into the next layout search, so a wider terminal restores the earlier layout.
+
+**Files:**
+- `crates/cargo-handler/src/census/accounts.rs` — `SessionStates`, `AccountsSource`, `AccountsMonitor`
+- `crates/cargo-handler/src/summary/mod.rs` — machine headings and session tables, `push_session_table`, `whole_width`
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterColors::account`, `search_lightness`
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — the whole-width layout test
+- `docs/cargo-handler/as-built/accounts.md` — the session states doc
+
+**Gotchas:** a session with no entry is `ReportedSessionState::Unavailable`, never `idle`.
+
+**Ruled out:** a reduced accounts table in the handler; the hana console accounts page owns account usage.
+
+### Phase 29 — The summary names an accounts command failure  · status: todo
 
 #### Work Order
 
-**Goal:** a one-shot `probe` or `census` never blocks on a file watch, and a hung probe cannot leak a process.
+**Goal:** while the accounts command fails, the summary shows one notice line under the local machine heading that names the failure. Today a failed command leaves the tree status column blank with no reason. Source: the showrunner, 2026-11-16: "Show one notice line under the local machine heading, only while the accounts command fails, naming the failure. A blank status column with no reason is a wrong result for the user."
 
 **Spec:**
-
-1. Give `LocalScanner` a subagent listing mode: the live census keeps the directory watch; a one-shot scan reads each subagent directory once with `read_subagents` and makes no `InputDirectoryWatch`. `probe::scan_local` and the `census` command use the one-shot mode.
-2. The probe ends by itself: it runs the scan off the main thread, and the main thread exits the process with a failure code when a probe deadline passes or when its parent process is gone (the parent pid changes). Name the deadline in constants, below `PROBE_TIMEOUT`.
-3. Fix the cause in cargo-handler. Do not patch notify.
-4. Do not stop the leaked probes on the Mac. Report them to the showrunner; the user stops them.
-5. Update the README probe section and the census as-built doc.
-
-**Files:**
-- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/scan.rs` — the one-shot listing mode
-- `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/constants.rs` — the deadline and parent check
-- `crates/cargo-handler/src/census/` — tests next to the code under test
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
-
-**Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` (natedev and the Mac)
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a one-shot scan lists running subagents and installs no directory watch.
-- A test: the probe guard ends the probe when the deadline passes, and when the parent pid changes.
-- Live check on the Mac: run `cargo-handler probe` with a build of this phase; it prints a report and exits.
-
-### Phase 25 — Every row's type reads agent, shell or subagent; a shell has no account; a shell or subagent name uses free row width  · status: todo
-
-**Source:** the user, through the cargo-liner showrunner, 2026-11-15: "a shell is not running in a family account - it should probably just show a blank there and we should move the type column to be after the role and before the activity and the type column should be either agent, shell, or subagent." Then: "you are not reclaiming space in the description column for running shells when there is space."
-
-**Current state:**
-- `agent_cell.rs` gives a `WorkKind::Shell` or `WorkKind::Subagent` line its parent's account when its own is `Account::Unrecorded`. So the natest shell row "Run the AWS pair for phase 302" shows `claude3`.
-- `TreeColumn` order is Session, Account, Role, Activity, Status, Branch, Type, Model, Effort, Directory, Age. The Type cell is blank for session and worker rows.
-- In the sdlc tile at about 170 columns, shell rows read "Start the…" and "Run the st…": the name is cut to the shared session column width, while the branch cell is `—` and the row has free width.
-
-#### Work Order
-
-**Goal:** each tree row says what it is, a shell shows no account, and a shell or subagent name is cut only when the row has no free width.
-
-**Spec:**
-
-1. A shell row shows a blank account cell. A subagent row keeps its parent's account.
-2. Move `TreeColumn::Type` after `Role` and before `Activity`, in the column order, the column drop order and the details order.
-3. Every row's Type cell reads `agent`, `shell` or `subagent`. Session and worker rows read `agent`.
-4. A shell or subagent name uses the free width of its row before it takes an ellipsis.
-5. Update the README tree column section and the as-built docs.
+1. While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one notice line under the local machine heading. The line names the `AccountsFailure` reason.
+2. In every other `AccountsSource` state, the summary draws no accounts notice line.
+3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count (`summary/mod.rs` near `hierarchy_notice`).
+4. `SummaryFrame` gets the notice from `app.accounts.source`; remote machines show no accounts notice.
+5. Update `docs/cargo-handler/as-built/accounts.md` and the summary layout doc.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — the account, the column order, the Type text, the name width
-- `crates/cargo-handler/src/details.rs` — the details order, if it lists columns
-- `crates/cargo-handler/src/render/` — render tests next to the code under test
-- `crates/cargo-handler/README.md`, `docs/cargo-handler/as-built/`
+- `crates/cargo-handler/src/summary/mod.rs`
+- `crates/cargo-handler/src/census/accounts.rs`
+- `crates/cargo-handler/src/render/mod.rs`
+- `crates/cargo-handler/src/terminal.rs`
+- `crates/cargo-handler/src/expansion.rs`
+- `crates/cargo-handler/src/details.rs`
+- `crates/cargo-handler/src/render/accounts_notice_tests.rs`
+- `docs/cargo-handler/as-built/accounts.md`
+- `docs/cargo-handler/as-built/tile-layout.md`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
-- A test: a shell row's account cell is blank; a subagent row shows its parent's account.
-- A test: the header order is session, account, role, type, activity, and each row kind shows its type word.
-- A test: at about 170 columns, a shell row with a `—` branch shows its full name when the row has the width.
-- Live check: capture a tile with a shell row and a subagent row; the shot goes with the checkpoint notice.
+- Check, lint, and the full `cargo-handler` test suite.
+- A render test: a failed source shows the notice line with its reason under the local heading; a ready source shows none.
+- Live: on a private Xvfb, a handler with a failing `accounts_command` shows the notice line.

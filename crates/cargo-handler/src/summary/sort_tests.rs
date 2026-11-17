@@ -14,10 +14,9 @@ use crate::census::Account;
 use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::sort;
-use crate::sort::AccountsSort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
@@ -104,8 +103,8 @@ fn sort_machines(states: &[MachineState; 2]) -> [Machine<'_>; 2] {
     ]
 }
 
-fn sort_report() -> AccountsTable {
-    let mut report = crate::census::accounts::AccountsReading::parse(
+fn sort_report() -> AccountsSource {
+    let report = crate::census::accounts::SessionStates::parse(
         br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
         {"session":"zeta","state":"idle"},{"session":"alpha","state":"busy"},
         {"session":"bee","state":"idle"},{"session":"ant","state":"paused"},
@@ -113,8 +112,7 @@ fn sort_report() -> AccountsTable {
     ]}],"problems":[]}"#,
     )
     .expect("source statuses");
-    report.accounts.clear();
-    AccountsTable::Ready(report)
+    AccountsSource::Ready(report)
 }
 
 fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
@@ -128,8 +126,7 @@ fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
         &mut buffer,
         area,
         &SummaryFrame {
-            accounts_sort: AccountsSort::SourceOrder,
-            accounts: &report,
+            session_states: report.session_states(),
             machines,
             placement: &placement,
             cells: &cells,
@@ -266,8 +263,7 @@ fn summary_header_clicks_work_for_every_machine_and_ignore_gaps_and_rows() {
     let colors = FooterColors::default();
     let report = sort_report();
     let frame = SummaryFrame {
-        accounts_sort: AccountsSort::SourceOrder,
-        accounts: &report,
+        session_states: report.session_states(),
         machines: &machines,
         placement: &placement,
         cells: &cells,
@@ -518,8 +514,7 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
                 &mut buffer,
                 area,
                 &SummaryFrame {
-                    accounts_sort:  AccountsSort::SourceOrder,
-                    accounts:       &AccountsTable::NotConfigured,
+                    session_states: &EMPTY_SESSION_STATES,
                     machines:       &machines,
                     placement:      &placement,
                     cells:          &cells,
@@ -574,8 +569,7 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
-        accounts_sort:  AccountsSort::SourceOrder,
-        accounts:       &AccountsTable::NotConfigured,
+        session_states: &EMPTY_SESSION_STATES,
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,

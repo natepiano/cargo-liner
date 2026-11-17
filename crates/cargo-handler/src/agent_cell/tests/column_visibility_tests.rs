@@ -476,6 +476,7 @@ fn the_c320_unassigned_tile_keeps_activity_at_90_columns() {
             TreeColumn::Session,
             TreeColumn::Account,
             TreeColumn::Role,
+            TreeColumn::Type,
             TreeColumn::Activity,
             TreeColumn::Status,
             TreeColumn::Branch
@@ -508,10 +509,10 @@ fn assert_column_drop_sequence(owner: &AgentEntry<'_>, cells: &[AgentEntry<'_>])
         TreeColumn::Session,
         TreeColumn::Account,
         TreeColumn::Role,
+        TreeColumn::Type,
         TreeColumn::Activity,
         TreeColumn::Status,
         TreeColumn::Branch,
-        TreeColumn::Type,
         TreeColumn::Model,
         TreeColumn::Effort,
         TreeColumn::Directory,
@@ -585,9 +586,11 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
             &FooterColors::default(),
         );
         assert!(find(&buffer, "free-session").is_some());
-        for absent in ["type", "age", "branch"] {
+        for absent in ["age", "branch"] {
             assert!(
-                find(&buffer, absent).is_none(),
+                !lines(&buffer)
+                    .iter()
+                    .any(|line| line.split_whitespace().any(|word| word == absent)),
                 "{absent}: {}",
                 lines(&buffer).join("\n")
             );
@@ -605,10 +608,11 @@ fn unassigned_tiles_omit_headers_for_columns_without_values() {
             ),
             HeaderHit::Column(TreeColumn::Status)
         );
-        assert!(!spans.iter().any(|span| matches!(
-            span.column,
-            TreeColumn::Type | TreeColumn::Age | TreeColumn::Branch
-        )));
+        assert!(
+            !spans
+                .iter()
+                .any(|span| matches!(span.column, TreeColumn::Age | TreeColumn::Branch))
+        );
     }
 }
 
@@ -682,8 +686,8 @@ fn different_tile_columns_share_core_positions_and_click_the_drawn_headers() {
             .iter()
             .filter(|&&y| lines(&buffer)[usize::from(y)].contains("type"))
             .count(),
-        1,
-        "only the work tile has a type column: {}",
+        2,
+        "every tile has a type column: {}",
         lines(&buffer).join("\n")
     );
     let mut status_positions = Vec::new();
@@ -987,8 +991,9 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         .iter()
         .find(|line| line.contains("status") && line.contains("account"))
         .expect("drawn status and account headers");
-    let status_x = summary::cell_width(&header[..header.find("status").expect("status column")]);
-    let type_x = summary::cell_width(&header[..header.find("type").expect("type column")]);
+    // Status is the last column, so only the one-cell tile margin follows its header.
+    let after_status = &header
+        [header.find(TREE_STATUS_HEADER).expect("status column") + TREE_STATUS_HEADER.len()..];
     assert!(rows.iter().any(|line| line.contains("running")), "{rows:?}");
     assert!(rows.iter().any(|line| line.contains("waiting")), "{rows:?}");
     assert!(
@@ -996,9 +1001,8 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         "{rows:?}"
     );
     assert_eq!(
-        type_x - status_x,
-        summary::cell_width(TREE_STATUS_HEADER) + TABLE_COLUMN_SPACING,
-        "six-cell source status header plus two-cell gap: {rows:?}"
+        after_status, " ",
+        "six-cell source status header plus the tile margin: {rows:?}"
     );
 }
 
@@ -1108,11 +1112,11 @@ fn assert_converging_account_columns() {
     .expect("recorded account");
     let mut second = agent(20, "unrecorded-owner", HOUR, None);
     second.directory.clear();
-    for (owner, pid) in [(&mut first, 11), (&mut second, 21)] {
+    for owner in [&mut first, &mut second] {
         owner.children.push(child(
             0,
-            ChildKind::Shell(ShellTimerObservation::Untimed),
-            Some(pid),
+            ChildKind::Subagent(SubagentRole::Unrecorded),
+            None,
             &"s".repeat(100),
             MINUTE,
         ));
@@ -1276,11 +1280,11 @@ fn assert_shared_headers(buffer: &Buffer, areas: [Rect; 2], different_columns: b
     } else if areas[0].width == 90 {
         assert_eq!(
             words(&headers[0]),
-            ["session", "role", "activity", "status", "branch", "type"]
+            ["session", "role", "type", "activity", "status", "branch"]
         );
         assert_eq!(
             words(&headers[1]),
-            ["session", "role", "activity", "status", "type"]
+            ["session", "role", "type", "activity", "status"]
         );
     }
     for word in words(&headers[0]).into_iter().filter(|word| {

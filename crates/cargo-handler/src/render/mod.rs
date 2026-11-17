@@ -59,7 +59,9 @@ use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::census::RoleLabel;
-use crate::census::accounts::AccountsTable;
+#[cfg(test)]
+use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::census::accounts::SessionStates;
 #[cfg(test)]
 use crate::census::scan::ScanStage;
 use crate::config::NameCutFloors;
@@ -79,11 +81,11 @@ use crate::interaction::SelectedSpan;
 use crate::interaction::SelectionSurface;
 use crate::interaction::Selections;
 use crate::interaction::SurfaceLookup;
+use crate::interaction::SurfaceSelection;
 use crate::interaction::TileSelection;
 use crate::interaction::ViewportLine;
 use crate::interaction::ViewportMapping;
 use crate::settings;
-use crate::sort::AccountsSort;
 use crate::sort::HeaderSpan;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
@@ -116,12 +118,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    // Agent rows and visible account readings or failures keep the summary
-    // present; only an empty watcher returns to the attract screen.
+    // Agent rows and hierarchy notices keep the summary present; only an
+    // empty watcher returns to the attract screen.
     let work = if app
         .census
         .lists_an_agent(&app.loaded_config.config.machines.remote)
-        || app.accounts.table.is_visible()
         || app
             .census
             .has_hierarchy_notice(&app.loaded_config.config.machines.remote)
@@ -194,10 +195,10 @@ fn draw_panes_at(
     let focused = focused_surface(app, area);
     let followed = match &focused {
         SelectableSurface::EmptyCell => TileSelection::NoRows,
-        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
-            TileSelection::NoRows,
-            super::interaction::SurfaceSelection::selection,
-        ),
+        SelectableSurface::Surface(surface) => app
+            .selections
+            .surface(surface)
+            .map_or(TileSelection::NoRows, SurfaceSelection::selection),
     };
     app.tiles
         .set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
@@ -210,12 +211,11 @@ fn draw_panes_at(
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &app.accounts.table,
+        app.accounts.source.session_states(),
     )
     .with_color_mode(app.framework.color_mode)
     .with_expansion(&app.expansion)
     .with_name_cut_floors(app.loaded_config.config.tiles.name_cut_floors())
-    .with_accounts_sort(app.accounts_sort)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
     let minimum = cells.measure_trees(area);
     app.tiles.set_min_tile_width(minimum);
@@ -401,7 +401,7 @@ pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect
         &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
-        &AccountsTable::NotConfigured,
+        &EMPTY_SESSION_STATES,
     );
     cells.draw(
         &mut Buffer::empty(area),
@@ -410,24 +410,6 @@ pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect
         Color::Reset,
     );
     app.painted_surfaces = cells.painted_surfaces.into_inner();
-}
-
-#[cfg(test)]
-pub(crate) fn draw_summary_for_test(app: &mut App, area: Rect) -> Buffer {
-    let cells = Cells::new(
-        app.census.machines(&[]),
-        census::unix_now(),
-        &app.footer_colors,
-        &app.tree_sorts,
-        app.summary_sort,
-        &app.accounts.table,
-    )
-    .with_accounts_sort(app.accounts_sort);
-    let mut buffer = Buffer::empty(area);
-    cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
-    app.painted_surfaces = cells.painted_surfaces.into_inner();
-    *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
-    buffer
 }
 
 /// `TileLookup` names current and retired census tiles.
@@ -531,10 +513,8 @@ struct Cells<'a> {
     footer_colors:     &'a FooterColors,
     /// Ordering shared by all machine groups in the summary.
     summary_sort:      SummarySort,
-    /// Account readings share the summary cell, independent of agent placement.
-    accounts:          &'a AccountsTable,
-    /// Source order until an accounts header is selected.
-    accounts_sort:     AccountsSort,
+    /// Session states from the accounts command, for the status column.
+    session_states:    &'a SessionStates,
 }
 
 /// Render fixed content allocations through the production preparation path.
@@ -552,7 +532,7 @@ pub(crate) fn draw_allocated_tiles_for_test(
         &colors,
         &HashMap::new(),
         SummarySort::default(),
-        &AccountsTable::NotConfigured,
+        &EMPTY_SESSION_STATES,
     );
     cells.prepare_frame(|| {
         allocations
@@ -642,9 +622,9 @@ impl<'a> Cells<'a> {
         footer_colors: &'a FooterColors,
         sorts: &HashMap<TileKey, TreeSort>,
         summary_sort: SummarySort,
-        accounts: &'a AccountsTable,
+        session_states: &'a SessionStates,
     ) -> Self {
-        let placement = AgentPlacement::from_machines(&machines, accounts.session_states());
+        let placement = AgentPlacement::from_machines(&machines, session_states);
         let agents = agent_cell::cell_order_placed(&placement);
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let full_tree_rows = tiles
@@ -670,8 +650,7 @@ impl<'a> Cells<'a> {
             now,
             footer_colors,
             summary_sort,
-            accounts,
-            accounts_sort: AccountsSort::SourceOrder,
+            session_states,
         }
     }
 
@@ -717,12 +696,6 @@ impl<'a> Cells<'a> {
         }
     }
 
-    /// Attach the accounts selection without changing the machine-group selection.
-    const fn with_accounts_sort(mut self, sort: AccountsSort) -> Self {
-        self.accounts_sort = sort;
-        self
-    }
-
     /// Grid demand can propose a new width; all readers of that allocation share its lines.
     fn summary_layout(&self, width: u16) -> Rc<SummaryLayout> {
         let mut current = self.summary_layout.borrow_mut();
@@ -758,7 +731,7 @@ impl<'a> Cells<'a> {
 
     /// Motion may paint a narrower allocation than its metric bounds.
     fn resolve_selection_rows(&self, layout: &SummaryLayout) {
-        let summary_rows = summary::selection_rows(&self.summary_frame(), layout);
+        let summary_rows = summary::selection_rows(layout);
         let mut rows: Vec<_> = self
             .tiles
             .iter()
@@ -776,15 +749,11 @@ impl<'a> Cells<'a> {
         let focused = self.focused.borrow().clone();
         let followed = match &focused {
             SelectableSurface::EmptyCell => TileSelection::NoRows,
-            SelectableSurface::Surface(surface) => selections.surface(surface).map_or(
-                TileSelection::NoRows,
-                super::interaction::SurfaceSelection::selection,
-            ),
+            SelectableSurface::Surface(surface) => selections
+                .surface(surface)
+                .map_or(TileSelection::NoRows, SurfaceSelection::selection),
         };
         selections.resolve(rows);
-        if let SurfaceLookup::Current(state) = selections.surface_mut(&SelectionSurface::Summary) {
-            state.set_pin(layout.section_pin());
-        }
         if let TileSelection::Row(identity) = followed
             && let RowLocation::Found(destination) = selections.follow_focused(&focused, &identity)
         {
@@ -796,8 +765,7 @@ impl<'a> Cells<'a> {
     /// The inputs shared by summary drawing and header hit testing.
     fn summary_frame(&self) -> SummaryFrame<'_, 'a> {
         SummaryFrame {
-            accounts:       self.accounts,
-            accounts_sort:  self.accounts_sort,
+            session_states: self.session_states,
             machines:       &self.machines,
             placement:      &self.placement,
             cells:          &self.agents,
@@ -844,10 +812,7 @@ impl<'a> Cells<'a> {
                         u16::try_from(layout.height()).unwrap_or(u16::MAX),
                     );
                     let agents = layout.header_spans(area);
-                    PaintedSurfaceContent::Summary {
-                        agents,
-                        accounts: layout.accounts_header_spans(area),
-                    }
+                    PaintedSurfaceContent::Summary { agents }
                 },
                 TileContent::Empty(_) => return,
             };
@@ -989,7 +954,7 @@ impl TileCells<TileKey> for Cells<'_> {
         let layout = self.summary_layout(summary_width);
         TileDemands {
             summary:       layout.height(),
-            summary_width: layout.preferred_width(&self.summary_frame()),
+            summary_width: layout.preferred_width(),
             groups:        self
                 .tiles
                 .iter()
@@ -1039,17 +1004,13 @@ impl TileCells<TileKey> for Cells<'_> {
                         .borrow_mut()
                         .surface_mut(&SelectionSurface::Summary)
                     {
-                        state.set_pin(layout.section_pin());
                         state.set_area(inner);
                     }
                 }
                 let selections = self.selections.borrow();
                 let mapping = selections.surface(&SelectionSurface::Summary).map_or(
-                    ViewportMapping::Linear {
-                        offset: 0,
-                        height: usize::from(inner.height),
-                    },
-                    |state| state.painted_mapping().clone(),
+                    ViewportMapping::new(0, usize::from(inner.height)),
+                    SurfaceSelection::painted_mapping,
                 );
                 let height = layout.height();
                 let virtual_area = Rect::new(
@@ -1064,11 +1025,11 @@ impl TileCells<TileKey> for Cells<'_> {
                     virtual_area,
                     *self.focused.borrow() == SelectableSurface::Surface(SelectionSurface::Summary),
                 );
-                summary::draw_measured(&mut complete, virtual_area, &self.summary_frame(), &layout);
+                summary::draw_measured(&mut complete, virtual_area, &layout);
                 *self.painted_summary.borrow_mut() = PaintedSummary::Drawn(layout);
                 for y in 0..inner.height {
                     let source = match mapping.source_line(usize::from(y)) {
-                        ViewportLine::Header(source) | ViewportLine::Body(source) => source,
+                        ViewportLine::Body(source) => source,
                         ViewportLine::Outside => continue,
                     };
                     if source >= usize::from(virtual_area.height) {
@@ -1630,7 +1591,7 @@ fraying = "leading"
             &app.footer_colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         )
         .with_selections(
             Selections::default(),
@@ -1906,7 +1867,7 @@ fraying = "leading"
                 &app.footer_colors,
                 &app.tree_sorts,
                 app.summary_sort,
-                &AccountsTable::NotConfigured,
+                &EMPTY_SESSION_STATES,
             )
             .with_color_mode(app.framework.color_mode)
             .with_expansion(&app.expansion);
@@ -2009,7 +1970,7 @@ fraying = "leading"
                 &app.footer_colors,
                 &HashMap::new(),
                 SummarySort::default(),
-                &AccountsTable::NotConfigured,
+                &EMPTY_SESSION_STATES,
             );
             let tile = &cells.tiles[0];
             let tree = cells
@@ -2077,7 +2038,7 @@ fraying = "leading"
             &app.footer_colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         let mut buffer = Buffer::empty(body);
         tui_pane::draw_tile_grid(
@@ -2425,7 +2386,7 @@ fraying = "leading"
             &footer_colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         let [boss, handler] = [&cells.agents[0], &cells.agents[1]];
         let narrow = 30;
@@ -2467,10 +2428,6 @@ fraying = "leading"
 }
 
 #[cfg(test)]
-#[path = "accounts_grid_tests.rs"]
-mod accounts_grid_tests;
-
-#[cfg(test)]
 #[path = "role_title_tests.rs"]
 mod role_title_tests;
 
@@ -2485,9 +2442,6 @@ mod selection_tests;
 
 #[cfg(test)]
 mod status_bar_contrast_tests;
-
-#[cfg(test)]
-mod pinned_accounts_tests;
 
 #[cfg(test)]
 mod narrow_width_tests;

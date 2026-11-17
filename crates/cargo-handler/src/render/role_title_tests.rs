@@ -25,8 +25,6 @@ use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::MachineState;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
 use crate::footer_colors;
 use crate::footer_colors::FooterRole;
@@ -79,7 +77,7 @@ fn tile_title_suffixes_use_showrunner_and_unit_role_colors() {
             &colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         let tile = cells
             .tiles
@@ -104,21 +102,33 @@ fn tile_title_suffixes_use_showrunner_and_unit_role_colors() {
 
 /// Full grid composition supplies the grounds; the test never paints one itself.
 fn role_grid(colors: &FooterColors, boss_visible: bool) -> Buffer {
-    account_grid(colors, boss_visible, &["claude1"])
+    account_grid(colors, boss_visible, &[])
 }
 
+/// Each label runs one unclaimed session, so the agent column names its account.
 fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> Buffer {
     const DRAWN_AT: u64 = 1_792_166_400;
-    let read_at =
-        chrono::DateTime::from_timestamp(i64::try_from(DRAWN_AT).expect("fixture time"), 0)
-            .expect("fixture date")
-            .to_rfc3339();
-    let rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([
+    let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([
         {"agent":"claude","name":"production","pid":10,"started":10,"session_id":"boss","directory":"/fixture","children":[]},
         {"agent":"claude","name":"director","pid":20,"started":20,"session_id":"unit","directory":"/fixture","children":[]},
         {"agent":"claude","name":"worker","pid":30,"started":30,"session_id":"worker","directory":"/fixture","children":[]},
         {"agent":"claude","name":"unclaimed","pid":40,"started":40,"session_id":"free","directory":"/fixture","children":[]}
     ])).expect("grid rows");
+    for (index, label) in (50_u32..).zip(labels) {
+        let agent = if label.starts_with("codex") {
+            "codex"
+        } else {
+            "claude"
+        };
+        rows.push(
+            serde_json::from_value(serde_json::json!({
+                "agent":agent,"name":format!("free-{label}"),"pid":index,"started":index,
+                "session_id":format!("free-{label}"),"directory":"/fixture","children":[],
+                "account":{"home":format!("~/.{label}"),"label":label}
+            }))
+            .expect("account row"),
+        );
+    }
     let edges = HierarchyEdges(vec![
         HierarchyEdge {
             manager: "boss".into(),
@@ -141,9 +151,6 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
             .collect(),
         edges.into(),
     );
-    let accounts = AccountsTable::Ready(AccountsReading::parse(&serde_json::to_vec(&serde_json::json!({
-        "accounts":labels.iter().map(|label| serde_json::json!({"label":label,"tool":"claude","roles":["showrunners","units"],"weekly_left_percent":50,"resets_at":null,"credits":2,"use_credits":true,"read_at":read_at})).collect::<Vec<_>>(),"problems":[]
-    })).expect("account JSON")).expect("accounts"));
     let sorts = HashMap::new();
     let cells = Cells::new(
         vec![Machine {
@@ -154,7 +161,7 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
         colors,
         &sorts,
         SummarySort::default(),
-        &accounts,
+        &EMPTY_SESSION_STATES,
     );
     let mut app = App::new_for_test().expect("test app");
     let area = Rect::new(0, 0, 104, 34);
@@ -216,9 +223,7 @@ fn check_role_words_on_tile_grounds(theme_name: &str) {
                                 "{name} tint={tint} boss={boss_visible} {word} ({x},{y}): fg={:?} bg={:?} contrast={ratio:.6} covered={covered:.6}",
                                 cell.fg, cell.bg
                             );
-                            let surface = if line.contains("claude1") {
-                                "accounts"
-                            } else if line.starts_with('├') || line.starts_with('┌') {
+                            let surface = if line.starts_with('├') || line.starts_with('┌') {
                                 "title"
                             } else {
                                 "tree"
@@ -237,12 +242,10 @@ fn check_role_words_on_tile_grounds(theme_name: &str) {
                         }
                     }
                 }
-                for surface in ["title", "accounts"] {
-                    assert!(
-                        surfaces.contains(surface),
-                        "{surface} roles must draw: {buffer:?}"
-                    );
-                }
+                assert!(
+                    surfaces.contains("title"),
+                    "title roles must draw: {buffer:?}"
+                );
             }
             assert!(
                 saw_tree_role,
@@ -634,7 +637,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
         &colors,
         &app.tree_sorts,
         SummarySort::default(),
-        &AccountsTable::NotConfigured,
+        &EMPTY_SESSION_STATES,
     );
     let keys: Vec<_> = cells.tiles.iter().map(AgentTile::key).collect();
     for key in keys {
@@ -644,7 +647,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             &colors,
             &app.tree_sorts,
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         let mut before = Buffer::empty(area);
         cells.draw(
@@ -684,7 +687,7 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             &colors,
             &app.tree_sorts,
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         let mut after = Buffer::empty(area);
         cells.draw(&mut after, &TileContent::Group(key), area, Color::Reset);
@@ -747,54 +750,36 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-#[derive(Clone, Copy)]
-enum SessionResetFloor {
-    DarkNotMeasured,
-    HeldLight(f64),
-}
-
 /// Rounded down from the current final inks, with both pane-tint states measured.
 #[derive(Clone, Copy)]
 struct SessionPaletteFloors {
     consecutive_hue_gap: f64,
     session_distance:    f64,
     row_fixed_distance:  f64,
-    reset_distance:      SessionResetFloor,
 }
 
 const DEFAULT_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 14.9,
     session_distance:    14.9,
     row_fixed_distance:  12.2,
-    reset_distance:      SessionResetFloor::DarkNotMeasured,
 };
 const HIGH_CONTRAST_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 14.5,
     session_distance:    16.0,
     row_fixed_distance:  14.8,
-    reset_distance:      SessionResetFloor::DarkNotMeasured,
 };
-// Hold the achieved reset distances; "Session colours stay apart" owns the full 20.
 const DEFAULT_LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 60.0,
     session_distance:    12.0,
     row_fixed_distance:  15.0,
-    reset_distance:      SessionResetFloor::HeldLight(14.7),
-};
-const HIGH_CONTRAST_LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
-    reset_distance: SessionResetFloor::HeldLight(15.3),
-    ..DEFAULT_LIGHT_SESSION_FLOORS
 };
 // Both dark minima round down to 4.5; the required contrast floor stays 4.5:1.
 const MINIMUM_SESSION_GLYPH_CONTRAST: f64 = 4.5;
-const NEAR_HUE_GAP_DEGREES: f64 = 45.0;
-const RESET_RAMP_POSITION_COUNT: usize = 256;
 
 fn session_palette_floors(appearance: Appearance, name: &str) -> SessionPaletteFloors {
     match appearance {
         Appearance::Light => match name {
-            "Default Light" => DEFAULT_LIGHT_SESSION_FLOORS,
-            "High Contrast Light" => HIGH_CONTRAST_LIGHT_SESSION_FLOORS,
+            "Default Light" | "High Contrast Light" => DEFAULT_LIGHT_SESSION_FLOORS,
             _ => panic!("unmeasured light session palette {name}"),
         },
         Appearance::Dark => match name {
@@ -826,44 +811,6 @@ struct SessionPaletteCheck<'a> {
 }
 
 impl SessionPaletteCheck<'_> {
-    fn check_reset_shades(&mut self, pane_ground: SessionPaneGround, minimum_distance: f64) {
-        let resets: Vec<_> = theme::ResetRank::positions(RESET_RAMP_POSITION_COUNT)
-            .map(|rank| {
-                footer_colors::readable_status_style(Style::default().fg(rank.color()))
-                    .fg
-                    .expect("final reset foreground")
-            })
-            .collect();
-        let first = theme::SessionHue::of_agent(0);
-        let sessions = std::iter::once(first).chain(
-            (1..)
-                .map(theme::SessionHue::of_agent)
-                .take_while(|hue| *hue != first),
-        );
-        for (ordinal, session) in sessions.enumerate() {
-            let session_ink = Role::Session(session).style().fg.expect("session ink");
-            for (rank, reset_ink) in resets.iter().enumerate() {
-                let gap = tests::hue_gap(session_ink, *reset_ink);
-                let distance = footer_colors::perceptual_distance(session_ink, *reset_ink);
-                self.measurements
-                    .entry("session/reset".into())
-                    .or_default()
-                    .push((
-                        format!("pane_ground={pane_ground:?} session-{ordinal}"),
-                        session_ink,
-                        format!("reset-{rank:03}"),
-                        *reset_ink,
-                    ));
-                if gap <= NEAR_HUE_GAP_DEGREES && distance < minimum_distance {
-                    self.failures.push(format!(
-                        "{} pane_ground={pane_ground:?} session-{ordinal}/reset-{rank:03} {session_ink:?}/{reset_ink:?} dE={distance:.9} floor={minimum_distance} hue gap={gap:.9}",
-                        self.theme_name
-                    ));
-                }
-            }
-        }
-    }
-
     fn check_ink(
         &mut self,
         session_ink: Color,
@@ -1055,12 +1002,9 @@ fn check_session_palette(variant_name: &str) {
             &colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         );
         check.check_drawn(&cells, &palette, pane_ground);
-        if let SessionResetFloor::HeldLight(minimum_distance) = check.floors.reset_distance {
-            check.check_reset_shades(pane_ground, minimum_distance);
-        }
     }
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
@@ -1093,7 +1037,6 @@ fn check_session_palette(variant_name: &str) {
 fn session_name_inks_stay_apart_from_all_palettes_in_default_dark() {
     check_session_palette("Default Dark");
 }
-/// Holds session/reset dE 14.7; "Session colours stay apart" owns the full 20.
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_default_light() {
     check_session_palette("Default Light");
@@ -1104,7 +1047,6 @@ fn session_name_inks_stay_apart_from_all_palettes_in_default_light() {
 fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_dark() {
     check_session_palette("High Contrast Dark");
 }
-/// Holds session/reset dE 15.3; "Session colours stay apart" owns the full 20.
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_light() {
     check_session_palette("High Contrast Light");
@@ -1192,7 +1134,7 @@ fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts()
                 &colors,
                 &sorts,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured,
+                &EMPTY_SESSION_STATES,
             );
             let keys: Vec<_> = first.tiles.iter().map(AgentTile::key).collect();
             drop(first);
@@ -1217,7 +1159,7 @@ fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts()
                     column: SummaryColumn::Name,
                     direction,
                 },
-                &AccountsTable::NotConfigured,
+                &EMPTY_SESSION_STATES,
             );
             let area = Rect::new(0, 0, 200, 48);
             let ground = tui_pane::pane_background(false);

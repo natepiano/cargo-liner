@@ -25,8 +25,6 @@ use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::ShellTimerObservation;
 use crate::census::Timer;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
 use crate::census::transcript::SubagentRole;
 use crate::interaction::SelectionSurface;
 
@@ -632,24 +630,6 @@ fn recorded_subagent_ids_keep_selection_when_duplicate_descriptions_change_order
     owner.children[1].name = "renamed-selected-work".into();
     apply_rows(&mut app, vec![owner]);
     assert_selected(&paint(&mut app), "renamed-selected-work");
-}
-
-#[test]
-fn summary_account_rows_take_clicks_and_key_moves_between_accounts() {
-    let mut app = application(vec![with_shell(session(10, "summary-owner"))]);
-    app.accounts.table = AccountsTable::Ready(AccountsReading::parse(br#"{
-        "accounts":[
-            {"label":"fixture-first","tool":"claude","roles":[],"weekly_left_percent":50,"use_credits":false},
-            {"label":"fixture-second","tool":"codex","roles":[],"weekly_left_percent":75,"use_credits":false}
-        ],"problems":[]
-    }"#).expect("account rows"));
-    let before = paint(&mut app);
-    app.click(locate(&before, "fixture-first"));
-    assert_selected(&paint(&mut app), "fixture-first");
-    press(&mut app, KeyCode::Down);
-    assert_selected(&paint(&mut app), "fixture-second");
-    press(&mut app, KeyCode::Up);
-    assert_selected(&paint(&mut app), "fixture-first");
 }
 
 #[test]

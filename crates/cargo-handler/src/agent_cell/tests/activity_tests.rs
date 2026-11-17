@@ -15,7 +15,7 @@ use crate::census::RoleFallback;
 use crate::census::RunLocation;
 use crate::census::ShellTimerObservation;
 use crate::census::VerifyStep;
-use crate::census::accounts::AccountsReading;
+use crate::census::accounts::SessionStates;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort::SortDirection;
 
@@ -50,8 +50,8 @@ fn activity_forest() -> MachineState {
     MachineState::Answered(rows.into(), HierarchyEdges::default().into())
 }
 
-fn source_reading() -> AccountsReading {
-    AccountsReading::parse(
+fn source_reading() -> SessionStates {
+    SessionStates::parse(
         br#"{
         "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
             {"session":"activity-20","state":"busy"},{"session":"activity-30","state":"busy"},
@@ -76,7 +76,7 @@ fn activity_pool(sort: TreeSort) -> Buffer {
         state: &state,
     }];
     let reading = source_reading();
-    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let placement = AgentPlacement::from_machines(&machines, &reading);
     let sorts = HashMap::from([(
         TileKey::Unassigned {
             machine: "fixture".into(),
@@ -115,7 +115,7 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         state: &state,
     }];
     let reading = source_reading();
-    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let placement = AgentPlacement::from_machines(&machines, &reading);
     let cells = cell_order_placed(&placement);
     for (name, word, status) in [
         ("writer-root", "writing", "busy"),
@@ -197,7 +197,7 @@ fn activity_pool_status_sort_uses_drawn_words_and_keeps_workers_under_their_root
                 state: &state,
             }];
             let reading = source_reading();
-            let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+            let placement = AgentPlacement::from_machines(&machines, &reading);
             let cells = cell_order_placed(&placement);
             let owner = cells
                 .iter()
@@ -242,7 +242,7 @@ fn activity_tree_account_cells_hide_standard_tier_and_show_only_fast() {
         state: &state,
     }];
     let reading = source_reading();
-    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let placement = AgentPlacement::from_machines(&machines, &reading);
     let cells = cell_order_placed(&placement);
     let rect = area(240, 10);
     let mut buffer = Buffer::empty(rect);
@@ -308,7 +308,7 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         state: &state,
     }];
     let reading = source_reading();
-    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let placement = AgentPlacement::from_machines(&machines, &reading);
     let original = cell_order_placed(&placement);
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let sorts = HashMap::from([(
@@ -379,7 +379,7 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         state: &state,
     }];
     let reading = source_reading();
-    let placement = AgentPlacement::from_machines(&machines, &reading.sessions);
+    let placement = AgentPlacement::from_machines(&machines, &reading);
     let agents = cell_order_placed(&placement);
     let buffer = drawn_into(&agents[0], &agents, 240, 12);
     let text = lines(&buffer).join("\n");
