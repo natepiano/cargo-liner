@@ -15,15 +15,19 @@ pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
 pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
 
 // configuration
+/// Status note while all command arguments are shown.
+pub(crate) const ALL_ARGUMENTS_NOTE_LABEL: &str = "all arguments";
+/// Build folder configuration under the account home.
+pub(crate) const BUILD_FOLDERS_CONFIG: &str = ".claude/config/build_folders.conf";
+/// Cargo manifest path argument.
+pub(crate) const CARGO_MANIFEST_PATH_FLAG: &str = "--manifest-path";
+/// Directory under the OS config root holding `config.toml`,
+/// `keymap.toml`, and `themes/`.
+pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
 /// Argument names shown before the full-arguments key is enabled.
 pub(crate) const DEFAULT_ARGUMENTS: [&str; 3] = ["all-targets", "fix", "workspace"];
 /// Editable command argument selection in Settings.
 pub(crate) const DEFAULT_ARGUMENTS_LABEL: &str = "default arguments";
-/// Status note while all command arguments are shown.
-pub(crate) const ALL_ARGUMENTS_NOTE_LABEL: &str = "all arguments";
-/// Directory under the OS config root holding `config.toml`,
-/// `keymap.toml`, and `themes/`.
-pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
 /// Id of the built-in dark variant, and the `appearance.dark_theme`
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
@@ -46,8 +50,34 @@ pub(crate) const DEFAULT_HIDDEN_COMMANDS: [&str; 2] =
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+/// Staff file used when the census setting is absent.
+pub(crate) const DEFAULT_STAFF_FILE: &str = "~/.local/state/staff/staff.json";
+/// Closing delimiter for a braced environment variable.
+pub(crate) const ENV_VARIABLE_CLOSE: char = '}';
+/// Opening delimiter for a braced environment variable.
+pub(crate) const ENV_VARIABLE_OPEN: char = '{';
+/// Prefix for a shell environment variable.
+pub(crate) const ENV_VARIABLE_PREFIX: char = '$';
+/// Additional character accepted in environment variable names.
+pub(crate) const ENV_VARIABLE_UNDERSCORE: char = '_';
+/// Separator between the short host name and its domain.
+pub(crate) const HOST_DOMAIN_SEPARATOR: char = '.';
 /// File under [`CONFIG_DIRNAME`] each panic is appended to.
 pub(crate) const PANIC_LOG_FILENAME: &str = "panic.log";
+/// Compiled output root key in the build folder configuration.
+pub(crate) const SLOT_CARGO_ROOT_KEY: &str = "roots.slot_cargo";
+/// A slot without a lock holder never displays the previous lease.
+pub(crate) const SLOT_FREE_LABEL: &str = "free";
+/// Separator between the slot, holder and purpose.
+pub(crate) const SLOT_LABEL_SEPARATOR: &str = " · ";
+/// Lease filename suffix beside a slot checkout.
+pub(crate) const SLOT_LEASE_SUFFIX: &str = ".lease.json";
+/// Lock filename suffix beside a slot checkout.
+pub(crate) const SLOT_LOCK_SUFFIX: &str = ".lock";
+/// Checkout root key in the build folder configuration.
+pub(crate) const SLOT_ROOT_KEY: &str = "roots.slots";
+/// A failed observation never displays a previous holder.
+pub(crate) const SLOT_UNREADABLE_LABEL: &str = "unreadable";
 
 // family identity
 /// Theme role for the blue family identity hue.

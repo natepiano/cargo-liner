@@ -21,6 +21,7 @@ use crate::census::process_identity::CaptureMembership;
 use crate::census::scan::InvocationExecution;
 use crate::census::scan::InvocationResourceUse;
 use crate::census::scan::OriginStart;
+use crate::census::slot_lease::SlotObservation;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::CPU_COLUMN;
 use crate::constants::TABLE_HEADERS;
@@ -70,6 +71,7 @@ fn collision_roster() -> Roster {
 
 fn invocation(pid: u32, marker: &str) -> CargoProcess {
     CargoProcess {
+        slot: SlotObservation::default(),
         invocation_id: InvocationId::for_test(pid),
         execution: InvocationExecution::Command,
         capture_membership: CaptureMembership::Outside,

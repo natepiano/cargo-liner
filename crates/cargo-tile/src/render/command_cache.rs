@@ -37,6 +37,9 @@ use super::displayed_subcommand_name;
 #[cfg(test)]
 use super::tests;
 use super::wrap_command_cell;
+use crate::census::slot_lease::SlotObservation;
+use crate::constants::COMMAND_WORD_SEPARATOR;
+use crate::constants::UNRESOLVED_PATH;
 use crate::probe;
 
 /// Solved columns for one unchanged source snapshot, including frame spacing decisions.
@@ -247,7 +250,8 @@ impl PreparedCommandCells {
             .or_insert_with(|| UnchangedCommandInputs::new(row, view));
         if (!Rc::ptr_eq(&source.source, &row.snapshot())
             && (source.source.process.command != row.process.command
-                || source.source.process.path != row.process.path))
+                || source.source.process.path != row.process.path
+                || source.source.process.slot != row.process.slot))
             || source.view.arguments != view.arguments
             || source.view.defaults != view.defaults
         {
@@ -298,9 +302,17 @@ impl PreparedCommandCells {
 
 impl UnchangedCommandInputs {
     fn measured_widths(&self) -> MeasuredCommandWidths {
-        *self
-            .widths
-            .get_or_init(|| MeasuredCommandWidths::new(&self.source.process.command, &self.view))
+        *self.widths.get_or_init(|| {
+            let mut widths = MeasuredCommandWidths::new(&self.source.process.command, &self.view);
+            if !matches!(self.source.process.slot, SlotObservation::Outside) {
+                let extra = cell_width(&self.source.process.slot.display_path(UNRESOLVED_PATH))
+                    .saturating_add(cell_width(COMMAND_WORD_SEPARATOR));
+                widths.selected = widths.selected.saturating_add(extra);
+                widths.full = widths.full.saturating_add(extra);
+                widths.subcommand = widths.subcommand.saturating_add(extra);
+            }
+            widths
+        })
     }
 
     fn new(row: &TrackedRow, view: &CommandView) -> Self {

@@ -71,32 +71,81 @@ def stage(source: Path, cache: Path | None = None) -> Path:
                           cache_directory() if cache is None else cache)
 
 
-def native_fixture(source: Path) -> Path:
-    """Keep debug data out of repeated installer copies."""
-    if sys.platform not in ('linux', 'darwin'):
-        return source
+def native_source_identity(source: Path) -> bytes:
+    """Record the source path, file identity, and native strip options."""
     metadata = source.stat()
     options = ('-u', '-r') if sys.platform == 'darwin' else ('--strip-all',)
-    identity = (str(source.resolve()), metadata.st_dev, metadata.st_ino,
-                metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns, options)
-    name = hashlib.sha256(repr(identity).encode()).hexdigest()
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns, options)
+    return os.fsencode(source.resolve()) + b'\0' + repr(identity).encode()
+
+
+def remove_retired_native_fixtures(cache: Path, retained: Path) -> None:
+    """Remove stale native fixtures only while their publication locks are free."""
+    names = {entry.name.split('.', 1)[0] for entry in cache.iterdir()
+             if re.fullmatch(r'[0-9a-f]{64}(?:\.lock|\.source)?', entry.name)}
+    for name in names:
+        destination = cache / name
+        if destination == retained:
+            continue
+        lock = cache / (name + '.lock')
+        with lock.open('a+b') as guard:
+            try:
+                fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            try:
+                if os.fstat(guard.fileno()).st_ino != lock.stat().st_ino:
+                    continue
+            except FileNotFoundError:
+                continue
+            record = cache / (name + '.source')
+            try:
+                identity = record.read_bytes()
+                source = Path(os.fsdecode(identity.split(b'\0', 1)[0]))
+                if destination.is_file() and native_source_identity(source) == identity:
+                    continue
+            except OSError:
+                pass
+            destination.unlink(missing_ok=True)
+            record.unlink(missing_ok=True)
+            lock.unlink(missing_ok=True)
+
+
+def native_fixture(source: Path) -> Path:
+    """Publish a native fixture and retire fixtures whose source identity changed."""
+    if sys.platform not in ('linux', 'darwin'):
+        return source
+    options = ('-u', '-r') if sys.platform == 'darwin' else ('--strip-all',)
     cache = cache_directory() / 'native-fixtures'
     cache.mkdir(parents=True, exist_ok=True)
-    destination = cache / name
-    with (cache / (name + '.lock')).open('a') as guard:
-        fcntl.flock(guard, fcntl.LOCK_EX)
-        if destination.is_file():
+    while True:
+        identity = native_source_identity(source)
+        name = hashlib.sha256(identity).hexdigest()
+        destination = cache / name
+        lock = cache / (name + '.lock')
+        with lock.open('a+b') as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
+            try:
+                if os.fstat(guard.fileno()).st_ino != lock.stat().st_ino:
+                    continue
+            except FileNotFoundError:
+                continue
+            if not destination.is_file():
+                with tempfile.TemporaryDirectory(prefix='prepare-', dir=cache) as temporary:
+                    executable = Path(temporary) / 'cargo-tile'
+                    _ = subprocess.run(['strip', *options, '-o', str(executable), str(source)],
+                                       check=True)
+                    if sys.platform == 'darwin':
+                        _ = subprocess.run(['codesign', '--force', '--sign', '-', str(executable)],
+                                           check=True)
+                    executable.chmod(0o755)
+                    if native_source_identity(source) != identity:
+                        continue
+                    _ = (cache / (name + '.source')).write_bytes(identity)
+                    os.link(executable, destination)
+            remove_retired_native_fixtures(cache, destination)
             return destination
-        with tempfile.TemporaryDirectory(prefix='prepare-', dir=cache) as temporary:
-            executable = Path(temporary) / 'cargo-tile'
-            _ = subprocess.run(['strip', *options, '-o', str(executable), str(source)],
-                               check=True)
-            if sys.platform == 'darwin':
-                _ = subprocess.run(['codesign', '--force', '--sign', '-', str(executable)],
-                                   check=True)
-            executable.chmod(0o755)
-            os.link(executable, destination)
-    return destination
 
 
 def prepare_named_shell() -> Path:

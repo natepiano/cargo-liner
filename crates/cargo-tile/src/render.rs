@@ -110,12 +110,15 @@ use crate::app::ProcessHierarchy;
 use crate::app::Updates;
 use crate::census::command_text::CommandWord;
 use crate::census::command_text::CommandWordDisplay;
+use crate::census::slot_lease::SlotObservation;
 use crate::config::DefaultArguments;
 use crate::constants::ALL_ARGUMENTS_NOTE_LABEL;
 use crate::constants::CARGO_RELEASE_PROFILE;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMMAND_WORD_SEPARATOR;
 use crate::constants::NEXTEST_SUBCOMMAND_NAME;
+use crate::constants::SLOT_LABEL_SEPARATOR;
+use crate::constants::UNRESOLVED_PATH;
 
 /// A frame's independent hierarchy and argument choices with checked defaults.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -705,6 +708,7 @@ mod expanded_view_tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use toml::Table;
     use tui_pane::ScrollDirection;
     use tui_pane::TerminalApp;
@@ -715,11 +719,27 @@ mod expanded_view_tests {
     use super::TileGridContents;
     use super::tests;
     use crate::app::GridView;
+    use crate::census::CargoGroup;
     use crate::census::Measurement;
     use crate::census::invocation_cpu_accounting::CompileMemoryShares;
+    use crate::census::slot_lease::SlotObservation;
+    use crate::constants::ELISION;
+    use crate::constants::SLOT_LABEL_SEPARATOR;
+    use crate::constants::UNRESOLVED_PATH;
+
+    const SLOT: &str = "hana-slot2";
+    const OTHER_SLOT: &str = "hana-slot3";
+    const HOLDER: &str = "fps";
+    const PURPOSE: &str = "measure startup";
+    const LABEL_ROOM: u16 = 16;
+    const PURPOSE_ROOM: u16 = 48;
+    const LONG_PURPOSE: [&str; 3] = ["gate", "handler phase 27", "census --json bound"];
+
+    const SEPARATOR_DIRECTORY_PARENT: &str = "/very-long-parent";
+    const SEPARATOR_DIRECTORY_FOLDER: &str = "folder";
+    const LAST_FOLDER: &str = "last";
 
     fn app() -> Result<App, Box<dyn Error>> {
-        let mut app = App::new_for_test()?;
         let groups = [4100, 5100]
             .into_iter()
             .map(|pid| {
@@ -730,6 +750,11 @@ mod expanded_view_tests {
                 group
             })
             .collect();
+        app_with_groups(groups)
+    }
+
+    fn app_with_groups(groups: Vec<CargoGroup>) -> Result<App, Box<dyn Error>> {
+        let mut app = App::new_for_test()?;
         app.roster.observe(groups, Instant::now());
         for _ in 0..3 {
             paint(&mut app, Instant::now(), 160, 36)?;
@@ -772,6 +797,105 @@ mod expanded_view_tests {
             .find(|&y| matches!(buffer[(0, y)].symbol(), "└" | "├" | "┼"))
             .unwrap_or_else(|| buffer.area.height.saturating_sub(1));
         Rect::new(0, y, right + 1, bottom - y + 1)
+    }
+
+    fn assert_slot_fitting(slot: &SlotObservation, room: u16, app: &App) {
+        let label = slot.display_path(UNRESOLVED_PATH);
+        let shortened = super::DirectoryDisplay::Slot(slot).fit(room);
+        assert!(shortened.starts_with(SLOT), "{shortened}");
+        if label.chars().count() > usize::from(room) {
+            assert!(shortened.ends_with(ELISION), "{shortened}");
+        }
+        if room == PURPOSE_ROOM {
+            assert!(
+                shortened.starts_with(&format!(
+                    "{SLOT}{SLOT_LABEL_SEPARATOR}{HOLDER}{SLOT_LABEL_SEPARATOR}"
+                )),
+                "{shortened}"
+            );
+            assert!(shortened.contains(LONG_PURPOSE[1]), "{shortened}");
+            let row = &app.roster.groups()[0].lead;
+            let words = super::styled_process_command_words(
+                row,
+                super::CommandView::long(),
+                Color::Black,
+                super::CommandForm::Full,
+            );
+            let rendered =
+                super::wrapped_command(words, room, ratatui::style::Style::default()).into_text();
+            assert!(rendered.to_string().contains(&shortened), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn slot_names_holders_and_purposes_remain_visible_in_grid_and_expanded_views()
+    -> Result<(), Box<dyn Error>> {
+        for (slot, room) in [
+            (
+                SlotObservation::Held {
+                    slot:    SLOT.to_owned(),
+                    holder:  HOLDER.to_owned(),
+                    purpose: PURPOSE.to_owned(),
+                },
+                LABEL_ROOM,
+            ),
+            (
+                SlotObservation::Free {
+                    slot: SLOT.to_owned(),
+                },
+                LABEL_ROOM,
+            ),
+            (
+                SlotObservation::Unreadable {
+                    slot: SLOT.to_owned(),
+                },
+                LABEL_ROOM,
+            ),
+            (
+                SlotObservation::Held {
+                    slot:    SLOT.to_owned(),
+                    holder:  HOLDER.to_owned(),
+                    purpose: LONG_PURPOSE.join(SLOT_LABEL_SEPARATOR),
+                },
+                PURPOSE_ROOM,
+            ),
+        ] {
+            let label = slot.display_path(UNRESOLVED_PATH);
+            let mut group = tests::cargo_group(tests::invocation(4100, &["check"]));
+            group.lead.slot = slot.clone();
+            let mut app = app_with_groups(vec![group])?;
+            let grid = paint(&mut app, Instant::now(), 160, 36)?;
+            assert!(tests::buffer_rows(&grid).join("\n").contains(&label));
+            app.tiles.focus_cell(1);
+            press(&mut app, KeyCode::Enter);
+            let expanded = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+            assert!(tests::buffer_rows(&expanded).join("\n").contains(&label));
+            assert_slot_fitting(&slot, room, &app);
+        }
+        // A common directory heading cannot select one member's distinct slot target.
+        let mut first = tests::invocation(4100, &["check"]);
+        first.slot = SlotObservation::Free {
+            slot: SLOT.to_owned(),
+        };
+        let mut second = first.clone();
+        second.pid = 4200;
+        second.invocation_id = crate::census::process_identity::InvocationId::for_test(second.pid);
+        second.slot = SlotObservation::Unreadable {
+            slot: OTHER_SLOT.to_owned(),
+        };
+        let expected_directory = first.path.clone();
+        let first = crate::roster::TrackedRow::from(first);
+        let second = crate::roster::TrackedRow::from(second);
+        let groups = super::group_by_path(&[&first, &second], super::PinnedGroup::Unpinned);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].heading(), expected_directory);
+        let path = format!(
+            "{SEPARATOR_DIRECTORY_PARENT}{SLOT_LABEL_SEPARATOR}{SEPARATOR_DIRECTORY_FOLDER}/{LAST_FOLDER}"
+        );
+        let shortened = super::DirectoryDisplay::Directory(&path).fit(LABEL_ROOM);
+        assert!(shortened.ends_with(LAST_FOLDER), "{shortened}");
+        assert!(shortened.contains(ELISION), "{shortened}");
+        Ok(())
     }
 
     #[test]
@@ -3600,7 +3724,18 @@ impl PathGroup<'_> {
         if self.names_only_account() {
             self.heading_prefix().trim_end().to_string()
         } else {
-            format!("{}{}", self.heading_prefix(), self.path)
+            format!("{}{}", self.heading_prefix(), self.display().fit(u16::MAX))
+        }
+    }
+
+    fn display(&self) -> DirectoryDisplay<'_> {
+        let first = &self.rows[0].process.slot;
+        if !matches!(first, SlotObservation::Outside)
+            && self.rows.iter().all(|row| row.process.slot == *first)
+        {
+            DirectoryDisplay::Slot(first)
+        } else {
+            DirectoryDisplay::Directory(self.path)
         }
     }
 
@@ -3613,7 +3748,7 @@ impl PathGroup<'_> {
         if cell_width(&whole) <= room {
             return whole;
         }
-        fit_directory_path(self.path, room)
+        self.display().fit(room)
     }
 
     /// A marked heading retaining the greatest number of whole trailing components.
@@ -3640,6 +3775,59 @@ impl PathGroup<'_> {
         }
         String::new()
     }
+}
+
+/// Directory paths retain their last folder; slot labels retain their slot name.
+enum DirectoryDisplay<'a> {
+    Directory(&'a str),
+    Slot(&'a SlotObservation),
+}
+
+impl DirectoryDisplay<'_> {
+    fn fit(&self, room: u16) -> String {
+        match self {
+            Self::Directory(path) => fit_directory_path(path, room),
+            Self::Slot(slot) => {
+                let label = slot.display_path(UNRESOLVED_PATH);
+                if cell_width(&label) <= room {
+                    return label;
+                }
+                if room < cell_width(ELISION) {
+                    return String::new();
+                }
+                format!(
+                    "{}{ELISION}",
+                    slot_label_prefix(slot, room.saturating_sub(cell_width(ELISION)))
+                )
+            },
+        }
+    }
+}
+
+/// Preserve whole slot and holder values before cutting the purpose's trailing text.
+fn slot_label_prefix(observation: &SlotObservation, room: u16) -> String {
+    if let SlotObservation::Held {
+        slot,
+        holder,
+        purpose,
+    } = observation
+    {
+        let prefix = format!("{slot}{SLOT_LABEL_SEPARATOR}{holder}");
+        if cell_width(&prefix) > room {
+            return heading_start(slot, room);
+        }
+        let purpose_room = room
+            .saturating_sub(cell_width(&prefix))
+            .saturating_sub(cell_width(SLOT_LABEL_SEPARATOR));
+        if purpose_room == 0 {
+            return prefix;
+        }
+        return format!(
+            "{prefix}{SLOT_LABEL_SEPARATOR}{}",
+            heading_start(purpose, purpose_room)
+        );
+    }
+    heading_start(&observation.display_path(UNRESOLVED_PATH), room)
 }
 
 /// Prefer GUID cuts, then cut the original path while keeping its last folder.
@@ -6143,7 +6331,7 @@ impl TableAccountHeadings {
             GroupQualification::Unqualified => false,
         };
         if drops && !group.names_only_account() {
-            return fit_directory_path(group.path, width);
+            return group.display().fit(width);
         }
         group.fitted_heading(width)
     }
@@ -6536,6 +6724,11 @@ enum StyledCommandWord {
     Independent(Span<'static>),
     /// An argv value remains whole even when it contains path punctuation.
     Argument(Span<'static>),
+    /// Slot fields retain their boundaries when the command column cuts their purpose.
+    Slot {
+        observation: SlotObservation,
+        style:       Style,
+    },
     /// The compiler frontend and crate stay on the first row.
     CompilerHeading {
         frontend:   Span<'static>,
@@ -6565,6 +6758,9 @@ impl StyledCommandWord {
     fn width(&self) -> u16 {
         match self {
             Self::Independent(span) | Self::Argument(span) => cell_width(&span.content),
+            Self::Slot { observation, .. } => {
+                cell_width(&observation.display_path(UNRESOLVED_PATH))
+            },
             Self::BoundValue { flag, value }
             | Self::CompilerHeading {
                 frontend: flag,
@@ -6579,6 +6775,10 @@ impl StyledCommandWord {
     fn write_to(self, line: &mut Line<'static>) {
         match self {
             Self::Independent(span) | Self::Argument(span) => line.spans.push(span),
+            Self::Slot { observation, style } => line.spans.push(Span::styled(
+                observation.display_path(UNRESOLVED_PATH),
+                style,
+            )),
             Self::BoundValue { flag, value }
             | Self::CompilerHeading {
                 frontend: flag,
@@ -6914,6 +7114,14 @@ fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
                 CutCommandUnit::Prefix(StyledCommandWord::Independent(prefix))
             }
         },
+        StyledCommandWord::Slot { observation, style } => {
+            let prefix = slot_label_prefix(&observation, room);
+            if prefix.is_empty() {
+                CutCommandUnit::Omitted
+            } else {
+                CutCommandUnit::Prefix(StyledCommandWord::Independent(Span::styled(prefix, style)))
+            }
+        },
         StyledCommandWord::BoundValue { flag, value } => {
             let value_room = room
                 .saturating_sub(cell_width(&flag.content))
@@ -7193,7 +7401,7 @@ fn styled_process_command_words(
     } else {
         Style::default().fg(success_color())
     };
-    process_command_words(
+    let mut words = process_command_words(
         &process.command,
         view,
         program,
@@ -7201,7 +7409,14 @@ fn styled_process_command_words(
         ground,
         faded,
         form,
-    )
+    );
+    if !matches!(process.slot, SlotObservation::Outside) {
+        words.push(StyledCommandWord::Slot {
+            observation: process.slot.clone(),
+            style:       arguments,
+        });
+    }
+    words
 }
 
 /// Read a prepared height without cloning the row's styled cells.
@@ -14876,6 +15091,7 @@ mod tests {
     #[test]
     fn a_short_view_program_is_named_by_its_file_name() {
         let row = TrackedRow::from(CargoProcess {
+            slot: SlotObservation::default(),
             command: CommandText::of("/nix/store/cargo/bin/cargo", &["check", "--workspace"]),
             ..invocation(20, &["check"])
         });
@@ -16736,6 +16952,7 @@ mod tests {
     /// epoch -- which is what orders one directory against another.
     fn started_at(path: &str, state: Option<RunState>, started: u64) -> TrackedRow {
         TrackedRow::from(CargoProcess {
+            slot:                 SlotObservation::default(),
             path:                 path.to_string(),
             directory_identity:   WorkingDirectoryIdentity::Absolute(
                 Path::new("/test-home").join(path),
@@ -17194,6 +17411,7 @@ mod tests {
     /// A cargo process for a group the roster is to carry.
     pub(super) fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
         CargoProcess {
+            slot: SlotObservation::default(),
             path: "~/rust/cargo-liner".to_string(),
             directory_identity: WorkingDirectoryIdentity::Absolute(
                 "/test-home/rust/cargo-liner".into(),

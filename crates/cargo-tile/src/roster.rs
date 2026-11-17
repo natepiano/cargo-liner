@@ -28,6 +28,8 @@ use crate::census::VisibleParent;
 use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 use crate::census::scan;
 use crate::census::scan::AncestryWalk;
+#[cfg(test)]
+use crate::census::slot_lease::SlotObservation;
 use crate::constants::CELL_BRIGHTEN_DURATION;
 use crate::constants::CELL_ENTRY_FADE_LIMIT;
 use crate::constants::FADE_ALPHA_STEP;
@@ -1528,6 +1530,7 @@ mod tests {
     /// A process row carrying nothing but the pid the tests key on.
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
+            slot: SlotObservation::default(),
             path: "~/rust/project".to_string(),
             directory_identity: WorkingDirectoryIdentity::Absolute(
                 "/test-home/rust/project".into(),
