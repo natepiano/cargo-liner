@@ -1802,7 +1802,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
 
-### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
+### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: done
 
 **Depends on:** Phase 69a (order only; Phase 69 runs first, showrunner 2026-11-15; Phase 69a follows it, director 2026-11-16)
 

@@ -172,7 +172,9 @@ pub(super) fn dirty_source(root: &Path, path: &str) {
     fs::write(target, "uncommitted holder work\n").expect("held work should write");
 }
 
-pub(super) fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+pub(super) fn initialized_repository() -> TempDir {
+    INITIALIZED_REPOSITORY.before_run().instantiate()
+}
 
 /// A scratch repository with berth initialized and its configuration committed on `main`.
 ///

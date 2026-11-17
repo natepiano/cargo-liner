@@ -7,6 +7,7 @@ use std::process::Output;
 
 use cargo_berth_test_support::AmbientHarnessSession;
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
@@ -25,7 +26,8 @@ const GIT: GitDriver = GitDriver {
 };
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
-pub(super) const GIT_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+/// A Git repository with one commit and no cargo-berth state.
+const GIT_ONLY: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
     name:             "hook-git-only",
@@ -35,7 +37,8 @@ pub(super) const GIT_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     },
 };
 
-pub(super) const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+/// `GIT_ONLY` after `cargo-berth init`.
+const INITIALIZED: RepositoryTemplate = RepositoryTemplate {
     name: "hook-initialized",
     build: |root| {
         let built = build_initialized_repository(root);
@@ -44,10 +47,11 @@ pub(super) const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate
             "initialized hook repository template failed: {built:?}"
         );
     },
-    ..GIT_REPOSITORY
+    ..GIT_ONLY
 };
 
-pub(super) const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+/// `INITIALIZED` with its berth configuration committed.
+const CONFIGURED: RepositoryTemplate = RepositoryTemplate {
     name: "hook-configured",
     build: |root| {
         INITIALIZED_REPOSITORY.restore_into(root);
@@ -72,8 +76,13 @@ pub(super) const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate 
             "configured hook repository template failed: {built:?}"
         );
     },
-    ..GIT_REPOSITORY
+    ..GIT_ONLY
 };
+
+/// Hook tests start from copies that setup builds before the run.
+pub(super) const GIT_REPOSITORY: LedgerTemplate = GIT_ONLY.before_run();
+pub(super) const INITIALIZED_REPOSITORY: LedgerTemplate = INITIALIZED.before_run();
+pub(super) const CONFIGURED_REPOSITORY: LedgerTemplate = CONFIGURED.before_run();
 
 pub(super) fn dirty_source(root: &Path, path: &str) -> TestResult {
     let file = root.join(path);
