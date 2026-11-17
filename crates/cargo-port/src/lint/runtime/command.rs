@@ -50,6 +50,10 @@ use super::read_status_from_disk;
 use super::status;
 use super::supervisor::PauseState;
 use super::thread;
+use crate::lint::LintCommandDuration;
+use crate::lint::LintCommandExitCode;
+use crate::lint::LintRunDuration;
+use crate::lint::LintRunFinishTime;
 
 pub(super) struct RunCommandsConfig<'a> {
     pub(super) cache_root:       &'a Path,
@@ -278,8 +282,8 @@ pub(super) fn build_pending_run(commands: &[LintCommandConfig], started_at_str: 
     LintRun {
         run_id:        paths::sanitize_run_id(&started_at_str),
         started_at:    started_at_str,
-        finished_at:   None,
-        duration_ms:   None,
+        finished_at:   LintRunFinishTime::NotRecorded,
+        duration_ms:   LintRunDuration::NotRecorded,
         status:        LintRunStatus::Running,
         commands:      commands
             .iter()
@@ -294,8 +298,8 @@ pub(super) fn build_pending_run(commands: &[LintCommandConfig], started_at_str: 
                     },
                     command:     command.command.clone(),
                     status:      LintCommandStatus::Pending,
-                    duration_ms: None,
-                    exit_code:   None,
+                    duration_ms: LintCommandDuration::NotRecorded,
+                    exit_code:   LintCommandExitCode::NotRecorded,
                     log_file:    format!("{log_name}-latest.log"),
                 }
             })
@@ -443,8 +447,10 @@ pub(super) fn run_commands_for_project(
             return Ok(RunAttempt::Deferred);
         },
     };
-    run.finished_at = Some(Local::now().to_rfc3339());
-    run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    run.finished_at = LintRunFinishTime::Recorded(Local::now().to_rfc3339());
+    run.duration_ms = LintRunDuration::MeasuredMilliseconds(
+        u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    );
 
     write_terminal_run(
         cache_root,
@@ -580,8 +586,12 @@ fn execute_commands(
         };
         if let Some(command_run) = run.commands.get_mut(index) {
             command_run.status = command_status;
-            command_run.duration_ms = Some(execution.duration_ms);
-            command_run.exit_code = execution.exit_code;
+            command_run.duration_ms =
+                LintCommandDuration::MeasuredMilliseconds(execution.duration_ms);
+            command_run.exit_code = execution.exit_code.map_or(
+                LintCommandExitCode::NotRecorded,
+                LintCommandExitCode::Recorded,
+            );
         }
         write_latest_under(context.cache_root, project_root, run)?;
     }
@@ -775,8 +785,8 @@ fn env_probe(context: &CommandContext<'_>) -> io::Result<Option<CommandExecution
 fn record_env_unavailable(run: &mut LintRun, project_root: &Path, execution: &CommandExecution) {
     for command in &mut run.commands {
         command.status = LintCommandStatus::Skipped;
-        command.duration_ms = None;
-        command.exit_code = None;
+        command.duration_ms = LintCommandDuration::NotRecorded;
+        command.exit_code = LintCommandExitCode::NotRecorded;
     }
     run.commands.insert(
         0,
@@ -784,8 +794,11 @@ fn record_env_unavailable(run: &mut LintRun, project_root: &Path, execution: &Co
             name:        ENV_PROBE_NAME.to_string(),
             command:     spawned_display(ENV_PROBE_COMMAND, project_root),
             status:      LintCommandStatus::Failed,
-            duration_ms: Some(execution.duration_ms),
-            exit_code:   execution.exit_code,
+            duration_ms: LintCommandDuration::MeasuredMilliseconds(execution.duration_ms),
+            exit_code:   execution.exit_code.map_or(
+                LintCommandExitCode::NotRecorded,
+                LintCommandExitCode::Recorded,
+            ),
             log_file:    format!("{ENV_PROBE_NAME}-latest.log"),
         },
     );
@@ -1351,8 +1364,11 @@ mod tests {
         );
         assert_eq!(run.commands[1].name, "clippy");
         assert_eq!(run.commands[1].status, LintCommandStatus::Skipped);
-        assert_eq!(run.commands[1].duration_ms, None);
-        assert_eq!(run.commands[1].exit_code, None);
+        assert_eq!(
+            run.commands[1].duration_ms,
+            LintCommandDuration::NotRecorded
+        );
+        assert_eq!(run.commands[1].exit_code, LintCommandExitCode::NotRecorded);
 
         let probe_log =
             paths::output_dir_under(&cache_root, project_dir.path()).join(&probe.log_file);
@@ -1456,8 +1472,8 @@ mod tests {
         let completed = LintRun {
             run_id:        "completed".to_string(),
             started_at:    "2026-04-01T18:00:00-04:00".to_string(),
-            finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
-            duration_ms:   Some(10_000),
+            finished_at:   LintRunFinishTime::Recorded("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(10_000),
             status:        LintRunStatus::Passed,
             commands:      Vec::new(),
             archive_bytes: 0,
@@ -1486,8 +1502,8 @@ mod tests {
         let running = LintRun {
             run_id:        "run-1".to_string(),
             started_at:    chrono::Utc::now().format("%+").to_string(),
-            finished_at:   None,
-            duration_ms:   Some(17_000),
+            finished_at:   LintRunFinishTime::NotRecorded,
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(17_000),
             status:        LintRunStatus::Running,
             commands:      Vec::new(),
             archive_bytes: 0,

@@ -28,6 +28,12 @@ pub(crate) enum SccacheSummary {
     Unavailable,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SccacheStatFieldMatch<'a> {
+    Field { label: &'a str, value: &'a str },
+    NotAlignedField,
+}
+
 /// Run `sccache --show-stats` and keep only the two status-line fields.
 pub(crate) fn read_summary() -> SccacheSummary {
     match read_stats() {
@@ -38,10 +44,17 @@ pub(crate) fn read_summary() -> SccacheSummary {
 
 fn summary_from_lines(lines: &[String]) -> SccacheSummary {
     let field = |label: &str| {
-        lines.iter().find_map(|line| {
-            let (found, value) = split_aligned_stat(line.trim())?;
-            (found == label).then(|| value.to_string())
-        })
+        lines
+            .iter()
+            .find_map(|line| match split_aligned_stat(line.trim()) {
+                SccacheStatFieldMatch::Field {
+                    label: found,
+                    value,
+                } if found == label => Some(value.to_string()),
+                SccacheStatFieldMatch::Field { .. } | SccacheStatFieldMatch::NotAlignedField => {
+                    None
+                },
+            })
     };
     field(SCCACHE_CACHE_SIZE_LABEL)
         .zip(field(SCCACHE_HIT_RATE_LABEL))
@@ -61,7 +74,7 @@ struct Gap {
 
 /// Split one `sccache --show-stats` line at its value column: the first run
 /// of two or more whitespace characters separates the label from the value.
-pub(crate) fn split_aligned_stat(text: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_aligned_stat(text: &str) -> SccacheStatFieldMatch<'_> {
     let mut gap: Option<Gap> = None;
     for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
@@ -82,11 +95,11 @@ pub(crate) fn split_aligned_stat(text: &str) -> Option<(&str, &str)> {
             let label = text[..gap.start].trim_end();
             let value = text[idx..].trim();
             if !label.is_empty() && !value.is_empty() {
-                return Some((label, value));
+                return SccacheStatFieldMatch::Field { label, value };
             }
         }
     }
-    None
+    SccacheStatFieldMatch::NotAlignedField
 }
 
 pub(crate) fn read_stats() -> StatsResult {
@@ -166,6 +179,10 @@ mod tests {
                 Some(("Cache location", "Local disk:  /tmp/cache")),
             ),
         ] {
+            let expected = expected
+                .map_or(SccacheStatFieldMatch::NotAlignedField, |(label, value)| {
+                    SccacheStatFieldMatch::Field { label, value }
+                });
             assert_eq!(split_aligned_stat(text), expected, "{text:?}");
         }
     }

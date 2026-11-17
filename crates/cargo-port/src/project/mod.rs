@@ -9,6 +9,7 @@ mod root_item;
 
 // `cargo` re-exports Cargo parsing results and Rust project model types.
 pub(crate) use cargo::Cargo;
+#[cfg(test)]
 pub(crate) use cargo::CargoParseResult;
 pub(crate) use cargo::CratesIoRelease;
 pub(crate) use cargo::CratesIoReleaseState;

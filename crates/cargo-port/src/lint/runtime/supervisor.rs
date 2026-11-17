@@ -63,6 +63,10 @@ use super::run_lock::RunLockAttempt;
 use super::status;
 use super::thread;
 use crate::lint;
+#[cfg(test)]
+use crate::lint::LintRunDuration;
+#[cfg(test)]
+use crate::lint::LintRunFinishTime;
 #[cfg(unix)]
 use crate::support;
 
@@ -1167,8 +1171,8 @@ mod tests {
         LintRun {
             run_id: "run-1".to_string(),
             started_at: "2026-03-30T14:22:01-05:00".to_string(),
-            finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
-            duration_ms: Some(17_000),
+            finished_at: LintRunFinishTime::Recorded("2026-03-30T14:22:18-05:00".to_string()),
+            duration_ms: LintRunDuration::MeasuredMilliseconds(17_000),
             status,
             commands: Vec::new(),
             archive_bytes: 0,
@@ -1374,9 +1378,12 @@ mod tests {
         LintRun {
             run_id: "foreign-run".to_string(),
             started_at: started_at.to_rfc3339(),
-            finished_at: (!matches!(status, LintRunStatus::Running))
-                .then(|| Local::now().to_rfc3339()),
-            duration_ms: None,
+            finished_at: if matches!(status, LintRunStatus::Running) {
+                LintRunFinishTime::NotRecorded
+            } else {
+                LintRunFinishTime::Recorded(Local::now().to_rfc3339())
+            },
+            duration_ms: LintRunDuration::NotRecorded,
             status,
             commands: Vec::new(),
             archive_bytes: 0,
@@ -2038,8 +2045,8 @@ mod tests {
         let cached_run = LintRun {
             run_id:        paths::sanitize_run_id(&finished_at),
             started_at:    finished_at.clone(),
-            finished_at:   Some(finished_at),
-            duration_ms:   Some(1),
+            finished_at:   LintRunFinishTime::Recorded(finished_at),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(1),
             status:        LintRunStatus::Passed,
             commands:      Vec::new(),
             archive_bytes: 0,

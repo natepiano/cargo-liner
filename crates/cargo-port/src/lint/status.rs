@@ -10,6 +10,9 @@ use super::artifacts;
 use super::artifacts::LatestLintRecord;
 use super::paths;
 use super::run::LintRun;
+#[cfg(test)]
+use super::run::LintRunDuration;
+use super::run::LintRunFinishTime;
 use super::run::LintRunStatus;
 use crate::config;
 use crate::config::DiscoveryLint;
@@ -177,7 +180,10 @@ impl CachedLintStatus {
             LintRunStatus::EnvUnavailable => CachedLintOutcome::EnvUnavailable,
             LintRunStatus::Running => return None,
         };
-        let finished_at = run.finished_at.as_deref().and_then(parse_timestamp);
+        let finished_at = match &run.finished_at {
+            LintRunFinishTime::Recorded(value) => parse_timestamp(value),
+            LintRunFinishTime::NotRecorded => None,
+        };
         Some(parse_timestamp(&run.started_at).map_or(
             Self::StartTimeUnavailable {
                 outcome,
@@ -275,11 +281,11 @@ pub(crate) fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
 }
 
 pub(super) fn parse_run(run: &LintRun) -> LintStatus {
-    let timestamp = run
-        .finished_at
-        .as_deref()
-        .and_then(parse_timestamp)
-        .or_else(|| parse_timestamp(&run.started_at));
+    let timestamp = match &run.finished_at {
+        LintRunFinishTime::Recorded(value) => parse_timestamp(value),
+        LintRunFinishTime::NotRecorded => None,
+    }
+    .or_else(|| parse_timestamp(&run.started_at));
     let Some(ts) = timestamp else {
         return LintStatus::NoLog;
     };
@@ -328,8 +334,8 @@ mod tests {
         LintRun {
             run_id: "run-1".to_string(),
             started_at: "2026-03-30T14:22:01-05:00".to_string(),
-            finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
-            duration_ms: Some(17_000),
+            finished_at: LintRunFinishTime::Recorded("2026-03-30T14:22:18-05:00".to_string()),
+            duration_ms: LintRunDuration::MeasuredMilliseconds(17_000),
             status,
             commands: Vec::new(),
             archive_bytes: 0,
@@ -340,19 +346,19 @@ mod tests {
     fn parse_run_cases() {
         let mut running = run(LintRunStatus::Running);
         running.started_at = Utc::now().format("%+").to_string();
-        running.finished_at = None;
+        running.finished_at = LintRunFinishTime::NotRecorded;
 
         let mut stale = run(LintRunStatus::Running);
         stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
-        stale.finished_at = None;
+        stale.finished_at = LintRunFinishTime::NotRecorded;
 
         let mut garbage = run(LintRunStatus::Passed);
         garbage.started_at = "not a valid timestamp".to_string();
-        garbage.finished_at = Some("not a valid timestamp".to_string());
+        garbage.finished_at = LintRunFinishTime::Recorded("not a valid timestamp".to_string());
 
         let mut empty = run(LintRunStatus::Passed);
         empty.started_at.clear();
-        empty.finished_at = None;
+        empty.finished_at = LintRunFinishTime::NotRecorded;
 
         let cases = [
             ("passed", run(LintRunStatus::Passed)),
@@ -482,8 +488,10 @@ mod tests {
         ] {
             let record = run(outcome);
             let started = parse_timestamp(&record.started_at).expect("start");
-            let finished = parse_timestamp(record.finished_at.as_deref().expect("finish text"))
-                .expect("finish");
+            let LintRunFinishTime::Recorded(finish_text) = &record.finished_at else {
+                panic!("finish text");
+            };
+            let finished = parse_timestamp(finish_text).expect("finish");
             let source_mtime = SystemTime::UNIX_EPOCH
                 + Duration::from_secs(u64::try_from(started.timestamp() + 5).expect("epoch"));
             let cached = CachedLintStatus::from_run(&record).expect("terminal run");
@@ -517,7 +525,7 @@ mod tests {
                 );
                 assert_eq!(cached.into_lint_status(), parse_run(&record));
 
-                record.finished_at = None;
+                record.finished_at = LintRunFinishTime::NotRecorded;
                 let cached = CachedLintStatus::from_run(&record).expect("terminal run");
                 assert!(matches!(
                     cached,

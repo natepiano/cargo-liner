@@ -18,6 +18,7 @@ use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::app::FocusedDismissal;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::hit_test::HoverTarget;
@@ -106,9 +107,10 @@ fn assert_deleted_row(app: &mut App, path: &Path, name: &str) -> anyhow::Result<
 
 fn dismiss_and_check_late_replies(app: &mut App, path: &Path) -> anyhow::Result<()> {
     app.project_list.select_project_in_tree(path, false);
-    let target = app
-        .focused_dismiss_target()
-        .context("the Deleted row must be dismissable")?;
+    let target = match app.focused_dismiss_target() {
+        FocusedDismissal::Target(target) => target,
+        FocusedDismissal::Unavailable => anyhow::bail!("the Deleted row must be dismissable"),
+    };
     app.dismiss(target);
     for bytes in [0, 42] {
         let _ = app.handle_bg_msg(BackgroundMsg::DiskUsage {
