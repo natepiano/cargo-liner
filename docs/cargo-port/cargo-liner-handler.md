@@ -713,7 +713,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** more nextest slots (showrunner rule); fixture changes in the tests, which were about 0.7 s alone.
 
-### Phase 34 — A real mend run loads the compiler library only where it must  · status: todo
+### Phase 34 — A real mend run loads the compiler library only where it must  · status: done
 
 #### Work Order
 
@@ -733,3 +733,9 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 **Verification:**
 - The 3 pairs: median and spread of wall time, and the load count per run.
 - With a code change: lint, one full `cargo-mend` test suite run, and 3 new pairs that show the change is not slower.
+
+#### Result
+
+- 3 pairs on the Mac, obsidian_knife copy, warm target, `src/main.rs` touched before each run, Mac load 13.2-13.5: main wall median 1.775 s (1.608-1.789 s), Phase 33 1.669 s (1.647-1.738 s). The difference is inside the spread.
+- Cargo's log shows "rustc info cache hit" for each rustc lookup, and `target/.rustc_info.json` does not change. A warm run starts no toolchain query. The crate is one package, so no unit passes through to rustc.
+- Avoidable loads: 0 ms, under the 100 ms limit. No code change.
