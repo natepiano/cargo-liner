@@ -107,3 +107,12 @@ slow-timeout = { period = "5s", terminate-after = 8 }
 [[profile.default.overrides]]
 filter           = 'binary_id(cargo-mend::bin/cargo-mend) & test(/^diagnostic_tests::/)'
 threads-required = 2
+
+# Each cargo-mend CLI smoke test runs the installed path: mend starts cargo check,
+# cargo starts a new copy of mend as its wrapper, and the copy starts rustc. A
+# `--fix` test runs that chain twice. Alone on the Mac, the external path
+# dependency fix test takes 0.81s; with the other twelve at once it took 0.99 to
+# 1.48s. Two slots for each test keeps that chain from overloading the machine.
+[[profile.default.overrides]]
+filter           = 'binary_id(cargo-mend::cli_smoke)'
+threads-required = 2
