@@ -48,7 +48,6 @@ pub(crate) use self::files::StartupThemeNotes;
 pub(crate) use self::files::ThemeInstallation;
 pub(crate) use self::files::install_theme;
 #[cfg(test)]
-pub(crate) use self::tests::MINIMUM_RESET_STEP_DISTANCE;
 #[cfg(test)]
 pub(crate) use self::tests::ResetThemeFixture;
 use crate::constants::BUSY_ROLE;
@@ -59,9 +58,6 @@ use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::IDLE_ROLE;
-use crate::constants::RESET_LATEST_ROLE;
-use crate::constants::RESET_MIDDLE_ROLE;
-use crate::constants::RESET_SOONEST_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 use crate::constants::WAITING_ROLE;
@@ -69,7 +65,6 @@ use crate::footer_colors;
 use crate::footer_colors::FooterColor;
 
 /// A fixed foreground drawn beside a session name in a tree, summary or launcher row.
-/// Quota, reset and failure-dot inks belong to separate accounts rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionRowInk {
     Text,
@@ -118,64 +113,6 @@ impl SessionRowInk {
             role.key(),
             DEFAULT_DARK_ROLES.spec(role),
         ))
-    }
-}
-
-/// The reset color step that a [`ResetRank`] draws in.
-#[derive(Clone, Copy)]
-enum ResetStep {
-    Soonest,
-    Middle,
-    Latest,
-}
-
-impl ResetStep {
-    /// The `[variants.roles]` key of this step.
-    const fn role_key(self) -> &'static str {
-        match self {
-            Self::Soonest => RESET_SOONEST_ROLE,
-            Self::Middle => RESET_MIDDLE_ROLE,
-            Self::Latest => RESET_LATEST_ROLE,
-        }
-    }
-}
-
-impl From<ResetRank> for ResetStep {
-    /// The first quarter of ranks is `Soonest`, the last quarter is `Latest`, and the rest are
-    /// `Middle`. A single reset is `Soonest`.
-    fn from(rank: ResetRank) -> Self {
-        let quarter_rank = rank.position as u128 * 4;
-        let last = rank.last as u128;
-        if rank.last == 0 || quarter_rank < last {
-            Self::Soonest
-        } else if quarter_rank > last * 3 {
-            Self::Latest
-        } else {
-            Self::Middle
-        }
-    }
-}
-
-/// A chronological rank constructed only within its set of distinct reset times.
-pub(crate) struct ResetRank {
-    position: usize,
-    last:     usize,
-}
-
-impl ResetRank {
-    /// Enumerate exactly the valid positions, including a single soonest reset.
-    pub(crate) fn positions(distinct: usize) -> impl Iterator<Item = Self> {
-        (0..distinct).map(move |position| Self {
-            position,
-            last: distinct.saturating_sub(1),
-        })
-    }
-
-    /// The active theme's color for this rank's [`ResetStep`], with the Default Dark color for a
-    /// theme without the role.
-    pub(crate) fn color(self) -> Color {
-        let role = ResetStep::from(self).role_key();
-        tui_pane::role_color(role, files::bundled_role_styles()[DEFAULT_DARK_THEME][role])
     }
 }
 
@@ -282,7 +219,7 @@ pub(crate) enum SessionHue {
 
 impl SessionHue {
     /// Every hue, in the order the cells take them.
-    pub(crate) const ALL: [Self; 5] = [
+    const ALL: [Self; 5] = [
         Self::First,
         Self::Second,
         Self::Third,
@@ -700,8 +637,6 @@ mod tests {
 
     const WAITING_HUE_TOLERANCE_DIVISOR: u8 = 4;
     const MINIMUM_WAITING_CONTRAST: f64 = 4.5;
-    /// The CIEDE2000 distance that each pair of drawn reset steps keeps.
-    pub(crate) const MINIMUM_RESET_STEP_DISTANCE: f64 = 20.0;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

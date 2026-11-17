@@ -20,9 +20,7 @@ use crate::app::expansion::HandlerExpansionAction;
 use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::theme;
-use crate::theme::MINIMUM_RESET_STEP_DISTANCE;
 use crate::theme::ResetThemeFixture;
-use crate::theme::SessionHue;
 use crate::theme::WordMatchLimit;
 use crate::theme::WordMatchSurface;
 use crate::word_highlight::HighlightWord;
@@ -50,8 +48,7 @@ const FOOTER: &str = "role.showrunner=purple\nrole.unit-director=yellow\naccount
 const ACCOUNTS: [&str; 6] = [
     "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
 ];
-// Of the six `reset_step_application` rows, these ranks draw the soonest, middle and latest steps.
-const RESET_STEP_RANKS: [usize; 3] = [0, 2, 5];
+// Each emphasis strength a word match can take.
 const EMPHASES: [WordHighlightEmphasis; 3] = [
     WordHighlightEmphasis::Subtle,
     WordHighlightEmphasis::Clear,
@@ -1895,205 +1892,6 @@ fn a_dark_appearance_lightens_matches_despite_a_light_focus_ground() -> TestResu
     Ok(())
 }
 
-fn reset_step_application() -> TestResult<App> {
-    use crate::census::accounts::AccountsReading;
-    use crate::census::accounts::AccountsTable;
-
-    let mut app = App::new_for_test()?;
-    app.loaded_config.config.tiles.view = TileView::Summary;
-    let now = chrono::Utc::now();
-    let accounts: Vec<_> = (0..6)
-        .map(|rank| {
-            serde_json::json!({
-                "label":format!("reset-step-{rank}"),
-                "roles":[], "use_credits":false,
-                "weekly_left_percent":50,
-                "resets_at":(now + chrono::Duration::minutes(10 + rank * 10)).to_rfc3339(),
-                "read_ok":true,
-                "read_at":now.to_rfc3339()
-            })
-        })
-        .collect();
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(&serde_json::to_vec(
-            &serde_json::json!({"accounts":accounts,"problems":[]}),
-        )?)
-        .map_err(|error| error.to_string())?,
-    );
-    Ok(app)
-}
-
-fn reset_step_cell(buffer: &Buffer, rank: usize) -> TestResult<Position> {
-    let heading = word_click_tests::locate(buffer, "resets")?;
-    let account = word_click_tests::locate(buffer, &format!("reset-step-{rank}"))?;
-    let point = Position::new(heading.x + 5, account.y);
-    assert!(
-        buffer[(point.x, point.y)]
-            .symbol()
-            .chars()
-            .any(|glyph| glyph.is_ascii_digit())
-    );
-    Ok(point)
-}
-
-fn assert_reset_ink_separation(ink: Color, description: &str) -> TestResult {
-    assert_ne!(
-        ink,
-        tui_pane::error_color(),
-        "{description} cannot use error red"
-    );
-    for hue in SessionHue::ALL {
-        assert_ne!(
-            ink,
-            Role::Session(hue).style().fg.ok_or("session ink")?,
-            "{description} differs from every session ink"
-        );
-    }
-    Ok(())
-}
-
-/// Match the reset word at `point`, check its ink, and return the matched ink.
-fn check_reset_step_match(
-    app: &mut App,
-    renderer: &mut Renderer,
-    baseline: &Buffer,
-    point: Position,
-) -> TestResult<Color> {
-    let WordHit::Word(word) =
-        crate::word_highlight::PaintedWords::word_at(baseline, app.tiles.pointer_regions(), point)
-    else {
-        return Err("the drawn reset must provide a word".into());
-    };
-    let before = &baseline[(point.x, point.y)];
-    assert!(
-        glyph_contrast(before.fg, before.bg)? >= MINIMUM_CONTRAST,
-        "the drawn reset step meets the text bound: {before:?}"
-    );
-    assert_reset_ink_separation(before.fg, "a reset step")?;
-    let text = word.text().to_owned();
-    app.word_highlight = WordHighlight::Word(word);
-    let matched = renderer.paint(app)?;
-    let after = &matched[(point.x, point.y)];
-    assert_ne!(
-        after.bg, before.bg,
-        "the reset word receives a match ground"
-    );
-    assert_reset_ink_separation(after.fg, "a matched reset")?;
-    assert_matched_ink(before, after, &text, point)?;
-    let bound = MINIMUM_CONTRAST.min(glyph_contrast(before.fg, before.bg)?);
-    assert!(
-        glyph_contrast(after.fg, after.bg)? >= bound,
-        "the match never makes reset text less readable: {before:?} -> {after:?}, bound={bound}"
-    );
-    let ink = after.fg;
-    app.word_highlight.clear();
-    Ok(ink)
-}
-
-/// On a plain match ground, the readability lift leaves the three matched steps apart.
-fn assert_matched_steps_distinct(inks: &[Color], emphasis: WordHighlightEmphasis) {
-    for (index, first) in inks.iter().enumerate() {
-        for second in &inks[index + 1..] {
-            let distance = footer_colors::perceptual_distance(*first, *second);
-            assert!(
-                distance >= MINIMUM_RESET_STEP_DISTANCE,
-                "{emphasis:?}: matched reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {first:?}/{second:?}, dE={distance:.9}"
-            );
-        }
-    }
-}
-
-fn measure_reset_steps() -> TestResult {
-    for tint in [PaneTint::Disabled, PaneTint::Enabled] {
-        tui_pane::set_focused_pane_tint(tint.enabled());
-        let mut app = reset_step_application()?;
-        let mut renderer = Renderer::new(&mut app, 100, 22)?;
-        let initial = renderer.paint(&mut app)?;
-        app.click(word_click_tests::locate(&initial, "reset-step-0")?);
-        app.word_highlight.clear();
-        let colors: Vec<_> = (0..6)
-            .map(|rank| {
-                let point = reset_step_cell(&initial, rank)?;
-                Ok(initial[(point.x, point.y)].fg)
-            })
-            .collect::<TestResult<_>>()?;
-        let mut steps = colors.clone();
-        steps.dedup();
-        assert_eq!(
-            steps.len(),
-            3,
-            "the drawn reset ramp has three steps: {colors:?}"
-        );
-        for emphasis in EMPHASES {
-            app.loaded_config.config.word_highlight.emphasis = emphasis;
-            let mut plain_inks = Vec::new();
-            for rank in RESET_STEP_RANKS {
-                let point = reset_step_cell(&initial, rank)?;
-                app.click(word_click_tests::locate(&initial, "reset-step-1")?);
-                app.word_highlight.clear();
-                let baseline = renderer.paint(&mut app)?;
-                assert_eq!(
-                    baseline[(point.x, point.y)].bg,
-                    tui_pane::pane_background(true),
-                    "the plain reset measurement uses the plain focused pane ground"
-                );
-                plain_inks.push(check_reset_step_match(
-                    &mut app,
-                    &mut renderer,
-                    &baseline,
-                    point,
-                )?);
-                app.click(word_click_tests::locate(
-                    &initial,
-                    &format!("reset-step-{rank}"),
-                )?);
-                app.word_highlight.clear();
-                let selected = renderer.paint(&mut app)?;
-                assert_eq!(
-                    selected[(point.x, point.y)].bg,
-                    tui_pane::active_focus_color()
-                );
-                // The 4.5 lift on the selected match ground takes every hue near white.
-                check_reset_step_match(&mut app, &mut renderer, &selected, point)?;
-            }
-            assert_matched_steps_distinct(&plain_inks, emphasis);
-        }
-    }
-    Ok(())
-}
-
-fn check_reset_steps(name: &str) -> TestResult {
-    let variant = theme::builtins()
-        .into_iter()
-        .find(|variant| variant.id.as_str() == name)
-        .ok_or("reset theme")?;
-    let fixture = ResetThemeFixture::with_theme(variant.theme);
-    tui_pane::set_transparent_background(false);
-    let result = measure_reset_steps();
-    drop(fixture);
-    result
-}
-
-#[test]
-fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_default_dark() -> TestResult {
-    check_reset_steps("Default Dark")
-}
-
-#[test]
-fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_default_light() -> TestResult {
-    check_reset_steps("Default Light")
-}
-
-#[test]
-fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_high_contrast_dark() -> TestResult {
-    check_reset_steps("High Contrast Dark")
-}
-
-#[test]
-fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_high_contrast_light() -> TestResult {
-    check_reset_steps("High Contrast Light")
-}
-
 #[derive(Clone, Copy)]
 enum AstraWordRole {
     Designer,
@@ -2268,8 +2066,8 @@ fn emphasis_grounds_and_modifiers_in_high_contrast_light() -> TestResult {
 }
 
 fn waiting_activity_application() -> TestResult<App> {
-    use crate::census::accounts::AccountsReading;
-    use crate::census::accounts::AccountsTable;
+    use crate::census::accounts::AccountsSource;
+    use crate::census::accounts::SessionStates;
 
     let mut app = word_click_tests::application()?;
     let mut owner = word_click_tests::session(10, "waiting-owner", "")?;
@@ -2285,8 +2083,8 @@ fn waiting_activity_application() -> TestResult<App> {
             word_click_tests::session(30, "idle-control", "")?,
         ],
     );
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        SessionStates::parse(
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,"read_ok":true,"sessions":[
             {"session":"word-session-10","state":"busy"},

@@ -8,8 +8,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use chrono::Local;
-use chrono::TimeZone;
 use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::PollWork;
@@ -27,8 +25,6 @@ use crate::census::CensusUpdate;
 use crate::census::ChildKind;
 use crate::census::ShellTimerObservation;
 use crate::census::account::AccountLabels;
-use crate::census::accounts::AccountsTable;
-use crate::census::accounts::Reading;
 use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
@@ -135,8 +131,6 @@ impl TextChange {
 /// Each time-dependent text supplies its own next visible change.
 enum DisplayText {
     AgentAge { started: u64 },
-    AccountReading { read_at: u64 },
-    AccountResetDate,
     ShellCountdown { deadline: u64 },
     Notice,
 }
@@ -153,22 +147,6 @@ impl DisplayText {
                     .and_then(|minutes| minutes.checked_mul(60))
                     .and_then(|seconds| started.checked_add(seconds))
                     .map_or(TextChange::Static, TextChange::At)
-            },
-            Self::AccountReading { read_at } => read_at
-                .checked_add(crate::constants::ACCOUNTS_STALE_SECONDS + 1)
-                .filter(|at| *at > now)
-                .map_or(TextChange::Static, TextChange::At),
-            Self::AccountResetDate => {
-                // A missing local midnight is retried each second across a clock transition.
-                i64::try_from(now)
-                    .ok()
-                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                    .and_then(|date| date.with_timezone(&Local).date_naive().succ_opt())
-                    .and_then(|date| date.and_hms_opt(0, 0, 0))
-                    .and_then(|date| Local.from_local_datetime(&date).earliest())
-                    .and_then(|date| u64::try_from(date.timestamp()).ok())
-                    .filter(|at| *at > now)
-                    .map_or_else(|| TextChange::At(now.saturating_add(1)), TextChange::At)
             },
             Self::ShellCountdown { deadline } if now < deadline => TextChange::At(now + 1),
             Self::ShellCountdown { .. } | Self::Notice => TextChange::Static,
@@ -206,7 +184,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
-    let placement = AgentPlacement::from_machines(&machines, app.accounts.table.session_states());
+    let placement = AgentPlacement::from_machines(&machines, app.accounts.source.session_states());
     for thread in &placement.threads {
         let child = &thread.owner_row.children[thread.child_index];
         session_starts.push(child.started);
@@ -256,39 +234,6 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
         && let Some(at) = now.max(started).checked_add(seconds)
     {
         next = next.earlier(TextChange::At(at));
-    }
-    if let AccountsTable::FailedKeepingLast { last, .. } = &app.accounts.table {
-        next = next.earlier(
-            DisplayText::AgentAge {
-                started: last.received_at,
-            }
-            .next_change(now),
-        );
-    }
-    let reading = match &app.accounts.table {
-        AccountsTable::Ready(reading) | AccountsTable::FailedKeepingLast { last: reading, .. } => {
-            Some(reading)
-        },
-        AccountsTable::Failed(_)
-        | AccountsTable::NotConfigured
-        | AccountsTable::AwaitingFirstReading => None,
-    };
-    if let Some(reading) = reading {
-        for row in &reading.accounts {
-            if let Reading::Known(at) = row.read_at {
-                next = next.earlier(
-                    DisplayText::AccountReading {
-                        read_at: u64::try_from(at.timestamp()).unwrap_or_default(),
-                    }
-                    .next_change(now),
-                );
-            }
-            if matches!(row.resets_at, Reading::Known(_))
-                || matches!(row.login_ends_at, Reading::Known(_))
-            {
-                next = next.earlier(DisplayText::AccountResetDate.next_change(now));
-            }
-        }
     }
     next
 }
@@ -447,7 +392,7 @@ impl Ticker {
         let accounts_changed = app.accounts.refresh();
         let census_changed = self.drain_census(app);
         if accounts_changed || census_changed {
-            app.census.record_local_accounts(&app.accounts.table);
+            app.census.record_local_accounts(&app.accounts.source);
         }
         let appearance_changed = self.drain_appearances(app);
         let footer_changed = self.drain_footer_colors(app);
@@ -532,9 +477,6 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::Timer;
-    use crate::census::accounts::AccountsFailure;
-    use crate::census::accounts::AccountsReading;
-    use crate::census::accounts::AccountsTable;
     use crate::census::model::ModelName;
     use crate::census::model::ReasoningEffort;
     use crate::footer_colors::FooterColor;
@@ -546,7 +488,7 @@ mod tests {
     #[test]
     fn idle_visual_handler_draws_an_appearance_change_without_data() {
         let mut app = App::new_for_test().expect("test app");
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        app.census.notice_without_agents();
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, _) = settle_body(&mut app, &mut ticker, 100);
         assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::NotNeeded);
@@ -558,14 +500,14 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_account_failure_needs_no_clock_frame() {
+    fn an_unchanged_hierarchy_notice_needs_no_clock_frame() {
         let mut app = App::new_for_test().expect("test app");
         app.census.apply(CensusUpdate::Local {
             rows:      Vec::new(),
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Completed,
         });
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        app.census.notice_without_agents();
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         assert!(!ticker.ages_moved(&app, 100));
         assert!(!ticker.ages_moved(&app, 100));
@@ -712,7 +654,6 @@ mod tests {
             hierarchy: HierarchyEdges::default().into(),
             stage: ScanStage::Completed,
         });
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, mut terminal) = settle_timed_body(&mut app, &mut ticker, 689);
         assert_drawn_age(&app, &terminal, "session0", "9 minutes", 689);
@@ -767,7 +708,6 @@ mod tests {
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Completed,
         });
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, mut terminal) = settle_timed_body(&mut app, &mut ticker, 100);
         assert_eq!(next_body_change(&app, 100), TextChange::At(1060));
@@ -799,7 +739,6 @@ mod tests {
             hierarchy: HierarchyEdges::default().into(),
             stage: ScanStage::Completed,
         });
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, mut terminal) = settle_body(&mut app, &mut ticker, 149);
         for (at, expected) in [
@@ -901,70 +840,11 @@ mod tests {
     }
 
     #[test]
-    fn account_reading_requests_body_frames_only_at_staleness() {
-        let mut app = App::new_for_test().expect("test app");
-        app.accounts.table = AccountsTable::Ready(AccountsReading::parse(br#"{"accounts":[{"label":"fixture","roles":[],"weekly_left_percent":50,"resets_at":null,"credits":null,"use_credits":false,"read_ok":true,"read_at":"1970-01-01T00:01:40Z"}],"problems":[]}"#).expect("account reading"));
-        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
-        let (now, mut terminal) = settle_body(&mut app, &mut ticker, 100);
-        for (at, expected) in [
-            (100, Repaint::NotNeeded),
-            (101, Repaint::NotNeeded),
-            (159, Repaint::NotNeeded),
-            (160, Repaint::NotNeeded),
-            (161, Repaint::NotNeeded),
-            (220, Repaint::NotNeeded),
-            (3699, Repaint::NotNeeded),
-            (3700, Repaint::NotNeeded),
-            (3701, Repaint::Needed),
-            (3702, Repaint::NotNeeded),
-        ] {
-            assert_body_boundary(&mut app, &mut ticker, &mut terminal, now, at, expected);
-        }
-    }
-
-    #[test]
-    fn failed_accounts_reading_repaints_the_retained_report_age() {
-        let mut app = App::new_for_test().expect("test app");
-        let mut reading = AccountsReading::parse(br#"{"accounts":[],"problems":[]}"#)
-            .expect("empty account reading");
-        reading.received_at = 100;
-        app.accounts.table = AccountsTable::Ready(reading);
-        app.accounts
-            .table
-            .apply(Err(AccountsFailure::InvalidReading));
-        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
-        let (now, mut terminal) = settle_body(&mut app, &mut ticker, 100);
-        for (at, expected) in [
-            (159, Repaint::NotNeeded),
-            (160, Repaint::Needed),
-            (161, Repaint::NotNeeded),
-            (219, Repaint::NotNeeded),
-            (220, Repaint::Needed),
-        ] {
-            assert_body_boundary(&mut app, &mut ticker, &mut terminal, now, at, expected);
-        }
-    }
-
-    #[test]
     fn idle_display_time_tracks_each_text_boundary() {
         for elapsed in [0, 59, 60, 3_599, 3_600, 86_399, 86_400] {
             assert_eq!(
                 DisplayText::AgentAge { started: 100 }.next_change(100 + elapsed),
                 TextChange::At(100 + (elapsed / 60 + 1) * 60)
-            );
-        }
-        for elapsed in [0, 59, 60, 3_599, 3_600] {
-            assert_eq!(
-                DisplayText::AccountReading { read_at: 100 }.next_change(100 + elapsed),
-                TextChange::At(100 + crate::constants::ACCOUNTS_STALE_SECONDS + 1),
-                "reading freshness {elapsed}"
-            );
-        }
-        for elapsed in [3_601, 86_400] {
-            assert_eq!(
-                DisplayText::AccountReading { read_at: 100 }.next_change(100 + elapsed),
-                TextChange::Static,
-                "stale reading {elapsed}"
             );
         }
         assert_eq!(
@@ -976,10 +856,6 @@ mod tests {
             TextChange::Static
         );
         assert_eq!(DisplayText::Notice.next_change(100), TextChange::Static);
-        assert!(
-            matches!(DisplayText::AccountResetDate.next_change(1_700_000_000),
-            TextChange::At(at) if at > 1_700_000_000 && at <= 1_700_086_400)
-        );
     }
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }

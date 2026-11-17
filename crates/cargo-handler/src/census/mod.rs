@@ -64,7 +64,7 @@ use std::time::UNIX_EPOCH;
 
 pub(crate) use account::Account;
 pub(crate) use account::AccountColumn;
-use accounts::AccountsTable;
+use accounts::AccountsSource;
 pub(crate) use activity::Activity;
 pub(crate) use activity::AgentActivity;
 use activity::DetachedRunFact;
@@ -74,6 +74,8 @@ pub(crate) use activity::RunLocation;
 pub(crate) use activity::VerifyStep;
 use herdr::PaneState;
 use hierarchy::HierarchyAnswer;
+#[cfg(test)]
+use hierarchy::HierarchyError;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
 use hierarchy::StaffRunPointer;
@@ -846,6 +848,20 @@ impl Census {
             .any(|machine| machine.state.hierarchy_notice().is_visible())
     }
 
+    /// Give the local machine a hierarchy notice and no rows, so the summary draws without agents.
+    #[cfg(test)]
+    pub(crate) fn notice_without_agents(&mut self) {
+        self.apply(CensusUpdate::Local {
+            rows:      Vec::new(),
+            hierarchy: HierarchySnapshot {
+                facts:  CensusFacts::default().into(),
+                edges:  HierarchyEdges::default(),
+                notice: HierarchyNotice::Failed(HierarchyError::TimedOut),
+            },
+            stage:     ScanStage::Completed,
+        });
+    }
+
     /// A census of `local_name` that nothing has answered yet.
     pub(crate) fn new(local_name: String) -> Self {
         Self {
@@ -857,8 +873,8 @@ impl Census {
     }
 
     /// Keep the TUI's one accounts read as the local census accounts fact.
-    pub(crate) fn record_local_accounts(&mut self, table: &AccountsTable) {
-        self.accounts = table.health();
+    pub(crate) fn record_local_accounts(&mut self, source: &AccountsSource) {
+        self.accounts = source.health();
         if let MachineState::Answered(_, hierarchy) = &mut self.local {
             hierarchy.facts.accounts = self.accounts.clone();
         }
@@ -979,7 +995,7 @@ pub(crate) fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use accounts::AccountsFailure;
-    use accounts::AccountsTable;
+    use accounts::AccountsSource;
     use hierarchy::HierarchyAnswer;
     use hierarchy::HierarchyError;
 
@@ -1140,7 +1156,7 @@ mod tests {
             stage:     ScanStage::Classified,
         };
         assert!(census.apply(update()));
-        census.record_local_accounts(&AccountsTable::Failed(AccountsFailure::Command(
+        census.record_local_accounts(&AccountsSource::Failed(AccountsFailure::Command(
             HierarchyError::ExitedUnsuccessfully,
         )));
         let expected = Observed::Known(SourceHealth::Unreadable(UnknownReason(

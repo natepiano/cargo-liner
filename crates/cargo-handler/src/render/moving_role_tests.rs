@@ -12,7 +12,6 @@ use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
-use crate::census::accounts::AccountsTable;
 use crate::census::transcript::SubagentRole;
 
 struct ShrinkingCells<'a> {
@@ -95,7 +94,7 @@ fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
             &colors,
             &HashMap::new(),
             SummarySort::default(),
-            &AccountsTable::NotConfigured,
+            &EMPTY_SESSION_STATES,
         ),
         summary_rows: 1,
     };

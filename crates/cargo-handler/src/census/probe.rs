@@ -49,7 +49,7 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
-use super::accounts::AccountsTable;
+use super::accounts::AccountsSource;
 #[cfg(test)]
 use super::accounts::EMPTY_SESSION_STATES;
 use super::activity::Activity;
@@ -758,7 +758,7 @@ fn scan_configured(config: &Config) -> ProbeReport {
     let mut report = ProbeReport::from_answer(local_machine_name(), rows, publication.edges);
     let mut facts = *publication.facts;
     facts.accounts =
-        AccountsTable::read_once(&config.census.accounts_command, HIERARCHY_TIMEOUT).health();
+        AccountsSource::read_once(&config.census.accounts_command, HIERARCHY_TIMEOUT).health();
     report.facts = Some(facts);
     report
 }

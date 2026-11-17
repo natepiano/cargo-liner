@@ -149,9 +149,6 @@ pub(crate) enum RowIdentity {
         started: u64,
         ordinal: usize,
     },
-    SummaryAccount {
-        account: String,
-    },
     SummaryGroup {
         machine: String,
     },
@@ -205,89 +202,27 @@ pub(crate) enum RowClick {
     Missed,
 }
 
-/// The accounts section supplied by the frame's fitted line record.
-#[derive(Clone, Debug, Default)]
-pub(crate) enum SectionPin {
-    #[default]
-    NoAccounts,
-    Accounts {
-        headers: Range<usize>,
-        body:    Range<usize>,
-    },
-}
-
 /// One transform serves painting, selection bands and pointer coordinates.
-#[derive(Clone, Debug)]
-pub(crate) enum ViewportMapping {
-    Linear {
-        offset: usize,
-        height: usize,
-    },
-    Pinned {
-        headers: Range<usize>,
-        offset:  usize,
-        height:  usize,
-    },
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ViewportMapping {
+    offset: usize,
+    height: usize,
 }
 
-/// Pinned decoration is addressable for sorting, but cannot select a body row.
+/// A viewport row shows one source line, or lies below the content.
 pub(crate) enum ViewportLine {
     Outside,
-    Header(usize),
     Body(usize),
 }
 
-impl Default for ViewportMapping {
-    fn default() -> Self {
-        Self::Linear {
-            offset: 0,
-            height: 0,
-        }
-    }
-}
-
 impl ViewportMapping {
-    fn new(pin: &SectionPin, offset: usize, height: usize) -> Self {
-        if let SectionPin::Accounts { headers, body } = pin {
-            let body_offset = offset.max(headers.end);
-            if offset > headers.start
-                && height > headers.len()
-                && body_offset < body.end
-                && body_offset.saturating_add(height - headers.len()) > body.start
-            {
-                return Self::Pinned {
-                    headers: headers.clone(),
-                    offset: body_offset,
-                    height,
-                };
-            }
-        }
-        Self::Linear { offset, height }
-    }
+    pub(crate) const fn new(offset: usize, height: usize) -> Self { Self { offset, height } }
 
-    pub(crate) fn source_line(&self, row: usize) -> ViewportLine {
-        match self {
-            Self::Linear { offset, height } if row < *height => ViewportLine::Body(offset + row),
-            Self::Pinned {
-                headers, height, ..
-            } if row < *height && row < headers.len() => ViewportLine::Header(headers.start + row),
-            Self::Pinned {
-                headers,
-                offset,
-                height,
-            } if row < *height => ViewportLine::Body(offset + row - headers.len()),
-            _ => ViewportLine::Outside,
-        }
-    }
-
-    fn body(&self) -> (usize, usize, usize) {
-        match self {
-            Self::Linear { offset, height } => (*offset, *height, 0),
-            Self::Pinned {
-                headers,
-                offset,
-                height,
-            } => (*offset, height - headers.len(), headers.len()),
+    pub(crate) const fn source_line(self, row: usize) -> ViewportLine {
+        if row < self.height {
+            ViewportLine::Body(self.offset + row)
+        } else {
+            ViewportLine::Outside
         }
     }
 }
@@ -326,18 +261,16 @@ impl RowSpan {
     const fn contains(self, line: usize) -> bool { self.first <= line && line < self.end() }
 
     /// The span's occupied lines clipped and translated into viewport coordinates.
-    pub(crate) fn visible_lines(self, mapping: &ViewportMapping) -> Range<usize> {
-        let (offset, height, pinned) = mapping.body();
-        let start = self.start().saturating_sub(offset).min(height) + pinned;
-        let end = self.end().saturating_sub(offset).min(height) + pinned;
+    pub(crate) fn visible_lines(self, mapping: ViewportMapping) -> Range<usize> {
+        let start = self
+            .start()
+            .saturating_sub(mapping.offset)
+            .min(mapping.height);
+        let end = self
+            .end()
+            .saturating_sub(mapping.offset)
+            .min(mapping.height);
         start..end
-    }
-
-    pub(crate) const fn shifted(self, offset: usize) -> Self {
-        Self {
-            first: self.first.saturating_add(offset),
-            ..self
-        }
     }
 }
 
@@ -346,7 +279,6 @@ impl RowSpan {
 pub(crate) struct SurfaceSelection {
     rows:     Vec<(RowIdentity, RowSpan)>,
     viewport: Viewport,
-    pin:      SectionPin,
     painted:  ViewportMapping,
 }
 
@@ -368,18 +300,10 @@ impl SurfaceSelection {
 
     pub(crate) const fn viewport(&self) -> &Viewport { &self.viewport }
 
-    /// Replace section geometry only from the fitted summary lines.
-    pub(crate) fn set_pin(&mut self, pin: SectionPin) {
-        self.pin = pin;
-        self.update_content_height();
-        self.keep_visible();
-    }
-
-    pub(crate) const fn painted_mapping(&self) -> &ViewportMapping { &self.painted }
+    pub(crate) const fn painted_mapping(&self) -> ViewportMapping { self.painted }
 
     fn mapping(&self) -> ViewportMapping {
         ViewportMapping::new(
-            &self.pin,
             self.viewport.scroll_offset(),
             usize::from(self.viewport.content_area().height),
         )
@@ -403,24 +327,10 @@ impl SurfaceSelection {
         self.keep_visible();
     }
 
-    /// Include the table tail without making it selectable.
+    /// The content ends with the last row.
     fn update_content_height(&mut self) {
-        let selected_end = self.rows.last().map_or(0, |(_, span)| span.end());
-        let table_end = match &self.pin {
-            SectionPin::NoAccounts => 0,
-            SectionPin::Accounts { body, .. } => body.end,
-        };
         self.viewport
-            .set_content_height(selected_end.max(table_end));
-    }
-
-    /// Navigation after the final row can expose unselectable table lines.
-    const fn scroll_end(&self, span: RowSpan) -> usize {
-        if self.viewport.pos().saturating_add(1) == self.rows.len() {
-            self.viewport.content_height()
-        } else {
-            span.end()
-        }
+            .set_content_height(self.rows.last().map_or(0, |(_, span)| span.end()));
     }
 
     pub(crate) fn selected_span(&self) -> SelectedSpan {
@@ -454,9 +364,7 @@ impl SurfaceSelection {
                     self.viewport.set_scroll_offset(span.start());
                 },
                 NavAction::End => {
-                    let offset = self
-                        .scroll_end(*span)
-                        .saturating_sub(self.viewport.visible_rows());
+                    let offset = span.end().saturating_sub(self.viewport.visible_rows());
                     self.viewport.set_scroll_offset(offset);
                 },
                 _ => {},
@@ -470,7 +378,7 @@ impl SurfaceSelection {
         let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
             return false;
         };
-        let end = self.scroll_end(*span);
+        let end = span.end();
         if visible == 0 || end.saturating_sub(span.start()) <= visible {
             return false;
         }
@@ -538,41 +446,22 @@ impl SurfaceSelection {
         if height == 0 {
             return;
         }
-        let mut offset = self.viewport.scroll_offset();
-        if let SectionPin::Accounts { headers, body } = &self.pin
-            && span.start() == body.start
-            && span.end().saturating_sub(headers.start) <= height
-        {
-            // Returning to the first account exposes the section in its natural place.
-            offset = offset.min(span.end().saturating_sub(height));
-        }
-        // Resolve once against the natural section and once against its pinned body.
-        for _ in 0..2 {
-            let mapping = ViewportMapping::new(&self.pin, offset, height);
-            let (body_start, visible, _) = mapping.body();
-            self.viewport.set_viewport_rows(visible);
-            let showing_tail = self.scroll_end(span) > span.end()
-                && offset >= span.start()
-                && body_start.saturating_add(visible) > span.end();
-            offset = if showing_tail {
-                offset
-            } else if span.end() - span.start() > visible {
-                if span.end() <= body_start || span.start() >= body_start.saturating_add(visible) {
-                    span.start()
-                } else {
-                    offset
-                }
-            } else if span.start() < body_start {
+        let offset = self.viewport.scroll_offset();
+        let offset = if span.end() - span.start() > height {
+            if span.end() <= offset || span.start() >= offset.saturating_add(height) {
                 span.start()
-            } else if span.end() > body_start.saturating_add(visible) {
-                span.end().saturating_sub(visible)
             } else {
                 offset
-            };
-            offset = offset.min(self.viewport.content_height().saturating_sub(visible));
-        }
-        self.viewport.set_scroll_offset(offset);
-        self.viewport.set_viewport_rows(self.mapping().body().1);
+            }
+        } else if span.start() < offset {
+            span.start()
+        } else if span.end() > offset.saturating_add(height) {
+            span.end().saturating_sub(height)
+        } else {
+            offset
+        };
+        self.viewport
+            .set_scroll_offset(offset.min(self.viewport.content_height().saturating_sub(height)));
     }
 }
 

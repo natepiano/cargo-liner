@@ -19,7 +19,7 @@ use crate::census::HierarchySnapshot;
 use crate::census::Observed;
 use crate::census::WorkerFacts;
 use crate::census::account::ConfigHome;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::codex::CodexThread;
 use crate::census::codex_names::SessionName;
 use crate::census::scan::ScanStage;
@@ -960,8 +960,8 @@ fn drawn_accounts_status(pane: Observed<PaneState>) -> Result<Vec<Cell>, &'stati
         },
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(
-        crate::census::accounts::AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        crate::census::accounts::SessionStates::parse(
             &serde_json::to_vec(&json!({
                 "accounts":[{"label":"fixture","roles":[],"use_credits":false,
                     "sessions":[{"session":"pane-worker","state":"busy"}]}],"problems":[]

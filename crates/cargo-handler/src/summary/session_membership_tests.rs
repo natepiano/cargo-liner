@@ -10,7 +10,6 @@ use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
 use crate::census::accounts::EMPTY_SESSION_STATES;
-use crate::sort::AccountsSort;
 
 const NOW: u64 = 1_792_166_400;
 const AREA: Rect = Rect::new(0, 0, 200, 25);
@@ -44,8 +43,7 @@ fn draw_summary(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> Buf
         &mut buffer,
         AREA,
         &SummaryFrame {
-            accounts: &AccountsTable::NotConfigured,
-            accounts_sort: AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines,
             placement,
             cells: &cells,
@@ -140,8 +138,7 @@ fn summary_omits_the_desktop_header_when_no_drawn_row_has_a_desktop() {
     let spans = header_spans(
         AREA,
         &SummaryFrame {
-            accounts:       &AccountsTable::NotConfigured,
-            accounts_sort:  AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,

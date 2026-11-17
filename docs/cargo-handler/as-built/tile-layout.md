@@ -145,6 +145,10 @@ Numbers and status words remain whole.
 Unused width goes to directory when present.
 The column union uses the smallest tile width at the same x.
 A summary session table with no drawable columns uses `SummarySessionTable::OmittedForWidth` and requests no rows.
+`SummaryLayout::preferred_width` gives the width that draws every populated column whole.
+It never gives the painted width at the offered width.
+A narrow frame cuts names and omits columns, so its painted width would carry into the next layout search.
+A return to a wider terminal then restores the earlier layout.
 
 `CellView::requested_at_width` determines row demand at the candidate width.
 `TreePresentation::HeightCompressed` applies only after row allocation.

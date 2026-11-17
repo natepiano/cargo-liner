@@ -14,12 +14,11 @@ use crate::census::HierarchyRole;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::RemoteHierarchyAnswers;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::herdr::PaneState;
 use crate::census::hierarchy::StaffRunPointer;
 use crate::footer_colors::FooterColors;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -150,10 +149,9 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
             "the remote unit stays managed"
         );
         let cells = agent_cell::cell_order_placed(&placement);
-        let accounts = AccountsTable::NotConfigured;
+        let accounts = AccountsSource::NotConfigured;
         let colors = FooterColors::default();
         let frame = SummaryFrame {
-            accounts_sort:  AccountsSort::SourceOrder,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -161,7 +159,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
             account_column: AccountColumn::Hidden,
             footer_colors:  &colors,
             sort:           SummarySort::default(),
-            accounts:       &accounts,
+            session_states: accounts.session_states(),
         };
         let area = Rect::new(
             0,
@@ -172,11 +170,8 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
                 200,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &accounts,
-                AccountsSort::SourceOrder,
             ),
-            u16::try_from(summary::height(&machines, &placement, &accounts))
-                .expect("small remote summary"),
+            u16::try_from(summary::height(&machines, &placement)).expect("small remote summary"),
         );
         let mut buffer = Buffer::empty(area);
         summary::draw(&mut buffer, area, &frame);

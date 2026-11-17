@@ -12,9 +12,8 @@ use crate::census::AgentActivity;
 use crate::census::RunLocation;
 use crate::census::ServiceTier;
 use crate::census::VerifyStep;
-use crate::census::accounts::AccountsTable;
+use crate::census::accounts::AccountsSource;
 use crate::census::accounts::EMPTY_SESSION_STATES;
-use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 
 fn row(pid: u32, name: &str, activity: AgentActivity) -> AgentRow {
@@ -60,8 +59,8 @@ fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
     }];
     let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
     let cells = agent_cell::cell_order_placed(&placement);
-    let source = AccountsTable::Ready(
-        crate::census::accounts::AccountsReading::parse(
+    let source = AccountsSource::Ready(
+        crate::census::accounts::SessionStates::parse(
             br#"{
         "accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
             {"session":"writer-session","state":"busy"},{"session":"reader-session","state":"busy"},
@@ -77,8 +76,7 @@ fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
         &mut buffer,
         area,
         &SummaryFrame {
-            accounts_sort: AccountsSort::SourceOrder,
-            accounts: &source,
+            session_states: source.session_states(),
             machines: &machines,
             placement: &placement,
             cells: &cells,

@@ -19,7 +19,6 @@ use crate::census::hierarchy::HierarchyError;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::HierarchySnapshot;
 use crate::census::scan::ScanStage;
-use crate::sort::AccountsSort;
 
 fn rows() -> Vec<AgentRow> {
     vec![
@@ -39,12 +38,6 @@ fn lines(buffer: &Buffer) -> Vec<String> {
                 .collect()
         })
         .collect()
-}
-
-fn accounts_below_diagnostic() -> AccountsTable {
-    AccountsTable::Ready(crate::census::accounts::AccountsReading::parse(
-        br#"{"accounts":[{"label":"account-after-note","tool":"claude","roles":[],"weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null}],"problems":[]}"#,
-    ).expect("account section below discovery note"))
 }
 
 #[test]
@@ -77,10 +70,8 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
         }];
         let placement = AgentPlacement::from_machines(&machines, &EMPTY_SESSION_STATES);
         let cells = agent_cell::cell_order_placed(&placement);
-        let accounts = accounts_below_diagnostic();
         let colors = FooterColors::default();
         let frame = SummaryFrame {
-            accounts_sort:  AccountsSort::SourceOrder,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -88,7 +79,7 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
             account_column: AccountColumn::Hidden,
             footer_colors:  &colors,
             sort:           SummarySort::default(),
-            accounts:       &accounts,
+            session_states: &EMPTY_SESSION_STATES,
         };
         let area = Rect::new(
             4,
@@ -99,10 +90,8 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
                 200,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &accounts,
-                AccountsSort::SourceOrder,
             ),
-            u16::try_from(height(&machines, &placement, &accounts)).expect("small measured height"),
+            u16::try_from(height(&machines, &placement)).expect("small measured height"),
         );
         let mut buffer = Buffer::empty(area);
         draw(&mut buffer, area, &frame);
@@ -111,19 +100,6 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
             .iter()
             .position(|line| line.contains("visible-production-session"))
             .expect("agents remain visible");
-        assert!(
-            output[output.len() - 2].contains("account-after-note"),
-            "accounts fit below the diagnostic: {output:?}"
-        );
-        assert_eq!(
-            output
-                .last()
-                .expect("final measured row")
-                .split_whitespace()
-                .next(),
-            Some("total"),
-            "the total fits after the account: {output:?}"
-        );
         if expected.is_empty() {
             assert!(
                 output.iter().all(|line| !line.contains("hierarchy:")),
@@ -164,7 +140,6 @@ fn hierarchy_failure_without_agents_or_accounts_draws_the_summary_in_the_real_fr
         },
         stage:     ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::NotConfigured;
     app.before_draw();
     let keymap = app.keymap();
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("test terminal");

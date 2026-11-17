@@ -20,7 +20,6 @@ use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::account::Program;
-use crate::census::accounts::AccountsTable;
 use crate::census::accounts::EMPTY_SESSION_STATES;
 use crate::census::activity::Activity;
 use crate::census::codex::CodexThread;
@@ -30,7 +29,6 @@ use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_RESUME_SUBCOMMAND;
 use crate::footer_colors::FooterColors;
-use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary::SummaryFrame;
 use crate::summary::{self};
@@ -148,8 +146,7 @@ fn drawn(rows: Vec<AgentRow>, work: RootWork) -> (Vec<String>, Vec<String>, Vec<
         &mut summary,
         AREA,
         &SummaryFrame {
-            accounts:       &AccountsTable::NotConfigured,
-            accounts_sort:  AccountsSort::SourceOrder,
+            session_states: &EMPTY_SESSION_STATES,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,

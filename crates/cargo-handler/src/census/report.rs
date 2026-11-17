@@ -27,7 +27,7 @@ use super::RemoteHierarchyAnswers;
 use super::SourceHealth;
 use super::StaffListing;
 use super::WorkerFacts;
-use super::accounts::AccountsTable;
+use super::accounts::AccountsSource;
 use super::accounts::ReportedSessionState;
 use super::accounts::SessionState;
 use super::accounts::SessionStates;
@@ -453,8 +453,8 @@ pub(crate) fn print() -> ExitCode {
 enum SourceAnswer {
     /// This machine's rows and hierarchy.
     Local((Vec<AgentRow>, HierarchySnapshot)),
-    /// The accounts command's table.
-    Accounts(AccountsTable),
+    /// The accounts command's session states.
+    Accounts(AccountsSource),
     /// The remote at this index of the configured remotes.
     Remote(usize, ProbeOutcome),
 }
@@ -462,7 +462,7 @@ enum SourceAnswer {
 /// What each source answered before the census bound; `None` did not answer in time.
 struct SourceAnswers {
     local:    Option<(Vec<AgentRow>, HierarchySnapshot)>,
-    accounts: Option<AccountsTable>,
+    accounts: Option<AccountsSource>,
     remotes:  Vec<Option<ProbeOutcome>>,
 }
 
@@ -489,7 +489,7 @@ impl SourceAnswers {
         let accounts = sender.clone();
         thread::spawn(move || {
             let limit = stop.saturating_duration_since(Instant::now());
-            let _ = accounts.send(SourceAnswer::Accounts(AccountsTable::read_once(
+            let _ = accounts.send(SourceAnswer::Accounts(AccountsSource::read_once(
                 &command, limit,
             )));
         });
@@ -509,7 +509,7 @@ impl SourceAnswers {
             };
             match answer {
                 SourceAnswer::Local(local) => answers.local = Some(local),
-                SourceAnswer::Accounts(table) => answers.accounts = Some(table),
+                SourceAnswer::Accounts(source) => answers.accounts = Some(source),
                 SourceAnswer::Remote(index, outcome) => answers.remotes[index] = Some(outcome),
             }
         }
@@ -542,7 +542,7 @@ where
     let scan = prepare_scan(config, config.census.herdr_probe_wait.at_most(source_time));
     let answers =
         SourceAnswers::collect(config, runner, scan, started + source_time, started + bound);
-    let accounts = answers.accounts.unwrap_or_else(AccountsTable::timed_out);
+    let accounts = answers.accounts.unwrap_or_else(AccountsSource::timed_out);
     let mut census = Census::new(local_machine_name());
     census.record_local_accounts(&accounts);
     match answers.local {

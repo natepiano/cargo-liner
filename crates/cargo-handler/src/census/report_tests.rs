@@ -30,7 +30,7 @@ use crate::census::CensusFacts;
 use crate::census::HierarchyEdges;
 use crate::census::PassAssignment;
 use crate::census::UnknownReason;
-use crate::census::accounts::AccountsReading;
+use crate::census::accounts::SessionStates;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::RunId;
 use crate::census::remote;
@@ -296,7 +296,7 @@ fn painted_with(directory: &TempDir, rows: Vec<AgentRow>) -> Vec<String> {
         stage: ScanStage::Completed,
     });
     let bytes = std::fs::read(directory.path().join("accounts.json")).expect("accounts fixture");
-    app.accounts.table = AccountsTable::Ready(AccountsReading::parse(&bytes).expect("accounts"));
+    app.accounts.source = AccountsSource::Ready(SessionStates::parse(&bytes).expect("accounts"));
     let mut terminal = Terminal::new(TestBackend::new(200, 60)).expect("terminal");
     let keymap = app.keymap();
     terminal

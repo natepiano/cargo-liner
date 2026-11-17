@@ -508,8 +508,8 @@ A value is a color name or `#rrggbb` in either case. A `#` starts a comment at
 the start of a line, or after a space once the value has begun, so
 `account.codex1 = #a0522d` keeps its value. A name or a hex value that is not
 readable on the theme's ground is made readable at the same hue; a readable
-one draws unchanged. One account takes the same ink in the tree, on the
-program line and in the accounts table. The census scan checks the file each
+one draws unchanged. One account takes the same ink in the tree and on the
+program line. The census scan checks the file each
 round, so a changed color shows at the next scan with no restart.
 
 A stale entry in `keymap.toml` is skipped rather than refusing to start.

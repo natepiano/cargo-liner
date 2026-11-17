@@ -1,4 +1,4 @@
-//! Stored account readings and their independent background refresh.
+//! Session states from the accounts command and their independent background refresh.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -13,11 +13,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use chrono::DateTime;
-use chrono::Utc;
 use serde::Deserialize;
-use serde::Deserializer;
-use serde::de::Error;
 
 use super::Agent;
 use super::AgentRow;
@@ -29,38 +25,6 @@ use super::hierarchy::HierarchyError;
 use crate::constants::ACCOUNTS_REFRESH_INTERVAL;
 use crate::constants::HIERARCHY_TIMEOUT;
 use crate::theme::Role;
-
-/// A nullable reading is unavailable rather than zero.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Reading<T> {
-    Known(T),
-    Unavailable,
-}
-
-impl<T> From<Option<T>> for Reading<T> {
-    fn from(value: Option<T>) -> Self { value.map_or(Self::Unavailable, Self::Known) }
-}
-
-/// Roles are supplied by accounts.py, including multiple groups per account.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AccountRole {
-    Units,
-    Showrunners,
-    Workers,
-    Spare,
-}
-
-impl AccountRole {
-    const fn text(self) -> &'static str {
-        match self {
-            Self::Units => "units",
-            Self::Showrunners => "showrunners",
-            Self::Workers => "workers",
-            Self::Spare => "spare",
-        }
-    }
-}
 
 /// The accounts producer classifies each session once.
 /// A report from before the four-value status gives `starting` or `waiting` for a busy session.
@@ -140,215 +104,9 @@ impl SessionStates {
             _ => self.for_session(&row.session_id),
         }
     }
-}
 
-#[derive(Deserialize)]
-struct SessionStateWire {
-    session: String,
-    state:   SessionState,
-}
-
-/// Source counts for one role across the reported machines.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RoleSessionCounts {
-    pub(crate) busy:   u64,
-    pub(crate) idle:   u64,
-    pub(crate) paused: u64,
-    pub(crate) exited: u64,
-    pub(crate) total:  u64,
-}
-
-/// One source count exceeds the range of a combined count.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RoleCountOverflow;
-
-impl From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionCounts> {
-    fn from(value: Result<RoleSessionCounts, RoleCountOverflow>) -> Self {
-        match value {
-            Ok(counts) => Self::Known(counts),
-            Err(RoleCountOverflow) => Self::Unavailable,
-        }
-    }
-}
-
-impl RoleSessionCounts {
-    /// `RoleSessionCounts::checked_add` sums all five source counts without overflow.
-    pub(crate) fn checked_add(self, other: &Self) -> Result<Self, RoleCountOverflow> {
-        Ok(Self {
-            busy:   self.busy.checked_add(other.busy).ok_or(RoleCountOverflow)?,
-            idle:   self.idle.checked_add(other.idle).ok_or(RoleCountOverflow)?,
-            paused: self
-                .paused
-                .checked_add(other.paused)
-                .ok_or(RoleCountOverflow)?,
-            exited: self
-                .exited
-                .checked_add(other.exited)
-                .ok_or(RoleCountOverflow)?,
-            total:  self
-                .total
-                .checked_add(other.total)
-                .ok_or(RoleCountOverflow)?,
-        })
-    }
-}
-
-/// `AccountRoleUsage` associates role with its counts.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AccountRoleUsage {
-    pub(crate) role:   AccountRole,
-    pub(crate) counts: Reading<RoleSessionCounts>,
-}
-
-impl AccountRoleUsage {
-    pub(crate) const fn text(&self) -> &'static str { self.role.text() }
-}
-
-/// Credit balances have three distinct source meanings.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Credits {
-    Amount(f64),
-    Unlimited,
-    Unavailable,
-}
-
-/// Whether this account may spend its available credits.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CreditPermission {
-    Enabled,
-    Disabled,
-}
-
-/// Whether the latest usage read succeeded and a stored reading exists.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AccountReadStatus {
-    Ok,
-    Failed,
-}
-
-/// One signed-in account, in the source's order.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AccountUsage {
-    pub(crate) label:               String,
-    pub(crate) roles:               Vec<AccountRoleUsage>,
-    pub(crate) weekly_left_percent: Reading<f64>,
-    pub(crate) resets_at:           Reading<DateTime<Utc>>,
-    /// When the stored Claude login ends; Codex rows have none.
-    pub(crate) login_ends_at:       Reading<DateTime<Utc>>,
-    pub(crate) credits:             Credits,
-    pub(crate) credit_permission:   CreditPermission,
-    pub(crate) read_status:         AccountReadStatus,
-    pub(crate) read_at:             Reading<DateTime<Utc>>,
-}
-
-/// A complete source answer; Rust does not infer its roles or filter its rows.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AccountsReading {
-    pub(crate) received_at: u64,
-    pub(crate) sessions:    SessionStates,
-    pub(crate) accounts:    Vec<AccountUsage>,
-    pub(crate) problems:    Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct AccountsReport {
-    accounts: Vec<AccountWire>,
-    problems: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct AccountWire {
-    #[serde(default)]
-    sessions:            Vec<SessionStateWire>,
-    label:               String,
-    roles:               Vec<AccountRole>,
-    #[serde(default)]
-    role_counts:         Vec<Option<RoleCountsWire>>,
-    weekly_left_percent: Option<f64>,
-    resets_at:           Option<String>,
-    #[serde(default)]
-    login_ends_at:       Option<String>,
-    credits:             Option<CreditWire>,
-    use_credits:         bool,
-    #[serde(default)]
-    read_ok:             bool,
-    read_at:             Option<String>,
-}
-
-/// The wire reader constructs this proof only when the retired key is absent.
-#[derive(Default)]
-struct RetiredShellAbsent;
-
-impl<'de> Deserialize<'de> for RetiredShellAbsent {
-    fn deserialize<D>(_: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Err(D::Error::custom("the shell count is retired"))
-    }
-}
-
-#[derive(Deserialize)]
-struct RoleCountsWire {
-    busy:          u64,
-    idle:          u64,
-    paused:        u64,
-    exited:        u64,
-    total:         u64,
-    #[serde(default, rename = "shell")]
-    retired_shell: RetiredShellAbsent,
-}
-
-impl From<RoleCountsWire> for RoleSessionCounts {
-    fn from(counts: RoleCountsWire) -> Self {
-        let RoleCountsWire {
-            busy,
-            idle,
-            paused,
-            exited,
-            total,
-            retired_shell: RetiredShellAbsent,
-        } = counts;
-        Self {
-            busy,
-            idle,
-            paused,
-            exited,
-            total,
-        }
-    }
-}
-
-/// Pair each role with its combined source count.
-fn role_usages(
-    roles: Vec<AccountRole>,
-    combined_counts: Vec<Option<RoleCountsWire>>,
-) -> Vec<AccountRoleUsage> {
-    let mut counts = combined_counts.into_iter();
-    roles
-        .into_iter()
-        .map(|role| AccountRoleUsage {
-            role,
-            counts: counts.next().flatten().map(RoleSessionCounts::from).into(),
-        })
-        .collect()
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CreditWire {
-    Amount(f64),
-    Word(Unlimited),
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Unlimited {
-    Unlimited,
-}
-
-impl AccountsReading {
-    /// Decode nullable wire readings once at the command boundary.
+    /// Decode the session states of every account once at the command boundary.
+    /// A session that two accounts report in different states has no state.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, AccountsFailure> {
         let report: AccountsReport =
             serde_json::from_slice(bytes).map_err(|_| AccountsFailure::InvalidReading)?;
@@ -365,57 +123,29 @@ impl AccountsReading {
             }
         }
         sessions.retain(|session, _| !conflicts.contains(session));
-        Ok(Self {
-            received_at: u64::try_from(Utc::now().timestamp()).unwrap_or_default(),
-            sessions:    SessionStates(sessions),
-            accounts:    report
-                .accounts
-                .into_iter()
-                .map(|row| {
-                    let roles = role_usages(row.roles, row.role_counts);
-                    Ok(AccountUsage {
-                        label: row.label,
-                        roles,
-                        weekly_left_percent: row.weekly_left_percent.into(),
-                        resets_at: timestamp(row.resets_at.as_deref())?,
-                        login_ends_at: timestamp(row.login_ends_at.as_deref())?,
-                        credits: match row.credits {
-                            Some(CreditWire::Amount(amount)) => Credits::Amount(amount),
-                            Some(CreditWire::Word(Unlimited::Unlimited)) => Credits::Unlimited,
-                            None => Credits::Unavailable,
-                        },
-                        credit_permission: if row.use_credits {
-                            CreditPermission::Enabled
-                        } else {
-                            CreditPermission::Disabled
-                        },
-                        read_status: if row.read_ok {
-                            AccountReadStatus::Ok
-                        } else {
-                            AccountReadStatus::Failed
-                        },
-                        read_at: timestamp(row.read_at.as_deref())?,
-                    })
-                })
-                .collect::<Result<_, AccountsFailure>>()?,
-            problems:    report.problems,
-        })
+        Ok(Self(sessions))
     }
 }
 
-/// UTC instants enter the domain only after their external text has parsed.
-fn timestamp(value: Option<&str>) -> Result<Reading<DateTime<Utc>>, AccountsFailure> {
-    value
-        .map(|text| {
-            DateTime::parse_from_rfc3339(text)
-                .map(|at| at.with_timezone(&Utc))
-                .map_err(|_| AccountsFailure::InvalidReading)
-        })
-        .transpose()
-        .map(Reading::from)
+/// The accounts command's report; only the session states are read.
+#[derive(Deserialize)]
+struct AccountsReport {
+    accounts: Vec<AccountWire>,
 }
 
-/// A failed command never replaces a usable reading with empty rows.
+#[derive(Deserialize)]
+struct AccountWire {
+    #[serde(default)]
+    sessions: Vec<SessionStateWire>,
+}
+
+#[derive(Deserialize)]
+struct SessionStateWire {
+    session: String,
+    state:   SessionState,
+}
+
+/// A failed command never replaces usable session states with none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AccountsFailure {
     Command(HierarchyError),
@@ -431,21 +161,21 @@ impl Display for AccountsFailure {
     }
 }
 
-/// Exactly one state describes both the visible reading and any failure.
+/// Exactly one state describes both the usable session states and any failure.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) enum AccountsTable {
+pub(crate) enum AccountsSource {
     #[default]
     NotConfigured,
     AwaitingFirstReading,
-    Ready(AccountsReading),
+    Ready(SessionStates),
     Failed(AccountsFailure),
     FailedKeepingLast {
-        last:    AccountsReading,
+        last:    SessionStates,
         failure: AccountsFailure,
     },
 }
 
-impl AccountsTable {
+impl AccountsSource {
     /// The census keeps the monitor's outcome; a failure keeps its reason.
     pub(super) fn health(&self) -> super::Observed<super::SourceHealth> {
         match self {
@@ -462,9 +192,7 @@ impl AccountsTable {
 
     pub(crate) fn session_states(&self) -> &SessionStates {
         match self {
-            Self::Ready(reading) | Self::FailedKeepingLast { last: reading, .. } => {
-                &reading.sessions
-            },
+            Self::Ready(states) | Self::FailedKeepingLast { last: states, .. } => states,
             Self::NotConfigured | Self::AwaitingFirstReading | Self::Failed(_) => {
                 &EMPTY_SESSION_STATES
             },
@@ -477,30 +205,22 @@ impl AccountsTable {
         if command.trim().is_empty() {
             return Self::NotConfigured;
         }
-        let mut table = Self::AwaitingFirstReading;
-        table.apply(read_accounts_within(command, limit));
-        table
+        let mut source = Self::AwaitingFirstReading;
+        source.apply(read_accounts_within(command, limit));
+        source
     }
 
     /// A one-time read that gave no answer in its time.
     pub(super) fn timed_out() -> Self {
-        let mut table = Self::AwaitingFirstReading;
-        table.apply(Err(AccountsFailure::Command(HierarchyError::TimedOut)));
-        table
-    }
-
-    /// Visible account content keeps the summary present even without agents.
-    pub(crate) const fn is_visible(&self) -> bool {
-        matches!(
-            self,
-            Self::Ready(_) | Self::Failed(_) | Self::FailedKeepingLast { .. }
-        )
+        let mut source = Self::AwaitingFirstReading;
+        source.apply(Err(AccountsFailure::Command(HierarchyError::TimedOut)));
+        source
     }
 
     /// Preserve the last successful answer across any number of failures.
-    pub(crate) fn apply(&mut self, result: Result<AccountsReading, AccountsFailure>) -> bool {
+    fn apply(&mut self, result: Result<SessionStates, AccountsFailure>) -> bool {
         let next = match result {
-            Ok(reading) => Self::Ready(reading),
+            Ok(states) => Self::Ready(states),
             Err(failure) => match self {
                 Self::Ready(last) | Self::FailedKeepingLast { last, .. } => {
                     Self::FailedKeepingLast {
@@ -521,35 +241,31 @@ impl AccountsTable {
     }
 }
 
-/// Read and decode the configured stored-account command off the frame thread.
-pub(crate) fn read_accounts(command: &str) -> Result<AccountsReading, AccountsFailure> {
+/// Read and decode the configured accounts command off the frame thread.
+fn read_accounts(command: &str) -> Result<SessionStates, AccountsFailure> {
     read_accounts_within(command, HIERARCHY_TIMEOUT)
 }
 
 /// Read and decode `command`, which is stopped at `HIERARCHY_TIMEOUT` or `limit`, whichever is
 /// sooner.
-fn read_accounts_within(
-    command: &str,
-    limit: Duration,
-) -> Result<AccountsReading, AccountsFailure> {
+fn read_accounts_within(command: &str, limit: Duration) -> Result<SessionStates, AccountsFailure> {
     let bytes = hierarchy::run_output(command, limit.min(HIERARCHY_TIMEOUT))
         .map_err(AccountsFailure::Command)?;
-    AccountsReading::parse(&bytes)
+    SessionStates::parse(&bytes)
 }
 
 #[cfg(test)]
 #[path = "accounts_source_tests.rs"]
 mod source_tests;
 
-/// A stored-account command whose answer is delivered by the refresh thread.
-pub(crate) type AccountsCommand =
-    Box<dyn Fn(&str) -> Result<AccountsReading, AccountsFailure> + Send>;
+/// An accounts command whose answer is delivered by the refresh thread.
+type AccountsCommand = Box<dyn Fn(&str) -> Result<SessionStates, AccountsFailure> + Send>;
 
 /// Only a configured source owns a refresh thread and its shutdown channel.
 enum AccountsUpdates {
     Disabled,
     Running {
-        readings: Receiver<Result<AccountsReading, AccountsFailure>>,
+        readings: Receiver<Result<SessionStates, AccountsFailure>>,
         stop:     Sender<()>,
     },
 }
@@ -564,8 +280,8 @@ impl Drop for AccountsUpdates {
 
 /// UI-owned state updated by nonblocking channel reads, never by a frame's command.
 pub(crate) struct AccountsMonitor {
-    pub(crate) table: AccountsTable,
-    updates:          AccountsUpdates,
+    pub(crate) source: AccountsSource,
+    updates:           AccountsUpdates,
 }
 
 impl AccountsMonitor {
@@ -576,10 +292,10 @@ impl AccountsMonitor {
     /// `AccountsMonitor::spawn_with` runs `AccountsCommand` on a refresh thread
     /// at `cadence` and publishes readings through `AccountsUpdates::Running`.
     /// An empty `command` selects `AccountsUpdates::Disabled` without a thread.
-    pub(crate) fn spawn_with(command: String, runner: AccountsCommand, cadence: Duration) -> Self {
+    fn spawn_with(command: String, runner: AccountsCommand, cadence: Duration) -> Self {
         if command.trim().is_empty() {
             return Self {
-                table:   AccountsTable::NotConfigured,
+                source:  AccountsSource::NotConfigured,
                 updates: AccountsUpdates::Disabled,
             };
         }
@@ -601,7 +317,7 @@ impl AccountsMonitor {
             }
         });
         Self {
-            table:   AccountsTable::AwaitingFirstReading,
+            source:  AccountsSource::AwaitingFirstReading,
             updates: AccountsUpdates::Running { readings, stop },
         }
     }
@@ -611,7 +327,7 @@ impl AccountsMonitor {
         let mut changed = false;
         if let AccountsUpdates::Running { readings, .. } = &self.updates {
             while let Ok(result) = readings.try_recv() {
-                changed |= self.table.apply(result);
+                changed |= self.source.apply(result);
             }
         }
         changed

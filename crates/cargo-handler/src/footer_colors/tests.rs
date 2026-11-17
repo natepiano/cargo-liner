@@ -394,16 +394,6 @@ fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors(
                     );
                 }
             }
-            let muted = colors
-                .account("fixture")
-                .subdued_style(Style::default().add_modifier(ratatui::style::Modifier::DIM));
-            assert!(!muted.add_modifier.contains(ratatui::style::Modifier::DIM));
-            let ratio = contrast_ratio(muted.fg.expect("subdued ink"), background);
-            assert!(
-                ratio >= MINIMUM_CONTRAST,
-                "{} subdued {name}: {ratio}:1",
-                variant.id.as_str()
-            );
         }
     }
     tui_pane::set_active_theme(previous);
@@ -758,14 +748,12 @@ fn covered_contrast_keeps_fractional_channels_below_the_readability_floor() {
     let ground = Color::Rgb(250, 250, 250);
     let expected = covered_role_contrast(ink, ground);
     assert!(expected < 4.5, "fixture straddles the readability floor");
-    let actual = InkCoverage::Antialiased.contrast(
-        InkGrounds {
-            base:      ground,
-            unfocused: ground,
-            focused:   ground,
-        },
-        ink,
-    );
+    let actual = InkGrounds {
+        base:      ground,
+        unfocused: ground,
+        focused:   ground,
+    }
+    .contrast(ink);
     assert!(
         (actual - expected).abs() < 1e-12,
         "covered contrast must retain fractional channels: actual={actual:.12}, expected={expected:.12}"
@@ -783,14 +771,12 @@ fn covered_contrast_rejects_an_ink_that_only_fractional_coverage_accepts() {
     let ground = Color::Black;
     let expected = covered_role_contrast(ink, ground);
     assert!((expected - 4.479_550_353_426).abs() < 1e-12);
-    let measured = InkCoverage::Antialiased.contrast(
-        InkGrounds {
-            base:      ground,
-            unfocused: ground,
-            focused:   ground,
-        },
-        ink,
-    );
+    let measured = InkGrounds {
+        base:      ground,
+        unfocused: ground,
+        focused:   ground,
+    }
+    .contrast(ink);
     assert!((measured - expected).abs() < 1e-12);
     assert!(measured < 4.5, "nearest-byte coverage must reject this ink");
 }

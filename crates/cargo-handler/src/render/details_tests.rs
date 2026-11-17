@@ -27,9 +27,8 @@ use crate::census::HierarchyRole;
 use crate::census::RunLocation;
 use crate::census::ShellTimerObservation;
 use crate::census::VerifyStep;
-use crate::census::accounts::AccountsReading;
-use crate::census::accounts::AccountsTable;
-use crate::census::accounts::Reading;
+use crate::census::accounts::AccountsSource;
+use crate::census::accounts::SessionStates;
 use crate::census::model::ReasoningEffort;
 use crate::details::DetailsOverlay;
 use crate::theme;
@@ -55,7 +54,7 @@ fn application(now: u64, age: u64) -> TestResult<App> {
         ]))?.into(),
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(AccountsReading::parse(br#"{
+    app.accounts.source = AccountsSource::Ready(SessionStates::parse(br#"{
         "accounts":[{"label":"claude1","roles":["showrunners"],"weekly_left_percent":50,
         "use_credits":false,"role_counts":[{"busy":1,"idle":1,"paused":1,"exited":1,"total":4}],
         "sessions":[{"session":"director","state":"busy"},{"session":"unit","state":"paused"},
@@ -382,12 +381,8 @@ fn row_status_uses_the_accounts_source_and_leaves_missing_states_empty() -> Test
     ] {
         let now = census::unix_now();
         let mut app = application(now, 86400)?;
-        app.accounts.table = AccountsTable::Ready(AccountsReading::parse(&serde_json::to_vec(
-            &serde_json::json!({"accounts":[{"label":"claude1","roles":["workers"],
-                "weekly_left_percent":50,"use_credits":false,"role_counts":[{
-                    "busy":u64::from(state=="busy"),"idle":u64::from(state=="idle"),
-                    "paused":u64::from(state=="paused"),"exited":u64::from(state=="exited"),"total":1
-                }],"sessions":[{"session":"worker","state":state}]},
+        app.accounts.source = AccountsSource::Ready(SessionStates::parse(&serde_json::to_vec(
+            &serde_json::json!({"accounts":[{"label":"claude1","sessions":[{"session":"worker","state":state}]},
                 {"label":"claude2","roles":[],"use_credits":false,"sessions":if conflict {vec![
                     serde_json::json!({"session":"director","state":"busy"}),
                     serde_json::json!({"session":"worker","state":"idle"}),
@@ -400,20 +395,6 @@ fn row_status_uses_the_accounts_source_and_leaves_missing_states_empty() -> Test
         assert_eq!(actual, if conflict { "" } else { state });
         assert_eq!(field(&buffer, "unit-name", "status")?, "");
         assert_eq!(field(&buffer, "director-name", "status")?, "busy");
-        let AccountsTable::Ready(reading) = &app.accounts.table else {
-            return Err("missing reading".into());
-        };
-        let Reading::Known(counts) = &reading.accounts[0].roles[0].counts else {
-            return Err("missing counts".into());
-        };
-        let count = match state {
-            "busy" => counts.busy,
-            "idle" => counts.idle,
-            "paused" => counts.paused,
-            "exited" => counts.exited,
-            _ => return Err("unexpected status".into()),
-        };
-        assert_eq!(count, counts.total);
     }
     assert_unrecorded_statuses()?;
     Ok(())
@@ -795,6 +776,7 @@ fn assert_wrapped_details_navigation() -> TestResult {
     use tui_pane::CopySelection;
 
     use crate::details::DetailsPane;
+
     let now = census::unix_now();
     let mut app = application(now, 86400)?;
     let machine = app.census.machines(&[])[0];
@@ -1048,8 +1030,8 @@ fn ink_application() -> TestResult<App> {
         hierarchy: hierarchy.into(),
         stage: ScanStage::Completed,
     });
-    app.accounts.table = AccountsTable::Ready(
-        AccountsReading::parse(
+    app.accounts.source = AccountsSource::Ready(
+        SessionStates::parse(
             br#"{
         "accounts":[{"label":"claude1","roles":[],"use_credits":false,
         "sessions":[{"session":"director","state":"busy"},

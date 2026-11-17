@@ -88,7 +88,7 @@ fn sorting_forest() -> MachineState {
 
 /// The fixture's source statuses.
 static SOURCE_STATES: LazyLock<SessionStates> = LazyLock::new(|| {
-    crate::census::accounts::AccountsReading::parse(
+    crate::census::accounts::SessionStates::parse(
         br#"{"accounts":[{"label":"fixture","roles":[],"use_credits":false,"sessions":[
         {"session":"older-id","state":"idle"},{"session":"younger-id","state":"busy"},
         {"session":"id-20","state":"idle"},{"session":"id-30","state":"paused"},
@@ -96,7 +96,6 @@ static SOURCE_STATES: LazyLock<SessionStates> = LazyLock::new(|| {
     ]}],"problems":[]}"#,
     )
     .expect("source statuses")
-    .sessions
 });
 
 /// The fixture cells with their source statuses, sorted by `sort`.
