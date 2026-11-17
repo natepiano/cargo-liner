@@ -146,6 +146,7 @@ Unused width goes to directory when present.
 The column union uses the smallest tile width at the same x.
 A summary session table with no drawable columns uses `SummarySessionTable::OmittedForWidth` and requests no rows.
 `SummaryLayout::preferred_width` gives the width that draws every populated column whole.
+`MachineState::notices` lines draw under a machine's agents, dim, one row each, and count in the summary width and height.
 It never gives the painted width at the offered width.
 A narrow frame cuts names and omits columns, so its painted width would carry into the next layout search.
 A return to a wider terminal then restores the earlier layout.

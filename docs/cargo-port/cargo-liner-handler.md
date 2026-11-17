@@ -620,7 +620,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a reduced accounts table in the handler; the hana console accounts page owns account usage.
 
-### Phase 29 — The summary names an accounts command failure  · status: todo
+### Phase 29 — The summary names an accounts command failure  · status: done
 
 #### Work Order
 
