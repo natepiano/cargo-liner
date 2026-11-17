@@ -7,6 +7,11 @@ use crate::scan::MetadataDispatchContext;
 use crate::tui::panes::Panes;
 use crate::tui::project_list_state::ProjectList;
 
+pub(in crate::tui) enum LeafReplacementOutcome {
+    Replaced { previous: Box<RootItem> },
+    NoCompatibleLeaf,
+}
+
 /// RAII guard for structural mutations of the project tree.
 /// Obtained via `App::mutate_tree`; dropped at end of scope (or
 /// earlier via `drop`), at which point all tree-derived caches are
@@ -55,13 +60,17 @@ impl TreeMutation<'_> {
         path: &Path,
         item: RootItem,
         dispatch: &MetadataDispatchContext,
-    ) -> Option<RootItem> {
+    ) -> LeafReplacementOutcome {
         let roots = scan::cargo_metadata_roots_for_item(&item);
         let previous = self.projects.replace_leaf_by_path(path, item);
         for root in roots {
             scan::spawn_cargo_metadata_refresh(dispatch.clone(), root);
         }
-        previous
+        previous.map_or(LeafReplacementOutcome::NoCompatibleLeaf, |previous| {
+            LeafReplacementOutcome::Replaced {
+                previous: Box::new(previous),
+            }
+        })
     }
 
     /// Re-bucket workspace members under inline-dir groups.

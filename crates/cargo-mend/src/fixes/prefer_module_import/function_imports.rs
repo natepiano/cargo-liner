@@ -11,6 +11,7 @@ use syn::visit::visit_item_mod;
 
 use super::support;
 use super::support::CrateSources;
+use super::support::FunctionDefinition;
 use super::support::ImportNameCase;
 use super::support::ModuleResolution;
 use crate::fixes::imports::ConditionalAttributes;
@@ -139,6 +140,10 @@ fn analyze_function_import(
         ModuleResolution::Module => return None,
         ModuleResolution::NotModule => {},
     }
+    match support::function_definition(crate_sources, &absolute_module, leaf) {
+        FunctionDefinition::Defined => {},
+        FunctionDefinition::NotDefined => return None,
+    }
 
     let module_segments = &flat.prefix;
     let module_name = module_segments.last()?.clone();
@@ -190,7 +195,16 @@ mod tests {
     #[test]
     fn function_analysis_uses_the_required_leaf_and_module_prefix() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("lib.rs"), "mod util { pub fn run() {} }")?;
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "mod util {
+                pub fn run() {}
+                macro_rules! accessor { ($name:ident) => { pub trait $name {} }; }
+                accessor!(client_version);
+                pub use inner::step;
+                mod inner { pub fn step() {} }
+            }",
+        )?;
         let sources = crate::rust_syntax::ParsedSources::default();
         let crate_sources = super::CrateSources {
             source_root: dir.path(),
@@ -212,10 +226,24 @@ mod tests {
         assert_eq!(candidate.module_name, "util");
         assert_eq!(candidate.absolute_module, ["util"]);
         assert_eq!(candidate.replacement_use, "use crate::util;");
+        let text = "use crate::util::step;";
+        assert!(
+            super::analyze_function_import(
+                crate_sources,
+                &super::ImportSource::new(text),
+                &[],
+                &[],
+                &std::collections::BTreeSet::new(),
+                &syn::parse_str(text)?,
+            )
+            .is_some(),
+            "a function re-exported by the module stays a function import"
+        );
         for text in [
             "use run;",
             "use crate::run;",
             "use crate::util::run as execute;",
+            "use crate::util::client_version;",
         ] {
             let source = super::ImportSource::new(text);
             assert!(

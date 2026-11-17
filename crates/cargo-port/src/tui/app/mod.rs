@@ -98,6 +98,7 @@ pub(crate) use confirm_action::ConfirmationReadiness;
 pub(super) use discovery::DiscoveryRowKind;
 pub(super) use discovery::DiscoveryShimmer;
 pub(super) use discovery_shimmer::discovery_name_segments_for_path_with_refs;
+pub(super) use dismiss::FocusedDismissal;
 pub(super) use finder_state::FinderState;
 pub(super) use hovered_pane_row::HoveredPaneRow;
 pub(super) use manifest_metadata::ManifestMetadataStates;
@@ -110,6 +111,7 @@ pub(super) use poll_background_stats::PollBackgroundStats;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+pub(super) use render_registry::OverlayRenderInputs;
 #[cfg(test)]
 pub(super) use scan_state::RetrySpawnMode;
 pub(super) use scan_state::ScanState;
@@ -167,7 +169,6 @@ use self::phase_state::PhaseCompletion;
 use self::scan_state::ScanPhase;
 use self::startup::StartupPlanEffects;
 use super::app_render_state::FinderSplit;
-use super::app_render_state::OverlayRenderInputs;
 use super::app_render_state::RenderBorrows;
 use super::app_render_state::RenderRegistry;
 use super::background::Background;
@@ -214,9 +215,11 @@ use super::project_list::ReplacementExpansion;
 use super::project_list::VisibleRow;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
+use super::render_context::RenderProjectSelection;
 use super::sccache::SccacheStatusLine;
 use super::settings;
 use super::settings::SettingOption;
+use super::settings::SettingsRenderPreparation;
 use super::settings::StartupSettings;
 use super::startup_services::StartupEffect;
 #[cfg(test)]
@@ -232,10 +235,15 @@ use super::state::Config;
 use super::state::GitStatusTracker;
 use super::state::Inflight;
 use super::state::Keymap;
+use super::state::KeymapFilePath;
 use super::state::Lint;
 use super::state::Net;
+use super::state::OwnedRunId;
+use super::state::OwnedRunTerminationOutcome;
+use super::state::PriorityFetchHistory;
 use super::state::Scan;
 use super::state::SyncTracker;
+use super::state::TargetDirectoryResolution;
 use super::terminal;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
@@ -271,6 +279,29 @@ use crate::scan::BackgroundMsg;
 use crate::scan::DirSizes;
 use crate::scan::MetadataDispatchContext;
 use crate::scan::ProjectStorage;
+
+/// Ordered events for one Cargo Port-owned run.
+///
+/// The process actor sends both termination outcomes and child completion on
+/// this channel, so completion cannot overtake an accepted request's outcome.
+pub(crate) enum OwnedRunEvent {
+    Started {
+        owned_run_id: OwnedRunId,
+    },
+    Output {
+        owned_run_id: OwnedRunId,
+        line:         String,
+    },
+    /// Carriage-return line; replaces the last output line.
+    Progress {
+        owned_run_id: OwnedRunId,
+        line:         String,
+    },
+    TerminationOutcome(OwnedRunTerminationOutcome),
+    Finished {
+        owned_run_id: OwnedRunId,
+    },
+}
 
 /// The root project of the selected row, or none when the selection is not
 /// a root row or its entry is gone.
@@ -491,10 +522,12 @@ impl App {
             animation_elapsed:         Duration::ZERO,
             config:                    &self.config,
             project_list:              &self.project_list,
-            selected_project_path:     self.selected_project_path_for_render(),
+            selected_project_path:     RenderProjectSelection::from(
+                self.selected_project_path_for_render(),
+            ),
             scan:                      &self.scan,
             ci_status_lookup:          lookup,
-            settings_render_inputs:    None,
+            settings_render_inputs:    SettingsRenderPreparation::NotPrepared,
             synced_description_height: SyncedDescriptionHeight::default(),
             empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
             output_presentation:       OutputPresentation::derive(
@@ -680,10 +713,13 @@ impl App {
     /// in which case a timed "Already clean" toast is shown and no
     /// spinner is started.
     pub(super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
-        let target_dir = self
-            .scan
-            .resolve_target_dir(project_path)
-            .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join(TARGET_DIR)));
+        let target_dir = match self.scan.resolve_target_dir(project_path) {
+            TargetDirectoryResolution::Resolved(path) => path,
+            TargetDirectoryResolution::MetadataMissing
+            | TargetDirectoryResolution::MetadataStorePoisoned => {
+                AbsolutePath::from(project_path.as_path().join(TARGET_DIR))
+            },
+        };
         if !target_dir.as_path().exists() {
             let name = project::home_relative_path(project_path.as_path());
             self.show_timed_toast("Already clean", name);
@@ -807,7 +843,7 @@ impl App {
     /// Compute shared queries before this mutable borrow.
     pub(super) fn split_for_render<'a>(
         &'a mut self,
-        selected_project_path: Option<&'a Path>,
+        selected_project_path: RenderProjectSelection<'a>,
         animation_elapsed: Duration,
         ci_status_lookup: &'a CiStatusLookup,
         overlay_inputs: OverlayRenderInputs<'a>,
@@ -1291,7 +1327,8 @@ impl App {
         let framework_builder = FrameworkKeymap::<Self>::builder().vim_mode(
             integration::vim_mode_from_config(self.config.current().tui.navigation_keys),
         );
-        let framework_builder = if let Some(path) = self.keymap.path().map(Path::to_path_buf) {
+        let framework_builder = if let KeymapFilePath::Resolved(path) = self.keymap.path() {
+            let path = path.to_path_buf();
             let display_path = path.display().to_string();
             keymap::migrate_removed_action_keys_on_disk(&path).map_err(|err| {
                 format!("migrating removed keymap actions in {display_path}: {err}")
@@ -1760,7 +1797,7 @@ impl App {
             run = self.scan.state.run_count,
             "scan_start"
         );
-        self.scan.set_priority_fetch_path(None);
+        self.scan.reset_priority_fetch_history();
         self.set_focus_to_pane(PaneId::ProjectList);
         let _ = self.overlays.take_finder_return();
         self.overlays.close_settings();
@@ -2390,7 +2427,7 @@ impl App {
         if match self.project_list.at_path(abs_key.as_path()) {
             Found(p) => p.disk.total().is_none(),
             UnknownPath | StaleRoute => true,
-        } && self.scan.priority_fetch_path() != Some(&abs_key)
+        } && self.scan.priority_fetch_path() != PriorityFetchHistory::LastRequested(&abs_key)
         {
             let effect = self.startup_services.priority_detail_fetch_effect();
             self.startup_services.record_priority_detail_fetch(effect);
@@ -2398,7 +2435,7 @@ impl App {
                 return;
             }
             let abs_str = abs_key.as_path().display().to_string();
-            self.scan.set_priority_fetch_path(Some(abs_key));
+            self.scan.record_priority_fetch(abs_key);
             let crates_io_name = match &target.crates_io_query {
                 PriorityCratesIoQuery::Skip => None,
                 PriorityCratesIoQuery::Fetch(name) => Some(name),
@@ -2973,6 +3010,7 @@ mod tests {
     use super::CiRunDisplayMode;
     use super::DiscoveryRowKind;
     use super::DiscoveryShimmer;
+    use super::FocusedDismissal;
     use super::phase_state::PhaseCompletion;
     use super::scan_state::ScanPhase;
     use crate::ci::CiRun;
@@ -3037,6 +3075,8 @@ mod tests {
     use crate::tui::project_list::VisibleRow;
     use crate::tui::project_list_state::ProjectList;
     use crate::tui::render_context::PaneRenderCtx;
+    use crate::tui::render_context::RenderProjectSelection;
+    use crate::tui::settings::SettingsRenderPreparation;
     use crate::tui::state::CiStatusLookup;
     use crate::tui::test_support as tui_test_support;
     use crate::tui::test_support::TestApp;
@@ -4307,6 +4347,8 @@ mod tests {
         use crate::config::NavigationKeys;
         use crate::http::RateLimitQuota;
         use crate::lint::LintRun;
+        use crate::lint::LintRunDuration;
+        use crate::lint::LintRunFinishTime;
         use crate::lint::LintRunStatus;
         use crate::project::Comparison;
         use crate::project::DiskMeasurement;
@@ -4351,6 +4393,7 @@ mod tests {
         use crate::tui::panes::TargetsData;
         use crate::tui::render;
         use crate::tui::settings::SettingOption;
+        use crate::tui::state::KeymapFilePath;
 
         const TAB_WALK_STEPS: usize = 6;
         const SINGLE_RUN_COUNT: usize = 1;
@@ -4398,11 +4441,12 @@ mod tests {
                     .expect("keymap fixture app should be live")
             }
 
+            #[allow(clippy::panic, reason = "tests require a resolved keymap path")]
             fn keymap_path(&self) -> &Path {
-                self.app()
-                    .keymap
-                    .path()
-                    .expect("keymap fixture should use an on-disk keymap path")
+                match self.app().keymap.path() {
+                    KeymapFilePath::Resolved(path) => path,
+                    KeymapFilePath::Unavailable => panic!("keymap fixture path is unavailable"),
+                }
             }
         }
 
@@ -4761,8 +4805,8 @@ mod tests {
                 .map(|i| LintRun {
                     run_id:        format!("lint-{i}"),
                     started_at:    "2026-04-01T21:00:00-04:00".to_string(),
-                    finished_at:   None,
-                    duration_ms:   None,
+                    finished_at:   LintRunFinishTime::NotRecorded,
+                    duration_ms:   LintRunDuration::NotRecorded,
                     status:        LintRunStatus::Passed,
                     commands:      Vec::new(),
                     archive_bytes: 0,
@@ -6255,6 +6299,7 @@ mod tests {
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
+        use super::FocusedDismissal;
         use super::apply_bg_msg;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
@@ -6265,9 +6310,14 @@ mod tests {
         use crate::config::NavigationKeys;
         use crate::constants::GIT_STATUS_UNREADABLE;
         use crate::constants::GIT_UNREADABLE_LABEL;
+        use crate::lint::ArchiveSizeLookup;
         use crate::lint::LintCommand;
+        use crate::lint::LintCommandDuration;
+        use crate::lint::LintCommandExitCode;
         use crate::lint::LintCommandStatus;
         use crate::lint::LintRun;
+        use crate::lint::LintRunDuration;
+        use crate::lint::LintRunFinishTime;
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project;
@@ -6313,7 +6363,7 @@ mod tests {
         use crate::tui::app::App;
         use crate::tui::app::ConfirmAction;
         use crate::tui::app::HoveredPaneRow;
-        use crate::tui::app_render_state::OverlayRenderInputs;
+        use crate::tui::app::OverlayRenderInputs;
         use crate::tui::columns::COL_NAME;
         use crate::tui::dismiss_target::DismissTarget;
         use crate::tui::finder;
@@ -6342,6 +6392,7 @@ mod tests {
         use crate::tui::project_list::ProjectPathLookup::UnknownPath;
         use crate::tui::project_list_state::ProjectList;
         use crate::tui::render;
+        use crate::tui::render_context::RenderProjectSelection;
         use crate::tui::settings;
         use crate::tui::settings::SettingOption;
         use crate::tui::test_support as tui_test_support;
@@ -6480,15 +6531,15 @@ mod tests {
             LintRun {
                 run_id: run_id.to_string(),
                 started_at: "2024-01-01T00:00:00Z".to_string(),
-                finished_at: Some("2024-01-01T00:01:00Z".to_string()),
-                duration_ms: Some(60_000),
+                finished_at: LintRunFinishTime::Recorded("2024-01-01T00:01:00Z".to_string()),
+                duration_ms: LintRunDuration::MeasuredMilliseconds(60_000),
                 status,
                 commands: vec![LintCommand {
                     name:        "clippy".to_string(),
                     command:     "cargo clippy".to_string(),
                     status:      LintCommandStatus::Passed,
-                    duration_ms: Some(1_000),
-                    exit_code:   Some(0),
+                    duration_ms: LintCommandDuration::MeasuredMilliseconds(1_000),
+                    exit_code:   LintCommandExitCode::Recorded(0),
                     log_file:    "clippy.log".to_string(),
                 }],
                 archive_bytes: 0,
@@ -6539,7 +6590,7 @@ mod tests {
             app.ensure_detail_cached();
             app.lint.set_content(LintsData {
                 runs:         runs.to_vec(),
-                sizes:        vec![Some(0); runs.len()],
+                sizes:        vec![ArchiveSizeLookup::KnownBytes(0); runs.len()],
                 phases:       vec![LintRunPhase::Executing; runs.len()],
                 owner_paths:  Vec::new(),
                 owner_of:     Vec::new(),
@@ -6560,7 +6611,7 @@ mod tests {
                 .draw(|frame| {
                     let area = frame.area();
                     let split = app.split_for_render(
-                        selected_path.as_deref(),
+                        RenderProjectSelection::from(selected_path.as_deref()),
                         animation_elapsed,
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
@@ -6595,7 +6646,7 @@ mod tests {
                 .draw(|frame| {
                     let area = frame.area();
                     let split = app.split_for_render(
-                        selected_path.as_deref(),
+                        RenderProjectSelection::from(selected_path.as_deref()),
                         animation_elapsed,
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
@@ -6904,9 +6955,9 @@ mod tests {
             app.project_list.set_cursor(0);
             render_ui(&mut app);
 
-            let keyboard_target = app
-                .focused_dismiss_target()
-                .expect("deleted project should have a focused dismiss target");
+            let FocusedDismissal::Target(keyboard_target) = app.focused_dismiss_target() else {
+                panic!("deleted project should have a focused dismiss target");
+            };
             let (x, y) = row_dismiss_point(&app, 0);
             let Some(hit) = interaction::hit_test_at(&app, Position::new(x, y)) else {
                 panic!("deleted row dismiss point should hit a target");
@@ -7507,9 +7558,9 @@ mod tests {
             let stale_click = row_dismiss_point(&app, 0);
 
             app.project_list.set_cursor(0);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted project should have a focused dismiss target");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted project should have a focused dismiss target");
+            };
             app.dismiss(target);
             render_ui(&mut app);
 
@@ -8017,7 +8068,7 @@ mod tests {
                 .draw(|frame| {
                     let area = frame.area();
                     let split = app.split_for_render(
-                        selected_path.as_deref(),
+                        RenderProjectSelection::from(selected_path.as_deref()),
                         animation_elapsed,
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
@@ -8166,7 +8217,7 @@ mod tests {
                     .draw(|frame| {
                         let area = frame.area();
                         let split = app.split_for_render(
-                            selected_path.as_deref(),
+                            RenderProjectSelection::from(selected_path.as_deref()),
                             elapsed,
                             &lookup,
                             OverlayRenderInputs::none(),
@@ -8394,7 +8445,7 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let split = app.split_for_render(
-                        selected_path.as_deref(),
+                        RenderProjectSelection::from(selected_path.as_deref()),
                         elapsed,
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
@@ -10568,9 +10619,12 @@ mod tests {
         use crossterm::event::KeyModifiers;
         use tui_pane::GlobalAction;
 
+        use super::FocusedDismissal;
         use super::*;
         use crate::config::LintIndicator;
         use crate::lint::LintRun;
+        use crate::lint::LintRunDuration;
+        use crate::lint::LintRunFinishTime;
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::Cargo;
@@ -11288,7 +11342,7 @@ mod tests {
 
             app.project_list.set_cursor(0);
             assert!(
-                app.focused_dismiss_target().is_some(),
+                matches!(app.focused_dismiss_target(), FocusedDismissal::Target(_)),
                 "deleted top-level project should expose dismiss affordance"
             );
 
@@ -11380,8 +11434,10 @@ mod tests {
                 .set_runs(vec![LintRun {
                     run_id:        "dismissed-run".to_string(),
                     started_at:    "2026-03-30T14:22:18-05:00".to_string(),
-                    finished_at:   Some("2026-03-30T14:23:18-05:00".to_string()),
-                    duration_ms:   Some(60_000),
+                    finished_at:   LintRunFinishTime::Recorded(
+                        "2026-03-30T14:23:18-05:00".to_string(),
+                    ),
+                    duration_ms:   LintRunDuration::MeasuredMilliseconds(60_000),
                     status:        LintRunStatus::Passed,
                     commands:      Vec::new(),
                     archive_bytes: 0,
@@ -11400,9 +11456,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(0);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted top-level project should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted top-level project should be dismissable");
+            };
             app.dismiss(target);
 
             app.ensure_visible_rows_cached();
@@ -11435,6 +11491,7 @@ mod tests {
     mod rows {
         use tui_pane::ACTIVITY_SPINNER;
 
+        use super::FocusedDismissal;
         use super::*;
         use crate::config::LintIndicator;
         use crate::constants::CI_PASSED;
@@ -12073,9 +12130,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(2);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked worktree should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked worktree should be dismissable");
+            };
             app.dismiss(target);
 
             app.ensure_visible_rows_cached();
@@ -12156,9 +12213,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(2);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked workspace should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked workspace should be dismissable");
+            };
             app.dismiss(target);
             app.ensure_visible_rows_cached();
 
@@ -12224,9 +12281,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(2);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked workspace should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked workspace should be dismissable");
+            };
             app.dismiss(target);
 
             app.ensure_visible_rows_cached();
@@ -12303,9 +12360,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(2);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked workspace should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked workspace should be dismissable");
+            };
             app.dismiss(target);
             app.ensure_visible_rows_cached();
 
@@ -12442,9 +12499,9 @@ mod tests {
             );
 
             app.project_list.set_cursor(3);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked workspace member should dismiss its worktree");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked workspace member should dismiss its worktree");
+            };
             match &target {
                 DismissTarget::DeletedProject(path) => assert_eq!(path, Path::new(&linked_path)),
                 DismissTarget::Toast(_) => panic!("expected deleted project target"),
@@ -13007,6 +13064,8 @@ mod tests {
         use crate::constants::NO_REMOTE_SYNC;
         use crate::lint::CachedLintStatus;
         use crate::lint::LintRun;
+        use crate::lint::LintRunDuration;
+        use crate::lint::LintRunFinishTime;
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::AbsolutePath;
@@ -13049,12 +13108,12 @@ mod tests {
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::LintsAction;
-        use crate::tui::messages::CleanMsg;
         use crate::tui::panes;
         use crate::tui::panes::PackageContent;
         use crate::tui::state::CiApplicability;
         use crate::tui::state::CiDisplay;
         use crate::tui::state::StartupNetworkReadiness;
+        use crate::tui::terminal::CleanMsg;
         fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
             test_pull_request_info_with_state(number, title, PullRequestState::Ready)
         }
@@ -14147,8 +14206,10 @@ mod tests {
                     vec![LintRun {
                         run_id:        "previous".to_string(),
                         started_at:    "2026-03-30T13:22:18-05:00".to_string(),
-                        finished_at:   Some("2026-03-30T13:23:18-05:00".to_string()),
-                        duration_ms:   Some(60_000),
+                        finished_at:   LintRunFinishTime::Recorded(
+                            "2026-03-30T13:23:18-05:00".to_string(),
+                        ),
+                        duration_ms:   LintRunDuration::MeasuredMilliseconds(60_000),
                         status:        LintRunStatus::Passed,
                         commands:      Vec::new(),
                         archive_bytes: 0,
@@ -15319,8 +15380,8 @@ mod tests {
             let make_lint_run = |run_id: &str, status| LintRun {
                 run_id: run_id.to_string(),
                 started_at: "2026-03-30T16:12:18-05:00".to_string(),
-                finished_at: Some("2026-03-30T16:13:18-05:00".to_string()),
-                duration_ms: Some(60_000),
+                finished_at: LintRunFinishTime::Recorded("2026-03-30T16:13:18-05:00".to_string()),
+                duration_ms: LintRunDuration::MeasuredMilliseconds(60_000),
                 status,
                 commands: Vec::new(),
                 archive_bytes: 0,
@@ -15378,8 +15439,8 @@ mod tests {
             let run = |run_id: &str, started_at: &str| LintRun {
                 run_id:        run_id.to_string(),
                 started_at:    started_at.to_string(),
-                finished_at:   None,
-                duration_ms:   None,
+                finished_at:   LintRunFinishTime::NotRecorded,
+                duration_ms:   LintRunDuration::NotRecorded,
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 0,
@@ -15435,8 +15496,8 @@ mod tests {
             let run = |run_id: &str, started_at: &str| LintRun {
                 run_id:        run_id.to_string(),
                 started_at:    started_at.to_string(),
-                finished_at:   None,
-                duration_ms:   None,
+                finished_at:   LintRunFinishTime::NotRecorded,
+                duration_ms:   LintRunDuration::NotRecorded,
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 0,
@@ -15501,8 +15562,8 @@ mod tests {
             let run = |run_id: &str, started_at: &str| LintRun {
                 run_id:        run_id.to_string(),
                 started_at:    started_at.to_string(),
-                finished_at:   None,
-                duration_ms:   None,
+                finished_at:   LintRunFinishTime::NotRecorded,
+                duration_ms:   LintRunDuration::NotRecorded,
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 0,
@@ -15558,8 +15619,8 @@ mod tests {
             let run = |run_id: &str, started_at: &str, archive_bytes: u64| LintRun {
                 run_id: run_id.to_string(),
                 started_at: started_at.to_string(),
-                finished_at: None,
-                duration_ms: None,
+                finished_at: LintRunFinishTime::NotRecorded,
+                duration_ms: LintRunDuration::NotRecorded,
                 status: LintRunStatus::Passed,
                 commands: Vec::new(),
                 archive_bytes,
@@ -15690,8 +15751,8 @@ mod tests {
             linked_lints.set_runs(vec![LintRun {
                 run_id:        "previous".to_string(),
                 started_at:    "2026-03-30T16:12:18-05:00".to_string(),
-                finished_at:   Some("2026-03-30T16:13:18-05:00".to_string()),
-                duration_ms:   Some(60_000),
+                finished_at:   LintRunFinishTime::Recorded("2026-03-30T16:13:18-05:00".to_string()),
+                duration_ms:   LintRunDuration::MeasuredMilliseconds(60_000),
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 0,
@@ -18070,6 +18131,7 @@ mod tests {
         use notify::event::EventKind;
         use notify::event::ModifyKind;
 
+        use super::FocusedDismissal;
         use super::*;
         use crate::config::DiscoveryLint;
         use crate::config::LintIndicator;
@@ -18574,9 +18636,9 @@ mod tests {
             app.ensure_visible_rows_cached();
 
             app.project_list.set_cursor(2);
-            let target = app
-                .focused_dismiss_target()
-                .expect("deleted linked worktree should be dismissable");
+            let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+                panic!("deleted linked worktree should be dismissable");
+            };
             app.dismiss(target);
             app.ensure_detail_cached();
 
@@ -19501,10 +19563,12 @@ mod tests {
             animation_elapsed:         app.animation_started.elapsed(),
             config:                    &app.config,
             project_list:              &app.project_list,
-            selected_project_path:     app.selected_project_path_for_render(),
+            selected_project_path:     RenderProjectSelection::from(
+                app.selected_project_path_for_render(),
+            ),
             scan:                      &app.scan,
             ci_status_lookup:          &holder.ci_status_lookup,
-            settings_render_inputs:    None,
+            settings_render_inputs:    SettingsRenderPreparation::NotPrepared,
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
             empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
@@ -19822,7 +19886,7 @@ mod tests {
         let cargo_toml = dir.join("Cargo.toml");
         let parsed = project::from_cargo_toml(&cargo_toml)
             .unwrap_or_else(|_| panic!("parse test Cargo.toml"));
-        scan::cargo_parse_result_to_item(parsed)
+        RootItem::from(parsed)
     }
 
     fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
@@ -20371,9 +20435,9 @@ mod tests {
         );
         assert!(app.project_list.is_deleted(linked_dir));
         app.project_list.set_cursor(2);
-        let target = app
-            .focused_dismiss_target()
-            .expect("deleted linked worktree should be dismissable");
+        let FocusedDismissal::Target(target) = app.focused_dismiss_target() else {
+            panic!("deleted linked worktree should be dismissable");
+        };
         app.dismiss(target);
         app.ensure_visible_rows_cached();
         assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);

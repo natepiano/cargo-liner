@@ -1,6 +1,7 @@
 pub(super) use tui_pane::NumericColumnAlignment as ValueAlignment;
 
 use crate::sccache;
+use crate::sccache::SccacheStatFieldMatch;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StatContext {
@@ -41,7 +42,7 @@ fn parse_stat_line(text: &str, context: &mut StatContext) -> ParsedStatLine {
             context: StatContext::NonCacheableReasons,
         };
     }
-    if let Some((label, value)) = sccache::split_aligned_stat(trimmed) {
+    if let SccacheStatFieldMatch::Field { label, value } = sccache::split_aligned_stat(trimmed) {
         if label == "Cache location" {
             *context = StatContext::Stats;
         }

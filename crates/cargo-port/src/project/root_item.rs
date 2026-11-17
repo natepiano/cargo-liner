@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::path::Path;
 
+use super::cargo::CargoParseResult;
 use super::cargo::Package;
 use super::cargo::RustInfo;
 use super::cargo::RustProject;
@@ -438,6 +439,15 @@ impl RootItem {
             }
         }
         paths
+    }
+}
+
+impl From<CargoParseResult> for RootItem {
+    fn from(parsed: CargoParseResult) -> Self {
+        match parsed {
+            CargoParseResult::Workspace(workspace) => Self::Rust(RustProject::Workspace(workspace)),
+            CargoParseResult::Package(package) => Self::Rust(RustProject::Package(package)),
+        }
     }
 }
 
