@@ -1683,59 +1683,178 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - The Mac source-switch fixture's readiness cost (about 400 ms) is outside the files above: native capture exec to constructor, and native fixture preparation on first use.
 - A probe that writes a log before its timestamp, or injects a library, adds its own cost; its startup number is not a product number.
 
-### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: todo
+### Phase 43j — The Mac source-switch reader test runs under 1 s  · status: done
 
-**Depends on:** Phase 43i
+#### As-built
 
-Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). Its round 3 head had 0, 1 and 1 cargo-tile tests at 1 s or more (natedev, Mac, Mac). The same-hour base had 0 and 5 (natedev, Mac; `phases/43i/base_compare.txt`, Mac suite 1; Mac suite 2 was cancelled). Its finding F001 stays open and moves here, owner tile, due at this phase's checkpoint.
+- Every `shim_registration::reader_scenarios` test and the other named slow tests run under 1 s in Mac full suites at load under 12 and in the natedev full suite.
+- macOS reads process groups through libproc in the scenario process: `darwin_listed_pids` (`proc_listpids`), `darwin_process_is_live` (`proc_pidinfo` short BSD info, zombie status 5) and `darwin_group_members` in `reader_scenario_cases.py`. `live_group_members` and `process_children` use them; a `ps` process cost 25-70 ms.
+- The Mac nextest setup script (`setup_reader.py setup`) prepares and launches the product fixture once: it runs `reader_child` with `CARGO_TILE_TEST_NATIVE_FIXTURE_SETUP`, which publishes `CARGO_BIN_EXE_cargo-tile\0<prepared>` atomically, then runs the fixture with `--version`. It prints the setup time apart from test time.
+- The setup script also prepares one signed bash copy and launches it once (`prepare_named_shell`), and exports it as `CARGO_TILE_TEST_NAMED_SHELL`. `copy_named_shell` hard-links that loaded inode under the fixture name; without the variable it copies and signs as before.
+- The capture test helpers `publish` and `stage` share `write_capture_pair`; `stage` writes the record at its `.tmp` staging name. `unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` stages its `CAPTURE_SWEEP_LIMIT` records in two threads.
+- `.config/nextest.toml`: the priority-90 `cargo-tile-readers` group sets `threads-required = "num-cpus"`, so each of its six tests runs alone, as a chain of about 2.5 s on the Mac before other tests start. A separate override gives the four `reader_scenario_*_removes_its_processes_and_folder` tests `threads-required = 4`. Mac suite time is unchanged at 12.6-12.8 s.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — libproc group listing and the linked named shell.
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — fixture and named-shell preparation in suite setup.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the `reader_child` fixture publication branch.
+- `crates/cargo-tile/src/progress/capture.rs` — the staging helpers and the threaded staging test.
+- `.config/nextest.toml` — the reader slot overrides.
+
+**Binds later work:** A Mac gate suite counts only when its start load is under the Mac's 12 CPUs (scaled from natedev's under-32 rule; showrunner, 2026-11-15). The reader group and removes slot overrides stay when the slow-test priority override is added.
+
+**Gotchas:**
+- macOS spends 75-350 ms on the first launch of each new executable inode; a second launch or a hard link to a loaded inode costs 4-8 ms. A test that copies an executable pays this cost; link a loaded inode instead.
+- Under Mac load, a 25 ms sleep takes 33-165 ms, which sets the reader scan cadence floor. The CPU attribution test is about 0.9 s alone.
+- Mac load from other sessions moves suite times by 1.5x between runs; read the start load in the nextest line.
+
+**Ruled out:** the macOS Developer Tools entry and developer mode for the ssh session path (Tailscale's `tailscaled`) do not change the first-launch cost; a faster product scan pace.
+
+### Phase 64 — A released phase's commits raise no incursion against the next reservation  · status: done
+
+#### As-built
+
+Drift incursion attribution skips the commits that a released reservation in the same worktree checkpointed.
+- `IncursionAnchorAttribution` (`drift/provenance.rs`) holds `released_checkpoints`: the anchor's range commits that a released sibling in a subject's worktree checkpointed.
+- `record_released_sibling_checkpoints` runs in `read_committed_foreign_paths`. For each non-active sibling with `RetainedProtectedTip::Retained(tip)` in a subject's worktree, it reads `phase_start..tip` only when the tip is inside an anchor's range.
+- `path_commit_authorship`, `latest_commit` and `commits_for_paths` skip those commits. A path whose only entering commits are a released sibling's classifies as Inherited and raises no incursion. A commit the staying reservation makes into a held path still raises an incursion that names only that commit.
+- The observation-level committed path set (`observe_full`) is unchanged.
+
+**Files:**
+- `crates/cargo-berth/src/drift/provenance.rs` — incursion attribution and the released-sibling interval read.
+- `crates/cargo-berth/tests/drift.rs` — `a_released_siblings_checkpoint_raises_no_incursion_against_the_reservation_that_stays`.
+
+**Gotchas:**
+- Sibling selection is by worktree only; `widening.rs` selects by worktree and run for its comparison end.
+- A commit the staying reservation makes inside an active sibling's later-released interval is also skipped. Phases in one worktree run one after the other.
+- The 1 s gate applied to cargo-berth on natedev only. The Mac suite passed with 490 tests at 1 s or more; a later phase owns them.
+
+### Phase 65 — The cargo-berth template setup survives a slow git protocol reply on the CI runner  · status: done
+
+#### As-built
+
+The first reply of a persistent Git child includes process startup, so it uses the whole-command deadline.
+- `read_startup_line` (`git/protocol.rs`) reads the first reply under `GIT_COMMAND_DEADLINE` (30 s, `git/child.rs`) with the deadline label "protocol startup". The `update-ref --stdin` retention transaction (`git/refs.rs`) reads its `start: ok` reply with it.
+- The installation probe (`git/installation.rs`) uses `GIT_COMMAND_DEADLINE`. The 750 ms `CONTROL_REPLY_DEADLINE` is removed.
+- The recorded-template setup runs four template workers. `run_selected_setup_test` returns `SetupTestSelection` (`Completed`, `NoSelection`).
+
+**Files:**
+- `crates/cargo-berth/src/git/protocol.rs` — `read_startup_line` and the startup deadline.
+- `crates/cargo-berth/src/git/refs.rs` — the retention transaction's first reply.
+- `crates/cargo-berth/src/git/installation.rs` — the installation probe deadline.
+- `crates/cargo-berth/tests/recorded_templates.rs` — `SetupTestSelection` and the template worker count.
+
+**Binds later work:** No shorter deadline wraps Git startup, and the template setup keeps four workers; the cargo-berth Mac test speed work keeps both.
+
+**Gotchas:**
+- Git startup takes 0.7-2.1 ms normally and 1,231 ms with a valid 83 MB repository config; warm replies stay under 24 ms. Holding packed-refs.lock does not delay `start`.
+- The cargo-mend formatter test `batch_measurements_keep_configuration_edition_and_source_bytes` fails each time the GitHub cargo-mend job runs: the job installs no nightly rustfmt. It is not a cargo-berth failure.
+
+**Ruled out:** a smaller template worker cap, which hid the startup cost.
+
+### Phase 66 — The shim_modes native mirror test always runs native capture on the CI runner  · status: done
+
+**Depends on:** Phase 65 (order only)
 
 #### Work Order
 
-**Goal:** Every `shim_registration::reader_scenarios` test runs under 1 s in a loaded Mac full suite and a loaded natedev full suite. This includes `reader_keeps_parent_family_across_its_only_childs_source_switch`, `reader_scenario_sigkill_ends_its_waiting_writer_group` and the two tests in item 9.
+**Goal:** `a_native_mirror_keeps_cargo_streams_without_shell_utilities` does not fall back to uncaptured cargo on the GitHub macOS runner.
 
 **Spec:**
-1. The test took 1.374 s on natedev in a cargo-port run (`20261110T233054-4094787-d0c2`, reported by the showrunner 2026-11-10). It took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
-   - Native capture exec call to constructor: 238 ms.
-   - Native fixture preparation: 168 ms, on the path `hook::fixture_runner` → `native_fixture::executable` → `setup_reader.py native-fixture`. `native_fixture.rs:31` reads the receipt; its cold branch starts `setup_reader.py` at line 38, which strips and signs the fixture on a cache miss (`setup_reader.py:87`).
-2. Measure first. The 43i probe does not isolate either cost: it logs before its constructor timestamp and injects a library (Astra review, `/tmp/claude/astra/20261109T072032Z-2693821/review.md`).
-   - Compare launches with and without the probe, at the same executable and load. Take monotonic timestamps before any log write. Time first and repeated launches apart.
-   - Split preparation into receipt hit, artifact cache hit, lock wait, strip and sign. Later preparations in the same file took 0.380 ms and 0.166 ms, so 168 ms may be a first-use cost only.
-   - Record the full source-switch timeline in loaded suites, with an empty and a populated fixture cache.
-   Then fix the largest measured cost at its cause.
-3. Keep every assertion and readiness wait. Keep the product `CARGOTILE_NESTED`, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace.
-4. `progress::capture::tests::unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` took 1.009 s on the Mac in a 43i round 2 suite. Its largest stage starts at `progress/capture.rs:2088` (`phases/43i/fix3_stages.md`). Measure it again; if it is at 1 s or more in a gate suite, fix its cause.
-5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
-6. `copy_named_shell` (`reader_scenario_cases.py:313`) copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
-7. The Phase 32 round 1 Mac suite (2026-11-09, `phases/32/repair_summary_round1.txt`) had twelve `shim_registration::installed` tests at 1.458-1.570 s, all finishing together, and one leaky test, `cli_lifecycle::tests::uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`. Phase 32 does not touch these files. Measure them in a loaded Mac full suite. Fix the shared cost at its cause, and stop the process that outlives the leaky test. Do not raise a limit.
-8. `shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group` took 3.349 s in the Phase 59 Mac gate (`phases/59/mac_gate_r3.log`). The four ownership tests took 0.57-0.69 s in the same suite. Measure startup and cleanup apart, then fix the largest cost at its cause. Keep every assertion at `reader_scenario_cases.py:2024-2065`.
-9. The Phase 32i round 3 natedev gate suite (2026-11-11, run `20261111T011717-1578511-7053`) had three reader scenarios over 1 s. Phase 32i does not touch these tests. The source-switch test took 1.088 s. `reader_accepts_live_writer_under_different_locale_and_timezone` took 1.103 s. `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.592 s. Measure both new tests with the item 2 timeline. Fix each cost at its cause.
-10. A natedev cargo-tile full suite on the handler branch (no cargo-tile edits, heavy load; showrunner, 2026-11-13) passed 1292 tests. Nine existing tests took more than 1 s:
-    - `reader_keeps_parent_family_across_its_only_childs_source_switch` — 1.757 s
-    - `reader_excludes_a_live_command_without_sweeping_its_capture` — 1.673 s
-    - `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` — 1.507 s
-    - `darwin_membership_beyond_the_credential_limit_keeps_account_children_running` (`shim_registration/shared_capture.rs`) — 1.313 s
-    - `reader_scenario_sigkill_removes_its_processes_and_folder` — 1.137 s
-    - `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` — 1.103 s
-    - `installing_repairs_a_runner_missing_group_and_other_execution` (`hook.rs`) — 1.071 s
-    - `reader_scenario_timeout_removes_its_processes_and_folder` — 1.066 s
-    - `unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` — 1.013 s
-    Apply item 2 to each, and fix each cost at its cause. A test over 1 s is a defect, also under load.
+1. The failure: GitHub run 43717017527, "Merge handler phase 19 (0aa61ba) into main", 2026-11-15 13:03 UTC, job "macOS cargo-tile" (image macos-26-arm64). The next main run passed.
+   - `crates/cargo-tile/tests/shim_modes.rs:1375`: "the utility row must run native capture". The stand-in cargo saw `CARGOTILE_NESTED`, `CARGO_TERM_PROGRESS_WHEN` and `CARGO_TERM_PROGRESS_WIDTH` all unset; the test expected `<pid>`, `always`, `100`. The shim ran cargo with no capture. The test took 0.063 s.
+2. This is the same failure class as Phase 63 (`attempts-63-shim-mode-not-found` in the unit's memory): under load, the shim takes a fallback path that runs cargo with no capture. The fallback paths are in `hook.rs` (no terminal, no signal guard, failed publication). Phase 63 did not reproduce the trigger.
+3. Make the fallback name its cause: the test prints the shim's stderr and status when the environment shows no capture. Then force each fallback path in a scratch run to find which one matches the CI evidence. Fix the cause in the shim or the fixture. Keep every assertion.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/installed.rs` — item 7, test module only.
-- `crates/cargo-tile/tests/cli_lifecycle.rs` — item 7, the leaky test.
-- `crates/cargo-tile/src/hook.rs` — only `fixture_runner`, the native capture entry's startup and the item 10 test.
-- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 10, the darwin membership test.
-- `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
-- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — items 6 and 8, the named-shell preparation and the SIGKILL scenario.
-- `crates/cargo-tile/src/progress/capture.rs` — item 4, test module only.
+- `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
+- `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
 
-**Workers:** 1 writer — `test`.
+**Workers:** 1 writer (`impl`) — owns `shim_modes.rs`, the named `hook.rs` fallback and the scratch runs.
 
-**Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it. Phase 59: a reader scenario runs under an owner process that holds a lifetime pipe (`reader_scenarios.rs:180-222`). A group registers before its session is created, and the owner ends the groups before it removes the folder. Keep this order and the four ownership tests (`reader_scenarios.rs:265-286`).
+**Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1, item 4, item 7 and item 8 tests, of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) and of each item 10 test below 1 s, and no leaky test; lint.
+### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: todo
+
+**Depends on:** Phase 66 (order only)
+
+#### Work Order
+
+**Goal:** The cargo-tile native fixture cache holds only fixtures whose source build still exists. Unbounded cache growth is a defect (showrunner, 2026-11-15).
+
+**Spec:**
+1. The evidence: on the Mac, `~/Library/Caches/cargo-tile/test-readers/native-fixtures` holds 129 fixtures, 2.1 GB, about 17 MB each, and one `.lock` file for each (director, 2026-11-15). Measure the count and size on natedev too.
+2. The cause: `native_fixture` in `setup_reader.py` names each fixture by a hash of its source identity (path, device, inode, size, mtime, ctime, strip options). Each build makes a new identity and a new fixture. Nothing removes the old ones. `remove_retired_readers` removes readers whose owner process ended; fixtures have no such rule.
+3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file.
+4. The lock rule. Today `native_fixture.rs` `executable` reuses a receipt without a fixture lock (architect review, 2026-11-16; confirm in the code first).
+   - A reader takes the fixture lock shared from the receipt check until the fixture process starts. A removed file does not stop a process that already started.
+   - Removal takes the fixture lock exclusive and non-blocking. A busy lock means the fixture stays for a later publication.
+   - Removal deletes the fixture, then unlinks the lock file while it still holds the lock.
+   - Each lock taker, publisher or reader, compares the locked file's inode with the inode at the lock path after it gets the lock. On a difference it opens the path again and retries.
+5. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
+6. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture`, the removal and the publisher lock retry.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the shared reader lock and its retry.
+
+**Workers:** 1 writer (`impl`) — owns both files and their tests.
+
+**Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+
+### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
+
+**Depends on:** Phase 69 (order only; Phase 69 runs first, showrunner 2026-11-15)
+
+#### Work Order
+
+**Goal:** No cargo-berth test takes 1 s or more on the Mac when the suite starts at load under 12 (showrunner, 2026-11-15).
+
+**Spec:**
+1. The evidence: in the Phase 64 Mac suite (load 5.92, 12 threads), 490 of 1389 cargo-berth tests took 1 s or more, and 167 took 2 s or more (director, 2026-11-15). Phase 58b met the 1 s rule on natedev only; its Mac half never ran.
+2. Measure first. Run the cargo-berth full suite on the Mac at start load under 12. Group the slow tests by shared cost: git process starts, template setup, file system sync, first launch of a new executable (see the Phase 43j attempts).
+3. Cut each shared cost at its source, largest group first. Keep each test's behavior and assertions.
+4. Keep natedev at no test 1 s or more at load under 32. In the Phase 64 natedev suite (load 28.17), two board tests took 1.07 s and 1.04 s: `every_reachable_edge_readiness_has_its_own_action_or_settlement` and `retained_scoped_patch_verdicts_reuse_both_results_after_process_restart`. Alone they take 0.26 s and 0.21 s (load 15.99). Bring both under 1 s in the full suite.
+
+**Files:**
+- `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
+- `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
+
+**Constraints from prior phases:**
+- Phase 65: the first reply of a persistent Git child (`read_startup_line`) and the installation probe use the 30 s `GIT_COMMAND_DEADLINE` (`crates/cargo-berth/src/git/child.rs`). Do not add a shorter deadline around Git startup. A valid 83 MB repository config made Git startup take 1,231 ms.
+- Phase 65: the recorded-template setup runs four template workers (`recorded_templates.rs`). Do not cut the worker count to make a slow reply pass.
+
+**Workers:** 1 writer (`impl`) — measures on both machines and owns the named test and support files.
+
+**Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
+
+### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: todo
+
+**Depends on:** Phase 67 (order only; runs before Phase 68, showrunner 2026-11-15)
+
+#### Work Order
+
+**Goal:** A row for a build in a build slot names the slot, its holder and its purpose, for example `hana-slot2 · fps · <purpose>`. User rule, 2026-11-14: "it's important that in cargo tile we see human readable names for the path of the build ... we need to be able to know what the build is for".
+
+**Spec:**
+1. The layout (builds showrunner, user-approved): each checkout is a slot `/build/slot/<repo>-slotN` (Mac `~/build/slot/...`). Its compiled output is `/build/cargo/<repo>-slotN`. One lookup by the folder name serves both paths.
+2. Roots: `roots.slots.<machine>` and `roots.slot_cargo.<machine>` in `~/.claude/config/build_folders.conf`. A missing key means no slots. Read the keys at run time; hard-code no path.
+3. Beside each slot folder are `<repo>-slotN.lease.json` and `<repo>-slotN.lock`. The lease holds showrunner, unit, work, purpose, pid, start_time, machine, repository, slot, commit and last_use. Read the JSON in Rust; do not call Python.
+4. A holder is live only while a process holds the `.lock` (flock). With no lock held, the slot shows as free, never as its last holder.
+5. A build whose workspace or target directory is inside a slot or slot cargo root shows the slot name, the holder and the purpose. A build outside the roots shows as before.
+6. Read each lease once per change of the lease file, not once per frame. Keep the frame time rules of Phases 32b-32j.
+7. Check the lock on its own, apart from the lease cache. A holder can release the lock and leave the lease file unchanged. Check it once per census scan, not once per frame. Name the slot states in a type: free, held with its lease, and unreadable.
+8. Send lease format questions to the queue unit through the builds showrunner.
+
+**Files:**
+- `crates/cargo-tile/src/census/scan/census.rs` — the build path read.
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `cargo_target_directory`.
+- `crates/cargo-tile/src/render.rs` — the row text.
+- `crates/cargo-tile/src/census/slot_lease.rs` — new: the slot lease reader and the lock check.
+
+**Workers:** 1 writer (`impl`) — owns the named files and their tests.
+
+**Acceptance gate:** tests for a live lease, a free slot (lock not held), a missing roots key, a build outside the roots, and a released lock with an unchanged lease file whose row stops showing the old holder; one dark mode desktop screenshot of a slot row for the user; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -3506,6 +3625,10 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Forward edits from Phase 49 (director, 2026-11-07):**
 - Run after every remaining phase that changes tests, 39, 40 and 43f included, so the measurement covers the suite that ships. Phase 43e replaces parked Phase 43c.
 - The priority-100 override holds two readers: source-switch and `reader_scenario_sigkill_ends_its_waiting_writer_group` (Phase 49 slot, `.config/nextest.toml:22`). Without the slot the SIGKILL test took 0.950 s and 1.069 s on natedev. The slot costs about 1.5 s of Mac suite time.
+
+**Forward edits from Phase 43j (director, 2026-11-15):**
+- The priority-90 `cargo-tile-readers` group now sets `threads-required = "num-cpus"`: each of its six tests runs alone, as a chain of about 2.5 s on the Mac before other tests start. A fourth override gives the four `reader_scenario_*_removes_its_processes_and_folder` tests `threads-required = 4` and sets no priority. Keep both; the new priority-80 override names none of these tests.
+- The before runs measure this layout: Mac suite 12.6-12.8 s at load 6.79-8.95 on 12 CPUs.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, after the config edit: green.

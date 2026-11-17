@@ -1238,21 +1238,33 @@ mod tests {
         birth: &str,
         output: &str,
     ) -> (PathBuf, PathBuf) {
-        let registration = root
+        let record_path = root
             .join(CAPTURE_LIVE_RUNS_DIR)
             .join(format!("{pid}.{generation}"));
+        write_capture_pair(root, pid, generation, birth, output, record_path)
+    }
+
+    /// Write the record and log for `publish` or `stage` at their final fixture paths.
+    fn write_capture_pair(
+        root: &Path,
+        pid: u32,
+        generation: &str,
+        birth: &str,
+        output: &str,
+        record_path: PathBuf,
+    ) -> (PathBuf, PathBuf) {
         let log = root.join(format!("run-{generation}-{pid}.log"));
-        fs::write(&registration, record(generation, pid, birth)).unwrap();
+        fs::write(&record_path, record(generation, pid, birth)).unwrap();
         fs::write(&log, output).unwrap();
-        (registration, log)
+        (record_path, log)
     }
 
     /// Leave the complete record at the shim's pre-publication staging basename.
     fn stage(root: &Path, pid: u32, generation: &str, birth: &str) -> (PathBuf, PathBuf) {
-        let (registration, log) = publish(root, pid, generation, birth, CAPTURED_REDRAW);
-        let staging = registration.with_file_name(format!("{pid}.{generation}.tmp"));
-        fs::rename(registration, &staging).unwrap();
-        (staging, log)
+        let record_path = root
+            .join(CAPTURE_LIVE_RUNS_DIR)
+            .join(format!("{pid}.{generation}.tmp"));
+        write_capture_pair(root, pid, generation, birth, CAPTURED_REDRAW, record_path)
     }
 
     /// Inject complete kernel evidence without depending on host pid allocation.
@@ -2085,9 +2097,19 @@ mod tests {
     fn unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots() {
         let first = capture_root();
         let second = capture_root();
-        for index in 0..CAPTURE_SWEEP_LIMIT {
-            stage(first.path(), 10, &format!("retained-{index}"), "100");
-        }
+        let retained_root = first.path();
+        std::thread::scope(|threads| {
+            for indices in [
+                0..CAPTURE_SWEEP_LIMIT / 2,
+                CAPTURE_SWEEP_LIMIT / 2..CAPTURE_SWEEP_LIMIT,
+            ] {
+                threads.spawn(move || {
+                    for index in indices {
+                        stage(retained_root, 10, &format!("retained-{index}"), "100");
+                    }
+                });
+            }
+        });
         let pair = stage(first.path(), 11, "ended", "100");
         let next_pair = publish(second.path(), 20, "ended", "100", "");
         let mut budget = SweepBudget::default();

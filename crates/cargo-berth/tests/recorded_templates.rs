@@ -200,7 +200,7 @@ mod lifecycle_templates;
 #[path = "support/recorded_history.rs"]
 mod recorded_history;
 
-// Four workers leave descriptor capacity for nested fixture locks and child pipes.
+// MAX_PARALLEL_TEMPLATE_BUILDS limits descriptors for fixture locks and child pipes.
 const MAX_PARALLEL_TEMPLATE_BUILDS: usize = 4;
 // The cold probe builds every template through the setup wrapper.
 const TEMPLATE_SETUP_PROBE_DEADLINE: Duration = Duration::from_secs(120);
@@ -281,15 +281,10 @@ fn main() {
         }
         return;
     }
-    if env::args().any(|argument| argument == "stalled_template_build_fails_with_a_clear_deadline")
-    {
-        assert_stalled_template_deadline();
-        return;
-    }
-    if env::args()
-        .any(|argument| argument == "cold_single_target_setup_builds_every_recorded_template")
-    {
-        assert_single_target_setup(&templates);
+    if matches!(
+        run_selected_setup_test(&templates),
+        SetupTestSelection::Completed
+    ) {
         return;
     }
     let builds = directory.join("before-run").join(
@@ -314,6 +309,27 @@ fn main() {
         )
         .expect("template directory should publish");
     }
+}
+
+enum SetupTestSelection {
+    Completed,
+    NoSelection,
+}
+
+fn run_selected_setup_test(templates: &[LedgerTemplate]) -> SetupTestSelection {
+    for argument in env::args() {
+        match argument.as_str() {
+            "stalled_template_build_fails_with_a_clear_deadline" => {
+                assert_stalled_template_deadline();
+            },
+            "cold_single_target_setup_builds_every_recorded_template" => {
+                assert_single_target_setup(templates);
+            },
+            _ => continue,
+        }
+        return SetupTestSelection::Completed;
+    }
+    SetupTestSelection::NoSelection
 }
 
 const fn round_two_histories() -> [LedgerTemplate; 25] {

@@ -747,7 +747,7 @@ mod tests {
             ("ignored/new.txt", false),
             ("scratch.scratch", false),
             ("new.txt", true),
-            ("src/main.rs", true),
+            ("src/lib.rs", true),
             ("ignored", true),
         ] {
             let path = project_dir.join(relative);
@@ -892,6 +892,12 @@ mod tests {
     fn ignored_git_project(temporary: &Path) -> PathBuf {
         let project_dir = temporary.join("demo");
         watch_test_support::write_tracked_file(&project_dir, "fn main() {}\n");
+        // A main.rs event also starts a project refresh, which sends background messages.
+        std::fs::rename(
+            project_dir.join("src/main.rs"),
+            project_dir.join("src/lib.rs"),
+        )
+        .expect("rename tracked source fixture");
         std::fs::create_dir_all(project_dir.join("ignored")).expect("tracked ignored directory");
         std::fs::write(project_dir.join("ignored/kept.txt"), "tracked")
             .expect("tracked ignored file");

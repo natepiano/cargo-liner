@@ -16,16 +16,14 @@ use std::time::Duration;
 use super::child;
 use super::child::ChildDeadline;
 use super::child::ChildProcess;
-
-/// A local protocol acknowledgement or installation probe performs no history walk.
-pub(super) const CONTROL_REPLY_DEADLINE: Duration = Duration::from_millis(750);
+use super::child::GIT_COMMAND_DEADLINE;
 
 impl ChildProcess {
-    /// Read a single protocol reply and restore stdout for subsequent capture.
+    /// Read the first reply after process startup and restore stdout for later capture.
     ///
     /// # Errors
     /// Returns a named timeout or a pipe error, stopping the child on failure.
-    pub(super) fn read_line(&mut self, duration: Duration) -> io::Result<String> {
+    pub(super) fn read_startup_line(&mut self) -> io::Result<String> {
         let mut output = self
             .child_mut()
             .stdout
@@ -43,7 +41,8 @@ impl ChildProcess {
             let line = String::from_utf8(bytes).map_err(io::Error::other)?;
             Ok((output, line))
         })?;
-        let deadline = ChildDeadline::new(self.command(), "protocol reply", duration);
+        // The first reply includes executable loading and repository configuration.
+        let deadline = ChildDeadline::new(self.command(), "protocol startup", GIT_COMMAND_DEADLINE);
         match deadline.receive(&response) {
             Ok((output, line)) => {
                 self.child_mut().stdout = Some(output);

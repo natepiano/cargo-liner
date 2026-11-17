@@ -7,6 +7,9 @@
 
 use std::fs::File;
 use std::io::Read;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -26,6 +29,7 @@ use tui_pane::SettingsRowIdentity;
 use tui_pane::SettingsRowPayload;
 use tui_pane::TerminalApp;
 
+use super::native_fixture;
 use super::python_cache;
 use crate::app::App;
 use crate::census::CensusCadence;
@@ -57,6 +61,20 @@ const READER_SCENARIO_SCRIPT: &str = concat!(
 /// The child receives a parent path through this constructor, never application configuration.
 #[test]
 fn reader_child() -> std::io::Result<()> {
+    if let Some(publication) = std::env::var_os("CARGO_TILE_TEST_NATIVE_FIXTURE_SETUP") {
+        // `setup_reader.py` loads the product fixture that `native_fixture::executable` publishes.
+        let prepared = native_fixture::executable()?;
+        let publication = Path::new(&publication);
+        let directory = publication.parent().ok_or_else(|| {
+            std::io::Error::other("the fixture publication needs a parent directory")
+        })?;
+        let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+        staged.write_all(env!("CARGO_BIN_EXE_cargo-tile").as_bytes())?;
+        staged.write_all(b"\0")?;
+        staged.write_all(prepared.as_os_str().as_bytes())?;
+        staged.persist(publication)?;
+        return Ok(());
+    }
     if let Some(scenario) = std::env::var_os("CARGO_TILE_TEST_READER") {
         let root = std::env::current_dir()?;
         if scenario == "cpu-cache-server" {

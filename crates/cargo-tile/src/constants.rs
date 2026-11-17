@@ -754,6 +754,19 @@ pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
 pub(crate) const ACCOUNT_GROUPS_MAX_CAPACITY: usize = 65_536;
 /// Hidden per-account hook protocol shared by the admin command and account process.
 pub(crate) const ACCOUNT_HOOK_REPORT_FLAG: &str = "account-hook-report";
+/// `CAPTURE_FALLBACK_ENV` carries the capture failure without a terminal diagnostic.
+pub(crate) const CAPTURE_FALLBACK_ENV: &str = "CARGOTILE_CAPTURE_FALLBACK";
+/// `CAPTURE_FALLBACK_PUBLICATION` names a registration or log publication failure.
+pub(crate) const CAPTURE_FALLBACK_PUBLICATION: &str = "publication";
+/// `CAPTURE_FALLBACK_SIGNALS` names a signal guard failure.
+pub(crate) const CAPTURE_FALLBACK_SIGNALS: &str = "signal guard";
+/// `CAPTURE_FALLBACK_STARTUP` names a cargo transport startup failure.
+pub(crate) const CAPTURE_FALLBACK_STARTUP: &str = "capture startup";
+/// `CAPTURE_FALLBACK_TERMINAL` names an unavailable capture stream.
+pub(crate) const CAPTURE_FALLBACK_TERMINAL: &str = "terminal";
+/// `CAPTURE_HELPER_UNACKNOWLEDGED` names a helper exit before cargo confirms execution.
+pub(crate) const CAPTURE_HELPER_UNACKNOWLEDGED: &str =
+    "capture helper exited without cargo acknowledgement";
 /// How long the toast announcing a shim the grid just installed stays
 /// up. Longer than a notice: it names a change to every toolchain on
 /// the machine and the command that reverses it.
