@@ -730,21 +730,20 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 35 — Worker role labels take the `role.worker` color  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the role label of a worker row (impl, test, review, fix, worker) takes the color in `role.worker`. Source: a user request through sdlc (Images page, images 9548b3e68998 and 64f58b09e489), sent by the showrunner 2026-11-17. The user sets the color on the Accounts page; devtools adds `role.worker` (default white) to `~/.claude/config/statusline.conf` in its rolecolor phase.
-
-**Spec:**
-1. Add `FooterRole::Worker`. `FooterColors::parse` reads it from the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys.
-2. `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint. `Agent` and `Producer` stay plain.
-3. A missing or invalid `role.worker` key leaves these labels plain, as today.
+- `FooterRole::Worker` reads the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys. The user sets the color on the Accounts page; devtools writes the key to `~/.claude/config/statusline.conf`.
+- `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint in the tree role column. `Agent` and `Producer` stay plain.
+- A review-fallback session and each dispatch or unroled worker seat also show `worker` and take the same tint.
+- `FooterColors::management_role` tints job text: showrunner, unit director and Astra roles keep their ink; worker job text stays plain.
+- A missing or invalid `role.worker` key leaves every worker label plain.
 
 **Files:**
-- `crates/cargo-handler/src/footer_colors/mod.rs`
-- `crates/cargo-handler/src/footer_colors/tests.rs`
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterRole::Worker`, the parse arm, `hierarchy_role` and `management_role`.
+- `crates/cargo-handler/src/agent_cell.rs` — `job_tint` and `footer_role` route worker labels to the `role.worker` tint.
+- `docs/cargo-handler/as-built/colors.md` — the `role.worker` key and its scope.
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- `job_style` shares the role tint path. Worker job text must go through `management_role` to stay plain.
 
-**Verification:**
-- Tests: `role.worker` parses with comments and spacing; each of the five worker roles takes the tint; `Agent` and `Producer` stay plain; a missing or empty key stays plain.
-- `verify.sh lint cargo-handler` and `verify.sh test cargo-handler`.
+**Ruled out:** tinting worker job text with `role.worker`, an unasked look change.
