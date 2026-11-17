@@ -728,7 +728,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
 
-### Phase 35 — Worker role labels take the `role.worker` color  · status: todo
+### Phase 35 — Worker role labels take the `role.worker` color  · status: done
 
 #### Work Order
 
