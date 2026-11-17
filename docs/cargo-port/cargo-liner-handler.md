@@ -653,7 +653,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a second re-export resolver for the function check; it read bare names differently from the module check.
 
-### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: todo
+### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: done
 
 #### Work Order
 
