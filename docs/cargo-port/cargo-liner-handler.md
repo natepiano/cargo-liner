@@ -715,27 +715,15 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 34 — A real mend run loads the compiler library only where it must  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** count and time the librustc_driver loads of a real mend run, and remove the avoidable ones only when they cost 100 ms or more. Source: the showrunner, 2026-11-17. The full CLI/driver split is dropped: it widens hundreds of internal items to public API for about one load per run. Order: after Phase 33, before the as-built.
-
-**Spec:**
-1. Measure 3 pairs on the Mac on a real crate: main against Phase 33, a warm target, one dirty crate. Report the median and spread of wall time, and the count of librustc_driver loads in each run.
-2. Name each avoidable load: a process that loads librustc_driver only to answer a toolchain query or to pass a unit to rustc.
-3. When the avoidable loads add 100 ms or more to the median run, add a small rustc-free `cargo-mend-wrapper` binary. It answers the toolchain queries, passes unselected units to rustc, and starts the full binary only for selected crates. Otherwise make no code change.
-
-**Files:**
-- `crates/cargo-mend/Cargo.toml`
-- `crates/cargo-mend/src/`
-
-**Workers:** none. The director writes the phase under NoWorkerMode.
-
-**Verification:**
-- The 3 pairs: median and spread of wall time, and the load count per run.
-- With a code change: lint, one full `cargo-mend` test suite run, and 3 new pairs that show the change is not slower.
-
-#### Result
-
+- A measurement only; no code change. Rule (showrunner, 2026-11-17): build a rustc-free wrapper binary only when avoidable librustc_driver loads add 100 ms or more to the median run.
 - 3 pairs on the Mac, obsidian_knife copy, warm target, `src/main.rs` touched before each run, Mac load 13.2-13.5: main wall median 1.775 s (1.608-1.789 s), Phase 33 1.669 s (1.647-1.738 s). The difference is inside the spread.
-- Cargo's log shows "rustc info cache hit" for each rustc lookup, and `target/.rustc_info.json` does not change. A warm run starts no toolchain query. The crate is one package, so no unit passes through to rustc.
-- Avoidable loads: 0 ms, under the 100 ms limit. No code change.
+- A warm run starts no toolchain query: cargo answers from `target/.rustc_info.json` ("rustc info cache hit"). A one-package crate passes no unit through to rustc. Avoidable loads cost 0 ms.
+
+**Files:** none.
+
+**Gotchas:**
+- DYLD_PRINT_LIBRARIES and DYLD_PRINT_TO_FILE do not reach cargo's child processes. Do not use them to count loads.
+
+**Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
