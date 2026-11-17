@@ -602,22 +602,51 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 ### Phase 28 — The handler shows no accounts table  · status: done
 
+#### As-built
+
+- The summary lists only the machines and their sessions. It has no accounts section, sort, row selection, section pin, reset colors or failure note. The hana console accounts page shows account usage.
+- `SessionStates::parse` decodes only `accounts[].sessions[]` (`{session, state}`) and ignores every other field. `AccountsSource` keeps five states (`NotConfigured`, `AwaitingFirstReading`, `Ready`, `Failed`, `FailedKeepingLast`); `health` gives the census its source health and `session_states` gives the tree its states.
+- `[census] accounts_command`, the tree status column, the `census --json` status, the `[accounts]` label column and `FooterColors::account` stay.
+- `SummaryLayout::preferred_width()` gives the whole (uncut) width. A narrow frame no longer carries its cut width into the next layout search, so a wider terminal restores the earlier layout.
+
+**Files:**
+- `crates/cargo-handler/src/census/accounts.rs` — `SessionStates`, `AccountsSource`, `AccountsMonitor`
+- `crates/cargo-handler/src/summary/mod.rs` — machine headings and session tables, `push_session_table`, `whole_width`
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterColors::account`, `search_lightness`
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — the whole-width layout test
+- `docs/cargo-handler/as-built/accounts.md` — the session states doc
+
+**Gotchas:** a session with no entry is `ReportedSessionState::Unavailable`, never `idle`.
+
+**Ruled out:** a reduced accounts table in the handler; the hana console accounts page owns account usage.
+
+### Phase 29 — The summary names an accounts command failure  · status: todo
+
 #### Work Order
 
-**Goal:** cargo-handler no longer shows the accounts table. The user now reads account updates on the hana console's accounts page. Source: the user via the showrunner, 2026-11-16: "remove from cargo handler anything related to showing the accounts page - it is no longer necessary".
+**Goal:** while the accounts command fails, the summary shows one notice line under the local machine heading that names the failure. Today a failed command leaves the tree status column blank with no reason. Source: the showrunner, 2026-11-16: "Show one notice line under the local machine heading, only while the accounts command fails, naming the failure. A blank status column with no reason is a wrong result for the user."
 
 **Spec:**
-1. Remove the summary's accounts section: its heading, rows, header sort, row selection, section pin, reset colors and gradients, the failure note and the `problems` lines.
-2. Remove what only that section uses: `summary/accounts.rs`, `AccountsColumn` and `AccountsSort` in `sort.rs`, `SummaryAccount` and `SectionPin` in `interaction.rs`, the `AccountReading` and `AccountResetDate` redraw times, `ResetRank`, and the constants and theme entries that only the table reads.
-3. The accounts command reads only what the handler still uses: the `sessions` states. Remove the decode of account usage, role counts, credits, resets, login ends and read status (`AccountUsage` and the types under it). Extra fields in the command's JSON are ignored.
-4. Keep `[census] accounts_command`, the session status in the tree and in `census --json`, the accounts source health, and the `[accounts]` label column and its ink.
-5. Remove the tests of removed code. Keep each test of kept behavior, rewritten where it builds an `AccountUsage`.
-6. Update the README and `docs/cargo-handler/as-built/` (`accounts.md`, `colors.md`, the summary layout) to match.
+1. While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one notice line under the local machine heading. The line names the `AccountsFailure` reason.
+2. In every other `AccountsSource` state, the summary draws no accounts notice line.
+3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count (`summary/mod.rs` near `hierarchy_notice`).
+4. `SummaryFrame` gets the notice from `app.accounts.source`; remote machines show no accounts notice.
+5. Update `docs/cargo-handler/as-built/accounts.md` and the summary layout doc.
 
-**Files:** `crates/cargo-handler/src/` — `summary/` (`accounts.rs` and its tests, `mod.rs`), `census/accounts.rs` and `accounts_wire_tests.rs`, `sort.rs`, `interaction.rs`, `terminal.rs`, `app.rs`, `expansion.rs`, `details.rs`, `render/` (the pinned accounts and accounts grid tests), `theme/mod.rs`, `constants.rs`, `startup_log.rs`; `crates/cargo-handler/README.md`; `docs/cargo-handler/as-built/`.
+**Files:**
+- `crates/cargo-handler/src/summary/mod.rs`
+- `crates/cargo-handler/src/census/accounts.rs`
+- `crates/cargo-handler/src/render/mod.rs`
+- `crates/cargo-handler/src/terminal.rs`
+- `crates/cargo-handler/src/expansion.rs`
+- `crates/cargo-handler/src/details.rs`
+- `crates/cargo-handler/src/render/accounts_notice_tests.rs`
+- `docs/cargo-handler/as-built/accounts.md`
+- `docs/cargo-handler/as-built/tile-layout.md`
 
 **Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
 - Check, lint, and the full `cargo-handler` test suite.
-- Live: on a private Xvfb, the handler draws its summary with no accounts table, and the tree's status column still fills.
+- A render test: a failed source shows the notice line with its reason under the local heading; a ready source shows none.
+- Live: on a private Xvfb, a handler with a failing `accounts_command` shows the notice line.
