@@ -348,7 +348,7 @@ pub(crate) enum StaffRowName {
 
 /// A source failure remains distinct from a valid empty answer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct UnknownReason(pub(crate) String);
+pub(crate) struct UnknownReason(String);
 
 /// A fact carries either its value or the reason it is unknown.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

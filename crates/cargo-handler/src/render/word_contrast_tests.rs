@@ -20,6 +20,7 @@ use crate::app::expansion::HandlerExpansionAction;
 use crate::config::WordHighlightEmphasis;
 use crate::footer_colors;
 use crate::theme;
+use crate::theme::MINIMUM_RESET_STEP_DISTANCE;
 use crate::theme::ResetThemeFixture;
 use crate::theme::SessionHue;
 use crate::theme::WordMatchLimit;
@@ -48,6 +49,13 @@ const HEIGHT: u16 = 70;
 const FOOTER: &str = "role.showrunner=purple\nrole.unit-director=yellow\naccount.claude1=brown\naccount.claude2=magenta\naccount.claude3=blue\naccount.claude4=orange\naccount.codex1=pink\naccount.codex2=teal\n";
 const ACCOUNTS: [&str; 6] = [
     "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
+];
+// Of the six `reset_step_application` rows, these ranks draw the soonest, middle and latest steps.
+const RESET_STEP_RANKS: [usize; 3] = [0, 2, 5];
+const EMPHASES: [WordHighlightEmphasis; 3] = [
+    WordHighlightEmphasis::Subtle,
+    WordHighlightEmphasis::Clear,
+    WordHighlightEmphasis::Strong,
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -139,8 +147,7 @@ fn glyph_contrast(ink: Color, ground: Color) -> TestResult<f64> {
 fn palette_application(path: &Path) -> TestResult<App> {
     std::fs::write(path, FOOTER)?;
     let mut app = word_click_tests::application()?;
-    app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.to_owned());
-    app.footer_colors.refresh();
+    app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path.to_owned());
     let mut rows = Vec::new();
     for (index, account) in ACCOUNTS.iter().enumerate() {
         let pid = 100 + u32::try_from(index)? * 10;
@@ -462,11 +469,7 @@ fn measure_theme(
         ground,
         tile_ground,
     };
-    for emphasis in [
-        WordHighlightEmphasis::Subtle,
-        WordHighlightEmphasis::Clear,
-        WordHighlightEmphasis::Strong,
-    ] {
+    for emphasis in EMPHASES {
         app.loaded_config.config.word_highlight.emphasis = emphasis;
         reference.plain_match =
             theme::WordMatchGrounds::new(word_click_tests::match_background()?, emphasis)
@@ -1579,11 +1582,7 @@ fn measure_emphasized_frames() -> TestResult {
     let mut cache = crate::word_highlight::MatchInkCache::default();
     let background = word_click_tests::match_background()?;
     let mut previous = Vec::new();
-    for emphasis in [
-        WordHighlightEmphasis::Subtle,
-        WordHighlightEmphasis::Clear,
-        WordHighlightEmphasis::Strong,
-    ] {
+    for emphasis in EMPHASES {
         let plain =
             theme::WordMatchGrounds::new(background, emphasis).background(WordMatchSurface::Plain);
         for (index, (baseline, words, point, surface, tint)) in references.iter().enumerate() {
@@ -1953,12 +1952,13 @@ fn assert_reset_ink_separation(ink: Color, description: &str) -> TestResult {
     Ok(())
 }
 
+/// Match the reset word at `point`, check its ink, and return the matched ink.
 fn check_reset_step_match(
     app: &mut App,
     renderer: &mut Renderer,
     baseline: &Buffer,
     point: Position,
-) -> TestResult {
+) -> TestResult<Color> {
     let WordHit::Word(word) =
         crate::word_highlight::PaintedWords::word_at(baseline, app.tiles.pointer_regions(), point)
     else {
@@ -1985,8 +1985,22 @@ fn check_reset_step_match(
         glyph_contrast(after.fg, after.bg)? >= bound,
         "the match never makes reset text less readable: {before:?} -> {after:?}, bound={bound}"
     );
+    let ink = after.fg;
     app.word_highlight.clear();
-    Ok(())
+    Ok(ink)
+}
+
+/// On a plain match ground, the readability lift leaves the three matched steps apart.
+fn assert_matched_steps_distinct(inks: &[Color], emphasis: WordHighlightEmphasis) {
+    for (index, first) in inks.iter().enumerate() {
+        for second in &inks[index + 1..] {
+            let distance = footer_colors::perceptual_distance(*first, *second);
+            assert!(
+                distance >= MINIMUM_RESET_STEP_DISTANCE,
+                "{emphasis:?}: matched reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {first:?}/{second:?}, dE={distance:.9}"
+            );
+        }
+    }
 }
 
 fn measure_reset_steps() -> TestResult {
@@ -2005,32 +2019,44 @@ fn measure_reset_steps() -> TestResult {
             .collect::<TestResult<_>>()?;
         let mut steps = colors.clone();
         steps.dedup();
-        assert!(
-            (3..=4).contains(&steps.len()),
-            "the drawn reset ramp has three or four steps: {colors:?}"
+        assert_eq!(
+            steps.len(),
+            3,
+            "the drawn reset ramp has three steps: {colors:?}"
         );
-        for rank in [0, 2, 5] {
-            let point = reset_step_cell(&initial, rank)?;
-            app.click(word_click_tests::locate(&initial, "reset-step-1")?);
-            app.word_highlight.clear();
-            let baseline = renderer.paint(&mut app)?;
-            assert_eq!(
-                baseline[(point.x, point.y)].bg,
-                tui_pane::pane_background(true),
-                "the plain reset measurement uses the plain focused pane ground"
-            );
-            check_reset_step_match(&mut app, &mut renderer, &baseline, point)?;
-            app.click(word_click_tests::locate(
-                &initial,
-                &format!("reset-step-{rank}"),
-            )?);
-            app.word_highlight.clear();
-            let selected = renderer.paint(&mut app)?;
-            assert_eq!(
-                selected[(point.x, point.y)].bg,
-                tui_pane::active_focus_color()
-            );
-            check_reset_step_match(&mut app, &mut renderer, &selected, point)?;
+        for emphasis in EMPHASES {
+            app.loaded_config.config.word_highlight.emphasis = emphasis;
+            let mut plain_inks = Vec::new();
+            for rank in RESET_STEP_RANKS {
+                let point = reset_step_cell(&initial, rank)?;
+                app.click(word_click_tests::locate(&initial, "reset-step-1")?);
+                app.word_highlight.clear();
+                let baseline = renderer.paint(&mut app)?;
+                assert_eq!(
+                    baseline[(point.x, point.y)].bg,
+                    tui_pane::pane_background(true),
+                    "the plain reset measurement uses the plain focused pane ground"
+                );
+                plain_inks.push(check_reset_step_match(
+                    &mut app,
+                    &mut renderer,
+                    &baseline,
+                    point,
+                )?);
+                app.click(word_click_tests::locate(
+                    &initial,
+                    &format!("reset-step-{rank}"),
+                )?);
+                app.word_highlight.clear();
+                let selected = renderer.paint(&mut app)?;
+                assert_eq!(
+                    selected[(point.x, point.y)].bg,
+                    tui_pane::active_focus_color()
+                );
+                // The 4.5 lift on the selected match ground takes every hue near white.
+                check_reset_step_match(&mut app, &mut renderer, &selected, point)?;
+            }
+            assert_matched_steps_distinct(&plain_inks, emphasis);
         }
     }
     Ok(())
@@ -2049,24 +2075,22 @@ fn check_reset_steps(name: &str) -> TestResult {
 }
 
 #[test]
-fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_default_dark() -> TestResult {
+fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_default_dark() -> TestResult {
     check_reset_steps("Default Dark")
 }
 
 #[test]
-fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_default_light() -> TestResult {
+fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_default_light() -> TestResult {
     check_reset_steps("Default Light")
 }
 
 #[test]
-fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast_dark() -> TestResult
-{
+fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_high_contrast_dark() -> TestResult {
     check_reset_steps("High Contrast Dark")
 }
 
 #[test]
-fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast_light()
--> TestResult {
+fn reset_steps_stay_readable_and_distinct_at_every_emphasis_in_high_contrast_light() -> TestResult {
     check_reset_steps("High Contrast Light")
 }
 
@@ -2103,8 +2127,7 @@ fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
         tui_pane::set_focused_pane_tint(tint);
         let mut app = selection_tests::astra_application();
         app.loaded_config.config.word_highlight.emphasis = WordHighlightEmphasis::Subtle;
-        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.clone());
-        app.footer_colors.refresh();
+        app.footer_colors = crate::footer_colors::FooterColorFile::read_fixture(path.clone());
         let mut renderer = Renderer::new(&mut app, 180, 60)?;
         let initial = renderer.paint(&mut app)?;
         {
@@ -2385,11 +2408,7 @@ fn check_waiting_activity_matches(name: &str) -> TestResult {
             let WordHit::Word(token) = HighlightWord::from_token("waiting") else {
                 return Err("waiting token".into());
             };
-            for emphasis in [
-                WordHighlightEmphasis::Subtle,
-                WordHighlightEmphasis::Clear,
-                WordHighlightEmphasis::Strong,
-            ] {
+            for emphasis in EMPHASES {
                 let mut matched = baseline.clone();
                 painted.apply_with_inks(
                     &WordHighlight::Word(token.clone()),

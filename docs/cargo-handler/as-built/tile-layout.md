@@ -98,21 +98,30 @@ Population and ages still consider complete rows.
 
 `GroupFitStep` and `ColumnDrop` fit columns in this order:
 
-1. Remove effort.
-2. Remove model.
-3. Remove directory.
-4. Remove type.
-5. Remove branch.
-6. Add back each removed column of steps 1-5, in the reverse order, while it fits.
-7. Cut session names to the remaining width.
-8. Remove account only below the session minimum.
-9. Remove role.
-10. Remove activity.
-11. Remove status.
+1. Cut the session and branch names, the wider name first, each to its floor.
+2. Remove effort.
+3. Remove model.
+4. Remove directory.
+5. Remove type.
+6. Remove branch.
+7. Add back each removed column of steps 2-6, in the reverse order, while it fits. Then give the free width back to the cut names, the narrower name first.
+8. Cut session names below the floor to the remaining width.
+9. Remove account only below the session minimum.
+10. Remove role.
+11. Remove activity.
+12. Remove status.
 
-Each remove step acts only when the current columns exceed the available width.
-Step 6 adds back only columns that the tile's rows fill, and each keeps its display position.
+Each cut and remove step acts only when the current columns exceed the available width.
+The cut floors are `tiles.session_cut_floor` and `tiles.branch_cut_floor` in `config.toml` (`NameCutFloors`).
+Their defaults are `DEFAULT_SESSION_CUT_FLOOR` and `DEFAULT_BRANCH_CUT_FLOOR` in `constants.rs`.
+A cut never takes the session below its minimum, or the branch below its header.
+Thus a long name ends in `…` before an optional column drops.
+A name cut never makes room for the directory (`ColumnDrop::fits_beside_cut_names`).
+The directory fits only beside the uncut names; branch, type, model and effort fit beside the cut names.
+Thus on a tile with long names, the directory drops before effort and model.
+Step 7 adds back only columns that the tile's rows fill, and each keeps its display position.
 Thus effort and model return when directory drops and frees the width they need.
+The activity column takes the width of its widest drawn cell.
 The fit of all tiles at one x adds back only columns that one of those tiles keeps.
 The session minimum holds the session header and the deepest tree guides.
 Shell lines add only their guides to the session width.

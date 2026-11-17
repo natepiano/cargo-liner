@@ -486,28 +486,15 @@ fn render_sections(
         items.hint_fit
     };
     let total_width = area.width as usize;
-    let right_spans = fitted_right_spans(total_width, &mut items);
+    let right_spans = fitted_right_spans(total_width, &mut items, hint_fit);
     let right_width = right_spans.iter().map(Span::width).sum::<usize>();
     let right_start = if right_spans.is_empty() {
         total_width
     } else {
         total_width.saturating_sub(right_width + 1)
     };
-    let right_gap = if hint_fit == HintFit::IndividualHints {
-        let leading_blank = right_spans
-            .iter()
-            .flat_map(|span| span.content.chars())
-            .take_while(|character| character.is_whitespace())
-            .count();
-        STATUS_NOTE_MIN_GAP.saturating_sub(leading_blank)
-    } else {
-        1
-    };
-    let left_room = if right_spans.is_empty() {
-        total_width
-    } else {
-        right_start.saturating_sub(right_gap)
-    };
+    let right_gap = right_gap(&right_spans, hint_fit);
+    let left_room = left_room(total_width, &right_spans, hint_fit);
     let left_spans = fitted_left_spans(left_room, &mut items, hint_fit);
     let left_width = left_spans.iter().map(Span::width).sum::<usize>();
 
@@ -564,7 +551,46 @@ fn render_sections(
     }
 }
 
+/// Cells between the left side and `right` spans that start at their column.
+fn right_gap(right: &[Span<'_>], hint_fit: HintFit) -> usize {
+    if hint_fit == HintFit::IndividualHints {
+        let leading_blank = right
+            .iter()
+            .flat_map(|span| span.content.chars())
+            .take_while(|character| character.is_whitespace())
+            .count();
+        STATUS_NOTE_MIN_GAP.saturating_sub(leading_blank)
+    } else {
+        1
+    }
+}
+
+/// Room for the left side when `right` spans end the row.
+fn left_room(total_width: usize, right: &[Span<'_>], hint_fit: HintFit) -> usize {
+    if right.is_empty() {
+        return total_width;
+    }
+    let right_width = right.iter().map(Span::width).sum::<usize>();
+    total_width
+        .saturating_sub(right_width + 1)
+        .saturating_sub(right_gap(right, hint_fit))
+}
+
+/// Width of the uptime group that fits in `room`.
+///
+/// The group is the uptime and CPU spans with `Reads/s`, or without it when only they fit.
+fn uptime_group_width(items: &StatusLineItems, room: usize) -> usize {
+    let uptime_width = items.uptime.iter().map(Span::width).sum::<usize>();
+    let disk_read_width = items.disk_reads.iter().map(Span::width).sum::<usize>();
+    [uptime_width + disk_read_width, uptime_width]
+        .into_iter()
+        .find(|width| *width <= room)
+        .unwrap_or_default()
+}
+
 /// Left-side items that fit before the right-side region.
+///
+/// The uptime group comes first. Navigation hints get the room that is left.
 fn fitted_left_spans(
     room: usize,
     items: &mut StatusLineItems,
@@ -574,9 +600,7 @@ fn fitted_left_spans(
     if uptime_width > room {
         return Vec::new();
     }
-    let navigation_width = items.navigation.iter().map(Span::width).sum::<usize>();
-    let disk_read_width = items.disk_reads.iter().map(Span::width).sum::<usize>();
-    if uptime_width + navigation_width + disk_read_width <= room {
+    if uptime_group_width(items, room) > uptime_width {
         items.uptime.append(&mut items.disk_reads);
     }
     let uptime_width = items.uptime.iter().map(Span::width).sum::<usize>();
@@ -607,10 +631,18 @@ fn fit_hint_prefix(spans: &mut Vec<Span<'static>>, room: usize) {
 }
 
 /// Right-side items that fit with the trailing status-line cell retained.
-fn fitted_right_spans(total_width: usize, items: &mut StatusLineItems) -> Vec<Span<'static>> {
+///
+/// Globals come first. Notes follow from the right while the uptime group that fits beside
+/// the globals still fits, so notes drop from the left before `Reads/s`.
+fn fitted_right_spans(
+    total_width: usize,
+    items: &mut StatusLineItems,
+    hint_fit: HintFit,
+) -> Vec<Span<'static>> {
     let hinted_width = items
         .uptime
         .iter()
+        .chain(&items.disk_reads)
         .chain(&items.navigation)
         .chain(items.notes.iter().flatten())
         .chain(&items.with_hints)
@@ -626,13 +658,19 @@ fn fitted_right_spans(total_width: usize, items: &mut StatusLineItems) -> Vec<Sp
     }
     let mut width = global_width;
     let mut fitted = std::mem::take(&mut items.globals);
+    let group_width = uptime_group_width(items, left_room(total_width, &fitted, hint_fit));
     for note in std::mem::take(&mut items.notes).into_iter().rev() {
         let note_width = note.iter().map(Span::width).sum::<usize>();
         if width.saturating_add(note_width) > room {
             break;
         }
-        width += note_width;
+        let note_len = note.len();
         fitted.splice(0..0, note);
+        if left_room(total_width, &fitted, hint_fit) < group_width {
+            fitted.drain(..note_len);
+            break;
+        }
+        width += note_width;
     }
     fitted
 }
@@ -740,6 +778,9 @@ mod tests {
                 &palette,
             );
         }
+        let group = format!("{}{}", text(&uptime), text(&disk_reads));
+        let group_width = group.chars().count();
+        let full_width = group_width + navigation.iter().map(Span::width).sum::<usize>();
         for hint_fit in [HintFit::WholeGroups, HintFit::IndividualHints] {
             let mut disk_dropped = false;
             for width in (0..=100).rev() {
@@ -756,16 +797,17 @@ mod tests {
                 let row = text(&fitted_left_spans(width, &mut items, hint_fit));
                 if row.contains(DISK_READ_LABEL) {
                     assert!(!disk_dropped, "{hint_fit:?}, width {width}: {row:?}");
-                    assert!(row.ends_with(&text(&navigation)), "{row:?}");
+                    assert!(row.starts_with(&group), "{row:?}");
                 } else {
                     disk_dropped = true;
+                    assert!(width < group_width, "{hint_fit:?}, width {width}: {row:?}");
                 }
                 for (room, expected_navigation) in [
-                    (48, " ↑/↓ nav   =/- all"),
-                    (49, " ↑/↓ nav   =/- all   tab pane"),
+                    (full_width - 1, " ↑/↓ nav   =/- all"),
+                    (full_width, " ↑/↓ nav   =/- all   tab pane"),
                 ] {
                     if width == room && hint_fit == HintFit::IndividualHints {
-                        assert_eq!(row, format!("{}{}", text(&uptime), expected_navigation));
+                        assert_eq!(row, format!("{group}{expected_navigation}"));
                     }
                 }
             }

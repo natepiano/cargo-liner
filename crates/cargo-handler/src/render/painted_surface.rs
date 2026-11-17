@@ -108,12 +108,13 @@ fn tree_pressed(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,
     )
-    .with_expansion(&app.expansion);
+    .with_expansion(&app.expansion)
+    .with_name_cut_floors(app.loaded_config.config.tiles.name_cut_floors());
     let TileLookup::Current(tile) = cells.tile(id) else {
         return;
     };

@@ -1289,19 +1289,22 @@ edition = "2024"
         "the re-export reached only from #[cfg(test)] must NOT be removed; inner_facade/mod.rs after:\n{facade_after}",
     );
 
-    // Compile the test binary after the compiler fixes.
-    let test_build = cargo_command()
-        .arg("build")
+    // Check the test target after the compiler fixes. `cargo check --tests`
+    // resolves `crate::inner_facade::helper` in `tests::calls_helper`, which a
+    // removed `pub use child::helper` breaks. Nothing runs the test executable,
+    // so `cargo build --tests` adds only code generation and a link.
+    let test_check = cargo_command()
+        .arg("check")
         .arg("--tests")
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .output()
-        .expect("run cargo build --tests");
+        .expect("run cargo check --tests");
     assert!(
-        test_build.status.success(),
+        test_check.status.success(),
         "test target must still compile after --fix-compiler:\n{}\n{}",
-        String::from_utf8_lossy(&test_build.stdout),
-        String::from_utf8_lossy(&test_build.stderr)
+        String::from_utf8_lossy(&test_check.stdout),
+        String::from_utf8_lossy(&test_check.stderr)
     );
 }
 

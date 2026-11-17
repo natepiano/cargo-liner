@@ -186,7 +186,7 @@ fn observed_cells(app: &App) -> ObservedCells<'_> {
             app.census
                 .machines(&app.loaded_config.config.machines.remote),
             NOW,
-            app.footer_colors.colors(),
+            &app.footer_colors,
             &app.tree_sorts,
             app.summary_sort,
             &app.accounts.table,

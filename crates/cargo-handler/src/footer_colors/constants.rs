@@ -16,6 +16,9 @@ pub(super) const ACCOUNT_TEAL_SEED: Color = Color::Rgb(0, 135, 160);
 // footer configuration
 pub(super) const ACCOUNT_KEY_PREFIX: &str = "account.";
 pub(super) const FOOTER_CONFIG_PATH: &str = ".claude/config/statusline.conf";
+/// `#rrggbb`: two hex digits for each of red, green and blue.
+pub(super) const HEX_COLOR_DIGITS: usize = 6;
+pub(super) const HEX_RADIX: u32 = 16;
 
 // sRGB transfer and luminance
 pub(super) const BLUE_LUMINANCE_WEIGHT: f64 = 0.0722;

@@ -1696,28 +1696,102 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_inline_subtree_path()
     );
 }
 
+/// One facade fixture in a shared dry run and apply. `name` is the workspace
+/// member that `write` adds, and `fixes` is its `--fix-pub-use` count.
+struct FacadeCase {
+    name:     &'static str,
+    write:    fn(&mut DiagnosticBatch) -> std::path::PathBuf,
+    fixes:    usize,
+    findings: Option<fn(&Report)>,
+    applied:  fn(&std::path::Path),
+}
+
 #[test]
-fn grouped_facades_share_dry_run_and_apply() {
+fn grouped_and_obsidian_facades_share_dry_run_and_apply() {
+    assert_facades_share_dry_run_and_apply(&[
+        FacadeCase {
+            name:     "grouped",
+            write:    write_grouped_facade,
+            fixes:    2,
+            findings: None,
+            applied:  assert_grouped_facade_applied,
+        },
+        FacadeCase {
+            name:     "multiline",
+            write:    write_multiline_facade,
+            fixes:    2,
+            findings: Some(assert_multiline_facade_findings),
+            applied:  assert_grouped_facade_applied,
+        },
+        FacadeCase {
+            name:     "file_parent",
+            write:    write_file_parent_facade,
+            fixes:    2,
+            findings: None,
+            applied:  assert_file_parent_facade_applied,
+        },
+        FacadeCase {
+            name:     "obsidian",
+            write:    write_obsidian_facade,
+            fixes:    6,
+            findings: Some(assert_obsidian_facade_findings),
+            applied:  assert_obsidian_facade_applied,
+        },
+    ]);
+}
+
+#[test]
+fn subtree_and_parent_facades_share_dry_run_and_apply() {
+    assert_facades_share_dry_run_and_apply(&[
+        FacadeCase {
+            name:     "subtree",
+            write:    write_subtree_facade,
+            fixes:    2,
+            findings: Some(assert_subtree_facade_findings),
+            applied:  assert_subtree_facade_applied,
+        },
+        FacadeCase {
+            name:     "mixed",
+            write:    write_mixed_facade,
+            fixes:    3,
+            findings: Some(assert_mixed_facade_findings),
+            applied:  assert_mixed_facade_applied,
+        },
+        FacadeCase {
+            name:     "private_parent",
+            write:    write_private_parent_facade,
+            fixes:    2,
+            findings: Some(assert_private_parent_facade_findings),
+            applied:  assert_private_parent_facade_applied,
+        },
+        FacadeCase {
+            name:     "super_parent",
+            write:    write_super_parent_facade,
+            fixes:    1,
+            findings: None,
+            applied:  assert_super_parent_facade_applied,
+        },
+    ]);
+}
+
+/// Writes each case as a member of one workspace. One dry run and one apply
+/// then cover all the cases, so the cases share each Cargo build.
+fn assert_facades_share_dry_run_and_apply(cases: &[FacadeCase]) {
     let mut batch = DiagnosticBatch::new(
         r#"[visibility]
 pub_in_path = "permitted"
 "#,
     );
-    let members = [
-        ("grouped", write_grouped_facade(&mut batch), 2),
-        ("multiline", write_multiline_facade(&mut batch), 2),
-        ("file_parent", write_file_parent_facade(&mut batch), 2),
-        ("obsidian", write_obsidian_facade(&mut batch), 6),
-        ("subtree", write_subtree_facade(&mut batch), 2),
-        ("mixed", write_mixed_facade(&mut batch), 3),
-        ("private_parent", write_private_parent_facade(&mut batch), 2),
-        ("super_parent", write_super_parent_facade(&mut batch), 1),
-    ];
-    batch.single_compile_targets();
-    let before = members
+    let roots = cases
         .iter()
-        .flat_map(|(_, root, _)| facade_source_bytes(&root.join("src")))
+        .map(|case| (case.write)(&mut batch))
         .collect::<Vec<_>>();
+    batch.single_compile_targets();
+    let before = roots
+        .iter()
+        .flat_map(|root| facade_source_bytes(&root.join("src")))
+        .collect::<Vec<_>>();
+    let fixes = cases.iter().map(|case| case.fixes).sum::<usize>();
     let dry_run = batch
         .command()
         .args(["--fix-pub-use", "--dry-run", "--json"])
@@ -1731,19 +1805,24 @@ pub_in_path = "permitted"
     );
     let reports = batch.partition_report(parse_mend_json_output(&dry_run.stdout));
     let stderr = String::from_utf8(dry_run.stderr).expect("decode dry-run stderr");
-    assert!(stderr.contains("mend: would apply 20 `pub use` fix(es) in dry run"));
+    assert!(
+        stderr.contains(&format!(
+            "mend: would apply {fixes} `pub use` fix(es) in dry run"
+        )),
+        "{stderr}"
+    );
     assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
-    for (member, _, expected) in &members {
+    for case in cases {
+        let report = &reports[case.name];
         assert_eq!(
-            reports[*member].summary.fixable_with_fix_pub_use, *expected,
-            "{member}"
+            report.summary.fixable_with_fix_pub_use, case.fixes,
+            "{}",
+            case.name
         );
+        if let Some(findings) = case.findings {
+            findings(report);
+        }
     }
-    assert_multiline_facade_findings(&reports["multiline"]);
-    assert_obsidian_facade_findings(&reports["obsidian"]);
-    assert_subtree_facade_findings(&reports["subtree"]);
-    assert_mixed_facade_findings(&reports["mixed"]);
-    assert_private_parent_facade_findings(&reports["private_parent"]);
     for (path, bytes) in before {
         assert_eq!(
             fs::read(&path).expect("read dry-run source"),
@@ -1765,17 +1844,12 @@ pub_in_path = "permitted"
     );
     let stderr = String::from_utf8(applied.stderr).expect("decode apply stderr");
     assert!(
-        stderr.contains("mend: applied 20 `pub use` fix(es)"),
+        stderr.contains(&format!("mend: applied {fixes} `pub use` fix(es)")),
         "{stderr}"
     );
-    assert_grouped_facade_applied(&members[0].1);
-    assert_grouped_facade_applied(&members[1].1);
-    assert_file_parent_facade_applied(&members[2].1);
-    assert_obsidian_facade_applied(&members[3].1);
-    assert_subtree_facade_applied(&members[4].1);
-    assert_mixed_facade_applied(&members[5].1);
-    assert_private_parent_facade_applied(&members[6].1);
-    assert_super_parent_facade_applied(&members[7].1);
+    for (case, root) in cases.iter().zip(&roots) {
+        (case.applied)(root);
+    }
 }
 
 #[test]

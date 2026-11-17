@@ -5,7 +5,9 @@ use tui_pane::PERF_LOG_TARGET;
 
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
+use crate::project::CheckoutRefs;
 use crate::project::DiskMeasurement;
+use crate::project::LocalGitState;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::project::Visibility;
@@ -245,6 +247,9 @@ impl App {
             BackgroundMsg::CheckoutInfo { path, info } => {
                 self.handle_checkout_info(path.as_path(), info);
             },
+            BackgroundMsg::CheckoutRefs { path, refs } => {
+                self.handle_checkout_refs(path.as_path(), refs);
+            },
             BackgroundMsg::RepoInfo { path, info } => {
                 self.handle_repo_info(path.as_path(), info);
             },
@@ -354,6 +359,21 @@ impl App {
         }
         false
     }
+
+    /// Merge `refs` into the stored `CheckoutInfo` of `path`, and keep its Git
+    /// status. A path with no stored `CheckoutInfo` has no Git state to change.
+    fn handle_checkout_refs(&mut self, path: &Path, refs: CheckoutRefs) {
+        let Found(project) = self.project_list.at_path(path) else {
+            return;
+        };
+        let LocalGitState::Detected(stored) = &project.local_git_state else {
+            return;
+        };
+        let mut info = (**stored).clone();
+        info.apply_refs(refs);
+        self.handle_checkout_info(path, info);
+    }
+
     /// Stash a project's submodule list onto its `ProjectInfo` when
     /// the path resolves to a known leaf. Extracted from the dispatch
     /// match so each arm stays a single call.

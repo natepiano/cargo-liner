@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A worker row whose job runs shows its job alone, such as `reviewer`, not `reviewer · running`.
+
+- Long session and branch names end in `…` before the effort and model columns drop.
+
+- A busy shell command row, or a subagent row with no role, shows `running` when no activity is scanned, so no busy row has an empty activity cell.
+
+- A subagent row whose turn ended shows `idle`, not `busy`.
+
 - Claude rows show the effort that assistant records write at their top level.
 
 - A column that drops early, such as effort, returns when a later drop frees the width it needs.
@@ -32,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
 
 ### Added
+
+- `tiles.session_cut_floor` and `tiles.branch_cut_floor` set how far a narrow tile cuts long session and branch names.
 
 - Enter shows the focused tile on the full screen, and Esc returns it to the grid. Rows, details and word clicks work in it as in the grid.
 
@@ -79,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reset shades follow time order: the soonest reset takes the nearest shade. On dark themes the shades go from yellow-green (soonest) to sea green (latest). On light themes a brighter violet means a sooner reset.
 - Light reset times use new ramp ends: violet to deep violet in Default Light and violet to indigo in High Contrast Light. No reset shade now matches the darkest violet session color.
 - The accounts table matches the accounts board: lower-case headers, an `enabled` credit column, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
-- Reset times use their own green (dark) or violet-to-indigo (light) ramp, never error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files can set the ramp ends with `reset_nearest` and `reset_farthest`.
+- Reset times draw in three clearly different colors: green for the soonest, blue for the middle and violet for the latest. They never use error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files set the reset colors with `reset_soonest`, `reset_middle` and `reset_latest`; a theme file without them uses the Default Dark reset colors.
 - Selected rows keep their text hues and adjust lightness for readability, reducing chroma only at the color gamut boundary; unselected rows retain their theme inks.
 - Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
 - Role columns fit the roles visible in their tile group. Short tiles keep the branch column when it fits. Fitted column sets share widths and age slots after optional columns drop; the summary also omits columns without values. A shell still running after its timer expires reads `running` in the Busy ink.

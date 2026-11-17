@@ -2510,47 +2510,29 @@ The showrunner reported two intermittent failures on the Mac at style tip ad23f4
 
 **Files:** `crates/cargo-berth/src/git/{lock_holders_macos.rs,error.rs,constants.rs}`, `crates/cargo-berth/Cargo.toml`, `crates/cargo-berth/tests/{hooks,board,edges,lifecycle,recorded_templates}.rs`, `crates/cargo-berth/tests/support/proof_subject_templates.rs`, `crates/cargo-berth-test-support/src/{constants,git_trace,lib,recorded_history,repository_template}.rs`, `crates/cargo-berth-test-support/src/git_driver/mod.rs`.
 
-### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: todo
+### Phase 58g — Two more cargo-berth lock tests fail under load on the Mac  · status: done
 
 **Depends on:** Phase 58d (order only; the same test files and the same lock causes).
 
-On 2026-11-11 the showrunner ran the cargo-berth package on the Mac for style ticket 1439 on an unchanged tree (base 5142c3ca4; nextest 6 of 12 threads, load 18.48 on 12 CPUs). 1363 tests ran and 3 failed; ticket 1438 passed all 1363 at the same base. Log (natedev): `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261111T184934-4073552-8f6b.log`.
+On 2026-11-11 a Mac run of the cargo-berth package on an unchanged tree (base 5142c3ca4, load 18.48) had 3 failures: `gate::hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` ("gate worker should report mutation lock contention"), `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (Phase 58d item 1), and `ledger::explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open` ("process holders unavailable").
 
-1. `gate::hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` failed after 6.363 s: "gate worker should report mutation lock contention" (`tests/gate.rs`, log line 518).
-2. `hooks::pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` failed after 1.225 s (log line 713). This is Phase 58d item 1. Phase 58d's three Mac full suites are its check.
-3. `ledger::explicit_retention_lock_diagnostic_identifies_an_unrelated_process_holding_it_open` failed after 1.813 s: "git ref write refused by lock .../packed-refs.lock (age: 0.458 seconds; process holders unavailable)" (`tests/ledger.rs`, log line 770).
+#### As-built
 
-#### Work Order
+- **Mac holder scan.** Only `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` fails on a Mac with no lock holder. EPERM comes from Apple agents of the current user (routined, ScreenTimeAgent, dmd, nsurlsessiond, lsd and others) for files in macOS data vaults. ENOENT comes from a revoked descriptor. `lsof` reads data-vault paths only through its private entitlement `com.apple.rootless.datavault.metadata`.
+- In `process_holds_file` (`git/lock_holders_macos.rs`), ENOENT means "not the lock file", as EBADF does. EPERM means "not the lock file" only for `ProcessUser::Current`: the scan reads the lock file's metadata first, so the lock file is not in a data vault. Other errors keep the answer "unavailable". `current_user` reads this process's owner through `process_owner`, with no new unsafe code. The Linux rule does not change.
+- Cold Mac scans: 10 scans at load 9.21 took 20.78-42.16 ms, each "no process holds it".
+- `assert_no_lock_holder` (`tests/ledger.rs`) checks the three ledger holder tests. On the Mac it accepts only "no process holds it". On other systems it also accepts "process holders unavailable".
+- **Gate deadline.** `GateDeadline` (`cli.rs`) has two values. `FromStart` is the 10 s total deadline from the gate start; release builds and debug builds without `CARGO_BERTH_TEST_GATE_DEADLINE_MS` use it. `AfterMutationLockWait(d)` counts the test deadline from the worker's first mutation-lock wait, and the 10 s total deadline still applies. `ledger::notify_mutation_lock_waits` registers one process-wide notice in a `OnceLock` (`ledger/lock.rs`); `MutationLock::request` calls it after its wait thread starts. The worker sends `GateWorkerEvent::MutationLockWait` or `GateWorkerEvent::Decided`.
+- The unrelated-process ledger failure came from the old `lsof` scan (the base came before Phase 58d's libproc scan). The hooks contention test passed in all three Mac suites with no change.
+- Gate: lint on natedev after the last change. Three Mac suites of 1,388 cargo-berth tests passed at load 20.2, 12.96 and 38.38 (report only), with the gate test at 0.388-0.553 s. natedev: 1,388 tests at load 18.50 (gate test 0.299 s, hooks 0.195 s, unrelated ledger 0.215 s).
+- Director review only (no workers). No findings.
+- Checkpoint: f8e9e6ba0 on `tile-phase-58g`.
 
-**Goal:** the gate deadline test and the unrelated-process ledger test pass on every run under load, and each takes less than 1 s. On the Mac, a lock file with no holder gets the answer "no process holds it".
+**Files:** `crates/cargo-berth/src/{cli,git/lock_holders_macos,ledger/constants,ledger/lock,ledger/mod}.rs`, `crates/cargo-berth/tests/ledger.rs`.
 
-**Spec:**
+**Gotchas:** Linux `/proc/<pid>/fd` is unreadable for a same-user process that is not dumpable (natedev has 9: sd-pam, upsmon, codex, python3, 1Password, the polkit agent, bash), so the Linux scan can answer "process holders unavailable" with no holder.
 
-0. **The Mac holder scan answers "unavailable" for a file with no holder** (Phase 58d review finding F007, moved here at the repair cap; showrunner, 2026-11-13). Phase 58d replaced lsof with an in-process libproc scan (`crates/cargo-berth/src/git/lock_holders_macos.rs`). A scan of a fresh file with no holder returned `Unavailable` in 71.9 ms at load 31.35. The scan answers `Unavailable` when it cannot read a process that has the lock file's owner (`lock_holders_macos.rs:46-63`). The Linux scan has the same rule (`git/error.rs:363-375`).
-   1. First, with no product change, find each same-user process that macOS refuses, and the call and errno it returns. Report the process names, the call and the errno to the director. The director sends them and a proposed rule change to the showrunner. Make no product change before the showrunner answers.
-   2. Then apply the rule that the showrunner approves.
-   3. Measure the scan once at load below 24. The target is under 50 ms.
-   4. Remove the acceptance of `process holders unavailable` from the ledger holder tests (`tests/ledger.rs:2440-2444`). A test of a file with no holder must fail on that answer.
-1. For item 1, find why the worker did not report mutation lock contention before the outer gate deadline. Quote the line that takes the mutation lock and the line that sets the deadline. Make the order of the two events fixed by the test, not by timing.
-2. For item 3, find why the holder of `packed-refs.lock` was unavailable. Use the cause and fix of Phase 58d item 2 when they apply; do not make a second copy of that fix.
-3. Make each test deterministic: no sleep, no retry, no longer wait, no raised limit. Keep every assertion.
-4. If Phase 58d's Mac suites show item 2 still fails, fix it here with the same rules.
-5. Before the fix, show each failure in a scratch run that forces the late order (for example, a held lock or a slow step in test support). Do not commit that scratch change.
-
-**Files:**
-
-- `crates/cargo-berth/tests/gate.rs` — item 1
-- `crates/cargo-berth/tests/ledger.rs` — item 3
-- `crates/cargo-berth/tests/hooks.rs` — item 2, only under spec item 4
-- `crates/cargo-berth-test-support/` — shared lock helpers
-- `crates/cargo-berth/src/` — the lock path or the holder diagnostic, when the cause is there
-- `crates/cargo-berth/src/git/lock_holders_macos.rs` — spec item 0
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect, also under load. An intermittent test is a defect. Phase 58d: the four libproc unsafe functions are user-approved; add no other unsafe code without user approval.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh lint cargo-berth --mac`; `verify.sh test cargo-berth` green on natedev; three Mac full suites with the three tests passing and each under 1 s; the spec item 0 scan time at load below 24.
+**Ruled out:** an entitlement for data-vault reads; it is private to `lsof`.
 
 ### Phase 58i — A session's reservation in another worktree accepts `--reservation`  · status: done
 
@@ -2907,7 +2889,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 **Workers:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
 - `impl` — every file above, items 1 to 6, the whole rename and the pause path.
 
-**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates.
+**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates. Since "Reads/s stays beside CPU at 100 columns or more", the uptime group (uptime, CPU, `Reads/s`) outranks every status note, so on a narrow row the `paused` note drops before `Reads/s`. Draw `space_pauses_and_unpauses_the_display` at 80 columns or more, where a flag note such as cargo-handler's `attract` still shows.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
@@ -3580,6 +3562,62 @@ The user, 2026-11-12: "i would like to see disk reads / second (abbreviated some
 - Gate: lint for tui_pane (natedev and Mac), cargo-tile and cargo-handler; 1,389 tui_pane and 1,202 cargo-handler tests. Three cargo-handler tests that this phase does not edit took 1.04-1.15 s; the showrunner routes them.
 
 **Files:** `crates/tui_pane/src/bar/{counter_rate,disk_reads,rate_label,cpu,constants,mod,status_line,status_line_gap_tests,status_bar_contrast_tests}.rs`, `crates/tui_pane/src/framework/mod.rs`, `crates/cargo-handler/src/render/mod.rs` (the `GRID_STATUS` test string).
+
+### Phase 62a — Reads/s stays beside CPU at 100 columns or more  · status: done
+
+#### As-built
+
+- The status line fits the uptime group (the uptime spans, `CPU:` and `Reads/s`) before the navigation hints and the right-side notes. Change review C350 found `Reads/s` missing at 120 columns in cargo-port while it scanned with CPU over 300%.
+- Drop order on a narrow row: navigation hints from the right, then notes from the left, then `Reads/s`, then uptime and CPU. Globals drop last. After-uptime hints (`with_hints`, such as `enter expand`) also give way before `Reads/s`, because `hinted_width` counts `disk_reads`.
+- `crates/tui_pane/src/bar/status_line.rs`:
+  - `uptime_group_width(items, room)` gives the widest form of the group that fits: with `Reads/s`, then without it, else 0.
+  - `fitted_right_spans(total_width, items, hint_fit)` adds notes from the right only while `left_room` still holds that group.
+  - `right_gap` and `left_room` give the gap and the left room for the fitted right spans. `render_sections` and the note loop both use them.
+  - `fitted_left_spans` adds `Reads/s` whenever the group fits, then gives the room that is left to the navigation hints.
+- Tests:
+  - `reads_per_second_stays_after_cpu_while_a_scan_runs_at_one_hundred_columns_or_more` (`status_line_gap_tests.rs`) draws a cargo-port row (scan indicator, `CPU: 447%`, three navigation hints, a `Disk cache:` note, `? shortcuts`) at 100 and 120 columns. It fails on the earlier fit order at 100.
+  - `check_disk_read_priority_at_every_width` derives its rooms from the span widths.
+- cargo-handler at 80 columns now draws ` Uptime: 0s CPU: — Reads/s: —`, then `cargo-handler <version>`, then `? shortcuts`, over the grid and over every overlay. `enter expand` and the overlay navigation hints give way to `Reads/s`. One test constant, `STATUS` (`crates/cargo-handler/src/render/mod.rs`), holds that row.
+- Live check: a pty capture of cargo-port at 120 and 100 columns showed `Reads/s` after `CPU:` on every frame of a scan, with CPU up to 827%.
+
+**Files:**
+- `crates/tui_pane/src/bar/status_line.rs` — the fit order and its helpers
+- `crates/tui_pane/src/bar/status_line_gap_tests.rs` — the cargo-port row test
+- `crates/cargo-handler/src/render/mod.rs` — the 80-column `STATUS` test row
+
+**Binds later work:** a status note (for example a `paused` or stale mark) drops before `Reads/s` on a narrow row. A test that reads a note from the status line draws at a width where the note fits beside the uptime group.
+
+### Phase 62b — Four more cargo-berth edges and hooks tests run under 1 s  · status: done
+
+#### As-built
+
+- No code changed. The four tests already run under 1 s at natedev load under 32:
+
+  | Test | Alone (load 21) | Full suites (load 27.56, 13.20) |
+  | --- | --- | --- |
+  | `edges::witness_survives_pruning_and_controls_successors` | 0.251 s | 0.510 s, 0.350 s |
+  | `edges::successor_round_robin_covers_every_head` | 0.247 s | 0.522 s, 0.354 s |
+  | `hooks::a_second_commit_to_an_answered_working_tree_incursion_reopens_it` | 0.228 s | 0.384 s, 0.277 s |
+  | `hooks::hooks_state_the_unresolvable_trunk_evidence_recovery` | 0.171 s | 0.310 s, 0.215 s |
+
+- Both full cargo-berth suites passed 1388 of 1388. Their slowest tests took 0.606 s and 0.496 s.
+- The Phase 58g gate times (1.023-1.416 s) came from a busier machine.
+
+**Gotchas:** cargo-berth test scratch is in /dev/shm (`TMPDIR` from `check-test-scratch.sh`), so disk sync does not add time. The edges tests spend their time in repeated `board` runs, which are what each test proves.
+
+### Phase 62c — cargo-tile's status-row tests follow the Reads/s fit order  · status: done
+
+#### As-built
+
+- Two cargo-tile render tests expect the Phase 62a status-line rule. No product code changed.
+- `an_arriving_attract_screen_draws_the_pinned_frame` expects ` Uptime: 0s CPU: — Reads/s: —` at 80 columns. The `enter expand` hint gives way; the `cargo-tile <version> attract` note and `? shortcuts` stay.
+- The `FRAME_TAIL_CASES` rows expect `Reads/s: —` at 60 columns. The `cargo-tile <version>` note gives way; `? shortcuts` stays.
+- No cargo-port test expected the old fit order. Mac suites: cargo-tile 1,292 of 1,292 and cargo-port 1,546 of 1,546.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — the two tests
+
+**Gotchas:** `tui::theme_roles::tests::startup_page_footer_meets_contrast_in_every_registered_theme` (cargo-port) took 1.051 s at Mac load 8.84. It is port-unit code; the showrunner routes it.
 
 ### Phase 63 — Two shim mode tests pass under load  · status: done
 

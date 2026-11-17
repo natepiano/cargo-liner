@@ -209,6 +209,7 @@ pub(super) const fn record_background_msg_kind(
             stats.disk_usage_msgs += 1;
         },
         BackgroundMsg::CheckoutInfo { .. }
+        | BackgroundMsg::CheckoutRefs { .. }
         | BackgroundMsg::RepoInfo { .. }
         | BackgroundMsg::NoRepository { .. }
         | BackgroundMsg::GitFirstCommit { .. } => {

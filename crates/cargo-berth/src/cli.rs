@@ -1925,6 +1925,36 @@ fn write_reference_transaction_diagnostic(arguments: Arguments<'_>) {
 
 const TOTAL_GATE_DEADLINE: Duration = Duration::from_secs(10);
 
+/// When the trunk gate stops waiting for its worker.
+#[derive(Clone, Copy)]
+enum GateDeadline {
+    /// `TOTAL_GATE_DEADLINE` after the gate starts.
+    FromStart,
+    /// A shorter test deadline after the worker first waits on the mutation lock, so a test
+    /// fixes the order of the wait and the expiry. The total deadline still applies.
+    AfterMutationLockWait(Duration),
+}
+
+impl GateDeadline {
+    /// `GATE_DEADLINE_ENVIRONMENT` selects the test deadline in debug builds only.
+    fn from_environment() -> Self {
+        let deadline =
+            ledger::shortened_by_environment(GATE_DEADLINE_ENVIRONMENT, TOTAL_GATE_DEADLINE);
+        if deadline < TOTAL_GATE_DEADLINE {
+            Self::AfterMutationLockWait(deadline)
+        } else {
+            Self::FromStart
+        }
+    }
+}
+
+/// What the trunk gate worker sends to the gate's main thread.
+enum GateWorkerEvent {
+    /// The worker queued on the mutation lock; sent only for `GateDeadline::AfterMutationLockWait`.
+    MutationLockWait,
+    Decided(Result<Vec<GateResult>, GateError>),
+}
+
 fn gate_total_deadline_diagnostic() -> String {
     format!(
         "cargo-berth trunk gate exhausted its {}-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately.",
@@ -1947,8 +1977,7 @@ fn run_reference_transaction(
     if gate::permit::environment_bypass_requested() {
         return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
     }
-    let total_gate_deadline =
-        ledger::shortened_by_environment(GATE_DEADLINE_ENVIRONMENT, TOTAL_GATE_DEADLINE);
+    let gate_deadline = GateDeadline::from_environment();
     let started_at = std::time::Instant::now();
     let transaction = match read_reference_transaction(phase) {
         Ok(transaction) => transaction,
@@ -1977,8 +2006,15 @@ fn run_reference_transaction(
     };
     let issuing_directory =
         env::var_os(REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT).map(PathBuf::from);
-    let remaining = total_gate_deadline.saturating_sub(started_at.elapsed());
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    if matches!(gate_deadline, GateDeadline::AfterMutationLockWait(_)) {
+        // The notice keeps this sender for the rest of the process, so in this test mode a
+        // worker that stops without a decision ends at the deadline, not at `Disconnected`.
+        let lock_wait_sender = sender.clone();
+        ledger::notify_mutation_lock_waits(move || {
+            std::mem::drop(lock_wait_sender.try_send(GateWorkerEvent::MutationLockWait));
+        });
+    }
     let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
         let issuing_checkout = issuing_directory
@@ -1990,24 +2026,34 @@ fn run_reference_transaction(
             &transaction,
             &trunk_reference,
         );
-        let _ = sender.send(result);
+        let _ = sender.send(GateWorkerEvent::Decided(result));
     });
-    let results = match receiver.recv_timeout(remaining) {
-        Ok(Ok(results)) => results,
-        Ok(Err(error)) => return reference_transaction_error(&error),
-        Err(RecvTimeoutError::Timeout) => {
-            write_reference_transaction_diagnostic(format_args!(
-                "{}",
-                gate_total_deadline_diagnostic()
-            ));
-            return BerthExit::BlockedByContention.into();
-        },
-        Err(RecvTimeoutError::Disconnected) => {
-            write_reference_transaction_diagnostic(format_args!(
-                "cargo-berth trunk gate stopped before making a decision. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
-            ));
-            return BerthExit::LedgerUnreadable.into();
-        },
+    let mut deadline_at = started_at + TOTAL_GATE_DEADLINE;
+    let results = loop {
+        match receiver
+            .recv_timeout(deadline_at.saturating_duration_since(std::time::Instant::now()))
+        {
+            Ok(GateWorkerEvent::MutationLockWait) => {
+                if let GateDeadline::AfterMutationLockWait(deadline) = gate_deadline {
+                    deadline_at = deadline_at.min(std::time::Instant::now() + deadline);
+                }
+            },
+            Ok(GateWorkerEvent::Decided(Ok(results))) => break results,
+            Ok(GateWorkerEvent::Decided(Err(error))) => return reference_transaction_error(&error),
+            Err(RecvTimeoutError::Timeout) => {
+                write_reference_transaction_diagnostic(format_args!(
+                    "{}",
+                    gate_total_deadline_diagnostic()
+                ));
+                return BerthExit::BlockedByContention.into();
+            },
+            Err(RecvTimeoutError::Disconnected) => {
+                write_reference_transaction_diagnostic(format_args!(
+                    "cargo-berth trunk gate stopped before making a decision. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+                ));
+                return BerthExit::LedgerUnreadable.into();
+            },
+        }
     };
     if gate_worker.join().is_err() {
         write_reference_transaction_diagnostic(format_args!(

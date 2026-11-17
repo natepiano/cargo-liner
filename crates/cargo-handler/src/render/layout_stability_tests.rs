@@ -248,7 +248,7 @@ fn paint(app: &mut App, width: u16, height: u16) -> TestResult<DrawnLayout> {
     let cells = Cells::new(
         app.census.machines(&[]),
         NOW,
-        app.footer_colors.colors(),
+        &app.footer_colors,
         &app.tree_sorts,
         app.summary_sort,
         &app.accounts.table,

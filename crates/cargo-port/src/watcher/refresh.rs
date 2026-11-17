@@ -16,6 +16,7 @@ use tui_pane::PERF_LOG_TARGET;
 use super::ProjectEntry;
 use super::WatchState;
 use super::events::EventContext;
+use super::runtime::GitRefreshRequest;
 use crate::channel::Sender;
 use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
@@ -25,6 +26,8 @@ use crate::lint;
 use crate::process_observation::DiskReadBytes;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::CheckoutRefs;
+use crate::project::GitRefreshScope;
 use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::scan;
@@ -250,6 +253,17 @@ pub(super) fn is_internal_git_refresh_event(event_path: &Path, entry: &ProjectEn
         || is_worktree_git_fallback_event(event_path, git_dir)
 }
 
+/// The scope of the checkout probe that `event_path` requests for `entry`. An
+/// entry with no known Git dir gets the full probe.
+pub(super) fn git_refresh_scope(event_path: &Path, entry: &ProjectEntry) -> GitRefreshScope {
+    match (entry.git_dir.as_deref(), entry.common_git_dir.as_deref()) {
+        (Some(git_dir), Some(common_git_dir)) => {
+            GitRefreshScope::of_event(event_path, git_dir, common_git_dir)
+        },
+        _ => GitRefreshScope::Full,
+    }
+}
+
 pub(super) fn is_worktree_git_fallback_event(event_path: &Path, git_dir: &Path) -> bool {
     let logs_dir = git_dir.join("logs");
     event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir)
@@ -447,7 +461,7 @@ pub(super) fn fire_git_updates(
                 entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
                     && entry.abs_path.as_path().join(GIT_DIR).is_dir()
             })
-            .map_or_else(|| affected[0].clone(), |entry| entry.abs_path.clone());
+            .map_or_else(|| affected[0].0.clone(), |entry| entry.abs_path.clone());
         if let Some(state) = pending_git.get_mut(&refresh_key) {
             mark_running(state);
         }
@@ -463,28 +477,27 @@ pub(super) fn fire_git_updates(
     }
 }
 
+/// Each checkout of `refresh_key` with a request, and the scope of its probe.
+/// With no request, each checkout of `refresh_key` gets the full probe.
 pub(super) fn requested_git_checkouts(
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     refresh_key: &AbsolutePath,
-) -> Vec<AbsolutePath> {
+) -> Vec<(AbsolutePath, GitRefreshScope)> {
     let candidates: Vec<_> = projects
         .values()
         .filter(|entry| git_refresh_key(entry).as_ref() == Some(refresh_key))
         .collect();
     let requested: Vec<_> = candidates
         .iter()
-        .filter(|entry| {
-            matches!(
-                entry.git_refresh_demand.take(),
-                super::runtime::GitRefreshRequest::Pending
-            )
+        .filter_map(|entry| match entry.git_refresh_demand.take() {
+            GitRefreshRequest::Pending(scope) => Some((entry.abs_path.clone(), scope)),
+            GitRefreshRequest::Absent => None,
         })
-        .map(|entry| entry.abs_path.clone())
         .collect();
     if requested.is_empty() {
         candidates
             .iter()
-            .map(|entry| entry.abs_path.clone())
+            .map(|entry| (entry.abs_path.clone(), GitRefreshScope::Full))
             .collect()
     } else {
         requested
@@ -498,7 +511,7 @@ pub(super) fn spawn_git_refresh(
     background_tx: Sender<BackgroundMsg>,
     refresh_key: AbsolutePath,
     primary_path: AbsolutePath,
-    affected: Vec<AbsolutePath>,
+    affected: Vec<(AbsolutePath, GitRefreshScope)>,
 ) {
     let handle = handle.clone();
     let git_limit = Arc::clone(git_limit);
@@ -536,21 +549,34 @@ pub(super) fn spawn_git_refresh(
             });
         }
 
-        // Probe `CheckoutInfo` for every `checkout_path` in `affected`: no per-remote loop makes
-        // these probes cheap, and each reports its worktree's own branch, HEAD and status.
-        for checkout_path in affected {
+        // Probe each `checkout_path` in `affected`: no per-remote loop makes these probes cheap,
+        // and each reports its worktree's own branch and HEAD. Only a full probe runs `git status`.
+        for (checkout_path, scope) in affected {
             let probe_path = checkout_path.clone();
             let lmb = local_main_branch.clone();
-            let checkout =
-                tokio::task::spawn_blocking(move || CheckoutInfo::get(probe_path.as_path(), &lmb))
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some(checkout) = checkout {
-                let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
-                    path: checkout_path,
-                    info: checkout,
-                });
+            let message = tokio::task::spawn_blocking(move || match scope {
+                GitRefreshScope::Full => {
+                    CheckoutInfo::get(probe_path.as_path(), &lmb).map(|info| {
+                        BackgroundMsg::CheckoutInfo {
+                            path: probe_path,
+                            info,
+                        }
+                    })
+                },
+                GitRefreshScope::RefsOnly => {
+                    CheckoutRefs::get(probe_path.as_path(), &lmb).map(|refs| {
+                        BackgroundMsg::CheckoutRefs {
+                            path: probe_path,
+                            refs,
+                        }
+                    })
+                },
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(message) = message {
+                let _ = background_tx.send(message);
             }
         }
 

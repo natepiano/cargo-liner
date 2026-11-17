@@ -278,10 +278,14 @@ and `name` is the value that the tile draws.
   word, as in `impl · thinking`. Other rows show the job.
 - `sessions` has one entry for each session that a tile shows, in session id
   order. Its `activity` is null when the session is not busy.
+- `shells` lists each shell row that the tile shows under the session, in tile
+  order, with the row name and the shell's `started_at`. A session with no
+  shell row has an empty list.
 - `pane` is `open`, `stopped`, `closed` or `unknown`. It is separate from
   `status`.
 - Each run `state` is `running`, `finished_queued` or `missing`.
-- Times are epoch seconds. A change to a key or a type increments `schema`.
+- Times are epoch seconds. A renamed or removed key, or a changed type,
+  increments `schema`. A new key does not.
 
 <!-- census-json-example: report_tests.rs checks these keys and types -->
 ```json
@@ -330,7 +334,10 @@ and `name` is the value that the tile draws.
       "session": "4dbdb78e-a83b-4248-b8f9-ff278dcbc60c",
       "machine": "natedev",
       "status": "busy",
-      "activity": "impl · waiting"
+      "activity": "impl · waiting",
+      "shells": [
+        { "name": "verify.sh test cargo-handler", "started_at": 1794600060 }
+      ]
     }
   ]
 }
@@ -405,9 +412,11 @@ iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
 transparent    = true            # false paints the grid solid in the theme's background
 
 [tiles]
-initial_rows  = 4                # rows the first column grows to before the grid squares up
-fill          = "redistribute"   # redistribute / add_new: how the cells spread over the columns
-widen_summary = true             # the summary reaches across columns until its widest line fits
+initial_rows      = 4              # rows the first column grows to before the grid squares up
+fill              = "redistribute" # redistribute / add_new: how the cells spread over the columns
+widen_summary     = true           # the summary reaches across columns until its widest line fits
+session_cut_floor = 24             # a long session name is cut with … to this width before a column drops
+branch_cut_floor  = 16             # a long branch name is cut with … to this width before a column drops
 
 [machines]
 remote = []                      # ssh host names the summary probes, e.g. ["mac"]
@@ -442,6 +451,10 @@ whose cells would no longer fit below it stops the summary there. Off, the
 summary stays in its own column and cuts a long directory short. The settings
 overlay steps `initial rows`, `fill` and `widen summary` under **Tiles**.
 
+`session_cut_floor` and `branch_cut_floor` set how far a narrow tile cuts long
+session and branch names, with `…`, before it drops the effort and model
+columns. A name cut never makes room for the directory.
+
 `transparent` paints nothing under the grid, so a transparent terminal window
 shows the desktop behind every cell, and the focused cell's border lights to
 mark focus. Off, the grid is painted solid in the theme's background while its
@@ -467,6 +480,23 @@ the agent cells take in that order, returning to red after blue, for the name
 column and each cell's title. A custom variant that leaves one out takes it from the built-in
 it replaces, or, under a new name, from `Default Dark` or `Default Light` to
 match its appearance.
+
+Account and role labels take their colors from the status line's file,
+`~/.claude/config/statusline.conf`, one `key=value` line each:
+
+```text
+account.claude1=cyan
+account.codex1=#a0522d   # sienna
+role.unit-director=bright-blue
+```
+
+A value is a color name or `#rrggbb` in either case. A `#` starts a comment at
+the start of a line, or after a space once the value has begun, so
+`account.codex1 = #a0522d` keeps its value. A name or a hex value that is not
+readable on the theme's ground is made readable at the same hue; a readable
+one draws unchanged. One account takes the same ink in the tree, on the
+program line and in the accounts table. The census scan checks the file each
+round, so a changed color shows at the next scan with no restart.
 
 A stale entry in `keymap.toml` is skipped rather than refusing to start.
 

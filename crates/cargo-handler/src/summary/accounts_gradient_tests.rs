@@ -37,14 +37,16 @@ use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::RESET_LATEST_ROLE;
+use crate::constants::RESET_MIDDLE_ROLE;
+use crate::constants::RESET_SOONEST_ROLE;
 use crate::footer_colors;
 use crate::footer_colors::tests;
 use crate::sort::AccountsColumn;
 use crate::theme;
+use crate::theme::MINIMUM_RESET_STEP_DISTANCE;
 use crate::theme::ResetThemeFixture;
 use crate::theme::SessionRowInk;
-
-const MINIMUM_RESET_STEP_DISTANCE: f64 = 5.0;
 
 pub(super) fn role_usage(role: AccountRole) -> AccountRoleUsage {
     AccountRoleUsage {
@@ -54,6 +56,11 @@ pub(super) fn role_usage(role: AccountRole) -> AccountRoleUsage {
 }
 
 const NOW: u64 = 1_792_166_400;
+// A reset ink keeps this CIEDE2000 distance from error red and the low-quota inks.
+const MINIMUM_RESET_ALERT_DISTANCE: f64 = 20.0;
+// The user chose green, blue and violet resets (2026-11-14). On light themes, no readable green
+// keeps 20 from the olive low-quota warning and 15 from the Astra reviewer green.
+const MINIMUM_LIGHT_RESET_WARNING_DISTANCE: f64 = 17.0;
 const SUMMARY_AREA: Rect = Rect::new(4, 3, 160, 32);
 
 pub(super) fn reset(seconds: i64) -> Reading<DateTime<Utc>> {
@@ -102,7 +109,7 @@ fn drawn_in(app: &App, area: Rect) -> Buffer {
         cells:          &cells,
         now:            NOW,
         account_column: agent_cell::account_column(&cells),
-        footer_colors:  app.footer_colors.colors(),
+        footer_colors:  &app.footer_colors,
         sort:           app.summary_sort,
     };
     let mut buffer = Buffer::empty(area);
@@ -163,7 +170,7 @@ fn readable_rank(color: Color) -> Color {
 }
 
 #[test]
-fn chronological_resets_draw_three_or_four_distinct_steps_in_every_theme() {
+fn chronological_resets_draw_three_steps_far_apart_in_every_theme() {
     for variant in theme::builtins() {
         let theme_name = variant.id.to_string();
         let fixture = ResetThemeFixture::with_theme(variant.theme);
@@ -183,17 +190,19 @@ fn chronological_resets_draw_three_or_four_distinct_steps_in_every_theme() {
                     steps.push(color);
                 }
             }
-            assert!(
-                (3..=4).contains(&steps.len()),
+            assert_eq!(
+                steps.len(),
+                3,
                 "{theme_name}, tint={tint}: drawn reset steps={steps:?}"
             );
-            for pair in steps.windows(2) {
-                let distance = footer_colors::perceptual_distance(pair[0], pair[1]);
-                assert!(
-                    distance >= MINIMUM_RESET_STEP_DISTANCE,
-                    "{theme_name}, tint={tint}: adjacent reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {pair:?}, dE={distance:.9}"
-                );
-                eprintln!("RESET_STEP {theme_name} tint={tint} inks={pair:?} dE={distance:.9}");
+            for (index, first) in steps.iter().enumerate() {
+                for second in &steps[index + 1..] {
+                    let distance = footer_colors::perceptual_distance(*first, *second);
+                    assert!(
+                        distance >= MINIMUM_RESET_STEP_DISTANCE,
+                        "{theme_name}, tint={tint}: reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {first:?}/{second:?}, dE={distance:.9}"
+                    );
+                }
             }
         }
         drop(fixture);
@@ -213,45 +222,24 @@ fn accounts_gradient_fixture_readings_draw_fresh_at_the_fixture_time() {
 }
 
 #[test]
-fn accounts_gradient_distinct_resets_draw_the_reset_palette_on_each_theme() {
+fn accounts_gradient_distinct_resets_draw_the_three_reset_roles_on_each_theme() {
     let previous = tui_pane::theme();
     for variant in theme::builtins() {
         tui_pane::set_active_theme(Arc::new(variant.theme));
-        let nearest = reset_role("reset_nearest");
-        let farthest = reset_role("reset_farthest");
-        let expected = [
-            nearest,
-            tui_pane::blend_color(nearest, farthest, 128),
-            farthest,
-        ]
-        .map(readable_rank);
         let app = app_with_accounts(vec![
-            account("furthest", reset(7200)),
-            account("nearest", reset(60)),
+            account("latest", reset(7200)),
+            account("soonest", reset(60)),
             account("middle", reset(120)),
         ]);
         let buffer = drawn(&app);
-        let middle = reset_color(&buffer, "middle");
-        assert_ne!(
-            middle, expected[0],
-            "middle differs from nearest: {expected:?}"
-        );
-        assert_ne!(
-            middle, expected[2],
-            "middle differs from farthest: {expected:?}"
-        );
-        let [first, middle_rgb, last] = [expected[0], middle, expected[2]].map(tests::terminal_rgb);
-        for channel in 0..3 {
-            assert!(
-                (first[channel].min(last[channel])..=first[channel].max(last[channel]))
-                    .contains(&middle_rgb[channel]),
-                "middle lies between endpoints: {first:?} / {middle_rgb:?} / {last:?}"
-            );
-        }
-        for (label, color) in ["nearest", "middle", "furthest"].into_iter().zip(expected) {
+        for (label, role) in [
+            ("soonest", RESET_SOONEST_ROLE),
+            ("middle", RESET_MIDDLE_ROLE),
+            ("latest", RESET_LATEST_ROLE),
+        ] {
             assert_eq!(
                 reset_color(&buffer, label),
-                color,
+                readable_rank(reset_role(role)),
                 "{label} uses chronological rank"
             );
         }
@@ -260,15 +248,14 @@ fn accounts_gradient_distinct_resets_draw_the_reset_palette_on_each_theme() {
 }
 
 #[test]
-fn reset_time_order_assigns_the_nearest_shade_to_the_earliest_instant() {
+fn reset_time_order_assigns_the_soonest_role_to_the_earliest_instant() {
     let times = [-3600, 60, 120, 3600, 7200, 86400];
     for variant in theme::builtins() {
         let name = variant.id.as_str().to_owned();
         let _theme = ResetThemeFixture::with_theme(variant.theme);
-        let nearest = reset_role("reset_nearest");
-        let farthest = reset_role("reset_farthest");
-        let middle = tui_pane::blend_color(nearest, farthest, 128);
-        let expected = [nearest, nearest, middle, middle, farthest, farthest].map(readable_rank);
+        let [soonest, middle, latest] =
+            [RESET_SOONEST_ROLE, RESET_MIDDLE_ROLE, RESET_LATEST_ROLE].map(reset_role);
+        let expected = [soonest, soonest, middle, middle, latest, latest].map(readable_rank);
         for order in [[5, 1, 3, 0, 4, 2], [2, 4, 0, 3, 1, 5]] {
             let app = app_with_accounts(
                 order
@@ -289,39 +276,32 @@ fn reset_time_order_assigns_the_nearest_shade_to_the_earliest_instant() {
 }
 
 #[test]
-fn accounts_gradient_equal_timestamps_share_a_rank_without_changing_the_midpoint() {
+fn accounts_gradient_equal_timestamps_share_the_middle_rank() {
     let _theme = ResetThemeFixture::install();
     let app = app_with_accounts(vec![
-        account("nearest", reset(60)),
+        account("soonest", reset(60)),
         account("middle-one", reset(120)),
-        account("furthest", reset(7200)),
+        account("latest", reset(7200)),
         account("middle-two", reset(120)),
     ]);
     let buffer = drawn(&app);
     let midpoint = reset_color(&buffer, "middle-one");
     assert_eq!(midpoint, reset_color(&buffer, "middle-two"));
-    assert_eq!(
-        midpoint,
-        readable_rank(tui_pane::blend_color(
-            reset_role("reset_nearest"),
-            reset_role("reset_farthest"),
-            128
-        ))
-    );
+    assert_eq!(midpoint, readable_rank(reset_role(RESET_MIDDLE_ROLE)));
 }
 
 #[test]
-fn accounts_gradient_one_account_uses_the_nearest_reset_shade() {
+fn accounts_gradient_one_account_uses_the_soonest_reset_role() {
     let _theme = ResetThemeFixture::install();
     let app = app_with_accounts(vec![account("only", reset(60))]);
     assert_eq!(
         reset_color(&drawn(&app), "only"),
-        readable_rank(reset_role("reset_nearest"))
+        readable_rank(reset_role(RESET_SOONEST_ROLE))
     );
 }
 
 #[test]
-fn accounts_gradient_one_shared_timestamp_uses_the_nearest_reset_shade_for_every_account() {
+fn accounts_gradient_one_shared_timestamp_uses_the_soonest_reset_role_for_every_account() {
     let _theme = ResetThemeFixture::install();
     let app = app_with_accounts(
         ["first", "second", "third"]
@@ -332,7 +312,7 @@ fn accounts_gradient_one_shared_timestamp_uses_the_nearest_reset_shade_for_every
     for label in ["first", "second", "third"] {
         assert_eq!(
             reset_color(&buffer, label),
-            readable_rank(reset_role("reset_nearest"))
+            readable_rank(reset_role(RESET_SOONEST_ROLE))
         );
     }
 }
@@ -342,20 +322,20 @@ fn accounts_gradient_missing_reset_keeps_plain_text_and_does_not_shift_other_ran
     let _theme = ResetThemeFixture::install();
     let app = app_with_accounts(vec![
         account("missing", Reading::Unavailable),
-        account("nearest", reset(60)),
-        account("furthest", reset(120)),
+        account("soonest", reset(60)),
+        account("latest", reset(120)),
     ]);
     let buffer = drawn(&app);
     let column = locate(&buffer, "resets").column + 5;
     let row = locate(&buffer, "missing").row;
     assert_eq!(buffer[(column, row)].symbol(), " ");
     assert_eq!(
-        reset_color(&buffer, "nearest"),
-        readable_rank(reset_role("reset_nearest"))
+        reset_color(&buffer, "soonest"),
+        readable_rank(reset_role(RESET_SOONEST_ROLE))
     );
     assert_eq!(
-        reset_color(&buffer, "furthest"),
-        readable_rank(reset_role("reset_farthest"))
+        reset_color(&buffer, "latest"),
+        readable_rank(reset_role(RESET_LATEST_ROLE))
     );
 }
 
@@ -393,28 +373,8 @@ fn reset_rank_positions(buffer: &Buffer) -> HashMap<String, CellPoint> {
         .collect()
 }
 
-fn configured_account_inks(fixture: &str) -> Vec<(&str, Color)> {
-    let colors = footer_colors::FooterColors::parse(fixture);
-    fixture
-        .lines()
-        .filter_map(|line| {
-            let (key, _) = line.split_once('=')?;
-            let label = key.strip_prefix("account.")?;
-            Some((
-                label,
-                colors
-                    .account(label)
-                    .style(ratatui::style::Style::default())
-                    .fg
-                    .expect("account ink"),
-            ))
-        })
-        .collect()
-}
-
-fn check_rendered_reset_ramp(variant_name: &str) {
+fn check_rendered_reset_ramp(variant_name: &str, warning_floor: f64) {
     let previous = tui_pane::theme();
-    let fixture = include_str!("../footer_colors/fixtures/statusline.conf");
     let mut failures = Vec::new();
     let mut reports = Vec::new();
     let variant = theme::builtins()
@@ -424,7 +384,6 @@ fn check_rendered_reset_ramp(variant_name: &str) {
     let name = variant.id.as_str().to_owned();
     tui_pane::set_active_theme(Arc::new(variant.theme));
     let buffer = draw_reset_ranks();
-    let account_inks = configured_account_inks(fixture);
     let left_right = locate(&buffer, "left").column + 4;
     let reset_right = locate(&buffer, "resets").column + 6;
     let positions = reset_rank_positions(&buffer);
@@ -432,7 +391,6 @@ fn check_rendered_reset_ramp(variant_name: &str) {
     let mut error_pairs = Vec::new();
     let mut warning_pairs = Vec::new();
     let mut alarm_pairs = Vec::new();
-    let mut account_pairs = Vec::new();
     let alarm = buffer[(left_right - 1, positions["rank-000"].row)].fg;
     let warning = buffer[(left_right - 1, positions["rank-001"].row)].fg;
     for rank in 0..=u8::MAX {
@@ -459,27 +417,28 @@ fn check_rendered_reset_ramp(variant_name: &str) {
                 failures.push(format!("{name} {label} {cell:?} covered={contrast:.6}"));
             }
         }
-        for (other_name, other, pairs) in [
-            ("error", tui_pane::error_color(), &mut error_pairs),
-            ("left warning", warning, &mut warning_pairs),
-            ("left alarm", alarm, &mut alarm_pairs),
+        for (other_name, other, floor, pairs) in [
+            (
+                "error",
+                tui_pane::error_color(),
+                MINIMUM_RESET_ALERT_DISTANCE,
+                &mut error_pairs,
+            ),
+            ("left warning", warning, warning_floor, &mut warning_pairs),
+            (
+                "left alarm",
+                alarm,
+                MINIMUM_RESET_ALERT_DISTANCE,
+                &mut alarm_pairs,
+            ),
         ] {
             let distance = footer_colors::perceptual_distance(ink, other);
-            if distance < 20.0 {
+            if distance < floor {
                 failures.push(format!(
-                    "{name} {label} {ink:?}/{other_name} {other:?} dE={distance:.6}"
+                    "{name} {label} {ink:?}/{other_name} {other:?} dE={distance:.6} floor={floor}"
                 ));
             }
             pairs.push((label.clone(), ink, other_name.to_owned(), other));
-        }
-        for (account_name, other) in &account_inks {
-            let gap = tests::hue_gap(ink, *other);
-            if gap < 30.0 {
-                failures.push(format!(
-                    "{name} {label} {ink:?}/{account_name} {other:?} hue={gap:.6}"
-                ));
-            }
-            account_pairs.push((label.clone(), ink, (*account_name).to_owned(), *other));
         }
     }
     let mut report = format!(
@@ -490,7 +449,6 @@ fn check_rendered_reset_ramp(variant_name: &str) {
         ("reset/error", error_pairs),
         ("reset/left-warning", warning_pairs),
         ("reset/left-alarm", alarm_pairs),
-        ("reset/account", account_pairs),
     ] {
         report.push_str(&tests::palette_pair_report(class, &pairs));
     }
@@ -504,54 +462,23 @@ fn check_rendered_reset_ramp(variant_name: &str) {
 }
 
 #[test]
-fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_default_dark() {
-    check_rendered_reset_ramp(DEFAULT_DARK_THEME);
+fn reset_shades_avoid_alarms_with_failed_dots_red_in_default_dark() {
+    check_rendered_reset_ramp(DEFAULT_DARK_THEME, MINIMUM_RESET_ALERT_DISTANCE);
 }
 
 #[test]
-fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_default_light() {
-    check_rendered_reset_ramp(DEFAULT_LIGHT_THEME);
+fn reset_shades_avoid_alarms_with_failed_dots_red_in_default_light() {
+    check_rendered_reset_ramp(DEFAULT_LIGHT_THEME, MINIMUM_LIGHT_RESET_WARNING_DISTANCE);
 }
 
 #[test]
-fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_high_contrast_dark() {
-    check_rendered_reset_ramp(DEFAULT_HC_DARK_THEME);
+fn reset_shades_avoid_alarms_with_failed_dots_red_in_high_contrast_dark() {
+    check_rendered_reset_ramp(DEFAULT_HC_DARK_THEME, MINIMUM_RESET_ALERT_DISTANCE);
 }
 
 #[test]
-fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_high_contrast_light() {
-    check_rendered_reset_ramp(DEFAULT_HC_LIGHT_THEME);
-}
-
-#[test]
-fn reset_endpoints_remain_perceptually_distinct_on_every_theme() {
-    let previous = tui_pane::theme();
-    let tinted = tui_pane::focused_pane_tint_enabled();
-    let mut failures = Vec::new();
-    for variant in theme::builtins() {
-        let name = variant.id.as_str().to_owned();
-        tui_pane::set_active_theme(Arc::new(variant.theme));
-        for tint in [false, true] {
-            tui_pane::set_focused_pane_tint(tint);
-            let app = app_with_accounts(vec![
-                account("nearest", reset(60)),
-                account("furthest", reset(7200)),
-            ]);
-            let buffer = drawn(&app);
-            let nearest = reset_color(&buffer, "nearest");
-            let farthest = reset_color(&buffer, "furthest");
-            let distance = footer_colors::perceptual_distance(nearest, farthest);
-            if distance < 12.0 {
-                failures.push(format!("{name} tint={tint} nearest={nearest:?} farthest={farthest:?} dE={distance:.9} floor=12"));
-            }
-        }
-    }
-    tui_pane::set_active_theme(previous);
-    tui_pane::set_focused_pane_tint(tinted);
-    assert!(
-        failures.is_empty(),
-        "reset endpoint separation: {failures:#?}"
-    );
+fn reset_shades_avoid_alarms_with_failed_dots_red_in_high_contrast_light() {
+    check_rendered_reset_ramp(DEFAULT_HC_LIGHT_THEME, MINIMUM_LIGHT_RESET_WARNING_DISTANCE);
 }
 
 #[test]

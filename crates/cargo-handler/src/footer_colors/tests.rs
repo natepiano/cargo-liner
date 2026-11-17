@@ -12,16 +12,7 @@ use std::time::UNIX_EPOCH;
 
 use ratatui::style::Color;
 
-use super::constants::BLUE_LUMINANCE_WEIGHT;
-use super::constants::CONTRAST_LUMINANCE_OFFSET;
-use super::constants::GREEN_LUMINANCE_WEIGHT;
 use super::constants::MINIMUM_CONTRAST;
-use super::constants::RED_LUMINANCE_WEIGHT;
-use super::constants::SRGB_ENCODED_OFFSET;
-use super::constants::SRGB_ENCODED_SCALE;
-use super::constants::SRGB_LINEAR_DIVISOR;
-use super::constants::SRGB_LINEAR_THRESHOLD;
-use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
 use crate::theme::ResetThemeFixture;
@@ -316,37 +307,15 @@ pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
+/// The shared WCAG measure, `tui_pane::contrast_ratio`, for two drawn colors.
+#[expect(
+    clippy::panic,
+    reason = "a drawn color without channels fails the measurement"
+)]
 pub(crate) fn contrast_ratio(foreground: Color, background: Color) -> f64 {
-    fn luminance(color: Color) -> f64 {
-        let (red, green, blue) = measured_channels(color);
-        let linear = |channel: u8| {
-            let value = f64::from(channel) / 255.0;
-            if value <= SRGB_LINEAR_THRESHOLD {
-                value / SRGB_LINEAR_DIVISOR
-            } else {
-                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
-            }
-        };
-        RED_LUMINANCE_WEIGHT.mul_add(
-            linear(red),
-            GREEN_LUMINANCE_WEIGHT.mul_add(linear(green), BLUE_LUMINANCE_WEIGHT * linear(blue)),
-        )
-    }
-    assert_ne!(
-        foreground,
-        Color::Reset,
-        "text must have a measurable foreground"
-    );
-    assert_ne!(
-        background,
-        Color::Reset,
-        "the theme must supply a background"
-    );
-    let foreground = luminance(foreground);
-    let background = luminance(background);
-    (foreground.max(background) + CONTRAST_LUMINANCE_OFFSET)
-        / (foreground.min(background) + CONTRAST_LUMINANCE_OFFSET)
+    tui_pane::contrast_ratio(foreground, background).unwrap_or_else(|| {
+        panic!("contrast needs two measurable colors: {foreground:?} on {background:?}")
+    })
 }
 
 #[test]
@@ -526,6 +495,69 @@ fn footer_color_names_are_exact() {
     ] {
         assert!(name.parse::<FooterColor>().is_err(), "{name:?}");
     }
+}
+
+#[test]
+fn hex_footer_colors_parse_in_either_case() {
+    for text in ["#a0522d", "#A0522D"] {
+        let parsed = text.parse::<FooterColor>().expect("a hex footer color");
+        assert_eq!(parsed, FooterColor::Rgb(0xa0, 0x52, 0x2d), "{text}");
+        assert_eq!(Color::from(parsed), Color::Rgb(0xa0, 0x52, 0x2d), "{text}");
+    }
+}
+
+#[test]
+fn malformed_hex_footer_colors_are_unknown() {
+    for text in ["#a0522", "#gg0000", "a0522d", "#a0522d0", "#", "#+a0522"] {
+        assert!(text.parse::<FooterColor>().is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_comment_starts_only_at_the_line_start_or_after_whitespace() {
+    let colors = FooterColors::parse(
+        "account.sienna=#a0522d # sienna\n\
+         account.upper = #A0522D\n\
+         # account.commented=#a0522d\n\
+         \t# account.indented=#a0522d\n\
+         account.glued=#a0522d#note\n",
+    );
+    for account in ["sienna", "upper"] {
+        assert_eq!(
+            colors.account(account),
+            FooterTint::Footer(FooterColor::Rgb(0xa0, 0x52, 0x2d)),
+            "{account}"
+        );
+    }
+    for account in ["commented", "indented", "glued"] {
+        assert_eq!(colors.account(account), FooterTint::Plain, "{account}");
+    }
+}
+
+#[test]
+fn a_readable_hex_color_draws_unchanged() {
+    let previous = tui_pane::theme();
+    for variant in theme::builtins() {
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        let readable = FooterColors::parse("account.fixture=#a0522d")
+            .account("fixture")
+            .style(Style::default())
+            .fg
+            .expect("hex ink");
+        assert!(
+            matches!(readable, Color::Rgb(..)),
+            "{}: a hex ink stays RGB, got {readable:?}",
+            variant.id.as_str()
+        );
+        let [red, green, blue] = terminal_rgb(readable);
+        let drawn =
+            FooterColors::parse(&format!("account.fixture=#{red:02x}{green:02x}{blue:02x}"))
+                .account("fixture")
+                .style(Style::default())
+                .fg;
+        assert_eq!(drawn, Some(readable), "{}", variant.id.as_str());
+    }
+    tui_pane::set_active_theme(previous);
 }
 
 #[test]

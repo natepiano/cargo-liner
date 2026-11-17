@@ -41,6 +41,7 @@ use super::scan::ScanStage;
 use super::unix_now;
 use crate::agent_cell;
 use crate::agent_cell::SessionCells;
+use crate::agent_cell::ShellCells;
 use crate::config::CargoHandler;
 use crate::config::Config;
 use crate::config::LoadedConfig;
@@ -77,6 +78,17 @@ struct SessionReport {
     status:   Option<&'static str>,
     /// The tile activity text of a busy session, or null when the session is not busy.
     activity: Option<String>,
+    /// Each shell row the tile shows under the session, in tile line order.
+    shells:   Vec<ShellReport>,
+}
+
+/// One shell row of a session.
+#[derive(Debug, Serialize)]
+struct ShellReport {
+    /// The tile name: the shell's description or command.
+    name:       String,
+    /// When the shell started, in epoch seconds.
+    started_at: u64,
 }
 
 impl SessionReport {
@@ -90,6 +102,16 @@ impl SessionReport {
                 ReportedSessionState::Reported(SessionState::Busy)
             )
             .then(|| cell.activity.clone()),
+            shells:   cell.shells.iter().map(ShellReport::from).collect(),
+        }
+    }
+}
+
+impl From<&ShellCells> for ShellReport {
+    fn from(shell_cells: &ShellCells) -> Self {
+        Self {
+            name:       shell_cells.name.clone(),
+            started_at: shell_cells.started,
         }
     }
 }
