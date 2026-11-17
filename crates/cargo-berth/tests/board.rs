@@ -5,6 +5,9 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/board_templates.rs"]
+mod board_templates;
+
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
 #[path = "support/integration_parent_reservations.rs"]
@@ -1985,30 +1988,13 @@ fn independent_ready_reservations_are_an_unnumbered_tie() {
 #[test]
 fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
     let fixture = ordered_fixture();
-    let repository = DirectorySnapshot::capture(fixture.repository.path());
-    let worktrees = DirectorySnapshot::capture(fixture.worktrees.path());
     assert_waiting_reason(
         &board_data(fixture.repository.path()),
         "predecessor_checkpoint",
         "nobody can act yet",
     );
 
-    fs::write(
-        fixture.predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&fixture.predecessor_root, &["add", "src/lib.rs"]);
-    git(
-        &fixture.predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
-    );
-    let released = run_berth_with_run(
-        &fixture.predecessor_root,
-        &["release", &fixture.predecessor_id, "--json"],
-        FIRST_RUN,
-    );
-    assert!(released.status.success());
+    let fixture = ordered_fixture_from(board_templates::CHECKPOINTED_PREDECESSOR);
     let not_integrated = board_data(fixture.repository.path());
     assert_waiting_reason(
         &not_integrated,
@@ -2021,19 +2007,13 @@ fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
         "not_integrated"
     );
 
-    git(
-        fixture.repository.path(),
-        &["merge", "--quiet", "--ff-only", "predecessor"],
-    );
+    let fixture = ordered_fixture_from(board_templates::LANDED_PREDECESSOR);
     assert_waiting_reason(
         &board_data(fixture.repository.path()),
         "successor_must_incorporate_predecessor",
         "reader's own rebase",
     );
-    git(
-        &fixture.successor_root,
-        &["merge", "--quiet", "--ff-only", "main"],
-    );
+    let fixture = ordered_fixture_from(board_templates::INCORPORATED_PREDECESSOR);
     let fulfilled = board_data(fixture.repository.path());
     assert_eq!(fulfilled["waiting"]["entries"], serde_json::json!([]));
     assert_eq!(
@@ -2041,8 +2021,7 @@ fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
         "fulfilled_successor_contains_predecessor"
     );
 
-    repository.restore(fixture.repository.path());
-    worktrees.restore(fixture.worktrees.path());
+    let fixture = ordered_fixture();
     let cancelled_fixture = &fixture;
     let abandoned = run_berth_with_run(
         &cancelled_fixture.predecessor_root,
@@ -4058,41 +4037,11 @@ fn assert_historical_witness_settlement_journal(
 
 #[test]
 fn retained_scoped_patch_verdicts_reuse_both_results_after_process_restart() {
-    let mut fixture =
+    let positive =
         rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
-    let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
-        .expect("baseline journal should read");
-    assert_retained_positive_verdict(&fixture);
-
-    git(
-        fixture.repository.path(),
-        &["reset", "--hard", &fixture.protected_tip],
-    );
-    fs::write(
-        fixture.repository.path().join("src/lib.rs"),
-        "pub fn replacement() {}\n",
-    )
-    .expect("different target should write");
-    git(fixture.repository.path(), &["add", "src/lib.rs"]);
-    git(
-        fixture.repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "--amend",
-            "-m",
-            "rewritten target",
-        ],
-    );
-    fixture.target = git_stdout(fixture.repository.path(), &["rev-parse", "HEAD"]);
-    fs::write(
-        fixture.repository.path().join(JOURNAL_PATH),
-        baseline_journal,
-    )
-    .expect("baseline journal should restore");
-    invalidate_projection(fixture.repository.path());
+    assert_retained_positive_verdict(&positive);
+    let fixture =
+        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
     assert_retained_negative_verdict(&fixture);
     assert_legacy_negative_is_replaced_once();
 }
@@ -7499,39 +7448,23 @@ fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
     commands
 }
 
-fn ordered_fixture() -> OrderedFixture {
-    let repository = initialized_repository();
-    git(
-        repository.path(),
-        &["add", "--force", ".claude/config/berth.toml"],
-    );
-    GIT.run_without_hooks(
-        repository.path(),
-        ["commit", "--quiet", "-m", "configure berth"],
-    );
+fn ordered_fixture() -> OrderedFixture { ordered_fixture_from(board_templates::ORDERED_HOLDERS) }
+
+fn ordered_fixture_from(template: cargo_berth_test_support::LedgerTemplate) -> OrderedFixture {
     let worktrees = tempdir().expect("worktree directory should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    dirty_source(&predecessor_root, "src/lib.rs");
-    let predecessor = claim(&predecessor_root, "file:src/lib.rs", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = answered_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--after",
-        &predecessor_id,
-        "predecessor must land first",
-    );
-    assert!(successor.status.success());
-    let successor_id = reservation_id(&successor);
+    let repository = template.instantiate_with_external_worktrees(worktrees.path());
+    let state: board_templates::OrderedHolders = serde_json::from_slice(
+        &fs::read(repository.path().join(STATE)).expect("ordered identities should read"),
+    )
+    .expect("ordered identities should decode");
+    let parent = fs::canonicalize(worktrees.path()).expect("ordered worktrees should resolve");
     OrderedFixture {
         repository,
         worktrees,
-        predecessor_root,
-        successor_root,
-        predecessor_id,
-        successor_id,
+        predecessor_root: parent.join("predecessor"),
+        successor_root: parent.join("successor"),
+        predecessor_id: state.predecessor_id,
+        successor_id: state.successor_id,
     }
 }
 
@@ -7694,7 +7627,7 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
-fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.before_run().instantiate() }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::path::PathBuf {
     let root = parent.join(branch);

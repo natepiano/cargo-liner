@@ -11,6 +11,9 @@ mod prepared_lock_tests;
 #[path = "support/ledger_templates.rs"]
 mod ledger_templates;
 
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -18,7 +21,6 @@ use cargo_berth_test_support::MAIN_COORDINATION_RUN_ID;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
-use cargo_berth_test_support::copy_git_repository_seed;
 use cargo_berth_test_support::json;
 use ledger_templates::PROJECTION_HISTORY;
 use ledger_templates::PROJECTION_HISTORY_STATE;
@@ -1725,12 +1727,7 @@ fn separate_git_directory_repository() -> SeparateGitDirectoryRepository {
     }
 }
 
-fn scratch_repository() -> TempDir {
-    copy_git_repository_seed("ledger-scratch-main", |root| {
-        ledger_templates::build_git_repository(root);
-        Ok::<(), std::io::Error>(())
-    })
-}
+fn scratch_repository() -> TempDir { ledger_templates::SCRATCH_REPOSITORY.instantiate() }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {
     let root = parent.join(branch);
@@ -2032,69 +2029,12 @@ fn sequence_reported_enrollment_overlap(root: &Path, overlap: &serde_json::Value
 
 /// Leave a real outstanding checkpoint with a packed retention reference.
 fn checkpoint_with_packed_retention() -> (IntegrationRepository, String) {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
-    repo.git_without_hooks(repo.root(), &["switch", "--quiet", "-c", "retention-lock"]);
-    let claim = repo.run(
-        repo.root(),
-        &[
-            "claim",
-            "file:retained.txt",
-            "--run",
-            MAIN_COORDINATION_RUN_ID,
-            "--json",
-        ],
-    );
-    assert_success(&claim);
-    let id = json(&claim)["reservations"][0]
-        .as_str()
-        .expect("reservation id")
-        .to_owned();
-    fs::write(repo.root().join("retained.txt"), "outstanding work\n").expect("work writes");
-    repo.git_without_hooks(repo.root(), &["add", "retained.txt"]);
-    repo.git_without_hooks(
-        repo.root(),
-        &["commit", "--quiet", "-m", "outstanding work"],
-    );
-    assert_success(&repo.run(repo.root(), &["release", &id, "--json"]));
-    assert_success(&repo.run(repo.root(), &["board", "--json"]));
-    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
-    (repo, id)
+    ledger_templates::packed_retention_fixture(ledger_templates::PACKED_CHECKPOINT)
 }
 
 /// Keep a released predecessor's packed reference until its last successor ends.
 fn successor_with_packed_predecessor() -> (IntegrationRepository, String) {
-    let (repo, predecessor) = checkpoint_with_packed_retention();
-    repo.git_without_hooks(repo.root(), &["config", "core.packedRefsTimeout", "20"]);
-    repo.git_without_hooks(repo.root(), &["config", "core.filesRefLockTimeout", "20"]);
-    let claim = repo.claim(
-        repo.root(),
-        "file:successor.txt",
-        MAIN_COORDINATION_RUN_ID,
-        None,
-    );
-    assert_success(&claim);
-    let successor = json(&claim)["reservations"][0]
-        .as_str()
-        .expect("successor id")
-        .to_owned();
-    assert_success(&repo.run(
-        repo.root(),
-        &[
-            "sequence",
-            &predecessor,
-            &successor,
-            "--why",
-            "retain predecessor until successor ends",
-            "--json",
-        ],
-    ));
-    let tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
-    repo.git_without_hooks(repo.root(), &["branch", "--force", "main", &tip]);
-    assert_success(&repo.run(repo.root(), &["board", "--json"]));
-    let retained = format!("refs/cargo-berth/reservations/{predecessor}");
-    assert_eq!(repo.git_stdout(repo.root(), &["rev-parse", &retained]), tip);
-    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
-    (repo, successor)
+    ledger_templates::packed_retention_fixture(ledger_templates::PACKED_PREDECESSOR)
 }
 
 fn pending_retention_bypass(repo: &IntegrationRepository) -> PathBuf {

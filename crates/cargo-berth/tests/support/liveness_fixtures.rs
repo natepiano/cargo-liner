@@ -126,7 +126,9 @@ pub(super) fn record_terminal_recovery_dispositions(repository: &Path) -> (Strin
     (abandoned_id, retired_id)
 }
 
-pub(super) fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+pub(super) fn initialized_repository() -> TempDir {
+    INITIALIZED_REPOSITORY.before_run().instantiate()
+}
 
 pub(super) fn build_recovery_sources(repository: &Path) {
     // No ledger answer or reservation is cached. The source commits run their

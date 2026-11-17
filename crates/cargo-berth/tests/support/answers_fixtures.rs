@@ -29,10 +29,10 @@ pub(super) const GIT: GitDriver = GitDriver {
 };
 
 /// An initialized main checkout with untracked policy and no reservations.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+pub(super) const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
+    name:             "answers-initialized",
     build:            build_initialized_repository,
 };
 
@@ -40,7 +40,9 @@ pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 
 pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 
-pub(super) fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+pub(super) fn initialized_repository() -> TempDir {
+    INITIALIZED_REPOSITORY.before_run().instantiate()
+}
 
 pub(super) fn build_initialized_repository(root: &Path) {
     git(root, ["init", "--quiet", "--initial-branch=main"]);
