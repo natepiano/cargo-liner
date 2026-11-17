@@ -669,7 +669,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a test-side LEAK fix. The test waits for every process it starts; `build_info`, which starts no cargo or git, also had a LEAK mark.
 
-### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
+### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: done
 
 #### Work Order
 
