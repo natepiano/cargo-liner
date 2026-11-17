@@ -19,6 +19,7 @@ pub(crate) mod process_identity;
     )
 )]
 pub(crate) mod scan;
+pub(crate) mod slot_lease;
 #[cfg(test)]
 #[allow(
     clippy::expect_used,

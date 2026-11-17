@@ -33,6 +33,7 @@ use crate::census::process_identity::CaptureMembership;
 use crate::census::process_identity::InvocationId;
 use crate::census::process_identity::ProcessIdentity;
 use crate::census::process_identity::VisibleParent;
+use crate::census::slot_lease::SlotObservation;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::PID_SEPARATOR;
 use crate::constants::RUN_LOG_PREFIX;
@@ -934,6 +935,7 @@ pub(super) fn census_of(parents: &[(u32, u32)]) -> Census {
             .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
             .collect(),
         topology:                 std::cell::OnceCell::new(),
+        observed_targets:         std::cell::OnceCell::new(),
         cargo:                    Vec::new(),
         rowless_cargo:            Vec::new(),
         dispatched_runs:          HashMap::new(),
@@ -977,6 +979,7 @@ pub(super) fn directory_record(home: &str) -> RegistrationCandidate {
 /// A process-table row whose absolute cwd is independent of display shortening.
 pub(super) fn directory_row() -> CargoProcess {
     CargoProcess {
+        slot:                 SlotObservation::default(),
         invocation_id:        InvocationId::for_test(10),
         execution:            InvocationExecution::Command,
         capture_membership:   CaptureMembership::Outside,

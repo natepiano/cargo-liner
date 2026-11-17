@@ -26,6 +26,7 @@ use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_COMMANDS;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::DEFAULT_STAFF_FILE;
 use crate::constants::DEFAULT_WIDEN_SUMMARY;
 use crate::constants::FLAG_MARK;
 use crate::constants::MAX_FADE_SECONDS;
@@ -224,6 +225,8 @@ impl Default for CaptureConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Config {
+    /// `[census]` — names for build slot holders.
+    pub(crate) census:     CensusConfig,
     /// `[appearance]` — theme selection.
     pub(crate) appearance: AppearanceConfig<CargoTile>,
     /// `[capture]` — automatic shim installation.
@@ -232,6 +235,22 @@ pub(crate) struct Config {
     pub(crate) commands:   CommandsConfig,
     /// `[tiles]` — how the tile grid is arranged and viewed.
     pub(crate) tiles:      TilesConfig,
+}
+
+/// Files used to resolve build slot holders.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct CensusConfig {
+    /// Staff rows map lease unit ids to current names. An empty path disables this lookup.
+    pub(crate) staff_file: String,
+}
+
+impl Default for CensusConfig {
+    fn default() -> Self {
+        Self {
+            staff_file: DEFAULT_STAFF_FILE.to_owned(),
+        }
+    }
 }
 
 impl Config {
@@ -392,6 +411,9 @@ mod tests {
     #[test]
     fn the_default_config_serializes_to_the_known_file() {
         let expected = "\
+[census]
+staff_file = \"~/.local/state/staff/staff.json\"
+
 [appearance]
 mode = \"auto\"
 light_theme = \"Default Light\"

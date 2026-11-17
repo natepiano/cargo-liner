@@ -99,6 +99,11 @@ fn reader_staging_publishes_the_hashed_bytes_after_the_source_changes() -> io::R
     run_staging_case("changed-source")
 }
 
+#[test]
+fn native_fixture_retirement_keeps_shared_readers_and_live_sources() -> io::Result<()> {
+    run_staging_case("native-retirement")
+}
+
 fn run_staging_case(case: &str) -> io::Result<()> {
     let output = Command::new("python3")
         .arg("-S")

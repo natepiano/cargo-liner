@@ -1774,7 +1774,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
 
-### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: todo
+### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: done
 
 **Depends on:** Phase 66 (order only)
 
@@ -1828,7 +1828,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
 
-### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: todo
+### Phase 69 — A build in a slot shows the slot name, its holder and its purpose  · status: done
 
 **Depends on:** Phase 67 (order only; runs before Phase 68, showrunner 2026-11-15)
 
