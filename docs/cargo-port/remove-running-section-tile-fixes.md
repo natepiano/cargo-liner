@@ -1884,31 +1884,26 @@ A row for a cargo build in a build slot reads `slot · holder · purpose`, for e
 **Binds later work:** The slot label is fitted from typed parts, never split on ` · `; a lease purpose can contain ` · `. The render caches compare `CargoProcess::slot` before reuse.
 
 **Gotchas:**
-- A staff file that does not parse becomes `ScanStaffNames::Loaded` with an empty map, so the holder shows the unit id.
+- A staff file that does not parse becomes `ScanStaffNames::Unreadable` (Phase 69a). The holder then shows the unit id.
 
 ### Phase 69a — A staff file that does not parse keeps its own state  · status: done
 
-**Depends on:** Phase 69. Runs before Phase 68 (director, 2026-11-16: a defect in the type that Phase 69 shipped).
+**Depends on:** Phase 69.
 
-#### Work Order
+#### As-built
 
-**Goal:** `ScanStaffNames` names a staff file that does not parse as its own state, apart from a loaded staff file. A held slot row still shows the unit id as the holder when no staff name is found. A live capture of a held slot row replaces the Phase 69 fallback image.
-
-**Spec:**
-1. Today `SlotLeaseScan` (`crates/cargo-tile/src/census/slot_lease.rs`, near line 370) turns a staff file that does not parse into `ScanStaffNames::Loaded` with an empty map (`unwrap_or_default`). The type then says loaded for a failed read.
-2. Give the failed read its own `ScanStaffNames` variant. In that state the holder falls back to the unit id, as for a unit id with no staff row. Use no `Option` and no empty-map placeholder.
-3. A lease that does not parse keeps the label `slot · unreadable`.
-4. Add a staff-file-does-not-parse row to `slot_rows_follow_live_locks_leases_staff_and_configured_roots`. It asserts the unit id fallback and the separate state.
-5. Live acceptance: on natedev, capture cargo-tile on a private Xvfb display in dark mode at desktop width while a real slot build holds a lease. Check the slot, the staff name and the purpose against the lease and the staff file. Register the image with `change_review.py image --image <png>`.
+`ScanStaffNames` (`census/slot_lease.rs`) has three states: `Unread`, `Unreadable` and `Loaded(HashMap<String, String>)`. A staff file that does not parse is `Unreadable`, apart from a loaded staff file.
+- In `Unread` and `Unreadable`, the holder is the lease's unit id, the same as for a unit id with no staff row.
+- A lease that does not parse still shows `slot · unreadable`.
+- `slot_rows_follow_live_locks_leases_staff_and_configured_roots` checks the exact staff state through `ExpectedStaffState` rows: an empty staff list gives `Loaded`, and a staff file that does not parse gives `Unreadable`. Both rows show the unit id as the holder.
+- The live dark mode desktop image (`5b83e857739e`) shows `hana-slot2 · fps · hold` from a real slot build.
 
 **Files:**
 - `crates/cargo-tile/src/census/slot_lease.rs` — the staff state and its tests.
 
-**Workers:** 1 writer — `impl`, every file above, and the capture.
-
-**Constraints from prior phases:** Phase 69: `SlotLeaseReader` reads each lease and staff file once per file revision through `RevisionCachedFile`; keep that. Live shots run on a private Xvfb display with `import -silent` after `-display`, never on `:0`. Phase 67: a timing suite runs alone on its machine; the same worker runs no other build, test or lint there while it runs. This holds for every timing measurement batch.
-
-**Acceptance gate:** the new test row; the cargo-tile full suite on natedev at load under 32 and on the Mac at load under 12 with no test at 1 s or more that Phase 69 did not already report; lint; one live dark mode desktop image of a held slot row.
+**Gotchas:**
+- A live slot capture needs the private Xvfb display and cargo-tile running before the slot build starts. A slot build can end in a few seconds, so take a burst of shots and record the lease and lock before and after each shot.
+- A lease holder can be a unit id with no staff row. A check of the holder accepts the unit id fallback.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
