@@ -839,7 +839,7 @@ cargo-mend test fixtures find their stored findings reports with any Cargo build
 
 **Ruled out:** a second report layout under `target/mend-reports/`. A build directory spelled `target/../x` passed its path-prefix check and put reports outside `target`, and mend's own writer and reader already agreed.
 
-### Phase 40 — a mend source edit gives a new build id  · status: todo
+### Phase 40 — a mend source edit gives a new build id  · status: done
 
 #### Work Order
 
