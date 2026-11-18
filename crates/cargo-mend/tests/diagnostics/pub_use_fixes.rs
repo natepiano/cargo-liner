@@ -1667,6 +1667,41 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
 }
 
 #[test]
+fn fix_pub_use_keeps_an_internal_facade_when_its_caller_is_generated() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    let caller = "// @generated\nuse super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n";
+    write_internal_facade_fixture(&temp, caller);
+    let paths = ["src/tool/inner.rs", "src/tool/mod.rs", "src/tool/widget.rs"];
+    let before = paths.map(|path| fs::read(temp.path().join(path)).expect("read fixture source"));
+    let manifest = temp.path().join("Cargo.toml");
+    let mut command = mend_command_for(&manifest);
+    let output = command
+        .args(["--fix", "--fix-pub-use", "--json"])
+        .output()
+        .expect("run cargo-mend with facade fixes");
+    assert!(
+        output.status.success(),
+        "cargo-mend failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let report = report_from_mend_output(&output);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InternalParentPubUseFacade),
+        "the facade finding must remain: {report:#?}",
+    );
+    for (path, expected) in paths.into_iter().zip(before) {
+        assert_eq!(
+            fs::read(temp.path().join(path)).expect("read facade proposal file"),
+            expected,
+            "{path}",
+        );
+    }
+}
+
+#[test]
 fn fix_pub_use_removes_an_internal_facade_and_repoints_its_inline_subtree_path() {
     let temp = tempdir().expect("create internal facade fixture dir");
     write_internal_facade_fixture(

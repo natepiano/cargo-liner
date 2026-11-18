@@ -46,11 +46,15 @@ A hex color that is already readable draws unchanged.
 Account keys match the displayed label through `account.<label>`.
 A new account assignment needs no Rust change.
 
-`FooterRole` covers Showrunner, UnitDirector, AstraDesigner, and AstraReviewer.
-Their keys are `role.showrunner`, `role.unit-director`, `role.astra-designer`, and `role.astra-reviewer`.
+`FooterRole` covers Showrunner, UnitDirector, AstraDesigner, AstraReviewer, and Worker.
+Their keys are `role.showrunner`, `role.unit-director`, `role.astra-designer`, `role.astra-reviewer`, and `role.worker`.
 `FooterColors::hierarchy_role` resolves hierarchy tints.
 The same role tint serves tile suffixes and tree roles.
-Ordinary worker and subagent roles retain their current plain style.
+The impl, test, review, fix, and worker roles share the `role.worker` tint.
+A review-fallback session and each dispatch or unroled worker seat also show `worker` and take the same tint.
+`FooterColors::management_role` tints job text; worker job text stays plain.
+Agent, producer, and subagent roles keep the plain style.
+A missing `role.worker` key leaves worker roles plain.
 A Showrunner subagent uses the Showrunner tint.
 
 Basic names map to the corresponding ANSI colors.

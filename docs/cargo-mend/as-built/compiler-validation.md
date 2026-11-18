@@ -48,6 +48,26 @@ A publisher therefore does not wait for every active user of an already publishe
 Measure a first run after relinking to expose publication and cache costs.
 Warm reuse alone cannot measure them.
 
+## Toolchain query cache
+
+Each start of a binary that links librustc_driver (mend, rustc, rustfmt) costs 25-50 ms on the Mac.
+`compiler/toolchain_probes.rs` keeps the answers to Cargo's compiler queries (`-vV`, `--print`) so a new target directory does not start rustc again.
+`ToolchainProbes` is `Retained(PathBuf)` or `RunLocal(TempDir)`.
+`Retained` is `toolchain-queries/` in the shared wrapper cache, held by the wrapper's shared retention lock.
+`RunLocal` is a temporary directory, used when the wrapper is project-local.
+`RunWrapper::toolchain_probes` selects it, so `main` resolves the wrapper before the queries.
+`MEND_TOOLCHAIN_PROBES` gives the directory to the wrapper process.
+
+`ProbeRequest` keys a query by the compiler path, `CompilerIdentity` (size and modified time), the arguments and the toolchain variables.
+The key holds no working directory and no wrapper path, so every project shares one answer.
+`read_or_run` keeps only successful answers.
+
+Cargo also keeps its own answers in `target/.rustc_info.json`.
+A run with a warm target directory therefore starts no compiler query, and the cache above serves only new target directories.
+
+`fixes/runner/function_length/formatter.rs::nightly_probe` returns Available without a `rustfmt --version` run when `rustup which` names an existing file.
+`nightly_executable` holds the one lookup for the command and the probe.
+
 ## Batch and fallback validation
 
 `fixes/subtree_reexport/chain.rs` composes independent re-export links before validation.
@@ -98,6 +118,10 @@ Launcher and machine-load costs must be separated from compiler work when invest
 5. Read compiler error locations from the stream Cargo actually supplies.
 6. Keep progress redraws from erasing diagnostics.
 7. Reuse validation only while its source and build context remain valid.
+8. Key a kept compiler answer by the compiler's identity, never by the project.
+
+A rustc-free wrapper binary would save no load in a warm run: Cargo makes no compiler query there, and a one-package crate passes no unit through.
+On the Mac, `DYLD_PRINT_LIBRARIES` does not reach Cargo's child processes, so it cannot count librustc_driver loads.
 
 Help and build-info currently open the executable before their early returns.
 That read-access requirement remains a documented follow-up.

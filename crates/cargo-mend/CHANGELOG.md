@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Skip reports and fixes for generated source files and their child modules.
+  The global and project `[generated]` tables accept `markers` and positive `header_lines`.
+  The defaults are `markers = ["@generated", "AUTOMATICALLY GENERATED"]` and `header_lines = 5`.
+
 ### Changed
 - Diagnostic rule tests call production scans and compiler callbacks directly. CLI tests retain actual Cargo fix and validation calls.
 
 ### Fixed
+- Keep `pub(crate)` when a qualified struct pattern names the struct or an enum variant.
 - Compiler fixes retain the analysis compiler, wrapper, and query cache. Projects with an unusable project compiler can run `--fix-all`.
 - Function-length checks exclude headers from the conservative body bound. Small bodies avoid unnecessary formatter commands.
 - Caller analysis reuses resolved source paths. Facades in separate namespaces keep their callers when exports share a line.
