@@ -23,11 +23,12 @@ use crate::project::Comparison;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::tui::app_render_state::OverlayRenderInputs;
+use crate::tui::app::OverlayRenderInputs;
 use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::SyncedDescriptionHeight;
+use crate::tui::render_context::RenderProjectSelection;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
@@ -190,7 +191,7 @@ fn narrow_quota_values_keep_whole_labels_above_whole_counts() -> anyhow::Result<
     let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
     let frame = terminal.draw(|frame| {
         let mut split = app.split_for_render(
-            None,
+            RenderProjectSelection::NoResolvedProject,
             Duration::ZERO,
             &lookup,
             OverlayRenderInputs::none(),

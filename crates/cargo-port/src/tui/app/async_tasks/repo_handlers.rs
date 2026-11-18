@@ -42,6 +42,7 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
+use crate::tui::app::tree_mutation::LeafReplacementOutcome;
 use crate::tui::panes::DetailCacheState;
 use crate::tui::project_list::ProjectPathLookup;
 use crate::tui::project_list_state::SyncResolution;
@@ -648,10 +649,13 @@ impl App {
             // `tree.replace_leaf_by_path` redispatches cargo metadata on each replacement.
             // `WorkspaceMetadataStore`'s per-root generation counter lets the second,
             // runtime-enriched replacement supersede the first transient extraction dispatch.
-            let Some(previous_root_item) =
-                tree_mutation.replace_leaf_by_path(&path, item.clone(), &metadata_dispatch_context)
-            else {
-                return false;
+            let previous_root_item = match tree_mutation.replace_leaf_by_path(
+                &path,
+                item.clone(),
+                &metadata_dispatch_context,
+            ) {
+                LeafReplacementOutcome::Replaced { previous } => *previous,
+                LeafReplacementOutcome::NoCompatibleLeaf => return false,
             };
             let mut item = item;
             for (project_path, project_info) in previous_root_item.collect_project_info() {

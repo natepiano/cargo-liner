@@ -224,7 +224,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
                 }
             }
         }
-        if machine.state.hierarchy_notice().is_visible() {
+        if machine.state.notices().next().is_some() {
             next = next.earlier(DisplayText::Notice.next_change(now));
         }
     }

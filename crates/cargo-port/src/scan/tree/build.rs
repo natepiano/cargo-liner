@@ -1,5 +1,4 @@
 use super::AbsolutePath;
-use super::CargoParseResult;
 use super::HashMap;
 use super::HashSet;
 use super::Itertools;
@@ -155,14 +154,6 @@ fn group_members_new(
     });
 
     groups
-}
-
-/// Convert a `CargoParseResult` (from `from_cargo_toml()`) into a `RootItem`.
-pub(crate) fn cargo_parse_result_to_item(cargo_parse_result: CargoParseResult) -> RootItem {
-    match cargo_parse_result {
-        CargoParseResult::Workspace(ws) => RootItem::Rust(RustProject::Workspace(ws)),
-        CargoParseResult::Package(pkg) => RootItem::Rust(RustProject::Package(pkg)),
-    }
 }
 
 #[cfg(test)]

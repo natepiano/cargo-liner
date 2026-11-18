@@ -4,7 +4,8 @@
 
 The accounts command reports the state of each session.
 cargo-handler reads only those session states from its answer.
-The status column uses them, and the hierarchy notes report the health of the source.
+The status column uses them.
+While the command fails, the summary names the failure under the local machine.
 The handler shows no accounts table.
 The hana console accounts page shows account usage.
 
@@ -37,7 +38,15 @@ The UI only drains completed answers through `refresh`.
 
 `AccountsSource::session_states` gives the usable states, or an empty map.
 `AccountsSource::health` gives the source health to the census.
-A failure keeps its reason, and the hierarchy note shows it.
+A failure keeps its reason.
+
+### Failure notice
+
+`Census::record_local_accounts` copies the source health into the local machine's census facts.
+`MachineState::notices` gives the lines under a machine's agents: the hierarchy notice, then the accounts failure.
+The accounts line shows for `Failed` and `FailedKeepingLast`, for example `accounts: command failed`.
+No other state draws an accounts line.
+A remote probe records no accounts read, so a remote shows no accounts line.
 
 ### Decoding
 
