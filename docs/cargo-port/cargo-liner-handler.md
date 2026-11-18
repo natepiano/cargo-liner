@@ -774,7 +774,7 @@ cargo-mend neither reports nor fixes a generated source file, such as the spacet
 
 **Ruled out:** crate roots from the `lib.rs`/`main.rs` file names; support for one file that is both a Cargo target root and a symlinked module under a generated `mod.rs`, which is not a realistic case.
 
-### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: todo
+### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: done
 
 #### Work Order
 
