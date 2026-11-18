@@ -818,3 +818,33 @@ Each object in `cargo-handler census --json` `sessions[]` names its sampled Clau
 **Ruled out:**
 - A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
 - A guard for a remote that uses the local machine name: that is a configuration error.
+
+### Phase 39 — mend writes its stored findings report under load  · status: todo
+
+#### Work Order
+
+**Goal:** a cargo-mend run always writes its stored findings report where the run's target directory puts it, at any machine load and test concurrency. Source: the showrunner, 2026-11-18. The CI point validation on main f2c7bc680 (workspace nextest, `--test-threads 32`, natedev under load) failed two tests at `crates/cargo-mend/tests/diagnostics/facade_subjects.rs:880` with "missing stored findings report":
+- `diagnostic_tests::facade_subjects::cargo_renamed_extern_crate_reports_a_foreign_chain_blocker` (4.3 s)
+- `diagnostic_tests::facade_subjects::foreign_dependency_glob_reports_a_foreign_chain_blocker` (2.8 s)
+
+The handler final gate on the same tests passed, so the cause depends on load or concurrency. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 11686-11745.
+
+**Spec:**
+1. Find why a run of these fixtures can finish with no `*STORED_REPORT_SUFFIX` file under the fixture's `target/` (`tests/support/mod.rs::stored_report_paths`). Prove the cause with evidence from a reproduction, not from reading alone.
+2. Fix the cause in cargo-mend, where the stored report is written or where the run decides to skip the write. Do not change a test timeout, add a retry, or loosen the assertion.
+3. Both tests must run under 1 s in the full cargo-mend suite at normal load. If the cost is in the fixture shape, reduce it without losing what the test checks.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/persistence/cache.rs`
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+
+**Workers:** 1 writer.
+- `impl`: diagnosis, fix and the regression test. Add any other cargo-mend file the proved cause names.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A reproduction under parallel load that failed before the fix passes after it.
+- No changed test takes one second or more.
