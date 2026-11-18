@@ -98,6 +98,40 @@ A proc macro can make an item with `quote_spanned!` on written spans and copy th
 No span then has an expansion context, so `from_expansion` cannot see it.
 Rule 4 reads the span order from rustc and reads no source file.
 
+`compiler/visibility/use_sites.rs::UseSiteCollector` records each use of an item, so mend keeps a `pub(crate)` that another module needs.
+`visit_pat` records the path of a `PatKind::Struct` pattern through `record_qpath`, as tuple-struct and path patterns do.
+`let child::Point { x, y } = …;` in a crate root thus counts as a use of `child::Point`.
+`record_target` maps a variant to its enum, so a qualified struct-variant pattern counts as a use of the enum.
+A pattern regression test needs an unused control item that mend still reports.
+It also needs a project `mend.toml` that pins `[generated] markers = []` and the diagnostic.
+Without them, the test also passes when the file is skipped or the diagnostic is off.
+
+## Generated sources
+
+mend neither reports nor fixes a generated source file, such as spacetime bindings.
+
+The `[generated]` table holds `markers` and `header_lines`, in the global config and in a project `mend.toml`.
+A project key overrides the global key.
+The defaults are `["@generated", "AUTOMATICALLY GENERATED"]` and 5.
+`config/generated_sources.rs` holds the type, and `ProjectGeneratedSources::resolve(global)` applies the override.
+
+`rust_syntax/generated_sources.rs::SourceOwnershipClassifier` returns `SourceOwnership::{Generated, Authored}`.
+A file is generated when a marker is in its first `header_lines` lines.
+A file is also generated when its parent module file (`D/mod.rs` or `D.rs`) is generated.
+Cargo target roots have no parent, and ancestry follows the mounted module path.
+The per-pass cache uses the physical file identity, so re-entry cannot recurse.
+
+The filters apply in this order:
+
+1. `MendRunner::scan_checked_sources` drops each finding in a generated file, after the syntax-scan findings merge.
+2. `MendRunner::retain_authored_facts` removes pub-use fix facts with a generated child or parent.
+3. `SyntaxScans::retain_authored` and `ValidatedFixSet::retain_authored` drop import, prefer-module-import, inline-path and imports-at-top fixes in generated files.
+4. A pub-use facade or subtree re-export proposal with any edit in a generated file is rejected whole, in the first pass and in each chain pass. Its finding stays in the report.
+
+A per-file report filter does not protect callers, because facade and subtree fixes edit caller and ancestor files.
+Each proposal therefore checks every edit path.
+The compiler facts cache is stored before the filter, so the generated settings are not part of the compiler fingerprint.
+
 ## Function-length protection
 
 `fixes/runner/function_length/` measures functions changed by a proposed fix.
@@ -125,6 +159,7 @@ A relocation pass that depends on a protected function stays out as one unit.
 6. Reject an import-dependent plan as a whole when its binding cannot be written safely.
 7. Keep valid independent fixes when another edit is declined.
 8. Change only a visibility that a person wrote.
+9. Never report or edit a generated source file.
 
 These constraints prioritize compilable edits over the number of automatic rewrites.
 See [compiler validation](compiler-validation.md) for build checks, rollback, and wrapper lifetime.

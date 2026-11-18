@@ -818,3 +818,56 @@ Each object in `cargo-handler census --json` `sessions[]` names its sampled Clau
 **Ruled out:**
 - A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
 - A guard for a remote that uses the local machine name: that is a configuration error.
+
+### Phase 39 — mend writes its stored findings report under load  · status: done
+
+#### Work Order
+
+**Goal:** a cargo-mend run always writes its stored findings report where the run's target directory puts it, at any machine load and test concurrency. Source: the showrunner, 2026-11-18. The CI point validation on main f2c7bc680 (workspace nextest, `--test-threads 32`, natedev under load) failed two tests at `crates/cargo-mend/tests/diagnostics/facade_subjects.rs:880` with "missing stored findings report":
+- `diagnostic_tests::facade_subjects::cargo_renamed_extern_crate_reports_a_foreign_chain_blocker` (4.3 s)
+- `diagnostic_tests::facade_subjects::foreign_dependency_glob_reports_a_foreign_chain_blocker` (2.8 s)
+
+The handler final gate on the same tests passed, so the cause depends on load or concurrency. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 11686-11745.
+
+**Spec:**
+1. Find why a run of these fixtures can finish with no `*STORED_REPORT_SUFFIX` file under the fixture's `target/` (`tests/support/mod.rs::stored_report_paths`). Prove the cause with evidence from a reproduction, not from reading alone.
+2. Fix the cause in cargo-mend, where the stored report is written or where the run decides to skip the write. Do not change a test timeout, add a retry, or loosen the assertion.
+3. Both tests must run under 1 s in the full cargo-mend suite at normal load. If the cost is in the fixture shape, reduce it without losing what the test checks.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/persistence/cache.rs`
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+
+**Workers:** 1 writer.
+- `impl`: diagnosis, fix and the regression test. Add any other cargo-mend file the proved cause names.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A reproduction under parallel load that failed before the fix passes after it.
+- No changed test takes one second or more.
+
+### Phase 40 — a mend source edit gives a new build id  · status: todo
+
+#### Work Order
+
+**Goal:** a cargo-mend binary built after a source edit carries a new `MEND_BUILD_ID`, so the findings cache and the builds lint cache never reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+
+**Spec:**
+1. `crates/cargo-mend/build.rs` emits `cargo:rerun-if-changed` only for `../../.git/HEAD`, `../../.git/refs/heads` and `build.rs`. A source edit with no commit rebuilds the binary but keeps the old `MEND_BUILD_ID` and `MEND_GIT_HASH`. The findings cache keys on `MEND_BUILD_ID` (`src/compiler/settings.rs:70`), and builds verify keys its lint cache on `cargo mend --build-info` (`src/main.rs:105`).
+2. Add `cargo:rerun-if-changed=src` and `cargo:rerun-if-changed=Cargo.toml` to `build.rs`, so each source or manifest edit reruns the script and stamps a new build id. Update the comment above the directives to state the current rule.
+3. Add a test that proves a source edit gives a new build id, in under 1 s. If no test can rebuild the binary in under 1 s, test the build script's directive list instead, and state why in the summary.
+
+**Files:**
+- `crates/cargo-mend/build.rs`
+
+**Workers:** 1 writer.
+- `impl`: `build.rs` and its test.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No new test takes one second or more.

@@ -130,6 +130,24 @@ The report lists each unit director and current-run worker that a tile shows, fr
 Schema 2 adds a `sessions` list: one `{session, machine, status, activity}` entry for each session that a tile shows, in session order.
 A `sessions` entry has a `null` activity when its status is not `busy`.
 Each `sessions` entry also has `shells: [{name, started_at}]`: the shell rows the tile shows under the session, in tile line order, from `SessionCells::shells`. The name is the drawn shell name without the machine. A new key keeps `schema` at 2.
+Each `sessions[]` object names its sampled Claude director process, so the sdlc Units board can join shell rows to its checked owner.
+`machine` is on every session; it is the census machine name.
+`pid` (integer) and `process_start` (string) are both present or both absent, and `schema` stays 2.
+`process_start` matches `~/.claude/scripts/lib/process_start.py`:
+
+1. Linux: `/proc/<pid>/stat` field 22 (`ProcessBirth::KernelTicks`) as a decimal string.
+2. macOS: `ps -p <pid> -o lstart=` with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends.
+
+`census/scan.rs` holds `ProcessStart`, `SessionProcess { pid: NonZeroU32, process_start }` and `SessionProcesses`.
+`ProcessStart` refuses empty text and whitespace at either end, at construction and at decode.
+`census/report.rs::SessionReport` flattens an untagged `SessionOwner`: `Known(&SessionProcess)` or `Unreadable {}`.
+`LocalScanner::scan` reads each session pid's exact birth before the process-table read.
+It emits the pair only when that birth equals the snapshot's birth and the session has one Claude row.
+On macOS, one `/bin/ps` call reads all sessions, capped at 200 ms or the time left before the probe deadline.
+The birth is checked again after `ps`.
+Remote probes return `session_processes`, and `remote::probe_answer` with `probe::parse_census_answer` is the single decode path.
+A session with a shell on another machine omits the pair (`SessionCells.shells_share_machine`).
+Codex worker threads have no Claude row, so they have no pair.
 `agent_cell::session_cells` supplies each name, status and activity from the tile lines.
 A staff row with no tile line is not listed, so the JSON and the tiles name the same sessions.
 A session that two machines list takes its facts from the machine whose tile shows it.
