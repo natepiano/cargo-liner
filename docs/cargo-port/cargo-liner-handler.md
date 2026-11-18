@@ -858,29 +858,19 @@ A cargo-mend binary built after a source or manifest edit carries a new `MEND_BU
 
 ### Phase 41 — tests that read stored findings reports require a report  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** every cargo-mend test that loops over stored findings reports fails when it finds none, so a test can never pass on nothing. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
+Every cargo-mend test that loops over stored findings reports fails when it finds none. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
 
-**Spec:**
-1. The loops over `stored_report_paths` in `tests/diagnostics/pub_use_fixes.rs` (near lines 70 and 610), `tests/diagnostics/rendering.rs` (near line 1232) and `tests/diagnostics/allowances.rs` (near lines 300, 336 and 374) pass with zero reports.
-2. Make each one require at least one stored report, with one shared helper in `tests/support/mod.rs` if the loops share the shape. Keep each existing assertion on the report contents.
-3. Search the other cargo-mend tests for loops over `stored_report_paths` with no count check, and apply the same rule.
+- `stored_report_paths` walks the fixture's Cargo build directory, keeps only files that end in `.mend.json`, and asserts that at least one exists. Every caller loop (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`, `facade_subjects.rs`) gets the check from the helper.
+- Three tests lost their own report counters and count asserts, because the helper holds that check.
 
 **Files:**
-- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
-- `crates/cargo-mend/tests/diagnostics/rendering.rs`
-- `crates/cargo-mend/tests/diagnostics/allowances.rs`
-- `crates/cargo-mend/tests/support/mod.rs`
+- `crates/cargo-mend/tests/support/mod.rs` — the stored-report lookup, which fails on an empty result.
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** WalkDir also yields directories. The lookup filters on `file_type().is_file()` before the suffix match.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- No changed test takes one second or more.
+**Ruled out:** a count check in each caller loop. The shared helper holds it once.
 
 ### Phase 42 — the mend rollback test finishes in under 1 second  · status: todo
 
