@@ -861,3 +861,29 @@ cargo-mend test fixtures find their stored findings reports with any Cargo build
 **Verification:**
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - No new test takes one second or more.
+
+### Phase 41 — tests that read stored findings reports require a report  · status: todo
+
+#### Work Order
+
+**Goal:** every cargo-mend test that loops over stored findings reports fails when it finds none, so a test can never pass on nothing. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
+
+**Spec:**
+1. The loops over `stored_report_paths` in `tests/diagnostics/pub_use_fixes.rs` (near lines 70 and 610), `tests/diagnostics/rendering.rs` (near line 1232) and `tests/diagnostics/allowances.rs` (near lines 300, 336 and 374) pass with zero reports.
+2. Make each one require at least one stored report, with one shared helper in `tests/support/mod.rs` if the loops share the shape. Keep each existing assertion on the report contents.
+3. Search the other cargo-mend tests for loops over `stored_report_paths` with no count check, and apply the same rule.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/rendering.rs`
+- `crates/cargo-mend/tests/diagnostics/allowances.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No changed test takes one second or more.
