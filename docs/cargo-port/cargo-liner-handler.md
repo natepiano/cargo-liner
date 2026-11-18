@@ -848,3 +848,26 @@ The handler final gate on the same tests passed, so the cause depends on load or
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - A reproduction under parallel load that failed before the fix passes after it.
 - No changed test takes one second or more.
+
+### Phase 40 — a mend source edit gives a new build id  · status: todo
+
+#### Work Order
+
+**Goal:** a cargo-mend binary built after a source edit carries a new `MEND_BUILD_ID`, so the findings cache and the builds lint cache never reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+
+**Spec:**
+1. `crates/cargo-mend/build.rs` emits `cargo:rerun-if-changed` only for `../../.git/HEAD`, `../../.git/refs/heads` and `build.rs`. A source edit with no commit rebuilds the binary but keeps the old `MEND_BUILD_ID` and `MEND_GIT_HASH`. The findings cache keys on `MEND_BUILD_ID` (`src/compiler/settings.rs:70`), and builds verify keys its lint cache on `cargo mend --build-info` (`src/main.rs:105`).
+2. Add `cargo:rerun-if-changed=src` and `cargo:rerun-if-changed=Cargo.toml` to `build.rs`, so each source or manifest edit reruns the script and stamps a new build id. Update the comment above the directives to state the current rule.
+3. Add a test that proves a source edit gives a new build id, in under 1 s. If no test can rebuild the binary in under 1 s, test the build script's directive list instead, and state why in the summary.
+
+**Files:**
+- `crates/cargo-mend/build.rs`
+
+**Workers:** 1 writer.
+- `impl`: `build.rs` and its test.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No new test takes one second or more.
