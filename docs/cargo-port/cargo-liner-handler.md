@@ -881,3 +881,30 @@ A cargo-mend binary built after a source or manifest edit carries a new `MEND_BU
 **Verification:**
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - No changed test takes one second or more.
+
+### Phase 42 — the mend rollback test finishes in under 1 second  · status: todo
+
+#### Work Order
+
+**Goal:** the cargo-mend test `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk` runs in under 1 s in the full suite at normal load. Source: the showrunner approved the Phase 41 add-on, 2026-11-18: "Fix the cause of the time, not the limit."
+
+**Spec:**
+1. The test took 1.200 s on the Mac at load 8.09 on 12 CPUs, in the full cargo-mend suite. Before the Phase 33 toolchain-query cache it took 1.655 s.
+2. Measure first. Time the test alone and in the suite, and record each mend and cargo process the test starts, with its time. Find the step that costs the most.
+3. Remove that cost at its cause: in mend, in the shared test support, or in the fixture. Keep what the test proves: a second `--fix-all` pass fails validation, and mend restores every fixture file to its text before the invocation.
+4. Do not give the test more nextest slots and do not raise a time limit. Diagnostic tests already hold two slots.
+5. If the cause is in mend itself, the fix also makes other fix tests faster. Report the suite's slowest diagnostic tests before and after.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/fix_rollback.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+- mend source files the measurement names
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The test is under 1 s in the full suite on the Mac and on natedev at normal load (Mac under 12, natedev under 32). A run at higher load is reported only.
