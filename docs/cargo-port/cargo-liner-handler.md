@@ -821,33 +821,23 @@ Each object in `cargo-handler census --json` `sessions[]` names its sampled Clau
 
 ### Phase 39 — mend writes its stored findings report under load  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a cargo-mend run always writes its stored findings report where the run's target directory puts it, at any machine load and test concurrency. Source: the showrunner, 2026-11-18. The CI point validation on main f2c7bc680 (workspace nextest, `--test-threads 32`, natedev under load) failed two tests at `crates/cargo-mend/tests/diagnostics/facade_subjects.rs:880` with "missing stored findings report":
-- `diagnostic_tests::facade_subjects::cargo_renamed_extern_crate_reports_a_foreign_chain_blocker` (4.3 s)
-- `diagnostic_tests::facade_subjects::foreign_dependency_glob_reports_a_foreign_chain_blocker` (2.8 s)
+cargo-mend test fixtures find their stored findings reports with any Cargo build directory. Source: the showrunner, 2026-11-18, from a CI point validation that failed two facade tests with "missing stored findings report". mend's report writer and reader are unchanged: each report stays beside its unit's `.rmeta`.
 
-The handler final gate on the same tests passed, so the cause depends on load or concurrency. Log: `~/.local/state/showrunner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/session/waiting_state/ci_validation.log`, lines 11686-11745.
-
-**Spec:**
-1. Find why a run of these fixtures can finish with no `*STORED_REPORT_SUFFIX` file under the fixture's `target/` (`tests/support/mod.rs::stored_report_paths`). Prove the cause with evidence from a reproduction, not from reading alone.
-2. Fix the cause in cargo-mend, where the stored report is written or where the run decides to skip the write. Do not change a test timeout, add a retry, or loosen the assertion.
-3. Both tests must run under 1 s in the full cargo-mend suite at normal load. If the cost is in the fixture shape, reduce it without losing what the test checks.
+- Cause: the build slot exports `CARGO_BUILD_BUILD_DIR` (`~/.claude/scripts/lib/build_slots.py`). Fixture cargo commands inherited it, so mend wrote the reports in the slot's shared build directory. The test helper searched only `<fixture>/target`. The `verify.sh` gate fixtures built under `<fixture>/target`, so the gate passed.
+- `isolate_cargo` removes an inherited `CARGO_BUILD_BUILD_DIR`, so a fixture builds in its own directory.
+- `stored_report_paths` searches the fixture's Cargo `build_directory`, read from `cargo metadata` through `CargoDirectories::for_fixture`.
+- `stored_reports_are_found_under_a_split_build_directory` sets a fixture-local `build-dir` and requires one report for each `.rmeta`.
 
 **Files:**
-- `crates/cargo-mend/src/compiler/persistence/cache.rs`
-- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs`
-- `crates/cargo-mend/tests/support/mod.rs`
+- `crates/cargo-mend/tests/support/mend_json.rs` — `isolate_cargo`, `CargoDirectories::for_fixture` and `read`.
+- `crates/cargo-mend/tests/support/mod.rs` — `stored_report_paths`, `STORED_REPORT_SUFFIX`.
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs` — the split build directory regression.
 
-**Workers:** 1 writer.
-- `impl`: diagnosis, fix and the regression test. Add any other cargo-mend file the proved cause names.
+**Gotchas:** a test that loops over stored reports without a minimum count passes when none are found (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`).
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- A reproduction under parallel load that failed before the fix passes after it.
-- No changed test takes one second or more.
+**Ruled out:** a second report layout under `target/mend-reports/`. A build directory spelled `target/../x` passed its path-prefix check and put reports outside `target`, and mend's own writer and reader already agreed.
 
 ### Phase 40 — a mend source edit gives a new build id  · status: todo
 
