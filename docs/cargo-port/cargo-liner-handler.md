@@ -819,7 +819,7 @@ Each object in `cargo-handler census --json` `sessions[]` names its sampled Clau
 - A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
 - A guard for a remote that uses the local machine name: that is a configuration error.
 
-### Phase 39 — mend writes its stored findings report under load  · status: todo
+### Phase 39 — mend writes its stored findings report under load  · status: done
 
 #### Work Order
 
