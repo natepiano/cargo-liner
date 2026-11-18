@@ -1489,33 +1489,7 @@ exit 43
         }
     }
 
-    #[test]
-    fn a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts() {
-        let fixture = InstalledToolchain::for_live_capture();
-        write_executable(
-            &fixture.bin.join("script"),
-            "#!/bin/sh\nprintf helper > \"$SHIM_TEST_OBSERVATIONS/helper\"\nexit 19\n",
-        );
-        write_executable(
-            &fixture.bin.join("cargo-tile-real"),
-            r#"#!/bin/sh
-printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
-printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
-printf '%s' "${@CAPTURE_FALLBACK_ENV@-}" > "$SHIM_TEST_OBSERVATIONS/capture-fallback"
-printf 'original stdout\n'
-printf 'original stderr\n' >&2
-exit 43
-"#,
-        );
-        let arguments = ["build", "--quiet", "--message-format=json", "--", "a b", ""];
-        let temporary = fixture.directory.path().join("startup");
-        fs::create_dir(&temporary).expect("create private socket directory");
-        let prepared = fixture.prepare(
-            CapturePath::NoTerminal,
-            HomeSelection::Present,
-            0o066,
-            &arguments,
-        );
+    fn pty_stream_relay(prepared: &Command) -> Command {
         // Supply a terminal without sending an EOF character through script's outer input.
         let mut terminal = Command::new("python3");
         terminal
@@ -1562,23 +1536,78 @@ sys.exit(child.wait())
         if let Some(directory) = prepared.get_current_dir() {
             terminal.current_dir(directory);
         }
-        let output = terminal
-            .env("TMPDIR", &temporary)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run with failed inner PTY helper");
-        assert_eq!(fixture.observed("helper"), b"helper");
-        assert_eq!(output.status.code(), Some(43), "{output:?}");
-        assert_eq!(output.stdout, b"original stdout\n");
-        assert_eq!(output.stderr, b"original stderr\n");
-        let expected: Vec<u8> = arguments
-            .iter()
-            .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
-            .collect();
-        assert_eq!(fixture.observed("arguments"), expected);
-        assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
-        fixture.assert_cleaned_up();
-        assert_eq!(entries(&temporary).len(), 0, "startup socket is removed");
+        terminal
+    }
+
+    #[test]
+    fn a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts() {
+        for startup_directory in [
+            "startup",
+            "startup-in-a-long-temporary-directory-like-the-handler-gate-session-directory",
+        ] {
+            let fixture = InstalledToolchain::for_live_capture();
+            write_executable(
+                &fixture.bin.join("script"),
+                r#"#!/bin/sh
+printf helper > "$SHIM_TEST_OBSERVATIONS/helper"
+printf '%s' "$CARGO_TILE_PTY_START_SOCKET" > "$SHIM_TEST_OBSERVATIONS/startup-socket"
+exit 19
+"#,
+            );
+            write_executable(
+                &fixture.bin.join("cargo-tile-real"),
+                r#"#!/bin/sh
+printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$SHIM_TEST_OBSERVATIONS/environment"
+printf '%s' "${@CAPTURE_FALLBACK_ENV@-}" > "$SHIM_TEST_OBSERVATIONS/capture-fallback"
+printf 'original stdout\n'
+printf 'original stderr\n' >&2
+exit 43
+"#,
+            );
+            let arguments = ["build", "--quiet", "--message-format=json", "--", "a b", ""];
+            let temporary = fixture.directory.path().join(startup_directory);
+            fs::create_dir(&temporary).expect("create private socket directory");
+            let prepared = fixture.prepare(
+                CapturePath::NoTerminal,
+                HomeSelection::Present,
+                0o066,
+                &arguments,
+            );
+            let output = pty_stream_relay(&prepared)
+                .env("TMPDIR", &temporary)
+                .stdin(Stdio::null())
+                .output()
+                .expect("run with failed inner PTY helper");
+            assert_eq!(fixture.observed("helper"), b"helper");
+            assert_eq!(output.status.code(), Some(43), "{output:?}");
+            assert_eq!(output.stdout, b"original stdout\n");
+            assert_eq!(output.stderr, b"original stderr\n");
+            let expected: Vec<u8> = arguments
+                .iter()
+                .flat_map(|argument| argument.bytes().chain(std::iter::once(0)))
+                .collect();
+            assert_eq!(fixture.observed("arguments"), expected);
+            assert_eq!(fixture.observed("environment"), UNCAPTURED_ENVIRONMENT);
+            fixture.assert_cleaned_up();
+            assert_eq!(entries(&temporary).len(), 0, "startup socket is removed");
+            let socket_path = PathBuf::from(
+                String::from_utf8(fixture.observed("startup-socket")).expect("UTF-8 socket path"),
+            );
+            for path in [
+                socket_path.as_path(),
+                socket_path.parent().expect("private socket directory"),
+            ] {
+                assert_eq!(
+                    fs::symlink_metadata(path)
+                        .expect_err("startup artifact is removed")
+                        .kind(),
+                    std::io::ErrorKind::NotFound,
+                    "{}",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]

@@ -813,6 +813,14 @@ pub(crate) const CAPTURE_SHIM_EXECUTABLE: &str = "@CARGO_TILE_EXECUTABLE@";
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
 /// Entry argument that runs cargo without opening another capture.
 pub(crate) const CAPTURE_SHIM_PASSTHROUGH_ARGUMENT: &str = "--capture-shim-passthrough";
+/// A short base keeps startup sockets within the Unix path limit, regardless of TMPDIR.
+pub(crate) const CAPTURE_STARTUP_SOCKET_BASE: &str = "/tmp";
+/// The private startup directory receives a random suffix.
+pub(crate) const CAPTURE_STARTUP_SOCKET_DIRECTORY_PREFIX: &str = "tile-start-";
+/// Only the owner can access the startup directory.
+pub(crate) const CAPTURE_STARTUP_SOCKET_DIRECTORY_MODE: u32 = 0o700;
+/// Each private startup directory contains one acknowledgement socket.
+pub(crate) const CAPTURE_STARTUP_SOCKET_NAME: &str = "socket";
 /// The binary the shim stands in for, in each toolchain's `bin`.
 pub(crate) const CARGO_NAME: &str = "cargo";
 /// Whether the grid puts the shim in front of cargo when it opens,
