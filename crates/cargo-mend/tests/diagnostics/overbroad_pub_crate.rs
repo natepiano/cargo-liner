@@ -57,6 +57,113 @@ edition = "2024"
     );
 }
 
+const BOARD_TEMPLATES: &str = r"#[derive(Default)]
+pub(crate) struct Board {
+    pub(crate) rows: u32,
+}
+
+#[derive(Default)]
+pub(crate) struct Count(pub(crate) u32);
+
+pub(crate) enum Outcome {
+    Ready { total: u32 },
+}
+
+impl Default for Outcome {
+    fn default() -> Self {
+        Self::Ready { total: 0 }
+    }
+}
+";
+
+#[test]
+fn qualified_patterns_keep_required_pub_crate() {
+    let temp = tempdir().expect("create qualified pattern fixture");
+    let manifest = temp.path().join("Cargo.toml");
+    fs::write(
+        &manifest,
+        r#"[package]
+name = "qualified_pattern_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[[test]]
+name = "board"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        r#"[visibility]
+pub_in_path = "permitted"
+
+[generated]
+markers = []
+
+[diagnostics]
+overbroad_pub_crate = true
+"#,
+    )
+    .expect("write fixture configuration");
+    fs::create_dir_all(temp.path().join("tests/support")).expect("create support directory");
+    let board_templates = "tests/support/board_templates.rs";
+    let board_templates_path = temp.path().join(board_templates);
+    fs::write(
+        &board_templates_path,
+        format!("{BOARD_TEMPLATES}\npub(crate) fn unused() {{}}\n"),
+    )
+    .expect("write board templates");
+    fs::write(
+        temp.path().join("tests/board.rs"),
+        r#"#[path = "support/board_templates.rs"]
+mod board_templates;
+
+#[test]
+fn reads_board() {
+    let board_templates::Board { rows } = Default::default();
+    let board_templates::Count(count) = Default::default();
+    let board_templates::Outcome::Ready { total } = Default::default();
+    assert_eq!(rows + count, total);
+}
+"#,
+    )
+    .expect("write board integration test");
+
+    let report = run_mend_json(&manifest);
+    let control_line = BOARD_TEMPLATES.lines().count() + 2;
+    let visibility_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.path.ends_with(board_templates)
+                && matches!(
+                    finding.code,
+                    DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                )
+        })
+        .map(|finding| (finding.code, finding.line_start))
+        .collect();
+    assert_eq!(
+        visibility_findings,
+        [(DiagnosticCode::OverbroadPubCrate, control_line)],
+        "only the unused function may have a visibility finding: {report:#?}",
+    );
+
+    let output = mend_command_for(&manifest)
+        .arg("--fix")
+        .output()
+        .expect("fix the qualified pattern fixture");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "cargo-mend --fix failed: {stderr}");
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    let source = fs::read(board_templates_path).expect("read board templates after --fix");
+    assert_eq!(
+        source.strip_suffix(b"\nfn unused() {}\n"),
+        Some(BOARD_TEMPLATES.as_bytes()),
+        "only the unused function may lose its visibility",
+    );
+}
+
 #[test]
 fn unused_pub_crate_at_depth_1_is_a_fixable_warning() {
     let temp = tempdir().expect("create temp fixture dir");
