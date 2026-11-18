@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::MendRunner;
 use super::RunPlan;
 use crate::compiler;
@@ -20,14 +22,16 @@ use crate::reporting::PassEdits;
 use crate::reporting::SubtreeReexportEdits;
 use crate::reporting::sort_and_dedup_findings;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnershipClassifier;
 
 /// A checked selection, with the syntax scans that added findings to its
 /// report and the sources they read, kept so the fix scans that follow reuse
 /// both instead of reading the tree again.
 pub(super) struct CheckedSelection {
-    pub(super) result:  SelectionResult,
-    pub(super) scans:   SyntaxScans,
-    pub(super) sources: ParsedSources,
+    pub(super) result:           SelectionResult,
+    pub(super) scans:            SyntaxScans,
+    pub(super) sources:          Rc<ParsedSources>,
+    pub(super) source_ownership: SourceOwnershipClassifier,
 }
 
 /// The syntax scans whose diagnostics are enabled; a fix kind is enabled only
@@ -37,6 +41,28 @@ pub(super) struct SyntaxScans {
     pub(super) inline_path:          Option<InlinePathScan>,
     pub(super) imports:              Option<ImportScan>,
     pub(super) imports_at_top:       Option<ImportsAtTopScan>,
+}
+
+impl SyntaxScans {
+    pub(super) fn retain_authored(
+        &mut self,
+        generated: &SourceOwnershipClassifier,
+    ) -> anyhow::Result<()> {
+        for fixes in [
+            self.imports.as_mut().map(|scan| &mut scan.fixes),
+            self.prefer_module_import
+                .as_mut()
+                .map(|scan| &mut scan.fixes),
+            self.inline_path.as_mut().map(|scan| &mut scan.fixes),
+            self.imports_at_top.as_mut().map(|scan| &mut scan.fixes),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            fixes.retain_authored(generated)?;
+        }
+        Ok(())
+    }
 }
 
 impl MendRunner<'_> {
@@ -118,7 +144,7 @@ impl MendRunner<'_> {
                 DiagnosticStatus::Disabled
             }
         };
-        let syntax_scans = SyntaxScans {
+        let mut syntax_scans = SyntaxScans {
             imports:              match enabled(&[
                 DiagnosticCode::ShortenLocalCrateImport,
                 DiagnosticCode::ReplaceDeepSuperImport,
@@ -171,19 +197,23 @@ impl MendRunner<'_> {
             .findings
             .extend(scan_findings.into_iter().flatten().flatten().cloned());
         sort_and_dedup_findings(&mut report.findings);
-        // `report.findings.retain` removes findings whose `diagnostic_code` is disabled in
-        // `self.loaded_config.diagnostics_config`.
-        report.findings.retain(|f| {
-            self.loaded_config
-                .diagnostics_config
-                .is_enabled(f.diagnostic_code)
-                == DiagnosticStatus::Enabled
-        });
+        let sources = Rc::new(sources);
+        let source_ownership = SourceOwnershipClassifier::for_selection(
+            Rc::clone(&sources),
+            &self.loaded_config.generated,
+            self.selection,
+        );
+        self.retain_authored_report(report, &source_ownership)
+            .map_err(MendFailure::Unexpected)?;
+        syntax_scans
+            .retain_authored(&source_ownership)
+            .map_err(MendFailure::Unexpected)?;
         report.refresh_summary();
         Ok(CheckedSelection {
             result,
             scans: syntax_scans,
             sources,
+            source_ownership,
         })
     }
 }

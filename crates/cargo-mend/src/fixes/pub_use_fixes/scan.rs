@@ -12,11 +12,13 @@ use super::validated_plan::ParentModuleFile;
 use super::validated_plan::ValidatedPubUsePlan;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
+use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
 use crate::rust_syntax::FileModulePath;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnershipClassifier;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
@@ -86,17 +88,37 @@ pub(crate) fn scan_selection(
     selection: &Selection,
     report: &Report,
     parsed_sources: &ParsedSources,
+    source_ownership: &SourceOwnershipClassifier,
 ) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let facts = collect_pub_use_fix_facts(selection, report);
-    let analysis = analyze_pub_use_candidates(&facts, parsed_sources)?;
-    let parent_fix_groups = group_parent_pub_use_plans(&analysis.supported_plans);
-
-    for validated_pub_use_plan in &analysis.supported_plans {
-        fixes.push(validated_pub_use_plan.child_narrowing.clone());
+    let PubUseAnalysis {
+        mut supported_plans,
+        mut skipped,
+    } = analyze_pub_use_candidates(&facts, parsed_sources)?;
+    let mut callers = loop {
+        let callers =
+            validated_plan::rewrite_subtree_imports_for_plans(&supported_plans, parsed_sources)?;
+        let rejected = OwnedFix::generated_owners(&callers, source_ownership)?;
+        if rejected.is_empty() {
+            break callers
+                .into_iter()
+                .map(|owned| owned.fix)
+                .collect::<Vec<_>>();
+        }
+        skipped += rejected.len();
+        supported_plans = supported_plans
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, plan)| (!rejected.contains(&index)).then_some(plan))
+            .collect();
+    };
+    facade_redirect::dedup_fixes(&mut callers);
+    for plan in &supported_plans {
+        fixes.push(plan.child_narrowing.clone());
     }
 
-    for (parent_boundary, exports) in parent_fix_groups {
+    for (parent_boundary, exports) in group_parent_pub_use_plans(&supported_plans) {
         let use_fix = parent_boundary::build_parent_pub_use_edit_for_exports(
             &parent_boundary,
             &exports,
@@ -104,17 +126,13 @@ pub(crate) fn scan_selection(
         )?;
         fixes.push(use_fix);
     }
-
-    fixes.extend(validated_plan::rewrite_subtree_imports_for_plans(
-        &analysis.supported_plans,
-        parsed_sources,
-    )?);
+    fixes.extend(callers);
     let fixes = ValidatedFixSet::try_from((fixes, parsed_sources))?;
 
     Ok(PubUseFixScan {
         fixes,
-        applied: analysis.supported_plans.len(),
-        skipped: analysis.skipped,
+        applied: supported_plans.len(),
+        skipped,
     })
 }
 

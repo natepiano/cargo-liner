@@ -12,6 +12,7 @@ use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::ModuleAliases;
 use crate::fixes::facade_redirect::RedirectTarget;
+use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax::ParsedSources;
 
@@ -56,16 +57,16 @@ pub(super) struct ValidatedPubUsePlan {
 pub(super) fn rewrite_subtree_imports_for_plans(
     plans: &[ValidatedPubUsePlan],
     parsed_sources: &ParsedSources,
-) -> Result<Vec<UseFix>> {
-    let mut plan_groups: BTreeMap<(&Path, &Path), Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
-    for plan in plans {
+) -> Result<Vec<OwnedFix>> {
+    let mut plan_groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for (index, plan) in plans.iter().enumerate() {
         plan_groups
             .entry((
                 plan.parent_boundary.path(),
                 plan.parent_boundary.directory(),
             ))
             .or_default()
-            .push(plan);
+            .push((index, plan));
     }
 
     let mut fixes = Vec::new();
@@ -79,14 +80,13 @@ pub(super) fn rewrite_subtree_imports_for_plans(
         let module_map = parsed_sources.module_map(&source_root);
         let facade_redirects = parent_plans
             .iter()
-            .copied()
-            .map(facade_redirect)
+            .map(|(_, plan)| facade_redirect(plan))
             .collect::<Vec<_>>();
         for file in rust_source_files(parent_dir)? {
             if file == parent_module {
                 continue;
             }
-            if parent_plans.iter().any(|plan| plan.child_file == file) {
+            if parent_plans.iter().any(|(_, plan)| plan.child_file == file) {
                 continue;
             }
             let Some(module_path) = module_map.scannable_module_path(&source_root, &file)? else {
@@ -102,12 +102,16 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                 )?
                 .fixes
                 .into_iter()
-                .map(|owned| owned.fix),
+                .map(|mut owned| {
+                    for index in &mut owned.facts {
+                        *index = parent_plans[*index].0;
+                    }
+                    owned
+                }),
             );
         }
     }
 
-    facade_redirect::dedup_fixes(&mut fixes);
     Ok(fixes)
 }
 

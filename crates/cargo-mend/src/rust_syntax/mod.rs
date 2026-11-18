@@ -1,4 +1,5 @@
 mod attribute_test_gate;
+mod generated_sources;
 mod identifier_character;
 mod lexical_regions;
 mod module_map;
@@ -11,6 +12,8 @@ use std::path::Path;
 
 pub(crate) use attribute_test_gate::AttributeTestGate;
 pub(crate) use attribute_test_gate::attribute_test_gate;
+pub(crate) use generated_sources::SourceOwnership;
+pub(crate) use generated_sources::SourceOwnershipClassifier;
 pub(crate) use identifier_character::IdentifierCharacter;
 pub(crate) use identifier_character::identifier_character;
 pub(crate) use lexical_regions::LexicalRegions;

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Skip reports and fixes for generated source files and their child modules.
+  The global and project `[generated]` tables accept `markers` and positive `header_lines`.
+  The defaults are `markers = ["@generated", "AUTOMATICALLY GENERATED"]` and `header_lines = 5`.
+
 ### Changed
 - Diagnostic rule tests call production scans and compiler callbacks directly. CLI tests retain actual Cargo fix and validation calls.
 

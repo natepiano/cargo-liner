@@ -748,7 +748,7 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** tinting worker job text with `role.worker`, an unasked look change.
 
-### Phase 36 — mend skips generated files  · status: todo
+### Phase 36 — mend skips generated files  · status: done
 
 #### Work Order
 

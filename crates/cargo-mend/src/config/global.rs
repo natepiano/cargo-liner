@@ -8,6 +8,7 @@ use anyhow::Result;
 use dirs::config_dir;
 use serde::Deserialize;
 use toml::from_str;
+use toml_edit::Array;
 use toml_edit::DocumentMut;
 use toml_edit::Item;
 use toml_edit::Key;
@@ -18,6 +19,9 @@ use super::constants::APP_NAME;
 use super::constants::CONFIG_VERSION;
 use super::constants::CONFIG_VERSION_KEY;
 use super::constants::DIAGNOSTICS_TABLE_KEY;
+use super::constants::GENERATED_HEADER_LINES_KEY;
+use super::constants::GENERATED_MARKERS_KEY;
+use super::constants::GENERATED_TABLE_KEY;
 use super::constants::GLOBAL_CONFIG_FILE;
 use super::constants::LEGACY_OVERBROAD_PUB_CRATE_KEY;
 use super::constants::PRELUDE_COMMENT;
@@ -27,14 +31,16 @@ use super::constants::PUB_IN_PATH_KEY;
 use super::constants::VISIBILITY_TABLE_KEY;
 use super::diagnostic_code::DiagnosticCode;
 use super::diagnostics_config::DiagnosticsConfig;
+use super::generated_sources::GeneratedSourcesConfig;
 use super::prelude_pub_mod::PreludePubMod;
 use super::pub_in_path::PubInPath;
 use crate::constants::HELP_URL_BASE;
 
-/// Resolved global configuration: diagnostics defaults and visibility settings.
+/// Resolved defaults for diagnostics, visibility, and generated sources.
 #[derive(Debug, Default)]
 pub(crate) struct GlobalConfig {
     pub(crate) diagnostics:     DiagnosticsConfig,
+    pub(super) generated:       GeneratedSourcesConfig,
     pub(super) prelude_pub_mod: PreludePubMod,
     pub(super) pub_in_path:     PubInPath,
 }
@@ -45,6 +51,8 @@ struct GlobalConfigFile {
     diagnostics_config: DiagnosticsConfig,
     #[serde(default, rename = "visibility")]
     visibility:         GlobalVisibility,
+    #[serde(default)]
+    generated:          GeneratedSourcesConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -59,6 +67,7 @@ impl From<GlobalConfigFile> for GlobalConfig {
     fn from(file: GlobalConfigFile) -> Self {
         Self {
             diagnostics:     file.diagnostics_config,
+            generated:       file.generated,
             prelude_pub_mod: file.visibility.prelude_pub_mod,
             pub_in_path:     file.visibility.pub_in_path,
         }
@@ -118,6 +127,13 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
         }
     }
 
+    if matches!(
+        reconcile_generated_sources(&mut document_mut)?,
+        ConfigEdit::Rewritten
+    ) {
+        config_edit = ConfigEdit::Rewritten;
+    }
+
     if let Some(visibility) = ensure_table(document_mut.as_table_mut(), VISIBILITY_TABLE_KEY)
         && !visibility.contains_key(PRELUDE_KEY)
     {
@@ -158,6 +174,36 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
 enum ConfigEdit {
     Unchanged,
     Rewritten,
+}
+
+fn reconcile_generated_sources(document_mut: &mut DocumentMut) -> Result<ConfigEdit> {
+    let mut config_edit = ConfigEdit::Unchanged;
+    if let Some(generated) = ensure_table(document_mut.as_table_mut(), GENERATED_TABLE_KEY) {
+        for (key, default) in generated_defaults()? {
+            if !generated.contains_key(key) {
+                generated.insert(key, default);
+                config_edit = ConfigEdit::Rewritten;
+            }
+        }
+    }
+
+    Ok(config_edit)
+}
+
+fn generated_defaults() -> Result<[(&'static str, Item); 2]> {
+    let defaults = GeneratedSourcesConfig::default();
+    let markers = defaults
+        .markers
+        .iter()
+        .map(String::as_str)
+        .collect::<Array>();
+    Ok([
+        (GENERATED_MARKERS_KEY, value(markers)),
+        (
+            GENERATED_HEADER_LINES_KEY,
+            value(i64::try_from(defaults.header_lines.get())?),
+        ),
+    ])
 }
 
 fn migrate_overbroad_pub_crate_key(diagnostics_table: &mut Table) -> ConfigEdit {
@@ -217,7 +263,7 @@ fn ensure_table<'a>(root_table: &'a mut Table, name: &str) -> Option<&'a mut Tab
         .as_table_mut()
 }
 
-fn default_global_config_toml() -> String {
+fn default_global_config_toml() -> Result<String> {
     let mut out = format!(
         "# cargo-mend global configuration\n\
          # See {HELP_URL_BASE}#diagnostics for details on each rule.\n\
@@ -229,6 +275,10 @@ fn default_global_config_toml() -> String {
     for code in DiagnosticCode::ALL {
         let _ = writeln!(out, "{} = true", code.as_str());
     }
+    let _ = writeln!(out, "\n[{GENERATED_TABLE_KEY}]");
+    for (key, default) in generated_defaults()? {
+        let _ = writeln!(out, "{key} = {default}");
+    }
     out.push_str("\n[visibility]\n");
     out.push_str(PRELUDE_COMMENT);
     let _ = writeln!(out, "{PRELUDE_KEY} = true");
@@ -238,7 +288,7 @@ fn default_global_config_toml() -> String {
         "{PUB_IN_PATH_KEY} = \"{}\"",
         PubInPath::Required.config_value()
     );
-    out
+    Ok(out)
 }
 
 fn create_default_global_config(path: &Path) -> Result<()> {
@@ -246,7 +296,7 @@ fn create_default_global_config(path: &Path) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
-    fs::write(path, default_global_config_toml())
+    fs::write(path, default_global_config_toml()?)
         .with_context(|| format!("failed to write default config to {}", path.display()))?;
     Ok(())
 }
@@ -258,6 +308,7 @@ fn create_default_global_config(path: &Path) -> Result<()> {
 )]
 mod tests {
     use toml::from_str;
+    use toml_edit::DocumentMut;
 
     use super::CONFIG_VERSION;
     use super::CONFIG_VERSION_KEY;
@@ -273,13 +324,35 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::config::DiagnosticStatus;
     use crate::config::PreludePubMod;
+    use crate::config::constants::DEFAULT_GENERATED_HEADER_LINES;
+    use crate::config::constants::DEFAULT_GENERATED_MARKERS;
     use crate::config::constants::DIAGNOSTICS_TABLE_KEY;
+    use crate::config::constants::GENERATED_HEADER_LINES_KEY;
+    use crate::config::constants::GENERATED_MARKERS_KEY;
+    use crate::config::constants::GENERATED_TABLE_KEY;
     use crate::config::constants::GLOBAL_CONFIG_FILE;
     use crate::config::constants::VISIBILITY_TABLE_KEY;
 
+    fn assert_generated_defaults(contents: &str) {
+        let doc = contents.parse::<DocumentMut>().unwrap();
+        let generated = doc[GENERATED_TABLE_KEY].as_table().unwrap();
+        let markers = generated[GENERATED_MARKERS_KEY].as_array().unwrap();
+        assert_eq!(
+            markers
+                .iter()
+                .map(|marker| marker.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            DEFAULT_GENERATED_MARKERS,
+        );
+        assert_eq!(
+            generated[GENERATED_HEADER_LINES_KEY].as_integer(),
+            Some(i64::try_from(DEFAULT_GENERATED_HEADER_LINES.get()).unwrap()),
+        );
+    }
+
     #[test]
     fn default_global_config_toml_parses_correctly() {
-        let result: Result<GlobalConfigFile, _> = from_str(&default_global_config_toml());
+        let result: Result<GlobalConfigFile, _> = from_str(&default_global_config_toml().unwrap());
         assert!(result.is_ok(), "default_global_config_toml() should parse");
         let global_config_file = result.unwrap();
         for (code, enabled) in global_config_file.diagnostics_config.entries() {
@@ -333,13 +406,14 @@ mod tests {
         }
         assert!(contents.contains(PRELUDE_KEY));
         assert!(contents.contains(PUB_IN_PATH_KEY));
+        assert_generated_defaults(&contents);
     }
 
     #[test]
     fn reconcile_preserves_comments_and_explicit_values_when_complete() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join(GLOBAL_CONFIG_FILE);
-        std::fs::write(&path, default_global_config_toml()).unwrap();
+        std::fs::write(&path, default_global_config_toml().unwrap()).unwrap();
         // `original` changes `prefer_module_import` and adds a user comment before
         // `std::fs::write` writes the complete file.
         let mut original = std::fs::read_to_string(&path).unwrap();
@@ -348,6 +422,8 @@ mod tests {
             &format!("{diagnostic_key} = true"),
             &format!("# my note\n{diagnostic_key} = false"),
         );
+        original = original.replace("header_lines = 5", "header_lines = 12");
+        original = original.replace("@generated", "custom generated marker");
         std::fs::write(&path, &original).unwrap();
 
         reconcile_global_config(&path).unwrap();
@@ -404,6 +480,7 @@ mod tests {
         assert!(after.contains(PUB_IN_PATH_KEY), "pub_in_path key inserted");
 
         let file: GlobalConfigFile = from_str(&after).unwrap();
+        assert_generated_defaults(&after);
         assert!(matches!(
             file.diagnostics_config
                 .is_enabled(DiagnosticCode::ReviewPubMod),
@@ -427,7 +504,9 @@ mod tests {
             "{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"{}\"\n",
             PubInPath::Required.config_value()
         );
-        let existing = default_global_config_toml().replace(&pub_in_path_line, "");
+        let existing = default_global_config_toml()
+            .unwrap()
+            .replace(&pub_in_path_line, "");
         std::fs::write(&path, &existing).unwrap();
 
         reconcile_global_config(&path).unwrap();

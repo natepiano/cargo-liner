@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ use crate::reporting::AppliedFixCounts;
 use crate::reporting::Finding;
 use crate::reporting::FixKind;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnership;
+use crate::rust_syntax::SourceOwnershipClassifier;
 
 pub(in crate::fixes) struct ImportScan {
     pub findings: Vec<Finding>,
@@ -62,6 +65,22 @@ pub(in crate::fixes) struct OwnedFix {
     pub facts: Vec<usize>,
 }
 
+impl OwnedFix {
+    /// Find the owners of proposals that edit any generated source.
+    pub(in crate::fixes) fn generated_owners(
+        fixes: &[Self],
+        source_ownership: &SourceOwnershipClassifier,
+    ) -> Result<BTreeSet<usize>> {
+        let mut owners = BTreeSet::new();
+        for owned in fixes {
+            if source_ownership.classify(&owned.fix.path)? == SourceOwnership::Generated {
+                owners.extend(owned.facts.iter().copied());
+            }
+        }
+        Ok(owners)
+    }
+}
+
 /// A fix paired with the notice kind it reports under once it is written.
 ///
 /// `fix_kind` is `None` for the `pub_use` pass, which tallies its own applied
@@ -90,6 +109,21 @@ pub(in crate::fixes) struct RewrittenFiles {
 }
 
 impl ValidatedFixSet {
+    /// Keep all edits of an authored file, including its import groups.
+    pub(in crate::fixes) fn retain_authored(
+        &mut self,
+        generated: &SourceOwnershipClassifier,
+    ) -> Result<()> {
+        let mut retained = Vec::new();
+        for tagged in std::mem::take(&mut self.fixes) {
+            if generated.classify(&tagged.fix.path)? == SourceOwnership::Authored {
+                retained.push(tagged);
+            }
+        }
+        self.fixes = retained;
+        Ok(())
+    }
+
     pub(in crate::fixes) const fn presence(&self) -> FixSetPresence {
         if self.fixes.is_empty() {
             FixSetPresence::Empty
