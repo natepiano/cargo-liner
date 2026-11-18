@@ -22,6 +22,12 @@ use super::constants::INDEX_FILENAME;
 #[cfg(test)]
 use super::paths;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndexedCacheSize {
+    RecountRequired,
+    Bytes(u64),
+}
+
 /// Serializes [`adjust`] calls within the process. Two lint workers running
 /// in parallel for different projects both call adjust, and without this
 /// mutex their read-modify-write sequences race and lose updates. The
@@ -31,9 +37,13 @@ static ADJUST_LOCK: Mutex<()> = Mutex::new(());
 
 fn index_path(cache_root: &Path) -> PathBuf { cache_root.join(INDEX_FILENAME) }
 
-pub(super) fn read(cache_root: &Path) -> Option<u64> {
-    let raw = fs::read_to_string(index_path(cache_root)).ok()?;
-    raw.trim().parse::<u64>().ok()
+pub(super) fn read(cache_root: &Path) -> IndexedCacheSize {
+    let Ok(raw) = fs::read_to_string(index_path(cache_root)) else {
+        return IndexedCacheSize::RecountRequired;
+    };
+    raw.trim()
+        .parse::<u64>()
+        .map_or(IndexedCacheSize::RecountRequired, IndexedCacheSize::Bytes)
 }
 
 pub(super) fn write(cache_root: &Path, bytes: u64) -> io::Result<()> {
@@ -72,7 +82,7 @@ pub(super) fn adjust(cache_root: &Path, delta: i64) {
     paths::assert_not_default_user_cache_root(cache_root);
 
     let _guard = ADJUST_LOCK.lock();
-    let Some(current) = read(cache_root) else {
+    let IndexedCacheSize::Bytes(current) = read(cache_root) else {
         return;
     };
     let next = if delta >= 0 {
@@ -94,16 +104,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_missing_returns_none() {
+    fn read_missing_requires_recount() {
         let dir = tempdir().expect("tempdir");
-        assert_eq!(read(dir.path()), None);
+        assert_eq!(read(dir.path()), IndexedCacheSize::RecountRequired);
     }
 
     #[test]
     fn write_then_read_roundtrips() {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), 12_345).expect("write");
-        assert_eq!(read(dir.path()), Some(12_345));
+        assert_eq!(read(dir.path()), IndexedCacheSize::Bytes(12_345));
     }
 
     #[test]
@@ -111,9 +121,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), 1_000).expect("write");
         adjust(dir.path(), 250);
-        assert_eq!(read(dir.path()), Some(1_250));
+        assert_eq!(read(dir.path()), IndexedCacheSize::Bytes(1_250));
         adjust(dir.path(), -500);
-        assert_eq!(read(dir.path()), Some(750));
+        assert_eq!(read(dir.path()), IndexedCacheSize::Bytes(750));
     }
 
     #[test]
@@ -121,13 +131,13 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), 100).expect("write");
         adjust(dir.path(), -500);
-        assert_eq!(read(dir.path()), Some(0));
+        assert_eq!(read(dir.path()), IndexedCacheSize::Bytes(0));
     }
 
     #[test]
     fn adjust_no_op_when_missing() {
         let dir = tempdir().expect("tempdir");
         adjust(dir.path(), 250);
-        assert_eq!(read(dir.path()), None);
+        assert_eq!(read(dir.path()), IndexedCacheSize::RecountRequired);
     }
 }

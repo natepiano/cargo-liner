@@ -6,6 +6,8 @@ mod processes;
 mod run;
 mod tree_state;
 
+pub(super) use processes::CiFetchMsg;
+pub(super) use processes::CleanMsg;
 pub(super) use processes::signal_owned_run;
 pub use run::run;
 #[cfg(test)]

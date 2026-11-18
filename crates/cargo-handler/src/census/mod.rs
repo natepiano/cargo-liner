@@ -715,11 +715,30 @@ impl MachineState {
         }
     }
 
-    pub(crate) const fn hierarchy_notice(&self) -> HierarchyNotice {
+    const fn hierarchy_notice(&self) -> HierarchyNotice {
         match self {
             Self::Answered(_, hierarchy) => hierarchy.notice,
             _ => HierarchyNotice::Clear,
         }
+    }
+
+    /// The note lines under this machine's agents: the hierarchy notice,
+    /// then the reason the accounts read fails. Only the local census
+    /// records an accounts read, so a remote has no accounts line.
+    pub(crate) fn notices(&self) -> impl Iterator<Item = Cow<'_, str>> {
+        let hierarchy = self.hierarchy_notice();
+        let hierarchy = hierarchy.is_visible().then(|| Cow::Owned(hierarchy.text()));
+        let accounts = match self {
+            Self::Answered(_, snapshot) => match &snapshot.facts.accounts {
+                Observed::Known(SourceHealth::Unreadable(reason)) => {
+                    Some(Cow::Borrowed(reason.0.as_str()))
+                },
+                Observed::Known(SourceHealth::Loaded | SourceHealth::Absent)
+                | Observed::Unknown(_) => None,
+            },
+            Self::Scanning | Self::Failed(_) => None,
+        };
+        hierarchy.into_iter().chain(accounts)
     }
 }
 
@@ -842,10 +861,10 @@ pub(crate) struct Census {
 
 impl Census {
     /// Diagnostics keep an otherwise empty watcher visible.
-    pub(crate) fn has_hierarchy_notice(&self, configured: &[String]) -> bool {
+    pub(crate) fn has_notice(&self, configured: &[String]) -> bool {
         self.machines(configured)
             .iter()
-            .any(|machine| machine.state.hierarchy_notice().is_visible())
+            .any(|machine| machine.state.notices().next().is_some())
     }
 
     /// Give the local machine a hierarchy notice and no rows, so the summary draws without agents.

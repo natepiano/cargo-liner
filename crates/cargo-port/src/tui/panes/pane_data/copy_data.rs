@@ -203,9 +203,14 @@ mod tests {
     use crate::ci::CiStatus;
     use crate::ci::FetchStatus::Fetched;
     use crate::lint;
+    use crate::lint::ArchiveSizeLookup;
     use crate::lint::LintCommand;
+    use crate::lint::LintCommandDuration;
+    use crate::lint::LintCommandExitCode;
     use crate::lint::LintCommandStatus;
     use crate::lint::LintRun;
+    use crate::lint::LintRunDuration;
+    use crate::lint::LintRunFinishTime;
     use crate::lint::LintRunPhase;
     use crate::lint::LintRunStatus;
     use crate::project::AbsolutePath;
@@ -518,20 +523,20 @@ mod tests {
             runs:         vec![LintRun {
                 run_id:        "run-1".to_string(),
                 started_at:    "2026-05-19T10:00:00-04:00".to_string(),
-                finished_at:   Some("2026-05-19T10:01:00-04:00".to_string()),
-                duration_ms:   Some(60_000),
+                finished_at:   LintRunFinishTime::Recorded("2026-05-19T10:01:00-04:00".to_string()),
+                duration_ms:   LintRunDuration::MeasuredMilliseconds(60_000),
                 status:        LintRunStatus::Passed,
                 commands:      vec![LintCommand {
                     name:        "clippy".to_string(),
                     command:     "cargo clippy".to_string(),
                     status:      LintCommandStatus::Passed,
-                    duration_ms: Some(60_000),
-                    exit_code:   Some(0),
+                    duration_ms: LintCommandDuration::MeasuredMilliseconds(60_000),
+                    exit_code:   LintCommandExitCode::Recorded(0),
                     log_file:    "runs/run-1/clippy.log".to_string(),
                 }],
                 archive_bytes: 0,
             }],
-            sizes:        vec![Some(1024)],
+            sizes:        vec![ArchiveSizeLookup::KnownBytes(1024)],
             phases:       vec![LintRunPhase::Executing],
             owner_paths:  vec![project_root.clone()],
             owner_of:     vec![0],

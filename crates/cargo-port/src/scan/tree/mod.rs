@@ -11,26 +11,20 @@ use toml::Value;
 
 use crate::constants::CARGO_TOML;
 use crate::project::AbsolutePath;
-use crate::project::CargoParseResult;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
-use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 
 mod build;
-mod dependencies;
 mod vendored;
 mod workspace;
 mod worktrees;
 
 pub(crate) use build::build_tree;
-pub(crate) use build::cargo_parse_result_to_item;
-use dependencies::package_path_dependencies;
-use dependencies::workspace_path_dependencies;
 use vendored::extract_vendored_new;
 pub(crate) use workspace::normalize_workspace_path;
 use workspace::workspace_member_paths_new;

@@ -21,7 +21,7 @@ use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::sccache::StatsResult;
 use crate::tui::app::App;
-use crate::tui::app_render_state::OverlayRenderInputs;
+use crate::tui::app::OverlayRenderInputs;
 use crate::tui::panes::DescriptionState;
 use crate::tui::panes::PackageContent;
 use crate::tui::panes::PackageData;
@@ -31,6 +31,7 @@ use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::panes::TargetEntry;
 use crate::tui::panes::TargetsData;
 use crate::tui::render;
+use crate::tui::render_context::RenderProjectSelection;
 use crate::tui::sccache;
 use crate::tui::test_support;
 use crate::tui::theme_roles;
@@ -193,7 +194,7 @@ fn draw_pane_in_area(
             frame.area(),
         );
         let mut split = app.split_for_render(
-            path.as_deref(),
+            RenderProjectSelection::from(path.as_deref()),
             std::time::Duration::ZERO,
             &lookup,
             OverlayRenderInputs::none(),

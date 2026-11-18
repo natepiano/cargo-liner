@@ -15,6 +15,7 @@ use rustc_hir::Item;
 use rustc_hir::ItemKind;
 use rustc_hir::VariantData;
 use rustc_middle::middle::privacy::Level;
+use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
 
@@ -29,6 +30,8 @@ use super::scan::ItemCategory;
 use super::scan::ItemInfo;
 use super::scan::VisibilityContext;
 use super::source;
+use super::source::DeclarationSpans;
+use super::source::VisibilityOrigin;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredFinding;
 use crate::config::DiagnosticCode;
@@ -89,14 +92,28 @@ fn check_variant_data(
     Ok(())
 }
 
+/// A positional field has no written name, so its order cannot be read.
+fn field_visibility_origin(tcx: TyCtxt<'_>, field_def: &FieldDef<'_>) -> VisibilityOrigin {
+    source::visibility_origin(
+        tcx,
+        field_def.def_id,
+        DeclarationSpans {
+            declaration: field_def.span,
+            visibility:  field_def.vis_span,
+            name:        (!field_def.is_positional()).then_some(field_def.ident.span),
+        },
+    )
+}
+
 fn check_field(
     visibility_context: &VisibilityContext<'_, '_>,
     type_def_id: LocalDefId,
     field_def: &FieldDef<'_>,
     findings_sink: &mut FindingsSink,
 ) -> Result<()> {
-    if field_def.span.from_expansion() || field_def.vis_span.from_expansion() {
-        return Ok(());
+    match field_visibility_origin(visibility_context.tcx, field_def) {
+        VisibilityOrigin::Written => {},
+        VisibilityOrigin::MacroMade => return Ok(()),
     }
     let Some(file_path) = source::real_file_path(visibility_context.tcx, field_def.vis_span) else {
         return Ok(());

@@ -453,11 +453,13 @@ fn negative_imports_in_independent_members() {
     let skips_constant_imports = skips_constant_imports(&mut batch);
     let skips_grouped_imports = skips_grouped_imports(&mut batch);
     let skips_renamed_imports = skips_renamed_imports(&mut batch);
+    let skips_snake_case_trait_made_by_a_macro = skips_snake_case_trait_made_by_a_macro(&mut batch);
     let report = super::compiled_report(&batch.path().join("Cargo.toml"));
     skips_type_imports(&report);
     skips_constant_imports(&report);
     skips_grouped_imports(&report);
     skips_renamed_imports(&report);
+    skips_snake_case_trait_made_by_a_macro(&report);
 }
 
 #[test]
@@ -529,6 +531,63 @@ fn skips_type_imports(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use
                 .iter()
                 .any(|f| f.code == DiagnosticCode::PreferModuleImport),
             "PascalCase imports should not be flagged as prefer_module_import"
+        );
+    }
+}
+
+/// A table macro such as `#[spacetimedb::table(accessor = client_version)]` makes a trait with a
+/// `snake_case` name. A method call needs that trait in scope, so its import stays.
+fn skips_snake_case_trait_made_by_a_macro(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    batch.add_member(
+        "skips_snake_case_trait_made_by_a_macro",
+        &[
+            (
+                "src/main.rs",
+                "mod parent;\nfn main() { parent::consumer::example(); }\n",
+            ),
+            (
+                "src/parent.rs",
+                "pub struct Db;\nmod tables;\npub mod consumer;\n",
+            ),
+            (
+                "src/parent/tables.rs",
+                r#"macro_rules! table_accessor {
+    ($name:ident) => {
+        #[allow(non_camel_case_types)]
+        pub trait $name {
+            fn $name(&self) -> i32 { 7 }
+        }
+        impl $name for super::Db {}
+    };
+}
+
+table_accessor!(client_version);
+"#,
+            ),
+            (
+                "src/parent/consumer.rs",
+                "use crate::parent::tables::client_version;\n\npub fn example() -> i32 { \
+                 crate::parent::Db.client_version() }\n",
+            ),
+        ],
+    );
+    move |report| {
+        let findings = [
+            "skips_snake_case_trait_made_by_a_macro/src/main.rs",
+            "skips_snake_case_trait_made_by_a_macro/src/parent.rs",
+            "skips_snake_case_trait_made_by_a_macro/src/parent/tables.rs",
+            "skips_snake_case_trait_made_by_a_macro/src/parent/consumer.rs",
+        ]
+        .into_iter()
+        .flat_map(|path| findings_at(report, path))
+        .collect::<Vec<_>>();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+            "a snake_case trait made by a macro must not be flagged: {findings:?}"
         );
     }
 }

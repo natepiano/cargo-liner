@@ -29,6 +29,11 @@ pub(in crate::scan) struct LanguageMeasurements {
     rust_breakdown: RustBreakdownCache,
 }
 
+enum RootStatsEmission {
+    NotRequested,
+    Deferred(AbsolutePath),
+}
+
 pub fn spawn_initial_language_stats(
     scan_context: &StreamingScanContext,
     disk_entries: &[(String, AbsolutePath)],
@@ -95,10 +100,10 @@ fn emit_language_stats_for_tree(
         return;
     }
 
-    let mut root_entry = None;
+    let mut root_entry = RootStatsEmission::NotRequested;
     for entry in &tree.entries {
         if entry.as_path() == tree.root_abs_path.as_path() {
-            root_entry = Some(entry.clone());
+            root_entry = RootStatsEmission::Deferred(entry.clone());
         } else {
             send_language_stats_entry(
                 sender,
@@ -113,7 +118,7 @@ fn emit_language_stats_for_tree(
         }
     }
 
-    if let Some(entry) = root_entry {
+    if let RootStatsEmission::Deferred(entry) = root_entry {
         send_language_stats_entry(
             sender,
             entry,

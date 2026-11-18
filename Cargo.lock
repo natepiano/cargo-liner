@@ -599,6 +599,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-style"
+version = "0.1.0"
+dependencies = [
+ "cargo-berth-test-support",
+ "gix",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cargo-tile"
 version = "0.2.78-dev"
 dependencies = [
@@ -2128,6 +2143,7 @@ checksum = "bc5024cc503cd29461a705ae90b9eae772fa8f0e6fafc1c48513877dc374de05"
 dependencies = [
  "clru",
  "crc32fast",
+ "crossbeam-deque",
  "gix-chunk",
  "gix-error",
  "gix-hash",
@@ -2140,6 +2156,7 @@ dependencies = [
  "gix-zlib",
  "memmap2",
  "smallvec",
+ "uluru",
 ]
 
 [[package]]
@@ -5623,6 +5640,15 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "uluru"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
+dependencies = [
+ "arrayvec",
 ]
 
 [[package]]

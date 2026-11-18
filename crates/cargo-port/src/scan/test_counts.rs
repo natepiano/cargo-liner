@@ -225,6 +225,21 @@ fn count_doctests(source: &str) -> DocCounts {
         .fold(DocCounts::default(), DocCounts::merged)
 }
 
+enum BlockDocState {
+    Outside,
+    Collecting(Vec<String>),
+}
+
+enum LineDocContent<'a> {
+    NotLineDoc,
+    Markdown(&'a str),
+}
+
+enum BlockDocOpening<'a> {
+    NotBlockDoc,
+    Content(&'a str),
+}
+
 /// Split a source file into the markdown text of each doc comment: a run
 /// of contiguous `///` / `//!` lines becomes one document, and each
 /// `/** */` / `/*! */` block comment becomes its own. Keeping them
@@ -233,15 +248,15 @@ fn count_doctests(source: &str) -> DocCounts {
 fn doc_comment_blocks(source: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut line_run: Vec<String> = Vec::new();
-    let mut block: Option<Vec<String>> = None;
+    let mut block = BlockDocState::Outside;
 
     for raw in source.lines() {
-        if let Some(acc) = block.as_mut() {
+        if let BlockDocState::Collecting(acc) = &mut block {
             let content = raw.trim_start();
             if let Some(end) = content.find("*/") {
                 acc.push(strip_block_star(&content[..end]).to_string());
                 blocks.push(acc.join("\n"));
-                block = None;
+                block = BlockDocState::Outside;
             } else {
                 acc.push(strip_block_star(content).to_string());
             }
@@ -249,7 +264,7 @@ fn doc_comment_blocks(source: &str) -> Vec<String> {
         }
 
         let trimmed = raw.trim_start();
-        if let Some(content) = line_doc_content(trimmed) {
+        if let LineDocContent::Markdown(content) = line_doc_content(trimmed) {
             line_run.push(content.to_string());
             continue;
         }
@@ -257,10 +272,12 @@ fn doc_comment_blocks(source: &str) -> Vec<String> {
             blocks.push(line_run.join("\n"));
             line_run.clear();
         }
-        if let Some(after) = block_doc_open(trimmed) {
+        if let BlockDocOpening::Content(after) = block_doc_open(trimmed) {
             match after.find("*/") {
                 Some(end) => blocks.push(strip_block_star(&after[..end]).to_string()),
-                None => block = Some(vec![strip_block_star(after).to_string()]),
+                None => {
+                    block = BlockDocState::Collecting(vec![strip_block_star(after).to_string()]);
+                },
             }
         }
     }
@@ -268,39 +285,38 @@ fn doc_comment_blocks(source: &str) -> Vec<String> {
     if !line_run.is_empty() {
         blocks.push(line_run.join("\n"));
     }
-    if let Some(acc) = block {
+    if let BlockDocState::Collecting(acc) = block {
         blocks.push(acc.join("\n"));
     }
     blocks
 }
 
-/// Markdown content of a `///` or `//!` line doc comment, with the one
-/// leading space rustdoc strips removed. `None` for any other line —
-/// including `////…`, which is a regular comment, not doc.
-fn line_doc_content(trimmed: &str) -> Option<&str> {
+/// Return `Markdown` for a `///` or `//!` comment after removing at most one leading space.
+/// Return `NotLineDoc` for other lines, including ordinary `////` comments.
+fn line_doc_content(trimmed: &str) -> LineDocContent<'_> {
     for prefix in ["///", "//!"] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             if prefix == "///" && rest.starts_with('/') {
-                return None;
+                return LineDocContent::NotLineDoc;
             }
-            return Some(rest.strip_prefix(' ').unwrap_or(rest));
+            return LineDocContent::Markdown(rest.strip_prefix(' ').unwrap_or(rest));
         }
     }
-    None
+    LineDocContent::NotLineDoc
 }
 
-/// Content after a `/**` or `/*!` block-doc opener on its first line.
-/// `None` for any other line — including `/***…`, a regular block comment.
-fn block_doc_open(trimmed: &str) -> Option<&str> {
+/// Return `Content` after a `/**` or `/*!` opener.
+/// Return `NotBlockDoc` for other lines, including ordinary `/***` comments.
+fn block_doc_open(trimmed: &str) -> BlockDocOpening<'_> {
     for prefix in ["/**", "/*!"] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             if prefix == "/**" && rest.starts_with('*') {
-                return None;
+                return BlockDocOpening::NotBlockDoc;
             }
-            return Some(rest);
+            return BlockDocOpening::Content(rest);
         }
     }
-    None
+    BlockDocOpening::NotBlockDoc
 }
 
 /// Strip the leading ` * ` decoration block doc comments conventionally

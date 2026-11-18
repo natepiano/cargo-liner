@@ -8,6 +8,8 @@
 #[path = "../../cargo-berth-test-support/fixtures/prepared_lock_tests.rs"]
 mod prepared_lock_tests;
 
+#[path = "support/board_templates.rs"]
+mod board_templates;
 #[path = "support/proof_subject_templates.rs"]
 mod proof_subject_templates;
 
@@ -57,7 +59,6 @@ pub use prepared_lock_tests::RetainedPredecessorHistory;
 pub use prepared_lock_tests::read_history;
 use reanchoring_templates::ABORTABLE_CHECKPOINT;
 use reanchoring_templates::ACTIVE_BEFORE_OTHER_REBASE;
-use reanchoring_templates::ACTIVE_FIRST_SPLIT;
 use reanchoring_templates::APPLY_CONFLICTED_CHECKPOINT;
 use reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
 use reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
@@ -69,11 +70,15 @@ use reanchoring_templates::CONTINUED_SPLIT_SWITCHED;
 use reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
 use reanchoring_templates::DRAINED_SPLIT_SWITCHED_CHECKPOINT;
+use reanchoring_templates::INTERACTIVE_ACTIVE_FIRST_SPLIT;
+use reanchoring_templates::INTERACTIVE_CHECKPOINT_FIRST_SPLIT;
 use reanchoring_templates::LOWER_FIRST_SPLIT;
 use reanchoring_templates::ONE_HUNK_CHECKPOINT;
 use reanchoring_templates::RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT;
 use reanchoring_templates::RECONCILED_SOFT_ACTIVE_SPLIT;
 use reanchoring_templates::RECONCILED_SOFT_CHECKPOINT_SPLIT;
+use reanchoring_templates::SOFT_ACTIVE_FIRST_SPLIT;
+use reanchoring_templates::SOFT_CHECKPOINT_FIRST_SPLIT;
 use reanchoring_templates::SPLIT_ACTIVE_PHASE;
 use reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
 use reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
@@ -219,47 +224,7 @@ fn main() {
         require_template_progress(&receiver, &["stalled-fixture"], Duration::from_millis(25));
         return;
     }
-    let templates: Vec<_> = recorded_populations()
-        .into_iter()
-        .chain([
-            integration_parent_reservations::PARENT_RESERVATION,
-            integration_parent_reservations::UNRELATED_RESERVATION,
-            proof_subject_templates::EQUIVALENT_TARGET,
-            proof_subject_templates::DIFFERENT_TARGET,
-            gate_fixtures::THREE_COMMIT_REBASE,
-            compaction_fixture::PREPARED_COMPACTION,
-            answers_fixtures::HOLDER_LIFECYCLE_START,
-            edges_fixtures::ORPHANED_MIDDLE_START,
-            SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
-            ACTIVE_FIRST_SPLIT,
-            UPPER_FIRST_SPLIT,
-            LOWER_FIRST_SPLIT,
-            gate_templates::MAIN_PREDECESSOR_INTEGRATION_SUCCESSOR,
-            gate_templates::DEFAULT_ANSWERED_GATE,
-            gate_templates::ENROLLED_BEFORE_EDITS,
-            gate_templates::ENROLLED_AFTER_FIRST_EDIT,
-            drift_templates::TWO_PHASE_REBASE,
-            parallel_templates::NAMED_SEED,
-            parallel_templates::NAMED_OVERLAP,
-            parallel_templates::NAMED_METADATA,
-            MERGED_TRUNK_ONLY,
-            MERGED_TRUNK_WITH_OWN_WORK,
-            PENDING_TRUNK_MERGE,
-            NEWER_TRUNK,
-            MERGED_ACTIVE_HOLDER,
-            LATER_UNMERGED_HOLDER,
-            SWITCHED_BRANCH_HOLDER,
-            CLEAN_MERGED_HOLDER,
-        ])
-        .chain(STARTING_REPOSITORIES.iter().copied())
-        .chain(round_two_histories())
-        .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
-        .chain(GATE_SLOW_HISTORIES.iter().copied())
-        .chain(EDGES_SLOW_HISTORIES.iter().copied())
-        .chain(OVERLAP_SLOW_HISTORIES.iter().copied())
-        .chain(LIVENESS_SLOW_HISTORIES.iter().copied())
-        .chain(DRIFT_HELPER_HISTORIES.iter().copied())
-        .collect();
+    let templates = templates_for_setup();
     let directory = template_cache_directory();
     if env::args().any(|argument| argument == "--list") {
         fs::create_dir_all(&directory).expect("builder directory should exist");
@@ -309,6 +274,59 @@ fn main() {
         )
         .expect("template directory should publish");
     }
+}
+
+fn templates_for_setup() -> Vec<LedgerTemplate> {
+    recorded_populations()
+        .into_iter()
+        .chain([
+            integration_parent_reservations::PARENT_RESERVATION,
+            integration_parent_reservations::UNRELATED_RESERVATION,
+            proof_subject_templates::EQUIVALENT_TARGET,
+            proof_subject_templates::DIFFERENT_TARGET,
+            board_templates::ORDERED_HOLDERS,
+            board_templates::CHECKPOINTED_PREDECESSOR,
+            board_templates::LANDED_PREDECESSOR,
+            board_templates::INCORPORATED_PREDECESSOR,
+            ledger_templates::PACKED_CHECKPOINT,
+            ledger_templates::PACKED_PREDECESSOR,
+            gate_fixtures::THREE_COMMIT_REBASE,
+            compaction_fixture::PREPARED_COMPACTION,
+            answers_fixtures::HOLDER_LIFECYCLE_START,
+            edges_fixtures::ORPHANED_MIDDLE_START,
+            SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT,
+            INTERACTIVE_ACTIVE_FIRST_SPLIT,
+            SOFT_ACTIVE_FIRST_SPLIT,
+            INTERACTIVE_CHECKPOINT_FIRST_SPLIT,
+            SOFT_CHECKPOINT_FIRST_SPLIT,
+            UPPER_FIRST_SPLIT,
+            LOWER_FIRST_SPLIT,
+            gate_templates::MAIN_PREDECESSOR_INTEGRATION_SUCCESSOR,
+            gate_templates::DEFAULT_ANSWERED_GATE,
+            gate_templates::ENROLLED_BEFORE_EDITS,
+            gate_templates::ENROLLED_AFTER_FIRST_EDIT,
+            drift_templates::TWO_PHASE_REBASE,
+            parallel_templates::NAMED_SEED,
+            parallel_templates::NAMED_OVERLAP,
+            parallel_templates::NAMED_METADATA,
+            MERGED_TRUNK_ONLY,
+            MERGED_TRUNK_WITH_OWN_WORK,
+            PENDING_TRUNK_MERGE,
+            NEWER_TRUNK,
+            MERGED_ACTIVE_HOLDER,
+            LATER_UNMERGED_HOLDER,
+            SWITCHED_BRANCH_HOLDER,
+            CLEAN_MERGED_HOLDER,
+        ])
+        .chain(STARTING_REPOSITORIES.iter().copied())
+        .chain(round_two_histories())
+        .chain(prepared_lock_tests::PREPARED_LOCK_REPOSITORIES)
+        .chain(GATE_SLOW_HISTORIES.iter().copied())
+        .chain(EDGES_SLOW_HISTORIES.iter().copied())
+        .chain(OVERLAP_SLOW_HISTORIES.iter().copied())
+        .chain(LIVENESS_SLOW_HISTORIES.iter().copied())
+        .chain(DRIFT_HELPER_HISTORIES.iter().copied())
+        .collect()
 }
 
 enum SetupTestSelection {
@@ -640,6 +658,17 @@ const OVERLAP_SLOW_HISTORIES: &[LedgerTemplate] = &[
 ///
 /// The setup script builds them before tests start, so no test waits for them.
 const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
+    answers_fixtures::INITIALIZED_REPOSITORY.before_run(),
+    proof_subject_templates::INITIALIZED_REPOSITORY.before_run(),
+    edges_fixtures::INITIALIZED_REPOSITORY.before_run(),
+    edges_fixtures::CONFIGURED_REPOSITORY.before_run(),
+    gate_fixtures::INITIALIZED_REPOSITORY.before_run(),
+    liveness_fixtures::INITIALIZED_REPOSITORY.before_run(),
+    overlap_fixtures::INITIALIZED_REPOSITORY.before_run(),
+    hook_repository::GIT_REPOSITORY,
+    hook_repository::INITIALIZED_REPOSITORY,
+    hook_repository::CONFIGURED_REPOSITORY,
+    ledger_templates::SCRATCH_REPOSITORY,
     drift_fixtures::INITIALIZED_REPOSITORY,
     parallel_templates::INITIALIZED_BEFORE_RUN,
     presentation_templates::INITIALIZED,

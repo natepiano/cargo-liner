@@ -1802,35 +1802,66 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
 
-### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
+### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: done
 
-**Depends on:** Phase 69a (order only; Phase 69 runs first, showrunner 2026-11-15; Phase 69a follows it, director 2026-11-16)
+#### As-built
+
+- natedev meets the 1 s rule: all 1389 cargo-berth tests pass at load 11.50, slowest 0.462 s. The two board tests from the Phase 64 suite run well under 1 s.
+- The Mac does not meet it: at start load 6.54, 83 tests take 1 s or more. Heavy scenario tests take 0.96-1.24 s alone on the Mac; suite contention doubles a test's alone time (2-2.5x).
+- Recorded before-run templates hold setup that ran inside test clocks: the board ordering stages (`ORDERED_HOLDERS`, `CHECKPOINTED_PREDECESSOR`, `LANDED_PREDECESSOR`, `INCORPORATED_PREDECESSOR`), the packed retention fixtures (`PACKED_CHECKPOINT`, `PACKED_PREDECESSOR`), the four first-split stages (`first_split(workflow, stage)`) and the one-hunk rewrite checkpoint (`ONE_HUNK_CHECKPOINT`). `recorded_templates.rs` registers each, so setup builds them before the test clocks start.
+- The hook, answers, edges, gate, liveness, overlap and ledger scratch fixtures start from before-run copies. `hook_repository.rs` exports `GIT_REPOSITORY`, `INITIALIZED_REPOSITORY` and `CONFIGURED_REPOSITORY` as before-run `LedgerTemplate`s, as `lifecycle_templates.rs` does. Each fixture module names its own template (`answers-initialized`, `edges-initialized`, and so on).
+- `.config/nextest.toml`: on macOS each `package(cargo-berth)` test sets `threads-required = 3`. Mac counts at 1 s or more: 318 with one slot, 161 with two, 86 with three (start loads 5.3-6.4); six slots made the suite twice as long and did not cut the count.
+
+**Files:**
+- `crates/cargo-berth/tests/support/board_templates.rs` — the ordered-holder templates and `OrderedHolders`.
+- `crates/cargo-berth/tests/support/ledger_templates.rs` — `SCRATCH_REPOSITORY`, the packed retention templates and `packed_retention_fixture`.
+- `crates/cargo-berth/tests/support/reanchoring_templates.rs`, `reanchoring.rs` — the first-split and one-hunk rewrite templates and their readers.
+- `crates/cargo-berth/tests/support/hook_repository.rs` and the answers, edges, gate, liveness and overlap fixture files — before-run starting repositories.
+- `crates/cargo-berth/tests/recorded_templates.rs` — registration of every template above.
+- `crates/cargo-berth/tests/board.rs`, `ledger.rs` — tests that read the templates.
+- `.config/nextest.toml` — the macOS cargo-berth slot override.
+
+**Binds later work:** A template that is not registered in `recorded_templates.rs` is built by the first test that uses it, inside that test's clock. The macOS cargo-berth slot override sets no priority.
+
+**Gotchas:**
+- Mac test time follows process starts (fit: Git 12 ms, hook 6 ms, cargo-berth 6 ms each; one start alone 4-13 ms). Process count on natedev, not sync count, predicts Mac time.
+- Assertions inside a template builder run when setup builds the template, not in the test.
+
+**Ruled out:** in-process Git reads for the Mac goal (removing every cargo-berth Git call saves about 0.15 s per slow test); six slots per test; the Mac Developer Tools exemption.
+
+### Phase 68b — Heavy cargo-berth scenario tests run under 1 s alone on the Mac  · status: todo
+
+**Depends on:** Phase 68 (order only; showrunner ruling, 2026-11-17)
 
 #### Work Order
 
-**Goal:** No cargo-berth test takes 1 s or more on the Mac when the suite starts at load under 12 (showrunner, 2026-11-15).
+**Goal:** Every cargo-berth test that takes 1 s or more alone on the Mac takes less than 1 s alone there (showrunner, 2026-11-17).
 
 **Spec:**
-1. The evidence: in the Phase 64 Mac suite (load 5.92, 12 threads), 490 of 1389 cargo-berth tests took 1 s or more, and 167 took 2 s or more (director, 2026-11-15). Phase 58b met the 1 s rule on natedev only; its Mac half never ran.
-2. Measure first. Run the cargo-berth full suite on the Mac at start load under 12. Group the slow tests by shared cost: git process starts, template setup, file system sync, first launch of a new executable (see the Phase 43j attempts).
-3. Cut each shared cost at its source, largest group first. Keep each test's behavior and assertions.
-4. Keep natedev at no test 1 s or more at load under 32. In the Phase 64 natedev suite (load 28.17), two board tests took 1.07 s and 1.04 s: `every_reachable_edge_readiness_has_its_own_action_or_settlement` and `retained_scoped_patch_verdicts_reuse_both_results_after_process_restart`. Alone they take 0.26 s and 0.21 s (load 15.99). Bring both under 1 s in the full suite.
+1. The evidence: in the Phase 68 Mac suite (start load 6.54, three slots per test), 83 of 1389 tests took 1 s or more. Alone on the Mac, the heaviest scenario tests take 0.96-1.24 s; tests with few process starts take 0.42-0.65 s alone.
+2. Measure first. Time each of the 83 alone on the Mac (a warm run, then three runs) through `~/.claude/scripts/mac_test/mac_queue_run.py`. The set for this phase is each test at 1 s or more alone.
+3. Count the process starts of each test in the set on natedev (a warm run, then `strace -f -e trace=execve`), split by origin: test Git, cargo-berth, cargo-berth's own Git, hooks.
+4. Cut the process starts in each heavy scenario at their source. Keep each test's behavior and assertions.
+5. Report the suite contention as a number only: the ratio of each test's suite time to its alone time (2 to 2.5 in Phase 68).
 
 **Files:**
-- `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
-- `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
-- `crates/cargo-berth-test-support/src/repository_template.rs`, `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/setup-recorded-templates.sh` — shared template fixture costs; edit only where the measurement selects them. The support crate has its own test lane.
+- `crates/cargo-berth/tests/` — the scenario tests in the set; the measurement names them.
+- `crates/cargo-berth/tests/support/` — shared fixture setup; edit only where the measurement selects it.
 
 **Workers:** 1 writer + 1 tester
-- `impl`: every source edit, the shared fixture regressions and the natedev runs.
-- `test`: the Mac measurements and runs on the same candidate revision; no source edits.
+- `impl`: every source edit and the natedev runs.
+- `test`: the Mac alone and suite measurements on the same candidate revision; no source edits.
 
 **Constraints from prior phases:**
-- Phase 65: the first reply of a persistent Git child (`read_startup_line`) and the installation probe use the 30 s `GIT_COMMAND_DEADLINE` (`crates/cargo-berth/src/git/child.rs`). Do not add a shorter deadline around Git startup. A valid 83 MB repository config made Git startup take 1,231 ms.
-- Phase 65: the recorded-template setup runs four template workers (`recorded_templates.rs`). Do not cut the worker count to make a slow reply pass.
-- Phase 67: a timing suite runs alone on its machine; the same worker runs no other build, test or lint there while it runs. This holds for every timing measurement batch.
+- Phase 68: recorded before-run templates hold the setup of the board ordering, packed retention, first-split and one-hunk rewrite tests (`recorded_templates.rs` registers each). A new template must be registered there, or the first test that uses it builds it inside its clock.
+- Phase 68: on macOS each cargo-berth test takes three nextest slots (`.config/nextest.toml`). Six slots made the suite longer and did not cut the count.
+- Phase 68: Mac time follows process starts (fit: Git 12 ms, hook 6 ms, cargo-berth 6 ms each). Removing every cargo-berth Git call saves about 0.15 s per slow test. Do not build in-process Git reads for this goal (showrunner, 2026-11-17).
+- Phase 68: the Mac Developer Tools exemption does not change the first-launch cost (Phase 43j).
+- Phase 65: the persistent Git child and the installation probe keep the 30 s `GIT_COMMAND_DEADLINE`.
+- Phase 67: a timing suite runs alone on its machine; the same worker runs no other build, test or lint there while it runs.
+- Every Mac build, test or run of built code goes through `mac_queue_run.py`; plain `ssh mac` is for reads only.
 
-**Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
+**Acceptance gate:** each test in the set takes less than 1 s alone on the Mac; the cargo-berth full suite passes on natedev at load under 32 with no test at 1 s or more, and on the Mac; the report states the contention ratio; lint.
 
 ### Phase 68a — Two cargo-tile reader tests run under 1 s at normal load  · status: todo
 
@@ -1845,7 +1876,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 2. Phase 69 adds no work to either test: their fixtures configure no slot roots, so the slot reader is `ConfiguredSlotRoots::Disabled`. The cost is older; read the Phase 43g and 43j As-built blocks and the attempts logs `attempts-43g-reader-timing` and `attempts-43j-mac-first-exec` in the project memory before any change.
 3. Measure first. Split each test's time into its stages (fixture readiness, native scans, CPU observation, writer output) on the machine where it is slow.
 4. Cut each cost at its source. Keep the strict CPU oracle, the readiness waits, the cleanup assertions and the reader scheduling.
-5. The Mac first launch of a new executable costs 100-230 ms (Phase 43j). If the user enables the Mac Developer Tools exemption, measure again before any code change for that cost.
+5. The Mac first launch of a new executable costs 100-230 ms (Phase 43j). The Mac Developer Tools exemption does not change that cost (Phase 43j As-built, ruled out); cut new executable files in code.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the two tests.
@@ -3679,6 +3710,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Forward edits from Phase 43j (director, 2026-11-15):**
 - The priority-90 `cargo-tile-readers` group now sets `threads-required = "num-cpus"`: each of its six tests runs alone, as a chain of about 2.5 s on the Mac before other tests start. A fourth override gives the four `reader_scenario_*_removes_its_processes_and_folder` tests `threads-required = 4` and sets no priority. Keep both; the new priority-80 override names none of these tests.
 - The before runs measure this layout: Mac suite 12.6-12.8 s at load 6.79-8.95 on 12 CPUs.
+
+**Forward edits from Phase 68 (director, 2026-11-17):**
+- On macOS a `package(cargo-berth)` override sets `threads-required = 3` and no priority. The new priority-80 override sets `priority` alone, so both hold; the Mac before runs measure the suite with it.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, after the config edit: green.
