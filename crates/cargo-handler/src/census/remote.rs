@@ -16,8 +16,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+#[cfg(test)]
 use super::MachineState;
 use super::probe;
+use super::probe::CensusProbeAnswer;
 use crate::constants::BINARY_NAME;
 use crate::constants::COMMAND_NOT_FOUND_STATUS;
 use crate::constants::NOT_INSTALLED_REASON;
@@ -60,17 +62,14 @@ pub(super) enum ProbeOutcome {
     NotStarted,
 }
 
-/// What `outcome` says about the machine: its rows, or why there are
-/// none.
-pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
-    let failed = |reason: &str| MachineState::Failed(reason.to_string());
+/// Decode a completed report or give the reason the probe failed.
+pub(super) fn probe_answer(outcome: ProbeOutcome) -> Result<CensusProbeAnswer, String> {
+    let failed = |reason: &str| Err(reason.to_owned());
     match outcome {
         ProbeOutcome::Finished {
             status: Some(0),
             stdout,
-        } => probe::parse_report(&stdout).map_or_else(MachineState::Failed, |(rows, edges)| {
-            MachineState::Answered(rows, edges.into())
-        }),
+        } => probe::parse_census_answer(&stdout),
         ProbeOutcome::Finished {
             status: Some(SSH_UNREACHABLE_STATUS),
             ..
@@ -82,11 +81,20 @@ pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
         ProbeOutcome::Finished {
             status: Some(status),
             ..
-        } => MachineState::Failed(format!("probe exited with status {status}")),
+        } => Err(format!("probe exited with status {status}")),
         ProbeOutcome::Finished { status: None, .. } => failed(PROBE_SIGNALLED_REASON),
         ProbeOutcome::TimedOut => failed(TIMED_OUT_REASON),
         ProbeOutcome::NotStarted => failed(SSH_NOT_STARTED_REASON),
     }
+}
+
+#[cfg(test)]
+pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
+    probe_answer(outcome)
+        .map(CensusProbeAnswer::into_rows_and_edges)
+        .map_or_else(MachineState::Failed, |(rows, edges)| {
+            MachineState::Answered(rows, edges.into())
+        })
 }
 
 /// The control socket's path under `home`, as ssh is handed it.

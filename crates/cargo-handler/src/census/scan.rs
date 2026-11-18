@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,6 +18,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
+
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::startup_log;
 
@@ -29,7 +33,7 @@ use std::ffi::OsStr;
 use std::io::ErrorKind;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
-#[cfg(test)]
+#[cfg(any(test, target_os = "macos"))]
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
@@ -96,8 +100,11 @@ use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
 use super::herdr::HerdrNames;
+#[cfg(target_os = "macos")]
+use super::hierarchy;
 use super::hierarchy::AstraWorkerMembership;
 use super::hierarchy::FileRevision;
+use super::hierarchy::HierarchySnapshot;
 use super::hierarchy::StaffFileReader;
 use super::hierarchy::StaffMemberLookup;
 use super::hierarchy::StaffRoster;
@@ -417,6 +424,39 @@ const SHELL_COMMAND_FLAG: &str = "-c";
 /// A process as a cache knows it: its pid and start, so a pid handed
 /// out again is a new key.
 type ProcessKey = (u32, u64);
+
+/// The process start text used to identify an owner on its machine.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String")]
+pub(super) struct ProcessStart(String);
+
+impl TryFrom<String> for ProcessStart {
+    type Error = &'static str;
+
+    fn try_from(start: String) -> Result<Self, Self::Error> {
+        if start.is_empty() || start.trim() != start {
+            return Err("process start must contain text without surrounding whitespace");
+        }
+        Ok(Self(start))
+    }
+}
+
+/// The process that supplies a Claude session's census rows.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct SessionProcess {
+    pub(super) pid:           NonZeroU32,
+    pub(super) process_start: ProcessStart,
+}
+
+/// The process of each Claude session whose start the machine could read.
+pub(super) type SessionProcesses = BTreeMap<String, SessionProcess>;
+
+/// A completed scan with the starts of its sampled session processes.
+pub(super) struct CensusScan {
+    pub(super) rows:              Vec<AgentRow>,
+    pub(super) hierarchy:         HierarchySnapshot,
+    pub(super) session_processes: SessionProcesses,
+}
 
 /// Scans this machine for its agents and what each is running.
 #[derive(Debug)]
@@ -742,20 +782,83 @@ impl LocalScanner {
     ///
     /// Each scan refreshes the retained process table. sysinfo replaces a reused
     /// pid when its start time changes, including its command and directory.
-    pub(super) fn scan(&mut self) -> (Vec<AgentRow>, StaffSnapshot) {
+    pub(super) fn scan(&mut self, owner_deadline: Instant) -> CensusScan {
         let deadline = super::herdr::HerdrProbeDeadline::from_scan_start(
             Instant::now(),
             self.herdr_probe_wait,
         );
+        let sessions = self.session_records();
+        // Check the exact birth on both sides of the process table read.
+        let births = sessions
+            .iter()
+            .filter_map(|session| {
+                let pid = NonZeroU32::new(session.pid)?;
+                let birth = process_revision(Pid::from_u32(pid.get())).into_birth()?;
+                Some((pid, birth))
+            })
+            .collect();
         let mut rows = Vec::new();
-        let mut snapshot = self.scan_staged(|_, answer, _| rows = answer);
+        let mut snapshot = self.scan_sessions(&sessions, |_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links, deadline);
         apply_astra_work(&mut rows, &self.herdr);
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &snapshot.roster);
         self.complete_worker_facts(&rows, &[], &snapshot.roster);
         snapshot.facts.workers = Observed::Known(self.worker_facts.clone());
-        (rows, snapshot)
+        CensusScan {
+            session_processes: self.session_processes(&rows, &births, owner_deadline),
+            rows,
+            hierarchy: snapshot.publication(),
+        }
+    }
+
+    /// Read the owner starts for this completed scan.
+    fn session_processes(
+        &self,
+        rows: &[AgentRow],
+        births: &HashMap<NonZeroU32, ProcessBirth>,
+        deadline: Instant,
+    ) -> SessionProcesses {
+        let ProcessSnapshot::Current { revisions, .. } = &self.processes.snapshot else {
+            return SessionProcesses::new();
+        };
+        let mut candidates = rows
+            .iter()
+            .filter(|row| row.agent == Agent::Claude)
+            .filter_map(|row| row.session_id.claude_id().map(|id| (id, row)))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(id, _)| *id);
+        let unique = candidates
+            .chunk_by(|(left, _), (right, _)| left == right)
+            .filter_map(|group| {
+                let [(session, row)] = group else {
+                    return None;
+                };
+                let pid = NonZeroU32::new(row.pid)?;
+                let birth = births.get(&pid)?;
+                let ProcessRevision::Observed {
+                    birth: observed, ..
+                } = revisions.get(&Pid::from_u32(pid.get()))?
+                else {
+                    return None;
+                };
+                (birth == observed).then_some((*session, pid, birth))
+            })
+            .collect::<Vec<_>>();
+        let mut starts =
+            session_starts(unique.iter().map(|&(_, pid, birth)| (pid, birth)), deadline);
+        unique
+            .into_iter()
+            .filter_map(|(session, pid, _)| {
+                Some((
+                    session.to_owned(),
+                    SessionProcess {
+                        pid,
+                        process_start: starts.remove(&pid)?,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Publish classification early on startup; later scans publish completed rows only.
@@ -763,22 +866,34 @@ impl LocalScanner {
         &mut self,
         publish: impl FnMut(ScanStage, Vec<AgentRow>, &StaffSnapshot),
     ) -> StaffSnapshot {
-        let home = self.home.clone();
-        let sessions = startup_log::startup_stage("sessions", || {
-            home.as_deref()
+        self.scan_sessions(&self.session_records(), publish)
+    }
+
+    fn session_records(&self) -> Vec<SessionRecord> {
+        startup_log::startup_stage("sessions", || {
+            self.home
+                .as_deref()
                 .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
                 .unwrap_or_default()
-        });
+        })
+    }
+
+    fn scan_sessions(
+        &mut self,
+        sessions: &[SessionRecord],
+        publish: impl FnMut(ScanStage, Vec<AgentRow>, &StaffSnapshot),
+    ) -> StaffSnapshot {
+        let home = self.home.clone();
         let processes =
-            startup_log::startup_stage("process_table", || self.processes.read(&sessions));
+            startup_log::startup_stage("process_table", || self.processes.read(sessions));
         self.codex_logs.refresh(&processes, home.as_deref());
         self.scan_with_staff(
             &processes,
-            &sessions,
+            sessions,
             home.as_deref(),
             publish,
             |scanner, rows| {
-                scanner.attach_details(&processes, &sessions, home.as_deref(), rows);
+                scanner.attach_details(&processes, sessions, home.as_deref(), rows);
             },
         )
     }
@@ -2365,6 +2480,89 @@ enum ProcessRevision {
     Unreadable,
 }
 
+impl ProcessRevision {
+    fn into_birth(self) -> Option<ProcessBirth> {
+        match self {
+            Self::Observed { birth, .. } => Some(birth),
+            Self::Exited | Self::Unreadable => None,
+        }
+    }
+}
+
+/// Emit field 22 of `/proc/<pid>/stat` from [`ProcessBirth::KernelTicks`].
+#[cfg(target_os = "linux")]
+fn session_starts<'a>(
+    sessions: impl Iterator<Item = (NonZeroU32, &'a ProcessBirth)>,
+    _: Instant,
+) -> HashMap<NonZeroU32, ProcessStart> {
+    sessions
+        .filter_map(|(pid, ProcessBirth::KernelTicks(ticks))| {
+            Some((pid, ProcessStart::try_from(ticks.to_string()).ok()?))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+const MAC_PROCESS_START_FORMAT: &str = "%a %b %e %T %Y";
+#[cfg(target_os = "macos")]
+const MAC_PROCESS_START_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Read the start text in one bounded command.
+#[cfg(target_os = "macos")]
+fn session_starts<'a>(
+    sessions: impl Iterator<Item = (NonZeroU32, &'a ProcessBirth)>,
+    deadline: Instant,
+) -> HashMap<NonZeroU32, ProcessStart> {
+    let expected: HashMap<_, _> = sessions.collect();
+    let timeout = MAC_PROCESS_START_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+    if expected.is_empty() || timeout.is_zero() {
+        return HashMap::new();
+    }
+    let pids = expected
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let command = format!("LC_ALL=C TZ=UTC exec /bin/ps -p {pids} -o pid= -o lstart=");
+    let Ok(output) = hierarchy::run_output(&command, timeout) else {
+        return HashMap::new();
+    };
+    String::from_utf8_lossy(&output)
+        .lines()
+        .filter_map(|line| {
+            let (pid, start) = line.trim().split_once(char::is_whitespace)?;
+            let pid = pid.parse::<NonZeroU32>().ok()?;
+            let start = start.trim();
+            let seconds = chrono::NaiveDateTime::parse_from_str(start, MAC_PROCESS_START_FORMAT)
+                .ok()?
+                .and_utc()
+                .timestamp();
+            let birth = *expected.get(&pid)?;
+            let ProcessBirth::UnixTime {
+                seconds: sampled, ..
+            } = birth;
+            // The command prints whole seconds. Verify the full birth after it exits.
+            if u64::try_from(seconds).ok()? != *sampled
+                || process_revision(Pid::from_u32(pid.get()))
+                    .into_birth()
+                    .as_ref()
+                    != Some(birth)
+            {
+                return None;
+            }
+            Some((pid, ProcessStart::try_from(start.to_owned()).ok()?))
+        })
+        .collect()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn session_starts<'a>(
+    _: impl Iterator<Item = (NonZeroU32, &'a ProcessBirth)>,
+    _: Instant,
+) -> HashMap<NonZeroU32, ProcessStart> {
+    HashMap::new()
+}
+
 impl ProcessCensus {
     #[cfg(test)]
     fn for_test() -> Self {
@@ -2618,12 +2816,26 @@ fn process_revision(pid: Pid) -> ProcessRevision {
         Err(error) if error.kind() == ErrorKind::NotFound => return ProcessRevision::Exited,
         Err(_) => return ProcessRevision::Unreadable,
     };
+    linux_process_revision(&bytes, || {
+        fs::read_link(format!("/proc/{pid}/cwd"))
+            .map_or(ProcessDirectory::Unreadable, ProcessDirectory::Known)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_revision(
+    bytes: &[u8],
+    directory: impl FnOnce() -> ProcessDirectory,
+) -> ProcessRevision {
     let Some(open) = bytes.iter().position(|byte| *byte == b'(') else {
         return ProcessRevision::Unreadable;
     };
     let Some(close) = bytes.iter().rposition(|byte| *byte == b')') else {
         return ProcessRevision::Unreadable;
     };
+    if close <= open {
+        return ProcessRevision::Unreadable;
+    }
     let fields: Vec<_> = bytes[close + 1..]
         .split(u8::is_ascii_whitespace)
         .filter(|field| !field.is_empty())
@@ -2649,8 +2861,7 @@ fn process_revision(pid: Pid) -> ProcessRevision {
         },
         name:      OsString::from_vec(bytes[open + 1..close].to_vec()),
         parent:    u32::try_from(parent).unwrap_or_default(),
-        directory: fs::read_link(format!("/proc/{pid}/cwd"))
-            .map_or(ProcessDirectory::Unreadable, ProcessDirectory::Known),
+        directory: directory(),
     }
 }
 
@@ -3562,7 +3773,7 @@ mod tests {
     fn the_probe_deadline_starts_before_the_process_scan() {
         let mut scanner = scanner();
         scanner.processes = ProcessCensus::for_test();
-        scanner.scan();
+        scanner.scan(Instant::now());
         assert!(
             scanner.herdr.probe_starts[0] <= scanner.processes.read_starts[0],
             "process discovery must spend the shared probe budget"
@@ -4023,6 +4234,113 @@ mod process_cache_tests {
 
     use super::*;
 
+    struct RecoveryChild(Child);
+
+    impl Drop for RecoveryChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_stat_keeps_the_start_after_a_name_with_spaces_and_parentheses()
+    -> Result<(), &'static str> {
+        let stat = b"144453 (worker ) phase 38) S 42 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 18734562 0 0 0 4096 8192 12288";
+        let ProcessRevision::Observed {
+            birth: ProcessBirth::KernelTicks(ticks),
+            name,
+            ..
+        } = linux_process_revision(stat, || ProcessDirectory::Unreadable)
+        else {
+            return Err("the process stat must parse");
+        };
+        assert_eq!(name, "worker ) phase 38");
+        assert_eq!(ticks, 18_734_562);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_changed_kernel_birth_omits_the_session_process() -> Result<(), &'static str> {
+        let mut scanner = LocalScanner::new(AccountLabels::default());
+        scanner.processes = ProcessCensus::for_test();
+        let pid = NonZeroU32::new(std::process::id()).ok_or("process ID")?;
+        let session = SessionRecord {
+            pid:        pid.get(),
+            session_id: "owner".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        };
+        let ProcessBirth::KernelTicks(ticks) = process_revision(Pid::from_u32(pid.get()))
+            .into_birth()
+            .ok_or("process birth")?;
+        scanner.processes.read(&[session]);
+        let rows = serde_json::from_value::<Vec<AgentRow>>(serde_json::json!([
+            {"agent":"claude","pid":pid,"session_id":"owner","name":"owner","started":1,
+             "directory":"/fixture","children":[]}
+        ]))
+        .map_err(|_| "owner row")?;
+        let matched = BTreeMap::from([(
+            "owner".to_owned(),
+            SessionProcess {
+                pid,
+                process_start: ProcessStart::try_from(ticks.to_string())?,
+            },
+        )]);
+        for (birth, expected) in [(ticks, matched), (ticks + 1, SessionProcesses::new())] {
+            let births = HashMap::from([(pid, ProcessBirth::KernelTicks(birth))]);
+            assert_eq!(
+                scanner.session_processes(&rows, &births, Instant::now()),
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_probe_with_no_time_for_the_start_lookup_keeps_its_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut child = RecoveryChild(
+            Command::new("bash")
+                .args(["-c", "exec -a claude bash -c 'echo ready; read -r finish'"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?,
+        );
+        let mut signal = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?),
+            &mut signal,
+        )?;
+        assert_eq!(signal.trim(), "ready");
+        let pid = child.0.id();
+        let home = tempfile::tempdir()?;
+        let sessions = home
+            .path()
+            .join(CLAUDE_DIRNAME)
+            .join(CLAUDE_SESSIONS_DIRNAME);
+        fs::create_dir_all(&sessions)?;
+        fs::write(
+            sessions.join("owner.json"),
+            serde_json::to_vec(&serde_json::json!({"pid": pid, "sessionId": "owner"}))?,
+        )?;
+        let mut scanner = LocalScanner::new(AccountLabels::default()).one_shot();
+        scanner.home = Some(home.path().to_owned());
+        scanner.processes = ProcessCensus::for_test();
+        let answer = scanner.scan(Instant::now());
+        assert_eq!(
+            answer.rows.iter().map(|row| row.pid).collect::<Vec<_>>(),
+            [pid]
+        );
+        assert_eq!(answer.session_processes, SessionProcesses::new());
+        Ok(())
+    }
+
     #[test]
     fn idle_worker_commands_parse_only_changed_process_inputs() {
         let mut commands = WorkerCommands::default();
@@ -4176,13 +4494,6 @@ mod process_cache_tests {
     #[test]
     fn idle_process_table_recovers_lost_events_and_new_sessions_within_thirty_seconds()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct RecoveryChild(Child);
-        impl Drop for RecoveryChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
         let mut census = ProcessCensus::for_test();
         let now = Instant::now();
         census.read_at(&[], now);

@@ -791,7 +791,7 @@ cargo-mend counts an item named through a qualified path in a pattern as a use o
 
 **Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.
 
-### Phase 38 — census sessions name their owner process  · status: todo
+### Phase 38 — census sessions name their owner process  · status: done
 
 #### Work Order
 

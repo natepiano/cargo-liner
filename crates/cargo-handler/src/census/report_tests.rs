@@ -6,6 +6,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
@@ -26,14 +27,17 @@ use super::*;
 use crate::app::App;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::AgentRow;
 use crate::census::CensusFacts;
 use crate::census::HierarchyEdges;
+use crate::census::HierarchySnapshot;
 use crate::census::PassAssignment;
 use crate::census::UnknownReason;
 use crate::census::accounts::SessionStates;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::RunId;
 use crate::census::remote;
+use crate::census::scan::ProcessStart;
 
 const README: &str = include_str!("../../README.md");
 const EXAMPLE_MARKER: &str = "<!-- census-json-example";
@@ -229,7 +233,7 @@ fn print_census_with(
     let status = print_to(
         loaded,
         &(Arc::new(Unreachable) as Arc<dyn RemoteRunner>),
-        |_, _| move || (rows, snapshot(facts)),
+        |_, _, _| move || fixture_scan(rows, facts),
         &mut stdout,
         &mut stderr,
     );
@@ -246,6 +250,14 @@ fn print_census_with(
 }
 
 fn report(config: Config, facts: CensusFacts) -> Value { report_with(config, rows(), facts) }
+
+fn fixture_scan(rows: Vec<AgentRow>, facts: CensusFacts) -> CensusScan {
+    CensusScan {
+        rows,
+        hierarchy: snapshot(facts),
+        session_processes: SessionProcesses::new(),
+    }
+}
 
 fn report_with(config: Config, rows: Vec<AgentRow>, facts: CensusFacts) -> Value {
     let (status, json, stderr) = print_census_with(
@@ -435,7 +447,34 @@ fn a_busy_session_whose_scan_saw_no_open_turn_shows_thinking() {
 #[test]
 fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
     let directory = tempfile::tempdir().expect("fixture directory");
-    let json = report(config(&directory, true), facts());
+    let loaded = LoadedConfig {
+        config: config(&directory, true),
+        error:  None,
+    };
+    let fixture = fixture_scan(rows(), facts());
+    let session_processes = BTreeMap::from([(
+        "director".to_owned(),
+        SessionProcess {
+            pid:           NonZeroU32::new(20).expect("fixture process ID"),
+            process_start: ProcessStart::try_from("18734562".to_owned())
+                .expect("fixture process start"),
+        },
+    )]);
+    let mut stdout = Vec::new();
+    assert_eq!(
+        print_to(
+            &loaded,
+            &(Arc::new(Unreachable) as Arc<dyn RemoteRunner>),
+            |_, _, _| move || CensusScan {
+                session_processes,
+                ..fixture
+            },
+            &mut stdout,
+            &mut Vec::new(),
+        ),
+        ExitCode::SUCCESS
+    );
+    let json: Value = serde_json::from_slice(&stdout).expect("census JSON");
     assert_eq!(json["schema"], 2);
     let ids: Vec<&str> = json["sessions"]
         .as_array()
@@ -462,6 +501,18 @@ fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
         director["activity"],
         entry(&json, "directors", "unit-id")["activity"]
     );
+    assert_eq!(
+        *director,
+        serde_json::json!({
+            "session": "director",
+            "status": "busy",
+            "activity": entry(&json, "directors", "unit-id")["activity"],
+            "machine": json["machines"][0]["name"],
+            "pid": 20,
+            "process_start": "18734562",
+            "shells": []
+        })
+    );
 }
 
 #[test]
@@ -479,7 +530,7 @@ fn sessions_list_their_shell_rows_with_the_tile_name_and_start() {
     ]))
     .expect("fixture shells");
     let directory = tempfile::tempdir().expect("fixture directory");
-    let json = report_with(config(&directory, true), rows, facts());
+    let json = report_with(config(&directory, true), rows.clone(), facts());
     assert_eq!(
         session(&json, "alpha")["shells"],
         serde_json::json!([
@@ -487,7 +538,69 @@ fn sessions_list_their_shell_rows_with_the_tile_name_and_start() {
             {"name":"sleep 60","started_at":7}
         ])
     );
-    assert_eq!(session(&json, "beta")["shells"], serde_json::json!([]));
+    let beta = session(&json, "beta");
+    assert_eq!(beta["shells"], serde_json::json!([]));
+    assert_eq!(
+        *beta,
+        serde_json::json!({
+            "session": "beta",
+            "machine": json["machines"][0]["name"],
+            "status": null,
+            "activity": null,
+            "shells": []
+        })
+    );
+
+    let remote_rows = serde_json::from_value(serde_json::json!([
+        {"agent":"claude","pid":60,"session_id":"alpha","name":"remote-alpha","started":100,
+         "directory":"/fixture","children":[
+            {"depth":0,"kind":"shell","pid":61,"name":"remote work","started":101}
+         ]}
+    ]))
+    .expect("remote shell row");
+    let mut census = Census::new("local".to_owned());
+    census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: snapshot(facts()),
+        stage: ScanStage::Completed,
+    });
+    census.apply(CensusUpdate::Remote {
+        host:  "remote".to_owned(),
+        state: MachineState::Answered(remote_rows, HierarchySnapshot::default()),
+    });
+    let processes = BTreeMap::from([(
+        "local".to_owned(),
+        BTreeMap::from([(
+            "alpha".to_owned(),
+            SessionProcess {
+                pid:           NonZeroU32::new(30).expect("alpha process ID"),
+                process_start: ProcessStart::try_from("18734562".to_owned())
+                    .expect("alpha process start"),
+            },
+        )]),
+    )]);
+    let cross_host = CensusReport::build(
+        &census,
+        &["remote".to_owned()],
+        &SessionStates::default(),
+        110,
+        &processes,
+    );
+    let json = serde_json::to_value(cross_host).expect("census JSON");
+    assert_eq!(
+        *session(&json, "alpha"),
+        serde_json::json!({
+            "session": "alpha",
+            "machine": "local",
+            "status": null,
+            "activity": null,
+            "shells": [
+                {"name":"bash verify.sh test","started_at":5},
+                {"name":"sleep 60","started_at":7},
+                {"name":"remote work","started_at":101}
+            ]
+        })
+    );
 }
 
 #[test]
@@ -633,12 +746,12 @@ fn print_hung_census(
             error: None,
         },
         &remote,
-        move |_, _| {
+        move |_, _, _| {
             move || {
                 if hung_scan {
                     let _ = scan_held.recv();
                 }
-                (rows(), snapshot(facts()))
+                fixture_scan(rows(), facts())
             }
         },
         &mut stdout,

@@ -39,6 +39,7 @@ use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
 use super::HierarchyRole;
+use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::ProvenCodexThread;
 use super::RoleFallback;
@@ -60,7 +61,9 @@ use super::hierarchy::HierarchyError;
 use super::hierarchy::StaffFileReader;
 use super::idle_activity;
 use super::local_machine_name;
+use super::scan::CensusScan;
 use super::scan::LocalScanner;
+use super::scan::SessionProcesses;
 use super::transcript::SubagentRole;
 use super::worker_dispatch::JobText;
 use super::worker_dispatch::WorkerDispatch;
@@ -70,6 +73,7 @@ use crate::config::Config;
 use crate::config::HerdrProbeWait;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
+use crate::constants::CENSUS_SOURCE_STOP_RESERVE;
 use crate::constants::HIERARCHY_TIMEOUT;
 use crate::constants::PROBE_CALLER_CHECK;
 use crate::constants::PROBE_DEADLINE;
@@ -532,29 +536,32 @@ impl From<ProbeAgentRow> for AgentRow {
 struct ProbeReport {
     /// Older probes omit observations without invalidating their agent rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    facts:            Option<super::CensusFacts>,
+    facts:             Option<super::CensusFacts>,
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    schema:           u32,
+    schema:            u32,
     /// The printing machine's short host name.
-    machine:          String,
+    machine:           String,
     /// Its agents, oldest first, each with what it is running.
-    rows:             Vec<AgentRow>,
+    rows:              Vec<AgentRow>,
+    /// Owner starts sampled on this machine. Older probes omit them.
+    #[serde(default, skip_serializing_if = "SessionProcesses::is_empty")]
+    session_processes: SessionProcesses,
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
-    edges:            HierarchyEdges,
+    edges:             HierarchyEdges,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    astra_edges:      Vec<AstraHierarchyEdge>,
+    astra_edges:       Vec<AstraHierarchyEdge>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    producer_edges:   Vec<HierarchyEdge>,
+    producer_edges:    Vec<HierarchyEdge>,
     /// A failed command must not erase the receiver's last successful links.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    hierarchy_failed: bool,
+    hierarchy_failed:  bool,
     /// Typed discovery health; older probes omit it and remain readable.
     #[serde(default)]
-    hierarchy_notice: HierarchyNotice,
+    hierarchy_notice:  HierarchyNotice,
     /// Transport-only worker carriers, ignored by older schema-3 peers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    thread_hosts:     Vec<AgentRow>,
+    thread_hosts:      Vec<AgentRow>,
 }
 
 impl ProbeReport {
@@ -595,6 +602,7 @@ impl ProbeReport {
 
             machine,
             rows,
+            session_processes: SessionProcesses::new(),
             edges,
             astra_edges,
             producer_edges,
@@ -605,7 +613,7 @@ impl ProbeReport {
     }
 
     /// Restore transport-only identity before handing an answer to the census.
-    fn into_answer(mut self) -> (Vec<AgentRow>, HierarchyAnswer) {
+    fn into_answer(mut self) -> CensusProbeAnswer {
         for producer in self.producer_edges {
             if let Some(edge) = self
                 .edges
@@ -652,7 +660,7 @@ impl ProbeReport {
                     },
                     HierarchyAnswer::WithFacts(snapshot) => (snapshot.edges, snapshot.notice),
                 };
-                HierarchyAnswer::WithFacts(super::HierarchySnapshot {
+                HierarchyAnswer::WithFacts(HierarchySnapshot {
                     edges,
                     notice,
                     facts: facts.into(),
@@ -660,7 +668,11 @@ impl ProbeReport {
             },
             None => hierarchy,
         };
-        (rows, hierarchy)
+        CensusProbeAnswer {
+            rows,
+            hierarchy,
+            session_processes: self.session_processes,
+        }
     }
 }
 
@@ -680,6 +692,9 @@ struct SchemaHeader {
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let caller = parent_id();
+    let scan_start = Instant::now();
+    let deadline = scan_start + PROBE_DEADLINE;
+    let owner_deadline = scan_start + PROBE_DEADLINE.saturating_sub(CENSUS_SOURCE_STOP_RESERVE);
     let (finished, result) = mpsc::channel();
     let started = thread::Builder::new()
         .name("probe-scan".into())
@@ -688,7 +703,7 @@ pub(crate) fn print() -> ExitCode {
             // Each write takes the lock by itself, so the guard below can still write.
             let code = print_to(
                 &loaded,
-                scan_configured,
+                |config| scan_configured(config, owner_deadline),
                 &mut io::stdout(),
                 &mut io::stderr(),
             );
@@ -698,12 +713,9 @@ pub(crate) fn print() -> ExitCode {
         let _ = writeln!(io::stderr(), "{BINARY_NAME}: probe: {error}");
         return ExitCode::FAILURE;
     }
-    match wait_for_scan(
-        &result,
-        Instant::now() + PROBE_DEADLINE,
-        PROBE_CALLER_CHECK,
-        || parent_id() == caller,
-    ) {
+    match wait_for_scan(&result, deadline, PROBE_CALLER_CHECK, || {
+        parent_id() == caller
+    }) {
         ProbeWait::Finished(code) => code,
         ProbeWait::DeadlinePassed => {
             let _ = writeln!(
@@ -753,20 +765,16 @@ fn wait_for_scan<T>(
 }
 
 /// Scan with the configuration that remains valid after loading.
-fn scan_configured(config: &Config) -> ProbeReport {
-    let (rows, publication) = scan_local(config);
-    let mut report = ProbeReport::from_answer(local_machine_name(), rows, publication.edges);
-    let mut facts = *publication.facts;
+fn scan_configured(config: &Config, owner_deadline: Instant) -> ProbeReport {
+    let scan = local_scan(config, config.census.herdr_probe_wait, owner_deadline)();
+    let mut report =
+        ProbeReport::from_answer(local_machine_name(), scan.rows, scan.hierarchy.edges);
+    report.session_processes = scan.session_processes;
+    let mut facts = *scan.hierarchy.facts;
     facts.accounts =
         AccountsSource::read_once(&config.census.accounts_command, HIERARCHY_TIMEOUT).health();
     report.facts = Some(facts);
     report
-}
-
-/// One completed scan of this machine with the configured staff file and timeouts.
-/// It lists each directory once and installs no file watch.
-pub(super) fn scan_local(config: &Config) -> (Vec<AgentRow>, super::HierarchySnapshot) {
-    local_scan(config, config.census.herdr_probe_wait)()
 }
 
 /// A one-shot scan of this machine that waits at most `herdr_wait` for herdr names, ready to
@@ -774,7 +782,8 @@ pub(super) fn scan_local(config: &Config) -> (Vec<AgentRow>, super::HierarchySna
 pub(super) fn local_scan(
     config: &Config,
     herdr_wait: HerdrProbeWait,
-) -> impl FnOnce() -> (Vec<AgentRow>, super::HierarchySnapshot) + Send + use<> {
+    owner_deadline: Instant,
+) -> impl FnOnce() -> CensusScan + Send + use<> {
     let source = HierarchySource::from(config.census.staff_file.0.clone());
     let mut scanner = LocalScanner::new(AccountLabels::new(
         &config.accounts,
@@ -788,10 +797,7 @@ pub(super) fn local_scan(
         super::StaffFileSetting::new(source),
         StaffFileReader::default(),
     );
-    move || {
-        let (rows, snapshot) = scanner.scan();
-        (rows, snapshot.publication())
-    }
+    move || scanner.scan(owner_deadline)
 }
 
 /// Keep the JSON report separate from probe diagnostics.
@@ -819,19 +825,37 @@ fn print_to(
 
 /// The rows of a report read back from `output`, or why there are none:
 /// output that is not a report, or a report from another version.
+#[cfg(test)]
 pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdges), String> {
-    parse_answer(output).map(|(rows, hierarchy)| {
-        let edges = match hierarchy {
+    parse_census_answer(output).map(CensusProbeAnswer::into_rows_and_edges)
+}
+
+/// Decode hierarchy failure separately from an authoritative empty answer.
+#[cfg(test)]
+pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAnswer), String> {
+    parse_census_answer(output).map(|answer| (answer.rows, answer.hierarchy))
+}
+
+/// A probe answer with the session starts used by the JSON census.
+pub(super) struct CensusProbeAnswer {
+    pub(super) rows:              Vec<AgentRow>,
+    pub(super) hierarchy:         HierarchyAnswer,
+    pub(super) session_processes: SessionProcesses,
+}
+
+#[cfg(test)]
+impl CensusProbeAnswer {
+    pub(super) fn into_rows_and_edges(self) -> (Vec<AgentRow>, HierarchyEdges) {
+        let edges = match self.hierarchy {
             HierarchyAnswer::Answered(edges) | HierarchyAnswer::Unmatched(edges) => edges,
             HierarchyAnswer::WithFacts(snapshot) => snapshot.edges,
             HierarchyAnswer::Failed { .. } => HierarchyEdges::default(),
         };
-        (rows, edges)
-    })
+        (self.rows, edges)
+    }
 }
 
-/// Decode hierarchy failure separately from an authoritative empty answer.
-pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAnswer), String> {
+pub(super) fn parse_census_answer(output: &[u8]) -> Result<CensusProbeAnswer, String> {
     let header: SchemaHeader =
         serde_json::from_slice(output).map_err(|_| UNREADABLE_PROBE_REASON.to_string())?;
     if header.schema != PROBE_SCHEMA {
@@ -881,6 +905,8 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::Timer;
     use crate::census::WorkIdentity;
+    use crate::census::scan::ProcessStart;
+    use crate::census::scan::SessionProcess;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
 
@@ -997,16 +1023,17 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            facts:            None,
-            hierarchy_failed: false,
-            hierarchy_notice: HierarchyNotice::Clear,
-            schema:           PROBE_SCHEMA,
-            machine:          "mac".to_string(),
-            thread_hosts:     Vec::new(),
-            edges:            HierarchyEdges::default(),
-            astra_edges:      Vec::new(),
-            producer_edges:   Vec::new(),
-            rows:             vec![codex_report_row(), claude_report_row(), worker()],
+            facts:             None,
+            hierarchy_failed:  false,
+            hierarchy_notice:  HierarchyNotice::Clear,
+            schema:            PROBE_SCHEMA,
+            machine:           "mac".to_string(),
+            session_processes: SessionProcesses::new(),
+            thread_hosts:      Vec::new(),
+            edges:             HierarchyEdges::default(),
+            astra_edges:       Vec::new(),
+            producer_edges:    Vec::new(),
+            rows:              vec![codex_report_row(), claude_report_row(), worker()],
         }
     }
 
@@ -1195,6 +1222,15 @@ mod tests {
             super::super::CodexThreadId::Recorded("worker-thread".to_string());
         report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
         report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
+        report.session_processes.insert(
+            "manager".to_owned(),
+            SessionProcess {
+                pid:           std::num::NonZeroU32::new(report.rows[1].pid)
+                    .expect("manager process ID"),
+                process_start: ProcessStart::try_from("Tue Nov  3 08:00:00 2026".to_owned())
+                    .expect("manager process start"),
+            },
+        );
         report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
             manager: "manager".to_string(),
             member:  "member".to_string(),
@@ -1205,10 +1241,15 @@ mod tests {
             parse_report(&output),
             Ok((report.rows.clone(), report.edges.clone()))
         );
+        let answer = parse_census_answer(&output).expect("the census probe should parse");
+        assert_eq!(answer.session_processes, report.session_processes);
         let mut old = serde_json::to_value(&report).expect("the report should serialize");
         old.as_object_mut()
             .expect("report is an object")
             .remove("edges");
+        old.as_object_mut()
+            .expect("report is an object")
+            .remove("session_processes");
         for row in old["rows"].as_array_mut().expect("rows is an array") {
             row.as_object_mut()
                 .expect("a row is an object")
@@ -1223,9 +1264,10 @@ mod tests {
                     .remove("thread_id");
             }
         }
-        let (rows, edges) =
-            parse_report(&serde_json::to_vec(&old).expect("old report should serialize"))
-                .expect("an old probe should parse");
+        let old = serde_json::to_vec(&old).expect("old report should serialize");
+        let answer = parse_census_answer(&old).expect("an old census probe should parse");
+        assert_eq!(answer.session_processes, SessionProcesses::new());
+        let (rows, edges) = parse_report(&old).expect("an old probe should parse");
         assert_eq!(edges, HierarchyEdges::default());
         assert!(
             rows.iter()
@@ -1282,8 +1324,7 @@ mod tests {
         );
     }
 
-    /// Output that is not a report, and a report missing its rows, are
-    /// both unreadable.
+    /// Invalid JSON, missing rows, and invalid process starts make a report unreadable.
     #[test]
     fn output_that_is_not_a_report_is_unreadable() {
         let unreadable = Err(UNREADABLE_PROBE_REASON.to_string());
@@ -1291,6 +1332,16 @@ mod tests {
         assert_eq!(parse_report(b"bash: warning: setlocale\n"), unreadable);
         assert_eq!(parse_report(b""), unreadable);
         assert_eq!(parse_report(br#"{"schema":3,"machine":"mac"}"#), unreadable);
+        for start in ["", " 18734562", "18734562\t"] {
+            let wire = serde_json::json!({
+                "schema": PROBE_SCHEMA,
+                "machine": "mac",
+                "rows": [],
+                "session_processes": {"manager": {"pid": 13, "process_start": start}}
+            });
+            let output = serde_json::to_vec(&wire).expect("probe bytes");
+            assert_eq!(parse_report(&output), unreadable, "{start:?}");
+        }
     }
     /// Old schema-3 readers see only real agents, even when a report carries workers.
     #[test]
