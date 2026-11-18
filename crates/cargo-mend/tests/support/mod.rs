@@ -121,21 +121,28 @@ pub(super) fn init_git_repo(project_root: &Path) {
 /// The suffix mend uses for a stored findings report.
 pub(super) const STORED_REPORT_SUFFIX: &str = ".mend.json";
 
-/// Find reports in the fixture's Cargo build directory.
+/// Require at least one report in the fixture's Cargo build directory.
 /// Mend writes each report beside its unit's `.rmeta` file.
 /// Cargo's artifact message names that metadata file so mend can find the report.
 pub(super) fn stored_report_paths(project_root: &Path) -> Vec<PathBuf> {
     let directories = CargoDirectories::for_fixture(project_root);
-    WalkDir::new(directories.build_directory)
+    let paths: Vec<_> = WalkDir::new(directories.build_directory)
         .into_iter()
         .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
         .map(DirEntry::into_path)
         .filter(|path| {
             path.file_name()
                 .and_then(OsStr::to_str)
                 .is_some_and(|file_name| file_name.ends_with(STORED_REPORT_SUFFIX))
         })
-        .collect()
+        .collect();
+    assert!(
+        !paths.is_empty(),
+        "missing stored findings report for {}",
+        project_root.display()
+    );
+    paths
 }
 
 pub(super) fn assert_summary_matches_findings(report: &Report) {

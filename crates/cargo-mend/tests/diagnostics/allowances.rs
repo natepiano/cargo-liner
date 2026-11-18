@@ -370,9 +370,7 @@ fn assert_stored_finding_has_no_refinement_metadata(
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let mut stored_reports = 0;
     for path in stored_report_paths(temp.path()) {
-        stored_reports += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let fix_facts = stored_report
@@ -381,7 +379,6 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
             .expect("read stored pub-use fix facts");
         assert!(fix_facts.is_empty(), "{stored_report:#?}");
     }
-    assert!(stored_reports > 0, "missing stored findings report");
 }
 
 #[test]

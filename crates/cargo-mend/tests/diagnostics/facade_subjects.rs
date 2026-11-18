@@ -910,9 +910,7 @@ fn assert_foreign_boundary_finding(report: &Report, path: &str, _blocker_locatio
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let mut stored_report_count = 0;
     for path in stored_report_paths(temp.path()) {
-        stored_report_count += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let fix_facts = stored_report
@@ -924,7 +922,6 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
             "a foreign chain blocker must not write a pub-use fix fact: {stored_report:#?}"
         );
     }
-    assert!(stored_report_count > 0, "missing stored findings report");
 }
 
 #[test]
