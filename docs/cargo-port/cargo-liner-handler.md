@@ -793,32 +793,28 @@ cargo-mend counts an item named through a qualified path in a pattern as a use o
 
 ### Phase 38 — census sessions name their owner process  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** each object in `cargo-handler census --json` `sessions[]` names its sampled Claude director process: `machine`, `pid` and `process_start`. Source: sdlc unit-board, through the showrunner, 2026-11-18. The sdlc Units board joins a director's shell rows only when machine, PID and process start match its checked owner process. Today it shows "unknown" for units with census shell rows.
+Each object in `cargo-handler census --json` `sessions[]` names its sampled Claude director process, so the sdlc Units board can join a director's shell rows to its checked owner process. Source: sdlc unit-board, through the showrunner, 2026-11-18. `schema` stays 2.
 
-**Spec:**
-1. Field names and place come from unit-board: three fields beside `session`, `status` and `shells` in each `sessions[]` object (`crates/cargo-handler/src/census/report.rs`).
-   - `machine`: string. It equals the `name` of the matching `machines[]` entry for the host that runs the process (for example `"natedev"`). Use the machine name the census already uses, never `gethostname`.
-   - `pid`: integer, the process id on that machine.
-   - `process_start`: string in the exact format of `~/.claude/scripts/lib/process_start.py`. Linux: field 22 of `/proc/<pid>/stat` (starttime, clock ticks since boot) as a decimal string, parsed after the last `)` in the file at index 19. macOS: the output of `ps -p <pid> -o lstart=` run with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends, inner spaces kept (`"Tue Nov  3 08:00:00 2026"`).
-2. `schema` stays 2. The fields are additive.
-3. When any of the three values cannot be read (the process is gone, or the file or `ps` fails), omit all three for that session. Never write a partial set or a placeholder. Model the three as one type that holds all three or none, not three separate optional fields.
-4. Reuse the existing `/proc/<pid>/stat` reader in `census/scan.rs` where it gives field 22. A remote (Mac) session reads its value through the existing remote probe path.
+- `machine` (string) stays on every session, as before. It is the census machine name.
+- `pid` (integer) and `process_start` (string) are both present or both absent. `process_start` matches `~/.claude/scripts/lib/process_start.py`. Linux: `/proc/<pid>/stat` field 22 (`ProcessBirth::KernelTicks`) as a decimal string. macOS: `ps -p <pid> -o lstart=` with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends.
+- `ProcessStart` refuses empty text and whitespace at either end, at construction and at decode. `SessionProcess { pid: NonZeroU32, process_start }` holds the pair. `SessionReport` flattens an untagged `SessionOwner`: `Known(&SessionProcess)` or `Unreadable {}`.
+- `LocalScanner::scan` reads each session pid's exact birth before the process-table read. It emits the pair only when that birth equals the snapshot's birth and the session has one Claude row.
+- On macOS, one `/bin/ps -p <pids> -o pid= -o lstart=` call runs for all sessions. It is capped at 200 ms or the time left before the probe deadline, and the birth is checked again after `ps`.
+- Remote probes return `session_processes`. `remote::probe_answer` and `probe::parse_census_answer` are the single decode path for the report and the scheduler.
+- A session with a shell on another machine omits the pair (`SessionCells.shells_share_machine`).
 
 **Files:**
-- `crates/cargo-handler/src/census/report.rs`
-- `crates/cargo-handler/src/census/report_tests.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/census/remote.rs`
-- `crates/cargo-handler/src/census/probe.rs`
+- `crates/cargo-handler/src/census/scan.rs` — `ProcessStart`, `SessionProcess`, `SessionProcesses`, `CensusScan`, birth checks, `session_starts` for Linux and macOS.
+- `crates/cargo-handler/src/census/report.rs` — `SessionReport` and `SessionOwner`.
+- `crates/cargo-handler/src/census/probe.rs` — `ProbeReport.session_processes` and the owner deadline.
+- `crates/cargo-handler/src/census/remote.rs`, `census/mod.rs`, `census/schedule.rs` — the shared remote decode.
+- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells.shells_share_machine`.
+- `crates/cargo-handler/src/census/report_tests.rs` — a session with the full pair, a session without it, and a cross-machine shell that omits it.
 
-**Workers:** 1 writer.
-- `impl`: all files above. Tests: a `report_tests.rs` row whose session has all three fields, in the unit-board sample shape; a row whose process start cannot be read, which has none of the three; and a Linux parse test of a `/proc/<pid>/stat` line whose command name holds `)` and spaces.
+**Gotchas:** Codex worker threads have no Claude row, so they get no pair. A Mac session gets its pair only after the Mac runs a build that has this phase.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-handler`, `verify.sh test cargo-handler`, `verify.sh lint cargo-handler`.
-- No new test takes one second or more.
-- The checkpoint message states the three field names.
+**Ruled out:**
+- A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
+- A guard for a remote that uses the local machine name: that is a configuration error.
