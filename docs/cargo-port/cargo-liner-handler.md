@@ -776,27 +776,17 @@ cargo-mend neither reports nor fixes a generated source file, such as the spacet
 
 ### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** cargo-mend counts a struct named through a qualified path in a pattern as a use of that struct, and keeps its `pub(crate)`. Source: tile phase 68b, sent by the showrunner 2026-11-17. In `crates/cargo-berth/tests`, `let board_templates::UnresolvedOverlap { a, b } = …;` sits in the test crate root `board.rs`. The struct is `pub(crate)` in `support/board_templates.rs`, a `#[path]` child module. mend narrows the struct to private, the build fails with E0603, and mend rolls back all its fixes. Tile saw three cases: `ReleasedBeforeMissingTrunk` (`lifecycle.rs:1280`), `UnresolvedOverlap` (`board.rs:882`) and `UnconstrainedHolders` (`board.rs:2200`). An explicit `use` import hides the defect.
+cargo-mend counts an item named through a qualified path in a pattern as a use of that item, and keeps its `pub(crate)`. Before this fix, `let board_templates::UnresolvedOverlap { a, b } = …;` in a test crate root did not count as a use of a `#[path]` child's struct. mend narrowed the struct to private, the build failed with E0603, and `--fix` rolled back.
 
-**Spec:**
-1. Cause: `UseSiteCollector::visit_pat` in `crates/cargo-mend/src/compiler/visibility/use_sites.rs` ignores the path of `PatKind::Struct`. It records only the field targets. `PatKind::TupleStruct` and `PatKind::Expr` paths already go through `record_qpath`.
-2. Fix: the `PatKind::Struct` arm records its path through `record_qpath`, beside `record_struct_pat_field_targets`. `record_target` already maps a variant to its enum, so an enum struct-variant pattern counts as a use of the enum.
-3. A struct pattern, a tuple-struct pattern and an enum-variant pattern each count as a use when the pattern names the item through a qualified path (`module::Item { .. }`, `module::Item(..)`, `module::Enum::Variant { .. }`). mend leaves the visibility of each item alone, and `--fix` makes no rollback.
-4. Rustc diagnostics and the other scans are out of scope.
+- `UseSiteCollector::visit_pat` records the `PatKind::Struct` path through `record_qpath`, beside `record_struct_pat_field_targets`. Tuple-struct and path patterns already recorded their path.
+- `record_target` maps a variant to its enum, so a qualified struct-variant pattern counts as a use of the enum.
 
 **Files:**
-- `crates/cargo-mend/src/compiler/visibility/use_sites.rs`
-- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs`
-- `crates/cargo-mend/CHANGELOG.md`
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs` — the struct-pattern arm of `visit_pat`.
+- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs` — `qualified_patterns_keep_required_pub_crate`, in the tile shape: a `#[path]` child with a struct, a tuple struct and an enum variant used through qualified patterns, plus one unused control.
 
-**Workers:** 1 writer.
-- `impl`: all three files. The regression test uses the tile shape: an integration test root `tests/board.rs` with `#[path = "support/board_templates.rs"] mod board_templates;`. The child declares a `pub(crate)` struct, a `pub(crate)` tuple struct and a `pub(crate)` enum with a struct variant. The root destructures each one through a qualified path in a `let` or `match` pattern, with no `use` import. Assert that the JSON report has no visibility finding on the three items, and that `--fix` leaves the child file byte-identical. Put all three items in one fixture, so one mend run covers them.
+**Gotchas:** a pattern regression needs an unused control that mend still reports, and a project `mend.toml` that pins `[generated] markers = []` and the diagnostic. Without them, the test also passes when the file is skipped or the diagnostic is off.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The new test fails before the fix and passes after it.
-- No new test takes one second or more.
+**Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.
