@@ -72,6 +72,7 @@ use crate::tui::panes::support;
 use crate::tui::panes::support::DetailSectionHeaders;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::render_context::RenderProjectSelection;
 use crate::tui::state;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
@@ -1127,11 +1128,10 @@ fn render_package_pane_body(
     let mut chrome = package_chrome(&pkg_data, pane_focus_state);
     chrome.title = fit_package_title(&pkg_data, usize::from(area.width.saturating_sub(2)));
     let pane_inner = tui_pane::frame_inner(area);
-    let metadata_state = ctx
-        .selected_project_path
-        .map_or(&ProjectMetadataState::NotLoaded, |path| {
-            ctx.scan.manifest_metadata.for_project(path)
-        });
+    let metadata_state = match ctx.selected_project_path {
+        RenderProjectSelection::Selected(path) => ctx.scan.manifest_metadata.for_project(path),
+        RenderProjectSelection::NoResolvedProject => &ProjectMetadataState::NotLoaded,
+    };
     let project_inner = render_manifest_error_header(frame, area, metadata_state);
 
     // The diagnostic is fixed above the normal, selectable Package content.

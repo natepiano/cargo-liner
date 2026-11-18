@@ -18,7 +18,9 @@ use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::CiFetchResult;
 use crate::tui::app::App;
+use crate::tui::app::OwnedRunEvent;
 use crate::tui::app::PendingClean;
 use crate::tui::constants::CARGO_BENCH_FLAG;
 use crate::tui::constants::CARGO_BENCH_SUBCOMMAND;
@@ -30,9 +32,6 @@ use crate::tui::constants::CARGO_FEATURES_FLAG;
 use crate::tui::constants::CARGO_PACKAGE_FLAG;
 use crate::tui::constants::CARGO_RELEASE_FLAG;
 use crate::tui::constants::CARGO_RUN_SUBCOMMAND;
-use crate::tui::messages::CiFetchMsg;
-use crate::tui::messages::CleanMsg;
-use crate::tui::messages::OwnedRunEvent;
 use crate::tui::panes::CargoPackageInvocation;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
@@ -47,6 +46,20 @@ use crate::tui::state::OwnedRunProcessActor;
 use crate::tui::state::OwnedRunStartingRequest;
 use crate::tui::state::OwnedRunTermination;
 use crate::tui::state::OwnedRunTerminationSubmission;
+
+/// Message sent when a background CI fetch completes.
+pub(in crate::tui) enum CiFetchMsg {
+    /// The fetch completed with updated runs for the given project path.
+    Complete {
+        path:   String,
+        result: CiFetchResult,
+        kind:   CiFetchKind,
+    },
+}
+
+pub(in crate::tui) enum CleanMsg {
+    Finished(AbsolutePath),
+}
 
 /// Attempt to signal the current run's identity-bound process group.
 pub(in crate::tui) enum OwnedRunStopSignal {

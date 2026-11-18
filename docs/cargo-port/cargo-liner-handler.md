@@ -620,33 +620,99 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a reduced accounts table in the handler; the hana console accounts page owns account usage.
 
-### Phase 29 — The summary names an accounts command failure  · status: todo
+### Phase 29 — The summary names an accounts command failure  · status: done
+
+#### As-built
+
+- While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one dim line under the local machine's agents that names the failure, for example `accounts: command failed`. No other state draws it.
+- `MachineState::notices` gives the lines under a machine's agents: the hierarchy notice, then the accounts failure read from `hierarchy.facts.accounts` (`Observed::Known(SourceHealth::Unreadable)`). The summary height, width and drawing, the notice redraw time and `Census::has_notice` read it.
+
+**Files:**
+- `crates/cargo-handler/src/census/mod.rs` — `MachineState::notices`, `Census::has_notice`
+- `crates/cargo-handler/src/summary/mod.rs` — notice lines in the summary height, width and drawing
+- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs` — `draw_at_measured_demand`, the accounts notice test
+
+**Gotchas:** only the local census records an accounts read. A remote probe's facts hold `Observed::Unknown`, so a remote draws no accounts line.
+
+**Ruled out:** a `SummaryFrame` field for the notice; the census facts already carry the source health.
+
+### Phase 30 — `cargo mend --fix` keeps the import of a snake_case trait  · status: done
+
+#### As-built
+
+- `cargo mend --fix` rewrites a function import only when the target module defines a `fn` of that name: in the module, in an inline `mod` block, or behind a `pub` re-export. A trait, type or macro output with a snake_case name keeps its import, so `use crate::tables::client_version;` stays.
+- `support::function_definition` returns `FunctionDefinition::Defined | NotDefined`; `analyze_function_import` returns no candidate for `NotDefined`.
+- `reexport_target` reads a bare first segment, as in `pub(crate) use source::run;`, as a child module of the holding module. The module check and the function check share it.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/prefer_module_import/support.rs` — `function_definition`, `defines_function`, `inline_module_items`, `items_define_function`, `reexport_target`
+- `crates/cargo-mend/src/fixes/prefer_module_import/function_imports.rs` — the check call, unit cases for the macro-made trait and a bare re-export
+- `crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` — `skips_snake_case_trait_made_by_a_macro`
+
+**Gotchas:** a glob or grouped `pub use` is not followed, so an import through one is kept.
+
+**Ruled out:** a second re-export resolver for the function check; it read bare names differently from the module check.
+
+### Phase 31 — The cargo-mend external path dependency fix test runs under 1 s  · status: done
+
+#### As-built
+
+- Each `cli_smoke` test holds two nextest slots. Each one runs cargo, a new mend wrapper copy and rustc, and one slot let the suite crowd the `--fix` tests to 0.99-1.48 s.
+- Mac suite at load 7.68: `fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc` 0.822 s, `fix_all_…` 0.849 s, `all_targets_fix_edits_shared_path_module_once` 0.961 s, no LEAK mark.
+
+**Files:**
+- `.config/nextest.toml` — the `binary_id(cargo-mend::cli_smoke)` override
+
+**Gotchas:**
+- Alone on the Mac the test takes 0.81 s. Of that, 217 ms is the first launch of mend's per-target wrapper copy (a new inode), and 78 ms is cargo's rustc probe in a fresh target. Real use pays both once per target folder.
+- `verify.sh test` refuses `--filter` with `--test <target>`; use `--filter` alone.
+
+**Ruled out:** a test-side LEAK fix. The test waits for every process it starts; `build_info`, which starts no cargo or git, also had a LEAK mark.
+
+### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
 
 #### Work Order
 
-**Goal:** while the accounts command fails, the summary shows one notice line under the local machine heading that names the failure. Today a failed command leaves the tree status column blank with no reason. Source: the showrunner, 2026-11-16: "Show one notice line under the local machine heading, only while the accounts command fails, naming the failure. A blank status column with no reason is a wrong result for the user."
+**Goal:** mend never reports or fixes the visibility of an item that a macro expansion makes. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). In `hana_agora_server` (`crates/hana_agora_server/src/tables.rs`, repo `hana`, branch `spacetime-spacetime-server`), SpacetimeDB 2.15.0 `#[table(accessor = <name>, public)]` makes one `pub` trait per table, named by the accessor. mend gave 12 `unused_pub` warnings on those traits, and `mend --fix` applied 4 `pub` removals there. The written source has no `pub` that a person can remove.
 
 **Spec:**
-1. While `AccountsSource` is `Failed` or `FailedKeepingLast`, the summary draws one notice line under the local machine heading. The line names the `AccountsFailure` reason.
-2. In every other `AccountsSource` state, the summary draws no accounts notice line.
-3. The notice line follows the existing hierarchy notice: `SECTION_ITEM_INDENT`, the note style, and its width counts in the summary preferred width and row count (`summary/mod.rs` near `hierarchy_notice`).
-4. `SummaryFrame` gets the notice from `app.accounts.source`; remote machines show no accounts notice.
-5. Update `docs/cargo-handler/as-built/accounts.md` and the summary layout doc.
+1. Find why `scan::visit::visit_item` reports these traits: its `from_expansion` check on `item.span` and `item.vis_span` does not skip them. A proc macro can give its output tokens the spans of the written input.
+2. Make every visibility finding and fix skip an item that a macro expansion makes, also when the macro reuses a written span. Read the expansion from rustc data, not from the source text.
+3. Keep every finding and fix on a written item, also on a written item that an attribute macro keeps.
+4. Add a regression test: a proc-macro fixture crate whose attribute macro makes a `pub` trait named by an argument, with the written spans. mend reports no visibility finding on the trait, and a `pub` item written beside it is still reported.
 
 **Files:**
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/census/accounts.rs`
-- `crates/cargo-handler/src/render/mod.rs`
-- `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/expansion.rs`
-- `crates/cargo-handler/src/details.rs`
-- `crates/cargo-handler/src/render/accounts_notice_tests.rs`
-- `docs/cargo-handler/as-built/accounts.md`
-- `docs/cargo-handler/as-built/tile-layout.md`
+- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs`
+- `crates/cargo-mend/src/compiler/visibility/source.rs`
+- `crates/cargo-mend/src/compiler/visibility/field.rs`
+- `crates/cargo-mend/tests/diagnostics/unused_pub.rs`
 
 **Workers:** none. The director writes the phase under NoWorkerMode.
 
 **Verification:**
-- Check, lint, and the full `cargo-handler` test suite.
-- A render test: a failed source shows the notice line with its reason under the local heading; a ready source shows none.
-- Live: on a private Xvfb, a handler with a failing `accounts_command` shows the notice line.
+- Lint and the full `cargo-mend` test suite.
+- The regression test fails before the fix and passes after it.
+- `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
+
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+
+#### Work Order
+
+**Goal:** every cargo-mend `diagnostic_tests` test runs under 1 s in the Mac suite at normal load. Source: the showrunner, 2026-11-16. The Phase 31 Mac suite at start load 7.68 timed 53 of them at 1.0 to 1.75 s: 27 in `pub_use_outside_subtree_fixes`, 11 in `pub_use_fixes`, and 1 to 3 in each of 9 other modules. Tests over 1 s at normal load are defects. Order: after Phase 32, before the as-built.
+
+**Spec:**
+1. Measure the slowest tests alone on the Mac, and find where each one spends its time: fixture setup, each cargo and compiler process, each fix pass, and the validation compile.
+2. Remove the cost at its cause. More nextest slots are not the fix.
+3. Keep what each test proves.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/support/`
+- `crates/cargo-mend/src/`
+
+**Workers:** none. The director writes the phase under NoWorkerMode.
+
+**Verification:**
+- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
+- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.

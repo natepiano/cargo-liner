@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::path::PathBuf;
 
 use tui_pane::KeyBind;
@@ -19,6 +18,7 @@ use super::VimMode;
 use super::input;
 use crate::tui::keymap;
 use crate::tui::keymap_ui;
+use crate::tui::state::KeymapFilePath;
 
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on.
@@ -185,7 +185,12 @@ impl KeymapEditContext for App {
 
     const KEYMAP_TOML_HEADER: &'static str = KEYMAP_TOML_HEADER;
 
-    fn keymap_file_path(&self) -> Option<PathBuf> { self.keymap.path().map(Path::to_path_buf) }
+    fn keymap_file_path(&self) -> Option<PathBuf> {
+        match self.keymap.path() {
+            KeymapFilePath::Unavailable => None,
+            KeymapFilePath::Resolved(path) => Some(path.to_path_buf()),
+        }
+    }
 
     fn set_keymap_inline_error(&mut self, message: String) {
         self.overlays.set_inline_error(message);
