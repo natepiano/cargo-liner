@@ -14,15 +14,15 @@ use super::constants::MAX_MSGS_PER_FRAME;
 use super::constants::SLOW_BG_MSG_MS;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::app::OwnedRunEvent;
 use crate::tui::app::poll_background_stats::PollBackgroundStats;
 use crate::tui::app::poll_background_stats::RebuildStatus;
-use crate::tui::messages::CiFetchMsg;
-use crate::tui::messages::CleanMsg;
-use crate::tui::messages::OwnedRunEvent;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::sccache;
 use crate::tui::state::OwnedRunMessageUpdate;
+use crate::tui::terminal::CiFetchMsg;
+use crate::tui::terminal::CleanMsg;
 
 impl App {
     pub(in crate::tui) fn poll_background(&mut self) -> PollBackgroundStats {

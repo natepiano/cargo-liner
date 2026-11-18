@@ -9,25 +9,31 @@ use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
 use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 
-// ── Resolution + dispatch ───────────────────────────────────────
+pub(in crate::tui) enum FocusedDismissal {
+    Unavailable,
+    Target(DismissTarget),
+}
 
 impl App {
     /// Resolve the currently focused pane into a dismiss target, if one exists.
-    pub(in crate::tui) fn focused_dismiss_target(&self) -> Option<DismissTarget> {
+    pub(in crate::tui) fn focused_dismiss_target(&self) -> FocusedDismissal {
         match self.focused_pane_id() {
             PaneId::Toasts => match self
                 .framework
                 .toasts
                 .focused_toast_id(self.framework.toast_pane_focus_state())
             {
-                ToastFocus::PaneFocusedOn(id) => Some(DismissTarget::Toast(id)),
-                ToastFocus::PaneUnfocused | ToastFocus::PaneFocusedWithoutToast => None,
+                ToastFocus::PaneFocusedOn(id) => FocusedDismissal::Target(DismissTarget::Toast(id)),
+                ToastFocus::PaneUnfocused | ToastFocus::PaneFocusedWithoutToast => {
+                    FocusedDismissal::Unavailable
+                },
             },
             PaneId::ProjectList => self
                 .project_list
                 .selected_row()
-                .and_then(|row| self.project_list.dismiss_target_for_row_inner(row)),
-            _ => None,
+                .and_then(|row| self.project_list.dismiss_target_for_row_inner(row))
+                .map_or(FocusedDismissal::Unavailable, FocusedDismissal::Target),
+            _ => FocusedDismissal::Unavailable,
         }
     }
 

@@ -33,6 +33,7 @@ use crate::reporting::Report;
 use crate::reporting::SubtreeReexportFixFact;
 use crate::rust_syntax::ModuleMap;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnershipClassifier;
 use crate::selection;
 use crate::selection::Selection;
 
@@ -101,10 +102,26 @@ struct ResolvedOwnerFacts<'a, 'f> {
     facts:      Vec<OwnerFact<'f>>,
 }
 
+#[cfg(test)]
 pub(in crate::fixes) fn scan_selection(
     selection: &Selection,
     report: &Report,
     sources: &ParsedSources,
+    plan: impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
+) -> Result<SubtreeReexportScan> {
+    let source_ownership = SourceOwnershipClassifier::for_selection(
+        std::rc::Rc::new(ParsedSources::for_selection(selection)),
+        &crate::config::GeneratedSourcesConfig::default(),
+        selection,
+    );
+    scan_authored_selection(selection, report, sources, &source_ownership, plan)
+}
+
+pub(in crate::fixes) fn scan_authored_selection(
+    selection: &Selection,
+    report: &Report,
+    sources: &ParsedSources,
+    source_ownership: &SourceOwnershipClassifier,
     mut plan: impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
 ) -> Result<SubtreeReexportScan> {
     let root = &selection.analysis_root;
@@ -137,6 +154,11 @@ pub(in crate::fixes) fn scan_selection(
     // overlap another fix to `excluded`, then rebuilds every edit without them.
     let fixes = loop {
         let round = build_mount_rounds(root, &crates, &excluded, sources)?;
+        let generated_owners = OwnedFix::generated_owners(&round.fixes, source_ownership)?;
+        if !generated_owners.is_empty() {
+            excluded.extend(generated_owners);
+            continue;
+        }
         let mut rejected = round.unmatched.clone();
         rejected.extend(overlapping_facts(&round.fixes));
         rejected.extend(mounts.unagreed_facts(root, &facts, &round.fixes, sources));

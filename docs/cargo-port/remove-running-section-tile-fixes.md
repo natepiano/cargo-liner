@@ -1756,83 +1756,199 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Depends on:** Phase 65 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** `a_native_mirror_keeps_cargo_streams_without_shell_utilities` does not fall back to uncaptured cargo on the GitHub macOS runner.
-
-**Spec:**
-1. The failure: GitHub run 43717017527, "Merge handler phase 19 (0aa61ba) into main", 2026-11-15 13:03 UTC, job "macOS cargo-tile" (image macos-26-arm64). The next main run passed.
-   - `crates/cargo-tile/tests/shim_modes.rs:1375`: "the utility row must run native capture". The stand-in cargo saw `CARGOTILE_NESTED`, `CARGO_TERM_PROGRESS_WHEN` and `CARGO_TERM_PROGRESS_WIDTH` all unset; the test expected `<pid>`, `always`, `100`. The shim ran cargo with no capture. The test took 0.063 s.
-2. This is the same failure class as Phase 63 (`attempts-63-shim-mode-not-found` in the unit's memory): under load, the shim takes a fallback path that runs cargo with no capture. The fallback paths are in `hook.rs` (no terminal, no signal guard, failed publication). Phase 63 did not reproduce the trigger.
-3. Make the fallback name its cause: the test prints the shim's stderr and status when the environment shows no capture. Then force each fallback path in a scratch run to find which one matches the CI evidence. Fix the cause in the shim or the fixture. Keep every assertion.
+Each capture fallback in the shim names its path and error to the cargo it runs uncaptured.
+- `exec_uncaptured_cargo` (`hook.rs`) sets `CARGOTILE_CAPTURE_FALLBACK` to `<path>: <error>` and execs cargo. The paths are `terminal`, `signal guard`, `publication` and `capture startup`.
+- `command()` removes an inherited `CARGOTILE_CAPTURE_FALLBACK`, so a successful capture never passes a stale value to cargo.
+- `CaptureStartup::PlainCargo(Error)` and `CargoCompletion::NotStarted(Error)` carry the error. An unacknowledged PTY helper reports `CAPTURE_HELPER_UNACKNOWLEDGED: <status>`.
+- The `MirrorStartup` rows in `shim_modes.rs` force real faults: descriptor limit, occupied descriptors, publication failure, inherited fallback, missing shell, missing tee and failed shell. The first assertion prints the shim status, stderr and fallback value.
+- The CI fallback cause in GitHub run 43717017527 is not known. The next CI failure names it.
 
 **Files:**
-- `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
-- `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
+- `crates/cargo-tile/src/hook.rs` — the fallback exec and the inherited-value removal.
+- `crates/cargo-tile/src/constants.rs` — `CAPTURE_FALLBACK_ENV`, the fallback path names and `CAPTURE_HELPER_UNACKNOWLEDGED`.
+- `crates/cargo-tile/tests/shim_modes.rs` — the `MirrorStartup` rows and their test-local fallback prefixes.
 
-**Workers:** 1 writer (`impl`) — owns `shim_modes.rs`, the named `hook.rs` fallback and the scratch runs.
+**Gotchas:**
+- The descriptor-limit row fails in publication on macOS and in capture startup on Linux.
 
-**Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
+**Ruled out:**
+- A C fault library that injects signal-guard and pump failures: it configures a mock instead of a real fault.
 
 ### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: done
 
 **Depends on:** Phase 66 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** The cargo-tile native fixture cache holds only fixtures whose source build still exists. Unbounded cache growth is a defect (showrunner, 2026-11-15).
-
-**Spec:**
-1. The evidence: on the Mac, `~/Library/Caches/cargo-tile/test-readers/native-fixtures` holds 129 fixtures, 2.1 GB, about 17 MB each, and one `.lock` file for each (director, 2026-11-15). Measure the count and size on natedev too.
-2. The cause: `native_fixture` in `setup_reader.py` names each fixture by a hash of its source identity (path, device, inode, size, mtime, ctime, strip options). Each build makes a new identity and a new fixture. Nothing removes the old ones. `remove_retired_readers` removes readers whose owner process ended; fixtures have no such rule.
-3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file.
-4. The lock rule. Today `native_fixture.rs` `executable` reuses a receipt without a fixture lock (architect review, 2026-11-16; confirm in the code first).
-   - A reader takes the fixture lock shared from the receipt check until the fixture process starts. A removed file does not stop a process that already started.
-   - Removal takes the fixture lock exclusive and non-blocking. A busy lock means the fixture stays for a later publication.
-   - Removal deletes the fixture, then unlinks the lock file while it still holds the lock.
-   - Each lock taker, publisher or reader, compares the locked file's inode with the inode at the lock path after it gets the lock. On a difference it opens the path again and retries.
-5. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
-6. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
+Each native test fixture records its source identity, and each publication removes the fixtures whose source changed or is gone.
+- `native_fixture` (`setup_reader.py`) writes `<name>.source` beside each fixture: the resolved source path, a NUL byte, and the repr of device, inode, size, mtime_ns, ctime_ns and strip options. The fixture name is the SHA-256 of that record.
+- `remove_retired_native_fixtures` runs after each publication. For each other fixture, it takes `LOCK_EX|LOCK_NB` on `<name>.lock` and checks the lock inode. It removes the fixture, record and lock when the source identity changed, the source is unreadable (any `OSError`), or the record is missing (a legacy fixture).
+- `native_fixture::executable()` keeps `RetainedNativeExecutable::{Direct, Locked}`. `Locked` holds a shared flock on `<fixture>.lock` for the process lifetime, so cleanup skips a fixture in use. `lock_fixture` opens only an existing lock and never creates one.
+- The cache fell from 162 fixtures (3.7 GB) on natedev and 164 (2.7 GB) on the Mac to one fixture and one lock on each.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture`, the removal and the publisher lock retry.
-- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the shared reader lock and its retry.
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — publication, the identity record and cleanup.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the retained fixture, its shared lock, and the Rust lock test.
+- `crates/cargo-tile/src/shim_registration/reader_staging_cases.py` — private-cache cleanup cases: stale, legacy, held lock, live source, orphan lock, unreadable source parent.
+- `crates/cargo-tile/src/shim_registration/reader_executable.rs` — the case registrations.
 
-**Workers:** 1 writer (`impl`) — owns both files and their tests.
+**Gotchas:**
+- A publisher in a worktree without this phase can lock a deleted lock inode and publish beside a new one. This stops when each worktree merges main.
+- A full suite that runs beside lint puts unchanged reader tests over 1 s. The start load does not show it.
 
-**Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: done
 
-### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: todo
+#### As-built
 
-**Depends on:** Phase 69a (order only; Phase 69 runs first, showrunner 2026-11-15; Phase 69a follows it, director 2026-11-16)
+- natedev meets the 1 s rule: all 1389 cargo-berth tests pass at load 11.50, slowest 0.462 s. The two board tests from the Phase 64 suite run well under 1 s.
+- The Mac does not meet it: at start load 6.54, 83 tests take 1 s or more. Heavy scenario tests take 0.96-1.24 s alone on the Mac; suite contention doubles a test's alone time (2-2.5x).
+- Recorded before-run templates hold setup that ran inside test clocks: the board ordering stages (`ORDERED_HOLDERS`, `CHECKPOINTED_PREDECESSOR`, `LANDED_PREDECESSOR`, `INCORPORATED_PREDECESSOR`), the packed retention fixtures (`PACKED_CHECKPOINT`, `PACKED_PREDECESSOR`), the four first-split stages (`first_split(workflow, stage)`) and the one-hunk rewrite checkpoint (`ONE_HUNK_CHECKPOINT`). `recorded_templates.rs` registers each, so setup builds them before the test clocks start.
+- The hook, answers, edges, gate, liveness, overlap and ledger scratch fixtures start from before-run copies. `hook_repository.rs` exports `GIT_REPOSITORY`, `INITIALIZED_REPOSITORY` and `CONFIGURED_REPOSITORY` as before-run `LedgerTemplate`s, as `lifecycle_templates.rs` does. Each fixture module names its own template (`answers-initialized`, `edges-initialized`, and so on).
+- `.config/nextest.toml`: on macOS each `package(cargo-berth)` test sets `threads-required = 3`. Mac counts at 1 s or more: 318 with one slot, 161 with two, 86 with three (start loads 5.3-6.4); six slots made the suite twice as long and did not cut the count.
+
+**Files:**
+- `crates/cargo-berth/tests/support/board_templates.rs` — the ordered-holder templates and `OrderedHolders`.
+- `crates/cargo-berth/tests/support/ledger_templates.rs` — `SCRATCH_REPOSITORY`, the packed retention templates and `packed_retention_fixture`.
+- `crates/cargo-berth/tests/support/reanchoring_templates.rs`, `reanchoring.rs` — the first-split and one-hunk rewrite templates and their readers.
+- `crates/cargo-berth/tests/support/hook_repository.rs` and the answers, edges, gate, liveness and overlap fixture files — before-run starting repositories.
+- `crates/cargo-berth/tests/recorded_templates.rs` — registration of every template above.
+- `crates/cargo-berth/tests/board.rs`, `ledger.rs` — tests that read the templates.
+- `.config/nextest.toml` — the macOS cargo-berth slot override.
+
+**Binds later work:** A template that is not registered in `recorded_templates.rs` is built by the first test that uses it, inside that test's clock. The macOS cargo-berth slot override sets no priority.
+
+**Gotchas:**
+- Mac test time follows process starts (fit: Git 12 ms, hook 6 ms, cargo-berth 6 ms each; one start alone 4-13 ms). Process count on natedev, not sync count, predicts Mac time.
+- Assertions inside a template builder run when setup builds the template, not in the test.
+
+**Ruled out:** in-process Git reads for the Mac goal (removing every cargo-berth Git call saves about 0.15 s per slow test); six slots per test; the Mac Developer Tools exemption.
+
+### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: todo
+
+**Depends on:** none (showrunner, 2026-11-17: first in tile's remaining scope).
 
 #### Work Order
 
-**Goal:** No cargo-berth test takes 1 s or more on the Mac when the suite starts at load under 12 (showrunner, 2026-11-15).
+**Goal:** An edit to a plan doc in a worktree with an active reservation joins that reservation. It makes no second reservation that holds only the plan doc (showrunner, 2026-11-14 and 2026-11-17).
 
 **Spec:**
-1. The evidence: in the Phase 64 Mac suite (load 5.92, 12 threads), 490 of 1389 cargo-berth tests took 1 s or more, and 167 took 2 s or more (director, 2026-11-15). Phase 58b met the 1 s rule on natedev only; its Mac half never ran.
-2. Measure first. Run the cargo-berth full suite on the Mac at start load under 12. Group the slow tests by shared cost: git process starts, template setup, file system sync, first launch of a new executable (see the Phase 43j attempts).
-3. Cut each shared cost at its source, largest group first. Keep each test's behavior and assertions.
-4. Keep natedev at no test 1 s or more at load under 32. In the Phase 64 natedev suite (load 28.17), two board tests took 1.07 s and 1.04 s: `every_reachable_edge_readiness_has_its_own_action_or_settlement` and `retained_scoped_patch_verdicts_reuse_both_results_after_process_restart`. Alone they take 0.26 s and 0.21 s (load 15.99). Bring both under 1 s in the full suite.
+1. The evidence: in the handler worktree, each plan shrink edit made a second reservation that held only the plan doc (01a1da82 in handler Phase 14, 01a1dabc in Phase 15). In the tile home worktree, the same happened (01a1e05c, 01a1e0df, 01a1e0e2, 01a1e3ce, 01a1e4ad, 01a1e6af, 01a1e82f, 01a1e297, 01a1e9c6, 01a1e9ca, 01a1ea5b).
+2. The result: drift puts the next phase's files in the extra reservation's merge extent, so every drift is ambiguous. Units retire each one by hand with `--retire-orphan`.
+3. Measure first. Reproduce the edit path in a cargo-berth test and name the code that makes the second reservation.
+4. Fix the cause in cargo-berth. The edit joins the active reservation of the worktree. Keep the overlap checks against other worktrees' reservations.
+
+**Files:** `crates/cargo-berth/src/` where the measurement names the cause; `crates/cargo-berth/tests/`.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** a test reproduces the second reservation before the fix and passes after it; `verify.sh final cargo-berth` passes on natedev; the Mac cargo-berth suite passes; lint.
+
+
+### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+
+**Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
+
+#### Work Order
+
+**Goal:** A stale `cargo-tile-shim.lock` never blocks install, and the user takes no step to recover it (user via showrunner, 2026-11-17).
+
+**Spec:**
+1. The evidence: the cargo tile TUI showed "stable-x86_64-unknown-linux-gnu: not installed: ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-tile-shim.lock: File exists (os error 17); confirm no install is still running, remove this lock file, and run cargo-tile install again". The lock was dated 11-16 15:14. No install ran.
+2. The lock is a held lock (flock) on the file, not the existence of the file. A file that no live process holds is free.
+3. Two installs at the same time still exclude each other.
+4. Remove the recovery text that asks the user to delete the lock file.
+
+**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, and the tests for the shim lock.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** a test with a left-over lock file installs with no error; a test with a held lock still excludes a second install; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint.
+
+
+### Phase 72 — Every notice closes with its [x] and with Esc  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** The user can close every notice in the cargo tile TUI with its [x] and with Esc (user via showrunner, 2026-11-17: "i can't even dismiss it which i've never seen before").
+
+**Spec:**
+1. The evidence: the "Capture shim" notice for the stale lock in Phase 71 did not close.
+2. Measure first. Name each notice kind and the reason the capture shim notice does not close.
+3. Fix the cause where it lives. A notice that comes back from live state shows again only when that state changes.
+4. Add one test for each notice kind: [x] closes it, and Esc closes it.
+
+**Files:** where the measurement names the cause.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** the new tests pass; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint; one dark-mode desktop image of the notice before and after Esc.
+
+
+### Phase 63b — The PTY helper fallback test passes on Linux  · status: todo
+
+**Depends on:** none. Goes before Phase 68b (showrunner ruling, 2026-11-17); handler's Phase 35 final gate waits on it.
+
+#### Work Order
+
+**Goal:** `cargo-tile::shim_modes` `a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts` passes on natedev and on the Mac (showrunner, 2026-11-17).
+
+**Spec:**
+1. The evidence: `verify.sh final cargo-tile` on natedev fails this test in 3 of 3 runs and passes on the Mac. At `shim_modes.rs:1570`, `fixture.observed("helper")` panics with "read observation file: NotFound": the fake `script` helper in `fixture.bin` does not run on Linux.
+2. Measure first. Make the failure print the shim status, stdout, stderr and the recorded capture fallback cause before the observation read (the Phase 63 attempt 9 method). Read which path skips the helper on Linux.
+3. Fix the cause where it lives, in the test fixture or in the shim. Keep each test's behavior and assertions.
 
 **Files:**
-- `crates/cargo-berth/tests/board.rs` — the two natedev board tests.
-- `crates/cargo-berth/tests/support/` — shared fixture setup; the measurement names the final set.
-- `crates/cargo-berth-test-support/src/repository_template.rs`, `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/setup-recorded-templates.sh` — shared template fixture costs; edit only where the measurement selects them. The support crate has its own test lane.
+- `crates/cargo-tile/tests/shim_modes.rs` — the test and its fixture.
+- `crates/cargo-tile/src/hook.rs` and `crates/cargo-tile/src/cargo-capture-shim.sh` — only where the measurement names the cause.
 
-**Workers:** 1 writer + 1 tester
-- `impl`: every source edit, the shared fixture regressions and the natedev runs.
-- `test`: the Mac measurements and runs on the same candidate revision; no source edits.
+**Workers:** 1 writer
+- `impl`: the diagnosis output, the fix and the natedev and Mac runs.
 
 **Constraints from prior phases:**
-- Phase 65: the first reply of a persistent Git child (`read_startup_line`) and the installation probe use the 30 s `GIT_COMMAND_DEADLINE` (`crates/cargo-berth/src/git/child.rs`). Do not add a shorter deadline around Git startup. A valid 83 MB repository config made Git startup take 1,231 ms.
-- Phase 65: the recorded-template setup runs four template workers (`recorded_templates.rs`). Do not cut the worker count to make a slow reply pass.
-- Phase 67: a timing suite runs alone on its machine; the same worker runs no other build, test or lint there while it runs. This holds for every timing measurement batch.
+- Phase 63a: the shim signal tests wait on an event and name their cause; keep that.
+- Diagnosis at `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/63b/diagnosis.md` lists 12 paths that skip the helper (read only).
 
-**Acceptance gate:** the cargo-berth full suite passes on the Mac at start load under 12 with no test at 1 s or more, and on natedev at load under 32 with no test at 1 s or more; lint.
+**Acceptance gate:** the test passes on natedev and on the Mac; `verify.sh final cargo-tile` passes on natedev; lint.
 
-### Phase 68a — Two cargo-tile reader tests run under 1 s at normal load  · status: todo
+### Phase 68b — Heavy cargo-berth scenario tests run under 1 s alone on the Mac  · status: dropped (review failed after 3 repair rounds; showrunner rule, 2026-11-18)
+
+**Depends on:** Phase 68 (order only; showrunner ruling, 2026-11-17)
+
+#### Work Order
+
+**Goal:** Every cargo-berth test that takes 1 s or more alone on the Mac takes less than 1 s alone there (showrunner, 2026-11-17).
+
+**Spec:**
+1. The evidence: in the Phase 68 Mac suite (start load 6.54, three slots per test), 83 of 1389 tests took 1 s or more. Alone on the Mac, the heaviest scenario tests take 0.96-1.24 s; tests with few process starts take 0.42-0.65 s alone.
+2. Measure first. Time each of the 83 alone on the Mac (a warm run, then three runs) through `~/.claude/scripts/mac_test/mac_queue_run.py`. The set for this phase is each test at 1 s or more alone.
+3. Count the process starts of each test in the set on natedev (a warm run, then `strace -f -e trace=execve`), split by origin: test Git, cargo-berth, cargo-berth's own Git, hooks.
+4. Cut the process starts in each heavy scenario at their source. Keep each test's behavior and assertions.
+5. Report the suite contention as a number only: the ratio of each test's suite time to its alone time (2 to 2.5 in Phase 68).
+
+**Files:**
+- `crates/cargo-berth/tests/` — the scenario tests in the set; the measurement names them.
+- `crates/cargo-berth/tests/support/` — shared fixture setup; edit only where the measurement selects it.
+
+**Workers:** 1 writer + 1 tester
+- `impl`: every source edit and the natedev runs.
+- `test`: the Mac alone and suite measurements on the same candidate revision; no source edits.
+
+**Constraints from prior phases:**
+- Phase 68: recorded before-run templates hold the setup of the board ordering, packed retention, first-split and one-hunk rewrite tests (`recorded_templates.rs` registers each). A new template must be registered there, or the first test that uses it builds it inside its clock.
+- Phase 68: on macOS each cargo-berth test takes three nextest slots (`.config/nextest.toml`). Six slots made the suite longer and did not cut the count.
+- Phase 68: Mac time follows process starts (fit: Git 12 ms, hook 6 ms, cargo-berth 6 ms each). Removing every cargo-berth Git call saves about 0.15 s per slow test. Do not build in-process Git reads for this goal (showrunner, 2026-11-17).
+- Phase 68: the Mac Developer Tools exemption does not change the first-launch cost (Phase 43j).
+- Phase 65: the persistent Git child and the installation probe keep the 30 s `GIT_COMMAND_DEADLINE`.
+- Phase 67: a timing suite runs alone on its machine; the same worker runs no other build, test or lint there while it runs.
+- Every Mac build, test or run of built code goes through `mac_queue_run.py`; plain `ssh mac` is for reads only.
+
+**Acceptance gate:** each test in the set takes less than 1 s alone on the Mac; the cargo-berth full suite passes on natedev at load under 32 with no test at 1 s or more, and on the Mac; the report states the contention ratio; lint.
+
+### Phase 68a — Two cargo-tile reader tests run under 1 s at normal load  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 68 (order only; showrunner, 2026-11-16)
 
@@ -1845,7 +1961,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 2. Phase 69 adds no work to either test: their fixtures configure no slot roots, so the slot reader is `ConfiguredSlotRoots::Disabled`. The cost is older; read the Phase 43g and 43j As-built blocks and the attempts logs `attempts-43g-reader-timing` and `attempts-43j-mac-first-exec` in the project memory before any change.
 3. Measure first. Split each test's time into its stages (fixture readiness, native scans, CPU observation, writer output) on the machine where it is slow.
 4. Cut each cost at its source. Keep the strict CPU oracle, the readiness waits, the cleanup assertions and the reader scheduling.
-5. The Mac first launch of a new executable costs 100-230 ms (Phase 43j). If the user enables the Mac Developer Tools exemption, measure again before any code change for that cost.
+5. The Mac first launch of a new executable costs 100-230 ms (Phase 43j). The Mac Developer Tools exemption does not change that cost (Phase 43j As-built, ruled out); cut new executable files in code.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the two tests.
@@ -2245,7 +2361,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - The space check does not reserve memory. A later fixture write can still fail when `/dev/shm` fills after selection. The failed-`mktemp` fallback branch has no test.
 - The checkpoint ran without the full drift. Reservation 01a1c689 was claimed under a worktree id that changed when the worktree was made again. Phase 58c releases it.
 
-### Phase 31 — Ended cells leave whole  · status: parked
+### Phase 31 — Ended cells leave whole  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
 
@@ -2573,7 +2689,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - Most frames over 4 ms at 40 rows repaint all cells after an input rejection (`cache_inputs=6`).
 - A doc link to a `#[cfg(test)]` function fails rustdoc in the product build.
 
-### Phase 32i — The last tile frames over 4 ms after 32h  · status: parked (showrunner, 2026-11-11: not landed at the 3-round repair cap; slower than main at 40 and 80 rows; the work continues in Phase 32j)
+### Phase 32i — The last tile frames over 4 ms after 32h  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32h.
 
@@ -2606,7 +2722,7 @@ Phase 32h landed at the repair cap with its gate open. Its findings F005, F006 a
 - Three interleaved pairs against main for any CPU claim, with the median change and the spread.
 - Change-Review: none — draw time only, with no visible change.
 
-### Phase 32j — Tile frames at 40 and 80 rows are no slower than main  · status: todo
+### Phase 32j — Tile frames at 40 and 80 rows are no slower than main  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32i (its uncommitted tree).
 
@@ -2919,7 +3035,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Ruled out:** a change to the cargo probe row: the real crate name `___` stays (showrunner, 2026-11-10).
 
-### Phase 32f — Active crate labels read on a light background  · status: todo
+### Phase 32f — Active crate labels read on a light background  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32c, Phase 32e
 
@@ -3679,6 +3795,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Forward edits from Phase 43j (director, 2026-11-15):**
 - The priority-90 `cargo-tile-readers` group now sets `threads-required = "num-cpus"`: each of its six tests runs alone, as a chain of about 2.5 s on the Mac before other tests start. A fourth override gives the four `reader_scenario_*_removes_its_processes_and_folder` tests `threads-required = 4` and sets no priority. Keep both; the new priority-80 override names none of these tests.
 - The before runs measure this layout: Mac suite 12.6-12.8 s at load 6.79-8.95 on 12 CPUs.
+
+**Forward edits from Phase 68 (director, 2026-11-17):**
+- On macOS a `package(cargo-berth)` override sets `threads-required = 3` and no priority. The new priority-80 override sets `priority` alone, so both hold; the Mac before runs measure the suite with it.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, after the config edit: green.

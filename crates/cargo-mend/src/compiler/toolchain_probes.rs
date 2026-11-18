@@ -1,8 +1,11 @@
-//! Reuse successful compiler queries within one mend invocation.
+//! Reuse successful compiler queries across mend runs.
 //!
-//! Cargo can repeat the same toolchain query as fix passes change its wrapper
-//! fingerprint. A private directory belongs to the CLI, not to a compilation
-//! unit or a persistent fixture cache, and disappears when that invocation ends.
+//! Cargo asks each new target directory for the compiler version and target
+//! facts. Each answer starts the mend wrapper and rustc, and each of those
+//! loads the compiler library. The answers depend only on the compiler file,
+//! the query arguments and a few toolchain variables, so mend keeps them in
+//! the shared wrapper cache of its build. A changed compiler file changes the
+//! key, and a new mend build starts a new cache.
 
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -17,6 +20,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
 use std::process::Stdio;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -24,20 +28,44 @@ use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
 
-const PROBE_DIRECTORY_ENV: &str = "MEND_TOOLCHAIN_PROBES";
+use super::constants::TOOLCHAIN_PROBES_ENV;
+use super::constants::WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY;
 
-/// Owns compiler-query results for every analysis pass of one CLI invocation.
-pub(crate) struct ToolchainProbes(TempDir);
+/// Owns compiler-query results for every analysis pass of a CLI invocation.
+pub(crate) enum ToolchainProbes {
+    /// The shared wrapper cache keeps results for later runs of this mend build.
+    Retained(PathBuf),
+    /// A run without the shared cache keeps results until it ends.
+    RunLocal(TempDir),
+}
 
 impl ToolchainProbes {
-    pub(crate) fn new() -> Result<Self> {
+    pub(super) fn retained(wrapper_cache: &Path) -> Result<Self> {
+        let directory = wrapper_cache.join(WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY);
+        fs::create_dir_all(&directory).with_context(|| {
+            format!(
+                "create mend toolchain probe directory {}",
+                directory.display()
+            )
+        })?;
+        Ok(Self::Retained(directory))
+    }
+
+    pub(super) fn run_local() -> Result<Self> {
         tempfile::tempdir()
-            .map(Self)
+            .map(Self::RunLocal)
             .context("create mend toolchain probe directory")
     }
 
+    fn directory(&self) -> &Path {
+        match self {
+            Self::Retained(directory) => directory,
+            Self::RunLocal(directory) => directory.path(),
+        }
+    }
+
     pub(super) fn configure(&self, command: &mut Command) {
-        command.env(PROBE_DIRECTORY_ENV, self.0.path());
+        command.env(TOOLCHAIN_PROBES_ENV, self.directory());
     }
 }
 
@@ -46,11 +74,22 @@ pub(super) enum ProbeInvocation {
     Query(ExitCode),
 }
 
+/// The key of one reusable query. The working directory is not part of it:
+/// Cargo's queries name no relative input, and each project runs them from
+/// its own directory.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct ProbeRequest {
+    compiler:    PathBuf,
+    identity:    CompilerIdentity,
     arguments:   Vec<OsString>,
-    directory:   PathBuf,
     environment: Vec<(String, OsString)>,
+}
+
+/// A new compiler file at the same path has a new size or modified time.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct CompilerIdentity {
+    length:   u64,
+    modified: SystemTime,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,17 +101,25 @@ struct ToolchainQueryResult {
 }
 
 /// Only Cargo's input-free queries are reusable. Source compilations and
-/// ambient wrappers keep their normal execution path.
+/// ambient wrappers keep their normal execution path. A compiler that is not
+/// a readable file has no identity, so its queries also keep that path.
 pub(super) fn run_query(arguments: &[OsString]) -> Result<ProbeInvocation> {
-    let Some(directory) = env::var_os(PROBE_DIRECTORY_ENV) else {
+    let Some(directory) = env::var_os(TOOLCHAIN_PROBES_ENV) else {
         return Ok(ProbeInvocation::Compiler);
     };
     if !is_query(arguments) {
         return Ok(ProbeInvocation::Compiler);
     }
+    let Ok(metadata) = fs::metadata(&arguments[1]) else {
+        return Ok(ProbeInvocation::Compiler);
+    };
     let request = ProbeRequest {
-        arguments:   arguments.to_vec(),
-        directory:   env::current_dir()?,
+        compiler:    PathBuf::from(&arguments[1]),
+        identity:    CompilerIdentity {
+            length:   metadata.len(),
+            modified: metadata.modified()?,
+        },
+        arguments:   arguments[2..].to_vec(),
         environment: [
             "RUSTUP_TOOLCHAIN",
             "RUSTUP_HOME",
@@ -84,7 +131,7 @@ pub(super) fn run_query(arguments: &[OsString]) -> Result<ProbeInvocation> {
         .filter_map(|name| env::var_os(name).map(|value| (name.to_string(), value)))
         .collect(),
     };
-    let probe = read_or_run(Path::new(&directory), request)?;
+    let probe = read_or_run(Path::new(&directory), request, &env::current_dir()?)?;
     io::stdout().write_all(&probe.stdout)?;
     io::stderr().write_all(&probe.stderr)?;
     Ok(ProbeInvocation::Query(ExitCode::from(probe.exit_code)))
@@ -103,7 +150,11 @@ fn is_query(arguments: &[OsString]) -> bool {
                 .any(|arg| arg.to_string_lossy().starts_with("--emit")))
 }
 
-fn read_or_run(directory: &Path, request: ProbeRequest) -> Result<ToolchainQueryResult> {
+fn read_or_run(
+    directory: &Path,
+    request: ProbeRequest,
+    working_directory: &Path,
+) -> Result<ToolchainQueryResult> {
     let mut hash = DefaultHasher::new();
     request.hash(&mut hash);
     let path = directory.join(format!("{:016x}.json", hash.finish()));
@@ -120,9 +171,9 @@ fn read_or_run(directory: &Path, request: ProbeRequest) -> Result<ToolchainQuery
     {
         return Ok(probe);
     }
-    let output = Command::new(&request.arguments[1])
-        .args(&request.arguments[2..])
-        .current_dir(&request.directory)
+    let output = Command::new(&request.compiler)
+        .args(&request.arguments)
+        .current_dir(working_directory)
         .stdin(Stdio::null())
         .output()
         .context("query rustc toolchain")?;
@@ -150,7 +201,11 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::path::Path;
 
+    #[cfg(unix)]
+    use super::CompilerIdentity;
     #[cfg(unix)]
     use super::ProbeRequest;
     #[cfg(unix)]
@@ -160,36 +215,64 @@ mod tests {
     use super::read_or_run;
 
     #[cfg(unix)]
+    fn request(compiler: &Path, argument: &str) -> anyhow::Result<ProbeRequest> {
+        let metadata = fs::metadata(compiler)?;
+        Ok(ProbeRequest {
+            compiler:    compiler.to_path_buf(),
+            identity:    CompilerIdentity {
+                length:   metadata.len(),
+                modified: metadata.modified()?,
+            },
+            arguments:   vec![argument.into()],
+            environment: Vec::new(),
+        })
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn identical_queries_share_one_child_but_different_queries_and_runs_do_not()
+    fn queries_are_shared_across_directories_until_the_compiler_or_cache_changes()
     -> anyhow::Result<()> {
         let fixture = tempfile::tempdir()?;
         let compiler = fixture.path().join("compiler");
         let counter = fixture.path().join("starts");
-        fs::write(
-            &compiler,
-            "#!/bin/sh\nprintf x >> starts\nprintf '%s' \"$1\"\n",
-        )?;
+        let script = format!(
+            "#!/bin/sh\nprintf x >> '{}'\nprintf '%s' \"$1\"\n",
+            counter.display()
+        );
+        fs::write(&compiler, &script)?;
         fs::set_permissions(&compiler, fs::Permissions::from_mode(0o700))?;
-        let request = ProbeRequest {
-            arguments:   vec!["mend".into(), compiler.into_os_string(), "-vV".into()],
-            directory:   fixture.path().to_path_buf(),
-            environment: Vec::new(),
-        };
-        let session = ToolchainProbes::new()?;
-        let first = read_or_run(session.0.path(), request.clone())?;
-        let second = read_or_run(session.0.path(), request.clone())?;
+        let cache = ToolchainProbes::run_local()?;
+        let project = fixture.path();
+        let other_project = tempfile::tempdir()?;
+        let first = read_or_run(cache.directory(), request(&compiler, "-vV")?, project)?;
+        let second = read_or_run(cache.directory(), request(&compiler, "-vV")?, project)?;
         assert_eq!(first.stdout, b"-vV");
         assert_eq!(second.stdout, first.stdout);
         assert_eq!(fs::read(&counter)?, b"x");
-        let mut different = request.clone();
-        different.arguments[2] = "--print=cfg".into();
-        let third = read_or_run(session.0.path(), different)?;
-        assert_eq!(third.stdout, b"--print=cfg");
+        let other_directory = read_or_run(
+            cache.directory(),
+            request(&compiler, "-vV")?,
+            other_project.path(),
+        )?;
+        assert_eq!(other_directory.stdout, first.stdout);
+        assert_eq!(fs::read(&counter)?, b"x");
+        let different = read_or_run(
+            cache.directory(),
+            request(&compiler, "--print=cfg")?,
+            project,
+        )?;
+        assert_eq!(different.stdout, b"--print=cfg");
         assert_eq!(fs::read(&counter)?, b"xx");
-        let another_session = ToolchainProbes::new()?;
-        read_or_run(another_session.0.path(), request)?;
-        assert_eq!(fs::read(counter)?, b"xxx");
+        fs::write(&compiler, format!("{script}# updated compiler\n"))?;
+        read_or_run(cache.directory(), request(&compiler, "-vV")?, project)?;
+        assert_eq!(fs::read(&counter)?, b"xxx");
+        let another_cache = ToolchainProbes::run_local()?;
+        read_or_run(
+            another_cache.directory(),
+            request(&compiler, "-vV")?,
+            project,
+        )?;
+        assert_eq!(fs::read(counter)?, b"xxxx");
         Ok(())
     }
 

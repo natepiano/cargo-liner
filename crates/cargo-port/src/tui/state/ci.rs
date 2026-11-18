@@ -476,9 +476,9 @@ mod tests {
         use crate::project::WorkflowPresence;
         use crate::scan::BackgroundMsg;
         use crate::scan::CiFetchResult;
-        use crate::tui::messages::CiFetchMsg;
         use crate::tui::panes::CiFetchKind;
         use crate::tui::panes::PaneId;
+        use crate::tui::terminal::CiFetchMsg;
         use crate::tui::test_support;
 
         let scratch = tempfile::tempdir()?;

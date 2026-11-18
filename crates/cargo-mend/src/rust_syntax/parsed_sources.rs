@@ -1,6 +1,7 @@
 use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -112,6 +113,21 @@ impl ParsedSources {
                 .insert(source_root, Rc::new(map));
         }
         parsed_sources
+    }
+
+    /// Keep all declared paths for files that resolve through a symlink.
+    pub(super) fn declared_source_aliases(&self) -> BTreeMap<SourcePathKey, BTreeSet<PathBuf>> {
+        let mut paths = BTreeMap::<_, BTreeSet<_>>::new();
+        for map in self.module_maps.borrow().values() {
+            for (path, _) in map.declared_files() {
+                paths
+                    .entry(self.path_key(path))
+                    .or_default()
+                    .insert(path.to_path_buf());
+            }
+        }
+        paths.retain(|key, paths| paths.iter().any(|path| path != key.as_path()));
+        paths
     }
 
     /// The text of `path`, read on the first request. A read failure is

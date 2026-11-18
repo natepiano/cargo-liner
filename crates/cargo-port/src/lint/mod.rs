@@ -33,11 +33,17 @@ pub(crate) use pause::record_project_resumed;
 pub(crate) use pause::record_resumed;
 #[cfg(test)]
 pub use run::LintCommand;
+pub use run::LintCommandDuration;
+pub use run::LintCommandExitCode;
 #[cfg(test)]
 pub use run::LintCommandStatus;
 pub use run::LintRun;
+pub use run::LintRunDuration;
+pub use run::LintRunFinishTime;
 pub use run::LintRunOrigin;
 pub use run::LintRunStatus;
+pub use runs::ArchiveSizeLookup;
+pub use runs::CachedLintAvailability;
 pub use runs::LintRuns;
 pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;

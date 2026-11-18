@@ -669,50 +669,124 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 
 **Ruled out:** a test-side LEAK fix. The test waits for every process it starts; `build_info`, which starts no cargo or git, also had a LEAK mark.
 
-### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: todo
+### Phase 32 — mend leaves the visibility of a macro-made item alone  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** mend never reports or fixes the visibility of an item that a macro expansion makes. Source: the showrunner, 2026-11-16 (mend bugs get a phase at once). In `hana_agora_server` (`crates/hana_agora_server/src/tables.rs`, repo `hana`, branch `spacetime-spacetime-server`), SpacetimeDB 2.15.0 `#[table(accessor = <name>, public)]` makes one `pub` trait per table, named by the accessor. mend gave 12 `unused_pub` warnings on those traits, and `mend --fix` applied 4 `pub` removals there. The written source has no `pub` that a person can remove.
-
-**Spec:**
-1. Find why `scan::visit::visit_item` reports these traits: its `from_expansion` check on `item.span` and `item.vis_span` does not skip them. A proc macro can give its output tokens the spans of the written input.
-2. Make every visibility finding and fix skip an item that a macro expansion makes, also when the macro reuses a written span. Read the expansion from rustc data, not from the source text.
-3. Keep every finding and fix on a written item, also on a written item that an attribute macro keeps.
-4. Add a regression test: a proc-macro fixture crate whose attribute macro makes a `pub` trait named by an argument, with the written spans. mend reports no visibility finding on the trait, and a `pub` item written beside it is still reported.
+- `source::visibility_origin` decides whether a person wrote a declaration's visibility. Items, impl items, foreign items and fields call it in place of their `from_expansion` checks. A `MacroMade` result skips every visibility finding and fix.
+- Rules in order: a span from an expansion is macro-made; a definition outside any expansion (`tcx.expn_that_defined` is root) is written; a derive output is macro-made; any other macro output is macro-made when its visibility ends after its name starts.
+- Regression test `diagnostic_tests::unused_pub::macro_made_traits_on_written_spans_are_not_flagged`: an attribute macro makes a trait on the accessor span with the struct's `pub`, and a derive makes a trait on the struct-name span. Before the fix the left set held `trait client_version`, and with the derive rule off it held `trait SessionAccess`.
 
 **Files:**
-- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs`
-- `crates/cargo-mend/src/compiler/visibility/source.rs`
-- `crates/cargo-mend/src/compiler/visibility/field.rs`
-- `crates/cargo-mend/tests/diagnostics/unused_pub.rs`
+- `crates/cargo-mend/src/compiler/visibility/source.rs` — `VisibilityOrigin`, `DeclarationSpans`, `visibility_origin`
+- `crates/cargo-mend/src/compiler/visibility/scan/visit.rs` — the three item visitors
+- `crates/cargo-mend/src/compiler/visibility/field.rs` — `field_visibility_origin`
+- `crates/cargo-mend/tests/diagnostics/unused_pub.rs` — `MACROS_FIXTURE_SOURCE` and the test
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- spacetimedb-bindings-macro 2.15.0 `table.rs` makes `<accessor>`, `<accessor>__view` and `<accessor>__query` traits with `quote_spanned!` on the accessor span and the struct's `#vis`. No span has an expansion context, so `from_expansion` cannot see them.
+- A fixture with a proc-macro dependency needs `run_mend_json`; `compiled_report` refuses fixtures that compile dependencies.
+- The real-crate check waits for the merge to main and a new cargo-mend install. The 12 reported locations all have the accessor name before the struct's `pub`.
 
-**Verification:**
-- Lint and the full `cargo-mend` test suite.
-- The regression test fails before the fix and passes after it.
-- `cargo mend` on `hana_agora_server` reports none of the 12 accessor trait warnings. The spacetime-server unit can send the full lint output through the spacetime showrunner.
+**Ruled out:** reading the source text for the order. rustc's expansion record and the spans give the answer without a file read.
 
-### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: todo
+### Phase 33 — The cargo-mend diagnostic tests run under 1 s on the Mac  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** every cargo-mend `diagnostic_tests` test runs under 1 s in the Mac suite at normal load. Source: the showrunner, 2026-11-16. The Phase 31 Mac suite at start load 7.68 timed 53 of them at 1.0 to 1.75 s: 27 in `pub_use_outside_subtree_fixes`, 11 in `pub_use_fixes`, and 1 to 3 in each of 9 other modules. Tests over 1 s at normal load are defects. Order: after Phase 32, before the as-built.
-
-**Spec:**
-1. Measure the slowest tests alone on the Mac, and find where each one spends its time: fixture setup, each cargo and compiler process, each fix pass, and the validation compile.
-2. Remove the cost at its cause. More nextest slots are not the fix.
-3. Keep what each test proves.
+- Cause: each start of a binary that links librustc_driver (mend, rustc, rustfmt) costs 25-50 ms on the Mac. A fix test started about 25 processes, 15 of them such starts. The suite made each fix test about 1.9 times slower than alone.
+- `nightly_probe` returns Available without a `rustfmt --version` run when `rustup which` names an existing file. `nightly_executable` holds the one lookup for the command and the probe.
+- `ToolchainProbes` is `Retained` (the shared wrapper cache, `toolchain-queries/`) or `RunLocal` (a temporary directory when the wrapper is project-local). `RunWrapper::toolchain_probes` picks it, so `main` resolves the wrapper first.
+- `ProbeRequest` keys a query by the compiler path, `CompilerIdentity` (size and modified time), the arguments and the toolchain variables. It holds no working directory, so every project shares the result. Only successful queries are kept.
+- Mac suite at load 5.27: 1038/1038 in 21.4 s (43-47 s before), no test at 1 s or more, slowest diagnostic test 0.792 s.
 
 **Files:**
-- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
-- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
-- `crates/cargo-mend/tests/support/`
-- `crates/cargo-mend/src/`
+- `crates/cargo-mend/src/compiler/toolchain_probes.rs` — `ToolchainProbes`, `ProbeRequest`, `CompilerIdentity`, `read_or_run`
+- `crates/cargo-mend/src/compiler/build/execute.rs` — `WrapperRetention::SharedCache` carries its directory; `RunWrapper::toolchain_probes`
+- `crates/cargo-mend/src/compiler/constants.rs` — `TOOLCHAIN_PROBES_ENV`, `WRAPPER_CACHE_TOOLCHAIN_QUERIES_DIRECTORY`
+- `crates/cargo-mend/src/fixes/runner/function_length/formatter.rs` — `nightly_executable`, `nightly_probe`
+- `crates/cargo-mend/src/main.rs` — wrapper before probes
 
-**Workers:** none. The director writes the phase under NoWorkerMode.
+**Gotchas:**
+- Alone, almost no diagnostic test was over 1 s. Time a slow test alone and in the suite, and count its process starts, before a change.
+- The test fixtures use the real user cache directory, so the kept query results serve every fixture of a run.
 
-**Verification:**
-- Lint and the full `cargo-mend` test suite on the Mac and on natedev.
-- No `diagnostic_tests` test at 1 s or more in a Mac suite at load under 12.
+**Ruled out:** more nextest slots (showrunner rule); fixture changes in the tests, which were about 0.7 s alone.
+
+### Phase 34 — A real mend run loads the compiler library only where it must  · status: done
+
+#### As-built
+
+- A measurement only; no code change. Rule (showrunner, 2026-11-17): build a rustc-free wrapper binary only when avoidable librustc_driver loads add 100 ms or more to the median run.
+- 3 pairs on the Mac, obsidian_knife copy, warm target, `src/main.rs` touched before each run, Mac load 13.2-13.5: main wall median 1.775 s (1.608-1.789 s), Phase 33 1.669 s (1.647-1.738 s). The difference is inside the spread.
+- A warm run starts no toolchain query: cargo answers from `target/.rustc_info.json` ("rustc info cache hit"). A one-package crate passes no unit through to rustc. Avoidable loads cost 0 ms.
+
+**Files:** none.
+
+**Gotchas:**
+- DYLD_PRINT_LIBRARIES and DYLD_PRINT_TO_FILE do not reach cargo's child processes. Do not use them to count loads.
+
+**Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
+
+### Phase 35 — Worker role labels take the `role.worker` color  · status: done
+
+#### As-built
+
+- `FooterRole::Worker` reads the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys. The user sets the color on the Accounts page; devtools writes the key to `~/.claude/config/statusline.conf`.
+- `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint in the tree role column. `Agent` and `Producer` stay plain.
+- A review-fallback session and each dispatch or unroled worker seat also show `worker` and take the same tint.
+- `FooterColors::management_role` tints job text: showrunner, unit director and Astra roles keep their ink; worker job text stays plain.
+- A missing or invalid `role.worker` key leaves every worker label plain.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterRole::Worker`, the parse arm, `hierarchy_role` and `management_role`.
+- `crates/cargo-handler/src/agent_cell.rs` — `job_tint` and `footer_role` route worker labels to the `role.worker` tint.
+- `docs/cargo-handler/as-built/colors.md` — the `role.worker` key and its scope.
+
+**Gotchas:**
+- `job_style` shares the role tint path. Worker job text must go through `management_role` to stay plain.
+
+**Ruled out:** tinting worker job text with `role.worker`, an unasked look change.
+
+### Phase 36 — mend skips generated files  · status: done
+
+#### As-built
+
+cargo-mend neither reports nor fixes a generated source file, such as the spacetime bindings in hana_catalyst `crates/hana_agora/src/bindings/`.
+
+- Config: a `[generated]` table with `markers` (`Vec<String>`) and `header_lines` (`NonZeroUsize`), in the global config and in a project `mend.toml`. A project key overrides the global key. The defaults are `["@generated", "AUTOMATICALLY GENERATED"]` and 5. `ProjectGeneratedSources::resolve(global)` applies the override. Global config creation and reconciliation share `generated_defaults`.
+- Classification: `SourceOwnershipClassifier` returns `SourceOwnership::{Generated, Authored}`. A file is generated when a marker is in its first `header_lines` lines, or when its parent module file (`D/mod.rs` or `D.rs`) is generated. Cargo target roots have no parent. Ancestry follows the mounted module path. The per-pass cache uses the physical file identity, so re-entry cannot recurse.
+- No report: `MendRunner::scan_checked_sources` drops each finding in a generated file in the disabled-diagnostic step, after the syntax-scan findings merge. `MendRunner::retain_authored_facts` removes `ReportFacts::pub_use_fix_facts` with a generated child or parent.
+- No fix: `SyntaxScans::retain_authored` and `ValidatedFixSet::retain_authored` drop the import, prefer-module-import, inline-path and imports-at-top fixes in generated files. A pub-use facade or subtree re-export proposal with any edit in a generated file is rejected whole, in the first pass (`subtree_reexport::scan_authored_selection`) and in each chain pass (`chain_pass(report, sources, source_ownership)`). The finding stays in the report.
+- The generated settings are not part of the compiler fingerprint.
+
+**Files:**
+- `crates/cargo-mend/src/config/generated_sources.rs` — the `[generated]` config type and project override.
+- `crates/cargo-mend/src/rust_syntax/generated_sources.rs` — the classifier.
+- `crates/cargo-mend/src/fixes/runner/{execute,mend_runner,plan,chain}.rs` — report, fact and proposal filters; `RunPlan::source_ownership`.
+- `crates/cargo-mend/src/fixes/pub_use_fixes/{scan,validated_plan}.rs`, `crates/cargo-mend/src/fixes/subtree_reexport/{mod,scan}.rs` — proposal rejection.
+- `crates/cargo-mend/tests/diagnostics/generated_sources.rs` — the spacetime-shaped regression test.
+- `crates/cargo-mend/README.md` — the "Generated sources" section.
+
+**Gotchas:**
+- A per-file report filter does not protect callers. Facade and subtree fixes edit caller and ancestor files, so each proposal checks every edit path.
+- The compiler facts cache is stored before the filter, so the generated settings stay out of the fingerprint.
+
+**Ruled out:** crate roots from the `lib.rs`/`main.rs` file names; support for one file that is both a Cargo target root and a symlinked module under a generated `mod.rs`, which is not a realistic case.
+
+### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: done
+
+#### As-built
+
+cargo-mend counts an item named through a qualified path in a pattern as a use of that item, and keeps its `pub(crate)`. Before this fix, `let board_templates::UnresolvedOverlap { a, b } = …;` in a test crate root did not count as a use of a `#[path]` child's struct. mend narrowed the struct to private, the build failed with E0603, and `--fix` rolled back.
+
+- `UseSiteCollector::visit_pat` records the `PatKind::Struct` path through `record_qpath`, beside `record_struct_pat_field_targets`. Tuple-struct and path patterns already recorded their path.
+- `record_target` maps a variant to its enum, so a qualified struct-variant pattern counts as a use of the enum.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs` — the struct-pattern arm of `visit_pat`.
+- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs` — `qualified_patterns_keep_required_pub_crate`, in the tile shape: a `#[path]` child with a struct, a tuple struct and an enum variant used through qualified patterns, plus one unused control.
+
+**Gotchas:** a pattern regression needs an unused control that mend still reports, and a project `mend.toml` that pins `[generated] markers = []` and the diagnostic. Without them, the test also passes when the file is skipped or the diagnostic is off.
+
+**Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.

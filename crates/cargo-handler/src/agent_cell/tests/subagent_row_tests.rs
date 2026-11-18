@@ -3,6 +3,7 @@
 use super::*;
 use crate::census::Activity;
 use crate::census::accounts::EMPTY_SESSION_STATES;
+use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
 use crate::sort::SortDirection;
 
@@ -339,7 +340,7 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
 }
 
 #[test]
-fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
+fn unassigned_and_unlabeled_role_cells_stay_plain_and_worker_cells_take_role_worker() {
     let root = agent(10, "director", HOUR, None);
     let rows = [
         agent(20, "standalone session", MINUTE, None),
@@ -407,11 +408,14 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         assert_eq!(cell.fg, Color::Reset, "blank role has no footer ink");
     }
     let plain = FooterTint::Plain.style(Style::default().fg(text_default()));
-    for (name, role) in [
-        ("unlabeled session", ""),
-        ("hierarchy worker", "worker"),
-        ("fallback reviewer", "worker"),
-        ("managed worker", "worker"),
+    let worker = colors
+        .role(FooterRole::Worker)
+        .style(Style::default().fg(text_default()));
+    for (name, role, expected) in [
+        ("unlabeled session", "", plain),
+        ("hierarchy worker", "worker", worker),
+        ("fallback reviewer", "worker", worker),
+        ("managed worker", "worker", worker),
     ] {
         let y = find(&buffer, name).expect("session or worker row").1;
         let drawn: String = (0..summary::cell_width(role))
@@ -420,8 +424,8 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         assert_eq!(drawn, role, "{name}");
         for offset in 0..summary::cell_width(role) {
             let drawn = &buffer[(role_x + offset, y)];
-            assert_eq!(Some(drawn.fg), plain.fg, "{name}");
-            assert_eq!(drawn.modifier, plain.add_modifier, "{name}");
+            assert_eq!(Some(drawn.fg), expected.fg, "{name}");
+            assert_eq!(drawn.modifier, expected.add_modifier, "{name}");
         }
     }
 }

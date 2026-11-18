@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 // `APP_NAME` identifies cargo-mend; `CONFIG_FILE_NAME` and `GLOBAL_CONFIG_FILE`
 // name its configuration files.
 pub(super) const APP_NAME: &str = "cargo-mend";
@@ -18,3 +20,10 @@ pub(super) const PUB_IN_PATH_COMMENT: &str =
     "# required (default) reviews pub; permitted also accepts it; forbidden rejects pub(in ...)\n";
 pub(super) const PUB_IN_PATH_KEY: &str = "pub_in_path";
 pub(super) const VISIBILITY_TABLE_KEY: &str = "visibility";
+
+// generated source configuration
+pub(super) const DEFAULT_GENERATED_HEADER_LINES: NonZeroUsize = NonZeroUsize::MIN.saturating_add(4);
+pub(super) const DEFAULT_GENERATED_MARKERS: [&str; 2] = ["@generated", "AUTOMATICALLY GENERATED"];
+pub(super) const GENERATED_HEADER_LINES_KEY: &str = "header_lines";
+pub(super) const GENERATED_MARKERS_KEY: &str = "markers";
+pub(super) const GENERATED_TABLE_KEY: &str = "generated";

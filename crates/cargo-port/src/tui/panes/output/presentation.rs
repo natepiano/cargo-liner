@@ -97,14 +97,6 @@ impl<'a> OutputPresentation<'a> {
         }
     }
 
-    /// The owned body on screen this frame, when there is one.
-    pub(super) const fn owned_output(&self) -> Option<OwnedOutputPresentation<'a>> {
-        match self {
-            Self::Hidden => None,
-            Self::Owned(owned) => Some(*owned),
-        }
-    }
-
     /// The captured lines a copy or visual selection reads.
     pub const fn captured_lines(&self) -> &'a [String] {
         match self {

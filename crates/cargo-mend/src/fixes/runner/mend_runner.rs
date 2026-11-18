@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -10,6 +11,7 @@ use crate::compiler::BuildOutputMode;
 use crate::compiler::CompilerFixOutcome;
 use crate::compiler::RunWrapper;
 use crate::compiler::ToolchainProbes;
+use crate::config::DiagnosticStatus;
 use crate::config::FixKind;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
@@ -31,6 +33,8 @@ use crate::reporting::OutputFormat;
 use crate::reporting::PassEdits;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnership;
+use crate::rust_syntax::SourceOwnershipClassifier;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
@@ -118,13 +122,57 @@ impl<'a> MendRunner<'a> {
         let run_plan = self.plan(operation_mode)?;
         self.execute(run_plan)
     }
+
+    /// Filter compiler and syntax findings before any report-based fix scan runs.
+    pub(super) fn retain_authored_report(
+        &self,
+        report: &mut Report,
+        generated: &SourceOwnershipClassifier,
+    ) -> Result<()> {
+        let mut retained = Vec::new();
+        for finding in std::mem::take(&mut report.findings) {
+            let path = self.selection.analysis_root.join(&finding.path);
+            if self
+                .loaded_config
+                .diagnostics_config
+                .is_enabled(finding.diagnostic_code)
+                == DiagnosticStatus::Enabled
+                && generated.classify(&path)? == SourceOwnership::Authored
+            {
+                retained.push(finding);
+            }
+        }
+        report.findings = retained;
+        self.retain_authored_facts(report, generated)
+    }
+
+    /// Filter `ReportFacts::pub_use_fix_facts` before `pub_use_fixes::scan_selection` reads them.
+    fn retain_authored_facts(
+        &self,
+        report: &mut Report,
+        generated: &SourceOwnershipClassifier,
+    ) -> Result<()> {
+        let mut retained = Vec::new();
+        for fact in report.facts.pub_use_fix_facts.iter() {
+            let child = self.selection.analysis_root.join(&fact.child_path);
+            let parent = self.selection.analysis_root.join(&fact.parent_path);
+            if generated.classify(&child)? == SourceOwnership::Authored
+                && generated.classify(&parent)? == SourceOwnership::Authored
+            {
+                retained.push(fact.clone());
+            }
+        }
+        report.facts.pub_use_fix_facts = retained.into();
+        Ok(())
+    }
 }
 
 pub(super) struct RunPlan {
     pub(super) function_plan:              FunctionLengthPlan,
     /// The checked selection's source and Cargo module context, reused until
     /// all selected edits have been combined, before any source is written.
-    pub(super) sources:                    ParsedSources,
+    pub(super) sources:                    Rc<ParsedSources>,
+    pub(super) source_ownership:           SourceOwnershipClassifier,
     pub(super) operation_mode:             OperationMode,
     pub(super) report:                     Report,
     pub(super) import_scan:                Option<ImportScan>,
