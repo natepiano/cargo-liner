@@ -62,6 +62,14 @@ Lexical scopes identify shorthand bindings.
 A child using `super::name` therefore keeps the parent binding it needs.
 The macro-token walker treats ambiguous field uses conservatively.
 
+`fixes/prefer_module_import/support.rs::function_definition` returns `FunctionDefinition::Defined` or `NotDefined`.
+A function import becomes a module import only when the target module defines a `fn` of that name.
+The definition can be in the module, in an inline `mod` block, or behind a `pub` re-export.
+A trait, type or macro output with a snake_case name therefore keeps its import.
+`reexport_target` reads a bare first segment, as in `pub(crate) use source::run;`, as a child module of the holding module.
+The module check and the function check share it.
+A glob or grouped `pub use` is not followed, so an import through one is kept.
+
 `fixes/imports/gate_tracking.rs` supplies `gate_tracking_visit!`.
 It collects enclosing cfg attributes from items, parameters, fields, generics, patterns, and attribute-bearing expressions.
 Both imports-at-top and inline-path fixes use it.
@@ -73,6 +81,22 @@ The replacement ends at the last identifier and leaves generic arguments intact.
 `process.rs` preserves external-crate identity when resolving the inserted import.
 A local alias must not capture the absolute external name.
 Diagnostic highlighting uses the replacement's byte span.
+
+## Written and macro-made visibility
+
+`compiler/visibility/source.rs::visibility_origin` decides whether a person wrote a declaration's visibility.
+Items, impl items, foreign items and fields call it.
+A `VisibilityOrigin::MacroMade` result skips every visibility finding and fix.
+The rules apply in order:
+
+1. A span from an expansion is macro-made.
+2. A definition outside any expansion (`tcx.expn_that_defined` is root) is written.
+3. A derive output is macro-made.
+4. Any other macro output is macro-made when its visibility ends after its name starts.
+
+A proc macro can make an item with `quote_spanned!` on written spans and copy the struct's `pub`.
+No span then has an expansion context, so `from_expansion` cannot see it.
+Rule 4 reads the span order from rustc and reads no source file.
 
 ## Function-length protection
 
@@ -100,6 +124,7 @@ A relocation pass that depends on a protected function stays out as one unit.
 5. Preserve absolute-path identity and generic arguments.
 6. Reject an import-dependent plan as a whole when its binding cannot be written safely.
 7. Keep valid independent fixes when another edit is declined.
+8. Change only a visibility that a person wrote.
 
 These constraints prioritize compilable edits over the number of automatic rewrites.
 See [compiler validation](compiler-validation.md) for build checks, rollback, and wrapper lifetime.

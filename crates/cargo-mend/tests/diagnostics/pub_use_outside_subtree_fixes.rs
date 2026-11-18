@@ -126,13 +126,7 @@ fn fixed_check_stderr_after(
     stderr
 }
 
-/// A sibling's function re-exported under `tool_staging` for callers outside
-/// `tool`: `tool/mod.rs` gets the re-export, the callers name `tool`, and the
-/// staging file keeps only its own item.
-#[test]
-fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
-    let temp = tempdir().expect("create temp fixture dir");
-    let root = temp.path();
+fn write_sibling_function_fixture(root: &Path, caller_header: &str) {
     pub_use_outside_subtree::write_manifest(root);
     pub_use_outside_subtree::write(
         root,
@@ -143,8 +137,10 @@ fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
     pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
-        "use crate::tool::tool_staging::build_device_recipe;\n\npub(crate) fn run() -> u32 {\n    \
-         build_device_recipe() + crate::tool::tool_staging::stage_all()\n}\n",
+        &format!(
+            "{caller_header}use crate::tool::tool_staging::build_device_recipe;\n\npub(crate) fn run() -> u32 {{\n    \
+         build_device_recipe() + crate::tool::tool_staging::stage_all()\n}}\n"
+        ),
     );
     pub_use_outside_subtree::write(
         root,
@@ -164,6 +160,16 @@ fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
     );
 
     single_compile_target(root);
+}
+
+/// A sibling's function re-exported under `tool_staging` for callers outside
+/// `tool`: `tool/mod.rs` gets the re-export, the callers name `tool`, and the
+/// staging file keeps only its own item.
+#[test]
+fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
+    let temp = tempdir().expect("create temp fixture dir");
+    let root = temp.path();
+    write_sibling_function_fixture(root, "");
 
     assert_fixed(
         root,
@@ -188,6 +194,29 @@ fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
                 "pub(crate) fn stage_all() -> u32 {\n    2\n}\n",
             ),
         ],
+    );
+}
+
+#[test]
+fn fix_keeps_a_subtree_reexport_when_its_caller_is_generated() {
+    let temp = tempdir().expect("create subtree fixture");
+    let root = temp.path();
+    write_sibling_function_fixture(root, "// @generated\n");
+    let before = rust_sources(root);
+    let mut command = mend_command_for(&root.join("Cargo.toml"));
+    command.args(["--fix", "--json"]);
+    let report = report_from_mend_output(&run_fix_output(&mut command));
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::PubUseOutsideSubtree),
+        "the subtree finding must remain: {report:#?}",
+    );
+    assert_eq!(
+        rust_sources(root),
+        before,
+        "the rejected proposal must leave every file unchanged"
     );
 }
 
@@ -839,12 +868,7 @@ fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
     );
 }
 
-/// Four private forwarding links converge in one validated batch.
-/// The crate root keeps the direct path to the defining module.
-#[test]
-fn reexport_chain_collapses_in_one_run() {
-    let temp = tempdir().expect("create temp fixture dir");
-    let root = temp.path();
+fn write_reexport_chain_fixture(root: &Path, crate_root_header: &str) {
     pub_use_outside_subtree::write_manifest(root);
     pub_use_outside_subtree::write(
         root,
@@ -854,7 +878,7 @@ fn reexport_chain_collapses_in_one_run() {
     pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
-        "mod input;\nmod orbit_cam;\n\npub use orbit_cam::Gain;\n",
+        &format!("{crate_root_header}mod input;\nmod orbit_cam;\n\npub use orbit_cam::Gain;\n"),
     );
     pub_use_outside_subtree::write(root, "src/input.rs", "pub struct Gain(pub u32);\n");
     pub_use_outside_subtree::write(
@@ -877,7 +901,23 @@ fn reexport_chain_collapses_in_one_run() {
         "src/orbit_cam/controls/bindings/preset.rs",
         "pub use crate::input::Gain;\n",
     );
+}
 
+/// Four private forwarding links converge in one validated batch.
+/// A generated crate root stops the chain at the last authored module.
+#[test]
+fn reexport_chain_collapses_in_one_run() {
+    std::thread::scope(|scope| {
+        let authored = scope.spawn(assert_authored_chain_collapses);
+        assert_generated_root_stops_chain();
+        authored.join().expect("verify the authored chain");
+    });
+}
+
+fn assert_authored_chain_collapses() {
+    let temp = tempdir().expect("create authored chain fixture");
+    let root = temp.path();
+    write_reexport_chain_fixture(root, "");
     fixed_check_stderr_after(
         root,
         &[
@@ -891,6 +931,33 @@ fn reexport_chain_collapses_in_one_run() {
             ("src/orbit_cam/controls/bindings/preset.rs", ""),
         ],
         || fix_chain_with_check_budget(root),
+    );
+}
+
+fn assert_generated_root_stops_chain() {
+    let temp = tempdir().expect("create generated chain fixture");
+    let root = temp.path();
+    write_reexport_chain_fixture(root, "// @generated\n");
+    let crate_root = root.join("src/lib.rs");
+    let before = fs::read(&crate_root).expect("read generated crate root before the fix");
+
+    run_fix(root);
+
+    assert_eq!(
+        fs::read(&crate_root).expect("read generated crate root after the fix"),
+        before,
+        "the chain fix must preserve every byte of the generated crate root"
+    );
+    let sources = rust_sources(root);
+    assert_eq!(
+        sources[Path::new("src/orbit_cam/controls/bindings/preset.rs")],
+        "",
+        "the chain fix must still remove the first forwarding link"
+    );
+    assert_eq!(
+        sources[Path::new("src/orbit_cam/mod.rs")],
+        "mod controls;\n\npub use crate::input::Gain;\n",
+        "the chain fix must keep the binding that the generated crate root uses"
     );
 }
 

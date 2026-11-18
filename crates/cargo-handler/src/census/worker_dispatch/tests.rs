@@ -1302,7 +1302,7 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
             assert_eq!(drawn_role.trim(), "worker", "{short} managed={managed}");
-            assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
+            assert_eq!(buffer[(role_x, y)].fg, ratatui::style::Color::LightCyan);
             let activity_x = u16::try_from(text[header].find("activity").expect("activity column"))
                 .expect("column fits");
             let status_x = u16::try_from(text[header].find("status").expect("status column"))

@@ -281,6 +281,8 @@ pub(crate) enum FooterRole {
     UnitDirector,
     AstraDesigner,
     AstraReviewer,
+    /// `HierarchyRole::{Impl, Test, Review, Fix, Worker}` share the `role.worker` color.
+    Worker,
 }
 
 /// Whether the footer supplies a foreground or leaves the theme's style intact.
@@ -907,6 +909,7 @@ impl FooterColors {
                 "role.unit-director" => FooterRole::UnitDirector,
                 "role.astra-designer" => FooterRole::AstraDesigner,
                 "role.astra-reviewer" => FooterRole::AstraReviewer,
+                "role.worker" => FooterRole::Worker,
                 key => {
                     if let Some(account) = key.strip_prefix(ACCOUNT_KEY_PREFIX) {
                         match color {
@@ -947,8 +950,26 @@ impl FooterColors {
             .map_or(FooterTint::Plain, FooterTint::Management)
     }
 
-    /// Management responsibilities use configured ink; worker roles remain plain.
+    /// Management and worker responsibilities use configured ink; agents and producers remain
+    /// plain.
     pub(crate) fn hierarchy_role(&self, role: HierarchyRole) -> FooterTint {
+        match role {
+            HierarchyRole::Impl
+            | HierarchyRole::Test
+            | HierarchyRole::Review
+            | HierarchyRole::Fix
+            | HierarchyRole::Worker => self.role(FooterRole::Worker),
+            HierarchyRole::Showrunner
+            | HierarchyRole::Unit
+            | HierarchyRole::AstraDesigner
+            | HierarchyRole::AstraReviewer
+            | HierarchyRole::Agent
+            | HierarchyRole::Producer => self.management_role(role),
+        }
+    }
+
+    /// Management responsibilities use configured ink; every other role remains plain.
+    pub(crate) fn management_role(&self, role: HierarchyRole) -> FooterTint {
         match role {
             HierarchyRole::Showrunner => self.role(FooterRole::Showrunner),
             HierarchyRole::Unit => self.role(FooterRole::UnitDirector),
