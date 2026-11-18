@@ -773,3 +773,30 @@ cargo-mend neither reports nor fixes a generated source file, such as the spacet
 - The compiler facts cache is stored before the filter, so the generated settings stay out of the fingerprint.
 
 **Ruled out:** crate roots from the `lib.rs`/`main.rs` file names; support for one file that is both a Cargo target root and a symlinked module under a generated `mod.rs`, which is not a realistic case.
+
+### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: todo
+
+#### Work Order
+
+**Goal:** cargo-mend counts a struct named through a qualified path in a pattern as a use of that struct, and keeps its `pub(crate)`. Source: tile phase 68b, sent by the showrunner 2026-11-17. In `crates/cargo-berth/tests`, `let board_templates::UnresolvedOverlap { a, b } = …;` sits in the test crate root `board.rs`. The struct is `pub(crate)` in `support/board_templates.rs`, a `#[path]` child module. mend narrows the struct to private, the build fails with E0603, and mend rolls back all its fixes. Tile saw three cases: `ReleasedBeforeMissingTrunk` (`lifecycle.rs:1280`), `UnresolvedOverlap` (`board.rs:882`) and `UnconstrainedHolders` (`board.rs:2200`). An explicit `use` import hides the defect.
+
+**Spec:**
+1. Cause: `UseSiteCollector::visit_pat` in `crates/cargo-mend/src/compiler/visibility/use_sites.rs` ignores the path of `PatKind::Struct`. It records only the field targets. `PatKind::TupleStruct` and `PatKind::Expr` paths already go through `record_qpath`.
+2. Fix: the `PatKind::Struct` arm records its path through `record_qpath`, beside `record_struct_pat_field_targets`. `record_target` already maps a variant to its enum, so an enum struct-variant pattern counts as a use of the enum.
+3. A struct pattern, a tuple-struct pattern and an enum-variant pattern each count as a use when the pattern names the item through a qualified path (`module::Item { .. }`, `module::Item(..)`, `module::Enum::Variant { .. }`). mend leaves the visibility of each item alone, and `--fix` makes no rollback.
+4. Rustc diagnostics and the other scans are out of scope.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs`
+- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs`
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+- `impl`: all three files. The regression test uses the tile shape: an integration test root `tests/board.rs` with `#[path = "support/board_templates.rs"] mod board_templates;`. The child declares a `pub(crate)` struct, a `pub(crate)` tuple struct and a `pub(crate)` enum with a struct variant. The root destructures each one through a qualified path in a `let` or `match` pattern, with no `use` import. Assert that the JSON report has no visibility finding on the three items, and that `--fix` leaves the child file byte-identical. Put all three items in one fixture, so one mend run covers them.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new test fails before the fix and passes after it.
+- No new test takes one second or more.
