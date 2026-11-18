@@ -790,3 +790,35 @@ cargo-mend counts an item named through a qualified path in a pattern as a use o
 **Gotchas:** a pattern regression needs an unused control that mend still reports, and a project `mend.toml` that pins `[generated] markers = []` and the diagnostic. Without them, the test also passes when the file is skipped or the diagnostic is off.
 
 **Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.
+
+### Phase 38 — census sessions name their owner process  · status: todo
+
+#### Work Order
+
+**Goal:** each object in `cargo-handler census --json` `sessions[]` names its sampled Claude director process: `machine`, `pid` and `process_start`. Source: sdlc unit-board, through the showrunner, 2026-11-18. The sdlc Units board joins a director's shell rows only when machine, PID and process start match its checked owner process. Today it shows "unknown" for units with census shell rows.
+
+**Spec:**
+1. Field names and place come from unit-board: three fields beside `session`, `status` and `shells` in each `sessions[]` object (`crates/cargo-handler/src/census/report.rs`).
+   - `machine`: string. It equals the `name` of the matching `machines[]` entry for the host that runs the process (for example `"natedev"`). Use the machine name the census already uses, never `gethostname`.
+   - `pid`: integer, the process id on that machine.
+   - `process_start`: string in the exact format of `~/.claude/scripts/lib/process_start.py`. Linux: field 22 of `/proc/<pid>/stat` (starttime, clock ticks since boot) as a decimal string, parsed after the last `)` in the file at index 19. macOS: the output of `ps -p <pid> -o lstart=` run with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends, inner spaces kept (`"Tue Nov  3 08:00:00 2026"`).
+2. `schema` stays 2. The fields are additive.
+3. When any of the three values cannot be read (the process is gone, or the file or `ps` fails), omit all three for that session. Never write a partial set or a placeholder. Model the three as one type that holds all three or none, not three separate optional fields.
+4. Reuse the existing `/proc/<pid>/stat` reader in `census/scan.rs` where it gives field 22. A remote (Mac) session reads its value through the existing remote probe path.
+
+**Files:**
+- `crates/cargo-handler/src/census/report.rs`
+- `crates/cargo-handler/src/census/report_tests.rs`
+- `crates/cargo-handler/src/census/scan.rs`
+- `crates/cargo-handler/src/census/remote.rs`
+- `crates/cargo-handler/src/census/probe.rs`
+
+**Workers:** 1 writer.
+- `impl`: all files above. Tests: a `report_tests.rs` row whose session has all three fields, in the unit-board sample shape; a row whose process start cannot be read, which has none of the three; and a Linux parse test of a `/proc/<pid>/stat` line whose command name holds `)` and spaces.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-handler`, `verify.sh test cargo-handler`, `verify.sh lint cargo-handler`.
+- No new test takes one second or more.
+- The checkpoint message states the three field names.
