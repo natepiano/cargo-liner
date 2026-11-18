@@ -22,6 +22,7 @@ use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::TargetEntry;
 use crate::lint;
+use crate::lint::ArchiveSizeLookup;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CiPagination;
@@ -824,7 +825,10 @@ fn clear_lint_history(app: &mut App) {
         if let Some(lr) = app.lint_at_path(abs_path.as_path()) {
             for run in lr.runs() {
                 run_count += 1;
-                freed_bytes += lr.archive_bytes(&run.run_id).unwrap_or(0);
+                freed_bytes += match lr.archive_bytes(&run.run_id) {
+                    ArchiveSizeLookup::KnownBytes(bytes) => bytes,
+                    ArchiveSizeLookup::UnknownRun => 0,
+                };
             }
         }
     }

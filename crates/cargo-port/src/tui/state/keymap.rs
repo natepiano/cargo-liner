@@ -14,12 +14,39 @@ use tui_pane::WatchedFile;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::tui::keymap::ResolvedKeymap;
 
+/// The keymap file path available to this subsystem.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::tui) enum KeymapFilePath<'a> {
+    Unavailable,
+    Resolved(&'a Path),
+}
+
+/// The result of the consumed stamp check.
+pub(in crate::tui) enum KeymapReloadCheck<'a> {
+    NoReload,
+    Changed(&'a Path),
+}
+
+/// The diagnostics toast identity retained by this subsystem.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::tui) enum KeymapDiagnosticsNotice {
+    Untracked,
+    Tracked(ToastId),
+}
+
+/// The warning toast identity retained by this subsystem.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::tui) enum KeymapWarningsNotice {
+    Untracked,
+    Tracked(ToastId),
+}
+
 /// Owns the parsed keymap plus the on-disk watch state and the
 /// diagnostics-toast slot.
 pub(in crate::tui) struct Keymap {
     file:           WatchedFile<ResolvedKeymap>,
-    diagnostics_id: Option<ToastId>,
-    warnings_id:    Option<ToastId>,
+    diagnostics_id: KeymapDiagnosticsNotice,
+    warnings_id:    KeymapWarningsNotice,
 }
 
 impl Keymap {
@@ -29,15 +56,19 @@ impl Keymap {
     ) -> Self {
         Self {
             file:           WatchedFile::new(path_resolution.into_external_path(), current),
-            diagnostics_id: None,
-            warnings_id:    None,
+            diagnostics_id: KeymapDiagnosticsNotice::Untracked,
+            warnings_id:    KeymapWarningsNotice::Untracked,
         }
     }
 
     #[cfg(test)]
     pub const fn current(&self) -> &ResolvedKeymap { &self.file.current }
 
-    pub(in crate::tui) fn path(&self) -> Option<&Path> { self.file.path() }
+    pub(in crate::tui) fn path(&self) -> KeymapFilePath<'_> {
+        self.file
+            .path()
+            .map_or(KeymapFilePath::Unavailable, KeymapFilePath::Resolved)
+    }
 
     /// Replace the parsed keymap (used by reload paths that parse
     /// the file themselves before consulting the stamp — the
@@ -53,31 +84,30 @@ impl Keymap {
     /// actions) so the next reload doesn't see the self-write.
     pub(in crate::tui) fn sync_stamp(&mut self) { self.file.sync_stamp(); }
 
-    /// Return `Some(path)` if the keymap file's stamp has changed
-    /// since the last seen value, swallowing the stamp delta.
-    /// Used by `App::maybe_reload_keymap_from_disk`, which drives
-    /// its own rich parser (`keymap::load_keymap_from_str`) whose
-    /// `KeymapLoadResult` doesn't fit
-    /// [`tui_pane::WatchedFile`]'s
-    /// `take_stamp_change` signature.
-    pub(in crate::tui) fn take_stamp_change(&mut self) -> Option<&Path> {
-        self.file.take_stamp_change()
+    /// Consume the framework stamp check without classifying filesystem errors.
+    /// `App::maybe_reload_keymap_from_disk` uses `keymap::load_keymap_from_str`
+    /// because `KeymapLoadResult` does not fit the
+    /// `tui_pane::WatchedFile::take_stamp_change` signature.
+    pub(in crate::tui) fn take_stamp_change(&mut self) -> KeymapReloadCheck<'_> {
+        self.file
+            .take_stamp_change()
+            .map_or(KeymapReloadCheck::NoReload, KeymapReloadCheck::Changed)
     }
 
-    pub(in crate::tui) const fn set_diagnostics_id(&mut self, id: Option<ToastId>) {
-        self.diagnostics_id = id;
+    pub(in crate::tui) const fn set_diagnostics_id(&mut self, id: ToastId) {
+        self.diagnostics_id = KeymapDiagnosticsNotice::Tracked(id);
     }
 
-    pub(in crate::tui) const fn take_diagnostics_id(&mut self) -> Option<ToastId> {
-        self.diagnostics_id.take()
+    pub(in crate::tui) const fn take_diagnostics_id(&mut self) -> KeymapDiagnosticsNotice {
+        std::mem::replace(&mut self.diagnostics_id, KeymapDiagnosticsNotice::Untracked)
     }
 
-    pub(in crate::tui) const fn set_warnings_id(&mut self, id: Option<ToastId>) {
-        self.warnings_id = id;
+    pub(in crate::tui) const fn set_warnings_id(&mut self, id: ToastId) {
+        self.warnings_id = KeymapWarningsNotice::Tracked(id);
     }
 
-    pub(in crate::tui) const fn take_warnings_id(&mut self) -> Option<ToastId> {
-        self.warnings_id.take()
+    pub(in crate::tui) const fn take_warnings_id(&mut self) -> KeymapWarningsNotice {
+        std::mem::replace(&mut self.warnings_id, KeymapWarningsNotice::Untracked)
     }
 }
 
@@ -86,14 +116,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_seeds_diagnostics_id_to_none() {
+    fn new_starts_without_notice_ids() {
         let mut keymap = Keymap::new(
             CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
             ResolvedKeymap::defaults(),
         );
-        assert!(keymap.take_diagnostics_id().is_none());
-        assert!(keymap.take_warnings_id().is_none());
-        assert!(keymap.path().is_none());
+        assert_eq!(
+            keymap.take_diagnostics_id(),
+            KeymapDiagnosticsNotice::Untracked
+        );
+        assert_eq!(keymap.take_warnings_id(), KeymapWarningsNotice::Untracked);
+        assert_eq!(keymap.path(), KeymapFilePath::Unavailable);
     }
 
     #[test]
@@ -102,12 +135,12 @@ mod tests {
             CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
             ResolvedKeymap::defaults(),
         );
-        keymap.set_diagnostics_id(Some(ToastId(42)));
+        keymap.set_diagnostics_id(ToastId(42));
         let taken = keymap.take_diagnostics_id();
-        assert_eq!(taken, Some(ToastId(42)));
-        assert!(
-            keymap.take_diagnostics_id().is_none(),
-            "take must clear the slot"
+        assert_eq!(taken, KeymapDiagnosticsNotice::Tracked(ToastId(42)));
+        assert_eq!(
+            keymap.take_diagnostics_id(),
+            KeymapDiagnosticsNotice::Untracked
         );
     }
 
@@ -117,13 +150,10 @@ mod tests {
             CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
             ResolvedKeymap::defaults(),
         );
-        keymap.set_warnings_id(Some(ToastId(42)));
+        keymap.set_warnings_id(ToastId(42));
         let taken = keymap.take_warnings_id();
-        assert_eq!(taken, Some(ToastId(42)));
-        assert!(
-            keymap.take_warnings_id().is_none(),
-            "take must clear the slot"
-        );
+        assert_eq!(taken, KeymapWarningsNotice::Tracked(ToastId(42)));
+        assert_eq!(keymap.take_warnings_id(), KeymapWarningsNotice::Untracked);
     }
 
     #[test]
@@ -134,12 +164,16 @@ mod tests {
         );
         let next = ResolvedKeymap::defaults();
         keymap.replace_current(next);
-        // `ResolvedKeymap` is difficult to compare structurally; the contract is that
-        // `replace_current` mutates `file.current` in place without altering the watched stamp or
-        // `diagnostics_id`.
-        assert!(keymap.take_diagnostics_id().is_none());
-        assert!(keymap.take_warnings_id().is_none());
-        assert!(keymap.path().is_none());
+        // The replacement preserves the watcher path and both notice states.
+        // `ResolvedKeymap` has no structural comparison.
+        // `replace_current` changes `file.current` in place without changing the
+        // watched stamp, `diagnostics_id`, or `warnings_id`.
+        assert_eq!(
+            keymap.take_diagnostics_id(),
+            KeymapDiagnosticsNotice::Untracked
+        );
+        assert_eq!(keymap.take_warnings_id(), KeymapWarningsNotice::Untracked);
+        assert_eq!(keymap.path(), KeymapFilePath::Unavailable);
     }
 
     #[test]
@@ -149,7 +183,7 @@ mod tests {
             CargoPortConfigurationPathResolution::InvalidEmptyOverride,
         ] {
             let keymap = Keymap::new(path_resolution, ResolvedKeymap::defaults());
-            assert!(keymap.path().is_none());
+            assert_eq!(keymap.path(), KeymapFilePath::Unavailable);
         }
     }
 }

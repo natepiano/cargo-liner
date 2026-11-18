@@ -1,6 +1,7 @@
 use itertools::Itertools;
 
 use crate::lint;
+use crate::lint::ArchiveSizeLookup;
 use crate::lint::LintRun;
 use crate::lint::LintRunPhase;
 use crate::lint::LintRunStatus;
@@ -27,13 +28,11 @@ impl From<bool> for LintsProjectKind {
 #[derive(Clone, Default)]
 pub struct LintsData {
     pub runs:         Vec<LintRun>,
-    /// Archive-directory size in bytes for each run, aligned by index with
-    /// `runs`.
-    /// Per-run archive size aligned with `runs`. `None` means the run has
-    /// no archive entry yet; `Some(0)` means the archive exists and is
-    /// empty. The renderer renders `None` as "—" and `Some(_)` as a byte
-    /// count, distinguishing missing data from known-empty.
-    pub sizes:        Vec<Option<u64>>,
+    /// Archive sizes align with `runs`.
+    /// `UnknownRun` has no archive entry.
+    /// `KnownBytes(0)` has an empty archive.
+    /// The renderer uses "—" for `UnknownRun` and a byte count for `KnownBytes`.
+    pub sizes:        Vec<ArchiveSizeLookup>,
     /// Per-run blocking phase aligned with `runs`, read from the owner's live
     /// [`LintStatus`] rather than the run record — the phase flips several
     /// times inside a run and is never persisted. Only a `Running` row can be
@@ -85,7 +84,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
     let (runs, sizes) = lint_runs.map_or_else(
         || (Vec::new(), Vec::new()),
         |lr| {
-            let sizes: Vec<Option<u64>> = lr
+            let sizes: Vec<ArchiveSizeLookup> = lr
                 .runs()
                 .iter()
                 .map(|run| lr.archive_bytes(&run.run_id))
@@ -142,7 +141,7 @@ const fn run_phase(run: &LintRun, live_phase: LintRunPhase) -> LintRunPhase {
 fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> LintsData {
     // `paths.iter().enumerate().flat_map` emits each checkout's `(LintRun, archive size, owner
     // index)` into `merged`, flattening checkout and run levels into one stream.
-    let mut merged: Vec<(LintRun, Option<u64>, usize)> = paths
+    let mut merged: Vec<(LintRun, ArchiveSizeLookup, usize)> = paths
         .iter()
         .enumerate()
         .flat_map(|(owner, path)| {
@@ -163,7 +162,7 @@ fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> 
 
     // `merged.into_iter().multiunzip()` builds index-aligned `runs`, `sizes` and `owner_of` vectors
     // in one pass.
-    let (runs, sizes, owner_of): (Vec<LintRun>, Vec<Option<u64>>, Vec<usize>) =
+    let (runs, sizes, owner_of): (Vec<LintRun>, Vec<ArchiveSizeLookup>, Vec<usize>) =
         merged.into_iter().multiunzip();
     let owner_phases: Vec<LintRunPhase> = paths
         .iter()

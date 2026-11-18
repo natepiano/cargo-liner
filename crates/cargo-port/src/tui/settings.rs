@@ -1499,6 +1499,13 @@ fn toggle_vim_mode(app: &mut App) {
     let _ = save_app_setting_with_toast(app, |table| set_navigation_keys(table, next));
 }
 
+/// The Settings data prepared for this render pass.
+#[derive(Clone, Copy)]
+pub(super) enum SettingsRenderPreparation<'a> {
+    NotPrepared,
+    Prepared(&'a SettingsRenderInputs),
+}
+
 /// Precomputed render inputs for the Settings overlay. Built in
 /// [`prepare_settings_render_inputs`] before `App::split_for_render`
 /// runs; consumed by `SettingsPane`'s [`tui_pane::Renderable`] impl
@@ -1572,7 +1579,7 @@ impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
 /// Body of `SettingsPane`'s [`Renderable`] impl. Reads precomputed inputs
 /// from `ctx` and viewport state from `pane`, and draws the popup.
 fn render_settings_pane_body(frame: &mut Frame, pane: &mut SettingsPane, ctx: &PaneRenderCtx<'_>) {
-    let Some(inputs) = ctx.settings_render_inputs else {
+    let SettingsRenderPreparation::Prepared(inputs) = ctx.settings_render_inputs else {
         return;
     };
 

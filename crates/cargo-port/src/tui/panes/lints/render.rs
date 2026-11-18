@@ -28,7 +28,10 @@ use tui_pane::warning_color;
 
 use super::constants::TABLE_LEFT_MARGIN;
 use super::data::LintsData;
+use crate::lint::ArchiveSizeLookup;
 use crate::lint::LintRun;
+use crate::lint::LintRunDuration;
+use crate::lint::LintRunFinishTime;
 use crate::lint::LintRunPhase;
 use crate::lint::LintRunStatus;
 use crate::tui::panes::support;
@@ -116,7 +119,7 @@ struct LintRowsCtx<'a> {
 
 fn build_lint_rows(
     runs: &[LintRun],
-    sizes: &[Option<u64>],
+    sizes: &[ArchiveSizeLookup],
     phases: &[LintRunPhase],
     ctx: &LintRowsCtx<'_>,
 ) -> Vec<Row<'static>> {
@@ -149,16 +152,18 @@ fn build_lint_rows(
         };
 
         let start_time = super::super::format_time(&lint_run.started_at);
-        let end_time = lint_run
-            .finished_at
-            .as_deref()
-            .map_or_else(|| "—".to_string(), super::super::format_time);
-        let duration = super::super::format_duration(lint_run.duration_ms);
-        let size = sizes
-            .get(row_index)
-            .copied()
-            .flatten()
-            .map_or_else(|| "—".to_string(), render::format_bytes);
+        let end_time = match &lint_run.finished_at {
+            LintRunFinishTime::NotRecorded => "—".to_string(),
+            LintRunFinishTime::Recorded(time) => super::super::format_time(time),
+        };
+        let duration = match lint_run.duration_ms {
+            LintRunDuration::NotRecorded => super::super::format_duration(None),
+            LintRunDuration::MeasuredMilliseconds(ms) => super::super::format_duration(Some(ms)),
+        };
+        let size = match sizes.get(row_index) {
+            Some(ArchiveSizeLookup::KnownBytes(bytes)) => render::format_bytes(*bytes),
+            Some(ArchiveSizeLookup::UnknownRun) | None => "—".to_string(),
+        };
 
         let (result, row_style) = lint_result(
             lint_run,
@@ -438,7 +443,10 @@ mod tests {
     use tui_pane::ColorMode;
     use tui_pane::Hittable;
 
+    use crate::lint::ArchiveSizeLookup;
     use crate::lint::LintRun;
+    use crate::lint::LintRunDuration;
+    use crate::lint::LintRunFinishTime;
     use crate::lint::LintRunStatus;
     use crate::tui::hit_test::HoverTarget;
     use crate::tui::panes::LintsData;
@@ -452,13 +460,13 @@ mod tests {
             runs: vec![LintRun {
                 run_id:        "recorded-run".to_string(),
                 started_at:    "2026-10-31T19:00:55-04:00".to_string(),
-                finished_at:   Some("2026-10-31T19:02:55-04:00".to_string()),
-                duration_ms:   Some(120_000),
+                finished_at:   LintRunFinishTime::Recorded("2026-10-31T19:02:55-04:00".to_string()),
+                duration_ms:   LintRunDuration::MeasuredMilliseconds(120_000),
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 1024,
             }],
-            sizes: vec![Some(1024)],
+            sizes: vec![ArchiveSizeLookup::KnownBytes(1024)],
             ..LintsData::default()
         });
         for mode in [ColorMode::Colored, ColorMode::NoColor] {
@@ -499,14 +507,14 @@ mod tests {
                         index / 60 % 24,
                         index % 60
                     ),
-                    finished_at:   None,
-                    duration_ms:   Some(120_000),
+                    finished_at:   LintRunFinishTime::NotRecorded,
+                    duration_ms:   LintRunDuration::MeasuredMilliseconds(120_000),
                     status:        LintRunStatus::Passed,
                     commands:      Vec::new(),
                     archive_bytes: 1024,
                 })
                 .collect(),
-            sizes: vec![Some(1024); 600],
+            sizes: vec![ArchiveSizeLookup::KnownBytes(1024); 600],
             ..LintsData::default()
         });
         app.set_focus_to_pane(PaneId::Lints);
@@ -535,13 +543,13 @@ mod tests {
             runs: vec![LintRun {
                 run_id:        "recorded-run".to_string(),
                 started_at:    "2026-10-31T19:00:55-04:00".to_string(),
-                finished_at:   Some("2026-10-31T19:02:55-04:00".to_string()),
-                duration_ms:   Some(120_000),
+                finished_at:   LintRunFinishTime::Recorded("2026-10-31T19:02:55-04:00".to_string()),
+                duration_ms:   LintRunDuration::MeasuredMilliseconds(120_000),
                 status:        LintRunStatus::Passed,
                 commands:      Vec::new(),
                 archive_bytes: 1024,
             }],
-            sizes: vec![Some(1024)],
+            sizes: vec![ArchiveSizeLookup::KnownBytes(1024)],
             ..LintsData::default()
         });
         for mode in [ColorMode::Colored, ColorMode::NoColor] {
@@ -568,14 +576,14 @@ mod tests {
                 .map(|index| LintRun {
                     run_id:        format!("run-{index}"),
                     started_at:    format!("2026-10-31T19:{index:02}:55-04:00"),
-                    finished_at:   None,
-                    duration_ms:   Some(120_000),
+                    finished_at:   LintRunFinishTime::NotRecorded,
+                    duration_ms:   LintRunDuration::MeasuredMilliseconds(120_000),
                     status:        LintRunStatus::Passed,
                     commands:      Vec::new(),
                     archive_bytes: 1024,
                 })
                 .collect(),
-            sizes: vec![Some(1024); 6],
+            sizes: vec![ArchiveSizeLookup::KnownBytes(1024); 6],
             ..LintsData::default()
         });
         app.set_focus_to_pane(PaneId::Lints);

@@ -65,5 +65,4 @@ use source_measurements::SourceFileMeasurements;
 pub(crate) use source_measurements::SourceMeasurements;
 pub(crate) use test_counts::collect_test_counts_single;
 pub(crate) use tree::build_tree;
-pub(crate) use tree::cargo_parse_result_to_item;
 pub(crate) use tree::normalize_workspace_path;

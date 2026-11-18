@@ -542,7 +542,9 @@ mod tests {
         assert_eq!(effects.startup_project_details, StartupEffect::Suppressed);
         assert_eq!(effects.streaming_scan, StartupEffect::Suppressed);
         assert!(app.config.path().is_some_and(std::path::Path::exists));
-        assert!(app.keymap.path().is_some_and(std::path::Path::exists));
+        assert!(
+            matches!(app.keymap.path(), crate::tui::state::KeymapFilePath::Resolved(path) if path.exists())
+        );
         assert!(app.themes.dir().is_some_and(std::path::Path::exists));
         assert_eq!(
             app.background.watcher_state(),

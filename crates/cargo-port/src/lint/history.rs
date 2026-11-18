@@ -13,8 +13,16 @@ use walkdir::WalkDir;
 use super::artifacts;
 use super::artifacts::LatestLintRecord;
 use super::cache_size_index;
+use super::cache_size_index::IndexedCacheSize;
 use super::paths;
+#[cfg(test)]
+use super::run::LintCommandDuration;
+#[cfg(test)]
+use super::run::LintCommandExitCode;
 use super::run::LintRun;
+#[cfg(test)]
+use super::run::LintRunDuration;
+use super::run::LintRunFinishTime;
 use super::run::LintRunStatus;
 use super::status;
 use crate::constants::LINTS_HISTORY_JSONL;
@@ -45,11 +53,14 @@ pub(super) fn retained_cache_usage_under(
     cache_root: &Path,
     cache_size_bytes: Option<u64>,
 ) -> CacheUsage {
-    let bytes = cache_size_index::read(cache_root).unwrap_or_else(|| {
-        let bytes = total_bytes_under(cache_root);
-        let _ = cache_size_index::write(cache_root, bytes);
-        bytes
-    });
+    let bytes = match cache_size_index::read(cache_root) {
+        IndexedCacheSize::Bytes(bytes) => bytes,
+        IndexedCacheSize::RecountRequired => {
+            let bytes = total_bytes_under(cache_root);
+            let _ = cache_size_index::write(cache_root, bytes);
+            bytes
+        },
+    };
     CacheUsage {
         bytes,
         cache_size_bytes,
@@ -222,11 +233,12 @@ pub(super) fn total_bytes_under(root: &Path) -> u64 {
 }
 
 fn history_line_sort_key(run: &LintRun) -> i64 {
-    run.finished_at
-        .as_deref()
-        .and_then(status::parse_timestamp)
-        .or_else(|| status::parse_timestamp(&run.started_at))
-        .map_or(i64::MIN, |timestamp| timestamp.timestamp_millis())
+    match &run.finished_at {
+        LintRunFinishTime::Recorded(value) => status::parse_timestamp(value),
+        LintRunFinishTime::NotRecorded => None,
+    }
+    .or_else(|| status::parse_timestamp(&run.started_at))
+    .map_or(i64::MIN, |timestamp| timestamp.timestamp_millis())
 }
 
 /// A single run in a single history file, with enough context to remove it
@@ -430,8 +442,8 @@ mod tests {
         LintRun {
             run_id: "run-1".to_string(),
             started_at: "2026-03-30T14:22:01-05:00".to_string(),
-            finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
-            duration_ms: Some(17_000),
+            finished_at: LintRunFinishTime::Recorded("2026-03-30T14:22:18-05:00".to_string()),
+            duration_ms: LintRunDuration::MeasuredMilliseconds(17_000),
             status,
             commands: Vec::new(),
             archive_bytes: 0,
@@ -445,8 +457,8 @@ mod tests {
         let completed = LintRun {
             run_id:        "completed".to_string(),
             started_at:    "2026-04-01T18:00:00-04:00".to_string(),
-            finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
-            duration_ms:   Some(10_000),
+            finished_at:   LintRunFinishTime::Recorded("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(10_000),
             status:        LintRunStatus::Passed,
             commands:      Vec::new(),
             archive_bytes: 0,
@@ -454,8 +466,8 @@ mod tests {
         let running = LintRun {
             run_id:        "running".to_string(),
             started_at:    "2026-04-01T18:05:00-04:00".to_string(),
-            finished_at:   None,
-            duration_ms:   None,
+            finished_at:   LintRunFinishTime::NotRecorded,
+            duration_ms:   LintRunDuration::NotRecorded,
             status:        LintRunStatus::Running,
             commands:      Vec::new(),
             archive_bytes: 0,
@@ -480,8 +492,8 @@ mod tests {
         let completed = LintRun {
             run_id:        "same-run".to_string(),
             started_at:    "2026-04-01T18:00:00-04:00".to_string(),
-            finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
-            duration_ms:   Some(10_000),
+            finished_at:   LintRunFinishTime::Recorded("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(10_000),
             status:        LintRunStatus::Passed,
             commands:      Vec::new(),
             archive_bytes: 0,
@@ -517,24 +529,24 @@ mod tests {
         LintRun {
             run_id:        run_id.to_string(),
             started_at:    started_at.to_string(),
-            finished_at:   Some(started_at.to_string()),
-            duration_ms:   Some(5_000),
+            finished_at:   LintRunFinishTime::Recorded(started_at.to_string()),
+            duration_ms:   LintRunDuration::MeasuredMilliseconds(5_000),
             status:        LintRunStatus::Passed,
             commands:      vec![
                 LintCommand {
                     name:        "clippy".to_string(),
                     command:     "cargo clippy".to_string(),
                     status:      LintCommandStatus::Passed,
-                    duration_ms: Some(3_000),
-                    exit_code:   Some(0),
+                    duration_ms: LintCommandDuration::MeasuredMilliseconds(3_000),
+                    exit_code:   LintCommandExitCode::Recorded(0),
                     log_file:    "clippy-latest.log".to_string(),
                 },
                 LintCommand {
                     name:        "mend".to_string(),
                     command:     "cargo mend".to_string(),
                     status:      LintCommandStatus::Passed,
-                    duration_ms: Some(2_000),
-                    exit_code:   Some(0),
+                    duration_ms: LintCommandDuration::MeasuredMilliseconds(2_000),
+                    exit_code:   LintCommandExitCode::Recorded(0),
                     log_file:    "mend-latest.log".to_string(),
                 },
             ],
