@@ -35,6 +35,8 @@ mod field_visibility_wider_than_type;
 mod fix_rollback;
 #[path = "../tests/diagnostics/forbidden_pub_in_crate.rs"]
 mod forbidden_pub_in_crate;
+#[path = "../tests/diagnostics/generated_sources.rs"]
+mod generated_sources;
 #[path = "../tests/diagnostics/import_fixes.rs"]
 mod import_fixes;
 #[path = "../tests/diagnostics/imports_at_top.rs"]

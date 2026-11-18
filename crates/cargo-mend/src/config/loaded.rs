@@ -14,6 +14,8 @@ use toml::from_str;
 
 use super::constants::CONFIG_FILE_NAME;
 use super::diagnostics_config::DiagnosticsConfig;
+use super::generated_sources::GeneratedSourcesConfig;
+use super::generated_sources::ProjectGeneratedSources;
 use super::global::GlobalConfig;
 use super::prelude_pub_mod::PreludePubMod;
 use super::pub_in_path::PubInPath;
@@ -23,6 +25,8 @@ use crate::constants::FINGERPRINT_HEX_WIDTH;
 struct ConfigFile {
     #[serde(default, rename = "visibility")]
     visibility_config:  ProjectVisibilityConfig,
+    #[serde(default)]
+    generated:          ProjectGeneratedSources,
     #[serde(default, rename = "diagnostics")]
     diagnostics_config: Option<DiagnosticsConfig>,
 }
@@ -65,6 +69,7 @@ pub(crate) struct VisibilityConfig {
 #[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub(crate) visibility_config:  VisibilityConfig,
+    pub(crate) generated:          GeneratedSourcesConfig,
     pub(crate) diagnostics_config: DiagnosticsConfig,
     pub(crate) root:               PathBuf,
     pub(crate) fingerprint:        String,
@@ -105,8 +110,10 @@ pub(crate) fn load_config(
                 |project| global.diagnostics.merge_project(&project),
             );
             let visibility_config = config_file.visibility_config.resolve(global);
+            let generated = config_file.generated.resolve(&global.generated);
             return Ok(LoadedConfig {
                 fingerprint: fingerprint_for(&root, &visibility_config)?,
+                generated,
                 visibility_config,
                 diagnostics_config,
                 root,
@@ -117,6 +124,7 @@ pub(crate) fn load_config(
     let visibility_config = ProjectVisibilityConfig::default().resolve(global);
     Ok(LoadedConfig {
         fingerprint: fingerprint_for(manifest_dir, &visibility_config)?,
+        generated: global.generated.clone(),
         visibility_config,
         diagnostics_config: global.diagnostics.clone(),
         root: manifest_dir.to_path_buf(),
@@ -150,6 +158,7 @@ mod tests {
     use super::fingerprint_for;
     use super::load_config;
     use crate::config::DiagnosticsConfig;
+    use crate::config::GeneratedSourcesConfig;
     use crate::config::constants::CONFIG_FILE_NAME;
     use crate::config::constants::PRELUDE_KEY;
     use crate::config::constants::PUB_IN_PATH_KEY;
@@ -158,6 +167,7 @@ mod tests {
     fn global_config(pub_in_path: PubInPath, prelude_pub_mod: PreludePubMod) -> GlobalConfig {
         GlobalConfig {
             diagnostics: DiagnosticsConfig::default(),
+            generated: GeneratedSourcesConfig::default(),
             prelude_pub_mod,
             pub_in_path,
         }

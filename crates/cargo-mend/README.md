@@ -99,6 +99,21 @@ intentional public surface, so it does not need an `allow_pub_mod` entry. Nested
 and any other crate-root `pub mod` are still reviewed. Set `allow_prelude_pub_mod = false` under
 `[visibility]` to review crate-root preludes too.
 
+### Generated sources
+
+Mend does not report or fix generated sources. The `[generated]` table controls the header check:
+
+```toml
+[generated]
+markers = ["@generated", "AUTOMATICALLY GENERATED"]
+header_lines = 5
+```
+
+These values are the defaults. Each project key overrides the corresponding global key.
+`header_lines` must be positive. A marker must occur within the first `header_lines` lines.
+A generated parent module also protects its child files, including children without a header.
+Rustc warnings and `cargo fix` do not use this filter.
+
 ### Global config
 
 On first run, cargo-mend writes a global config to your platform config directory:

@@ -27,6 +27,7 @@ use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnershipClassifier;
 
 pub(super) struct PlannedChainLinks {
     pub(super) fixes:               ValidatedFixSet,
@@ -91,6 +92,7 @@ impl MendRunner<'_> {
             result: selection_result,
             scans,
             sources,
+            source_ownership,
         } = checked;
         let report = selection_result.report;
         let check_duration = selection_result.check_duration;
@@ -161,10 +163,12 @@ impl MendRunner<'_> {
                 FixKindSelection::NotSelected => false,
             }
         });
-        let pub_use_scan = self.scan_parent_facades(pub_use, &report, &sources)?;
+        let pub_use_scan =
+            self.scan_parent_facades(pub_use, &report, &sources, &source_ownership)?;
         let mut planned = RunPlan {
             function_plan: FunctionLengthPlan::default(),
             sources,
+            source_ownership,
             operation_mode,
             report,
             import_scan,
@@ -225,10 +229,11 @@ impl MendRunner<'_> {
         pub_use: FixKindSelection,
         report: &Report,
         sources: &ParsedSources,
+        source_ownership: &SourceOwnershipClassifier,
     ) -> Result<Option<PubUseFixScan>, MendFailure> {
         match pub_use {
             FixKindSelection::Selected => {
-                pub_use_fixes::scan_selection(self.selection, report, sources)
+                pub_use_fixes::scan_selection(self.selection, report, sources, source_ownership)
                     .map(Some)
                     .map_err(MendFailure::Unexpected)
             },
@@ -245,10 +250,11 @@ impl MendRunner<'_> {
             FixKind::PubUseOutsideSubtree,
             &[DiagnosticCode::PubUseOutsideSubtree],
         ) {
-            FixKindSelection::Selected => subtree_reexport::scan_selection(
+            FixKindSelection::Selected => subtree_reexport::scan_authored_selection(
                 self.selection,
                 &self.chain_validation.planning_report(&planned.report),
                 &planned.sources,
+                &planned.source_ownership,
                 |subtree| {
                     let scans = FixScans {
                         subtree_reexports: Some(subtree),
