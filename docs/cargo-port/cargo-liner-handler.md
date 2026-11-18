@@ -841,26 +841,20 @@ cargo-mend test fixtures find their stored findings reports with any Cargo build
 
 ### Phase 40 — a mend source edit gives a new build id  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a cargo-mend binary built after a source edit carries a new `MEND_BUILD_ID`, so the findings cache and the builds lint cache never reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+A cargo-mend binary built after a source or manifest edit carries a new `MEND_BUILD_ID`. Thus the findings cache (`src/compiler/settings.rs`) and the builds lint cache (`cargo mend --build-info`) do not reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
 
-**Spec:**
-1. `crates/cargo-mend/build.rs` emits `cargo:rerun-if-changed` only for `../../.git/HEAD`, `../../.git/refs/heads` and `build.rs`. A source edit with no commit rebuilds the binary but keeps the old `MEND_BUILD_ID` and `MEND_GIT_HASH`. The findings cache keys on `MEND_BUILD_ID` (`src/compiler/settings.rs:70`), and builds verify keys its lint cache on `cargo mend --build-info` (`src/main.rs:105`).
-2. Add `cargo:rerun-if-changed=src` and `cargo:rerun-if-changed=Cargo.toml` to `build.rs`, so each source or manifest edit reruns the script and stamps a new build id. Update the comment above the directives to state the current rule.
-3. Add a test that proves a source edit gives a new build id, in under 1 s. If no test can rebuild the binary in under 1 s, test the build script's directive list instead, and state why in the summary.
+- `build.rs` emits `cargo:rerun-if-changed` for `../../.git/HEAD`, `../../.git/refs/heads`, `build.rs`, `src` and `Cargo.toml`. Cargo scans `src` recursively, so any edit there reruns the script, and `build_id()` stamps a new id.
+- `build_script_watches_source_and_manifest_for_build_id_updates` checks the `src` and `Cargo.toml` directives in Cargo's saved build-script output.
 
 **Files:**
-- `crates/cargo-mend/build.rs`
+- `crates/cargo-mend/build.rs` — stamps the git hash, build id and sysroot; declares the watched paths.
+- `crates/cargo-mend/tests/cli_smoke.rs` — the directive test.
 
-**Workers:** 1 writer.
-- `impl`: `build.rs` and its test.
+**Gotchas:** the directive test reads `concat!(env!("OUT_DIR"), "/../output")`, a Cargo-internal path. A toolchain layout change fails it at compile time.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- No new test takes one second or more.
+**Ruled out:** a live edit-and-rebuild test. A rebuild takes more than the 1 s test limit.
 
 ### Phase 41 — tests that read stored findings reports require a report  · status: todo
 
