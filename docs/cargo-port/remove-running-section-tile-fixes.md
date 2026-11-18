@@ -1756,51 +1756,47 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Depends on:** Phase 65 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** `a_native_mirror_keeps_cargo_streams_without_shell_utilities` does not fall back to uncaptured cargo on the GitHub macOS runner.
-
-**Spec:**
-1. The failure: GitHub run 43717017527, "Merge handler phase 19 (0aa61ba) into main", 2026-11-15 13:03 UTC, job "macOS cargo-tile" (image macos-26-arm64). The next main run passed.
-   - `crates/cargo-tile/tests/shim_modes.rs:1375`: "the utility row must run native capture". The stand-in cargo saw `CARGOTILE_NESTED`, `CARGO_TERM_PROGRESS_WHEN` and `CARGO_TERM_PROGRESS_WIDTH` all unset; the test expected `<pid>`, `always`, `100`. The shim ran cargo with no capture. The test took 0.063 s.
-2. This is the same failure class as Phase 63 (`attempts-63-shim-mode-not-found` in the unit's memory): under load, the shim takes a fallback path that runs cargo with no capture. The fallback paths are in `hook.rs` (no terminal, no signal guard, failed publication). Phase 63 did not reproduce the trigger.
-3. Make the fallback name its cause: the test prints the shim's stderr and status when the environment shows no capture. Then force each fallback path in a scratch run to find which one matches the CI evidence. Fix the cause in the shim or the fixture. Keep every assertion.
+Each capture fallback in the shim names its path and error to the cargo it runs uncaptured.
+- `exec_uncaptured_cargo` (`hook.rs`) sets `CARGOTILE_CAPTURE_FALLBACK` to `<path>: <error>` and execs cargo. The paths are `terminal`, `signal guard`, `publication` and `capture startup`.
+- `command()` removes an inherited `CARGOTILE_CAPTURE_FALLBACK`, so a successful capture never passes a stale value to cargo.
+- `CaptureStartup::PlainCargo(Error)` and `CargoCompletion::NotStarted(Error)` carry the error. An unacknowledged PTY helper reports `CAPTURE_HELPER_UNACKNOWLEDGED: <status>`.
+- The `MirrorStartup` rows in `shim_modes.rs` force real faults: descriptor limit, occupied descriptors, publication failure, inherited fallback, missing shell, missing tee and failed shell. The first assertion prints the shim status, stderr and fallback value.
+- The CI fallback cause in GitHub run 43717017527 is not known. The next CI failure names it.
 
 **Files:**
-- `crates/cargo-tile/tests/shim_modes.rs` — the test and its failure message.
-- `crates/cargo-tile/src/hook.rs` — only the capture fallback that the evidence names.
+- `crates/cargo-tile/src/hook.rs` — the fallback exec and the inherited-value removal.
+- `crates/cargo-tile/src/constants.rs` — `CAPTURE_FALLBACK_ENV`, the fallback path names and `CAPTURE_HELPER_UNACKNOWLEDGED`.
+- `crates/cargo-tile/tests/shim_modes.rs` — the `MirrorStartup` rows and their test-local fallback prefixes.
 
-**Workers:** 1 writer (`impl`) — owns `shim_modes.rs`, the named `hook.rs` fallback and the scratch runs.
+**Gotchas:**
+- The descriptor-limit row fails in publication on macOS and in capture startup on Linux.
 
-**Acceptance gate:** the fallback cause is named; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; one GitHub CI run on the branch passes; lint.
+**Ruled out:**
+- A C fault library that injects signal-guard and pump failures: it configures a mock instead of a real fault.
 
 ### Phase 67 — Old test fixtures no longer fill the Mac cache  · status: done
 
 **Depends on:** Phase 66 (order only)
 
-#### Work Order
+#### As-built
 
-**Goal:** The cargo-tile native fixture cache holds only fixtures whose source build still exists. Unbounded cache growth is a defect (showrunner, 2026-11-15).
-
-**Spec:**
-1. The evidence: on the Mac, `~/Library/Caches/cargo-tile/test-readers/native-fixtures` holds 129 fixtures, 2.1 GB, about 17 MB each, and one `.lock` file for each (director, 2026-11-15). Measure the count and size on natedev too.
-2. The cause: `native_fixture` in `setup_reader.py` names each fixture by a hash of its source identity (path, device, inode, size, mtime, ctime, strip options). Each build makes a new identity and a new fixture. Nothing removes the old ones. `remove_retired_readers` removes readers whose owner process ended; fixtures have no such rule.
-3. Record the source identity beside each fixture. When `native_fixture` publishes, remove each other fixture whose source file is gone or no longer has its recorded identity, and its lock file.
-4. The lock rule. Today `native_fixture.rs` `executable` reuses a receipt without a fixture lock (architect review, 2026-11-16; confirm in the code first).
-   - A reader takes the fixture lock shared from the receipt check until the fixture process starts. A removed file does not stop a process that already started.
-   - Removal takes the fixture lock exclusive and non-blocking. A busy lock means the fixture stays for a later publication.
-   - Removal deletes the fixture, then unlinks the lock file while it still holds the lock.
-   - Each lock taker, publisher or reader, compares the locked file's inode with the inode at the lock path after it gets the lock. On a difference it opens the path again and retries.
-5. Keep `native_fixture.rs`'s receipt and source checks and the direct-run fallback. A fixture that a running test uses stays until its source changes.
-6. Remove existing fixtures that have no recorded identity once, on the first publication after the change.
+Each native test fixture records its source identity, and each publication removes the fixtures whose source changed or is gone.
+- `native_fixture` (`setup_reader.py`) writes `<name>.source` beside each fixture: the resolved source path, a NUL byte, and the repr of device, inode, size, mtime_ns, ctime_ns and strip options. The fixture name is the SHA-256 of that record.
+- `remove_retired_native_fixtures` runs after each publication. For each other fixture, it takes `LOCK_EX|LOCK_NB` on `<name>.lock` and checks the lock inode. It removes the fixture, record and lock when the source identity changed, the source is unreadable (any `OSError`), or the record is missing (a legacy fixture).
+- `native_fixture::executable()` keeps `RetainedNativeExecutable::{Direct, Locked}`. `Locked` holds a shared flock on `<fixture>.lock` for the process lifetime, so cleanup skips a fixture in use. `lock_fixture` opens only an existing lock and never creates one.
+- The cache fell from 162 fixtures (3.7 GB) on natedev and 164 (2.7 GB) on the Mac to one fixture and one lock on each.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/setup_reader.py` — `native_fixture`, the removal and the publisher lock retry.
-- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the shared reader lock and its retry.
+- `crates/cargo-tile/src/shim_registration/setup_reader.py` — publication, the identity record and cleanup.
+- `crates/cargo-tile/src/shim_registration/native_fixture.rs` — the retained fixture, its shared lock, and the Rust lock test.
+- `crates/cargo-tile/src/shim_registration/reader_staging_cases.py` — private-cache cleanup cases: stale, legacy, held lock, live source, orphan lock, unreadable source parent.
+- `crates/cargo-tile/src/shim_registration/reader_executable.rs` — the case registrations.
 
-**Workers:** 1 writer (`impl`) — owns both files and their tests.
-
-**Acceptance gate:** tests for a reader that holds a fixture during removal, a publisher that waits on a lock file that removal unlinks, and removal of a stale fixture; after two cargo-tile builds and suites on each machine, the cache holds one fixture per live source build, and no lock file without its fixture; the cargo-tile full suite passes on natedev and the Mac with no test at 1 s or more; basedpyright reports 0 errors and 0 warnings in `setup_reader.py`; lint.
+**Gotchas:**
+- A publisher in a worktree without this phase can lock a deleted lock inode and publish beside a new one. This stops when each worktree merges main.
+- A full suite that runs beside lint puts unchanged reader tests over 1 s. The start load does not show it.
 
 ### Phase 68 — cargo-berth tests run under 1 s on the Mac  · status: done
 
@@ -1829,7 +1825,91 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Ruled out:** in-process Git reads for the Mac goal (removing every cargo-berth Git call saves about 0.15 s per slow test); six slots per test; the Mac Developer Tools exemption.
 
-### Phase 68b — Heavy cargo-berth scenario tests run under 1 s alone on the Mac  · status: todo
+### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: todo
+
+**Depends on:** none (showrunner, 2026-11-17: first in tile's remaining scope).
+
+#### Work Order
+
+**Goal:** An edit to a plan doc in a worktree with an active reservation joins that reservation. It makes no second reservation that holds only the plan doc (showrunner, 2026-11-14 and 2026-11-17).
+
+**Spec:**
+1. The evidence: in the handler worktree, each plan shrink edit made a second reservation that held only the plan doc (01a1da82 in handler Phase 14, 01a1dabc in Phase 15). In the tile home worktree, the same happened (01a1e05c, 01a1e0df, 01a1e0e2, 01a1e3ce, 01a1e4ad, 01a1e6af, 01a1e82f, 01a1e297, 01a1e9c6, 01a1e9ca, 01a1ea5b).
+2. The result: drift puts the next phase's files in the extra reservation's merge extent, so every drift is ambiguous. Units retire each one by hand with `--retire-orphan`.
+3. Measure first. Reproduce the edit path in a cargo-berth test and name the code that makes the second reservation.
+4. Fix the cause in cargo-berth. The edit joins the active reservation of the worktree. Keep the overlap checks against other worktrees' reservations.
+
+**Files:** `crates/cargo-berth/src/` where the measurement names the cause; `crates/cargo-berth/tests/`.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** a test reproduces the second reservation before the fix and passes after it; `verify.sh final cargo-berth` passes on natedev; the Mac cargo-berth suite passes; lint.
+
+
+### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+
+**Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
+
+#### Work Order
+
+**Goal:** A stale `cargo-tile-shim.lock` never blocks install, and the user takes no step to recover it (user via showrunner, 2026-11-17).
+
+**Spec:**
+1. The evidence: the cargo tile TUI showed "stable-x86_64-unknown-linux-gnu: not installed: ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-tile-shim.lock: File exists (os error 17); confirm no install is still running, remove this lock file, and run cargo-tile install again". The lock was dated 11-16 15:14. No install ran.
+2. The lock is a held lock (flock) on the file, not the existence of the file. A file that no live process holds is free.
+3. Two installs at the same time still exclude each other.
+4. Remove the recovery text that asks the user to delete the lock file.
+
+**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, and the tests for the shim lock.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** a test with a left-over lock file installs with no error; a test with a held lock still excludes a second install; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint.
+
+
+### Phase 72 — Every notice closes with its [x] and with Esc  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** The user can close every notice in the cargo tile TUI with its [x] and with Esc (user via showrunner, 2026-11-17: "i can't even dismiss it which i've never seen before").
+
+**Spec:**
+1. The evidence: the "Capture shim" notice for the stale lock in Phase 71 did not close.
+2. Measure first. Name each notice kind and the reason the capture shim notice does not close.
+3. Fix the cause where it lives. A notice that comes back from live state shows again only when that state changes.
+4. Add one test for each notice kind: [x] closes it, and Esc closes it.
+
+**Files:** where the measurement names the cause.
+
+**Workers:** 1 writer, 1 reviewer.
+
+**Acceptance gate:** the new tests pass; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint; one dark-mode desktop image of the notice before and after Esc.
+
+
+### Phase 63b — The PTY helper fallback test passes on Linux  · status: done
+
+#### As-built
+
+- The PTY capture helper's startup socket lives in a private directory under `/tmp` (`CAPTURE_STARTUP_SOCKET_BASE`), named with `CAPTURE_STARTUP_SOCKET_DIRECTORY_PREFIX` and `CAPTURE_STARTUP_SOCKET_NAME` (`constants.rs`). The path is 29 bytes for any `TMPDIR`. Before, the socket sat under `TMPDIR`; an agent session's long `/session/...` `TMPDIR` made it 130 bytes, over the Unix socket path limit (`SUN_LEN`: 108 on Linux, 104 on macOS). The bind failed, and capture fell back to plain cargo with `capture startup: path must be shorter than SUN_LEN`.
+- `PtyCaptureHelper` (`hook.rs`) owns the socket and its `TempDir`, and drops both on completion, fallback and the deferred signal paths. The directory is created and then set with `fs::set_permissions` to `CAPTURE_STARTUP_SOCKET_DIRECTORY_MODE` (`0o700`) before the bind, so the umask has no effect. The socket keeps mode `0600`.
+- `a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts` (`tests/shim_modes.rs`) runs a short and a long directory row. The fake helper records `CARGO_TILE_PTY_START_SOCKET`, and both rows assert that the socket and its directory are gone. The long row fails on the old code with the `SUN_LEN` fallback.
+- Gates: the named test 0.185 s; cargo-tile 1286/1286 on natedev; Mac `shim_modes` 48/48; lint clean.
+
+**Files:**
+- `crates/cargo-tile/src/hook.rs` — the private socket directory.
+- `crates/cargo-tile/src/constants.rs` — the base, prefix, socket name and directory mode.
+- `crates/cargo-tile/tests/shim_modes.rs` — the two directory rows and the removal assertions.
+
+**Binds later work:** Phase 71 edits the shim lock in `hook.rs`; keep the startup socket out of `TMPDIR`.
+
+**Ruled out:**
+- A test-only short `TMPDIR` alias (a workaround; the defect is in `hook.rs`).
+- Recovery of a socket directory left after `SIGKILL`: the old socket file had the same limit, and `/tmp` is cleared at reboot.
+- A umask test: the umask is global to the test process, and the explicit mode reset removes the dependence.
+
+### Phase 68b — Heavy cargo-berth scenario tests run under 1 s alone on the Mac  · status: dropped (review failed after 3 repair rounds; showrunner rule, 2026-11-18)
 
 **Depends on:** Phase 68 (order only; showrunner ruling, 2026-11-17)
 
@@ -1863,7 +1943,7 @@ The first reply of a persistent Git child includes process startup, so it uses t
 
 **Acceptance gate:** each test in the set takes less than 1 s alone on the Mac; the cargo-berth full suite passes on natedev at load under 32 with no test at 1 s or more, and on the Mac; the report states the contention ratio; lint.
 
-### Phase 68a — Two cargo-tile reader tests run under 1 s at normal load  · status: todo
+### Phase 68a — Two cargo-tile reader tests run under 1 s at normal load  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 68 (order only; showrunner, 2026-11-16)
 
@@ -2276,7 +2356,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - The space check does not reserve memory. A later fixture write can still fail when `/dev/shm` fills after selection. The failed-`mktemp` fallback branch has no test.
 - The checkpoint ran without the full drift. Reservation 01a1c689 was claimed under a worktree id that changed when the worktree was made again. Phase 58c releases it.
 
-### Phase 31 — Ended cells leave whole  · status: parked
+### Phase 31 — Ended cells leave whole  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
 
@@ -2604,7 +2684,7 @@ The final capture has wall-clock draws over 4 ms of 65, 45 and 74 frames at 24, 
 - Most frames over 4 ms at 40 rows repaint all cells after an input rejection (`cache_inputs=6`).
 - A doc link to a `#[cfg(test)]` function fails rustdoc in the product build.
 
-### Phase 32i — The last tile frames over 4 ms after 32h  · status: parked (showrunner, 2026-11-11: not landed at the 3-round repair cap; slower than main at 40 and 80 rows; the work continues in Phase 32j)
+### Phase 32i — The last tile frames over 4 ms after 32h  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32h.
 
@@ -2637,7 +2717,7 @@ Phase 32h landed at the repair cap with its gate open. Its findings F005, F006 a
 - Three interleaved pairs against main for any CPU claim, with the median change and the spread.
 - Change-Review: none — draw time only, with no visible change.
 
-### Phase 32j — Tile frames at 40 and 80 rows are no slower than main  · status: todo
+### Phase 32j — Tile frames at 40 and 80 rows are no slower than main  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32i (its uncommitted tree).
 
@@ -2950,7 +3030,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Ruled out:** a change to the cargo probe row: the real crate name `___` stays (showrunner, 2026-11-10).
 
-### Phase 32f — Active crate labels read on a light background  · status: todo
+### Phase 32f — Active crate labels read on a light background  · status: dropped (user via showrunner, 2026-11-17)
 
 **Depends on:** Phase 32c, Phase 32e
 
@@ -3722,35 +3802,15 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
 
-### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: todo
+### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: done
 
-**Depends on:** Phase 37 (order only; the showrunner queued it after the queued phases, 2026-11-12).
+#### As-built
 
-On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests as LEAK. A LEAK test leaves a child process or an open pipe after it ends. Phase 53 fixed one leak in the second test on 2026-11-05; the leak is back. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261112T015550-3381833-1e2c.log`, lines 54-55.
+- No code change. Neither `all_accounts_status_refuses_non_root_with_sudo_instruction` nor `install_prints_a_completed_toolchain_before_a_later_lock_finishes` (`crates/cargo-tile/tests/cli_lifecycle.rs`) shows LEAK now: cargo-tile 1286/1286 on natedev and 1302/1302 on the Mac with zero LEAK, and 20 Mac repeats of each test with zero LEAK (2026-11-18).
+- The tests already clean up: the refusal test's `Command::output()` waits for its child and reads both streams, and the install test reaps its child and joins its reader before it returns.
+- The probable cause of the old reports is a nextest race on macOS: sibling tests can inherit each other's capture pipes. The Mac ran nextest 0.9.143; 0.9.145 fixes the race. The production moves natedev, the Mac and the AWS pin to nextest 0.9.152 together (showrunner, 2026-11-18).
 
-#### Work Order
-
-**Goal:** nextest reports PASS, not LEAK, for both tests.
-
-**Spec:**
-
-1. Find each child process and pipe that these tests leave open after they return:
-   - `tests::all_accounts_status_refuses_non_root_with_sudo_instruction` (0.254 s)
-   - `tests::install_prints_a_completed_toolchain_before_a_later_lock_finishes` (0.266 s)
-2. Make each test wait for or stop every child it starts, on a pass and on a failed assertion. A process cleans up like a tempdir: a guard ends it when the scope ends.
-3. Close each pipe end the test holds before the test returns.
-4. Keep every assertion as it is. Do not raise the nextest leak timeout.
-
-**Files:**
-- `crates/cargo-tile/tests/cli_lifecycle.rs`
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. An intermittent leak is a defect.
-
-**Acceptance gate:**
-- `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
-- `verify.sh test cargo-tile --mac` reports neither test as LEAK.
+**Ruled out:** a reader join on panic and a wait before reading the refusal output; the review showed neither closes a real leak path, so the candidate was reverted.
 
 ### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: done
 
