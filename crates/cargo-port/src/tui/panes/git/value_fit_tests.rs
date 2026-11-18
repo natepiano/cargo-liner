@@ -26,6 +26,8 @@ use crate::tui::panes::lang;
 use crate::tui::panes::pane_data::QuotaObservation;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::render_context::RenderProjectSelection;
+use crate::tui::settings::SettingsRenderPreparation;
 use crate::tui::test_support;
 
 const TERMINAL_WIDTH: u16 = 80;
@@ -199,10 +201,10 @@ fn render_git_value(data: GitData, pane_width: u16) -> anyhow::Result<Vec<String
         animation_elapsed:         std::time::Duration::ZERO,
         config:                    &app.config,
         project_list:              &app.project_list,
-        selected_project_path:     None,
+        selected_project_path:     RenderProjectSelection::NoResolvedProject,
         scan:                      &app.scan,
         ci_status_lookup:          &lookup,
-        settings_render_inputs:    None,
+        settings_render_inputs:    SettingsRenderPreparation::NotPrepared,
         synced_description_height: SyncedDescriptionHeight::default(),
         empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
         output_presentation:       OutputPresentation::Hidden,

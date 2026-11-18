@@ -8,6 +8,7 @@ use tui_pane::PaneFrameChrome;
 use tui_pane::finder_match_bg;
 
 use super::pane::OutputPane;
+use super::presentation::OutputPresentation;
 use crate::tui::panes::pane_data;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::OwnedRunOutputTitleRef;
@@ -135,19 +136,19 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
             " Output — scrolled (End to follow) ".to_string()
         };
     }
-    let owned_output = ctx.output_presentation.owned_output();
-    let owned_run_running_label = owned_output
-        .map_or(OwnedRunRunningLabelRef::Unavailable, |owned| {
-            owned.running_label()
-        });
+    let (owned_run_running_label, owned_run_output_title) = match ctx.output_presentation {
+        OutputPresentation::Hidden => (
+            OwnedRunRunningLabelRef::Unavailable,
+            OwnedRunOutputTitleRef::Unavailable,
+        ),
+        OutputPresentation::Owned(owned) => (owned.running_label(), owned.title()),
+    };
     match owned_run_running_label {
         OwnedRunRunningLabelRef::Available(name) => {
             return format!(" Running: {name} (Esc to stop) ");
         },
         OwnedRunRunningLabelRef::Unavailable => {},
     }
-    let owned_run_output_title =
-        owned_output.map_or(OwnedRunOutputTitleRef::Unavailable, |owned| owned.title());
     match owned_run_output_title {
         OwnedRunOutputTitleRef::Named(name) => {
             return if focused {

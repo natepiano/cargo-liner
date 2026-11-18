@@ -125,7 +125,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .lists_an_agent(&app.loaded_config.config.machines.remote)
         || app
             .census
-            .has_hierarchy_notice(&app.loaded_config.config.machines.remote)
+            .has_notice(&app.loaded_config.config.machines.remote)
     {
         AttractWork::Running
     } else {

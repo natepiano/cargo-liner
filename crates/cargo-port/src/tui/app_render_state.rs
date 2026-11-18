@@ -11,7 +11,6 @@ use super::panes::ProjectListPane;
 use super::panes::TargetsPane;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
-use super::settings::SettingsRenderInputs;
 use super::state::Ci;
 use super::state::Config;
 use super::state::Lint;
@@ -25,22 +24,6 @@ use super::state::Scan;
 pub(super) struct RenderBorrows<'a> {
     pub(super) registry:        RenderRegistry<'a>,
     pub(super) pane_render_ctx: PaneRenderCtx<'a>,
-}
-
-/// Optional precomputed render inputs for framework overlays.
-#[derive(Clone, Copy)]
-pub(super) struct OverlayRenderInputs<'a> {
-    pub(super) settings: Option<&'a SettingsRenderInputs>,
-}
-
-impl<'a> OverlayRenderInputs<'a> {
-    pub const fn none() -> Self { Self { settings: None } }
-
-    pub const fn settings(inputs: &'a SettingsRenderInputs) -> Self {
-        Self {
-            settings: Some(inputs),
-        }
-    }
 }
 
 /// Disjoint `&mut` borrows of every renderable pane on `App`.

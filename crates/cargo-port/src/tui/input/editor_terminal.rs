@@ -19,6 +19,7 @@ use crate::tui::finder;
 use crate::tui::integration::AppGlobalAction;
 use crate::tui::integration::AppPaneId;
 use crate::tui::settings;
+use crate::tui::state::KeymapFilePath;
 
 pub(in crate::tui) fn open_in_editor(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
@@ -90,8 +91,11 @@ pub(super) fn handle_framework_overlay_editor_key(
         FrameworkOverlayId::Keymap => "Keymap editor failed",
         FrameworkOverlayId::GlobalShortcuts => return false,
     };
-    let Some(path) =
-        framework_overlay_editor_target_path(overlay, app.config.path(), app.keymap.path())
+    let keymap_path = match app.keymap.path() {
+        KeymapFilePath::Unavailable => None,
+        KeymapFilePath::Resolved(path) => Some(path),
+    };
+    let Some(path) = framework_overlay_editor_target_path(overlay, app.config.path(), keymap_path)
     else {
         return false;
     };

@@ -100,10 +100,29 @@ slow-timeout = { period = "20s", terminate-after = 2 }
 filter       = 'package(cargo-berth) | package(cargo-berth-test-support)'
 slow-timeout = { period = "5s", terminate-after = 8 }
 
+# Most cargo-berth tests run a chain of Git and hook processes (one board test
+# starts 60 Git processes and 28 hooks). Alone on the Mac they take 0.4-1.2s;
+# with 12 at once on 12 CPUs, 318 of them took 1s or more at load 5.3. With two
+# slots each, 161 took 1s or more at load 6.4; with three, 86 at load 5.7. Six
+# slots made the suite twice as long and did not cut the count further.
+[[profile.default.overrides]]
+filter           = 'package(cargo-berth)'
+platform         = 'cfg(target_os = "macos")'
+threads-required = 3
+
 # Each cargo-mend diagnostic test compiles a fixture through a chain of cargo
 # and cargo-mend compiler processes. Alone, one takes 0.13 to 0.29s; with 31 at
 # once on 32 CPUs, process start and kernel work made 20 of them take 1.0 to 1.3s.
 # Two slots for each test keeps that chain from overloading the machine.
 [[profile.default.overrides]]
 filter           = 'binary_id(cargo-mend::bin/cargo-mend) & test(/^diagnostic_tests::/)'
+threads-required = 2
+
+# Each cargo-mend CLI smoke test runs the installed path: mend starts cargo check,
+# cargo starts a new copy of mend as its wrapper, and the copy starts rustc. A
+# `--fix` test runs that chain twice. Alone on the Mac, the external path
+# dependency fix test takes 0.81s; with the other twelve at once it took 0.99 to
+# 1.48s. Two slots for each test keeps that chain from overloading the machine.
+[[profile.default.overrides]]
+filter           = 'binary_id(cargo-mend::cli_smoke)'
 threads-required = 2

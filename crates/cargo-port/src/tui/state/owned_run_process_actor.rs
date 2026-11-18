@@ -45,7 +45,7 @@ use crate::channel::RecvTimeoutError;
 use crate::channel::Sender;
 #[cfg(unix)]
 use crate::support;
-use crate::tui::messages::OwnedRunEvent;
+use crate::tui::app::OwnedRunEvent;
 
 /// How the actor resolved one accepted owned-group termination request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
