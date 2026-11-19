@@ -874,27 +874,19 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 ### Phase 42 — the mend rollback test finishes in under 1 second  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-mend test `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk` runs in under 1 s in the full suite at normal load. Source: the showrunner approved the Phase 41 add-on, 2026-11-18: "Fix the cause of the time, not the limit."
+`fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk` takes 0.861 s in the full Mac suite at load 10.38 (1.448 s before). On natedev it took 0.615 s at load 77. Source: the showrunner approved the Phase 41 add-on, 2026-11-18.
 
-**Spec:**
-1. The test took 1.200 s on the Mac at load 8.09 on 12 CPUs, in the full cargo-mend suite. Before the Phase 33 toolchain-query cache it took 1.655 s.
-2. Measure first. Time the test alone and in the suite, and record each mend and cargo process the test starts, with its time. Find the step that costs the most.
-3. Remove that cost at its cause: in mend, in the shared test support, or in the fixture. Keep what the test proves: a second `--fix-all` pass fails validation, and mend restores every fixture file to its text before the invocation.
-4. Do not give the test more nextest slots and do not raise a time limit. Diagnostic tests already hold two slots.
-5. If the cause is in mend itself, the fix also makes other fix tests faster. Report the suite's slowest diagnostic tests before and after.
+- The old fixture's cost was a compiler edit plus a chained `cargo fix` and its check. The new fixture has two mend edits. In pass one, `ImportsAtTop` moves a function import. `PreferModuleImport` puts off its overlapping rewrite to pass two, and a compile-time check rejects that rewrite.
+- The called function is `#[deprecated]`, so the compiler prints the moved import line. The test requires that line before the error, which proves that pass one compiled before pass two failed.
+- The fixture is one binary target with `test = false`, so `cargo fix --tests` skips a build.
+- `MODULE_IMPORT_FIXTURE_CONFIG` holds the `mend.toml` text that this test and `imports_at_top.rs` share.
 
 **Files:**
-- `crates/cargo-mend/tests/diagnostics/fix_rollback.rs`
-- `crates/cargo-mend/tests/support/mod.rs`
-- mend source files the measurement names
+- `crates/cargo-mend/tests/diagnostics/fix_rollback.rs` — the two-pass rollback fixture and its proof of pass one.
+- `crates/cargo-mend/tests/support/mod.rs` — the shared module-import fixture configuration.
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** without the pass-one proof, a single pass that makes both edits also satisfies the rollback assertions.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The test is under 1 s in the full suite on the Mac and on natedev at normal load (Mac under 12, natedev under 32). A run at higher load is reported only.
+**Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).
