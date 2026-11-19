@@ -13,6 +13,7 @@ use super::authorization;
 use super::authorization::AnswerKind;
 use super::authorization::AnsweringWorktree;
 use super::authorization::OrderingContext;
+use super::authorization::OrderingRequester;
 use super::failure::ClaimError;
 use super::failure::ClaimRejection;
 use super::incomplete_answer::IncompleteClaimAnswerRejection;
@@ -1623,18 +1624,21 @@ fn validate_claim_transaction(
             prepared_claim.into_operation(ConflictAuthorization::NoConflict),
         )),
         None => TransactionValidation::Reject(ClaimRejection::Conflict(conflicts)),
-        Some(request) => validate_authorization(
-            request,
-            conflicts,
-            prepared_claim,
-            &OrderingContext {
+        Some(request) => {
+            let ordering_context = OrderingContext {
                 ordering_graph,
                 reservations: &reservations,
                 answering_worktree,
-                reservation_selection: ClaimReservationSelection::NewReservation,
-            },
-            maximum_ordering_edges,
-        ),
+                requester: OrderingRequester::New(prepared_claim.reservation_id),
+            };
+            validate_authorization(
+                request,
+                conflicts,
+                prepared_claim,
+                &ordering_context,
+                maximum_ordering_edges,
+            )
+        },
     }
 }
 
@@ -3223,7 +3227,7 @@ fn authorization(
                     ordering_graph: graph,
                     reservations,
                     answering_worktree,
-                    reservation_selection: ClaimReservationSelection::Existing(id),
+                    requester: OrderingRequester::Existing(id),
                 },
                 context.maximum_ordering_edges,
             )

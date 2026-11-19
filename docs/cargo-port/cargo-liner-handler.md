@@ -925,7 +925,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - No cargo-mend test is at 1 s or more in the full Mac suite at normal load (under 12). A run at higher load is reported only.
 
-### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: todo
+### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: done
 
 #### Work Order
 

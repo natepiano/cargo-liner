@@ -1063,6 +1063,99 @@ pub(super) fn waiting_action_for<'board>(
         .expect("waiting action reason")
 }
 
+const HOLDER_COUNT: u32 = 11;
+const UNRELATED_RESERVATION_COUNT: u32 = 33;
+const STORED_LIVE_EDGE_COUNT: u32 = 512;
+const HOLDER_CHAIN_EDGES: u32 = HOLDER_COUNT - 1;
+const UNRELATED_CHAIN_EDGES: u32 = UNRELATED_RESERVATION_COUNT - 1;
+
+pub(super) const REDUCED_LIVE_EDGE_COUNT: u32 = HOLDER_CHAIN_EDGES + UNRELATED_CHAIN_EDGES;
+
+pub(super) const MANY_ORDERED_HOLDERS: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("edges-many-ordered-holders", build_many_ordered_holders);
+
+fn build_many_ordered_holders(destination: &Path) {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let root = repository.path();
+    let worktrees = root.join(".git/fixture-worktrees");
+    let checkouts = (0..HOLDER_COUNT)
+        .map(|index| add_worktree(root, &worktrees, &format!("holder-{index}")))
+        .collect::<Vec<_>>();
+    let holders = checkouts
+        .iter()
+        .map(|checkout| {
+            let run = uuid::Uuid::now_v7().to_string();
+            let output = claim(checkout, "file:src/lib.rs", &run);
+            assert_success(&output);
+            reservation_id(&output)
+        })
+        .collect::<Vec<_>>();
+    for checkout in &checkouts {
+        dirty_source(checkout, "src/lib.rs");
+    }
+
+    let last_holder = holders.last().expect("last holder");
+    let mut padding_template = fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .find(|event| event["op"] == "claim" && event["reservation_id"] == last_holder.as_str())
+        .expect("last holder claim");
+    let padding_scope = serde_json::json!([{"kind": "tree", "path": "tests"}]);
+    padding_template["scopes"] = padding_scope.clone();
+
+    let unrelated = append_prior_claims(root, &padding_template, UNRELATED_RESERVATION_COUNT);
+    let shared_scope = serde_json::json!([{"kind": "file", "path": "src/lib.rs"}]);
+    for pair in holders.windows(2) {
+        append_prior_edge(root, &pair[0], &pair[1], &shared_scope);
+    }
+    for pair in unrelated.windows(2) {
+        append_prior_edge(root, &pair[0], &pair[1], &padding_scope);
+    }
+    let shortcuts = unrelated
+        .iter()
+        .enumerate()
+        .skip(2)
+        .flat_map(|(index, after)| {
+            unrelated[..index - 1]
+                .iter()
+                .map(move |before| (before, after))
+        });
+    let shortcut_count = (STORED_LIVE_EDGE_COUNT - REDUCED_LIVE_EDGE_COUNT) as usize;
+    let shortcut_scope = serde_json::json!([{"kind": "file", "path": "tests/base.rs"}]);
+    for (before, after) in shortcuts.take(shortcut_count) {
+        append_prior_edge(root, before, after, &shortcut_scope);
+    }
+
+    recorded_history::save(destination, root, &holders);
+}
+
+fn append_prior_claims(root: &Path, template: &serde_json::Value, count: u32) -> Vec<String> {
+    (0..count)
+        .map(|_| {
+            let id = uuid::Uuid::now_v7().to_string();
+            let mut claim = template.clone();
+            claim["reservation_id"] = serde_json::json!(id);
+            crate::append_edge_fixture_event(root, claim);
+            id
+        })
+        .collect()
+}
+
+fn append_prior_edge(root: &Path, before: &str, after: &str, scopes: &serde_json::Value) {
+    crate::append_edge_fixture_event(
+        root,
+        serde_json::json!({
+            "op": "sequence",
+            "predecessor": before,
+            "successor": after,
+            "edge_id": uuid::Uuid::now_v7().to_string(),
+            "scopes": scopes,
+            "reason": "prior integration order",
+        }),
+    );
+}
+
 /// The initial edges and ordinary readiness precede deletion of the middle checkout.
 pub(super) const ORPHANED_MIDDLE_START: cargo_berth_test_support::LedgerTemplate =
     recorded_history::template("edges-orphaned-middle-start", build_orphaned_middle_start);
