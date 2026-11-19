@@ -17,6 +17,9 @@ pub(crate) const STYLE_SUBCOMMAND: &str = "style";
 /// The flag that requests the binary and protocol versions.
 pub(crate) const VERSION_FLAG: &str = "--version";
 
+// ledger
+pub(crate) const LEDGER_SCHEMA_VERSION: i64 = 47;
+
 // lines
 /// The line end that Python reads as one boundary, though both characters are boundaries.
 pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
@@ -28,6 +31,7 @@ pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 // protocol
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const FINDING_REPLY_SCHEMA: u32 = 1;
 
 // python token reader
 /// The Python `PUNCTUATION` alternatives of two characters, in pattern order.

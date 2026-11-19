@@ -1,6 +1,6 @@
 //! Child processes for the reader fixtures.
 
-mod process;
+pub(crate) mod process;
 #[path = "../../src/state_directory.rs"]
 mod state_directory;
 
@@ -12,7 +12,7 @@ use cargo_berth_test_support::FixtureCommand;
 use cargo_berth_test_support::fixture_tempdir;
 pub(crate) use process::TestResult;
 pub(crate) use process::git_input;
-use state_directory::STATE_DIRECTORY;
+pub(crate) use state_directory::STATE_DIRECTORY;
 
 /// The explicit permission to read the Python checkout.
 pub(crate) enum ParityCheckout {

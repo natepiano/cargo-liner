@@ -115,6 +115,12 @@ pub(crate) enum FactReading {
     MissingBlob,
 }
 
+pub(crate) enum BlobSource {
+    Utf8(String),
+    NotUtf8,
+    Missing,
+}
+
 /// The Rust code identity of a UTF-8 blob.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +139,14 @@ impl CodeIdentity {
 }
 
 impl FactReading {
+    pub(crate) fn into_source(self) -> BlobSource {
+        match self {
+            Self::Read { bundle, .. } => BlobSource::Utf8(bundle.text),
+            Self::MalformedUtf8(_) => BlobSource::NotUtf8,
+            Self::MissingBlob => BlobSource::Missing,
+        }
+    }
+
     /// Build each fact family from the same lexical reading.
     pub(crate) fn parse(data: &[u8]) -> Result<Self, Error> {
         let decoded = String::from_utf8_lossy(data);
