@@ -1849,25 +1849,20 @@ Each native test fixture records its source identity, and each publication remov
 - Hold settlement inside the comparison budget: a phase makes one or two holds, settled once for each integration.
 
 
-### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+### Phase 71 — A capture shim lock that no install holds does not block  · status: done
 
 **Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
 
-#### Work Order
+#### As-built
 
-**Goal:** A stale `cargo-tile-shim.lock` never blocks install, and the user takes no step to recover it (user via showrunner, 2026-11-17).
+- The cause: `HookInstallationLock` treated the existence of `cargo-tile-shim.lock` as the lock (`create_new`) and removed the file on drop. A file left by an ended install blocked every later install with `File exists (os error 17)`.
+- `HookInstallationLock::acquire` now opens or creates the file without `create_new` (`O_NOFOLLOW`; it must be a regular file) and takes `File::try_lock`. The lock is the held lock, so a left-over file that no process holds is free. The file stays on disk; the lock ends when the `File` drops.
+- Two installs at the same time still exclude each other: the second retries within the existing wait budget, then fails with `WouldBlock` and "another capture shim operation holds the lock".
+- `SHIM_LOCK_RECOVERY` (the "remove this lock file" text) is removed from `constants.rs`.
+- Tests: `install_succeeds_with_a_leftover_shim_lock_file` (`tests/cli_lifecycle.rs`) and a held-lock test in `hook.rs` that checks the `WouldBlock` text and that the lock file keeps its contents. The fixture repeats the lock name, because cargo-tile has no lib target (director ruling, review round 2).
+- Gates: Mac lint passed; Mac 1,302/1,302 at load 3.90 (12 CPUs); slowest 0.951 s. No separate natedev suite (user ruling 2026-11-18). Checkpoint ahead of Phase 32g (showrunner, 2026-11-19).
 
-**Spec:**
-1. The evidence: the cargo tile TUI showed "stable-x86_64-unknown-linux-gnu: not installed: ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-tile-shim.lock: File exists (os error 17); confirm no install is still running, remove this lock file, and run cargo-tile install again". The lock was dated 11-16 15:14. No install ran.
-2. The lock is a held lock (flock) on the file, not the existence of the file. A file that no live process holds is free.
-3. Two installs at the same time still exclude each other.
-4. Remove the recovery text that asks the user to delete the lock file.
-
-**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, and the tests for the shim lock.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** a test with a left-over lock file installs with no error; a test with a held lock still excludes a second install; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint.
+**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/CHANGELOG.md`.
 
 
 ### Phase 72 — Every notice closes with its [x] and with Esc  · status: done
