@@ -51,7 +51,9 @@ fn empty_cargo_home() -> PathBuf {
 /// ancestors and from `CARGO_HOME`: the working directory is the system temp
 /// directory every fixture lives in, outside any checkout or home directory
 /// on Linux and macOS, and `CARGO_HOME` is [`empty_cargo_home`]. Callers that
-/// run in a fixture set their own `current_dir` over this one.
+/// run in a fixture set their own `current_dir` over this one. An inherited
+/// `CARGO_BUILD_BUILD_DIR` is removed, so a fixture never builds in the build
+/// slot's shared directory.
 fn isolate_cargo(command: &mut Command) -> &mut Command {
     command
         .env_remove("RUSTC")
@@ -61,6 +63,7 @@ fn isolate_cargo(command: &mut Command) -> &mut Command {
         .env_remove("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR")
         .env("CARGO_PROFILE_DEV_DEBUG", FIXTURE_DEBUG_INFO)
         .env("CARGO_INCREMENTAL", FIXTURE_INCREMENTAL)
         .env("CARGO_HOME", empty_cargo_home())
@@ -102,15 +105,15 @@ fn mend_bin() -> PathBuf {
     )
 }
 
-/// The directories `cargo metadata` reports for this workspace.
+/// The output directories that `cargo metadata` reports for a workspace.
 ///
 /// Cargo writes test executables under `build_directory` and the `cargo-mend`
 /// binary under `target_directory`. The two differ when Cargo config sets
 /// `build.build-dir`.
 #[derive(Deserialize)]
-struct CargoDirectories {
-    build_directory:  PathBuf,
-    target_directory: PathBuf,
+pub(crate) struct CargoDirectories {
+    pub(crate) build_directory:  PathBuf,
+    pub(crate) target_directory: PathBuf,
 }
 
 impl CargoDirectories {
@@ -121,33 +124,43 @@ impl CargoDirectories {
     fn current() -> &'static Self {
         static CARGO_DIRECTORIES: OnceLock<CargoDirectories> = OnceLock::new();
         CARGO_DIRECTORIES.get_or_init(|| {
-            let output = Command::new(cargo_program())
-                .args([
-                    "metadata",
-                    "--no-deps",
-                    "--format-version",
-                    "1",
-                    "--offline",
-                ])
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .output()
-                .expect("run cargo metadata to find the cargo-mend binary");
-            assert!(
-                output.status.success(),
-                "cargo metadata failed: status {}; stderr:\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr),
-            );
-            let cargo_directories: Self = serde_json::from_slice(&output.stdout)
-                .expect("parse the target and build directories from cargo metadata");
-            Self {
-                build_directory:  cargo_directories
-                    .build_directory
-                    .canonicalize()
-                    .expect("canonicalize the Cargo build directory"),
-                target_directory: cargo_directories.target_directory,
-            }
+            let mut command = Command::new(cargo_program());
+            command.current_dir(env!("CARGO_MANIFEST_DIR"));
+            let mut directories = Self::read(command);
+            directories.build_directory = directories
+                .build_directory
+                .canonicalize()
+                .expect("canonicalize the Cargo build directory");
+            directories
         })
+    }
+
+    /// Use the same Cargo environment that mend uses for the fixture.
+    pub(crate) fn for_fixture(project_root: &Path) -> Self {
+        let mut command = cargo_command();
+        command.current_dir(project_root);
+        Self::read(command)
+    }
+
+    fn read(mut command: Command) -> Self {
+        let output = command
+            .args([
+                "metadata",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--offline",
+            ])
+            .output()
+            .expect("run cargo metadata to find the Cargo directories");
+        assert!(
+            output.status.success(),
+            "cargo metadata failed: status {}; stderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+        serde_json::from_slice(&output.stdout)
+            .expect("parse the target and build directories from cargo metadata")
     }
 
     /// The `cargo-mend` binary for the profile that built `test_executable`.

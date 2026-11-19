@@ -37,6 +37,7 @@ pub(super) use self::diagnostics::diagnostic_spec;
 pub(super) use self::diagnostics::findings_at;
 pub(super) use self::diagnostics::member_report;
 pub(super) use self::diagnostics::single_compile_target;
+pub(super) use self::mend_json::CargoDirectories;
 pub(super) use self::mend_json::fix_support_for;
 pub(super) use self::mend_json::mend_command;
 pub(super) use self::mend_json::parse_mend_json_output;
@@ -117,14 +118,15 @@ pub(super) fn init_git_repo(project_root: &Path) {
     assert!(status.success(), "git init failed for the fixture");
 }
 
-/// The suffix mend gives each stored report: the unit's `.rmeta` file name with
-/// its extension replaced.
-const STORED_REPORT_SUFFIX: &str = ".mend.json";
+/// The suffix mend uses for a stored findings report.
+pub(super) const STORED_REPORT_SUFFIX: &str = ".mend.json";
 
-/// Every stored report mend wrote under the fixture's `target/`, one
-/// `deps/lib<crate>-<unit id>.mend.json` per analyzed compilation unit.
+/// Find reports in the fixture's Cargo build directory.
+/// Mend writes each report beside its unit's `.rmeta` file.
+/// Cargo's artifact message names that metadata file so mend can find the report.
 pub(super) fn stored_report_paths(project_root: &Path) -> Vec<PathBuf> {
-    WalkDir::new(project_root.join("target"))
+    let directories = CargoDirectories::for_fixture(project_root);
+    WalkDir::new(directories.build_directory)
         .into_iter()
         .filter_map(Result::ok)
         .map(DirEntry::into_path)

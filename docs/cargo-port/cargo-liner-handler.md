@@ -818,3 +818,72 @@ Each object in `cargo-handler census --json` `sessions[]` names its sampled Clau
 **Ruled out:**
 - A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
 - A guard for a remote that uses the local machine name: that is a configuration error.
+
+### Phase 39 — mend writes its stored findings report under load  · status: done
+
+#### As-built
+
+cargo-mend test fixtures find their stored findings reports with any Cargo build directory. Source: the showrunner, 2026-11-18, from a CI point validation that failed two facade tests with "missing stored findings report". mend's report writer and reader are unchanged: each report stays beside its unit's `.rmeta`.
+
+- Cause: the build slot exports `CARGO_BUILD_BUILD_DIR` (`~/.claude/scripts/lib/build_slots.py`). Fixture cargo commands inherited it, so mend wrote the reports in the slot's shared build directory. The test helper searched only `<fixture>/target`. The `verify.sh` gate fixtures built under `<fixture>/target`, so the gate passed.
+- `isolate_cargo` removes an inherited `CARGO_BUILD_BUILD_DIR`, so a fixture builds in its own directory.
+- `stored_report_paths` searches the fixture's Cargo `build_directory`, read from `cargo metadata` through `CargoDirectories::for_fixture`.
+- `stored_reports_are_found_under_a_split_build_directory` sets a fixture-local `build-dir` and requires one report for each `.rmeta`.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mend_json.rs` — `isolate_cargo`, `CargoDirectories::for_fixture` and `read`.
+- `crates/cargo-mend/tests/support/mod.rs` — `stored_report_paths`, `STORED_REPORT_SUFFIX`.
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs` — the split build directory regression.
+
+**Gotchas:** a test that loops over stored reports without a minimum count passes when none are found (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`).
+
+**Ruled out:** a second report layout under `target/mend-reports/`. A build directory spelled `target/../x` passed its path-prefix check and put reports outside `target`, and mend's own writer and reader already agreed.
+
+### Phase 40 — a mend source edit gives a new build id  · status: done
+
+#### Work Order
+
+**Goal:** a cargo-mend binary built after a source edit carries a new `MEND_BUILD_ID`, so the findings cache and the builds lint cache never reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+
+**Spec:**
+1. `crates/cargo-mend/build.rs` emits `cargo:rerun-if-changed` only for `../../.git/HEAD`, `../../.git/refs/heads` and `build.rs`. A source edit with no commit rebuilds the binary but keeps the old `MEND_BUILD_ID` and `MEND_GIT_HASH`. The findings cache keys on `MEND_BUILD_ID` (`src/compiler/settings.rs:70`), and builds verify keys its lint cache on `cargo mend --build-info` (`src/main.rs:105`).
+2. Add `cargo:rerun-if-changed=src` and `cargo:rerun-if-changed=Cargo.toml` to `build.rs`, so each source or manifest edit reruns the script and stamps a new build id. Update the comment above the directives to state the current rule.
+3. Add a test that proves a source edit gives a new build id, in under 1 s. If no test can rebuild the binary in under 1 s, test the build script's directive list instead, and state why in the summary.
+
+**Files:**
+- `crates/cargo-mend/build.rs`
+
+**Workers:** 1 writer.
+- `impl`: `build.rs` and its test.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No new test takes one second or more.
+
+### Phase 41 — tests that read stored findings reports require a report  · status: todo
+
+#### Work Order
+
+**Goal:** every cargo-mend test that loops over stored findings reports fails when it finds none, so a test can never pass on nothing. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
+
+**Spec:**
+1. The loops over `stored_report_paths` in `tests/diagnostics/pub_use_fixes.rs` (near lines 70 and 610), `tests/diagnostics/rendering.rs` (near line 1232) and `tests/diagnostics/allowances.rs` (near lines 300, 336 and 374) pass with zero reports.
+2. Make each one require at least one stored report, with one shared helper in `tests/support/mod.rs` if the loops share the shape. Keep each existing assertion on the report contents.
+3. Search the other cargo-mend tests for loops over `stored_report_paths` with no count check, and apply the same rule.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/rendering.rs`
+- `crates/cargo-mend/tests/diagnostics/allowances.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No changed test takes one second or more.
