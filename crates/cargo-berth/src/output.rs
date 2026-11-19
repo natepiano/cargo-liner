@@ -5065,20 +5065,47 @@ fn post_tool_use_feedback(
 
 /// State what one post-write first touch did with the changed paths.
 fn first_touch_line(acquisition: &ReservationAcquisition, scopes: &ReservationScopeSet) -> String {
-    let reservation_id = acquisition.reservation_id.to_string();
-    let paths = scope_paths(scopes.as_slice());
-    match acquisition.kind {
+    let paths = scopes
+        .as_slice()
+        .iter()
+        .filter(|scope| {
+            !acquisition
+                .additional_acquisitions
+                .iter()
+                .any(|extra| extra.scope == **scope)
+        })
+        .map(|scope| scope.path.to_string())
+        .collect::<Vec<_>>();
+    let mut line = acquisition_line(acquisition.kind, acquisition.reservation_id, &paths);
+    for extra in &acquisition.additional_acquisitions {
+        line.push('\n');
+        line.push_str(&acquisition_line(
+            extra.kind,
+            extra.reservation_id,
+            &[extra.scope.path.to_string()],
+        ));
+    }
+    line
+}
+
+fn acquisition_line(
+    kind: ReservationAcquisitionKind,
+    reservation_id: ReservationId,
+    paths: &[String],
+) -> String {
+    let reservation_id = reservation_id.to_string();
+    match kind {
         ReservationAcquisitionKind::Appended => {
-            presentation::first_touch_reservation_line(&reservation_id, &paths)
+            presentation::first_touch_reservation_line(&reservation_id, paths)
         },
         ReservationAcquisitionKind::Widened => {
-            presentation::automatic_widening_line(&reservation_id, &paths)
+            presentation::automatic_widening_line(&reservation_id, paths)
         },
         ReservationAcquisitionKind::Answered => {
             format!("cargo-berth recorded an overlap answer on reservation {reservation_id}")
         },
         ReservationAcquisitionKind::AlreadyHeld => {
-            presentation::already_reserved_line(&reservation_id, &paths)
+            presentation::already_reserved_line(&reservation_id, paths)
         },
     }
 }
@@ -5093,11 +5120,18 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
             String::new()
         },
-        DriftPathAttributionOutcome::FirstTouchReserved { acquisition, .. } => {
-            format!(
-                "First-touch reservation {} now protects the changed paths.",
-                acquisition.reservation_id
-            )
+        DriftPathAttributionOutcome::FirstTouchReserved {
+            acquisition,
+            scopes,
+        } => {
+            if acquisition.additional_acquisitions.is_empty() {
+                format!(
+                    "First-touch reservation {} now protects the changed paths.",
+                    acquisition.reservation_id
+                )
+            } else {
+                first_touch_line(acquisition, scopes)
+            }
         },
         DriftPathAttributionOutcome::IncursionDetected {
             paths,
@@ -5120,6 +5154,12 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
             );
             match protection {
                 PostWriteFreePathProtection::NotAcquired => incursion,
+                PostWriteFreePathProtection::Acquired {
+                    acquisition,
+                    scopes,
+                } if !acquisition.additional_acquisitions.is_empty() => {
+                    format!("{incursion} {}", first_touch_line(acquisition, scopes))
+                },
                 PostWriteFreePathProtection::Acquired {
                     acquisition,
                     scopes,
@@ -5357,6 +5397,7 @@ fn source_description(claim_source: &ClaimSource) -> String {
     match claim_source {
         ClaimSource::WorkPlan { plan, phase } => format!("plan {plan}, phase {phase}"),
         ClaimSource::FirstTouch => "first-touch edit".to_owned(),
+        ClaimSource::PlanShrink => "plan shrink".to_owned(),
         ClaimSource::Explicit => "explicit claim".to_owned(),
         ClaimSource::Enrolled => "enrolled worktree changes".to_owned(),
         ClaimSource::Cover { covered_branch } => {

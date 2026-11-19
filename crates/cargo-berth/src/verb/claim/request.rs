@@ -163,7 +163,9 @@ impl ClaimCoordinationRunSelection {
                 ClaimRunValidation::IndependentWithPresentedIdentity(acting_run)
             },
             Self::ContinueOrStart => match resolved_edit_authorization.edit_authorization() {
-                EditAuthorization::Session { .. } | EditAuthorization::Marker { .. } => {
+                EditAuthorization::Session { .. }
+                | EditAuthorization::Marker { .. }
+                | EditAuthorization::SoleActivePhase { .. } => {
                     ClaimRunValidation::ResolvedIdentityRequired(resolved_edit_authorization)
                 },
                 // `Environment` and `Unidentified` split on exactly the question the

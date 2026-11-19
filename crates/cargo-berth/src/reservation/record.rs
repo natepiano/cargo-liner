@@ -357,6 +357,9 @@ impl Reservation {
         if matches!(self.lifecycle, ReservationLifecycle::Released { .. }) {
             return ReservationProtection::Clear;
         }
+        if self.is_plan_shrink() && self.is_active() {
+            return ReservationProtection::Protected(&self.race_scopes);
+        }
         if acting_worktree == self.actor.worktree {
             if self.is_active() {
                 ReservationProtection::Protected(&self.race_scopes)
@@ -409,6 +412,11 @@ impl Reservation {
 
     /// Borrow the external provenance recorded when this reservation was claimed.
     pub(crate) const fn source(&self) -> &ClaimSource { &self.source }
+
+    /// Return whether this reservation holds only a plan shrink.
+    pub(crate) const fn is_plan_shrink(&self) -> bool {
+        matches!(self.source, ClaimSource::PlanShrink)
+    }
 
     /// Borrow the caller's explanation of the work this reservation protects.
     pub(crate) const fn purpose(&self) -> &ReservationPurpose { &self.purpose }

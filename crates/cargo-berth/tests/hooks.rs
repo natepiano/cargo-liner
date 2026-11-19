@@ -2996,6 +2996,434 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
 }
 
 #[test]
+fn a_plan_shrink_after_checkpoint_never_makes_the_next_phases_drift_ambiguous() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let plan = "README.md";
+    let (_holder_directory, holder) =
+        add_worktree_without_configuration(&repository, "plan-shrink-holder")?;
+    checkpoint_phase(&holder, &["check", "file:finished.rs", "--json"])?;
+    assert!(
+        journal_events(trunk)?
+            .iter()
+            .all(|event| event["source"]["kind"] != "work_plan")
+    );
+    let next_path = "next.rs";
+    let next_unclaimed = "next-unclaimed.rs";
+    let before = journal_events(trunk)?.len();
+
+    let edit = run_pre_tool_use(&holder, &edit_payload(&holder, plan, Some("director")))?;
+    require_success(&edit, "the plan shrink edit")?;
+    let foreign_edit = run_pre_tool_use(trunk, &edit_payload(trunk, plan, Some("other-worker")))?;
+    assert_refused_for_scope(
+        &foreign_edit,
+        "file:README.md",
+        "foreign plan edit during closeout",
+    )?;
+    fs::write(holder.join(plan), "# Phase one as built\n")?;
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-am", "shrink phase one"]);
+    let next = run_berth_with_session(
+        &holder,
+        &["check", "file:next.rs", "--json"],
+        "director.phase-2",
+    )?;
+    require_success(&next, "the next phase's first touch")?;
+    let next_envelope = json_output(&next)?;
+    let next_id = required_string(
+        &next_envelope,
+        "/payload/data/acquisition/reservation_id",
+        "the next phase's first touch",
+    )?;
+    fs::write(holder.join(next_path), "// next phase work\n")?;
+    fs::write(
+        holder.join(next_unclaimed),
+        "// new path from the next phase\n",
+    )?;
+
+    let drift = run_post_tool_use(&holder, &bash_payload(&holder, "director"))?;
+    require_success(&drift, "the director's drift after the next phase starts")?;
+    let feedback = String::from_utf8(drift.stdout)?;
+    let events = journal_events(trunk)?;
+    let plan_reservations = plan_reservations_with_extents(&events[before..], plan)?;
+    assert!(
+        !feedback.contains("DRIFT ATTRIBUTION REQUIRED"),
+        "plan reservations and merge extents: {plan_reservations:?}\ndrift feedback: {feedback}"
+    );
+    assert!(
+        feedback.contains(&format!(
+            "cargo-berth added {next_unclaimed} to reservation {next_id}"
+        )),
+        "{feedback}"
+    );
+    assert_eq!(plan_reservations.len(), 1, "{plan_reservations:?}");
+    let (id, source, extent) = &plan_reservations[0];
+    assert_eq!(source["kind"], "plan_shrink");
+    assert_eq!(
+        extent["scopes"],
+        serde_json::json!([{"kind": "file", "path": plan}])
+    );
+    GIT.run_without_hooks(
+        trunk,
+        ["merge", "--quiet", "--ff-only", "plan-shrink-holder"],
+    );
+    let settled = run_berth(&holder, &["board", "--reservation", id, "--json"])?;
+    require_success(&settled, "the integrated plan reservation board row")?;
+    assert_eq!(
+        json_output(&settled)?["payload"]["data"]["lifecycle"]["status"],
+        "released_after_checkpoint"
+    );
+    let events = journal_events(trunk)?;
+    assert!(
+        events.iter().any(|event| {
+            event["op"] == "release"
+                && event["reservation_id"] == *id
+                && event["disposition"]["kind"] == "integrated"
+                && event["source"] == "reconciliation"
+        }),
+        "the integrated plan hold releases during reconciliation"
+    );
+    Ok(())
+}
+
+fn plan_reservations_with_extents<'events>(
+    events: &'events [Value],
+    plan: &str,
+) -> TestResult<Vec<(&'events str, &'events Value, &'events Value)>> {
+    let plan_scopes = serde_json::json!([{"kind": "file", "path": plan}]);
+    events
+        .iter()
+        .filter(|event| event["op"] == "claim" && event["scopes"] == plan_scopes)
+        .map(|event| {
+            let id = required_string(event, "/reservation_id", "plan-only claim")?;
+            let extent = events
+                .iter()
+                .rev()
+                .filter(|event| event["op"] == "holder_merge_extent_observed")
+                .find(|event| {
+                    event["reservations"]
+                        .as_array()
+                        .is_some_and(|reservations| {
+                            reservations
+                                .iter()
+                                .any(|reservation| reservation["reservation_id"] == id)
+                        })
+                })
+                .ok_or_else(|| failure("the plan reservation should have a merge extent"))?;
+            Ok((id, &event["source"], &extent["extent"]))
+        })
+        .collect()
+}
+
+#[test]
+fn a_bash_write_after_checkpoint_creates_an_exact_path_hold() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let plan = "README.md";
+    let (_directory, holder) = add_worktree_without_configuration(&repository, "bash-shrink")?;
+    checkpoint_phase(
+        &holder,
+        &[
+            "claim",
+            "file:finished.rs",
+            "--plan",
+            plan,
+            "--phase",
+            "1",
+            "--json",
+        ],
+    )?;
+    let before = journal_events(trunk)?.len();
+    fs::write(
+        holder.join(plan),
+        "# Phase one as built
+",
+    )?;
+    let output = run_post_tool_use(&holder, &bash_payload(&holder, "director"))?;
+    require_success(&output, "the Bash write after checkpoint")?;
+    let events = journal_events(trunk)?;
+    let claims = events[before..]
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .collect::<Vec<_>>();
+    assert_eq!(claims.len(), 1, "{claims:?}");
+    assert_eq!(
+        claims[0]["scopes"],
+        serde_json::json!([{"kind": "file", "path": plan}])
+    );
+    assert_eq!(claims[0]["source"]["kind"], "plan_shrink");
+    Ok(())
+}
+
+#[test]
+fn a_bash_write_after_checkpoint_creates_one_hold_per_free_path() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let (_directory, holder) = add_worktree_without_configuration(&repository, "bash-two-files")?;
+    checkpoint_phase(&holder, &["check", "file:finished.rs", "--json"])?;
+    let paths = ["README.md", "README-next.md"];
+    let before = journal_events(trunk)?.len();
+    for path in paths {
+        fs::write(holder.join(path), "# Phase one as built\n")?;
+    }
+    let output = run_post_tool_use(&holder, &bash_payload(&holder, "director"))?;
+    require_success(&output, "the Bash write after checkpoint")?;
+    let events = journal_events(trunk)?;
+    let claims = events[before..]
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .collect::<Vec<_>>();
+    assert_eq!(claims.len(), paths.len(), "{claims:?}");
+    let feedback = hook_feedback(&output, HookResponseEvent::PostToolUse, "two new holds")?;
+    for path in paths {
+        let scope = serde_json::json!([{"kind": "file", "path": path}]);
+        let claim = claims
+            .iter()
+            .find(|event| event["source"]["kind"] == "plan_shrink" && event["scopes"] == scope)
+            .ok_or_else(|| failure(format!("{path} needs its own hold: {claims:?}")))?;
+        let id = required_string(claim, "/reservation_id", "the new hold")?;
+        let line = format!("cargo-berth reserved {path} for this worktree (new reservation {id})");
+        assert!(feedback.additional_context.contains(&line), "{feedback:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_next_phase_check_acquires_a_path_from_a_checkpoint_gap_hold() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let (_directory, holder) = add_worktree_without_configuration(&repository, "hold-transfer")?;
+    checkpoint_phase(&holder, &["check", "file:finished.rs", "--json"])?;
+    let edit = run_pre_tool_use(
+        &holder,
+        &edit_payload(&holder, "README.md", Some("director")),
+    )?;
+    require_success(&edit, "the plan shrink edit")?;
+    let events = journal_events(trunk)?;
+    let hold = events
+        .iter()
+        .find(|event| event["source"]["kind"] == "plan_shrink")
+        .ok_or_else(|| failure("the edit should create a plan shrink hold"))?;
+    let hold_id = required_string(hold, "/reservation_id", "the plan shrink hold")?;
+    let next = run_berth_with_session(
+        &holder,
+        &["check", "file:README.md", "--json"],
+        "director.phase-2",
+    )?;
+    require_success(&next, "the next phase's check")?;
+    let envelope = json_output(&next)?;
+    let acquisition = &envelope["payload"]["data"]["acquisition"];
+    let phase_id = required_string(acquisition, "/reservation_id", "the next phase's check")?;
+    assert_ne!(phase_id, hold_id, "{acquisition}");
+    assert_eq!(acquisition["kind"], "appended");
+    assert_eq!(
+        acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    let events = journal_events(trunk)?;
+    let appended = &events[events
+        .iter()
+        .position(|event| event["op"] == "claim" && event["reservation_id"] == phase_id)
+        .ok_or_else(|| failure("the next phase should append its reservation"))?..];
+    assert_eq!(
+        appended[0]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "README.md"}])
+    );
+    assert!(
+        appended.iter().any(|event| {
+            event["op"] == "release"
+                && event["reservation_id"] == hold_id
+                && event["source"] == "reconciliation"
+        }),
+        "{appended:?}"
+    );
+    let existing = run_berth_with_session(
+        &holder,
+        &["check", "file:README.md", "--json"],
+        "director.phase-2",
+    )?;
+    require_success(&existing, "the mapped phase's next check")?;
+    assert_eq!(
+        json_output(&existing)?["payload"]["data"]["acquisition"]["reservation_id"],
+        phase_id
+    );
+    Ok(())
+}
+
+#[test]
+fn an_active_phase_edit_widens_the_phase_and_releases_the_checkpoint_gap_hold() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let plan = "README.md";
+    let (_directory, holder) = add_worktree_without_configuration(&repository, "hold-widen")?;
+    checkpoint_phase(&holder, &["check", "file:finished.rs", "--json"])?;
+    let edit = run_pre_tool_use(&holder, &edit_payload(&holder, plan, Some("director")))?;
+    require_success(&edit, "the plan shrink edit")?;
+    let events = journal_events(trunk)?;
+    let hold = events
+        .iter()
+        .find(|event| event["source"]["kind"] == "plan_shrink")
+        .ok_or_else(|| failure("the edit should create a plan shrink hold"))?;
+    let hold_id = required_string(hold, "/reservation_id", "the plan shrink hold")?;
+    let session = "director.phase-2";
+    let next = run_berth_with_session(&holder, &["check", "file:next.rs", "--json"], session)?;
+    require_success(&next, "the next phase's check")?;
+    let envelope = json_output(&next)?;
+    let phase_id = required_string(
+        &envelope,
+        "/payload/data/acquisition/reservation_id",
+        "the next phase's check",
+    )?;
+    let before = journal_events(trunk)?.len();
+
+    let edit = run_pre_tool_use(&holder, &edit_payload(&holder, plan, Some(session)))?;
+    require_success(&edit, "the active phase's plan edit")?;
+
+    let events = journal_events(trunk)?;
+    let mutations = events[before..]
+        .iter()
+        .filter(|event| matches!(event["op"].as_str(), Some("claim" | "widen" | "release")))
+        .collect::<Vec<_>>();
+    let [widen, release] = mutations.as_slice() else {
+        return Err(failure(format!(
+            "the phase should widen before the hold releases: {mutations:?}"
+        )));
+    };
+    assert_eq!(widen["op"], "widen");
+    assert_eq!(widen["reservation_id"], phase_id);
+    assert_eq!(
+        widen["added_scopes"],
+        serde_json::json!([{"kind": "file", "path": plan}])
+    );
+    assert_eq!(release["op"], "release");
+    assert_eq!(release["reservation_id"], hold_id);
+    Ok(())
+}
+
+#[test]
+fn a_plan_shrink_hold_releases_after_squash_integration() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let trunk = repository.path();
+    let plan = "README.md";
+    let (_directory, holder) = add_worktree_without_configuration(&repository, "squash-shrink")?;
+    checkpoint_phase(
+        &holder,
+        &[
+            "claim",
+            "file:finished.rs",
+            "--plan",
+            plan,
+            "--phase",
+            "1",
+            "--json",
+        ],
+    )?;
+    let edit = run_pre_tool_use(&holder, &edit_payload(&holder, plan, Some("director")))?;
+    require_success(&edit, "the plan shrink edit")?;
+    let events = journal_events(trunk)?;
+    let hold = events
+        .iter()
+        .find(|event| event["source"]["kind"] == "plan_shrink")
+        .ok_or_else(|| failure("the edit should create a plan shrink hold"))?;
+    let id = required_string(hold, "/reservation_id", "the plan shrink hold")?;
+    fs::write(
+        holder.join(plan),
+        "# Phase one as built
+",
+    )?;
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-am", "shrink phase one"]);
+    GIT.run_without_hooks(trunk, ["merge", "--quiet", "--squash", "squash-shrink"]);
+    GIT.run_without_hooks(
+        trunk,
+        ["commit", "--quiet", "-m", "integrate phase and plan"],
+    );
+    let settled = run_berth(&holder, &["board", "--reservation", id, "--json"])?;
+    require_success(&settled, "the squash-integrated plan hold")?;
+    assert_eq!(
+        json_output(&settled)?["payload"]["data"]["lifecycle"]["status"],
+        "released_after_checkpoint"
+    );
+    let events = journal_events(trunk)?;
+    assert!(events.iter().any(|event| {
+        event["op"] == "release"
+            && event["reservation_id"] == id
+            && event["disposition"]["kind"] == "rewritten_integration"
+            && event["source"] == "reconciliation"
+    }));
+    Ok(())
+}
+
+fn checkpoint_phase(holder: &Path, acquisition: &[&str]) -> TestResult {
+    let finished_path = "finished.rs";
+    let completed = run_berth_with_session(holder, acquisition, "director.phase-1")?;
+    require_success(&completed, "the completed phase's reservation")?;
+    let reservation_id_path = if acquisition.first() == Some(&"check") {
+        "/payload/data/acquisition/reservation_id"
+    } else {
+        "/payload/data/reservation_id"
+    };
+    let envelope = json_output(&completed)?;
+    let completed_id = required_string(
+        &envelope,
+        reservation_id_path,
+        "the completed phase's reservation",
+    )?;
+    fs::write(holder.join(finished_path), "// completed work\n")?;
+    GIT.run_without_hooks(holder, ["add", finished_path]);
+    GIT.run_without_hooks(holder, ["commit", "--quiet", "-m", "complete phase one"]);
+    let release = run_berth_with_session(
+        holder,
+        &["release", completed_id, "--json"],
+        "director.phase-1",
+    )?;
+    require_success(&release, "the phase checkpoint")?;
+    assert_eq!(
+        json_output(&release)?["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_tool_use_adds_a_plan_shrink_to_the_active_markerless_worktree_reservation() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let root = repository.path();
+    let plan = "plan.md";
+    fs::write(root.join(plan), "# Work plan\n")?;
+    let claimed = run_berth_with_session(
+        root,
+        &["check", "file:seed.rs", "--json"],
+        "director.phase-2",
+    )?;
+    require_success(&claimed, "the running phase's check")?;
+    let envelope = json_output(&claimed)?;
+    let reservation_id = required_string(
+        &envelope,
+        "/payload/data/acquisition/reservation_id",
+        "the running phase's check",
+    )?;
+    fs::remove_file(root.join(".git/cargo-berth-run-id"))?;
+    let before = journal_events(root)?;
+
+    let output = run_pre_tool_use(root, &edit_payload(root, plan, Some("director")))?;
+
+    require_success(&output, "the plan shrink edit")?;
+    let events = journal_events(root)?;
+    let acquisitions = events[before.len()..]
+        .iter()
+        .filter(|event| matches!(event["op"].as_str(), Some("claim" | "widen")))
+        .collect::<Vec<_>>();
+    assert_eq!(acquisitions.len(), 1, "{acquisitions:?}");
+    let event = acquisitions[0];
+    assert_eq!(event["op"], "widen", "{event}");
+    assert_eq!(event["reservation_id"], reservation_id);
+    assert_eq!(
+        event["added_scopes"],
+        serde_json::json!([{"kind": "file", "path": plan}])
+    );
+    Ok(())
+}
+
+#[test]
 fn post_tool_use_under_an_unmapped_session_widens_the_only_active_reservation() -> TestResult {
     let repository = CONFIGURED_REPOSITORY.instantiate();
     let root = repository.path();

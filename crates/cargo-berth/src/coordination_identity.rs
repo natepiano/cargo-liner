@@ -86,6 +86,7 @@ impl PresentedCoordinationRun {
             } => Some(Self(coordination_run_id)),
             EditAuthorization::Session { .. }
             | EditAuthorization::Marker { .. }
+            | EditAuthorization::SoleActivePhase { .. }
             | EditAuthorization::Unidentified => None,
         }
     }
@@ -803,6 +804,10 @@ pub(crate) fn validate_coordination_identity(
         EditAuthorization::Marker {
             coordination_run_id,
             ..
+        }
+        | EditAuthorization::SoleActivePhase {
+            coordination_run_id,
+            ..
         } => validate_marker(
             retained_reservation_set,
             coordination_run_id,
@@ -1131,6 +1136,7 @@ mod tests {
         let worktree_id = match authorization {
             EditAuthorization::Session { worktree_id, .. }
             | EditAuthorization::Marker { worktree_id, .. }
+            | EditAuthorization::SoleActivePhase { worktree_id, .. }
             | EditAuthorization::Environment { worktree_id, .. } => worktree_id,
             EditAuthorization::Unidentified => WorktreeId::new(),
         };
