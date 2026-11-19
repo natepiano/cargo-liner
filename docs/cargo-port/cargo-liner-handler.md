@@ -1034,10 +1034,10 @@ The copies are deleted. No source changes.
 
 **Spec:**
 1. Today `crates/cargo-handler/src/theme/files.rs` `install_theme` builds a `ThemeRegistry` with the handler's parser (`ThemeRegistry::from_dir_with_parser(source, builtins, parse_family)`), resolves the active theme with no remembered system appearance, collects the rejected theme files, installs the `ThemeState`, and sets the transparent background. `crates/tui_pane/src/app_config/theme_install.rs` `install_theme` does the same work with the default parser and the remembered system appearance.
-2. Add `install_theme_with_parser` to `tui_pane`. It takes the appearance config, the built-in variants, a `ThemeSource`, a parser, and the remembered-appearance choice. It returns the active-theme outcome and the rejected-file list. Move `ActiveThemeOutcome`, `RejectedThemeFile` and `ThemeInstallation` into `tui_pane` with it.
-3. Pass the remembered-appearance choice as a named type, never `Option`. `tui_pane::theme::RememberedAppearance` already names `NotObserved`; expose it only as far as the handler needs.
+2. Add `install_theme_with_parser` to `tui_pane`. It takes the appearance config, the built-in variants, a `ThemeSource` and a parser. It returns the active-theme outcome and the rejected-file list. Move `ActiveThemeOutcome`, `RejectedThemeFile` and `ThemeInstallation` into `tui_pane` with it.
+3. `install_theme_with_parser` resolves `auto` mode without the remembered system appearance, as the handler does today. The choice between the remembered appearance and none is a private named type in `tui_pane`, never `Option`; `RememberedAppearance` stays crate-private. Public API with no outside consumer stays private (review, 2026-11-19).
 4. Make `tui_pane::install_theme` and the handler's install function one-line calls to the shared body. No copy of the registry build, resolve or install steps stays in either crate.
-5. Keep the handler's behavior: it passes the not-observed choice, as it passes `None` today. The handler shows the same theme and the same notes as before. Keep the handler's message text in `files.rs`.
+5. Keep the handler's behavior: it resolves without the remembered appearance, as it passes `None` today. The handler shows the same theme and the same notes as before. Keep the handler's message text in `files.rs`.
 
 **Files:**
 - `crates/tui_pane/src/app_config/theme_install.rs`
