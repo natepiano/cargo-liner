@@ -10,6 +10,7 @@ use super::RowsReadout;
 use super::SummaryFoot;
 use super::TileContent;
 use super::TileDemands;
+use super::fade::ReadoutColor;
 use crate::tiles::TileColumnOrder;
 /// Whether the cells are drawn with what is in them.
 ///
@@ -76,6 +77,15 @@ pub trait TileCells<Id> {
         match self.readout_fade(content) {
             CellReadoutFade::Unfaded => CellFadeProgress::new(0),
             CellReadoutFade::Fading(progress) => progress,
+        }
+    }
+
+    /// Select the amount and color function for the readout spans.
+    #[must_use]
+    fn readout_ink(&self, content: &TileContent<Id>) -> Option<(u8, ReadoutColor)> {
+        match self.readout_fade(content) {
+            CellReadoutFade::Unfaded => None,
+            CellReadoutFade::Fading(_) => Some(self.readout_progress(content).readout_ink()),
         }
     }
 

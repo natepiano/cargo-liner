@@ -120,6 +120,7 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::MergeExtentKey;
 use crate::reservation::OrphanRetirementReason;
+use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
@@ -2743,11 +2744,22 @@ fn reservation_merge_extent(
     let MergeExtent::Protected { key, scopes } = extent else {
         return extent.clone();
     };
+    let own = crate::scope::ScopeContainmentIndex::new(reservation.scopes().as_slice().iter());
+    if reservation.is_plan_shrink() {
+        return MergeExtent::derived(
+            key.clone(),
+            scopes
+                .as_slice()
+                .iter()
+                .filter(|path| own.contains(path))
+                .cloned()
+                .collect(),
+        );
+    }
     let siblings = holder_group(reservation, reservations, snapshot);
     if siblings.len() == 1 {
         return extent.clone();
     }
-    let own = crate::scope::ScopeContainmentIndex::new(reservation.scopes().as_slice().iter());
     let shared = crate::scope::ScopeContainmentIndex::new(
         siblings
             .iter()
@@ -3074,7 +3086,12 @@ fn complete_reconciliation_plan(
     append_settlement_operations(reservations, ordering_graph, plan)?;
     let merged_runs = match context.merged_run_endings {
         MergedRunEndings::End | MergedRunEndings::CheckpointRequested { .. } => {
-            append_merged_run_endings(reservations, plan, context.merged_run_endings)
+            append_merged_run_endings(
+                reservations,
+                plan,
+                context.merged_run_endings,
+                context.repository,
+            )
         },
         MergedRunEndings::Defer => Vec::new(),
     };
@@ -3089,7 +3106,7 @@ fn complete_reconciliation_plan(
         {
             snapshot.evidence = RepositoryReservationEvidence::Released {
                 protected_tip:      merged_run.protected_tip.clone(),
-                disposition:        ReleaseDisposition::Integrated,
+                disposition:        merged_run.disposition.clone(),
                 integration_status: merged_run.integration_status.clone(),
             };
         }
@@ -4887,12 +4904,20 @@ fn settlement_selection(
     if &trunk_oid != actual {
         return SettlementSelection::Unchanged;
     }
-    SettlementSelection::Release(match proof {
+    SettlementSelection::Release(integrated_disposition(proof, &witness, &trunk_oid))
+}
+
+fn integrated_disposition(
+    proof: IntegrationProof,
+    witness: &IntegrationWitness,
+    trunk_oid: &GitObjectId,
+) -> ReleaseDisposition {
+    match proof {
         IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
         IntegrationProof::ScopedPatchEquivalent | IntegrationProof::RewrittenWitnessAncestor => {
-            ReleaseDisposition::RewrittenIntegration(witness.resolve(&trunk_oid))
+            ReleaseDisposition::RewrittenIntegration(witness.resolve(trunk_oid))
         },
-    })
+    }
 }
 
 /// Finish ordinary actual-trunk settlement after fresh merge extents and evidence are planned.
@@ -4977,6 +5002,72 @@ struct MergedRunEnding {
     reservation_id:     ReservationId,
     protected_tip:      ProtectedReservationTip,
     integration_status: IntegrationEvidenceStatus,
+    disposition:        ReleaseDisposition,
+}
+
+/// Check that the holder committed a change to the plan after the hold began.
+fn plan_shrink_has_committed_work(
+    reservation: &Reservation,
+    key: &MergeExtentKey,
+    repository: &git::RepositorySnapshot,
+    git_cost: &mut MergeExtentGitCost,
+) -> bool {
+    let [scope] = reservation.scopes().as_slice() else {
+        return false;
+    };
+    let Ok((paths, path_queries)) = repository.unmerged_branch_paths(
+        repository.repository_root(),
+        reservation.phase_start_head().as_ref(),
+        &key.head,
+    ) else {
+        return false;
+    };
+    git_cost.path_queries += path_queries;
+    paths.contains(&scope.path)
+}
+
+/// Find the commit and proof that permit the reservation to end.
+fn merged_run_integration(
+    reservation: &Reservation,
+    key: &MergeExtentKey,
+    repository: &git::RepositorySnapshot,
+    git_cost: &mut MergeExtentGitCost,
+) -> Option<(ProtectedReservationTip, IntegrationEvidenceStatus)> {
+    let protected_tip = ProtectedReservationTip::from(key.head.clone());
+    let repository_root = repository.repository_root();
+    if reservation.is_plan_shrink() {
+        if !plan_shrink_has_committed_work(reservation, key, repository, git_cost) {
+            return None;
+        }
+        git_cost.path_queries += 1;
+        let status = reservation::integration_status(
+            repository_root,
+            reservation.phase_start_head(),
+            reservation.scopes(),
+            &protected_tip,
+            &key.trunk,
+            PriorIntegrationStatus::Unproven,
+        )
+        .ok()?;
+        return Some((protected_tip, status));
+    }
+    if key.head != key.trunk {
+        git_cost.path_queries += 1;
+        if !matches!(
+            git::reachability(repository_root, &key.head, &key.trunk),
+            Ok(Reachability::Ancestor)
+        ) {
+            return None;
+        }
+    }
+    Some((
+        protected_tip,
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid: key.trunk.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
+            witness:   IntegrationWitness::EvaluatedTrunk,
+        },
+    ))
 }
 
 /// Checkpoint merged runs that `MergedRunEndings` permits to end.
@@ -4992,6 +5083,7 @@ fn append_merged_run_endings(
     reservations: &RetainedReservationSet,
     reconciliation: &mut ReconciliationPlan,
     merged_run_endings: MergedRunEndings,
+    repository: &git::RepositorySnapshot,
 ) -> Vec<MergedRunEnding> {
     let mut merged_runs = Vec::new();
     for reservation in reservations.iter() {
@@ -5008,14 +5100,17 @@ fn append_merged_run_endings(
         };
         // MergeExtentKey.reservation_group separates shared branch progress from this phase's
         // checkpoint request.
-        if matches!(
-            key.reservation_group,
-            HolderMergeExtentCoverage::ReservationShares { .. }
-        ) && !matches!(
-            merged_run_endings,
-            MergedRunEndings::CheckpointRequested { reservation_id, worktree_id }
-                if reservation_id == reservation.id() && worktree_id == reservation.actor().worktree
-        ) {
+        if !reservation.is_plan_shrink()
+            && matches!(
+                key.reservation_group,
+                HolderMergeExtentCoverage::ReservationShares { .. }
+            )
+            && !matches!(
+                merged_run_endings,
+                MergedRunEndings::CheckpointRequested { reservation_id, worktree_id }
+                    if reservation_id == reservation.id() && worktree_id == reservation.actor().worktree
+            )
+        {
             continue;
         }
         // Enrollment requires a nonempty observed footprint. Its immutable source preserves
@@ -5028,28 +5123,23 @@ fn append_merged_run_endings(
         if !did_work {
             continue;
         }
-        if key.head != key.trunk {
-            reconciliation.action.merge_extent_git_cost.path_queries += 1;
-            let reachability = git::reachability(
-                &reconciliation.action.repository_root,
-                &key.head,
-                &key.trunk,
-            );
-            if !matches!(reachability, Ok(Reachability::Ancestor)) {
-                continue;
-            }
-        }
-        let protected_tip = ProtectedReservationTip::from(key.head.clone());
-        let integration_status = IntegrationEvidenceStatus::Integrated {
-            trunk_oid: key.trunk.clone(),
-            proof:     IntegrationProof::ProtectedTipAncestor,
-            witness:   IntegrationWitness::EvaluatedTrunk,
+        let Some((protected_tip, integration_status)) = merged_run_integration(
+            reservation,
+            key,
+            repository,
+            &mut reconciliation.action.merge_extent_git_cost,
+        ) else {
+            continue;
         };
-        let ReservationIntegrationJudgment::Integrated { .. } =
-            reservation::judge_integration(&integration_status, extent)
+        let ReservationIntegrationJudgment::Integrated {
+            trunk_oid,
+            proof,
+            witness,
+        } = reservation::judge_integration(&integration_status, extent)
         else {
             continue;
         };
+        let disposition = integrated_disposition(proof, &witness, &trunk_oid);
         let trunk_snapshot = key.trunk.clone();
         reconciliation
             .operations
@@ -5067,7 +5157,7 @@ fn append_merged_run_endings(
             });
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
-            disposition:    ReleaseDisposition::Integrated,
+            disposition:    disposition.clone(),
             source:         Some(ReleaseSource::Reconciliation),
         });
         reconciliation
@@ -5075,12 +5165,13 @@ fn append_merged_run_endings(
             .settlements
             .push(ReconciledSettlement {
                 reservation_id: reservation.id(),
-                disposition:    ReleaseDisposition::Integrated,
+                disposition:    disposition.clone(),
             });
         merged_runs.push(MergedRunEnding {
             reservation_id: reservation.id(),
             protected_tip,
             integration_status,
+            disposition,
         });
     }
     merged_runs

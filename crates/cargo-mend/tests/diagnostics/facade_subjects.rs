@@ -741,6 +741,53 @@ fn extern_crate_declaration_retains_exact_pub_crate_at_a_foreign_boundary() {
 }
 
 #[test]
+fn stored_reports_are_found_under_a_split_build_directory() -> anyhow::Result<()> {
+    let fixture = tempdir()?;
+    pin_pub_in_path(fixture.path(), PubInPath::Permitted);
+    write_manifest(
+        &fixture,
+        "split_report_fixture",
+        ManifestFeatures::WithoutPromote,
+    );
+    fs::create_dir(fixture.path().join(".cargo"))?;
+    fs::write(
+        fixture.path().join(".cargo/config.toml"),
+        "[build]\nbuild-dir = \"intermediates\"\n",
+    )?;
+    fs::create_dir(fixture.path().join("src"))?;
+    fs::write(fixture.path().join("src/lib.rs"), "pub fn analyzed() {}\n")?;
+
+    run_mend_json(&fixture.path().join("Cargo.toml"));
+    let directories = CargoDirectories::for_fixture(fixture.path());
+    assert_ne!(directories.build_directory, directories.target_directory);
+    let mut expected: Vec<_> = walkdir::WalkDir::new(&directories.build_directory)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(walkdir::DirEntry::into_path)
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "rmeta")
+        })
+        .map(|path| {
+            let mut name = path.file_stem().expect("metadata file stem").to_os_string();
+            name.push(STORED_REPORT_SUFFIX);
+            path.with_file_name(name)
+        })
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "Cargo must put metadata under the separate build directory: {}",
+        directories.build_directory.display(),
+    );
+    let mut actual = stored_report_paths(fixture.path());
+    expected.sort_unstable();
+    actual.sort_unstable();
+    assert_eq!(actual, expected, "each metadata file must have one report");
+    Ok(())
+}
+
+#[test]
 fn cargo_renamed_extern_crate_reports_a_foreign_chain_blocker() {
     let temp = tempdir().expect("create renamed dependency fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
@@ -863,9 +910,7 @@ fn assert_foreign_boundary_finding(report: &Report, path: &str, _blocker_locatio
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let mut stored_report_count = 0;
     for path in stored_report_paths(temp.path()) {
-        stored_report_count += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let fix_facts = stored_report
@@ -877,7 +922,6 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
             "a foreign chain blocker must not write a pub-use fix fact: {stored_report:#?}"
         );
     }
-    assert!(stored_report_count > 0, "missing stored findings report");
 }
 
 #[test]

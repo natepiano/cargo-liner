@@ -1626,7 +1626,10 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
             PatKind::Expr(expr) if let PatExprKind::Path(qpath) = &expr.kind => {
                 self.record_qpath(qpath, expr.hir_id);
             },
-            PatKind::Struct(_, fields, _) => self.record_struct_pat_field_targets(pat, fields),
+            PatKind::Struct(qpath, fields, _) => {
+                self.record_qpath(qpath, pat.hir_id);
+                self.record_struct_pat_field_targets(pat, fields);
+            },
             PatKind::TupleStruct(qpath, ..) => self.record_qpath(qpath, pat.hir_id),
             _ => {},
         }

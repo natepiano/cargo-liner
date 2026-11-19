@@ -15,10 +15,8 @@ use std::time::Instant;
 use serde::Serialize;
 
 use super::AgentPlacement;
-use super::AgentRow;
 use super::Census;
 use super::CensusUpdate;
-use super::HierarchySnapshot;
 use super::MachineState;
 use super::Observed;
 use super::PassFact;
@@ -40,7 +38,10 @@ use super::probe;
 use super::remote::ProbeOutcome;
 use super::remote::RemoteRunner;
 use super::remote::SshRunner;
+use super::scan::CensusScan;
 use super::scan::ScanStage;
+use super::scan::SessionProcess;
+use super::scan::SessionProcesses;
 use super::unix_now;
 use crate::agent_cell;
 use crate::agent_cell::SessionCells;
@@ -60,7 +61,7 @@ use crate::startup_log;
 
 /// The `census --json` document. A field rename or removal increments `schema`.
 #[derive(Debug, Serialize)]
-struct CensusReport {
+struct CensusReport<'a> {
     /// The document version.
     schema:    u32,
     /// This machine first, then each configured remote in configuration order.
@@ -70,22 +71,32 @@ struct CensusReport {
     /// Each worker of a unit's current run that a tile shows, in staff id order.
     workers:   Vec<WorkerReport>,
     /// Each session a tile shows, in session id order.
-    sessions:  Vec<SessionReport>,
+    sessions:  Vec<SessionReport<'a>>,
 }
 
 /// One session a tile shows.
 #[derive(Debug, Serialize)]
-struct SessionReport {
+struct SessionReport<'a> {
     /// The session id.
     session:  String,
     /// The machine whose tile shows the session.
     machine:  String,
+    /// The process ID and start, omitted together if the start is unreadable.
+    #[serde(flatten)]
+    owner:    SessionOwner<'a>,
     /// The tile status word, or null with no accounts entry.
     status:   Option<&'static str>,
     /// The tile activity text of a busy session, or null when the session is not busy.
     activity: Option<String>,
     /// Each shell row the tile shows under the session, in tile line order.
     shells:   Vec<ShellReport>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum SessionOwner<'a> {
+    Known(&'a SessionProcess),
+    Unreadable {},
 }
 
 /// One shell row of a session.
@@ -97,18 +108,28 @@ struct ShellReport {
     started_at: u64,
 }
 
-impl SessionReport {
-    fn new(session: &str, cell: &SessionCells) -> Self {
+impl<'a> SessionReport<'a> {
+    fn new(
+        session: &str,
+        cell: &SessionCells,
+        processes: &'a BTreeMap<String, SessionProcesses>,
+    ) -> Self {
+        let owner = processes
+            .get(&cell.machine)
+            .and_then(|owners| owners.get(session))
+            .filter(|_| cell.shells_share_machine)
+            .map_or(SessionOwner::Unreadable {}, SessionOwner::Known);
         Self {
-            session:  session.to_owned(),
-            machine:  cell.machine.clone(),
-            status:   status(cell),
+            session: session.to_owned(),
+            machine: cell.machine.clone(),
+            owner,
+            status: status(cell),
             activity: matches!(
                 cell.status,
                 ReportedSessionState::Reported(SessionState::Busy)
             )
             .then(|| cell.activity.clone()),
-            shells:   cell.shells.iter().map(ShellReport::from).collect(),
+            shells: cell.shells.iter().map(ShellReport::from).collect(),
         }
     }
 }
@@ -261,8 +282,14 @@ struct Listed<'a> {
     facts:   &'a WorkerFacts,
 }
 
-impl CensusReport {
-    fn build(census: &Census, remotes: &[String], states: &SessionStates, now: u64) -> Self {
+impl<'a> CensusReport<'a> {
+    fn build(
+        census: &Census,
+        remotes: &[String],
+        states: &SessionStates,
+        now: u64,
+        processes: &'a BTreeMap<String, SessionProcesses>,
+    ) -> Self {
         let machines = census.machines(remotes);
         let placement = AgentPlacement::from_machines(&machines, states);
         let cells = agent_cell::session_cells(&placement, now);
@@ -321,7 +348,7 @@ impl CensusReport {
             workers,
             sessions: cells
                 .iter()
-                .map(|(session, cell)| SessionReport::new(session, cell))
+                .map(|(session, cell)| SessionReport::new(session, cell, processes))
                 .collect(),
         }
     }
@@ -452,7 +479,7 @@ pub(crate) fn print() -> ExitCode {
 /// One source's answer to the census.
 enum SourceAnswer {
     /// This machine's rows and hierarchy.
-    Local((Vec<AgentRow>, HierarchySnapshot)),
+    Local(CensusScan),
     /// The accounts command's session states.
     Accounts(AccountsSource),
     /// The remote at this index of the configured remotes.
@@ -461,7 +488,7 @@ enum SourceAnswer {
 
 /// What each source answered before the census bound; `None` did not answer in time.
 struct SourceAnswers {
-    local:    Option<(Vec<AgentRow>, HierarchySnapshot)>,
+    local:    Option<CensusScan>,
     accounts: Option<AccountsSource>,
     remotes:  Vec<Option<ProbeOutcome>>,
 }
@@ -472,7 +499,7 @@ impl SourceAnswers {
     fn collect(
         config: &Config,
         runner: &Arc<dyn RemoteRunner>,
-        scan: impl FnOnce() -> (Vec<AgentRow>, HierarchySnapshot) + Send + 'static,
+        scan: impl FnOnce() -> CensusScan + Send + 'static,
         stop: Instant,
         deadline: Instant,
     ) -> Self {
@@ -523,12 +550,12 @@ impl SourceAnswers {
 fn print_to<Scan>(
     loaded: &LoadedConfig,
     runner: &Arc<dyn RemoteRunner>,
-    prepare_scan: impl FnOnce(&Config, HerdrProbeWait) -> Scan,
+    prepare_scan: impl FnOnce(&Config, HerdrProbeWait, Instant) -> Scan,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> ExitCode
 where
-    Scan: FnOnce() -> (Vec<AgentRow>, HierarchySnapshot) + Send + 'static,
+    Scan: FnOnce() -> CensusScan + Send + 'static,
 {
     let started = Instant::now();
     if let Some(error) = &loaded.error {
@@ -539,14 +566,25 @@ where
     let remotes = &config.machines.remote;
     let bound = config.census.report_deadline.duration();
     let source_time = bound.saturating_sub(CENSUS_SOURCE_STOP_RESERVE);
-    let scan = prepare_scan(config, config.census.herdr_probe_wait.at_most(source_time));
-    let answers =
-        SourceAnswers::collect(config, runner, scan, started + source_time, started + bound);
+    let stop = started + source_time;
+    let scan = prepare_scan(
+        config,
+        config.census.herdr_probe_wait.at_most(source_time),
+        stop,
+    );
+    let answers = SourceAnswers::collect(config, runner, scan, stop, started + bound);
     let accounts = answers.accounts.unwrap_or_else(AccountsSource::timed_out);
-    let mut census = Census::new(local_machine_name());
+    let machine = local_machine_name();
+    let mut census = Census::new(machine.clone());
+    let mut processes = BTreeMap::new();
     census.record_local_accounts(&accounts);
     match answers.local {
-        Some((rows, hierarchy)) => {
+        Some(CensusScan {
+            rows,
+            hierarchy,
+            session_processes,
+        }) => {
+            processes.insert(machine, session_processes);
             census.apply(CensusUpdate::Local {
                 rows,
                 hierarchy,
@@ -557,12 +595,21 @@ where
     }
     let mut hierarchy_answers = RemoteHierarchyAnswers::default();
     for (host, outcome) in remotes.iter().zip(answers.remotes) {
+        let (state, session_processes) =
+            hierarchy_answers.answer(host, outcome.unwrap_or(ProbeOutcome::TimedOut));
+        processes.insert(host.clone(), session_processes);
         census.apply(CensusUpdate::Remote {
-            host:  host.clone(),
-            state: hierarchy_answers.answer(host, outcome.unwrap_or(ProbeOutcome::TimedOut)),
+            host: host.clone(),
+            state,
         });
     }
-    let report = CensusReport::build(&census, remotes, accounts.session_states(), unix_now());
+    let report = CensusReport::build(
+        &census,
+        remotes,
+        accounts.session_states(),
+        unix_now(),
+        &processes,
+    );
     let written = serde_json::to_string_pretty(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(stdout, "{json}"));
