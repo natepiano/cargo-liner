@@ -1846,7 +1846,7 @@ Each native test fixture records its source identity, and each publication remov
 **Acceptance gate:** a test reproduces the second reservation before the fix and passes after it; `verify.sh final cargo-berth` passes on natedev; the Mac cargo-berth suite passes; lint.
 
 
-### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+### Phase 71 — A capture shim lock that no install holds does not block  · status: done
 
 **Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
 

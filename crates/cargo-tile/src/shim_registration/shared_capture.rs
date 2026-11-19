@@ -15,6 +15,7 @@ use super::parallel_cases;
 use crate::config::Config;
 use crate::constants::CAPTURE_SHIM_VERSION;
 use crate::constants::RUSTUP_HOME_ENV;
+use crate::constants::SHIM_LOCK_NAME;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
 use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
@@ -587,7 +588,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
         after.modified().expect("mtime"),
         before.modified().expect("original mtime")
     );
-    assert!(!newer.join("cargo-tile-shim.lock").exists());
+    assert_shim_lock_is_released(&newer);
     assert!(!newer.join("cargo-tile-shim.staging").exists());
 }
 
@@ -710,7 +711,7 @@ fn local_install_refuses_a_truncated_version_without_changing_installed_files() 
             path.display()
         );
     }
-    assert!(!bin.join("cargo-tile-shim.lock").exists());
+    assert_shim_lock_is_released(&bin);
     assert!(!bin.join("cargo-tile-shim.staging").exists());
 }
 
@@ -930,7 +931,7 @@ fn uninstall_reports_an_orphan_and_restores_later_toolchains_before_failing() {
     );
     assert!(!orphan.join("cargo-tile-real").exists());
     for bin in [&orphan, &working] {
-        assert!(!bin.join("cargo-tile-shim.lock").exists());
+        assert_shim_lock_is_released(bin);
     }
 }
 
@@ -1190,7 +1191,7 @@ fn account_status_child_reports_all_states_without_changing_toolchains() {
         );
     }
     for bin in [&installed, &absent, &repairable, &orphaned, &unreadable] {
-        assert!(!bin.join("cargo-tile-shim.lock").exists());
+        assert!(!bin.join(SHIM_LOCK_NAME).exists());
         assert!(!bin.join("cargo-tile-shim.staging").exists());
     }
     assert!(!absent.join("cargo-tile-real").exists());
@@ -1323,7 +1324,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
         assert_eq!(after.ino(), original.ino());
         assert_eq!(after.mode(), original.mode());
         assert!(!bin.join("cargo-tile-real").exists());
-        assert!(!bin.join("cargo-tile-shim.lock").exists());
+        assert_shim_lock_is_released(bin);
     }
     for bin in [&orphan, &broken] {
         assert_eq!(
@@ -1422,8 +1423,10 @@ fn assert_terminated_child_retention(operation: HookOperation) {
     }
     let waiting = accounts[0].home.join(".rustup/toolchains/z-waiting/bin");
     let waiting_cargo = fs::read(waiting.join("cargo")).expect("waiting cargo before child");
-    let lock = waiting.join("cargo-tile-shim.lock");
-    fs::write(&lock, b"fixture installer owns this lock").expect("hold later toolchain lock");
+    let lock = waiting.join(SHIM_LOCK_NAME);
+    fs::write(&lock, b"fixture installer owns this lock").expect("write later toolchain lock");
+    let held_lock = fs::File::open(&lock).expect("open later toolchain lock");
+    held_lock.try_lock().expect("hold later toolchain lock");
     let wrapper = terminating_account_child(directory.path());
     let reports = hook::run_account_hooks(&accounts, &wrapper, operation);
     assert_eq!(reports.len(), 2, "{reports:?}");
@@ -1504,7 +1507,15 @@ fn assert_finished_account_toolchain(bin: &Path, operation: HookOperation) {
         );
         assert!(!real.exists());
     }
-    assert!(!bin.join("cargo-tile-shim.lock").exists());
+    assert_shim_lock_is_released(bin);
+}
+
+/// Open the existing file to check that the child released its lock.
+fn assert_shim_lock_is_released(bin: &Path) {
+    fs::File::open(bin.join(SHIM_LOCK_NAME))
+        .expect("open persistent lock file")
+        .try_lock()
+        .expect("child released the lock");
 }
 
 /// Read an actual child row before killing it; never synthesize or discard protocol rows.
@@ -1523,6 +1534,7 @@ fn terminating_account_child(directory: &Path) -> PathBuf {
         format!(
             r#"#!/bin/sh
 exec python3 - '{binary}' "$@" <<'PY'
+import fcntl
 import os
 from pathlib import Path
 import select
@@ -1530,6 +1542,14 @@ import signal
 import subprocess
 import sys
 import time
+
+def lock_is_free(path):
+    with path.open('rb') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
 
 home = Path(os.environ['HOME'])
 if home.name != 'first':
@@ -1545,7 +1565,7 @@ try:
             changed = (first / 'cargo').read_bytes() != original
         except FileNotFoundError:
             changed = False
-        if changed and not (first / 'cargo-tile-shim.lock').exists():
+        if changed and lock_is_free(first / '{SHIM_LOCK_NAME}'):
             break
         assert time.monotonic() < deadline, 'the first toolchain never finished'
         time.sleep(0.001)

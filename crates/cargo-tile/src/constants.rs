@@ -855,15 +855,9 @@ pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
 /// Environment variable moving the rustup home away from
 /// [`RUSTUP_DIRNAME`].
 pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
-/// Exclusive-create lock beside the shim, held across state inspection
-/// and installation so concurrent installers cannot overwrite real cargo.
+/// Persistent file for the per-toolchain lock beside the shim.
 pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
-/// An abandoned exclusive-create lock persists after its owner exits,
-/// so exhausted retries must explain how to recover without racing it.
-pub(crate) const SHIM_LOCK_RECOVERY: &str =
-    "confirm no install is still running, remove this lock file, and run cargo-tile install again";
-/// Brief retries let a concurrent installer finish without waiting
-/// indefinitely for a lock left behind by a terminated process.
+/// Limit the wait for a competing operation to release the lock.
 pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
 /// Match the favorites lock's short wait between competing writers.
 pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
