@@ -300,7 +300,92 @@ impl OrderingGraph {
     }
 
     /// Return the number of durable ordering relationships.
+    #[cfg(test)]
     pub(crate) const fn edge_count(&self) -> usize { self.edges.len() }
+
+    /// Check the live ordering limit after the claim adds and replaces edges.
+    pub(crate) fn claim_exceeds_live_ordering_limit(
+        &self,
+        requester: ReservationId,
+        authorization: &ConflictAuthorization,
+        reservations: &RetainedReservationSet,
+        maximum: u32,
+    ) -> bool {
+        let added = match authorization {
+            ConflictAuthorization::Sequence {
+                blocker, direction, ..
+            } => vec![directed_endpoints(requester, *blocker, *direction)],
+            ConflictAuthorization::SequencePerHolder { holders, .. } => holders
+                .iter()
+                .map(|holder| directed_endpoints(requester, holder.blocker, holder.direction))
+                .collect(),
+            ConflictAuthorization::SequenceWithExistingEdges { holders, .. } => holders
+                .iter()
+                .filter_map(|binding| match binding {
+                    ClaimSequenceBinding::NewEdge { holder, .. } => Some(directed_endpoints(
+                        requester,
+                        holder.blocker,
+                        holder.direction,
+                    )),
+                    ClaimSequenceBinding::ExistingEdge { .. } => None,
+                })
+                .collect(),
+            ConflictAuthorization::NoConflict
+            | ConflictAuthorization::Enrollment { .. }
+            | ConflictAuthorization::Defer { .. }
+            | ConflictAuthorization::Override { .. }
+            | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => return false,
+        };
+        self.exceeds_live_ordering_limit(reservations, &added, authorization.replaced(), maximum)
+    }
+
+    /// Check the same live ordering limit for a sequence or deferral resolution.
+    pub(crate) fn sequence_exceeds_live_ordering_limit(
+        &self,
+        edge: &PreparedOrderingEdge,
+        reservations: &RetainedReservationSet,
+        maximum: u32,
+    ) -> bool {
+        self.exceeds_live_ordering_limit(reservations, &[(edge.before, edge.after)], &[], maximum)
+    }
+
+    fn exceeds_live_ordering_limit(
+        &self,
+        reservations: &RetainedReservationSet,
+        added: &[(ReservationId, ReservationId)],
+        replaced: &[ContradictedOrdering],
+        maximum: u32,
+    ) -> bool {
+        let live = reservations
+            .iter()
+            .filter(|reservation| !reservation.is_terminal())
+            .map(Reservation::id)
+            .collect::<HashSet<_>>();
+        // A new claim has no graph vertex yet. Pruned reservations still have vertices.
+        let is_live_endpoint =
+            |id: &ReservationId| live.contains(id) || !self.vertices.contains(id);
+        let is_live = |(before, after): &(ReservationId, ReservationId)| {
+            is_live_endpoint(before) && is_live_endpoint(after)
+        };
+        let mut added = added.iter().copied().filter(&is_live).peekable();
+        if added.peek().is_none() {
+            return false;
+        }
+        let replaced = replaced
+            .iter()
+            .map(|edge| edge.edge_id)
+            .collect::<HashSet<_>>();
+        let retained = self.edges.iter().filter_map(|edge| {
+            let endpoints = (edge.before, edge.after);
+            (is_live(&endpoints) && !replaced.contains(&edge.edge_id)).then_some(endpoints)
+        });
+        let mut adjacency = HashMap::<ReservationId, Vec<ReservationId>>::new();
+        for (before, after) in retained.chain(added) {
+            adjacency.entry(before).or_default().push(after);
+        }
+        let count = transitive_reduction_edge_count(&adjacency);
+        u64::try_from(count).map_or(true, |count| count > u64::from(maximum))
+    }
 
     /// Iterate each distinct predecessor exactly once with its direct successors.
     pub(crate) fn predecessors(&self) -> impl Iterator<Item = GraphPredecessor<'_>> {
@@ -1146,6 +1231,39 @@ fn live_reservation(
         .ok()
         .filter(|reservation| !reservation.is_terminal())
         .ok_or(EdgeDeclarationRejection::TerminalEndpoint(reservation_id))
+}
+
+/// Count edges with no alternate path in a directed acyclic graph. The count ignores scopes.
+fn transitive_reduction_edge_count(
+    adjacency: &HashMap<ReservationId, Vec<ReservationId>>,
+) -> usize {
+    let mut pending = Vec::new();
+    let mut reachable = HashSet::new();
+    let mut count = 0;
+    for successors in adjacency.values() {
+        if successors.len() == 1 {
+            count += 1;
+            continue;
+        }
+        // Start two edges away. A direct successor reached from here has an alternate path.
+        pending.extend(
+            successors
+                .iter()
+                .flat_map(|successor| adjacency.get(successor).into_iter().flatten())
+                .copied(),
+        );
+        while let Some(vertex) = pending.pop() {
+            if reachable.insert(vertex) {
+                pending.extend(adjacency.get(&vertex).into_iter().flatten().copied());
+            }
+        }
+        count += successors
+            .iter()
+            .filter(|successor| !reachable.contains(*successor))
+            .count();
+        reachable.clear();
+    }
+    count
 }
 
 const fn directed_endpoints(
