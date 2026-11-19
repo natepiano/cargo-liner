@@ -82,7 +82,8 @@ impl DriftReservationSelection {
             reservations
                 .iter()
                 .filter(|reservation| {
-                    reservation.is_active_for_coordination_run_and_worktree(run, worktree)
+                    !reservation.is_plan_shrink()
+                        && reservation.is_active_for_coordination_run_and_worktree(run, worktree)
                 })
                 .map(Reservation::id)
                 .collect(),
@@ -165,7 +166,8 @@ impl PostCommitWideningSelection {
             reservations
                 .iter()
                 .filter(|reservation| {
-                    matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+                    !reservation.is_plan_shrink()
+                        && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
                         && reservation.actor().worktree == worktree
                 })
                 .map(Reservation::id)
@@ -176,7 +178,8 @@ impl PostCommitWideningSelection {
             DriftActingRun::Identified(run) => reservations
                 .iter()
                 .filter(|reservation| {
-                    reservation.is_active_for_coordination_run_and_worktree(run, worktree)
+                    !reservation.is_plan_shrink()
+                        && reservation.is_active_for_coordination_run_and_worktree(run, worktree)
                 })
                 .map(Reservation::id)
                 .collect(),

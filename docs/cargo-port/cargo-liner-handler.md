@@ -727,3 +727,166 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 - DYLD_PRINT_LIBRARIES and DYLD_PRINT_TO_FILE do not reach cargo's child processes. Do not use them to count loads.
 
 **Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
+
+### Phase 35 — Worker role labels take the `role.worker` color  · status: done
+
+#### As-built
+
+- `FooterRole::Worker` reads the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys. The user sets the color on the Accounts page; devtools writes the key to `~/.claude/config/statusline.conf`.
+- `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint in the tree role column. `Agent` and `Producer` stay plain.
+- A review-fallback session and each dispatch or unroled worker seat also show `worker` and take the same tint.
+- `FooterColors::management_role` tints job text: showrunner, unit director and Astra roles keep their ink; worker job text stays plain.
+- A missing or invalid `role.worker` key leaves every worker label plain.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterRole::Worker`, the parse arm, `hierarchy_role` and `management_role`.
+- `crates/cargo-handler/src/agent_cell.rs` — `job_tint` and `footer_role` route worker labels to the `role.worker` tint.
+- `docs/cargo-handler/as-built/colors.md` — the `role.worker` key and its scope.
+
+**Gotchas:**
+- `job_style` shares the role tint path. Worker job text must go through `management_role` to stay plain.
+
+**Ruled out:** tinting worker job text with `role.worker`, an unasked look change.
+
+### Phase 36 — mend skips generated files  · status: done
+
+#### As-built
+
+cargo-mend neither reports nor fixes a generated source file, such as the spacetime bindings in hana_catalyst `crates/hana_agora/src/bindings/`.
+
+- Config: a `[generated]` table with `markers` (`Vec<String>`) and `header_lines` (`NonZeroUsize`), in the global config and in a project `mend.toml`. A project key overrides the global key. The defaults are `["@generated", "AUTOMATICALLY GENERATED"]` and 5. `ProjectGeneratedSources::resolve(global)` applies the override. Global config creation and reconciliation share `generated_defaults`.
+- Classification: `SourceOwnershipClassifier` returns `SourceOwnership::{Generated, Authored}`. A file is generated when a marker is in its first `header_lines` lines, or when its parent module file (`D/mod.rs` or `D.rs`) is generated. Cargo target roots have no parent. Ancestry follows the mounted module path. The per-pass cache uses the physical file identity, so re-entry cannot recurse.
+- No report: `MendRunner::scan_checked_sources` drops each finding in a generated file in the disabled-diagnostic step, after the syntax-scan findings merge. `MendRunner::retain_authored_facts` removes `ReportFacts::pub_use_fix_facts` with a generated child or parent.
+- No fix: `SyntaxScans::retain_authored` and `ValidatedFixSet::retain_authored` drop the import, prefer-module-import, inline-path and imports-at-top fixes in generated files. A pub-use facade or subtree re-export proposal with any edit in a generated file is rejected whole, in the first pass (`subtree_reexport::scan_authored_selection`) and in each chain pass (`chain_pass(report, sources, source_ownership)`). The finding stays in the report.
+- The generated settings are not part of the compiler fingerprint.
+
+**Files:**
+- `crates/cargo-mend/src/config/generated_sources.rs` — the `[generated]` config type and project override.
+- `crates/cargo-mend/src/rust_syntax/generated_sources.rs` — the classifier.
+- `crates/cargo-mend/src/fixes/runner/{execute,mend_runner,plan,chain}.rs` — report, fact and proposal filters; `RunPlan::source_ownership`.
+- `crates/cargo-mend/src/fixes/pub_use_fixes/{scan,validated_plan}.rs`, `crates/cargo-mend/src/fixes/subtree_reexport/{mod,scan}.rs` — proposal rejection.
+- `crates/cargo-mend/tests/diagnostics/generated_sources.rs` — the spacetime-shaped regression test.
+- `crates/cargo-mend/README.md` — the "Generated sources" section.
+
+**Gotchas:**
+- A per-file report filter does not protect callers. Facade and subtree fixes edit caller and ancestor files, so each proposal checks every edit path.
+- The compiler facts cache is stored before the filter, so the generated settings stay out of the fingerprint.
+
+**Ruled out:** crate roots from the `lib.rs`/`main.rs` file names; support for one file that is both a Cargo target root and a symlinked module under a generated `mod.rs`, which is not a realistic case.
+
+### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: done
+
+#### As-built
+
+cargo-mend counts an item named through a qualified path in a pattern as a use of that item, and keeps its `pub(crate)`. Before this fix, `let board_templates::UnresolvedOverlap { a, b } = …;` in a test crate root did not count as a use of a `#[path]` child's struct. mend narrowed the struct to private, the build failed with E0603, and `--fix` rolled back.
+
+- `UseSiteCollector::visit_pat` records the `PatKind::Struct` path through `record_qpath`, beside `record_struct_pat_field_targets`. Tuple-struct and path patterns already recorded their path.
+- `record_target` maps a variant to its enum, so a qualified struct-variant pattern counts as a use of the enum.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs` — the struct-pattern arm of `visit_pat`.
+- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs` — `qualified_patterns_keep_required_pub_crate`, in the tile shape: a `#[path]` child with a struct, a tuple struct and an enum variant used through qualified patterns, plus one unused control.
+
+**Gotchas:** a pattern regression needs an unused control that mend still reports, and a project `mend.toml` that pins `[generated] markers = []` and the diagnostic. Without them, the test also passes when the file is skipped or the diagnostic is off.
+
+**Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.
+
+### Phase 38 — census sessions name their owner process  · status: done
+
+#### As-built
+
+Each object in `cargo-handler census --json` `sessions[]` names its sampled Claude director process, so the sdlc Units board can join a director's shell rows to its checked owner process. Source: sdlc unit-board, through the showrunner, 2026-11-18. `schema` stays 2.
+
+- `machine` (string) stays on every session, as before. It is the census machine name.
+- `pid` (integer) and `process_start` (string) are both present or both absent. `process_start` matches `~/.claude/scripts/lib/process_start.py`. Linux: `/proc/<pid>/stat` field 22 (`ProcessBirth::KernelTicks`) as a decimal string. macOS: `ps -p <pid> -o lstart=` with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends.
+- `ProcessStart` refuses empty text and whitespace at either end, at construction and at decode. `SessionProcess { pid: NonZeroU32, process_start }` holds the pair. `SessionReport` flattens an untagged `SessionOwner`: `Known(&SessionProcess)` or `Unreadable {}`.
+- `LocalScanner::scan` reads each session pid's exact birth before the process-table read. It emits the pair only when that birth equals the snapshot's birth and the session has one Claude row.
+- On macOS, one `/bin/ps -p <pids> -o pid= -o lstart=` call runs for all sessions. It is capped at 200 ms or the time left before the probe deadline, and the birth is checked again after `ps`.
+- Remote probes return `session_processes`. `remote::probe_answer` and `probe::parse_census_answer` are the single decode path for the report and the scheduler.
+- A session with a shell on another machine omits the pair (`SessionCells.shells_share_machine`).
+
+**Files:**
+- `crates/cargo-handler/src/census/scan.rs` — `ProcessStart`, `SessionProcess`, `SessionProcesses`, `CensusScan`, birth checks, `session_starts` for Linux and macOS.
+- `crates/cargo-handler/src/census/report.rs` — `SessionReport` and `SessionOwner`.
+- `crates/cargo-handler/src/census/probe.rs` — `ProbeReport.session_processes` and the owner deadline.
+- `crates/cargo-handler/src/census/remote.rs`, `census/mod.rs`, `census/schedule.rs` — the shared remote decode.
+- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells.shells_share_machine`.
+- `crates/cargo-handler/src/census/report_tests.rs` — a session with the full pair, a session without it, and a cross-machine shell that omits it.
+
+**Gotchas:** Codex worker threads have no Claude row, so they get no pair. A Mac session gets its pair only after the Mac runs a build that has this phase.
+
+**Ruled out:**
+- A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
+- A guard for a remote that uses the local machine name: that is a configuration error.
+
+### Phase 39 — mend writes its stored findings report under load  · status: done
+
+#### As-built
+
+cargo-mend test fixtures find their stored findings reports with any Cargo build directory. Source: the showrunner, 2026-11-18, from a CI point validation that failed two facade tests with "missing stored findings report". mend's report writer and reader are unchanged: each report stays beside its unit's `.rmeta`.
+
+- Cause: the build slot exports `CARGO_BUILD_BUILD_DIR` (`~/.claude/scripts/lib/build_slots.py`). Fixture cargo commands inherited it, so mend wrote the reports in the slot's shared build directory. The test helper searched only `<fixture>/target`. The `verify.sh` gate fixtures built under `<fixture>/target`, so the gate passed.
+- `isolate_cargo` removes an inherited `CARGO_BUILD_BUILD_DIR`, so a fixture builds in its own directory.
+- `stored_report_paths` searches the fixture's Cargo `build_directory`, read from `cargo metadata` through `CargoDirectories::for_fixture`.
+- `stored_reports_are_found_under_a_split_build_directory` sets a fixture-local `build-dir` and requires one report for each `.rmeta`.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mend_json.rs` — `isolate_cargo`, `CargoDirectories::for_fixture` and `read`.
+- `crates/cargo-mend/tests/support/mod.rs` — `stored_report_paths`, `STORED_REPORT_SUFFIX`.
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs` — the split build directory regression.
+
+**Gotchas:** a test that loops over stored reports without a minimum count passes when none are found (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`).
+
+**Ruled out:** a second report layout under `target/mend-reports/`. A build directory spelled `target/../x` passed its path-prefix check and put reports outside `target`, and mend's own writer and reader already agreed.
+
+### Phase 40 — a mend source edit gives a new build id  · status: done
+
+#### As-built
+
+A cargo-mend binary built after a source or manifest edit carries a new `MEND_BUILD_ID`. Thus the findings cache (`src/compiler/settings.rs`) and the builds lint cache (`cargo mend --build-info`) do not reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+
+- `build.rs` emits `cargo:rerun-if-changed` for `../../.git/HEAD`, `../../.git/refs/heads`, `build.rs`, `src` and `Cargo.toml`. Cargo scans `src` recursively, so any edit there reruns the script, and `build_id()` stamps a new id.
+- `build_script_watches_source_and_manifest_for_build_id_updates` checks the `src` and `Cargo.toml` directives in Cargo's saved build-script output.
+
+**Files:**
+- `crates/cargo-mend/build.rs` — stamps the git hash, build id and sysroot; declares the watched paths.
+- `crates/cargo-mend/tests/cli_smoke.rs` — the directive test.
+
+**Gotchas:** the directive test reads `concat!(env!("OUT_DIR"), "/../output")`, a Cargo-internal path. A toolchain layout change fails it at compile time.
+
+**Ruled out:** a live edit-and-rebuild test. A rebuild takes more than the 1 s test limit.
+
+### Phase 41 — tests that read stored findings reports require a report  · status: done
+
+#### As-built
+
+Every cargo-mend test that loops over stored findings reports fails when it finds none. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
+
+- `stored_report_paths` walks the fixture's Cargo build directory, keeps only files that end in `.mend.json`, and asserts that at least one exists. Every caller loop (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`, `facade_subjects.rs`) gets the check from the helper.
+- Three tests lost their own report counters and count asserts, because the helper holds that check.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mod.rs` — the stored-report lookup, which fails on an empty result.
+
+**Gotchas:** WalkDir also yields directories. The lookup filters on `file_type().is_file()` before the suffix match.
+
+**Ruled out:** a count check in each caller loop. The shared helper holds it once.
+
+### Phase 42 — the mend rollback test finishes in under 1 second  · status: done
+
+#### As-built
+
+`fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk` takes 0.861 s in the full Mac suite at load 10.38 (1.448 s before). On natedev it took 0.615 s at load 77. Source: the showrunner approved the Phase 41 add-on, 2026-11-18.
+
+- The old fixture's cost was a compiler edit plus a chained `cargo fix` and its check. The new fixture has two mend edits. In pass one, `ImportsAtTop` moves a function import. `PreferModuleImport` puts off its overlapping rewrite to pass two, and a compile-time check rejects that rewrite.
+- The called function is `#[deprecated]`, so the compiler prints the moved import line. The test requires that line before the error, which proves that pass one compiled before pass two failed.
+- The fixture is one binary target with `test = false`, so `cargo fix --tests` skips a build.
+- `MODULE_IMPORT_FIXTURE_CONFIG` holds the `mend.toml` text that this test and `imports_at_top.rs` share.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/fix_rollback.rs` — the two-pass rollback fixture and its proof of pass one.
+- `crates/cargo-mend/tests/support/mod.rs` — the shared module-import fixture configuration.
+
+**Gotchas:** without the pass-one proof, a single pass that makes both edits also satisfies the rollback assertions.
+
+**Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).

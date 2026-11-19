@@ -460,7 +460,7 @@ fn check_request(repository_relative_path: &str) -> Result<CheckRequest, String>
     )
     .map(|declared_reservation_scope_set| CheckRequest {
         declared_scopes:       declared_reservation_scope_set,
-        reservation_selection: CheckReservationSelection::SessionMappingOrSingleActive,
+        reservation_selection: CheckReservationSelection::EditHook,
     })
     .map_err(|error| error.to_string())
 }

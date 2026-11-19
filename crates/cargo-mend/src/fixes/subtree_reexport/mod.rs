@@ -20,4 +20,6 @@ mod scan;
 
 pub(super) use chain::ForwardingChains;
 pub(super) use scan::SubtreeReexportScan;
+pub(super) use scan::scan_authored_selection;
+#[cfg(test)]
 pub(super) use scan::scan_selection;

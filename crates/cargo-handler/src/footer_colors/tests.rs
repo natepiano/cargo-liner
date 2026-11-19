@@ -564,6 +564,7 @@ fn footer_configuration_accepts_comments_blanks_and_assignment_spacing() {
     for (role, name) in [
         (FooterRole::Showrunner, "bright-magenta"),
         (FooterRole::UnitDirector, "bright-blue"),
+        (FooterRole::Worker, "bright-cyan"),
     ] {
         assert_eq!(
             colors.role(role),
@@ -596,11 +597,44 @@ fn unrelated_keys_and_invalid_colors_leave_cells_plain() {
          role.unit-director\n\
          # account.commented=green\n",
     );
-    for role in [FooterRole::Showrunner, FooterRole::UnitDirector] {
+    for role in [
+        FooterRole::Showrunner,
+        FooterRole::UnitDirector,
+        FooterRole::Worker,
+    ] {
         assert_eq!(colors.role(role), FooterTint::Plain, "{role:?}");
     }
     for account in ["claude1", "claude2", "split", "commented", "high", "low"] {
         assert_eq!(colors.account(account), FooterTint::Plain, "{account}");
+    }
+}
+
+/// The impl, test, review, fix and worker roles share `role.worker`; agents and producers stay
+/// plain.
+#[test]
+fn worker_roles_take_the_role_worker_tint() {
+    let worker_roles = [
+        HierarchyRole::Impl,
+        HierarchyRole::Test,
+        HierarchyRole::Review,
+        HierarchyRole::Fix,
+        HierarchyRole::Worker,
+    ];
+    let plain_roles = [HierarchyRole::Agent, HierarchyRole::Producer];
+    let colors = FooterColors::parse("role.worker = white # worker labels\n");
+    for role in worker_roles {
+        assert_eq!(
+            colors.hierarchy_role(role),
+            FooterTint::Management(FooterColor::White),
+            "{role:?}"
+        );
+    }
+    for role in plain_roles {
+        assert_eq!(colors.hierarchy_role(role), FooterTint::Plain, "{role:?}");
+    }
+    let unset = FooterColors::parse("role.unit-director=yellow\n");
+    for role in worker_roles.into_iter().chain(plain_roles) {
+        assert_eq!(unset.hierarchy_role(role), FooterTint::Plain, "{role:?}");
     }
 }
 

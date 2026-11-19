@@ -384,9 +384,7 @@ fn example() {
 fn moves_and_deduplicates_uses_in_independent_files() {
     // `review_pub_mod` is off for the `pub(crate) mod helper` that
     // `moves_use_that_prefer_module_import_also_rewrites` reaches through.
-    let mut batch = DiagnosticBatch::new_crate(
-        "[diagnostics]\nreview_pub_mod = false\n\n[visibility]\npub_in_path = \"permitted\"\n",
-    );
+    let mut batch = DiagnosticBatch::new_crate(MODULE_IMPORT_FIXTURE_CONFIG);
     let moves_use_from_fn_body_to_file_top = moves_use_from_fn_body_to_file_top(&mut batch);
     let moves_use_in_inline_mod_to_top_of_inline_mod =
         moves_use_in_inline_mod_to_top_of_inline_mod(&mut batch);
@@ -395,7 +393,12 @@ fn moves_and_deduplicates_uses_in_independent_files() {
     let dedupes_when_use_already_at_top = dedupes_when_use_already_at_top(&mut batch);
     let moves_use_that_prefer_module_import_also_rewrites =
         moves_use_that_prefer_module_import_also_rewrites(&mut batch);
-    let output = batch.command().arg("--fix").output().expect("fix batch");
+    let output = batch
+        .command()
+        .env("CARGO_TERM_PROGRESS_WHEN", "never")
+        .arg("--fix")
+        .output()
+        .expect("fix batch");
     assert!(
         output.status.success(),
         "batch fix failed: {}\n{}",
