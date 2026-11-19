@@ -856,7 +856,7 @@ A cargo-mend binary built after a source or manifest edit carries a new `MEND_BU
 
 **Ruled out:** a live edit-and-rebuild test. A rebuild takes more than the 1 s test limit.
 
-### Phase 41 — tests that read stored findings reports require a report  · status: todo
+### Phase 41 — tests that read stored findings reports require a report  · status: done
 
 #### Work Order
 
