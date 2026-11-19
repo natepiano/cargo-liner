@@ -63,6 +63,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::RefusedVerb;
+use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScope;
@@ -84,9 +85,12 @@ use crate::reconcile;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ActingHeadContainment;
+use crate::reservation::KeptWorkReason;
 use crate::reservation::RecordedTarget;
+use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
@@ -364,9 +368,23 @@ pub(crate) struct ReservationAcquisition {
     marker_publication:                     CoordinationRunMarkerPublication,
     /// Whether the harness session mapping records the reservation.
     pub(crate) session_mapping_publication: SessionIdentityMappingPublication,
+    /// Other exact paths protected by the same transaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) additional_acquisitions:     Vec<ExactPathAcquisition>,
     /// Requested paths that active siblings already protect instead of this reservation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) already_held:                Vec<SiblingHeldScopes>,
+}
+
+/// The outcome for one other path in a first-touch transaction.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct ExactPathAcquisition {
+    /// How the transaction protected the path.
+    pub(crate) kind:           ReservationAcquisitionKind,
+    /// The reservation that protects this path.
+    pub(crate) reservation_id: ReservationId,
+    /// The exact scope of the path.
+    pub(crate) scope:          ReservationScope,
 }
 
 /// The requested paths already protected by one active sibling in this run and worktree.
@@ -390,7 +408,10 @@ pub(crate) enum FirstTouchConflictHandling {
 /// How a `check` invocation selects an active reservation during locked first-touch validation.
 #[derive(Clone, Copy)]
 pub(crate) enum CheckReservationSelection {
-    /// Use a valid harness-session mapping or the acting run's only active reservation.
+    /// Continue this worktree's phase or reserve its plan during a checkpoint closeout.
+    EditHook,
+    /// Protect a post-write change using a session mapping or the acting run's only active
+    /// reservation.
     SessionMappingOrSingleActive,
     /// Use a valid mapping, open new work for an unmapped session, or join sole active work
     /// when no usable harness session id is available.
@@ -421,6 +442,15 @@ pub(in crate::verb) fn selected_reservation_check_acquisition(
     identity: ResolvedEditAuthorization,
     path_case: PathCase,
 ) -> CheckAcquisitionDecision {
+    // A phase check must transfer local holds under the lock, even if it has a session mapping.
+    if local_plan_holds(reservations, identity.worktree_id).any(|hold| {
+        scopes
+            .as_slice()
+            .iter()
+            .any(|scope| hold_covers(hold, scope, path_case))
+    }) {
+        return CheckAcquisitionDecision::NeedsLockedDecision;
+    }
     // An explicit switch must publish the session's new selection under the lock.
     let reservation_id = match (selection, identity.edit_authorization()) {
         (
@@ -436,7 +466,8 @@ pub(in crate::verb) fn selected_reservation_check_acquisition(
             id
         },
         (
-            CheckReservationSelection::SessionMappingOrSingleActive
+            CheckReservationSelection::EditHook
+            | CheckReservationSelection::SessionMappingOrSingleActive
             | CheckReservationSelection::SessionMappingOrNew,
             EditAuthorization::Session { reservation_id, .. },
         ) => reservation_id,
@@ -556,6 +587,7 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
             .iter()
             .find(|reservation| {
                 reservation.id() == reservation_id
+                    && !reservation.is_plan_shrink()
                     && reservation.is_active_for_coordination_run_and_worktree(
                         coordination_run_id,
                         worktree_id,
@@ -609,6 +641,7 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
     ) -> Self {
         let active_run_reservations = reservations
             .iter()
+            .filter(|reservation| !reservation.is_plan_shrink())
             .filter(|reservation| {
                 reservation
                     .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
@@ -648,13 +681,14 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
 }
 
 struct CommittedReservationAcquisition {
-    kind:             ReservationAcquisitionKind,
-    reservation_id:   ReservationId,
-    target:           Box<TargetView>,
-    phase_start_head: ProtectedPhaseStartHead,
-    scopes:           ReservationScopeSet,
-    conflicts:        FirstTouchConflictOutcome,
-    already_held:     Vec<SiblingHeldScopes>,
+    kind:                    ReservationAcquisitionKind,
+    reservation_id:          ReservationId,
+    target:                  Box<TargetView>,
+    phase_start_head:        ProtectedPhaseStartHead,
+    scopes:                  ReservationScopeSet,
+    conflicts:               FirstTouchConflictOutcome,
+    already_held:            Vec<SiblingHeldScopes>,
+    additional_acquisitions: Vec<ExactPathAcquisition>,
 }
 
 #[derive(Clone)]
@@ -925,9 +959,10 @@ fn normalized_claim_scopes(
     path_case: PathCase,
 ) -> ReservationScopeSet {
     match source {
-        ClaimSource::FirstTouch | ClaimSource::Enrolled | ClaimSource::Cover { .. } => {
-            scopes.into_exact_file_antichain(path_case)
-        },
+        ClaimSource::FirstTouch
+        | ClaimSource::PlanShrink
+        | ClaimSource::Enrolled
+        | ClaimSource::Cover { .. } => scopes.into_exact_file_antichain(path_case),
         ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
             scopes.into_minimal_antichain(path_case)
         },
@@ -1001,18 +1036,6 @@ fn acquire_first_touch_with_reservation_selection(
     } = request;
     let invocation_directory = session::command_directory()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
-    let run_validation =
-        ClaimCoordinationRunSelection::ContinueOrStart.resolve(resolved_edit_authorization);
-    let coordination_run_id = run_validation.actor_run_id();
-    let journal_mutation_actor =
-        resolved_edit_authorization.journal_mutation_actor_for(coordination_run_id);
-    let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
-    let scopes = declared_scopes.into_exact_file_antichain(path_case);
-    let source = ClaimSource::FirstTouch;
-    let repository_facts = repository_observation.read_facts(&worktree_context, run_validation)?;
-    let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -1023,13 +1046,26 @@ fn acquire_first_touch_with_reservation_selection(
             });
         },
     };
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let path_case = PathCase::read(worktree_context.common_git_directory())?;
+    let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
+    let scopes = declared_scopes.into_exact_file_antichain(path_case);
+    let resolved_edit_authorization =
+        first_touch_edit_authorization(&ledger, &worktree_context, reservation_selection)?;
+    let run_validation =
+        ClaimCoordinationRunSelection::ContinueOrStart.resolve(resolved_edit_authorization);
+    let coordination_run_id = run_validation.actor_run_id();
+    let journal_mutation_actor =
+        resolved_edit_authorization.journal_mutation_actor_for(coordination_run_id);
+    let source = ClaimSource::FirstTouch;
+    let repository_facts = repository_observation.read_facts(&worktree_context, run_validation)?;
+    let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let (target, trunk_at_claim) = repository_facts::selected_target_and_tip(
         &worktree_context,
         &repository_facts.head_snapshot,
         TargetSelectionRequest::AutomaticAcquisition,
         &berth_config,
     )?;
-    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let prepared_claim = PreparedClaim {
         reservation_id: ReservationId::new(),
         scopes,
@@ -1092,6 +1128,28 @@ fn acquire_first_touch_with_reservation_selection(
     Ok(Enrollment::Enrolled(
         execution.answered_by_default(answered),
     ))
+}
+
+/// Read phase ownership only when the edit hook has no current identity.
+fn first_touch_edit_authorization(
+    ledger: &Ledger,
+    worktree_context: &WorktreeContext,
+    reservation_selection: CheckReservationSelection,
+) -> Result<ResolvedEditAuthorization, ClaimError> {
+    let identity = ledger::resolve_identity(worktree_context)?;
+    if !matches!(reservation_selection, CheckReservationSelection::EditHook)
+        || !matches!(
+            identity.edit_authorization(),
+            EditAuthorization::Unidentified
+        )
+    {
+        return Ok(identity);
+    }
+    let reservations = ledger
+        .read_validated_journal()?
+        .into_reservations()
+        .map_err(ClaimError::ReservationReplay)?;
+    Ok(sole_phase_edit_authorization(&reservations, identity))
 }
 
 /// Retry a full-ledger decision once after committing stale-scope maintenance.
@@ -1322,7 +1380,9 @@ impl CheckReservationSelection {
         publication: SessionIdentityMappingPublication,
     ) -> SessionIdentityMappingPublication {
         match self {
-            Self::SessionMappingOrSingleActive | Self::SessionMappingOrNew => publication,
+            Self::EditHook | Self::SessionMappingOrSingleActive | Self::SessionMappingOrNew => {
+                publication
+            },
             Self::Explicit(_) => publication.for_explicit_reservation_selection(),
         }
     }
@@ -1366,6 +1426,7 @@ fn first_touch_acquisition(
         scopes,
         conflicts,
         already_held,
+        additional_acquisitions,
     } = committed;
     (
         ReservationAcquisition {
@@ -1376,6 +1437,7 @@ fn first_touch_acquisition(
             phase_start_head,
             marker_publication,
             session_mapping_publication,
+            additional_acquisitions,
             already_held,
         },
         scopes,
@@ -1664,6 +1726,15 @@ fn validate_first_touch_transaction(
     ) {
         return CommittedActionValidation::Reject(rejection);
     }
+    let reservation_selection = if let ClaimRunValidation::ResolvedIdentityRequired(identity) =
+        run_validation
+        && let EditAuthorization::SoleActivePhase { reservation_id, .. } =
+            identity.edit_authorization()
+    {
+        CheckReservationSelection::Explicit(reservation_id)
+    } else {
+        reservation_selection
+    };
     let first_touch_session_mapping =
         session::resolve_first_touch_mapping(&worktree_context.ledger_directory());
     let requested_scopes = prepared_claim.scopes.clone();
@@ -1687,10 +1758,10 @@ fn validate_first_touch_transaction(
             });
         },
     };
-    let reuse = select_first_touch_reservation_reuse(
+    append_or_reuse_first_touch(
         &reservations,
         &repository_trunk,
-        requested_scopes,
+        prepared_claim,
         protected_scopes,
         conflict_outcome,
         FirstTouchReservationReuseContext {
@@ -1701,28 +1772,327 @@ fn validate_first_touch_transaction(
             worktree_id,
             path_case,
         },
+        maximum_reservations,
+    )
+}
+
+/// Reuse an eligible reservation or append a claim after all overlap checks pass.
+fn append_or_reuse_first_touch(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    prepared_claim: PreparedClaim,
+    protected_scopes: ReservationScopeSet,
+    conflict_outcome: FirstTouchConflictOutcome,
+    context: FirstTouchReservationReuseContext<'_>,
+    maximum_reservations: u32,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    let edit = matches!(
+        context.check_reservation_selection,
+        CheckReservationSelection::EditHook
+            | CheckReservationSelection::SessionMappingOrSingleActive
     );
-    let (protected_scopes, conflict_outcome, already_held) = match reuse {
+    if edit && is_checkpoint_gap(reservations, context.worktree_id) {
+        return acquire_checkpoint_gap_holds(
+            reservations,
+            repository_trunk,
+            prepared_claim,
+            protected_scopes,
+            conflict_outcome,
+            context,
+            maximum_reservations,
+        );
+    }
+    if edit
+        && reservations
+            .active_phases(context.worktree_id)
+            .next()
+            .is_none()
+        && let [scope] = protected_scopes.as_slice()
+        && let Some(hold) = local_plan_holds(reservations, context.worktree_id)
+            .find(|hold| hold_covers(hold, scope, context.path_case))
+    {
+        return CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
+            acquisition:     Box::new(already_held_acquisition(
+                hold,
+                repository_trunk,
+                protected_scopes,
+                conflict_outcome,
+            )),
+            session_mapping: AlreadyHeldSessionMapping::PreserveUnmappedSession,
+        });
+    }
+
+    let releases = plan_hold_transfers(reservations, &protected_scopes, context);
+    let Some((last_release, other_releases)) = releases.split_last() else {
+        return acquire_first_touch_phase(
+            reservations,
+            repository_trunk,
+            prepared_claim,
+            protected_scopes,
+            conflict_outcome,
+            context,
+            maximum_reservations,
+        );
+    };
+    let projected = match reservations.with_pending_settlements(&releases) {
+        Ok(projected) => projected,
+        Err(error) => {
+            return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
+        },
+    };
+    let validation = acquire_first_touch_phase(
+        &projected,
+        repository_trunk,
+        prepared_claim,
+        protected_scopes,
+        conflict_outcome,
+        context,
+        maximum_reservations,
+    );
+    release_transferred_holds(
+        validation,
+        last_release.clone(),
+        other_releases,
+        context.first_touch_session_reservation_mapping,
+    )
+}
+
+fn acquire_first_touch_phase(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    prepared_claim: PreparedClaim,
+    protected_scopes: ReservationScopeSet,
+    conflict_outcome: FirstTouchConflictOutcome,
+    context: FirstTouchReservationReuseContext<'_>,
+    maximum_reservations: u32,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    match select_first_touch_reservation_reuse(
+        reservations,
+        repository_trunk,
+        prepared_claim.scopes.clone(),
+        protected_scopes,
+        conflict_outcome,
+        context,
+    ) {
+        FirstTouchReservationReuse::Complete(validation) => validation,
         FirstTouchReservationReuse::AppendRequired {
             scopes,
             conflicts,
             already_held,
-        } => (scopes, conflicts, already_held),
-        FirstTouchReservationReuse::Complete(validation) => {
-            return validation;
+        } => {
+            if authorization::count_reaches_limit(
+                reservations.nonterminal_count(),
+                maximum_reservations,
+            ) {
+                CommittedActionValidation::Reject(
+                    FirstTouchClaimRejection::ReservationLimitReached(maximum_reservations),
+                )
+            } else {
+                append_first_touch_claim(prepared_claim, scopes, conflicts, already_held)
+            }
         },
+    }
+}
+
+/// Recover the sole active phase when an edit hook has no caller identity.
+pub(in crate::verb) fn sole_phase_edit_authorization(
+    reservations: &RetainedReservationSet,
+    identity: ResolvedEditAuthorization,
+) -> ResolvedEditAuthorization {
+    if !matches!(
+        identity.edit_authorization(),
+        EditAuthorization::Unidentified
+    ) {
+        return identity;
+    }
+    let Some(reservation) = reservations.sole_active_phase(identity.worktree_id) else {
+        return identity;
     };
-    if authorization::count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
+    ResolvedEditAuthorization::for_edit_authorization(
+        identity.worktree_id,
+        EditAuthorization::SoleActivePhase {
+            coordination_run_id: reservation.actor().run,
+            reservation_id:      reservation.id(),
+            worktree_id:         identity.worktree_id,
+        },
+    )
+}
+
+fn is_checkpoint_gap(reservations: &RetainedReservationSet, worktree_id: WorktreeId) -> bool {
+    reservations.active_phases(worktree_id).next().is_none()
+        && reservations.iter().any(|reservation| {
+            reservation.actor().worktree == worktree_id
+                && matches!(
+                    reservation.lifecycle(),
+                    ReservationLifecycle::Outstanding { .. }
+                )
+        })
+}
+
+fn local_plan_holds(
+    reservations: &RetainedReservationSet,
+    worktree_id: WorktreeId,
+) -> impl Iterator<Item = &Reservation> {
+    reservations.iter().filter(move |reservation| {
+        reservation.actor().worktree == worktree_id
+            && reservation.is_plan_shrink()
+            && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+    })
+}
+
+fn hold_covers(hold: &Reservation, scope: &ReservationScope, path_case: PathCase) -> bool {
+    hold.scopes()
+        .as_slice()
+        .iter()
+        .any(|held| held.contains(scope, path_case))
+}
+
+/// Protect each free path in the checkpoint gap with a separate claim in the same append.
+fn acquire_checkpoint_gap_holds(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    mut prepared_claim: PreparedClaim,
+    scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    context: FirstTouchReservationReuseContext<'_>,
+    maximum_reservations: u32,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    let holds = local_plan_holds(reservations, context.worktree_id).collect::<Vec<_>>();
+    prepared_claim.source = ClaimSource::PlanShrink;
+    prepared_claim.coordination_identity_provenance = CoordinationIdentityProvenance::NotPresented;
+    let (primary, remaining) = scopes.first_and_rest();
+    let mut operations = Vec::new();
+    let mut acquisition = if let Some(hold) = holds
+        .iter()
+        .find(|hold| hold_covers(hold, primary, context.path_case))
+    {
+        already_held_acquisition(
+            hold,
+            repository_trunk,
+            ReservationScopeSet::from(primary.clone()),
+            conflicts,
+        )
+    } else {
+        let claim = checkpoint_gap_claim(&prepared_claim, primary);
+        let (operation, acquisition) = first_touch_claim_operation(claim, conflicts, Vec::new());
+        operations.push(*operation);
+        acquisition
+    };
+    for scope in remaining {
+        let (kind, reservation_id) = holds
+            .iter()
+            .find(|hold| hold_covers(hold, scope, context.path_case))
+            .map_or_else(
+                || {
+                    let claim = checkpoint_gap_claim(&prepared_claim, scope);
+                    let id = claim.reservation_id;
+                    operations.push(claim.into_operation(ConflictAuthorization::NoConflict));
+                    (ReservationAcquisitionKind::Appended, id)
+                },
+                |hold| (ReservationAcquisitionKind::AlreadyHeld, hold.id()),
+            );
+        acquisition
+            .additional_acquisitions
+            .push(ExactPathAcquisition {
+                kind,
+                reservation_id,
+                scope: scope.clone(),
+            });
+    }
+    acquisition.scopes = scopes;
+    let Some(operation) = operations.pop() else {
+        return CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
+            acquisition:     Box::new(acquisition),
+            session_mapping: AlreadyHeldSessionMapping::PreserveUnmappedSession,
+        });
+    };
+    if authorization::count_reaches_limit(
+        reservations
+            .nonterminal_count()
+            .saturating_add(operations.len()),
+        maximum_reservations,
+    ) {
         return CommittedActionValidation::Reject(
             FirstTouchClaimRejection::ReservationLimitReached(maximum_reservations),
         );
     }
-    append_first_touch_claim(
-        prepared_claim,
-        protected_scopes,
-        conflict_outcome,
-        already_held,
-    )
+    CommittedActionValidation::AppendWithPrerequisites {
+        prerequisites: operations,
+        operation:     Box::new(operation),
+        action:        acquisition,
+    }
+}
+
+fn checkpoint_gap_claim(prepared: &PreparedClaim, scope: &ReservationScope) -> PreparedClaim {
+    PreparedClaim {
+        reservation_id: ReservationId::new(),
+        scopes: ReservationScopeSet::from(scope.clone()),
+        ..prepared.clone()
+    }
+}
+
+/// Release a local hold only for a phase check that acquires its exact scope.
+fn plan_hold_transfers(
+    reservations: &RetainedReservationSet,
+    scopes: &ReservationScopeSet,
+    context: FirstTouchReservationReuseContext<'_>,
+) -> Vec<JournalOperation> {
+    if !matches!(
+        context.check_reservation_selection,
+        CheckReservationSelection::SessionMappingOrNew
+    ) && reservations
+        .active_phases(context.worktree_id)
+        .next()
+        .is_none()
+    {
+        return Vec::new();
+    }
+    let Ok(reason) = "The phase acquired this path.".parse::<KeptWorkReason>() else {
+        return Vec::new();
+    };
+    local_plan_holds(reservations, context.worktree_id)
+        .filter(|hold| {
+            hold.scopes().as_slice().iter().all(|held| {
+                scopes
+                    .as_slice()
+                    .iter()
+                    .any(|scope| scope.contains(held, context.path_case))
+            })
+        })
+        .map(|hold| JournalOperation::Release {
+            reservation_id: hold.id(),
+            disposition:    ReleaseDisposition::KeptOnBranch(reason.clone()),
+            source:         Some(ReleaseSource::Reconciliation),
+        })
+        .collect()
+}
+
+fn release_transferred_holds(
+    validation: CommittedActionValidation<
+        FirstTouchClaimRejection,
+        CommittedReservationAcquisition,
+    >,
+    last_release: JournalOperation,
+    other_releases: &[JournalOperation],
+    mapping: FirstTouchSessionReservationMapping,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    let (mut prerequisites, action) = match validation {
+        CommittedActionValidation::Append { operation, action } => (vec![*operation], action),
+        // A retry can find that the selected phase already acquired the path.
+        CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
+            acquisition,
+            session_mapping: AlreadyHeldSessionMapping::PublishSelectedReservation,
+        }) if matches!(mapping, FirstTouchSessionReservationMapping::Mapped(_)) => {
+            (Vec::new(), *acquisition)
+        },
+        validation => return validation,
+    };
+    prerequisites.extend_from_slice(other_releases);
+    CommittedActionValidation::AppendWithPrerequisites {
+        prerequisites,
+        operation: Box::new(last_release),
+        action,
+    }
 }
 
 /// Construct the claim and its acquisition report from the locked coverage decision.
@@ -1732,7 +2102,16 @@ fn append_first_touch_claim(
     conflicts: FirstTouchConflictOutcome,
     already_held: Vec<SiblingHeldScopes>,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
-    prepared_claim.scopes = protected_scopes.clone();
+    prepared_claim.scopes = protected_scopes;
+    let (operation, action) = first_touch_claim_operation(prepared_claim, conflicts, already_held);
+    CommittedActionValidation::Append { operation, action }
+}
+
+fn first_touch_claim_operation(
+    prepared_claim: PreparedClaim,
+    conflicts: FirstTouchConflictOutcome,
+    already_held: Vec<SiblingHeldScopes>,
+) -> (Box<JournalOperation>, CommittedReservationAcquisition) {
     let acquisition = CommittedReservationAcquisition {
         kind: ReservationAcquisitionKind::Appended,
         reservation_id: prepared_claim.reservation_id,
@@ -1741,14 +2120,15 @@ fn append_first_touch_claim(
             &prepared_claim.trunk_at_claim,
         )),
         phase_start_head: prepared_claim.phase_start_head.clone(),
-        scopes: protected_scopes,
+        scopes: prepared_claim.scopes.clone(),
         conflicts,
+        additional_acquisitions: Vec::new(),
         already_held,
     };
-    CommittedActionValidation::Append {
-        operation: Box::new(prepared_claim.into_operation(ConflictAuthorization::NoConflict)),
-        action:    acquisition,
-    }
+    (
+        Box::new(prepared_claim.into_operation(ConflictAuthorization::NoConflict)),
+        acquisition,
+    )
 }
 
 fn select_first_touch_reservation_reuse(
@@ -2050,6 +2430,7 @@ fn widen_first_touch_reservation(
                 phase_start_head: reservation.phase_start_head().clone(),
                 scopes: protected_scopes,
                 conflicts,
+                additional_acquisitions: Vec::new(),
                 already_held: Vec::new(),
             },
         },
@@ -2143,6 +2524,7 @@ fn already_held_acquisition(
         phase_start_head: reservation.phase_start_head().clone(),
         scopes,
         conflicts,
+        additional_acquisitions: Vec::new(),
         already_held: Vec::new(),
     }
 }
@@ -2218,6 +2600,19 @@ fn validate_first_touch_run(
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<(), FirstTouchClaimRejection> {
+    if let ClaimRunValidation::ResolvedIdentityRequired(identity) = run_validation
+        && let EditAuthorization::SoleActivePhase { reservation_id, .. } =
+            identity.edit_authorization()
+        && !reservations
+            .sole_active_phase(worktree_id)
+            .is_some_and(|phase| {
+                phase.id() == reservation_id && phase.actor().run == identity.coordination_run_id
+            })
+    {
+        return Err(FirstTouchClaimRejection::IneligibleExplicitReservation(
+            reservation_id,
+        ));
+    }
     match run_validation.validate(
         reservations,
         worktree_context,
@@ -2493,6 +2888,7 @@ fn consume_named(
                     ),
                     session_mapping_publication: publication,
                     already_held,
+                    additional_acquisitions: Vec::new(),
                 },
                 scopes,
             })
@@ -2561,6 +2957,7 @@ fn validate_named(
         phase_start_head: selected.phase_start_head().clone(),
         scopes: acquired_scopes,
         conflicts: FirstTouchConflictOutcome::None,
+        additional_acquisitions: Vec::new(),
         already_held,
     };
     Ok(match mutation {

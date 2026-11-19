@@ -44,9 +44,9 @@ pub(super) enum DriftRunValidation {
 impl DriftRunValidation {
     pub(super) const fn resolve(resolved_edit_authorization: ResolvedEditAuthorization) -> Self {
         match resolved_edit_authorization.edit_authorization() {
-            EditAuthorization::Session { .. } | EditAuthorization::Marker { .. } => {
-                Self::ResolvedIdentityRequired
-            },
+            EditAuthorization::Session { .. }
+            | EditAuthorization::Marker { .. }
+            | EditAuthorization::SoleActivePhase { .. } => Self::ResolvedIdentityRequired,
             // `PresentedCoordinationRun::from_edit_authorization` decides the split between
             // `EditAuthorization::Environment` and `EditAuthorization::Unidentified` because
             // that is exactly its constructor question; a second variant match would repeat it.
