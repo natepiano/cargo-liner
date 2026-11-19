@@ -7,15 +7,19 @@
 //! `RAYON_NUM_THREADS` sets the thread count; the default is one thread for each CPU.
 
 mod blob_reader;
+mod cache_constants;
 mod constants;
 mod declarations;
 mod error;
+mod fact_store;
 mod facts;
 mod module_scan;
 mod module_sites;
 mod name_sites;
 mod request;
+mod state_directory;
 mod tokenizer;
+mod tree_inventory;
 mod unicode_tables;
 mod word_syntax;
 

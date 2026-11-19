@@ -12,13 +12,18 @@ version              = "0.1.0"
 workspace = true
 
 [dependencies]
+dirs       = { workspace = true }
 gix        = { workspace = true, features = ["max-performance-safe", "sha1"] }
 libc       = { workspace = true }
 rayon      = { workspace = true }
+rusqlite   = { workspace = true, features = ["bundled"] }
 serde      = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2       = { workspace = true }
 thiserror  = { workspace = true }
+
+[build-dependencies]
+sha2 = { workspace = true }
 
 [dev-dependencies]
 cargo-berth-test-support = { workspace = true }

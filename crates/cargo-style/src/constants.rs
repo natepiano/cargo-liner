@@ -1,9 +1,15 @@
 //! Named values of the style reader.
 
+use std::time::Duration;
+
 // blobs
 /// The blobs read in parallel before their lines are written. It bounds the memory that waits
 /// for stdout.
 pub(crate) const BLOB_BATCH_SIZE: usize = 512;
+
+// cache timing
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
 /// The subcommand argument that Cargo inserts.

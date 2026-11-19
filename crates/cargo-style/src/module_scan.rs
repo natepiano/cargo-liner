@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use serde::Deserialize;
 use serde::Serialize;
 
 #[cfg(test)]
@@ -12,20 +13,20 @@ use crate::tokenizer::TokenKind;
 use crate::word_syntax;
 
 /// The module declarations of readable source, or unreadable token offsets.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) enum ModuleScanReading {
     Value(ModuleScan),
     TokenSpansUnreadable,
 }
 
 /// A file's module declarations in the Python source order.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct ModuleScan {
     declarations: Vec<ModuleDeclaration>,
 }
 
 /// A module declaration with its inline scope and path form.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ModuleDeclaration {
     name:  String,
     scope: Vec<String>,
@@ -33,14 +34,14 @@ struct ModuleDeclaration {
 }
 
 /// The path form that the Python declaration scan retains.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 enum ModulePath {
     Literal { literal: String },
     Other(PathForm),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PathForm {
     Default,
