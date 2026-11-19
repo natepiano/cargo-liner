@@ -926,6 +926,8 @@ pub(crate) enum ClaimSource {
     },
     /// A reservation acquired atomically when an edit first touched its paths.
     FirstTouch,
+    /// An exact plan path held while a completed phase's plan is updated.
+    PlanShrink,
     /// A direct caller-specified reservation.
     Explicit,
     /// A reservation enrolled from a worktree's existing changes.
@@ -1329,6 +1331,11 @@ impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
     pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
 
+    /// Split the nonempty set into its first scope and the remaining scopes.
+    pub(crate) fn first_and_rest(&self) -> (&ReservationScope, &[ReservationScope]) {
+        (&self.0[0], &self.0[1..])
+    }
+
     /// Union two nonempty footprints without weakening their construction guarantee.
     pub(crate) fn with_added(&self, added: &Self) -> Self {
         let mut scopes = self.0.clone();
@@ -1346,6 +1353,10 @@ impl ReservationScopeSet {
             .iter()
             .any(|scope| scope.covers_path(repository_path))
     }
+}
+
+impl From<ReservationScope> for ReservationScopeSet {
+    fn from(scope: ReservationScope) -> Self { Self(vec![scope]) }
 }
 
 impl TryFrom<Vec<ReservationScope>> for ReservationScopeSet {
