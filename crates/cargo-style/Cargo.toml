@@ -1,0 +1,25 @@
+[package]
+authors.workspace    = true
+description          = "Read Rust source facts from git blobs for the style refill"
+edition.workspace    = true
+license.workspace    = true
+name                 = "cargo-style"
+publish              = false
+repository.workspace = true
+version              = "0.1.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+gix        = { workspace = true, features = ["max-performance-safe", "sha1"] }
+libc       = { workspace = true }
+rayon      = { workspace = true }
+serde      = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2       = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+cargo-berth-test-support = { workspace = true }
+tempfile                 = { workspace = true }

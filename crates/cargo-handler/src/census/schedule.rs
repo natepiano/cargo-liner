@@ -951,7 +951,7 @@ fn dispatch(
                 .remove(&host);
             return;
         }
-        let state = answers.answer(&host, outcome);
+        let (state, _) = answers.answer(&host, outcome);
         drop(answers);
         in_flight
             .lock()

@@ -1,3 +1,5 @@
+use tempfile::TempDir;
+
 use super::compiled_report;
 use crate::support::*;
 
@@ -746,5 +748,142 @@ impl Iterator for Extension {
         material.contains("pub(crate) struct ExtensionKey")
             || material.contains("pub struct ExtensionKey"),
         "`ExtensionKey` must keep at least `pub(crate)` visibility: {material}"
+    );
+}
+
+/// `macros_fixture::table` acts as `SpacetimeDB`'s `#[table(accessor = <name>)]`:
+/// it keeps the written item and makes `<vis> trait <accessor>` beside it. The
+/// trait takes the item's written `pub` token, and every other token takes the
+/// written span of the accessor name, so no span of the trait is from an expansion.
+/// `macros_fixture::Accessor` derives `<vis> trait <Name>Access` the same way, on
+/// the written span of the struct name, so its `pub` comes before its name.
+const MACROS_FIXTURE_SOURCE: &str = r##"use proc_macro::Group;
+use proc_macro::Ident;
+use proc_macro::Span;
+use proc_macro::TokenStream;
+use proc_macro::TokenTree;
+
+#[proc_macro_attribute]
+pub fn table(arguments: TokenStream, item: TokenStream) -> TokenStream {
+    let accessor = arguments
+        .into_iter()
+        .find_map(|token| match token {
+            TokenTree::Ident(ident) if ident.to_string() != "accessor" => Some(ident),
+            _ => None,
+        })
+        .expect("table needs accessor = <name>");
+    let visibility = item
+        .clone()
+        .into_iter()
+        .find(|token| token.to_string() == "pub")
+        .expect("table needs a pub item");
+    let attribute: TokenStream = "#[allow(non_camel_case_types, dead_code)]"
+        .parse()
+        .expect("parse the trait attribute");
+    let declaration: TokenStream = format!("trait {accessor} {{ fn {accessor}(&self); }}")
+        .parse()
+        .expect("parse the trait declaration");
+    let mut output = item;
+    output.extend(on_span(attribute, accessor.span()));
+    output.extend([visibility]);
+    output.extend(on_span(declaration, accessor.span()));
+    output
+}
+
+#[proc_macro_derive(Accessor)]
+pub fn accessor(item: TokenStream) -> TokenStream {
+    let visibility = item
+        .clone()
+        .into_iter()
+        .find(|token| token.to_string() == "pub")
+        .expect("Accessor needs a pub struct");
+    let name = item
+        .into_iter()
+        .skip_while(|token| token.to_string() != "struct")
+        .find_map(|token| match token {
+            TokenTree::Ident(ident) if ident.to_string() != "struct" => Some(ident),
+            _ => None,
+        })
+        .expect("Accessor needs a struct name");
+    let trait_name = Ident::new(&format!("{name}Access"), name.span());
+    let attribute: TokenStream = "#[allow(dead_code)] ".parse().expect("parse the trait attribute");
+    let declaration: TokenStream = format!("trait {trait_name} {{}}")
+        .parse()
+        .expect("parse the trait declaration");
+    let mut output = on_span(attribute, name.span());
+    output.extend([visibility]);
+    output.extend(on_span(declaration, name.span()));
+    output
+}
+
+fn on_span(stream: TokenStream, span: Span) -> TokenStream {
+    stream
+        .into_iter()
+        .map(|token| {
+            let mut token = match token {
+                TokenTree::Group(group) => {
+                    TokenTree::Group(Group::new(group.delimiter(), on_span(group.stream(), span)))
+                },
+                other => other,
+            };
+            token.set_span(span);
+            token
+        })
+        .collect()
+}
+"##;
+
+/// A workspace whose app crate uses the `macros_fixture` macros.
+fn write_macro_made_trait_fixture(temp: &TempDir) {
+    for (relative_path, source) in [
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"macros\"]\nresolver = \"3\"\n",
+        ),
+        ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"macro_made_trait_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nmacros_fixture = { path = \"../macros\" }\n",
+        ),
+        ("app/src/lib.rs", "mod tables;\n"),
+        (
+            "app/src/tables.rs",
+            "#[macros_fixture::table(accessor = client_version)]\npub struct ClientVersion;\n\n#[derive(macros_fixture::Accessor)]\npub struct Session;\n\npub fn written_beside() {}\n",
+        ),
+        (
+            "macros/Cargo.toml",
+            "[package]\nname = \"macros_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nproc-macro = true\n",
+        ),
+        ("macros/src/lib.rs", MACROS_FIXTURE_SOURCE),
+    ] {
+        let path = temp.path().join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture source directory");
+        }
+        fs::write(path, source).expect("write fixture source");
+    }
+}
+
+#[test]
+fn macro_made_traits_on_written_spans_are_not_flagged() {
+    let temp = tempdir().expect("create macro made trait fixture dir");
+    write_macro_made_trait_fixture(&temp);
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let unused_items: BTreeSet<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
+        .filter_map(|finding| finding.item.as_deref())
+        .collect();
+    assert_eq!(
+        unused_items,
+        BTreeSet::from([
+            "fn written_beside",
+            "struct ClientVersion",
+            "struct Session"
+        ]),
+        "the macro-made traits have no written `pub`; the written items keep theirs: {:#?}",
+        report.findings
     );
 }

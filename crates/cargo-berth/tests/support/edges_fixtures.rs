@@ -74,7 +74,7 @@ pub(super) struct EdgeReadinessFixture {
 
 impl EdgeReadinessFixture {
     pub(super) fn new() -> Self {
-        let repository = CONFIGURED_REPOSITORY.instantiate();
+        let repository = CONFIGURED_REPOSITORY.before_run().instantiate();
         let base_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
         let baseline_journal =
             fs::read(repository.path().join(JOURNAL_PATH)).expect("initial journal should read");
@@ -368,7 +368,7 @@ pub(super) struct ReleasedPredecessorRefRetiresOnlyAfterEverySuccessorIsTerminal
 fn build_before_released_predecessor_ref_retires_only_after_every_successor_is_terminal(
     destination: &Path,
 ) {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let repository = CONFIGURED_REPOSITORY.before_run().instantiate();
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
@@ -441,7 +441,7 @@ pub(super) struct SuccessorHeadAndCurrentTrunkBothControlReadinessState {
 }
 
 fn build_before_successor_head_and_current_trunk_both_control_readiness(destination: &Path) {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let repository = CONFIGURED_REPOSITORY.before_run().instantiate();
     fs::create_dir_all(repository.path().join("left")).expect("left directory should exist");
     fs::create_dir_all(repository.path().join("right")).expect("right directory should exist");
     fs::write(repository.path().join("left/shared.rs"), "// left\n")
@@ -561,7 +561,7 @@ pub(super) struct SequenceRejectsEachInvalidIdentityAndCarriesAlertsState {
 }
 
 fn build_before_sequence_rejects_each_invalid_identity_and_carries_alerts(destination: &Path) {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let repository = CONFIGURED_REPOSITORY.before_run().instantiate();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let worktrees = tempdir().expect("worktree parent should exist");

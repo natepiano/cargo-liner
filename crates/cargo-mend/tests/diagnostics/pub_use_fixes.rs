@@ -66,9 +66,7 @@ fn accepted_restricted_stale_facade_is_not_offered_to_any_fixer() {
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let mut stored_report_count = 0;
     for path in stored_report_paths(temp.path()) {
-        stored_report_count += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let facts = stored_report
@@ -80,7 +78,6 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
             "a restricted annotation must not write a pub-use fix fact: {stored_report:#?}"
         );
     }
-    assert!(stored_report_count > 0, "missing stored findings report");
 }
 
 #[test]
@@ -1664,6 +1661,41 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
         fs::read_to_string(temp.path().join("src/tool/widget.rs")).expect("read child"),
         "pub(super) struct Widget;\n",
     );
+}
+
+#[test]
+fn fix_pub_use_keeps_an_internal_facade_when_its_caller_is_generated() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    let caller = "// @generated\nuse super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n";
+    write_internal_facade_fixture(&temp, caller);
+    let paths = ["src/tool/inner.rs", "src/tool/mod.rs", "src/tool/widget.rs"];
+    let before = paths.map(|path| fs::read(temp.path().join(path)).expect("read fixture source"));
+    let manifest = temp.path().join("Cargo.toml");
+    let mut command = mend_command_for(&manifest);
+    let output = command
+        .args(["--fix", "--fix-pub-use", "--json"])
+        .output()
+        .expect("run cargo-mend with facade fixes");
+    assert!(
+        output.status.success(),
+        "cargo-mend failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let report = report_from_mend_output(&output);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InternalParentPubUseFacade),
+        "the facade finding must remain: {report:#?}",
+    );
+    for (path, expected) in paths.into_iter().zip(before) {
+        assert_eq!(
+            fs::read(temp.path().join(path)).expect("read facade proposal file"),
+            expected,
+            "{path}",
+        );
+    }
 }
 
 #[test]

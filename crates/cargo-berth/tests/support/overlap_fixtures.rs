@@ -51,7 +51,9 @@ pub(super) const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 
 pub(super) const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
-pub(super) fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+pub(super) fn initialized_repository() -> TempDir {
+    INITIALIZED_REPOSITORY.before_run().instantiate()
+}
 
 pub(super) fn build_initialized_repository(root: &Path) {
     git(root, &["init", "--quiet", "--initial-branch=main"]);

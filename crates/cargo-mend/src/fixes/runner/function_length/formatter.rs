@@ -231,9 +231,9 @@ fn formatter_configuration(directory: &Path) -> Result<FormatterConfiguration> {
     Ok(FormatterConfiguration::Default)
 }
 
-fn nightly_command() -> Command {
+fn nightly_executable() -> &'static NightlyExecutable {
     static EXECUTABLE: OnceLock<NightlyExecutable> = OnceLock::new();
-    match EXECUTABLE.get_or_init(|| {
+    EXECUTABLE.get_or_init(|| {
         match Command::new(RUSTUP_COMMAND)
             .args(NIGHTLY_RUSTFMT_LOOKUP_ARGUMENTS)
             .output()
@@ -248,7 +248,11 @@ fn nightly_command() -> Command {
             },
             _ => NightlyExecutable::Rustup,
         }
-    }) {
+    })
+}
+
+fn nightly_command() -> Command {
+    match nightly_executable() {
         NightlyExecutable::Direct(path) => Command::new(path),
         NightlyExecutable::Rustup => {
             let mut command = Command::new(RUSTUP_COMMAND);
@@ -258,12 +262,18 @@ fn nightly_command() -> Command {
     }
 }
 
+/// `rustup which` names the nightly `rustfmt` file only when the toolchain
+/// has the component, so an existing file needs no `--version` run. Each
+/// `rustfmt` start loads the compiler library, which is the cost this saves.
 fn nightly_probe() -> FormatterProbe {
-    probe_result(
-        nightly_command().arg(VERSION_ARGUMENT).output(),
-        "nightly rustfmt",
-        "nightly rustfmt",
-    )
+    match nightly_executable() {
+        NightlyExecutable::Direct(path) if path.is_file() => FormatterProbe::Available,
+        NightlyExecutable::Direct(_) | NightlyExecutable::Rustup => probe_result(
+            nightly_command().arg(VERSION_ARGUMENT).output(),
+            "nightly rustfmt",
+            "nightly rustfmt",
+        ),
+    }
 }
 
 fn probe(program: &str, arguments: &[&str]) -> FormatterProbe {

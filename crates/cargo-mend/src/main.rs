@@ -163,10 +163,12 @@ fn run() -> Result<ExitCode, MendFailure> {
     let color_mode = color_mode();
     let output_format = cli.output_format;
     let start = Instant::now();
-    let toolchain_probes = compiler::ToolchainProbes::new().map_err(MendFailure::Unexpected)?;
     let wrapper =
         compiler::RunWrapper::resolve(cargo_plan.target_directory.as_path(), &mut executable)
             .map_err(MendFailure::Unexpected)?;
+    let toolchain_probes = wrapper
+        .toolchain_probes()
+        .map_err(MendFailure::Unexpected)?;
     let mut runner = MendRunner::new(
         &selection,
         &cargo_plan,
