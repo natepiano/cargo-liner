@@ -3189,6 +3189,12 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Unit director's live capture: a running tile, space, and the status bar reads `paused` while the cells hold still with a build running; space again, the note leaves and the cells update.
 - Change-review line (production doc's change review file): space pauses and unpauses the display, and the status bar says `paused`.
 
+### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: todo
+
+**Depends on:** Phase 72
+
+**Packaging (director, 2026-11-19, on the showrunner's parallel order):** Phase 35's `overlay` writer (items 9, 35 and 38) touches no Phase 34 file, so it runs as its own phase beside Phase 34. Phase 35's item text, files (`crates/tui_pane/src/pane/frame.rs`, `pane/state.rs`, `app_settings/draw.rs`, a `tui_pane` palette file its diagnosis names) and acceptance gate for those items apply here. This phase writes its own `crates/tui_pane/CHANGELOG.md` Fixed lines for items 35 and 38. It builds on Phase 72's `app_settings/draw.rs`.
+
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
 
 **Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Item 2 was met. Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 stay (showrunner, 2026-11-06: the user's rule covers visible changes only). Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
@@ -3756,6 +3762,12 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - Cost: `test` compares the byte-identical candidate against the phase 35 checkpoint build on a quiet natedev, over event frames as well as steady moving and settled frames; per-frame cost is no higher, and the Phase 13 1 ms gate holds.
 - The map covers all 264 current grid and draw tests. Retain each visible assertion. Port only fixtures that depend on replaced geometry or motion state. Name every retirement and its retained behavioral coverage.
 - The unit director's notice lists each retired grid test with its current module path and its reason.
+
+### Phase 37a — Seven slow tests run under 1 s on the Mac  · status: todo
+
+**Depends on:** Phase 70
+
+**Packaging (director, 2026-11-19, on the showrunner's parallel order):** the test rewrites in Phase 37's forward edits run now, beside Phase 34. This phase shortens the six `cargo-berth` `tests/hooks.rs` tests from Phase 70's forward edit and `taking_two_resolved_roots_shares_one_removal_allowance` (`crates/cargo-tile/src/progress/capture.rs`) from Phase 72's forward edit, each to under 1 s on the Mac at load under 12 and on natedev. Phase 72's four `render.rs` tests go to Phase 34, which owns `render.rs`. Phase 37 keeps the priority override and its measurements, after Phase 36.
 
 ### Phase 37 — Slow tests start first  · status: todo
 
