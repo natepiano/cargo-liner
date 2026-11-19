@@ -872,7 +872,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 **Ruled out:** a count check in each caller loop. The shared helper holds it once.
 
-### Phase 42 — the mend rollback test finishes in under 1 second  · status: todo
+### Phase 42 — the mend rollback test finishes in under 1 second  · status: done
 
 #### Work Order
 

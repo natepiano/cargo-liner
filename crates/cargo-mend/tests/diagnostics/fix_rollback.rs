@@ -1,47 +1,50 @@
 use crate::support::*;
 
-/// A `--fix-all` fixture that needs more than one convergence pass.
-///
-/// Pass one rewrites `src/outer/parent.rs` — the `pub use child::SpawnStats;`
-/// facade collapses into the call site and `begin` narrows to `pub(super)` —
-/// and validates, so those edits stay on disk. The chained `cargo fix` then
-/// deletes the now-unused `use crate::deep::thing::Widget;`, and only once that
-/// import is gone does `src/deep.rs` become narrowable. That narrowing is pass
-/// two's edit. A compile-time source check rejects that edit.
+/// `ImportsAtTop` moves the function import to the file top.
+/// The move defers the overlapping `PreferModuleImport` import and call rewrites to the next pass.
+/// The compiler reports the moved import in a deprecation warning.
+/// The compile-time check rejects the qualified call.
 const FIXTURE_SOURCES: &[(&str, &str)] = &[
     (
         "src/main.rs",
-        "mod deep;\nmod outer;\n\nconst _: () = assert!(include_str!(\"deep.rs\").as_bytes()[4] == b'c', \"second-pass narrowing landed\");\n\nfn main() {\n    outer::go();\n}\n",
+        r#"mod scenario;
+
+const SOURCE: &[u8] = include_bytes!("scenario.rs");
+const CALL: usize = SOURCE.len() - b"present();\n};\n".len();
+// A bare call follows a space. A qualified call follows a colon.
+const _: () = assert!(SOURCE[CALL - 1] == b' ', "second-pass module qualification landed");
+
+fn main() {}
+"#,
     ),
     (
-        "src/deep.rs",
-        "pub(crate) mod thing;\n\npub(crate) fn seed() {\n    let _ = thing::make();\n}\n",
+        "src/scenario.rs",
+        r#"#[deprecated]
+mod tool;
+
+const _: () = {
+    use crate::scenario::tool::helper::present;
+    present();
+};
+"#,
     ),
     (
-        "src/deep/thing.rs",
-        "pub struct Widget;\n\npub fn make() -> Widget {\n    Widget\n}\n",
+        "src/scenario/tool.rs",
+        "pub(crate) mod helper {\n    pub(crate) const fn present() {}\n}\n",
     ),
-    (
-        "src/outer.rs",
-        "mod parent;\n\npub(crate) fn go() {\n    parent::begin();\n}\n",
-    ),
-    (
-        "src/outer/parent.rs",
-        "mod child;\npub use child::SpawnStats;\nuse crate::deep::thing::Widget;\n\npub(crate) fn \
-         begin() {\n    let _ = child::SpawnStats;\n}\n",
-    ),
-    ("src/outer/parent/child.rs", "pub struct SpawnStats;\n"),
 ];
 
+// Mend validates the binary. `cargo fix --tests` has no test target to build.
 const FIXTURE_MANIFEST: &str = r#"[package]
 name = "fix_rollback_fixture"
 version = "0.1.0"
 edition = "2024"
-autobins = false
 
-[[test]]
+[[bin]]
 name = "rollback"
 path = "src/main.rs"
+test = false
+bench = false
 "#;
 
 /// Rollback covers the whole invocation, not the pass that failed.
@@ -62,7 +65,8 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
     }
 
     let temp = tempdir().expect("create fix rollback fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(temp.path().join("mend.toml"), MODULE_IMPORT_FIXTURE_CONFIG)
+        .expect("configure the rollback fixture");
     fs::write(temp.path().join("Cargo.toml"), FIXTURE_MANIFEST).expect("write fixture manifest");
     for (relative_path, source) in FIXTURE_SOURCES {
         let path = temp.path().join(relative_path);
@@ -73,6 +77,7 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
     init_git_repo(temp.path());
 
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
+        .env("CARGO_TERM_PROGRESS_WHEN", "never")
         .arg("--fix-all")
         .output()
         .expect("run cargo-mend --fix-all");
@@ -85,6 +90,17 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
     assert!(
         stderr.contains("compiler failed after applying mend fixes; changes were rolled back"),
         "expected the mend-fix rollback message, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("second-pass module qualification landed"),
+        "the qualified call must cause the compiler error:\n{stderr}"
+    );
+    assert!(
+        strip_ansi(&stderr)
+            .lines()
+            .take_while(|line| !line.contains("second-pass module qualification landed"))
+            .any(|line| line.ends_with("| use crate::scenario::tool::helper::present;")),
+        "the compiler must see the file-level function import before the call rewrite:\n{stderr}"
     );
 
     for (relative_path, source) in FIXTURE_SOURCES {
