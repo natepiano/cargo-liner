@@ -414,6 +414,19 @@ fn build_info_flag_prints_build_metadata_and_exits_successfully() {
 }
 
 #[test]
+fn build_script_watches_source_and_manifest_for_build_id_updates() {
+    // Cargo saves the build script's stdout beside OUT_DIR.
+    let output = include_str!(concat!(env!("OUT_DIR"), "/../output"));
+    for path in ["src", "Cargo.toml"] {
+        let directive = format!("cargo:rerun-if-changed={path}");
+        assert!(
+            output.lines().any(|line| line == directive),
+            "build script must watch {path} for build ID updates"
+        );
+    }
+}
+
+#[test]
 fn default_invocation_from_package_root_reports_findings() {
     let temp = create_simple_lib_fixture(DEFAULT_FIXTURE_PACKAGE);
 

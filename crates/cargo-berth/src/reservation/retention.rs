@@ -671,12 +671,13 @@ impl RetainedReservationSet {
         authorized_editing_identity: AuthorizedEditingIdentity,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        let conflicts = self.conflicts_with_holders(
-            candidate,
-            path_case,
-            authorized_editing_identity.worktree(),
-            |holder| authorized_editing_identity.is_foreign(holder),
-        );
+        let acting_worktree = authorized_editing_identity.worktree();
+        let conflicts =
+            self.conflicts_with_holders(candidate, path_case, acting_worktree, |holder| {
+                // A checkpoint gap hold belongs to the worktree, even if its marker is absent.
+                authorized_editing_identity.is_foreign(holder)
+                    && (!holder.is_plan_shrink() || holder.actor().worktree != acting_worktree)
+            });
         let mut unanswered_conflicts = Vec::new();
         for (holder, mut conflict) in conflicts {
             let unanswered_scopes = conflict
@@ -716,12 +717,18 @@ impl RetainedReservationSet {
             }),
             EditAuthorization::Environment { .. }
             | EditAuthorization::Marker { .. }
+            | EditAuthorization::SoleActivePhase { .. }
             | EditAuthorization::Unidentified => false,
         };
         let marker_is_active = match edit_authorization {
             EditAuthorization::Marker {
                 coordination_run_id,
                 worktree_id,
+            }
+            | EditAuthorization::SoleActivePhase {
+                coordination_run_id,
+                worktree_id,
+                ..
             } => self.reservations.iter().any(|reservation| {
                 reservation
                     .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
@@ -750,12 +757,18 @@ impl RetainedReservationSet {
             EditAuthorization::Marker {
                 coordination_run_id,
                 worktree_id,
+            }
+            | EditAuthorization::SoleActivePhase {
+                coordination_run_id,
+                worktree_id,
+                ..
             } if marker_is_active => AuthorizedEditingIdentity::Run {
                 coordination_run_id,
                 worktree_id,
             },
             EditAuthorization::Session { .. }
             | EditAuthorization::Marker { .. }
+            | EditAuthorization::SoleActivePhase { .. }
             | EditAuthorization::Unidentified => AuthorizedEditingIdentity::Unidentified {
                 worktree_id: resolved_edit_authorization.worktree_id,
             },
@@ -764,6 +777,25 @@ impl RetainedReservationSet {
 
     /// Iterate over every reservation retained for constraints or audit history.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.reservations.iter() }
+
+    /// Return the only active ordinary reservation in this worktree.
+    pub(crate) fn sole_active_phase(&self, worktree_id: WorktreeId) -> Option<&Reservation> {
+        let mut phases = self.active_phases(worktree_id);
+        let phase = phases.next()?;
+        phases.next().is_none().then_some(phase)
+    }
+
+    /// Select active ordinary reservations in this worktree.
+    pub(crate) fn active_phases(
+        &self,
+        worktree_id: WorktreeId,
+    ) -> impl Iterator<Item = &Reservation> {
+        self.iter().filter(move |reservation| {
+            reservation.actor().worktree == worktree_id
+                && !reservation.is_plan_shrink()
+                && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+        })
+    }
 
     /// Find one retained reservation by its non-recyclable identity.
     pub(crate) fn reservation(
