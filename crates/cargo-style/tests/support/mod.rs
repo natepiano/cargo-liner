@@ -22,11 +22,9 @@ pub(crate) enum ParityCheckout {
 
 /// Read the checkout setting before a parity test creates its fixtures.
 pub(crate) fn parity_checkout() -> ParityCheckout {
-    std::env::var_os("CARGO_STYLE_PARITY_CHECKOUT").map_or_else(
+    std::env::var_os("STYLE_PARITY_CHECKOUT").map_or_else(
         || {
-            eprintln!(
-                "Parity test skipped: set CARGO_STYLE_PARITY_CHECKOUT to the Python checkout."
-            );
+            eprintln!("Parity test skipped: set STYLE_PARITY_CHECKOUT to the Python checkout.");
             ParityCheckout::Disabled
         },
         |path| ParityCheckout::Enabled(path.into()),

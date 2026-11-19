@@ -16,10 +16,12 @@ mod facts;
 mod finding;
 mod finding_anchor;
 mod finding_source;
+mod footprint;
 mod ledger_read;
 mod module_scan;
 mod module_sites;
 mod name_sites;
+mod rename_classifiers;
 mod request;
 mod source_lines;
 mod sqlite_read;
@@ -87,10 +89,7 @@ fn main() -> ExitCode {
             return match FindingRequest::parse(arguments).and_then(FindingRequest::answer) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!(
-                        "cargo-style: {}",
-                        error_chain(&error).replace(['\r', '\n'], " ")
-                    );
+                    eprintln!("cargo-style: {}", error_chain(&error).replace('\n', " "));
                     ExitCode::FAILURE
                 },
             };

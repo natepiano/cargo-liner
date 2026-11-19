@@ -12,6 +12,8 @@ pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
+/// The flag that selects a base commit for finding footprint searches.
+pub(crate) const FINDING_BASE_FLAG: &str = "--base";
 /// The subcommand argument that Cargo inserts.
 pub(crate) const STYLE_SUBCOMMAND: &str = "style";
 /// The flag that requests the binary and protocol versions.
@@ -29,9 +31,9 @@ pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
+pub(crate) const FINDING_REPLY_SCHEMA: u32 = 2;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
-pub(crate) const FINDING_REPLY_SCHEMA: u32 = 1;
 
 // python token reader
 /// The Python `PUNCTUATION` alternatives of two characters, in pattern order.

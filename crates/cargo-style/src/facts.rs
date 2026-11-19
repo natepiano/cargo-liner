@@ -117,7 +117,7 @@ pub(crate) enum FactReading {
 
 pub(crate) enum BlobSource {
     Utf8(String),
-    NotUtf8,
+    NotUtf8(String),
     Missing,
 }
 
@@ -142,7 +142,7 @@ impl FactReading {
     pub(crate) fn into_source(self) -> BlobSource {
         match self {
             Self::Read { bundle, .. } => BlobSource::Utf8(bundle.text),
-            Self::MalformedUtf8(_) => BlobSource::NotUtf8,
+            Self::MalformedUtf8(bundle) => BlobSource::NotUtf8(bundle.text),
             Self::MissingBlob => BlobSource::Missing,
         }
     }

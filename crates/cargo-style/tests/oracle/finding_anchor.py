@@ -129,6 +129,7 @@ def anchor_answers(repo: Path, database: Path, cases: dict[str, FindingCase], re
                           "path": anchor.path, "line": anchor.line}
             else:
                 answer = {"id": identity, "status": "needs_judgment", "reason": anchor.reason}
+            answer["footprint"] = {"files": [findings[identity].path], "uncertain": []}
             answers.append({"case": cases[identity].name, "answer": answer})
         return answers
 

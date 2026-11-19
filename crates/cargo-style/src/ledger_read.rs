@@ -1,4 +1,4 @@
-//! Read the ledger rows that a finding anchor needs.
+//! Read the ledger rows for finding proofs.
 
 use std::error::Error;
 use std::fmt::Display;
@@ -37,8 +37,36 @@ pub(crate) enum LedgerRevision {
 }
 
 pub(crate) enum FindingLookup {
-    Held(HeldAnchor),
+    Held(HeldFinding),
     Unknown,
+}
+
+pub(crate) struct HeldFinding {
+    pub(crate) anchor: HeldAnchor,
+    pub(crate) edit:   FindingEdit,
+    pub(crate) needs:  Vec<String>,
+}
+
+pub(crate) enum FindingKind {
+    Rename,
+    Restructure,
+    Other,
+}
+
+impl From<&str> for FindingKind {
+    fn from(kind: &str) -> Self {
+        match kind {
+            "rename" => Self::Rename,
+            "restructure" => Self::Restructure,
+            _ => Self::Other,
+        }
+    }
+}
+
+pub(crate) struct FindingEdit {
+    pub(crate) kind:   FindingKind,
+    pub(crate) before: String,
+    pub(crate) after:  String,
 }
 
 pub(crate) struct HeldAnchor {
@@ -154,12 +182,14 @@ impl LedgerSnapshot {
         let findings = {
             let mut statement = snapshot.prepare(
                 "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, h.ticket, \
-                        t.id AS judging_ticket, t.checkpoint, t.base \
+                        t.id AS judging_ticket, t.checkpoint, t.base, h.kind, h.before, h.after \
                  FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
                  WHERE h.finding_id = ?1",
             )?;
+            let mut needs = snapshot
+                .prepare("SELECT path FROM finding_needs WHERE finding_id = ?1 ORDER BY path")?;
             ids.iter()
-                .map(|id| read_finding(&mut statement, id))
+                .map(|id| read_finding(&mut statement, &mut needs, id))
                 .collect::<Result<_, _>>()?
         };
         snapshot.commit()?;
@@ -229,6 +259,7 @@ fn read_synced_tip(connection: &Connection) -> Result<String, LedgerReadFailure>
 
 fn read_finding(
     statement: &mut Statement<'_>,
+    needs: &mut Statement<'_>,
     id: &str,
 ) -> Result<FindingLookup, LedgerReadFailure> {
     let mut rows = statement.query([id])?;
@@ -262,11 +293,26 @@ fn read_finding(
         })?;
     let text = read_column(row, "held_findings", id, "text")?;
     let evidence = read_evidence(row, id)?;
-    Ok(FindingLookup::Held(HeldAnchor {
-        path,
-        line,
-        text,
-        evidence,
+    let kind: String = read_column(row, "held_findings", id, "kind")?;
+    let edit = FindingEdit {
+        kind:   FindingKind::from(kind.as_str()),
+        before: read_column(row, "held_findings", id, "before")?,
+        after:  read_column(row, "held_findings", id, "after")?,
+    };
+    let mut paths = needs.query([id])?;
+    let mut needed_paths = Vec::new();
+    while let Some(row) = paths.next()? {
+        needed_paths.push(read_column(row, "finding_needs", id, "path")?);
+    }
+    Ok(FindingLookup::Held(HeldFinding {
+        anchor: HeldAnchor {
+            path,
+            line,
+            text,
+            evidence,
+        },
+        edit,
+        needs: needed_paths,
     }))
 }
 

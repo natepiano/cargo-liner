@@ -1,5 +1,7 @@
 //! Read source coordinates and map equal lines across a patch.
 
+use std::cell::OnceCell;
+
 use crate::tokenizer;
 use crate::unicode_tables::DECIMAL;
 use crate::unicode_tables::LINE_BOUNDARIES;
@@ -17,33 +19,37 @@ pub(crate) enum LineContinuity {
 
 pub(crate) struct SourceLines {
     text: String,
-    ends: Vec<usize>,
+    ends: OnceCell<Vec<usize>>,
 }
 
 impl From<String> for SourceLines {
     fn from(text: String) -> Self {
-        let mut offset = 0;
-        let ends = split_lines(&text)
-            .map(|line| {
-                offset += line.len();
-                offset
-            })
-            .collect();
-        Self { text, ends }
+        Self {
+            text,
+            ends: OnceCell::new(),
+        }
     }
 }
 
 impl SourceLines {
+    pub(crate) fn text(&self) -> &str { &self.text }
+
     pub(crate) fn line(&self, line: usize) -> SiteLine<'_> {
         let Some(index) = line.checked_sub(1) else {
             return SiteLine::Unavailable;
         };
-        let Some(&end) = self.ends.get(index) else {
+        let ends = self.ends.get_or_init(|| {
+            split_lines(&self.text)
+                .scan(0, |offset, line| {
+                    *offset += line.len();
+                    Some(*offset)
+                })
+                .collect()
+        });
+        let Some(&end) = ends.get(index) else {
             return SiteLine::Unavailable;
         };
-        let start = index
-            .checked_sub(1)
-            .map_or(0, |previous| self.ends[previous]);
+        let start = index.checked_sub(1).map_or(0, |previous| ends[previous]);
         SiteLine::Text(&self.text[start..end])
     }
 }

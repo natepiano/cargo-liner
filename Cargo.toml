@@ -21,6 +21,7 @@ crossbeam-channel = "0.5"
 crossterm = "0.29.0"
 dark-light = "3.0.0"
 dirs = "7.0.0"
+fancy-regex = "0.11"
 futures-lite = "2.6.1"
 gix = { version = "=0.89.0", default-features = false }
 ignore = "0.4"
