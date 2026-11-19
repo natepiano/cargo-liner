@@ -1870,25 +1870,19 @@ Each native test fixture records its source identity, and each publication remov
 **Acceptance gate:** a test with a left-over lock file installs with no error; a test with a held lock still excludes a second install; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint.
 
 
-### Phase 72 — Every notice closes with its [x] and with Esc  · status: todo
+### Phase 72 — Every notice closes with its [x] and with Esc  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
+- The cause: `App::click` dropped `ToastHit::Close`, so the [x] did nothing, and `App::modal_key` left Esc unhandled while focus was on the grid.
+- Clicks and scrolling share one dispatcher, `tui_pane::handle_tile_click` (`framework/input.rs`, `framework/hit_test.rs`). The [x] close reaches the toast, and a click on a notice covered by settings or a popup leaves it open.
+- Esc closes the newest visible notice first, from any focus, before Favorites or settings. With no visible notice, Esc closes settings. Closing the last notice returns focus to the grid.
+- `Framework` stores the overlay bounds from the draw call (`overlay_bounds`), and each overlay popup returns the area it draws. Hit tests and drawing read one record; `toast_card_is_visible` checks a card against the overlays.
+- Tests (`shim_registration/app_scenarios.rs`): the capture shim lock notice closes with its button and with Esc from the grid; each startup and produced notice kind closes with [x] and with Esc; Esc order against Favorites and settings; a covered notice stays open on a click.
+- Gates: Mac lint passed; Mac 1,342/1,342 at load 6.56 (12 CPUs). Dark-mode shots before and after Esc. No separate natedev suite (user ruling 2026-11-18). Checkpoint ahead of Phase 32g (showrunner, 2026-11-19).
+- **Left over:** five older cargo-tile tests at 1.02-1.34 s on the Mac; moved to Phase 37 (showrunner, 2026-11-19).
 
-**Goal:** The user can close every notice in the cargo tile TUI with its [x] and with Esc (user via showrunner, 2026-11-17: "i can't even dismiss it which i've never seen before").
-
-**Spec:**
-1. The evidence: the "Capture shim" notice for the stale lock in Phase 71 did not close.
-2. Measure first. Name each notice kind and the reason the capture shim notice does not close.
-3. Fix the cause where it lives. A notice that comes back from live state shows again only when that state changes.
-4. Add one test for each notice kind: [x] closes it, and Esc closes it.
-
-**Files:** where the measurement names the cause.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** the new tests pass; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint; one dark-mode desktop image of the notice before and after Esc.
+**Files:** `crates/cargo-tile/src/{app,capture,interaction,render}.rs`, `shim_registration/app_scenarios.rs`; `crates/tui_pane/src/framework/`, overlays and toasts.
 
 
 ### Phase 63b — The PTY helper fallback test passes on Linux  · status: done
@@ -3785,6 +3779,11 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - Measure the suite that holds Phase 46's tests.
+
+**Forward edits from Phase 72 (showrunner, 2026-11-19):**
+- Five older `cargo-tile` tests take 1 s or more on the Mac at start load 6.56 on 12 CPUs. That load is normal, so each is a defect. Shorten each under 1 s on the Mac and on natedev. Phase 72 changed only one draw call that they reach; the Phase 71 run of the same suite at load 3.90 had none at 1 s or more.
+- The tests and their Mac times: `render.rs` `an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize` (1.337 s), `an_expanded_summary_keeps_its_header_above_scrolled_rows` (1.083 s), `every_command_cell_shows_a_process` (1.056 s), `an_expanded_summary_keeps_compact_rows_and_an_exact_end_range` (1.021 s); `progress/capture.rs` `taking_two_resolved_roots_shares_one_removal_allowance` (1.154 s).
+- Files: add `crates/cargo-tile/src/render.rs` (tests module) and `crates/cargo-tile/src/progress/capture.rs`.
 
 **Forward edits from Phase 49 (director, 2026-11-07):**
 - Run after every remaining phase that changes tests, 39, 40 and 43f included, so the measurement covers the suite that ships. Phase 43e replaces parked Phase 43c.
