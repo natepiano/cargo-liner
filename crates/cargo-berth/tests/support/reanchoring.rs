@@ -24,7 +24,6 @@ use super::loose_refs;
 use super::reanchoring_templates;
 use super::reanchoring_templates::ABORTABLE_CHECKPOINT;
 use super::reanchoring_templates::ACTIVE_BEFORE_OTHER_REBASE;
-use super::reanchoring_templates::ACTIVE_FIRST_SPLIT;
 use super::reanchoring_templates::APPLY_CONFLICTED_CHECKPOINT;
 use super::reanchoring_templates::APPLY_SIDE_BRANCH_CHECKPOINT;
 use super::reanchoring_templates::APPLY_UNINTERRUPTED_CHECKPOINT;
@@ -44,9 +43,7 @@ use super::reanchoring_templates::PENDING_PREFIX;
 use super::reanchoring_templates::RECONCILED_INTERACTIVE_CHECKPOINT_SPLIT;
 use super::reanchoring_templates::RECONCILED_SOFT_ACTIVE_SPLIT;
 use super::reanchoring_templates::RECONCILED_SOFT_CHECKPOINT_SPLIT;
-use super::reanchoring_templates::REWRITE_MAIN;
 use super::reanchoring_templates::RewriteRepository;
-use super::reanchoring_templates::SPLIT_ACTIVE_PHASE;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
@@ -77,8 +74,6 @@ impl std::ops::Deref for RewriteFixture {
 }
 
 impl RewriteFixture {
-    fn new() -> Self { Self::from_repository(REWRITE_MAIN.instantiate()) }
-
     fn from_repository(repository: TempDir) -> Self {
         let checkout = RewriteRepository::at_root(repository.path());
         Self {
@@ -86,6 +81,14 @@ impl RewriteFixture {
             worktrees: cargo_berth_test_support::fixture_tempdir("rewrite-worktrees-"),
             checkout,
         }
+    }
+
+    /// The recorded `ONE_HUNK_CHECKPOINT` and the id of its outstanding reservation.
+    fn one_hunk_checkpoint() -> (Self, String) {
+        let fixture = Self::from_repository(ONE_HUNK_CHECKPOINT.instantiate());
+        let reanchoring_templates::SplitPhaseState { id, .. } =
+            reanchoring_templates::read_state(fixture.root());
+        (fixture, id)
     }
 
     fn root(&self) -> &Path { self.repository.path() }
@@ -728,8 +731,7 @@ pub(super) fn stopped_rebase_defers_a_pending_reanchor() {
 }
 
 pub(super) fn failed_append_preserves_rewrite_marker_and_retention() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_checkpoint("one", "base");
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "base");
     let marker_bytes = fs::read(&marker).expect("rewrite marker should read");
@@ -760,8 +762,7 @@ pub(super) fn failed_append_preserves_rewrite_marker_and_retention() {
 }
 
 pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_checkpoint("one", "base");
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let before = reanchoring_templates::board(fixture.root());
     let old_tip = retained_tip(&fixture, &id);
     let prepared_repository = DirectorySnapshot::capture(fixture.root());
@@ -832,9 +833,7 @@ pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() 
 }
 
 pub(super) fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
-    let fixture = RewriteFixture::from_repository(ONE_HUNK_CHECKPOINT.instantiate());
-    let reanchoring_templates::SplitPhaseState { id, .. } =
-        reanchoring_templates::read_state(fixture.root());
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let rewrite_marker = fixture.deferred_amend("one", "base");
     let bypass_name = format!("{PENDING_PREFIX}mixed-bypass.json");
     let bypass_marker = fixture.root().join(".git").join(&bypass_name);
@@ -869,8 +868,7 @@ pub(super) fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
 }
 
 pub(super) fn drift_cleans_up_rewrite_markers_without_reporting_bypasses() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_checkpoint("one", "base");
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let active_id = fixture.start_phase();
     let marker = fixture.deferred_amend("one", "base");
     let drift = run_berth(
@@ -919,30 +917,16 @@ pub(super) fn soft_reset_split_keeps_both_protected_hunks_in_the_active_phase() 
 }
 
 fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservationStage) {
-    let recorded = matches!(
-        (stage, workflow),
-        (
-            SplitReservationStage::Active,
-            SplitWorkflow::InteractiveRebase
-        )
+    let fixture = RewriteFixture::from_repository(
+        reanchoring_templates::first_split(workflow, stage).instantiate(),
     );
-    let template = match (stage, workflow) {
-        (SplitReservationStage::Active, SplitWorkflow::InteractiveRebase) => ACTIVE_FIRST_SPLIT,
-        (SplitReservationStage::Active, SplitWorkflow::SoftReset) => SPLIT_ACTIVE_PHASE,
-        (SplitReservationStage::Outstanding, _) => SPLIT_OUTSTANDING_PHASE,
-    };
-    let fixture = RewriteFixture::from_repository(template.instantiate());
     let reanchoring_templates::CompletedSplitState {
         id,
         old_tip,
         first_split_tip,
         expected_start,
         split_tip,
-    } = if recorded {
-        reanchoring_templates::read_state(fixture.root())
-    } else {
-        reanchoring_templates::prepare_first_split(fixture.root(), workflow, stage)
-    };
+    } = reanchoring_templates::read_state(fixture.root());
     let markers = reanchoring_templates::pending_markers(fixture.root());
     assert_eq!(
         markers.len(),
@@ -967,7 +951,13 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         stage,
     );
 
-    if recorded {
+    if matches!(
+        (stage, workflow),
+        (
+            SplitReservationStage::Active,
+            SplitWorkflow::InteractiveRebase
+        )
+    ) {
         assert_lost_split_hunk_stays_outstanding(
             &fixture,
             reanchoring_templates::CompletedSplitState {
@@ -1255,8 +1245,7 @@ fn assert_dropping_split_preserves_checkpoint(
 }
 
 pub(super) fn unreadable_bypass_marker_does_not_block_rewrite_reconciliation() {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_checkpoint("one", "base");
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let rewrite_marker = fixture.deferred_amend("one", "base");
     let bypass_marker = fixture
         .root()
@@ -1467,8 +1456,7 @@ enum RewriteReadFailure {
 }
 
 fn assert_transient_rewrite_failure_is_retryable(failure: RewriteReadFailure) {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_checkpoint("one", "base");
+    let (fixture, id) = RewriteFixture::one_hunk_checkpoint();
     let old_tip = retained_tip(&fixture, &id);
     let marker = fixture.deferred_amend("one", "base");
     let wrapper_directory = tempdir().expect("Git wrapper directory should exist");

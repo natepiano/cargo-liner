@@ -13,6 +13,8 @@ use super::record;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
+use crate::compiler::visibility::source::DeclarationSpans;
+use crate::compiler::visibility::source::VisibilityOrigin;
 use crate::config::DiagnosticCode;
 use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
@@ -23,8 +25,17 @@ pub(super) fn visit_item(
     item: &Item<'_>,
     findings_sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.span.from_expansion() || item.vis_span.from_expansion() {
-        return Ok(());
+    match source::visibility_origin(
+        visibility_context.tcx,
+        item.owner_id.def_id,
+        DeclarationSpans {
+            declaration: item.span,
+            visibility:  item.vis_span,
+            name:        item.kind.ident().map(|ident| ident.span),
+        },
+    ) {
+        VisibilityOrigin::Written => {},
+        VisibilityOrigin::MacroMade => return Ok(()),
     }
     let Some(file_path) = source::real_file_path(visibility_context.tcx, item.vis_span) else {
         return Ok(());
@@ -103,8 +114,17 @@ pub(super) fn visit_impl_item(
     let Some(visibility_span) = item.vis_span() else {
         return Ok(());
     };
-    if item.span.from_expansion() || visibility_span.from_expansion() {
-        return Ok(());
+    match source::visibility_origin(
+        visibility_context.tcx,
+        item.owner_id.def_id,
+        DeclarationSpans {
+            declaration: item.span,
+            visibility:  visibility_span,
+            name:        Some(item.ident.span),
+        },
+    ) {
+        VisibilityOrigin::Written => {},
+        VisibilityOrigin::MacroMade => return Ok(()),
     }
     let Some(file_path) = source::real_file_path(visibility_context.tcx, visibility_span) else {
         return Ok(());
@@ -140,8 +160,17 @@ pub(super) fn visit_foreign_item(
     item: &ForeignItem<'_>,
     findings_sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.span.from_expansion() || item.vis_span.from_expansion() {
-        return Ok(());
+    match source::visibility_origin(
+        visibility_context.tcx,
+        item.owner_id.def_id,
+        DeclarationSpans {
+            declaration: item.span,
+            visibility:  item.vis_span,
+            name:        Some(item.ident.span),
+        },
+    ) {
+        VisibilityOrigin::Written => {},
+        VisibilityOrigin::MacroMade => return Ok(()),
     }
     let Some(file_path) = source::real_file_path(visibility_context.tcx, item.vis_span) else {
         return Ok(());

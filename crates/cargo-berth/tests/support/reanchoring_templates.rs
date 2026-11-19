@@ -1437,10 +1437,61 @@ pub(super) struct CompletedStackedSplitState {
 }
 
 /// An active reservation after its first real interactive split.
-pub(super) const ACTIVE_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+pub(super) const INTERACTIVE_ACTIVE_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
     repository: RepositoryTemplate {
-        name: "active-first-split",
-        build: build_active_first_split,
+        name: "interactive-active-first-split",
+        build: |root| {
+            build_first_split(
+                root,
+                SplitWorkflow::InteractiveRebase,
+                SplitReservationStage::Active,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+/// An active reservation after its first real soft reset split.
+pub(super) const SOFT_ACTIVE_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "soft-active-first-split",
+        build: |root| {
+            build_first_split(
+                root,
+                SplitWorkflow::SoftReset,
+                SplitReservationStage::Active,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+/// An outstanding checkpoint after its first real interactive split.
+pub(super) const INTERACTIVE_CHECKPOINT_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "interactive-checkpoint-first-split",
+        build: |root| {
+            build_first_split(
+                root,
+                SplitWorkflow::InteractiveRebase,
+                SplitReservationStage::Outstanding,
+            );
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+/// An outstanding checkpoint after its first real soft reset split.
+pub(super) const SOFT_CHECKPOINT_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "soft-checkpoint-first-split",
+        build: |root| {
+            build_first_split(
+                root,
+                SplitWorkflow::SoftReset,
+                SplitReservationStage::Outstanding,
+            );
+        },
         ..REWRITE_MAIN
     },
     ..TWO_REBASE_HISTORY
@@ -1464,14 +1515,32 @@ pub(super) const LOWER_FIRST_SPLIT: LedgerTemplate = LedgerTemplate {
     ..TWO_REBASE_HISTORY
 };
 
-fn build_active_first_split(root: &Path) {
-    SPLIT_ACTIVE_PHASE.restore_into(root);
-    let state = prepare_first_split(
-        root,
-        SplitWorkflow::InteractiveRebase,
-        SplitReservationStage::Active,
-    );
-    write_state(root, &state);
+/// The recorded first split of one workflow from one reservation stage.
+pub(super) const fn first_split(
+    workflow: SplitWorkflow,
+    stage: SplitReservationStage,
+) -> LedgerTemplate {
+    match (workflow, stage) {
+        (SplitWorkflow::InteractiveRebase, SplitReservationStage::Active) => {
+            INTERACTIVE_ACTIVE_FIRST_SPLIT
+        },
+        (SplitWorkflow::SoftReset, SplitReservationStage::Active) => SOFT_ACTIVE_FIRST_SPLIT,
+        (SplitWorkflow::InteractiveRebase, SplitReservationStage::Outstanding) => {
+            INTERACTIVE_CHECKPOINT_FIRST_SPLIT
+        },
+        (SplitWorkflow::SoftReset, SplitReservationStage::Outstanding) => {
+            SOFT_CHECKPOINT_FIRST_SPLIT
+        },
+    }
+}
+
+fn build_first_split(root: &Path, workflow: SplitWorkflow, stage: SplitReservationStage) {
+    match stage {
+        SplitReservationStage::Active => SPLIT_ACTIVE_PHASE.restore_into(root),
+        SplitReservationStage::Outstanding => SPLIT_OUTSTANDING_PHASE.restore_into(root),
+    }
+    let interval = prepare_first_split(root, workflow, stage);
+    write_state(root, &interval);
 }
 
 /// A reconciled interactive split before a second rebase drops a protected hunk.
@@ -1523,13 +1592,9 @@ pub(super) const RECONCILED_SOFT_CHECKPOINT_SPLIT: LedgerTemplate = LedgerTempla
 };
 
 fn build_reconciled_split(root: &Path, workflow: SplitWorkflow, stage: SplitReservationStage) {
-    match stage {
-        SplitReservationStage::Active => SPLIT_ACTIVE_PHASE.restore_into(root),
-        SplitReservationStage::Outstanding => SPLIT_OUTSTANDING_PHASE.restore_into(root),
-    }
-    let interval = prepare_first_split(root, workflow, stage);
+    first_split(workflow, stage).restore_into(root);
+    let interval: CompletedSplitState = read_state(root);
     reconcile_first_split(root, &interval, stage);
-    write_state(root, &interval);
 }
 
 fn build_first_stacked_split(root: &Path, order: StackedBranchWriteOrder) {
@@ -1614,7 +1679,7 @@ mv "$1.edited" "$1"
 }
 
 /// Run the first real split and retain its interval witnesses.
-pub(super) fn prepare_first_split(
+fn prepare_first_split(
     root: &Path,
     workflow: SplitWorkflow,
     stage: SplitReservationStage,

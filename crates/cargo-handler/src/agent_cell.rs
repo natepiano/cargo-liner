@@ -108,6 +108,7 @@ use crate::details::DetailProperty;
 use crate::details::RowDetails;
 use crate::details::RowDetailsLookup;
 use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
 use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
@@ -2253,7 +2254,7 @@ fn account_sort_text(account: LineAccount<'_>) -> &str {
 }
 
 impl TreeLine<'_> {
-    /// A timer job shows its countdown ink; other jobs use the footer role ink.
+    /// A timer job shows its countdown ink; other jobs use the job ink.
     fn job_style(&self, now: u64, colors: &FooterColors) -> Style {
         match self.subject {
             LineSubject::Work(Work {
@@ -2263,18 +2264,34 @@ impl TreeLine<'_> {
                 ShellState::Running => Role::Busy.style(),
                 ShellState::CountingDown(_) => Role::Shell.style(),
             },
-            _ => self.footer_role(colors).style(SessionRowInk::Text.style()),
+            _ => self.job_tint(colors).style(SessionRowInk::Text.style()),
         }
     }
 
-    /// Only management responsibilities use the footer's role colors.
+    /// Management roles and subagents tint their job text; worker job text stays plain.
+    fn job_tint(&self, colors: &FooterColors) -> FooterTint {
+        match self.kind() {
+            LineKind::Session(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
+            | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.management_role(role),
+            LineKind::Subagent(role) => role.ink(colors),
+            LineKind::UnassignedSession
+            | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
+            | LineKind::Worker(_)
+            | LineKind::Shell(_) => FooterTint::Plain,
+        }
+    }
+
+    /// Hierarchy roles use `FooterColors::hierarchy_role`; every other `worker` label uses
+    /// `role.worker`; unassigned, unlabeled and shell rows stay plain.
     fn footer_role(&self, colors: &FooterColors) -> FooterTint {
         match self.kind() {
             LineKind::Session(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
             | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.hierarchy_role(role),
+            LineKind::Session(RoleLabel::ReviewFallback) | LineKind::Worker(_) => {
+                colors.role(FooterRole::Worker)
+            },
             LineKind::UnassignedSession
-            | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
-            | LineKind::Worker(_)
+            | LineKind::Session(RoleLabel::Unlabeled)
             | LineKind::Shell(_) => FooterTint::Plain,
             LineKind::Subagent(role) => role.ink(colors),
         }
@@ -2389,15 +2406,17 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionCells {
     /// The machine the session runs on.
-    pub(crate) machine:  String,
+    pub(crate) machine:              String,
     /// The name cell, without the machine.
-    pub(crate) name:     String,
+    pub(crate) name:                 String,
     /// The state the status cell draws.
-    pub(crate) status:   ReportedSessionState,
+    pub(crate) status:               ReportedSessionState,
     /// The activity cell text.
-    pub(crate) activity: String,
+    pub(crate) activity:             String,
     /// The session's shell rows, in tile line order.
-    pub(crate) shells:   Vec<ShellCells>,
+    pub(crate) shells:               Vec<ShellCells>,
+    /// Whether every shell row belongs to the session's machine.
+    pub(crate) shells_share_machine: bool,
 }
 
 /// One shell row of a session, as its tile line draws it.
@@ -2443,6 +2462,7 @@ pub(crate) fn session_cells(
                     };
                     for id in line.row.session_id.ids() {
                         if let Some(cell) = cells.get_mut(id) {
+                            cell.shells_share_machine &= cell.machine == line.machine;
                             cell.shells.push(shell_cells.clone());
                         }
                     }
@@ -2460,11 +2480,12 @@ pub(crate) fn session_cells(
             };
             for id in ids {
                 cells.entry(id.to_owned()).or_insert_with(|| SessionCells {
-                    machine:  line.machine.to_owned(),
-                    name:     line.session_name(),
-                    status:   line.session_status(),
-                    activity: line.value(TreeColumn::Activity, now),
-                    shells:   Vec::new(),
+                    machine:              line.machine.to_owned(),
+                    name:                 line.session_name(),
+                    status:               line.session_status(),
+                    activity:             line.value(TreeColumn::Activity, now),
+                    shells:               Vec::new(),
+                    shells_share_machine: true,
                 });
             }
         }

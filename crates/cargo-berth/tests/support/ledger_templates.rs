@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::MAIN_COORDINATION_RUN_ID;
@@ -13,6 +14,8 @@ use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
+
+use crate::recorded_history;
 
 const EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 pub(super) const PROJECTION_SIZE_INITIAL_RENEWALS: usize = 18;
@@ -27,6 +30,97 @@ const GIT: GitDriver = GitDriver {
     ],
 };
 pub(super) const PROJECTION_HISTORY_STATE: &str = ".git/projection-history-reservation";
+
+/// An uninitialized Git checkout for the initialization behavior tests.
+pub(super) const SCRATCH_REPOSITORY: LedgerTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       EXECUTABLE,
+    name:             "ledger-scratch-main",
+    build:            build_git_repository,
+}
+.before_run();
+
+/// An outstanding checkpoint with its retention reference packed by Git.
+pub(super) const PACKED_CHECKPOINT: LedgerTemplate =
+    recorded_history::template("ledger-packed-checkpoint", build_packed_checkpoint);
+
+/// A released predecessor whose packed reference still protects a successor.
+pub(super) const PACKED_PREDECESSOR: LedgerTemplate =
+    recorded_history::template("ledger-packed-predecessor", build_packed_predecessor);
+
+/// Restore the checkpoint or successor identity with the recorded ledger.
+pub(super) fn packed_retention_fixture(
+    template: LedgerTemplate,
+) -> (IntegrationRepository, String) {
+    let repo = IntegrationRepository::from_recorded_template(template);
+    let id = recorded_history::read(repo.root());
+    (repo, id)
+}
+
+fn build_packed_checkpoint(root: &Path) {
+    let repo = IntegrationRepository::new(EXECUTABLE);
+    repo.git_without_hooks(repo.root(), &["switch", "--quiet", "-c", "retention-lock"]);
+    let claimed = repo.run(
+        repo.root(),
+        &[
+            "claim",
+            "file:retained.txt",
+            "--run",
+            MAIN_COORDINATION_RUN_ID,
+            "--json",
+        ],
+    );
+    assert_success(&claimed);
+    let id = json(&claimed)["reservations"][0]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    fs::write(repo.root().join("retained.txt"), "outstanding work\n").expect("work writes");
+    repo.git_without_hooks(repo.root(), &["add", "retained.txt"]);
+    repo.git_without_hooks(
+        repo.root(),
+        &["commit", "--quiet", "-m", "outstanding work"],
+    );
+    assert_success(&repo.run(repo.root(), &["release", &id, "--json"]));
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
+    recorded_history::save(root, repo.root(), &id);
+}
+
+fn build_packed_predecessor(root: &Path) {
+    let (repo, predecessor) = packed_retention_fixture(PACKED_CHECKPOINT);
+    repo.git_without_hooks(repo.root(), &["config", "core.packedRefsTimeout", "20"]);
+    repo.git_without_hooks(repo.root(), &["config", "core.filesRefLockTimeout", "20"]);
+    let claimed = repo.claim(
+        repo.root(),
+        "file:successor.txt",
+        MAIN_COORDINATION_RUN_ID,
+        None,
+    );
+    assert_success(&claimed);
+    let successor = json(&claimed)["reservations"][0]
+        .as_str()
+        .expect("successor id")
+        .to_owned();
+    assert_success(&repo.run(
+        repo.root(),
+        &[
+            "sequence",
+            &predecessor,
+            &successor,
+            "--why",
+            "retain predecessor until successor ends",
+            "--json",
+        ],
+    ));
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(repo.root(), &["branch", "--force", "main", &tip]);
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    let retained = format!("refs/cargo-berth/reservations/{predecessor}");
+    assert_eq!(repo.git_stdout(repo.root(), &["rev-parse", &retained]), tip);
+    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
+    recorded_history::save(root, repo.root(), &successor);
+}
 
 pub(super) const PROJECTION_HISTORY: LedgerTemplate = LedgerTemplate {
     repository:   RepositoryTemplate {

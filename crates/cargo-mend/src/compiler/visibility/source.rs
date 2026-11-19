@@ -9,8 +9,12 @@ use rustc_hir::ForeignItemKind;
 use rustc_hir::ImplItemKind;
 use rustc_hir::ItemKind;
 use rustc_middle::ty::TyCtxt;
+use rustc_span::ExpnId;
+use rustc_span::ExpnKind;
 use rustc_span::FileName;
+use rustc_span::MacroKind;
 use rustc_span::Span;
+use rustc_span::def_id::LocalDefId;
 
 use super::scan::FindingParams;
 use crate::compiler::persistence::StoredFinding;
@@ -101,6 +105,55 @@ pub(super) fn stored_visibility_source(
         path:   file_path.to_string_lossy().into_owned(),
         line:   start.line,
         column: start.col_display + 1,
+    }
+}
+
+/// Whether a person wrote a declaration's visibility for that declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum VisibilityOrigin {
+    Written,
+    MacroMade,
+}
+
+/// The spans rustc gives a declaration. `name` is `None` when the declaration
+/// has no written name: a glob `use` or a positional field.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DeclarationSpans {
+    pub(super) declaration: Span,
+    pub(super) visibility:  Span,
+    pub(super) name:        Option<Span>,
+}
+
+/// A macro can give its output the written spans of its input, so the spans
+/// alone do not show a macro-made declaration. rustc also records the
+/// expansion that defined each declaration:
+/// - a derive output holds no written declaration;
+/// - an attribute or function-like macro output holds a written declaration only in written order,
+///   with the visibility before the name.
+///
+/// `SpacetimeDB`'s `#[table(accessor = <name>)]` puts the `pub` of the struct
+/// below it on a trait whose name is in the attribute, so the name comes first.
+pub(super) fn visibility_origin(
+    tcx: TyCtxt<'_>,
+    def_id: LocalDefId,
+    spans: DeclarationSpans,
+) -> VisibilityOrigin {
+    if spans.declaration.from_expansion() || spans.visibility.from_expansion() {
+        return VisibilityOrigin::MacroMade;
+    }
+    let expansion = tcx.expn_that_defined(def_id.to_def_id());
+    if expansion == ExpnId::root() {
+        return VisibilityOrigin::Written;
+    }
+    if matches!(
+        expansion.expn_data().kind,
+        ExpnKind::Macro(MacroKind::Derive, _)
+    ) {
+        return VisibilityOrigin::MacroMade;
+    }
+    match spans.name {
+        Some(name) if spans.visibility.hi() > name.lo() => VisibilityOrigin::MacroMade,
+        Some(_) | None => VisibilityOrigin::Written,
     }
 }
 

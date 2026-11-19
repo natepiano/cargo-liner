@@ -92,6 +92,10 @@ use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_EXECUTABLE;
 use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_VERSION;
+use crate::constants::CAPTURE_STARTUP_SOCKET_BASE;
+use crate::constants::CAPTURE_STARTUP_SOCKET_DIRECTORY_MODE;
+use crate::constants::CAPTURE_STARTUP_SOCKET_DIRECTORY_PREFIX;
+use crate::constants::CAPTURE_STARTUP_SOCKET_NAME;
 use crate::constants::CAPTURE_STDERR_PUMP_BUFFER_BYTES;
 use crate::constants::CARGO_NAME;
 use crate::constants::COMMAND_VALUED_OPTIONS;
@@ -1004,9 +1008,10 @@ enum CargoCompletion {
 
 /// The script child cannot establish that cargo started without its exec acknowledgement.
 struct PtyCaptureHelper {
-    child:    Child,
-    listener: UnixListener,
-    socket:   OwnedCaptureFile,
+    child:            Child,
+    listener:         UnixListener,
+    socket:           OwnedCaptureFile,
+    socket_directory: TempDir,
 }
 
 impl PtyCaptureHelper {
@@ -1032,14 +1037,20 @@ impl PtyCaptureHelper {
             Err(error) => return Err(error),
         };
         drop(self.socket);
+        drop(self.socket_directory);
         Ok(completion)
     }
 }
 
 /// script remains the only helper process; the native child execs cargo in its own pid.
 fn capture_pty(cargo: &Command, log: &Path) -> io::Result<PtyCaptureHelper> {
-    let (_, random) = uuid::Uuid::now_v7().as_u64_pair();
-    let socket_path = env::temp_dir().join(format!("tile-start-{random:016x}"));
+    let directory_mode = fs::Permissions::from_mode(CAPTURE_STARTUP_SOCKET_DIRECTORY_MODE);
+    let socket_directory = tempfile::Builder::new()
+        .prefix(CAPTURE_STARTUP_SOCKET_DIRECTORY_PREFIX)
+        .permissions(directory_mode.clone())
+        .tempdir_in(CAPTURE_STARTUP_SOCKET_BASE)?;
+    fs::set_permissions(socket_directory.path(), directory_mode)?;
+    let socket_path = socket_directory.path().join(CAPTURE_STARTUP_SOCKET_NAME);
     let listener = UnixListener::bind(&socket_path)?;
     let socket = OwnedCaptureFile(socket_path);
     fs::set_permissions(&socket.0, fs::Permissions::from_mode(0o600))?;
@@ -1059,6 +1070,7 @@ fn capture_pty(cargo: &Command, log: &Path) -> io::Result<PtyCaptureHelper> {
         child,
         listener,
         socket,
+        socket_directory,
     })
 }
 

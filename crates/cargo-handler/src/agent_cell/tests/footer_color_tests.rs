@@ -86,22 +86,22 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
         (
             RoleLabel::Stated(HierarchyRole::Impl),
             "worker",
-            FooterTint::Plain,
+            colors.role(FooterRole::Worker),
         ),
         (
             RoleLabel::Stated(HierarchyRole::Test),
             "worker",
-            FooterTint::Plain,
+            colors.role(FooterRole::Worker),
         ),
         (
             RoleLabel::Stated(HierarchyRole::Review),
             "worker",
-            FooterTint::Plain,
+            colors.role(FooterRole::Worker),
         ),
         (
             RoleLabel::Stated(HierarchyRole::Fix),
             "worker",
-            FooterTint::Plain,
+            colors.role(FooterRole::Worker),
         ),
         (RoleLabel::Unlabeled, "", FooterTint::Plain),
     ] {
@@ -392,7 +392,15 @@ fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
     let root = trunk();
     let buffer = rendered_with_colors(&entry(&root, None), 220, AccountColumn::Shown, &colors);
     assert_color(&buffer, "subagent", text_default());
-    assert_color(&buffer, "worker", text_default());
+    assert_color(
+        &buffer,
+        "worker",
+        colors
+            .role(FooterRole::Worker)
+            .style(text_default().into())
+            .fg
+            .expect("resolved worker color"),
+    );
     let role_x = find(&buffer, "role").expect("the role header is drawn").0;
     assert!(
         find(&buffer, "branch").is_none(),
@@ -448,9 +456,9 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
     assert_eq!(buffer[(role_x, row)].fg, text_default());
 }
 
-/// Unroled Codex workers share their parent session's hue in either tree view.
+/// Unroled Codex workers share their parent session's hue and take the `role.worker` role tint.
 #[test]
-fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
+fn unroled_workers_inherit_parent_hues_and_take_the_worker_role_tint() {
     let root = AgentRow {
         role_fallback: RoleFallback::None,
         directory: "/fixture/color-check".repeat(4),
@@ -503,6 +511,6 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         let y = find(&buffer, "unroled task").expect("worker row").1;
         assert_eq!(tree_column(&buffer, "role", y), "worker");
         let x = find(&buffer, "role").expect("role header").0;
-        assert_eq!(buffer[(x, y)].fg, text_default());
+        assert_eq!(buffer[(x, y)].fg, Color::LightCyan);
     }
 }
