@@ -91,7 +91,15 @@ pub trait InputContext: HitTestRegistry {
 /// short-circuit, then the tiled-pane z-order via
 /// `hit_test_at`.
 pub fn dispatch_hit_test<C: InputContext>(ctx: &C, pos: Position) -> Option<C::Target> {
-    if let Some(hit) = ctx.framework_hit(pos) {
+    dispatch_with_framework_hit(ctx, pos, ctx.framework_hit(pos))
+}
+
+pub(crate) fn dispatch_with_framework_hit<C: InputContext>(
+    ctx: &C,
+    pos: Position,
+    framework_hit: Option<FrameworkHit>,
+) -> Option<C::Target> {
+    if let Some(hit) = framework_hit {
         return ctx.map_framework_hit(hit);
     }
     match ctx.app_modal_overlay_hit(pos) {
