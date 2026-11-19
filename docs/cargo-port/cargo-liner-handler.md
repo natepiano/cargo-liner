@@ -986,7 +986,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - The regression test fails before the fix and passes after it.
 - No changed test takes one second or more.
 
-### Phase 46 — the Phase 44 claim fix holds on a copy of hana's real claim records  · status: todo
+### Phase 46 — the Phase 44 claim fix holds on a copy of hana's real claim records  · status: done
 
 #### Work Order
 
