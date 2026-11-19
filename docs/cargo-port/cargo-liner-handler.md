@@ -1009,3 +1009,29 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 **Verification:**
 - The live edge count and the claim result, before and after the fix.
 - With the fix, the claim succeeds and the live edge count is well under 512.
+
+### Phase 47 — mend writes a full-path import when a block import brings in the path's first name  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo mend --fix` never writes an import that starts at a name another `use` in the same block brings in. Source: the showrunner, 2026-11-19, from a hana fault report. A mend bug always gets a phase.
+
+**Spec:**
+1. The fault: a test fn body in hana (`crates/hana/src/tool/rear_patch_panel/row_backing.rs`) had `use crate::tool::frame_time_info_panel::tests::pixels;` and then used `pixels::OutlineRendering::Disabled`. `cargo mend --fix` added `use pixels::OutlineRendering;` in the fn body. That import fails with E0432 (unresolved import `pixels`), so mend rolled back every rewrite.
+2. First build a fixture test that reproduces it: a fn body with a block `use` of a module and a qualified path through that module. The test fails before the fix.
+3. Fix the cause in the rule that wrote the import. When the first segment of the new import is a name that a block `use` brings in, write the import from that `use`'s full path (`use crate::tool::frame_time_info_panel::tests::pixels::OutlineRendering;`). If mend cannot resolve the full path, leave the site.
+4. Find which rule added the import from the fixture's diagnostic output. Name it in the reply.
+
+**Files:**
+- the cargo-mend fix source of the rule that wrote the import (start at `crates/cargo-mend/src/fixes/`)
+- the cargo-mend diagnostic test file of that rule (`crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` or `import_fixes.rs`)
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new fixture test fails before the fix and passes after it.
+- No changed test takes one second or more.
