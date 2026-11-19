@@ -8,7 +8,7 @@ use super::Color;
 use super::InvocationId;
 use super::Rc;
 use super::Rect;
-use super::RowInk;
+use super::RowPaintInk;
 use super::Text;
 use super::TrackedGroup;
 use super::TrackedRow;
@@ -470,24 +470,23 @@ impl InkSource {
         Self::Heading(rows.iter().map(|row| InkRowIdentity::of(row)).collect())
     }
 
-    fn ink(&self, rows: &[&TrackedRow]) -> super::RowInk {
+    fn ink(&self, rows: &[&TrackedRow]) -> RowPaintInk {
         match self {
             Self::Row(identity) => rows
                 .iter()
                 .find(|row| identity.matches(row))
-                .map_or(RowInk::Ordinary(0), |row| row.ink()),
-            Self::OrdinaryRow(identity) => RowInk::Ordinary(
-                rows.iter()
-                    .find(|row| identity.matches(row))
-                    .map_or(0, |row| row.faded()),
-            ),
-            Self::Heading(identities) => RowInk::Ordinary(
+                .copied()
+                .map_or(RowPaintInk::Live, RowPaintInk::of),
+            Self::OrdinaryRow(identity) => rows
+                .iter()
+                .find(|row| identity.matches(row))
+                .copied()
+                .map_or(RowPaintInk::Live, RowPaintInk::ordinary),
+            Self::Heading(identities) => RowPaintInk::minimum(
                 identities
                     .iter()
                     .filter_map(|identity| rows.iter().find(|row| identity.matches(row)))
-                    .map(|row| row.faded())
-                    .min()
-                    .unwrap_or_default(),
+                    .map(|row| RowPaintInk::ordinary(row)),
             ),
         }
     }
@@ -588,7 +587,7 @@ pub(super) fn paint_ink<T>(
     buffer: &mut Buffer,
     area: Rect,
     source: InkSource,
-    ink: super::RowInk,
+    ink: RowPaintInk,
     ground: Color,
     draw: impl FnOnce(&mut Buffer) -> T,
 ) -> T {
@@ -935,6 +934,8 @@ mod cell_paint_tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use ratatui::style::Style;
+
     use crate::census::CargoGroup;
     use crate::census::CompilerObservation;
     use crate::census::Measurement;
@@ -944,6 +945,7 @@ mod cell_paint_tests {
     use crate::census::scan::OriginStart;
     use crate::census::slot_lease::SlotObservation;
     use crate::constants::BYTES_PER_GIBIBYTE;
+    use crate::constants::MINIMUM_FADED_TEXT_CONTRAST;
     use crate::render;
     use crate::render::Buffer;
     use crate::render::CaptureLookup;
@@ -964,8 +966,124 @@ mod cell_paint_tests {
     use crate::render::frame_preparation::PreparedTables;
     use crate::render::tests;
     use crate::render::tests::CELL_CONTENT_PAINTS;
+    use crate::render::tests::TestTheme;
 
     const SLOT: &str = "hana-slot2";
+
+    #[test]
+    fn phase_32g_fading_command_and_slot_ink_match_the_retained_painting()
+    -> Result<(), &'static str> {
+        for (ground, ink) in [(Color::Black, Color::White), (Color::White, Color::Black)] {
+            let mut theme = (*tui_pane::theme()).clone();
+            theme.semantic.label.color = ink;
+            let _theme = TestTheme::install(theme);
+            assert_fading_command_ink(ground)?;
+        }
+        Ok(())
+    }
+
+    fn assert_fading_command_ink(ground: Color) -> Result<(), &'static str> {
+        let now = Instant::now();
+        let lifetime = Duration::from_secs(3);
+        let mut roster = Roster::new();
+        let mut lead = tests::invocation(4100, &["build"]);
+        lead.slot = SlotObservation::Held {
+            slot:    SLOT.to_owned(),
+            holder:  "holder".to_owned(),
+            purpose: "test · fade".to_owned(),
+        };
+        roster.observe(vec![tests::cargo_group(lead)], now);
+        let content = TileContent::Group(roster.visible(&[]).groups()[0].id.clone());
+        let stats = SccacheStats::default();
+        let area = Rect::new(0, 0, 160, 24);
+        let mut original = Buffer::empty(area);
+        original.set_style(area, Style::default().bg(ground));
+        let mut tables = PreparedTables::default();
+
+        let prepared = tables.for_frame(
+            &mut roster,
+            &[],
+            CommandView::long(),
+            24,
+            FreeDiskSpace::Unavailable,
+        );
+        Cells::from_prepared(prepared, &stats).draw(&mut original.clone(), &content, area, ground);
+        roster.observe(Vec::new(), now + Duration::from_millis(100));
+
+        for elapsed in [200, 1500, 2150, 3050] {
+            roster.advance(now + Duration::from_millis(elapsed), lifetime);
+            let prepared = tables.for_frame(
+                &mut roster,
+                &[],
+                CommandView::long(),
+                24,
+                FreeDiskSpace::Unavailable,
+            );
+            let cells = Cells::from_prepared(prepared, &stats);
+            let mut actual = original.clone();
+            CELL_CONTENT_PAINTS.with(|count| count.set(0));
+            render::ROW_FADE_CONTRAST_CHECKS.with(|count| count.set(0));
+            cells.draw(&mut actual, &content, area, ground);
+            if elapsed > 200 {
+                assert_eq!(CELL_CONTENT_PAINTS.with(std::cell::Cell::get), 0);
+            }
+            if elapsed > 1500 {
+                assert_eq!(
+                    render::ROW_FADE_CONTRAST_CHECKS.with(std::cell::Cell::get),
+                    0,
+                    "retained replay has the final colors for a new fade amount"
+                );
+            }
+            let mut fresh = original.clone();
+            render::frame_draw_contents_and_values(
+                &mut fresh,
+                &cells.roster,
+                &content,
+                area,
+                ground,
+                &cells.grids,
+            );
+            assert_eq!(actual, fresh, "{ground:?} at {elapsed} ms");
+            if elapsed == 1500 {
+                CELL_CONTENT_PAINTS.with(|count| count.set(0));
+                render::ROW_FADE_CONTRAST_CHECKS.with(|count| count.set(0));
+                let mut replay = original.clone();
+                cells.draw(&mut replay, &content, area, ground);
+                assert_eq!(CELL_CONTENT_PAINTS.with(std::cell::Cell::get), 0);
+                assert_eq!(replay, fresh);
+                assert_eq!(
+                    render::ROW_FADE_CONTRAST_CHECKS.with(std::cell::Cell::get),
+                    0,
+                    "retained replay has the final colors for this fade amount"
+                );
+            }
+            let command = (0..area.bottom())
+                .find_map(|y| {
+                    let line: String = (0..area.right()).map(|x| actual[(x, y)].symbol()).collect();
+                    line.find("cargo build").map(|start| (y, start, line))
+                })
+                .ok_or("the fading command stays visible")?;
+            let (y, start, line) = command;
+            let slot = line
+                .find(SLOT)
+                .ok_or("the command retains its slot label")?;
+            for start in [start, slot] {
+                let x = u16::try_from(line[..start].chars().count())
+                    .map_err(|_| "command column fits in u16")?;
+                let cell = &actual[(x, y)];
+                assert_eq!(cell.bg, ground);
+                let contrast = tui_pane::contrast_ratio(cell.fg, ground)
+                    .ok_or("the fixture has explicit colors")?;
+                assert!(
+                    contrast >= MINIMUM_FADED_TEXT_CONTRAST,
+                    "{ground:?} at {elapsed} ms: {contrast:.2}:1"
+                );
+            }
+        }
+        roster.advance(now + Duration::from_millis(3101), lifetime);
+        assert!(roster.groups().is_empty());
+        Ok(())
+    }
 
     #[test]
     fn roster_revisions_keep_only_unchanged_cell_paintings() {

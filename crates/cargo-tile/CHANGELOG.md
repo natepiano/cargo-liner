@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hidden process counts keep their last letter when the label fits and use the cell background. Fading process text stays readable. Shortened crate names keep their ellipsis. The compiler options `-L`, `--out-dir`, and `--check-cfg` wrap with their values.
 - Compiler rows retain their crate with all arguments shown. The status bar uses `processes` and hint ink for display modes.
 - A nextest run without a terminal shows `testing` from its `Starting N tests` line.
 - A command's CPU counts only what its live processes add. A helper that leaves the tree no longer holds the reading at 0%.

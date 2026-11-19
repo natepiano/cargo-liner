@@ -3066,7 +3066,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Shots of a live tile with active crates on a light and a dark background; when `tui_pane` changes, shots of `cargo-port` with the same ink. A fresh helper's design check passes.
 - Change-review line: active crate labels read on a light background.
 
-### Phase 32g — The hidden-process row reads whole and matches its cell  · status: todo
+### Phase 32g — The hidden-process row reads whole and matches its cell  · status: done
 
 **Depends on:** Phase 32c, Phase 32e, Phase 32h (both edit the painting and retained replay in `render.rs` and `render/cell_paint.rs`; item 4's fade clamp must keep Phase 32h's draw time)
 

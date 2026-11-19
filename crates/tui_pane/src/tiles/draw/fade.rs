@@ -7,6 +7,9 @@ use super::Color;
 use super::Line;
 use super::text_default;
 use super::theme;
+
+pub(super) type ReadoutColor = fn(u8, Color, Color) -> Color;
+
 /// How far a cell's ink has travelled toward its ground.
 /// Zero retains the ink; [`u8::MAX`] reaches the ground.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +46,18 @@ impl CellFadeProgress {
     /// The amount on the zero-to-255 blend scale.
     #[must_use]
     pub const fn amount(self) -> u8 { self.amount }
+
+    pub(super) fn readout_ink(self) -> (u8, ReadoutColor) {
+        let color: ReadoutColor = match self.rounding {
+            BlendRounding::Truncate => {
+                |amount, color, ground| Self::new(amount).color(color, ground)
+            },
+            BlendRounding::TowardColor => {
+                |amount, color, ground| Self::brightening(amount).color(color, ground)
+            },
+        };
+        (self.amount, color)
+    }
 }
 
 /// Whether a cell's foot follows its contents toward the cell's ground.
@@ -60,19 +75,25 @@ pub enum CellReadoutFade {
 pub(super) enum CellReadoutInk {
     Unfaded,
     Fading {
-        progress: CellFadeProgress,
-        ground:   Color,
+        amount: u8,
+        ground: Color,
+        color:  ReadoutColor,
     },
 }
 
 impl CellReadoutInk {
     pub(super) fn line(self, mut line: Line<'static>) -> Line<'static> {
-        let Self::Fading { progress, ground } = self else {
+        let Self::Fading {
+            amount,
+            ground,
+            color,
+        } = self
+        else {
             return line;
         };
         for span in &mut line.spans {
             let ink = line.style.patch(span.style).fg.unwrap_or_else(text_default);
-            span.style = span.style.fg(progress.color(ink, ground));
+            span.style = span.style.fg(color(amount, ink, ground));
         }
         line
     }
