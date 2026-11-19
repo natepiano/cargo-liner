@@ -1,4 +1,4 @@
-//! Read the ledger rows that a finding anchor needs.
+//! Read the ledger rows that a finding proof needs.
 
 use std::error::Error;
 use std::fmt::Display;
@@ -11,11 +11,12 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 use rusqlite::Error as SqliteError;
 use rusqlite::Row;
-use rusqlite::Statement;
 use rusqlite::types::FromSql;
 use serde::Serialize;
 
 use crate::constants::LEDGER_SCHEMA_VERSION;
+use crate::site_ledger::SiteEvidence;
+use crate::site_ledger::SiteRows;
 use crate::sqlite_read;
 use crate::sqlite_read::DatabaseFiles;
 use crate::sqlite_read::DatabaseReadMode;
@@ -23,10 +24,10 @@ use crate::sqlite_read::DatabaseReadMode;
 const LEDGER_READ_ATTEMPTS: usize = 3;
 
 /// One read of the sync row, ledger revision, and requested findings.
-pub(crate) struct LedgerSnapshot {
+pub(crate) struct LedgerSnapshot<T> {
     pub(crate) synced_tip:      String,
     pub(crate) ledger_revision: LedgerRevision,
-    pub(crate) findings:        Vec<FindingLookup>,
+    pub(crate) findings:        Vec<FindingLookup<T>>,
 }
 
 #[derive(Serialize)]
@@ -36,9 +37,14 @@ pub(crate) enum LedgerRevision {
     Revision(u64),
 }
 
-pub(crate) enum FindingLookup {
-    Held(HeldAnchor),
+pub(crate) enum FindingLookup<T> {
+    Held(T),
     Unknown,
+}
+
+pub(crate) struct HeldSite {
+    pub(crate) anchor: HeldAnchor,
+    pub(crate) site:   SiteEvidence,
 }
 
 pub(crate) struct HeldAnchor {
@@ -53,6 +59,12 @@ pub(crate) enum AnchorEvidence {
     Recorded(String),
     Judging(JudgingRevisions),
     NoJudgingTicket,
+}
+
+pub(crate) enum OriginalJudgment {
+    Recorded(String),
+    Anchor,
+    PriorTicket(Vec<String>),
 }
 
 pub(crate) struct JudgingRevisions(JudgingCommits);
@@ -95,8 +107,34 @@ impl From<io::Error> for LedgerReadFailure {
     fn from(error: io::Error) -> Self { Self::Database(Box::new(error)) }
 }
 
-impl LedgerSnapshot {
-    pub(crate) fn read(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
+impl LedgerSnapshot<HeldAnchor> {
+    pub(crate) fn read_anchors(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
+        Self::read(path, |connection| {
+            read_findings(connection, ids, read_anchor)
+        })
+    }
+}
+
+impl LedgerSnapshot<HeldSite> {
+    pub(crate) fn read_sites(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
+        Self::read(path, |connection| {
+            let mut sites = SiteRows::prepare(connection)?;
+            read_findings(connection, ids, |row, id| {
+                let anchor = read_anchor(row, id)?;
+                let ticket: String = read_column(row, "held_findings", id, "ticket")?;
+                let original = read_original(row, id, &ticket, &anchor.evidence)?;
+                let site = sites.read(id, &ticket, &anchor.path, original)?;
+                Ok(HeldSite { anchor, site })
+            })
+        })
+    }
+}
+
+impl<T> LedgerSnapshot<T> {
+    fn read(
+        path: &Path,
+        findings: impl Fn(&Connection) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure>,
+    ) -> Result<Self, LedgerReadFailure> {
         let absolute = fs::canonicalize(path).map_err(|error| {
             if error.kind() == ErrorKind::NotFound {
                 LedgerReadFailure::Missing(path.to_owned())
@@ -107,7 +145,7 @@ impl LedgerSnapshot {
         for _ in 0..LEDGER_READ_ATTEMPTS {
             let files = DatabaseFiles::read(&absolute)?;
             if files.is_quiet() {
-                let read = Self::read_database(&absolute, DatabaseReadMode::Immutable, ids);
+                let read = Self::read_database(&absolute, DatabaseReadMode::Immutable, &findings);
                 if files == DatabaseFiles::read(&absolute)? {
                     return read;
                 }
@@ -117,10 +155,10 @@ impl LedgerSnapshot {
                 let copied = files.copy_wal_database(&absolute, &copy);
                 if files == DatabaseFiles::read(&absolute)? {
                     copied?;
-                    return Self::read_database(&copy, DatabaseReadMode::Locked, ids);
+                    return Self::read_database(&copy, DatabaseReadMode::Locked, &findings);
                 }
             } else {
-                return Self::read_database(&absolute, DatabaseReadMode::Locked, ids);
+                return Self::read_database(&absolute, DatabaseReadMode::Locked, &findings);
             }
         }
         Err(io::Error::other("the ledger files changed during the read").into())
@@ -129,14 +167,14 @@ impl LedgerSnapshot {
     fn read_database(
         path: &Path,
         mode: DatabaseReadMode,
-        ids: &[String],
+        findings: &impl Fn(&Connection) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure>,
     ) -> Result<Self, LedgerReadFailure> {
-        Self::read_transaction(&mut sqlite_read::open_read_only(path, mode)?, ids)
+        Self::read_transaction(&mut sqlite_read::open_read_only(path, mode)?, findings)
     }
 
     fn read_transaction(
         connection: &mut Connection,
-        ids: &[String],
+        findings: &impl Fn(&Connection) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure>,
     ) -> Result<Self, LedgerReadFailure> {
         let snapshot = connection.transaction()?;
         check_schema(&snapshot)?;
@@ -151,17 +189,7 @@ impl LedgerSnapshot {
         } else {
             LedgerRevision::Absent
         };
-        let findings = {
-            let mut statement = snapshot.prepare(
-                "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, h.ticket, \
-                        t.id AS judging_ticket, t.checkpoint, t.base \
-                 FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
-                 WHERE h.finding_id = ?1",
-            )?;
-            ids.iter()
-                .map(|id| read_finding(&mut statement, id))
-                .collect::<Result<_, _>>()?
-        };
+        let findings = findings(&snapshot)?;
         snapshot.commit()?;
         Ok(Self {
             synced_tip,
@@ -227,14 +255,28 @@ fn read_synced_tip(connection: &Connection) -> Result<String, LedgerReadFailure>
     Ok(tip)
 }
 
-fn read_finding(
-    statement: &mut Statement<'_>,
-    id: &str,
-) -> Result<FindingLookup, LedgerReadFailure> {
-    let mut rows = statement.query([id])?;
-    let Some(row) = rows.next()? else {
-        return Ok(FindingLookup::Unknown);
-    };
+fn read_findings<T>(
+    connection: &Connection,
+    ids: &[String],
+    mut read: impl FnMut(&Row<'_>, &str) -> Result<T, LedgerReadFailure>,
+) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure> {
+    let mut statement = connection.prepare(
+        "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, h.ticket, \
+                t.id AS judging_ticket, t.checkpoint, t.base \
+         FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
+         WHERE h.finding_id = ?1",
+    )?;
+    ids.iter()
+        .map(|id| {
+            let mut rows = statement.query([id])?;
+            rows.next()?.map_or(Ok(FindingLookup::Unknown), |row| {
+                read(row, id).map(FindingLookup::Held)
+            })
+        })
+        .collect()
+}
+
+fn read_anchor(row: &Row<'_>, id: &str) -> Result<HeldAnchor, LedgerReadFailure> {
     let path: String = read_column(row, "held_findings", id, "path")?;
     if path.is_empty()
         || path.contains('\0')
@@ -262,12 +304,12 @@ fn read_finding(
         })?;
     let text = read_column(row, "held_findings", id, "text")?;
     let evidence = read_evidence(row, id)?;
-    Ok(FindingLookup::Held(HeldAnchor {
+    Ok(HeldAnchor {
         path,
         line,
         text,
         evidence,
-    }))
+    })
 }
 
 fn read_evidence(row: &Row<'_>, id: &str) -> Result<AnchorEvidence, LedgerReadFailure> {
@@ -295,7 +337,35 @@ fn read_evidence(row: &Row<'_>, id: &str) -> Result<AnchorEvidence, LedgerReadFa
     Ok(AnchorEvidence::NoJudgingTicket)
 }
 
-fn read_revision(
+fn read_original(
+    row: &Row<'_>,
+    id: &str,
+    ticket: &str,
+    anchor: &AnchorEvidence,
+) -> Result<OriginalJudgment, LedgerReadFailure> {
+    match anchor {
+        AnchorEvidence::Recorded(commit) => Ok(OriginalJudgment::Recorded(commit.clone())),
+        AnchorEvidence::Judging(_) | AnchorEvidence::NoJudgingTicket => {
+            Ok(OriginalJudgment::Anchor)
+        },
+        AnchorEvidence::Followed(_) => {
+            let recorded = read_revision(row, "held_findings", id, "anchor_commit")?;
+            if !recorded.is_empty() {
+                return Ok(OriginalJudgment::Recorded(recorded));
+            }
+            let mut commits = Vec::new();
+            for column in ["checkpoint", "base"] {
+                let commit: Option<String> = read_column(row, "tickets", ticket, column)?;
+                if let Some(commit) = commit.filter(|commit| !commit.is_empty()) {
+                    commits.push(commit);
+                }
+            }
+            Ok(OriginalJudgment::PriorTicket(commits))
+        },
+    }
+}
+
+pub(crate) fn read_revision(
     row: &Row<'_>,
     table: &'static str,
     key: &str,
@@ -308,7 +378,7 @@ fn read_revision(
     Ok(revision)
 }
 
-fn read_column<T: FromSql>(
+pub(crate) fn read_column<T: FromSql>(
     row: &Row<'_>,
     table: &'static str,
     key: &str,
@@ -318,7 +388,7 @@ fn read_column<T: FromSql>(
         .map_err(|error| invalid_row(table, key, column, &error))
 }
 
-fn invalid_row(
+pub(crate) fn invalid_row(
     table: &'static str,
     key: &str,
     column: &'static str,

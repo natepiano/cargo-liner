@@ -12,7 +12,7 @@ use crate::source_lines::SiteLine;
 use crate::tokenizer;
 use crate::unicode_tables::SPACE;
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub(crate) enum NeedsJudgmentReason {
     #[serde(rename = "last follow commit is missing")]
     LastFollowCommitMissing,
@@ -24,20 +24,23 @@ pub(crate) enum NeedsJudgmentReason {
     NoMatch,
     #[serde(rename = "source anchor is ambiguous between base and checkpoint")]
     Ambiguous,
+    #[serde(rename = "source or input proof unreadable")]
+    UnreadableProof,
 }
 
 /// The result of checking a held finding's source history and coordinate.
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum FindingAnchor {
-    Anchored {
-        commit: String,
-        path:   String,
-        line:   usize,
-    },
-    NeedsJudgment {
-        reason: NeedsJudgmentReason,
-    },
+    Anchored(ResolvedAnchor),
+    NeedsJudgment { reason: NeedsJudgmentReason },
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ResolvedAnchor {
+    pub(crate) commit: String,
+    pub(crate) path:   String,
+    line:              usize,
 }
 
 impl FindingAnchor {
@@ -74,11 +77,11 @@ impl FindingAnchor {
     }
 
     fn at(finding: &HeldAnchor, commit: &str) -> Self {
-        Self::Anchored {
+        Self::Anchored(ResolvedAnchor {
             commit: commit.to_owned(),
             path:   finding.path.clone(),
             line:   finding.line,
-        }
+        })
     }
 }
 

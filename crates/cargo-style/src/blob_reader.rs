@@ -1,5 +1,6 @@
 //! Finds the Rust blobs of commits and reads their facts on every CPU.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
@@ -25,6 +26,7 @@ use crate::fact_store::CachedFact;
 use crate::fact_store::FactCache;
 use crate::fact_store::NewFactRow;
 use crate::facts::BlobSource;
+use crate::facts::BlobSyntax;
 use crate::facts::FactReading;
 use crate::module_sites::ModuleSitesQuery;
 use crate::request::FactKind;
@@ -83,9 +85,13 @@ impl BlobReader {
         }
         Ok(
             read_blob_object(&repository, id)?.map_or(BlobSource::Missing, |blob| {
-                std::str::from_utf8(&blob.data).map_or(BlobSource::NotUtf8, |text| {
-                    BlobSource::Utf8(text.to_owned())
-                })
+                match String::from_utf8_lossy(&blob.data) {
+                    Cow::Borrowed(text) => BlobSource::Utf8 {
+                        text:   text.to_owned(),
+                        syntax: BlobSyntax::Unparsed,
+                    },
+                    Cow::Owned(text) => BlobSource::NotUtf8(text),
+                }
             }),
         )
     }
