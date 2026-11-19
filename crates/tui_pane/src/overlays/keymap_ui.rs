@@ -178,6 +178,15 @@ impl KeymapPane {
         area: Rect,
         inputs: &KeymapOverlayInputs,
     ) {
+        self.render_popup(frame, area, inputs);
+    }
+
+    fn render_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        inputs: &KeymapOverlayInputs,
+    ) -> Rect {
         let stride = inputs.column_width.saturating_add(KEYMAP_COLUMN_GAP);
         let outer_cap = area.width.saturating_sub(POPUP_SIDE_MARGIN_WIDTH);
         let columns = column_layout(
@@ -241,6 +250,7 @@ impl KeymapPane {
             ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
             Style::default().fg(label_color()),
         );
+        popup.outer
     }
 }
 
@@ -252,13 +262,24 @@ pub fn draw_keymap_overlay<Ctx>(frame: &mut Frame<'_>, ctx: &mut Ctx, keymap: &K
 where
     Ctx: KeymapUiContext + 'static,
 {
+    draw_keymap_popup(frame, ctx, keymap);
+}
+
+pub(super) fn draw_keymap_popup<Ctx>(
+    frame: &mut Frame<'_>,
+    ctx: &mut Ctx,
+    keymap: &Keymap<Ctx>,
+) -> Rect
+where
+    Ctx: KeymapUiContext + 'static,
+{
     ctx.framework_mut().keymap_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
     let inputs = KeymapPane::prepare_overlay_inputs(ctx, keymap);
     ctx.framework_mut()
         .keymap_pane
-        .render_overlay(frame, frame.area(), &inputs);
+        .render_popup(frame, frame.area(), &inputs)
 }
 
 /// Sort action rows within each section. Headers are anchors; rows

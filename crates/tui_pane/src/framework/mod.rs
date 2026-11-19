@@ -15,9 +15,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 
 pub use self::focus::focus_next;
 pub use self::focus::focus_prev;
+pub use self::focus::reconcile_focus_after_toast_change;
 pub(crate) use self::global_action::dispatch_global;
 pub use self::hit_test::HitTestRegistry;
 pub use self::hit_test::Hittable;
@@ -26,6 +28,7 @@ pub use self::input::FrameworkHit;
 pub use self::input::InputContext;
 pub use self::input::ModalHit;
 pub use self::input::dispatch_hit_test;
+pub(crate) use self::input::dispatch_with_framework_hit;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;
 pub use self::render::PaneFrameChrome;
@@ -55,6 +58,7 @@ use crate::Repaint;
 use crate::SettingsPane;
 use crate::SettingsRowHit;
 use crate::SettingsStore;
+use crate::ToastFocus;
 use crate::ToastSettings;
 use crate::Toasts;
 use crate::VisualDeadline;
@@ -108,6 +112,8 @@ pub struct Framework<Ctx: AppContext> {
     pane_order:                Vec<Ctx::AppPaneId>,
     tab_stops:                 Vec<RegisteredTabStop<Ctx>>,
     overlay:                   Option<FrameworkOverlayId>,
+    overlay_bounds:            Rect,
+    app_overlay_bounds:        Rect,
     /// Keymap viewer/editor overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Keymap)`.
     pub keymap_pane:           KeymapPane,
@@ -150,6 +156,8 @@ impl<Ctx: AppContext> Framework<Ctx> {
             pane_order: Vec::new(),
             tab_stops: Vec::new(),
             overlay: None,
+            overlay_bounds: Rect::default(),
+            app_overlay_bounds: Rect::default(),
             keymap_pane: KeymapPane::new(),
             settings_pane: SettingsPane::new(),
             global_shortcuts_pane: GlobalShortcutsPane::new(),
@@ -448,8 +456,26 @@ impl<Ctx: AppContext> Framework<Ctx> {
         self.global_shortcuts_pane.viewport_mut().set_hovered(None);
     }
 
+    pub(crate) const fn set_framework_overlay_bounds(&mut self, bounds: Rect) {
+        self.overlay_bounds = bounds;
+    }
+
+    #[cfg(feature = "backdrop")]
+    pub(crate) const fn set_app_overlay_bounds(&mut self, bounds: Rect) {
+        self.app_overlay_bounds = bounds;
+    }
+
+    /// Close the focused visible toast or the newest visible toast.
+    pub fn dismiss_visible_toast(&mut self) -> bool {
+        let pane = self.toast_pane_focus_state();
+        let framework = self.overlay_bounds;
+        let app = self.app_overlay_bounds;
+        self.toasts
+            .dismiss_visible(pane, |card| toast_card_is_visible(card, framework, app))
+    }
+
     /// Run the framework-owned hit-test ladder at `pos`: first the
-    /// toast stack (close button > card body), then, if a framework
+    /// visible toast stack (close button > card body), then, if a framework
     /// overlay is open, that overlay's row geometry. When an overlay
     /// is open the framework consumes the click whether or not it
     /// lands on a selectable row — the
@@ -461,7 +487,10 @@ impl<Ctx: AppContext> Framework<Ctx> {
     pub fn hit_test_at(&self, pos: Position) -> Option<crate::FrameworkHit> {
         use crate::Hittable;
 
-        if let Some(hit) = self.toasts.hit_test_at(pos) {
+        if !self.overlay_bounds.contains(pos)
+            && !self.app_overlay_bounds.contains(pos)
+            && let Some(hit) = self.toasts.hit_test_at(pos)
+        {
             return Some(FrameworkHit::Toast(hit));
         }
         match self.overlay {
@@ -532,12 +561,23 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// binary's registered `dismiss_fallback` hook (if any).
     ///
     /// Order:
-    /// 1. If [`Self::focused`] is the toast stack, pop the focused toast via
-    ///    [`Toasts::dismiss_focused`](crate::Toasts::dismiss_focused).
+    /// 1. Close the focused toast if no overlay covers it.
     /// 2. Else if an overlay is open, close it.
     /// 3. Else return `false`.
     pub fn dismiss_framework(&mut self) -> bool {
-        if self.toasts.dismiss_focused(self.toast_pane_focus_state()) {
+        let focus = self.toast_pane_focus_state();
+        if let ToastFocus::PaneFocusedOn(id) = self.toasts.focused_toast_id(focus)
+            && (self.overlay_bounds.is_empty() && self.app_overlay_bounds.is_empty()
+                || self.toasts.hits().iter().any(|hit| {
+                    hit.id == id
+                        && toast_card_is_visible(
+                            hit.card_rect,
+                            self.overlay_bounds,
+                            self.app_overlay_bounds,
+                        )
+                }))
+            && self.toasts.dismiss(id)
+        {
             return true;
         }
         self.close_overlay()
@@ -556,6 +596,13 @@ impl<Ctx: AppContext> Framework<Ctx> {
             Some(FrameworkOverlayId::GlobalShortcuts) | None => None,
         }
     }
+}
+
+fn toast_card_is_visible(card: Rect, framework_overlay: Rect, app_overlay: Rect) -> bool {
+    let framework = card.intersection(framework_overlay);
+    let app = card.intersection(app_overlay);
+    let covered = framework.area() + (app.area() - framework.intersection(app).area());
+    covered < card.area()
 }
 
 #[cfg(test)]
