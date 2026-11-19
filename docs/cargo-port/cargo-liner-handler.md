@@ -985,3 +985,27 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - The measurement before and after the fix, with the load at each run.
 - The regression test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 46 — the Phase 44 claim fix holds on a copy of hana's real claim records  · status: todo
+
+#### Work Order
+
+**Goal:** prove that the Phase 44 claim fix keeps hana's real cargo-berth records under the ordering edge limit, before the fix ships. Source: the user approved this check on the review page, 2026-11-19.
+
+**Spec:**
+1. The fault: a hana claim on `crates/hana/tests/assembly_face/frame_time_assembly/mod.rs` (reservation 01a1ed71, worktree hana trunk) was refused with `ordering_edge_limit_reached`. The limit is 512.
+2. Copy hana with its cargo-berth records (`.git/cargo-berth`, `.git/refs/cargo-berth`, `.git/cargo-berth-worktree-id`) into a scratch folder. Never write to `/home/natepiano/rust/hana`.
+3. With the installed `cargo-berth`, read the copy's board and try the claim from the fault. Record the live ordering edge count and the claim result.
+4. Build `cargo-berth` from the Phase 44 commit (`handler-phase-44`, 717b6c4e6) in a private copy. Repeat step 3 on a fresh copy with that binary.
+5. Delete the copies.
+
+**Files:** none. The phase reads records and changes no source.
+
+**Workers:** 1 tester.
+- `test`: the copy, the build and the runs.
+
+**State:** none. The copies are scratch and are deleted.
+
+**Verification:**
+- The live edge count and the claim result, before and after the fix.
+- With the fix, the claim succeeds and the live edge count is well under 512.
