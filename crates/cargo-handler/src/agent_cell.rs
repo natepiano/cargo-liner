@@ -2406,15 +2406,17 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionCells {
     /// The machine the session runs on.
-    pub(crate) machine:  String,
+    pub(crate) machine:              String,
     /// The name cell, without the machine.
-    pub(crate) name:     String,
+    pub(crate) name:                 String,
     /// The state the status cell draws.
-    pub(crate) status:   ReportedSessionState,
+    pub(crate) status:               ReportedSessionState,
     /// The activity cell text.
-    pub(crate) activity: String,
+    pub(crate) activity:             String,
     /// The session's shell rows, in tile line order.
-    pub(crate) shells:   Vec<ShellCells>,
+    pub(crate) shells:               Vec<ShellCells>,
+    /// Whether every shell row belongs to the session's machine.
+    pub(crate) shells_share_machine: bool,
 }
 
 /// One shell row of a session, as its tile line draws it.
@@ -2460,6 +2462,7 @@ pub(crate) fn session_cells(
                     };
                     for id in line.row.session_id.ids() {
                         if let Some(cell) = cells.get_mut(id) {
+                            cell.shells_share_machine &= cell.machine == line.machine;
                             cell.shells.push(shell_cells.clone());
                         }
                     }
@@ -2477,11 +2480,12 @@ pub(crate) fn session_cells(
             };
             for id in ids {
                 cells.entry(id.to_owned()).or_insert_with(|| SessionCells {
-                    machine:  line.machine.to_owned(),
-                    name:     line.session_name(),
-                    status:   line.session_status(),
-                    activity: line.value(TreeColumn::Activity, now),
-                    shells:   Vec::new(),
+                    machine:              line.machine.to_owned(),
+                    name:                 line.session_name(),
+                    status:               line.session_status(),
+                    activity:             line.value(TreeColumn::Activity, now),
+                    shells:               Vec::new(),
+                    shells_share_machine: true,
                 });
             }
         }
