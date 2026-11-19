@@ -46,6 +46,10 @@ pub(super) use self::report::ExpectedFinding;
 pub(super) use self::report::Finding;
 pub(super) use self::report::Report;
 
+/// Permit the `pub(crate) mod` that the module import fixtures use.
+pub(super) const MODULE_IMPORT_FIXTURE_CONFIG: &str =
+    "[diagnostics]\nreview_pub_mod = false\n\n[visibility]\npub_in_path = \"permitted\"\n";
+
 /// Mirrors `src/config/pub_in_path.rs`. Fixtures pin the setting explicitly
 /// because project `mend.toml` beats the machine-global config: a fixture that
 /// writes none inherits whatever the developer configured, so its result would
