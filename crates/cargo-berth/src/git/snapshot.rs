@@ -23,6 +23,7 @@ use super::reachability::BranchMergeSession;
 use super::reachability::ResolvedTrunkAncestry;
 use super::read;
 use super::refs::HeadAttachment;
+use super::worktree;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::LedgerError;
@@ -132,7 +133,7 @@ impl RepositorySnapshot {
     pub(crate) fn worktree_list_porcelain(&self) -> Result<&[u8], GitError> {
         self.worktrees
             .read(|| {
-                read::worktrees(self.repository_root())?.or_git(|| {
+                worktree::worktrees(self.repository_root())?.or_git(|| {
                     self.successful_output(
                         GIT_WORKTREE_COMMAND,
                         &[

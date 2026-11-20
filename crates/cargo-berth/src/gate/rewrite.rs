@@ -478,7 +478,7 @@ pub(super) fn reanchor_rewritten_phases(
     worktree_context: &WorktreeContext,
     events: &[BranchRewriteEvent],
 ) -> Result<(), GateError> {
-    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
+    let ledger = Ledger::open_for_reference_transaction(worktree_context)?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
     let repository = git::RepositorySnapshot::new(worktree_context.clone());

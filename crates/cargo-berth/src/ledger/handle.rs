@@ -100,6 +100,12 @@ pub(crate) struct Ledger {
     pub(super) paths:                      LedgerPaths,
     /// The superseded record bytes past which a transaction compacts the journal after it.
     pub(super) compaction_threshold_bytes: u64,
+    automatic_compaction:                  AutomaticCompaction,
+}
+
+enum AutomaticCompaction {
+    AfterTransaction,
+    Deferred,
 }
 
 /// Validated journal truth for a mutation-free edit check.
@@ -607,6 +613,15 @@ impl Ledger {
             worktree_context.repository_root(),
         );
         ledger.require_existing()?;
+        Ok(ledger)
+    }
+
+    /// Open the ledger for a Git ref hook. The next ordinary mutation can compact the journal.
+    pub(crate) fn open_for_reference_transaction(
+        worktree_context: &WorktreeContext,
+    ) -> Result<Self, LedgerError> {
+        let mut ledger = Self::open_from_discovered_worktree(worktree_context)?;
+        ledger.automatic_compaction = AutomaticCompaction::Deferred;
         Ok(ledger)
     }
 
@@ -1135,6 +1150,7 @@ impl Ledger {
                 directory,
             },
             compaction_threshold_bytes: JOURNAL_COMPACTION_THRESHOLD_BYTES,
+            automatic_compaction:       AutomaticCompaction::AfterTransaction,
         }
     }
 
@@ -1202,8 +1218,7 @@ impl Ledger {
         })
     }
 
-    /// Run `body` in `transaction`, then release its mutation lock and compact the journal when
-    /// the replay holds enough superseded records or expired finished history.
+    /// Run `body` in `transaction`, release the mutation lock, and check for due compaction.
     fn conclude<Concluded>(
         &self,
         transaction: LedgerTransaction,
@@ -1219,11 +1234,6 @@ impl Ledger {
         finish: impl FnOnce(Concluded, ReplayedLedgerState<'_>) -> Output,
     ) -> Output {
         let concluded = body(&mut transaction);
-        let droppable_bytes = transaction.replay.superseded.droppable_bytes;
-        let history_due = transaction
-            .replay
-            .finished_history
-            .is_due(&RecordedAt::now());
         let LedgerTransaction {
             _lock: lock,
             replay,
@@ -1242,10 +1252,15 @@ impl Ledger {
                 journal_end_offset:  replay.end_offset,
             },
         );
-        if history_due {
-            self.compact_expired_history();
-        } else {
-            self.compact_if_due(droppable_bytes);
+        if matches!(
+            self.automatic_compaction,
+            AutomaticCompaction::AfterTransaction
+        ) {
+            if replay.finished_history.is_due(&RecordedAt::now()) {
+                self.compact_expired_history();
+            } else {
+                self.compact_if_due(replay.superseded.droppable_bytes);
+            }
         }
         output
     }

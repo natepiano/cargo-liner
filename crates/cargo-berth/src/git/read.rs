@@ -82,7 +82,7 @@ pub(super) enum GitReadRequirement {
     UnmergedIndex,
     /// Git treats intent-to-add entries specially in its tree/index comparison.
     IntentToAdd,
-    /// Locked, prunable or inaccessible registrations need Git's diagnostic fields.
+    /// Git interprets registrations with unavailable metadata.
     ExtendedWorktreeRegistration,
     /// Symbolic refs outside HEAD retain Git's dereferencing and broken-ref behavior.
     SymbolicReference,
@@ -457,77 +457,27 @@ fn porcelain_status(paths: BTreeMap<Vec<u8>, [u8; 2]>) -> Vec<u8> {
     bytes
 }
 
-/// Preserve main-first ordering, branch attachment, detached and unborn heads.
-pub(super) fn worktrees(root: &Path) -> Result<RepositoryRead<Vec<u8>>, GitError> {
-    let repository = match open(root)? {
-        RepositoryRead::InProcess(repository) => repository,
-        RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
+/// Verify both sides of a ref update without using cached parent links.
+pub(crate) fn has_complete_history(root: &Path, tips: &[&GitObjectId]) -> bool {
+    let Ok(RepositoryRead::InProcess(repository)) = open(root) else {
+        return false;
     };
-    for proxy in repository
-        .worktrees()
-        .map_err(|error| failure("read worktree registry", error))?
+    if !repository.is_shallow().is_ok_and(|shallow| !shallow)
+        || repository.common_dir().join("info/grafts").exists()
     {
-        if proxy.is_locked() || proxy.is_prunable() {
-            return Ok(RepositoryRead::GitRequired(
-                GitReadRequirement::ExtendedWorktreeRegistration,
-            ));
-        }
+        return false;
     }
-    let mut bytes = Vec::new();
-    let worktrees = repository
-        .worktrees_including_main()
-        .map_err(|error| failure("read worktree registry", error))?;
-    let Ok(mut worktrees) = worktrees.collect::<Result<Vec<_>, _>>() else {
-        return Ok(RepositoryRead::GitRequired(
-            GitReadRequirement::ExtendedWorktreeRegistration,
-        ));
+    let ids = tips
+        .iter()
+        .map(|tip| gix::ObjectId::from_hex(tip.to_string().as_bytes()))
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(ids) = ids else {
+        return false;
     };
-    // Git lists the main checkout first, then linked checkouts by their path.
-    if worktrees.len() > 1 {
-        worktrees[1..].sort_by(|left, right| left.workdir().cmp(&right.workdir()));
-    }
-    for (index, worktree) in worktrees.into_iter().enumerate() {
-        let root = worktree.workdir().unwrap_or_else(|| worktree.git_dir());
-        // Git resolves the main checkout's path; linked paths retain their registration spelling.
-        let root = if index == 0 {
-            std::fs::canonicalize(root).map_err(|error| failure("resolve main worktree", error))?
-        } else {
-            root.to_path_buf()
-        };
-        bytes.extend_from_slice(b"worktree ");
-        bytes.extend_from_slice(root.as_os_str().as_encoded_bytes());
-        bytes.push(0);
-        if worktree.is_bare() {
-            bytes.extend_from_slice(b"bare\0\0");
-            continue;
-        }
-        let head = worktree
-            .head()
-            .map_err(|error| failure("read worktree HEAD", error))?;
-        if matches!(&head.kind, gix::head::Kind::Symbolic(reference) if reference.target.try_id().is_none())
-        {
-            return Ok(RepositoryRead::GitRequired(
-                GitReadRequirement::SymbolicReference,
-            ));
-        }
-        bytes.extend_from_slice(b"HEAD ");
-        let id = head.id().map_or_else(
-            || gix::hash::ObjectId::null(worktree.object_hash()).to_string(),
-            |id| id.to_string(),
-        );
-        bytes.extend_from_slice(id.as_bytes());
-        bytes.push(0);
-        match head.referent_name() {
-            Some(name) => {
-                bytes.extend_from_slice(b"branch ");
-                bytes.extend_from_slice(name.as_bstr());
-                bytes.push(0);
-            },
-            None => bytes.extend_from_slice(b"detached\0"),
-        }
-        bytes.push(0);
-    }
-    Ok(RepositoryRead::InProcess(bytes))
+    let Ok(mut walk) = repository.rev_walk(ids).use_commit_graph(false).all() else {
+        return false;
+    };
+    walk.all(|commit| commit.is_ok())
 }
 
 pub(super) fn attachment(root: &Path) -> Result<RepositoryRead<HeadAttachment>, GitError> {
@@ -867,7 +817,6 @@ mod tests {
     use super::GitReadRequirement;
     use super::RepositoryRead;
     use super::status;
-    use super::worktrees;
     use crate::git::command;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PRIMARY_PATH;
@@ -877,6 +826,7 @@ mod tests {
     use crate::git::object::OperationObjectReader;
     use crate::git::refs::ReferenceLookup;
     use crate::git::snapshot::RepositorySnapshot;
+    use crate::git::worktree;
 
     enum EnvironmentTestRole {
         Child,
@@ -1025,7 +975,7 @@ mod tests {
             RepositoryRead::GitRequired(GitReadRequirement::SymbolicReference)
         ));
         assert!(matches!(
-            worktrees(fixture.root())?,
+            worktree::worktrees(fixture.root())?,
             RepositoryRead::GitRequired(GitReadRequirement::SymbolicReference)
         ));
         let snapshot = RepositorySnapshot::discover(fixture.root())?;
@@ -1160,7 +1110,7 @@ mod tests {
             std::env::var_os("CARGO_BERTH_PROBE_SERIALIZATION_SHIM").ok_or("shim missing")?,
         );
         std::thread::scope(|scope| -> FixtureResult {
-            let observation = scope.spawn(|| super::worktrees(root));
+            let observation = scope.spawn(|| crate::git::worktree::worktrees(root));
             // The shim marks the spawn boundary: the probe child runs and waits for `continue`.
             while !shim.join("ready").exists() {
                 if observation.is_finished() {
@@ -1294,69 +1244,6 @@ mod tests {
     }
 
     #[test]
-    fn in_process_worktrees_preserve_linked_detached_and_unborn_heads() -> FixtureResult {
-        let fixture = PatchEquivalenceFixture::new()?;
-        let parent = tempfile::tempdir()?;
-        let linked = parent.path().join("linked path");
-        fixture.git(&[
-            "worktree",
-            "add",
-            "--detach",
-            linked.to_str().ok_or("path encoding")?,
-        ])?;
-        let expected =
-            command::git_output(fixture.root(), ["worktree", "list", "--porcelain", "-z"])?;
-        assert!(expected.status.success());
-        assert_eq!(in_process(worktrees(fixture.root())?)?, expected.stdout);
-        fixture.git(&["checkout", "--orphan", "unborn"])?;
-        let expected =
-            command::git_output(fixture.root(), ["worktree", "list", "--porcelain", "-z"])?;
-        assert_eq!(in_process(worktrees(fixture.root())?)?, expected.stdout);
-        Ok(())
-    }
-
-    #[test]
-    fn locked_worktree_registrations_keep_git_lock_reasons() -> FixtureResult {
-        let fixture = PatchEquivalenceFixture::new()?;
-        let parent = tempfile::tempdir()?;
-        let linked = parent.path().join("locked path");
-        let path = linked.to_str().ok_or("path encoding")?;
-        fixture.git(&["worktree", "add", "--detach", path])?;
-        fixture.git(&["worktree", "lock", "--reason", "external disk", path])?;
-        assert_worktree_registration_route(&fixture)
-    }
-
-    #[test]
-    fn prunable_worktree_registrations_keep_git_missing_checkout_diagnostics() -> FixtureResult {
-        let fixture = PatchEquivalenceFixture::new()?;
-        let parent = tempfile::tempdir()?;
-        let linked = parent.path().join("missing path");
-        fixture.git(&[
-            "worktree",
-            "add",
-            "--detach",
-            linked.to_str().ok_or("path encoding")?,
-        ])?;
-        std::fs::remove_dir_all(&linked)?;
-        assert_worktree_registration_route(&fixture)
-    }
-
-    fn assert_worktree_registration_route(fixture: &PatchEquivalenceFixture) -> FixtureResult {
-        assert!(matches!(
-            worktrees(fixture.root())?,
-            RepositoryRead::GitRequired(GitReadRequirement::ExtendedWorktreeRegistration)
-        ));
-        let expected =
-            command::git_output(fixture.root(), ["worktree", "list", "--porcelain", "-z"])?;
-        assert!(expected.status.success(), "{expected:?}");
-        assert_eq!(
-            RepositorySnapshot::discover(fixture.root())?.worktree_list_porcelain()?,
-            expected.stdout
-        );
-        Ok(())
-    }
-
-    #[test]
     fn in_process_reference_lookup_distinguishes_packed_missing_and_failed_reads() -> FixtureResult
     {
         let fixture = PatchEquivalenceFixture::new()?;
@@ -1441,48 +1328,6 @@ mod tests {
         std::os::unix::fs::symlink("primary.rs", fixture.root().join("src/secondary.rs"))?;
         fixture.git(&["add", "src/secondary.rs"])?;
         assert_eq!(in_process(status(fixture.root())?)?, git_status(&fixture)?);
-        Ok(())
-    }
-
-    #[test]
-    fn worktree_listing_resolves_main_checkout_aliases_like_git() -> FixtureResult {
-        let fixture = PatchEquivalenceFixture::new()?;
-        let parent = tempfile::tempdir()?;
-        let alias = parent.path().join("main alias");
-        std::os::unix::fs::symlink(fixture.root(), &alias)?;
-        let linked = parent.path().join("linked");
-        fixture.git(&[
-            "worktree",
-            "add",
-            "--detach",
-            linked.to_str().ok_or("path encoding")?,
-        ])?;
-        for checkout in [&alias, &linked] {
-            let expected =
-                command::git_output(checkout, ["worktree", "list", "--porcelain", "-z"])?;
-            assert!(expected.status.success());
-            assert_eq!(in_process(worktrees(checkout)?)?, expected.stdout);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn worktree_listing_orders_paths_independently_of_registration_names() -> FixtureResult {
-        let fixture = PatchEquivalenceFixture::new()?;
-        let parent = tempfile::tempdir()?;
-        for path in [parent.path().join("a/z"), parent.path().join("z/a")] {
-            std::fs::create_dir_all(path.parent().ok_or("parent path")?)?;
-            fixture.git(&[
-                "worktree",
-                "add",
-                "--detach",
-                path.to_str().ok_or("path encoding")?,
-            ])?;
-        }
-        let expected =
-            command::git_output(fixture.root(), ["worktree", "list", "--porcelain", "-z"])?;
-        assert!(expected.status.success());
-        assert_eq!(in_process(worktrees(fixture.root())?)?, expected.stdout);
         Ok(())
     }
 
@@ -1733,7 +1578,10 @@ mod tests {
         let expected =
             command::git_output(fixture.root(), ["worktree", "list", "--porcelain", "-z"])?;
         assert!(expected.status.success(), "{expected:?}");
-        assert_eq!(in_process(worktrees(fixture.root())?)?, expected.stdout);
+        assert_eq!(
+            in_process(worktree::worktrees(fixture.root())?)?,
+            expected.stdout
+        );
         Ok(())
     }
 

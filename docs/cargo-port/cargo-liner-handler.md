@@ -954,7 +954,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - The new regression test fails before the fix and passes after it.
 - No changed test takes one second or more.
 
-### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: todo
+### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: done
 
 #### Work Order
 

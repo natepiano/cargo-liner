@@ -798,8 +798,11 @@ mod tests {
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
+    use crate::ledger::LedgerReconciliationOutcome;
     use crate::ledger::LedgerTransactionOutcome;
+    use crate::ledger::ReconciliationValidation;
     use crate::ledger::TransactionValidation;
+    use crate::ledger::WorktreeContext;
     use crate::ledger::journal;
     use crate::ledger::journal::Journal;
     use crate::ledger::journal::JournalEvent;
@@ -1681,6 +1684,52 @@ mod tests {
         assert_ne!(fs::metadata(&fixture.ledger.paths.journal)?.ino(), inode);
         assert_eq!(superseded_bytes(&fixture.ledger)?, 0);
         assert!(survivors.contains(&renewed) && survivors.contains(&observed));
+        fixture.ledger.read_validated_journal()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_ref_hook_defers_due_compaction_to_the_next_ordinary_mutation() -> Result<(), Box<dyn Error>>
+    {
+        let (events, rejected) = recent_round_trip_events()?;
+        let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
+        let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        let threshold = superseded_bytes(&fixture.ledger)? + 1;
+        fixture.ledger.compaction_threshold_bytes = threshold;
+        let context = WorktreeContext::discover(fixture.repository.path())?;
+        let mut hook = Ledger::open_for_reference_transaction(&context)?;
+        hook.compaction_threshold_bytes = threshold;
+        let original = fixture.journal()?;
+        let inode = fs::metadata(&hook.paths.journal)?.ino();
+
+        let outcome = hook.transact_reconciliation(
+            WorktreeId::new(),
+            CoordinationRunId::new(),
+            |_| ReconciliationValidation::<(), ()>::Apply {
+                operations:             vec![observation.clone()],
+                cover_actors:           std::collections::HashMap::new(),
+                recoverable_operations: Vec::new(),
+                action:                 (),
+            },
+            |(), _, _| Ok::<(), std::io::Error>(()),
+        )?;
+        assert!(matches!(
+            outcome,
+            LedgerReconciliationOutcome::Appended { .. }
+        ));
+        let appended = fixture.journal()?;
+        assert!(appended.starts_with(&original) && appended.len() > original.len());
+        assert_eq!(fs::metadata(&hook.paths.journal)?.ino(), inode);
+        assert!(superseded_bytes(&hook)? >= threshold);
+
+        let renewed = append(&fixture.ledger, &renewal)?;
+        assert_ne!(fs::metadata(&hook.paths.journal)?.ino(), inode);
+        assert_eq!(superseded_bytes(&fixture.ledger)?, 0);
+        assert!(
+            journal::complete_record_events(&fixture.journal()?)?
+                .iter()
+                .any(|event| event.event_id == renewed)
+        );
         fixture.ledger.read_validated_journal()?;
         Ok(())
     }
