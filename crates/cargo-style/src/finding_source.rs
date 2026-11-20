@@ -1,4 +1,4 @@
-//! Read the Git objects and line map for finding anchors.
+//! Read the Git objects and line maps for finding proofs.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ use crate::source_lines::PatchLineMap;
 use crate::source_lines::SiteLine;
 use crate::source_lines::SourceLines;
 
-/// Git reads shared by the finding anchors in one request.
+/// Git reads shared by the finding proofs in one request.
 pub(crate) struct FindingSource<'a> {
     repo:        &'a Path,
     blob_reader: BlobReader,
@@ -52,6 +52,10 @@ pub(crate) enum FindingSourceFailure {
     UndecodableSyncedTree(String),
     #[error("cannot find source blob {0}")]
     MissingBlob(String),
+    #[error("git ls-tree {commit}: no blob for {path}")]
+    MissingPath { commit: String, path: String },
+    #[error("git grep returned a path that is not UTF-8")]
+    SearchPath(#[from] FromUtf8Error),
     #[error("cannot run git {command}")]
     GitStart {
         command: &'static str,
@@ -80,7 +84,13 @@ pub(crate) enum CommitResolution {
 
 pub(crate) enum TreeBlobs {
     Listed(Rc<TreeEntries>),
-    Undecodable,
+    Undecodable(BTreeMap<Vec<u8>, String>),
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+pub(crate) enum SearchFiles {
+    Rust,
+    RustAndMarkdown,
 }
 
 pub(crate) type TreeEntries = BTreeMap<String, TreeEntry>;
@@ -154,8 +164,59 @@ impl<'a> FindingSource<'a> {
                 .get(path)
                 .filter(|entry| entry.kind == EntryKind::Blob)
                 .map(|entry| entry.object.as_str()),
-            TreeBlobs::Undecodable => None,
+            TreeBlobs::Undecodable(_) => None,
         })
+    }
+
+    pub(crate) fn candidate_blob(
+        &mut self,
+        commit: &str,
+        path: &str,
+    ) -> Result<String, FindingSourceFailure> {
+        let missing_path = || FindingSourceFailure::MissingPath {
+            commit: commit.to_owned(),
+            path:   path.to_owned(),
+        };
+        // Python normalizes carriage returns in the module candidate tree listing.
+        if path.contains('\r') {
+            return Err(missing_path());
+        }
+        match self.tree(commit)? {
+            TreeBlobs::Listed(entries) => entries
+                .get(path)
+                .filter(|entry| entry.kind == EntryKind::Blob)
+                .map(|entry| entry.object.clone()),
+            TreeBlobs::Undecodable(blobs) => blobs.get(path.as_bytes()).cloned(),
+        }
+        .ok_or_else(missing_path)
+    }
+
+    pub(crate) fn paths_naming(
+        &self,
+        commit: &str,
+        name: &str,
+        files: SearchFiles,
+    ) -> Result<Vec<String>, FindingSourceFailure> {
+        let mut arguments = vec!["-l", "-z", "-w", "-F", "-e", name, commit, "--", "*.rs"];
+        if files == SearchFiles::RustAndMarkdown {
+            arguments.push("*.md");
+        }
+        let output = git(self.repo, "grep", &arguments)?;
+        let paths =
+            if output.status.code() == Some(1) && !grep_reported_missing_blob(&output.stderr) {
+                output.stdout
+            } else {
+                successful("grep", output)?
+            };
+        let prefix = format!("{commit}:");
+        paths
+            .split(|&byte| byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                let path = path.strip_prefix(prefix.as_bytes()).unwrap_or(path);
+                Ok(String::from_utf8(path.to_vec())?)
+            })
+            .collect()
     }
 
     pub(crate) fn raw_file(
@@ -203,22 +264,33 @@ impl<'a> FindingSource<'a> {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let trees = self.blob_reader.inventories(&[commit.to_owned()])?;
-                let entries = trees
-                    .into_iter()
-                    .flat_map(|tree| tree.entries)
-                    .map(|(path, mode, kind, object)| {
-                        let kind = match kind.as_str() {
-                            "tree" => EntryKind::Directory,
-                            "commit" => EntryKind::Submodule,
-                            _ => EntryKind::Blob,
-                        };
-                        Ok((String::from_utf8(path)?, TreeEntry { mode, object, kind }))
-                    })
-                    .collect::<Result<TreeEntries, FromUtf8Error>>()
-                    .map_or(TreeBlobs::Undecodable, |entries| {
-                        TreeBlobs::Listed(Rc::new(entries))
-                    });
-                entry.insert(entries)
+                let undecodable = trees
+                    .iter()
+                    .flat_map(|tree| &tree.entries)
+                    .any(|(path, ..)| std::str::from_utf8(path).is_err());
+                let entries = trees.into_iter().flat_map(|tree| tree.entries);
+                let tree = if undecodable {
+                    TreeBlobs::Undecodable(
+                        entries
+                            .filter_map(|(path, _, kind, object)| {
+                                (kind == "blob").then_some((path, object))
+                            })
+                            .collect(),
+                    )
+                } else {
+                    let entries = entries
+                        .map(|(path, mode, kind, object)| {
+                            let kind = match kind.as_str() {
+                                "tree" => EntryKind::Directory,
+                                "commit" => EntryKind::Submodule,
+                                _ => EntryKind::Blob,
+                            };
+                            Ok((String::from_utf8(path)?, TreeEntry { mode, object, kind }))
+                        })
+                        .collect::<Result<TreeEntries, FromUtf8Error>>()?;
+                    TreeBlobs::Listed(Rc::new(entries))
+                };
+                entry.insert(tree)
             },
         })
     }
@@ -250,6 +322,13 @@ impl<'a> FindingSource<'a> {
                 };
                 entry.insert(source)
             },
+        })
+    }
+
+    pub(crate) fn text(&mut self, blob: &str) -> Result<&str, FindingSourceFailure> {
+        Ok(match self.source(blob)? {
+            SourceText::Utf8(source) => source.lines.text(),
+            SourceText::NotUtf8(text) => text,
         })
     }
 
@@ -363,6 +442,15 @@ fn successful(command: &'static str, output: Output) -> Result<Vec<u8>, FindingS
         command,
         status: output.status,
         detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+fn grep_reported_missing_blob(stderr: &[u8]) -> bool {
+    stderr.split(|&byte| byte == b'\n').any(|line| {
+        line.starts_with(b"error: ")
+            && line
+                .windows(b": unable to read ".len())
+                .any(|window| window == b": unable to read ")
     })
 }
 

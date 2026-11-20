@@ -162,14 +162,16 @@ fn assert_reply(root: &Path, request: &AdmissionRequest, tip: &str) -> TestResul
     assert_eq!(findings.len(), request.cases.len());
     for (actual, expected) in findings.iter_mut().zip(&request.cases) {
         if expected.answer["status"] != "unknown_finding" {
-            let _ = actual
-                .as_object_mut()
-                .and_then(|fields| fields.remove("rename_applied"))
-                .ok_or_else(|| format!("{}: missing rename_applied", expected.name))?;
+            let fields = actual.as_object_mut().ok_or("expected a finding object")?;
+            for field in ["rename_applied", "footprint"] {
+                let _ = fields
+                    .remove(field)
+                    .ok_or_else(|| format!("{}: missing {field}", expected.name))?;
+            }
         }
         assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
-    assert_eq!(reply["schema"], 4);
+    assert_eq!(reply["schema"], 5);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":tip, "ledger_revision":"absent"})

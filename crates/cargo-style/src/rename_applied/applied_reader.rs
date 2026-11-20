@@ -6,7 +6,6 @@ use std::collections::btree_map::Entry;
 use super::AppliedError;
 use super::RenameApplied;
 use super::file;
-use super::file::FilePair;
 use super::qualified;
 use super::read_source;
 use crate::applied_tickets::BuildComparison;
@@ -19,8 +18,12 @@ use crate::binding::Pair;
 use crate::finding_source::FindingSource;
 use crate::finding_source::TreeFile;
 use crate::ledger_read::HeldRename;
-use crate::rename_admission::BindingRename;
+use crate::rename_admission::OwnedRename;
 use crate::rename_admission::PolicyInput;
+use crate::rename_classifiers::FileMoveApproval;
+use crate::rename_classifiers::FileRename;
+use crate::rename_classifiers::QualifiedRename;
+use crate::rename_classifiers::QualifiedRenameApproval;
 
 /// One cache per reply. The target is fixed by the ledger snapshot.
 #[derive(Default)]
@@ -38,34 +41,24 @@ impl AppliedReader {
     ) -> Result<RenameApplied, AppliedError> {
         let anchor = &finding.anchor;
         match &finding.comparison {
-            BuildComparison::Ticket(ticket) => {
-                if let Pair::Local(rename) = binding::read_pair(
-                    &finding.kind,
-                    &finding.before,
-                    &finding.after,
-                    anchor.line,
-                    &anchor.text,
-                ) {
-                    return self.binding_check(
-                        ticket,
-                        &anchor.path,
-                        target,
-                        &rename,
-                        source,
-                        policy,
-                    );
-                }
+            BuildComparison::Ticket { ticket, rename } => {
+                return self.binding_check(ticket, &anchor.path, target, rename, source, policy);
             },
             BuildComparison::MissingTicket(id) => {
                 return Err(AppliedError::MissingTicket(id.clone()));
             },
             BuildComparison::NotBinding | BuildComparison::NoBase => {},
         }
-        if let FilePair::Rename(rename) = file::read(&finding.kind, &anchor.path, &finding.after) {
-            return rename.check(&finding.kind, source, target);
+        if let FileMoveApproval::Approved(rename) = FileRename::read(&anchor.path, &finding.edit) {
+            return file::check(&rename, source, target);
         }
-        let text = read_source(source, target, &anchor.path)?;
-        Ok(qualified::check(finding, text))
+        let QualifiedRenameApproval::Approved(rename) = QualifiedRename::read(&finding.edit) else {
+            return Ok(RenameApplied::NoAppliedCheck {
+                kind: finding.edit.kind.as_str().to_owned(),
+            });
+        };
+        let file = read_source(source, target, &anchor.path)?;
+        Ok(qualified::check(&rename, &anchor.path, &file))
     }
 
     fn binding_check(
@@ -73,7 +66,7 @@ impl AppliedReader {
         ticket: &TicketComparison,
         path: &str,
         target: &str,
-        rename: &BindingRename<'_>,
+        rename: &OwnedRename,
         source: &mut FindingSource<'_>,
         policy: &PolicyInput,
     ) -> Result<RenameApplied, AppliedError> {

@@ -11,23 +11,16 @@ use super::constants::PARENT_KEYWORDS;
 use super::constants::STANDARD_DERIVES;
 use crate::declarations;
 use crate::finding_source::TreeFile;
-use crate::ledger_read::HeldRename;
+use crate::rename_classifiers::QualifiedRename;
 use crate::tokenizer;
 use crate::tokenizer::TokenKind;
 use crate::word_syntax;
 use crate::word_syntax::InlineModule;
 use crate::word_syntax::MemberKind;
 
-struct QualifiedRename<'a> {
+struct QualifiedParent<'a> {
     qualifier: Vec<&'a str>,
     parent:    &'a str,
-    old:       &'a str,
-    new:       &'a str,
-}
-
-enum QualifiedPair<'a> {
-    Rename(QualifiedRename<'a>),
-    Unsupported,
 }
 
 struct UncertainParent;
@@ -38,34 +31,7 @@ enum ParentKind {
     Other,
 }
 
-impl<'a> QualifiedRename<'a> {
-    fn read(finding: &'a HeldRename) -> QualifiedPair<'a> {
-        let (Some((old_parent, old)), Some((new_parent, new))) = (
-            finding.before.rsplit_once("::"),
-            finding.after.rsplit_once("::"),
-        ) else {
-            return QualifiedPair::Unsupported;
-        };
-        if finding.kind != "rename"
-            || old_parent != new_parent
-            || old == new
-            || !word_syntax::identifier(old)
-            || !word_syntax::identifier(new)
-        {
-            return QualifiedPair::Unsupported;
-        }
-        let (qualifier, parent) = old_parent.rsplit_once("::").map_or_else(
-            || (Vec::new(), old_parent),
-            |(path, parent)| (path.split("::").collect(), parent),
-        );
-        QualifiedPair::Rename(Self {
-            qualifier,
-            parent,
-            old,
-            new,
-        })
-    }
-
+impl QualifiedParent<'_> {
     fn declares(&self, words: &[String], path: &str, name: &str) -> Result<bool, UncertainParent> {
         let starts = word_syntax::item_starts(words);
         let modules = word_syntax::inline_modules(words, &starts);
@@ -125,7 +91,7 @@ impl<'a> QualifiedRename<'a> {
                 _ => {},
             }
         }
-        // QualifiedRename::declares also scans enums outside word_syntax::item_starts.
+        // Scan enums outside the positions from word_syntax::item_starts.
         for index in 0..words.len().saturating_sub(1) {
             if words[index] == "enum" && words[index + 1] == self.parent {
                 let start = word_syntax::body_start(words, index);
@@ -200,13 +166,15 @@ impl<'a> QualifiedRename<'a> {
     }
 }
 
-pub(super) fn check(finding: &HeldRename, file: TreeFile<'_>) -> RenameApplied {
+pub(super) fn check(
+    rename: &QualifiedRename<'_>,
+    path: &str,
+    file: &TreeFile<'_>,
+) -> RenameApplied {
     let unchecked = || RenameApplied::NoAppliedCheck {
-        kind: finding.kind.clone(),
+        kind: "rename".to_owned(),
     };
-    let (QualifiedPair::Rename(rename), TreeFile::Bytes(bytes)) =
-        (QualifiedRename::read(finding), file)
-    else {
+    let TreeFile::Bytes(bytes) = file else {
         return unchecked();
     };
     let chars = String::from_utf8_lossy(bytes).chars().collect::<Vec<_>>();
@@ -230,15 +198,17 @@ pub(super) fn check(finding: &HeldRename, file: TreeFile<'_>) -> RenameApplied {
         .into_iter()
         .map(|token| token.value)
         .collect::<Vec<_>>();
-    if !rename
-        .declares(&words, &finding.anchor.path, held)
+    let mut qualifier = rename.owner.split("::").collect::<Vec<_>>();
+    let parent = qualifier.pop().unwrap_or_default();
+    if !(QualifiedParent { qualifier, parent })
+        .declares(&words, path, held)
         .unwrap_or(false)
     {
         return unchecked();
     }
     if old {
         RenameApplied::NotApplied {
-            path: finding.anchor.path.clone(),
+            path: path.to_owned(),
         }
     } else {
         RenameApplied::AppliedInCode

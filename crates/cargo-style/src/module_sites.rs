@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -9,6 +10,7 @@ use serde::Serializer;
 
 use crate::module_scan;
 use crate::module_scan::PlainPath;
+use crate::rename_classifiers;
 use crate::tokenizer;
 use crate::tokenizer::Token;
 use crate::tokenizer::TokenKind;
@@ -21,7 +23,7 @@ use crate::word_syntax::InlineModule;
 /// The file module within the renamed file's crate, or outside that crate.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
-enum FileModule {
+pub(crate) enum FileModule {
     Crate {
         #[serde(rename = "crate")]
         path: Vec<String>,
@@ -29,23 +31,54 @@ enum FileModule {
     Outside(OutsideCrate),
 }
 
+impl FileModule {
+    pub(crate) fn for_path(path: &str, root: &Path) -> Self {
+        let file = Path::new(path);
+        let Ok(relative) = file.strip_prefix(root) else {
+            return Self::Outside(OutsideCrate::OutsideCrate);
+        };
+        if file.extension().is_none_or(|extension| extension != "rs") || relative.starts_with("bin")
+        {
+            return Self::Outside(OutsideCrate::OutsideCrate);
+        }
+        let mut module: Vec<_> = relative
+            .parent()
+            .into_iter()
+            .flat_map(Path::iter)
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect();
+        let name = rename_classifiers::stem(path);
+        if name != "mod" && !(module.is_empty() && matches!(name, "lib" | "main")) {
+            module.push(name.to_owned());
+        }
+        Self::Crate { path: module }
+    }
+
+    pub(crate) fn contains_declaration(&self, scope: &[String], parent: &[String]) -> bool {
+        match self {
+            Self::Crate { path } => path.iter().chain(scope).eq(parent),
+            Self::Outside(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum OutsideCrate {
+pub(crate) enum OutsideCrate {
     OutsideCrate,
 }
 
 /// The library name visible from files outside the renamed file's crate.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
-enum CrateLibrary {
+pub(crate) enum CrateLibrary {
     Named { name: String },
     None(NoLibrary),
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum NoLibrary {
+pub(crate) enum NoLibrary {
     None,
 }
 
@@ -57,6 +90,24 @@ pub(crate) struct ModuleMove {
     file_module: FileModule,
     parent:      Vec<String>,
     library:     CrateLibrary,
+}
+
+impl ModuleMove {
+    pub(crate) const fn new(
+        old: String,
+        new: String,
+        file_module: FileModule,
+        parent: Vec<String>,
+        library: CrateLibrary,
+    ) -> Self {
+        Self {
+            old,
+            new,
+            file_module,
+            parent,
+            library,
+        }
+    }
 }
 
 /// A module site query for one blob at one file path.
@@ -502,7 +553,7 @@ fn file_stem(path: &str) -> &str {
 }
 
 /// Python POSIX join and normalization, independent of the host platform.
-fn joined_path(source: &str, named: &str) -> String {
+pub(crate) fn joined_path(source: &str, named: &str) -> String {
     let parent = source.rsplit_once('/').map_or("", |(parent, _)| parent);
     let joined = if named.starts_with('/') || parent.is_empty() {
         named.to_owned()

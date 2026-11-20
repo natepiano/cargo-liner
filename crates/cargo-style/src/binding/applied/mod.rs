@@ -100,9 +100,9 @@ impl BindingProof {
         Ok(Self { checks })
     }
 
-    pub(crate) fn check(&self, rename: &BindingRename<'_>) -> BindingOutcome {
+    pub(crate) fn check(&self, rename: &OwnedRename) -> BindingOutcome {
         self.checks
-            .get(&OwnedRename::from(rename))
+            .get(rename)
             .cloned()
             .unwrap_or(BindingOutcome::Unchecked)
     }

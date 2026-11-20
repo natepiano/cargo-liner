@@ -156,7 +156,7 @@ impl AnchorFixture {
         );
         assert_eq!(output.stderr.as_slice(), b"");
         let mut reply: Value = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(reply["schema"], 4);
+        assert_eq!(reply["schema"], 5);
         assert_eq!(
             reply["observed"],
             json!({"synced_tip":self.oracle.synced_tip, "ledger_revision":ledger_revision})

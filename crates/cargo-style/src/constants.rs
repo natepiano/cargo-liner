@@ -12,6 +12,8 @@ pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
+/// The flag that selects a base commit for finding footprint searches.
+pub(crate) const FINDING_BASE_FLAG: &str = "--base";
 pub(crate) const FINDING_RENAME_POLICY_FLAG: &str = "--rename-policy";
 pub(crate) const FINDING_RULES_FLAG: &str = "--rules";
 /// The subcommand argument that Cargo inserts.
@@ -48,7 +50,7 @@ pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
-pub(crate) const FINDING_REPLY_SCHEMA: u32 = 4;
+pub(crate) const FINDING_REPLY_SCHEMA: u32 = 5;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 

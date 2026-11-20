@@ -604,6 +604,7 @@ version = "0.1.0"
 dependencies = [
  "cargo-berth-test-support",
  "dirs",
+ "fancy-regex",
  "gix",
  "libc",
  "rayon",

@@ -11,13 +11,19 @@ use serde::Serialize;
 
 use super::constants::FINDING_LEDGER_FLAG;
 use super::constants::FINDING_REPO_FLAG;
+use crate::constants::FINDING_BASE_FLAG;
 use crate::constants::FINDING_RENAME_POLICY_FLAG;
 use crate::constants::FINDING_REPLY_SCHEMA;
 use crate::constants::FINDING_RULES_FLAG;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_anchor::NeedsJudgmentReason;
+use crate::finding_source::CommitResolution;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
+use crate::footprint::Footprint;
+use crate::footprint::FootprintBase;
+use crate::footprint::FootprintError;
+use crate::footprint::FootprintReader;
 use crate::ledger_read::FindingLookup;
 use crate::ledger_read::HeldRename;
 use crate::ledger_read::LedgerReadFailure;
@@ -43,6 +49,7 @@ pub(crate) struct FindingRequest {
     scope:  FindingScope,
     ids:    Vec<String>,
     policy: PolicyInput,
+    base:   RequestedBase,
 }
 
 enum FindingScope {
@@ -50,12 +57,39 @@ enum FindingScope {
     OriginalSite(PathBuf),
 }
 
+enum RequestedBase {
+    SyncedOnly,
+    Revision(String),
+}
+
+impl RequestedBase {
+    fn reader<'a>(
+        self,
+        repo: &'a Path,
+        tip: &str,
+        source: &mut FindingSource<'_>,
+    ) -> Result<FootprintReader<'a>, FindingFailure> {
+        let base = match self {
+            Self::SyncedOnly => FootprintBase::SyncedOnly,
+            Self::Revision(revision) => match source.resolve_commit(&revision)? {
+                CommitResolution::Resolved(commit) => FootprintBase::WithBase(commit.clone()),
+                CommitResolution::Unresolved => {
+                    return Err(FindingFailure::UnresolvedBase(revision));
+                },
+            },
+        };
+        Ok(FootprintReader::new(repo, tip.to_owned(), base)?)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FindingFailure {
     #[error(
-        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json>] [--rename-policy <rename_policy.toml>] <finding id>..."
+        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json>] [--rename-policy <rename_policy.toml>] [--base <commit>] <finding id>..."
     )]
     Usage,
+    #[error("cannot resolve finding base {0:?} to a commit")]
+    UnresolvedBase(String),
     #[error(transparent)]
     Ledger(#[from] LedgerReadFailure),
     #[error(transparent)]
@@ -64,6 +98,8 @@ pub(crate) enum FindingFailure {
     Rules(#[from] RuleSnapshotFailure),
     #[error(transparent)]
     Site(#[from] SiteProofError),
+    #[error(transparent)]
+    Footprint(#[from] FootprintError),
     #[error("cannot prove rename admission for finding {id} at {path} against {tip}")]
     Rename {
         id:     String,
@@ -92,6 +128,7 @@ impl FindingRequest {
         let mut ledger = None;
         let mut rules = None;
         let mut policy = PolicyInput::NoFlag;
+        let mut base = RequestedBase::SyncedOnly;
         let mut ids = Vec::new();
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
@@ -116,6 +153,14 @@ impl FindingRequest {
                         .ok_or(FindingFailure::Usage)?;
                     policy = PolicyInput::from(path);
                 },
+                Some(FINDING_BASE_FLAG) if matches!(base, RequestedBase::SyncedOnly) => {
+                    let revision = arguments
+                        .next()
+                        .and_then(|argument| argument.into_string().ok())
+                        .filter(|revision| !revision.is_empty() && !revision.starts_with('-'))
+                        .ok_or(FindingFailure::Usage)?;
+                    base = RequestedBase::Revision(revision);
+                },
                 Some(id) if !id.is_empty() && !id.starts_with('-') => ids.push(id.to_owned()),
                 _ => return Err(FindingFailure::Usage),
             }
@@ -128,6 +173,7 @@ impl FindingRequest {
                 scope,
                 ids,
                 policy,
+                base,
             }),
             _ => Err(FindingFailure::Usage),
         }
@@ -140,7 +186,7 @@ impl FindingRequest {
                 FindingProof::WithSite(SiteReader::new(RuleSnapshot::read(&path)?))
             },
         };
-        let reply = proof.read(&self.repo, &self.ledger, self.ids, &self.policy)?;
+        let reply = proof.read(&self.repo, &self.ledger, self.ids, &self.policy, self.base)?;
         let mut stdout = io::stdout().lock();
         serde_json::to_writer(&mut stdout, &reply)?;
         writeln!(stdout)?;
@@ -160,11 +206,13 @@ impl FindingProof {
         ledger: &Path,
         ids: Vec<String>,
         policy: &PolicyInput,
+        base: RequestedBase,
     ) -> Result<FindingReply, FindingFailure> {
         match self {
             Self::Anchor => {
                 let snapshot = LedgerSnapshot::read_renames(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
+                let mut footprints = base.reader(repo, &snapshot.synced_tip, &mut source)?;
                 let mut applied = AppliedReader::default();
                 reply(ids, snapshot, |id, finding, tip| {
                     let anchor = FindingAnchor::prove(&finding.anchor, &mut source)?;
@@ -177,12 +225,14 @@ impl FindingProof {
                         anchor,
                         rename_admission,
                         rename_applied,
+                        footprint: footprints.read(&finding, &mut source)?,
                     })
                 })
             },
             Self::WithSite(mut reader) => {
                 let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
+                let mut footprints = base.reader(repo, &snapshot.synced_tip, &mut source)?;
                 let mut applied = AppliedReader::default();
                 reply(ids, snapshot, |id, finding, tip| {
                     let synced = reader.read_synced_tip(&mut source, tip)?;
@@ -217,6 +267,7 @@ impl FindingProof {
                         original_site,
                         rename_admission,
                         rename_applied,
+                        footprint: footprints.read(&finding.finding, &mut source)?,
                     })
                 })
             },
@@ -308,6 +359,7 @@ enum FindingAnswer {
         anchor:           FindingAnchor,
         rename_admission: RenameAdmission,
         rename_applied:   RenameApplied,
+        footprint:        Footprint,
     },
     WithSite {
         id:               String,
@@ -316,6 +368,7 @@ enum FindingAnswer {
         original_site:    OriginalSite,
         rename_admission: RenameAdmission,
         rename_applied:   RenameApplied,
+        footprint:        Footprint,
     },
     Unknown {
         id:     String,

@@ -14,12 +14,17 @@ use serde_json::Error as JsonError;
 use crate::facts;
 use crate::ledger_read;
 use crate::ledger_read::LedgerReadFailure;
+use crate::rename_admission::BindingRename;
+use crate::rename_admission::OwnedRename;
 
 pub(crate) enum BuildComparison {
     NotBinding,
     NoBase,
     MissingTicket(String),
-    Ticket(Rc<TicketComparison>),
+    Ticket {
+        ticket: Rc<TicketComparison>,
+        rename: OwnedRename,
+    },
 }
 
 pub(crate) struct TicketComparison {
@@ -112,6 +117,7 @@ impl<'a> AppliedTickets<'a> {
         finding: &str,
         path: &str,
         build_ticket: &str,
+        rename: &BindingRename<'_>,
     ) -> Result<BuildComparison, LedgerReadFailure> {
         let projection = if build_ticket.is_empty() {
             Projection::LinkedTicket
@@ -174,7 +180,10 @@ impl<'a> AppliedTickets<'a> {
                 Rc::clone(entry.insert(comparison))
             },
         };
-        Ok(BuildComparison::Ticket(comparison))
+        Ok(BuildComparison::Ticket {
+            ticket: comparison,
+            rename: OwnedRename::from(rename),
+        })
     }
 }
 

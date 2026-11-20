@@ -190,7 +190,7 @@ fn assert_answers(root: &Path, request: &AppliedRequest, tip: &str) -> TestResul
             assert_eq!(applied, &expected.result, "{}", expected.name);
         }
     }
-    assert_eq!(reply["schema"], 4);
+    assert_eq!(reply["schema"], 5);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip": tip, "ledger_revision": "absent"})

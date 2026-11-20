@@ -53,15 +53,46 @@ pub(crate) struct HeldSite {
 
 pub(crate) struct HeldRename {
     pub(crate) anchor:     HeldAnchor,
-    pub(crate) before:     String,
-    pub(crate) after:      String,
-    pub(crate) kind:       String,
+    pub(crate) edit:       FindingEdit,
+    pub(crate) needs:      Vec<String>,
     pub(crate) rule:       String,
     pub(crate) rule_blob:  String,
     pub(crate) ticket:     String,
     pub(crate) follow:     FindingFollow,
     pub(crate) history:    FindingSourceHistory,
     pub(crate) comparison: BuildComparison,
+}
+
+pub(crate) struct FindingEdit {
+    pub(crate) kind:   FindingKind,
+    pub(crate) before: String,
+    pub(crate) after:  String,
+}
+
+pub(crate) enum FindingKind {
+    Rename,
+    Restructure,
+    Other(String),
+}
+
+impl FindingKind {
+    pub(crate) const fn as_str(&self) -> &str {
+        match self {
+            Self::Rename => "rename",
+            Self::Restructure => "restructure",
+            Self::Other(kind) => kind.as_str(),
+        }
+    }
+}
+
+impl From<String> for FindingKind {
+    fn from(kind: String) -> Self {
+        match kind.as_str() {
+            "rename" => Self::Rename,
+            "restructure" => Self::Restructure,
+            _ => Self::Other(kind),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -152,7 +183,7 @@ impl LedgerSnapshot<HeldRename> {
         Self::read(path, |connection, tip| {
             let mut tickets = AppliedTickets::new(connection, tip);
             read_findings(connection, ids, |row, id| {
-                read_rename(row, id, &mut tickets)
+                read_rename(connection, row, id, &mut tickets)
             })
         })
     }
@@ -164,7 +195,7 @@ impl LedgerSnapshot<HeldSite> {
             let mut tickets = AppliedTickets::new(connection, tip);
             let mut sites = SiteRows::prepare(connection)?;
             read_findings(connection, ids, |row, id| {
-                let finding = read_rename(row, id, &mut tickets)?;
+                let finding = read_rename(connection, row, id, &mut tickets)?;
                 let original = read_original(row, id, &finding.ticket, &finding.anchor.evidence)?;
                 let site = sites.read(id, &finding.ticket, &finding.anchor.path, original)?;
                 Ok(HeldSite { finding, site })
@@ -322,6 +353,7 @@ fn read_findings<T>(
 }
 
 fn read_rename(
+    connection: &Connection,
     row: &Row<'_>,
     id: &str,
     tickets: &mut AppliedTickets<'_>,
@@ -352,20 +384,28 @@ fn read_rename(
         previous_site_commit: read_revision(row, table, id, "followed_from_commit")?,
     };
     let kind: String = read_column(row, table, id, "kind")?;
-    let before: String = read_column(row, table, id, "before")?;
-    let after: String = read_column(row, table, id, "after")?;
-    let comparison = match binding::read_pair(&kind, &before, &after, anchor.line, &anchor.text) {
-        Pair::Local(_) => {
+    let edit = FindingEdit {
+        kind:   kind.into(),
+        before: read_column(row, table, id, "before")?,
+        after:  read_column(row, table, id, "after")?,
+    };
+    let comparison = match binding::read_pair(
+        edit.kind.as_str(),
+        &edit.before,
+        &edit.after,
+        anchor.line,
+        &anchor.text,
+    ) {
+        Pair::Local(rename) => {
             let build_ticket: String = read_column(row, table, id, "build_ticket")?;
-            tickets.read(id, &anchor.path, &build_ticket)?
+            tickets.read(id, &anchor.path, &build_ticket, &rename)?
         },
         Pair::NonLocal => BuildComparison::NotBinding,
     };
     Ok(HeldRename {
         anchor,
-        before,
-        after,
-        kind,
+        edit,
+        needs: read_needs(connection, id)?,
         rule: read_column(row, table, id, "rule")?,
         rule_blob: read_column(row, table, id, "rule_blob")?,
         ticket,
@@ -373,6 +413,17 @@ fn read_rename(
         history,
         comparison,
     })
+}
+
+fn read_needs(connection: &Connection, id: &str) -> Result<Vec<String>, LedgerReadFailure> {
+    let mut statement = connection
+        .prepare_cached("SELECT path FROM finding_needs WHERE finding_id = ?1 ORDER BY path")?;
+    let mut rows = statement.query([id])?;
+    let mut paths = Vec::new();
+    while let Some(row) = rows.next()? {
+        paths.push(read_column(row, "finding_needs", id, "path")?);
+    }
+    Ok(paths)
 }
 
 fn read_anchor(row: &Row<'_>, id: &str) -> Result<HeldAnchor, LedgerReadFailure> {

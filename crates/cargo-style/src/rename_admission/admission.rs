@@ -139,11 +139,15 @@ enum PairReading {
 }
 
 fn name_pair(finding: &HeldRename) -> PairReading {
-    if finding.kind != "rename" || is_qualified_pair(&finding.before, &finding.after) {
+    if finding.edit.kind.as_str() != "rename"
+        || is_qualified_pair(&finding.edit.before, &finding.edit.after)
+    {
         return PairReading::NonLocal;
     }
-    let before = tokenizer::read_with_comments(&finding.before.chars().collect::<Vec<_>>()).tokens;
-    let after = tokenizer::read_with_comments(&finding.after.chars().collect::<Vec<_>>()).tokens;
+    let before =
+        tokenizer::read_with_comments(&finding.edit.before.chars().collect::<Vec<_>>()).tokens;
+    let after =
+        tokenizer::read_with_comments(&finding.edit.after.chars().collect::<Vec<_>>()).tokens;
     if before.len() != after.len() {
         return PairReading::NonLocal;
     }
@@ -210,9 +214,9 @@ fn finding_version(id: &str, finding: &HeldRename) -> Result<String, AdmissionEr
         &finding.anchor.path,
         finding.anchor.line,
         &finding.anchor.text,
-        &finding.kind,
-        &finding.before,
-        &finding.after,
+        finding.edit.kind.as_str(),
+        &finding.edit.before,
+        &finding.edit.after,
         &finding.ticket,
         &finding.follow,
         &finding.history,
