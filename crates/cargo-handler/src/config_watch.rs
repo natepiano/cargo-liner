@@ -85,10 +85,13 @@ impl WordHighlightUpdates {
     #[cfg(test)]
     pub(crate) fn receive_for_test(
         &self,
+        step: &str,
     ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
         match self {
-            Self::Disabled => Err("the configuration reader is disabled".into()),
-            Self::Watching { updates, .. } => Ok(updates.recv_timeout(TEST_CONFIG_UPDATE_TIMEOUT)?),
+            Self::Disabled => Err(format!("{step}: the configuration reader is disabled").into()),
+            Self::Watching { updates, .. } => updates
+                .recv_timeout(TEST_CONFIG_UPDATE_TIMEOUT)
+                .map_err(|error| format!("{step}: {error}").into()),
         }
     }
 }
@@ -143,6 +146,28 @@ impl ConfigFileReading {
             },
         };
         let _ = sender.send(update);
+    }
+}
+
+/// Publish file contents with the same reader that serves the watcher.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ConfigFileReadFixture {
+    reading: ConfigFileReading,
+}
+
+#[cfg(test)]
+impl ConfigFileReadFixture {
+    pub(crate) fn read(
+        &mut self,
+        path: &Path,
+        step: &str,
+    ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
+        let (sender, updates) = mpsc::channel();
+        self.reading.publish(path, &sender);
+        updates
+            .try_recv()
+            .map_err(|error| format!("{step}: {error}").into())
     }
 }
 

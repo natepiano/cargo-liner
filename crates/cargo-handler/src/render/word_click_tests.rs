@@ -19,6 +19,8 @@ use crate::census::HierarchyEdges;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::config::WordHighlightEmphasis;
+use crate::config_watch::ConfigFileReadFixture;
+use crate::config_watch::WordHighlightUpdate;
 use crate::config_watch::WordHighlightUpdates;
 use crate::interaction::TileSelection;
 use crate::theme::Role;
@@ -803,8 +805,8 @@ fn a_body_invalidation_keeps_the_painted_word_available_for_a_content_press() ->
 /// `assert_startup_config_error_recovers` checks notice ownership through the real file reader.
 fn assert_startup_config_error_recovers(
     path: &Path,
-    replace: &impl Fn(&str) -> TestResult,
-) -> TestResult<WordHighlightUpdates> {
+    reads: &mut ConfigFileReadFixture,
+) -> TestResult {
     let loaded = LoadedConfig::load_from::<CargoHandler>(Some(path.to_path_buf()));
     let mut startup = App::new_for_test_with_startup(loaded, StartupThemeNotes::default())?;
     let mut startup_renderer = Renderer::new(&mut startup, 80, 35)?;
@@ -823,9 +825,8 @@ fn assert_startup_config_error_recovers(
         1,
         "{startup_error}"
     );
-    let updates = WordHighlightUpdates::spawn(path.to_path_buf());
     assert_eq!(
-        startup.apply_word_highlight_update(updates.receive_for_test()?),
+        startup.apply_word_highlight_update(reads.read(path, "startup with invisible emphasis")?,),
         Repaint::NotNeeded
     );
     let repeated_error = notice_text(&startup_renderer.paint(&mut startup)?);
@@ -834,40 +835,57 @@ fn assert_startup_config_error_recovers(
         1,
         "{repeated_error}"
     );
-    replace("strong")?;
+    replace_emphasis(path, "strong")?;
     assert_eq!(
-        startup.apply_word_highlight_update(updates.receive_for_test()?),
+        startup.apply_word_highlight_update(reads.read(path, "startup correction to strong")?,),
         Repaint::Needed
     );
     let corrected = notice_text(&startup_renderer.paint(&mut startup)?);
     assert!(!corrected.contains("Notices"), "{corrected}");
     assert!(!corrected.contains("unknown variant"), "{corrected}");
-    drop(startup_renderer);
-    drop(startup);
+    Ok(())
+}
 
-    Ok(updates)
+fn replace_emphasis(path: &Path, value: &str) -> TestResult {
+    let replacement = path.with_file_name("next.toml");
+    std::fs::write(
+        &replacement,
+        format!("[word_highlight]\nemphasis = '{value}'\n"),
+    )?;
+    std::fs::rename(replacement, path)?;
+    Ok(())
+}
+
+#[test]
+fn config_watcher_reports_startup_and_atomic_replacement() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("config.toml");
+    replace_emphasis(&path, "subtle")?;
+    let updates = WordHighlightUpdates::spawn(path.clone());
+    assert!(matches!(
+        updates.receive_for_test("watcher startup with subtle emphasis")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
+    ));
+    replace_emphasis(&path, "strong")?;
+    assert!(matches!(
+        updates.receive_for_test("watcher replacement with strong emphasis")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Strong)
+    ));
+    Ok(())
 }
 
 #[test]
 fn config_changes_repaint_the_word_and_recover_from_an_invalid_emphasis() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("config.toml");
-    let replace = |value: &str| -> TestResult {
-        let replacement = directory.path().join("next.toml");
-        std::fs::write(
-            &replacement,
-            format!("[word_highlight]\nemphasis = '{value}'\n"),
-        )?;
-        std::fs::rename(replacement, &path)?;
-        Ok(())
-    };
-    replace("invisible")?;
-    let updates = assert_startup_config_error_recovers(&path, &replace)?;
+    let mut reads = ConfigFileReadFixture::default();
+    replace_emphasis(&path, "invisible")?;
+    assert_startup_config_error_recovers(&path, &mut reads)?;
 
-    replace("subtle")?;
+    replace_emphasis(&path, "subtle")?;
     let mut app = application()?;
     assert_eq!(
-        app.apply_word_highlight_update(updates.receive_for_test()?),
+        app.apply_word_highlight_update(reads.read(&path, "initial change to subtle")?),
         Repaint::NotNeeded
     );
     let mut renderer = Renderer::new(&mut app, 80, 35)?;
@@ -881,19 +899,21 @@ fn config_changes_repaint_the_word_and_recover_from_an_invalid_emphasis() -> Tes
     let selected_word = app.word_highlight.clone();
     let theme = tui_pane::theme();
 
-    replace("clear")?;
+    replace_emphasis(&path, "clear")?;
     app.request_clock_frame();
     assert_eq!(
-        app.apply_word_highlight_update(updates.receive_for_test()?),
+        app.apply_word_highlight_update(reads.read(&path, "change to clear")?),
         Repaint::Needed
     );
     let clear = renderer.paint(&mut app)?;
     assert_ne!(clear[point].bg, subtle[point].bg);
     assert_eq!(clear[point].modifier, subtle[point].modifier);
 
-    replace("invisible")?;
+    replace_emphasis(&path, "invisible")?;
     assert_eq!(
-        app.apply_word_highlight_update(updates.receive_for_test()?),
+        app.apply_word_highlight_update(
+            reads.read(&path, "change to invalid invisible emphasis")?,
+        ),
         Repaint::Needed
     );
     let rejected = renderer.paint(&mut app)?;
@@ -911,9 +931,9 @@ fn config_changes_repaint_the_word_and_recover_from_an_invalid_emphasis() -> Tes
     }
     assert!(error_text.contains("unknown variant"), "{error_text}");
 
-    replace("strong")?;
+    replace_emphasis(&path, "strong")?;
     assert_eq!(
-        app.apply_word_highlight_update(updates.receive_for_test()?),
+        app.apply_word_highlight_update(reads.read(&path, "recovery to strong")?),
         Repaint::Needed
     );
     let recovered = renderer.paint(&mut app)?;
@@ -934,15 +954,14 @@ fn config_changes_repaint_the_word_and_recover_from_an_invalid_emphasis() -> Tes
         clear[point].modifier | ratatui::style::Modifier::BOLD
     );
 
-    replace("subtle")?;
+    replace_emphasis(&path, "subtle")?;
     app.request_clock_frame();
     assert_eq!(
-        app.apply_word_highlight_update(updates.receive_for_test()?),
+        app.apply_word_highlight_update(reads.read(&path, "final change to subtle")?),
         Repaint::Needed
     );
     assert_eq!(renderer.paint(&mut app)?[point], subtle[point]);
     assert_eq!(app.word_highlight, selected_word);
     assert!(std::sync::Arc::ptr_eq(&theme, &tui_pane::theme()));
-    drop(updates);
     Ok(())
 }
