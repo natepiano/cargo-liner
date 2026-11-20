@@ -1890,6 +1890,65 @@ fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
 }
 
 #[test]
+fn claim_after_many_holders_uses_the_live_transitive_edge_budget() {
+    let repository = edges_fixtures::MANY_ORDERED_HOLDERS.instantiate();
+    let root = repository.path();
+    let holders: Vec<String> = recorded_history::read(root);
+    set_config_limit(
+        root,
+        "maximum_ordering_edges",
+        edges_fixtures::REDUCED_LIVE_EDGE_COUNT + 1,
+    );
+
+    let mut arguments = vec![
+        "claim",
+        "file:src/lib.rs",
+        "--run",
+        FIRST_RUN,
+        "--overlap-why",
+        "the existing holders land before the new claim",
+        "--json",
+    ];
+    for holder in &holders {
+        arguments.extend_from_slice(&["--after", holder]);
+    }
+    let output = run_berth(root, &arguments);
+    assert_success(&output);
+    let record = last_journal_event(root);
+    assert_eq!(record["reservation_id"], reservation_id(&output));
+    assert_eq!(record["authorization"]["kind"], "sequence_per_holder");
+    let mut stored_holders = record["authorization"]["holders"]
+        .as_array()
+        .expect("the claim should record its holder edges")
+        .iter()
+        .map(|edge| edge["blocker"].as_str().expect("the holder ID"))
+        .collect::<Vec<_>>();
+    stored_holders.sort_unstable();
+    let mut expected_holders = holders.iter().map(String::as_str).collect::<Vec<_>>();
+    expected_holders.sort_unstable();
+    assert_eq!(stored_holders, expected_holders);
+}
+
+#[test]
+fn sequence_uses_the_same_live_edge_budget_as_claim() {
+    let repository = edges_fixtures::MANY_ORDERED_HOLDERS.instantiate();
+    let root = repository.path();
+    let holders: Vec<String> = recorded_history::read(root);
+    set_config_limit(
+        root,
+        "maximum_ordering_edges",
+        edges_fixtures::REDUCED_LIVE_EDGE_COUNT,
+    );
+    let ordered = sequence(
+        root,
+        &holders[0],
+        holders.last().expect("the last holder"),
+        "record a direct order between these holders",
+    );
+    assert_success(&ordered);
+}
+
+#[test]
 fn successor_head_and_current_trunk_both_control_readiness() {
     let repository = BEFORE_SUCCESSOR_HEAD_AND_CURRENT_TRUNK_BOTH_CONTROL_READINESS.instantiate();
     let SuccessorHeadAndCurrentTrunkBothControlReadinessState {
