@@ -30,6 +30,9 @@ use crate::rename_admission;
 use crate::rename_admission::AdmissionError;
 use crate::rename_admission::PolicyInput;
 use crate::rename_admission::RenameAdmission;
+use crate::rename_applied::AppliedError;
+use crate::rename_applied::AppliedReader;
+use crate::rename_applied::RenameApplied;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
 
@@ -67,6 +70,13 @@ pub(crate) enum FindingFailure {
         path:   String,
         tip:    String,
         source: Box<AdmissionError>,
+    },
+    #[error("cannot prove rename applied for finding {id} at {path} against {tip}")]
+    Applied {
+        id:     String,
+        path:   String,
+        tip:    String,
+        source: Box<AppliedError>,
     },
     #[error("cannot write the finding reply")]
     Reply(#[from] serde_json::Error),
@@ -155,20 +165,25 @@ impl FindingProof {
             Self::Anchor => {
                 let snapshot = LedgerSnapshot::read_renames(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
+                let mut applied = AppliedReader::default();
                 reply(ids, snapshot, |id, finding, tip| {
                     let anchor = FindingAnchor::prove(&finding.anchor, &mut source)?;
                     let rename_admission =
                         prove_rename(&id, &finding, &anchor, tip, &mut source, policy)?;
+                    let rename_applied =
+                        prove_applied(&mut applied, &id, &finding, tip, &mut source, policy)?;
                     Ok(FindingAnswer::Known {
                         id,
                         anchor,
                         rename_admission,
+                        rename_applied,
                     })
                 })
             },
             Self::WithSite(mut reader) => {
                 let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
+                let mut applied = AppliedReader::default();
                 reply(ids, snapshot, |id, finding, tip| {
                     let synced = reader.read_synced_tip(&mut source, tip)?;
                     let anchor = match FindingAnchor::prove(&finding.finding.anchor, &mut source) {
@@ -188,11 +203,20 @@ impl FindingProof {
                     )?;
                     let rename_admission =
                         prove_rename(&id, &finding.finding, &anchor, tip, &mut source, policy)?;
+                    let rename_applied = prove_applied(
+                        &mut applied,
+                        &id,
+                        &finding.finding,
+                        tip,
+                        &mut source,
+                        policy,
+                    )?;
                     Ok(FindingAnswer::WithSite {
                         id,
                         anchor,
                         original_site,
                         rename_admission,
+                        rename_applied,
                     })
                 })
             },
@@ -216,6 +240,24 @@ fn prove_rename(
             source: Box::new(source),
         }
     })
+}
+
+fn prove_applied(
+    reader: &mut AppliedReader,
+    id: &str,
+    finding: &HeldRename,
+    tip: &str,
+    source: &mut FindingSource<'_>,
+    policy: &PolicyInput,
+) -> Result<RenameApplied, FindingFailure> {
+    reader
+        .check(finding, tip, source, policy)
+        .map_err(|source| FindingFailure::Applied {
+            id:     id.to_owned(),
+            path:   finding.anchor.path.clone(),
+            tip:    tip.to_owned(),
+            source: Box::new(source),
+        })
 }
 
 fn reply<T>(
@@ -265,6 +307,7 @@ enum FindingAnswer {
         #[serde(flatten)]
         anchor:           FindingAnchor,
         rename_admission: RenameAdmission,
+        rename_applied:   RenameApplied,
     },
     WithSite {
         id:               String,
@@ -272,6 +315,7 @@ enum FindingAnswer {
         anchor:           FindingAnchor,
         original_site:    OriginalSite,
         rename_admission: RenameAdmission,
+        rename_applied:   RenameApplied,
     },
     Unknown {
         id:     String,

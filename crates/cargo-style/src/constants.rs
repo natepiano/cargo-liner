@@ -48,7 +48,7 @@ pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
-pub(crate) const FINDING_REPLY_SCHEMA: u32 = 3;
+pub(crate) const FINDING_REPLY_SCHEMA: u32 = 4;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 

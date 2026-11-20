@@ -345,6 +345,10 @@ pub(crate) fn python_json_digest(value: &impl Serialize) -> Result<String, Error
 }
 
 pub(crate) fn python_serialized_json_digest(serialized: &str) -> Result<String, Error> {
+    source_digest(&python_ascii_json(serialized)?)
+}
+
+pub(crate) fn python_ascii_json(serialized: &str) -> Result<String, Error> {
     let mut ascii = String::with_capacity(serialized.len());
     for character in serialized.chars() {
         if character <= '~' {
@@ -358,7 +362,7 @@ pub(crate) fn python_serialized_json_digest(serialized: &str) -> Result<String, 
             }
         }
     }
-    source_digest(&ascii)
+    Ok(ascii)
 }
 
 pub(crate) fn source_digest(text: &str) -> Result<String, Error> {

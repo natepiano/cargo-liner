@@ -41,8 +41,8 @@ pub(crate) struct AdmittedLocalRename {
     pub(super) edit_mapping:         Vec<(usize, usize)>,
 }
 
-#[derive(Serialize)]
-pub(super) struct OwnedRename {
+#[derive(Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub(crate) struct OwnedRename {
     line: usize,
     text: String,
     old:  String,
@@ -60,7 +60,7 @@ impl From<&BindingRename<'_>> for OwnedRename {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct OuterBinding {
     #[serde(serialize_with = "serialize_reason")]
     reason: BindingConflict,
@@ -69,7 +69,7 @@ pub(crate) struct OuterBinding {
     text:   String,
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(Clone, thiserror::Error, Debug)]
 #[error("rename blocked by outer binding {} at line {line}", python_repr(.name))]
 struct BindingConflict {
     name: String,
@@ -172,6 +172,8 @@ pub(crate) enum RefusalCause {
     FindingTextAbsent,
     #[error("target tokens unread")]
     TokensUnread,
+    #[error("target tokens unread: source token offsets are unavailable")]
+    TargetTokenSpansUnread,
     #[error("recorded containing item unread")]
     RecordedItemUnread,
     #[error("containing item unread: {0}")]

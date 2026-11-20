@@ -8,6 +8,8 @@ use regex::Regex;
 
 use super::constants::NAMED_WIDTH_PATTERN;
 use super::declaration::Declaration;
+use super::pairs::PairIndex;
+use super::pairs::RenamePairs;
 use super::patterns::BindingScope;
 use super::presence;
 use super::presence::Presence;
@@ -34,24 +36,25 @@ pub(crate) enum CurrentAdmission {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum EditForm {
+pub(super) enum EditForm {
     Shorthand,
     Name,
     Capture,
 }
 
-struct BindingEdit {
-    before: usize,
-    after:  usize,
-    form:   EditForm,
+pub(super) struct BindingEdit {
+    pub(super) before: usize,
+    pub(super) after:  usize,
+    pub(super) form:   EditForm,
+    pub(super) pair:   PairIndex,
 }
 
-struct Alignment {
-    edits:     Vec<BindingEdit>,
-    locations: Vec<usize>,
+pub(super) struct Alignment {
+    pub(super) edits:     Vec<BindingEdit>,
+    pub(super) locations: Vec<usize>,
 }
 
-enum AlignmentProof {
+pub(super) enum AlignmentProof {
     Proved(Alignment),
     Unproved,
 }
@@ -80,6 +83,18 @@ pub(crate) fn map_current_rename(
         current_scan = reading;
         &current_scan
     };
+    let pairs = RenamePairs::from(std::slice::from_ref(rename));
+    map_approved_renames(scan, rename, previous, old_scope, policy, &pairs)
+}
+
+pub(super) fn map_approved_renames(
+    scan: &BindingScan,
+    rename: &BindingRename<'_>,
+    previous: &BindingScan,
+    old_scope: &BindingScope,
+    policy: &PolicyInput,
+    pairs: &RenamePairs<'_>,
+) -> CurrentAdmission {
     let attempt = coordinate_refusal(scan, rename, policy);
     if matches!(
         attempt,
@@ -87,7 +102,10 @@ pub(crate) fn map_current_rename(
     ) {
         return CurrentAdmission::Refused(PresenceRefusal::MissingPolicyFlag);
     }
-    let aligned = match align_items(previous, scan, old_scope, rename) {
+    let Some(pair) = pairs.index(rename.old, rename.new) else {
+        return refused(RefusalCause::EditsUnproved, rename);
+    };
+    let aligned = match align_items(previous, scan, old_scope, pairs) {
         Ok(alignment) => alignment,
         Err(RefusalCause::EditsUnproved) => {
             let cause = match attempt {
@@ -114,7 +132,7 @@ pub(crate) fn map_current_rename(
     if scan.unread_binding(&scope, rename) || previous.unread_binding(old_scope, rename) {
         return refused(RefusalCause::BindingVisibilityUnread, rename);
     }
-    let edits = match replacements(previous, scan, old_scope, &scope, &aligned, rename) {
+    let edits = match replacements(previous, scan, old_scope, &scope, &aligned, rename, pair) {
         Ok(edits) => edits,
         Err(cause) => return refused(cause, rename),
     };
@@ -147,7 +165,7 @@ pub(crate) fn map_current_rename(
     })
 }
 
-fn coordinate_refusal(
+pub(super) fn coordinate_refusal(
     scan: &BindingScan,
     rename: &BindingRename<'_>,
     policy: &PolicyInput,
@@ -175,7 +193,7 @@ fn coordinate_refusal(
     }
 }
 
-fn unproved_presence(cause: RefusalCause, rename: &BindingRename<'_>) -> Presence {
+pub(super) fn unproved_presence(cause: RefusalCause, rename: &BindingRename<'_>) -> Presence {
     Presence::Refused(PresenceRefusal::Unproved(RenameRefusal::at_finding(
         cause, rename,
     )))
@@ -191,7 +209,7 @@ fn align_items<'a>(
     previous: &'a BindingScan,
     scan: &BindingScan,
     old_scope: &BindingScope,
-    rename: &BindingRename<'_>,
+    pairs: &RenamePairs<'_>,
 ) -> Result<ItemAlignment<'a>, RefusalCause> {
     let old_items = previous
         .items()
@@ -221,7 +239,7 @@ fn align_items<'a>(
         scan,
         old_start..old_body.end,
         start..body.end,
-        rename,
+        pairs,
     );
     if matches!(alignment, AlignmentProof::Unproved) && old_body.contains(&old_scope.declaration) {
         if old_body.is_empty() || body.is_empty() {
@@ -234,7 +252,7 @@ fn align_items<'a>(
             scan,
             old_start..old_body.end,
             start..body.end,
-            rename,
+            pairs,
         );
     }
     let AlignmentProof::Proved(alignment) = alignment else {
@@ -253,7 +271,7 @@ fn align_region(
     scan: &BindingScan,
     before: Range<usize>,
     after: Range<usize>,
-    rename: &BindingRename<'_>,
+    pairs: &RenamePairs<'_>,
 ) -> AlignmentProof {
     if previous.words[before.clone()] == scan.words[after.clone()] {
         return AlignmentProof::Proved(Alignment {
@@ -267,107 +285,115 @@ fn align_region(
     let Ok(after) = BindingScan::read(scan.region(after)) else {
         return AlignmentProof::Unproved;
     };
-    binding_alignment(&before, &after, rename)
+    binding_alignment(&before, &after, pairs)
 }
 
-fn binding_alignment(
+pub(super) fn binding_alignment(
     before: &BindingScan,
     after: &BindingScan,
-    rename: &BindingRename<'_>,
+    pairs: &RenamePairs<'_>,
 ) -> AlignmentProof {
     let mut edits = Vec::new();
     let mut locations = Vec::with_capacity(before.words.len());
-    let (mut a, mut b) = (0, 0);
-    while a < before.words.len() && b < after.words.len() {
-        locations.push(b);
-        let old = before.word(a);
-        let new = after.word(b);
+    let (mut old_index, mut new_index) = (0, 0);
+    while old_index < before.words.len() && new_index < after.words.len() {
+        locations.push(new_index);
+        let old = before.word(old_index);
+        let new = after.word(new_index);
         if new == old
-            && after.word(b + 1) == ":"
-            && same_pair(old, after.word(b + 2), rename)
-            && before.shorthand(a)
+            && after.word(new_index + 1) == ":"
+            && let Some(pair) = pairs.index(old, after.word(new_index + 2))
+            && before.shorthand(old_index)
         {
             edits.push(BindingEdit {
-                before: a,
-                after:  b + 2,
-                form:   EditForm::Shorthand,
+                before: old_index,
+                after: new_index + 2,
+                form: EditForm::Shorthand,
+                pair,
             });
-            a += 1;
-            b += 3;
+            old_index += 1;
+            new_index += 3;
             continue;
         }
         if old == new
-            && before.word(a + 1) == ":"
-            && same_pair(before.word(a + 2), new, rename)
-            && after.shorthand(b)
+            && before.word(old_index + 1) == ":"
+            && let Some(pair) = pairs.index(before.word(old_index + 2), new)
+            && after.shorthand(new_index)
         {
-            locations.extend([b, b]);
+            locations.extend([new_index, new_index]);
             edits.push(BindingEdit {
-                before: a + 2,
-                after:  b,
-                form:   EditForm::Shorthand,
+                before: old_index + 2,
+                after: new_index,
+                form: EditForm::Shorthand,
+                pair,
             });
-            a += 3;
-            b += 1;
+            old_index += 3;
+            new_index += 1;
             continue;
         }
         if old != new {
-            let form = if same_pair(old, new, rename) {
-                EditForm::Name
-            } else if before.formats.contains(&a)
-                && after.formats.contains(&b)
-                && capture_alignment(old, new, rename)
+            if let Some(pair) = pairs.index(old, new) {
+                edits.push(BindingEdit {
+                    before: old_index,
+                    after: new_index,
+                    form: EditForm::Name,
+                    pair,
+                });
+            } else if before.formats.contains(&old_index)
+                && after.formats.contains(&new_index)
+                && let Some(captures) = capture_alignment(old, new, pairs)
             {
-                EditForm::Capture
+                edits.extend(captures.into_iter().map(|pair| BindingEdit {
+                    before: old_index,
+                    after: new_index,
+                    form: EditForm::Capture,
+                    pair,
+                }));
             } else {
                 return AlignmentProof::Unproved;
-            };
-            edits.push(BindingEdit {
-                before: a,
-                after: b,
-                form,
-            });
+            }
         }
-        a += 1;
-        b += 1;
+        old_index += 1;
+        new_index += 1;
     }
-    if a == before.words.len() && b == after.words.len() {
+    if old_index == before.words.len() && new_index == after.words.len() {
         AlignmentProof::Proved(Alignment { edits, locations })
     } else {
         AlignmentProof::Unproved
     }
 }
 
-fn same_pair(old: &str, new: &str, rename: &BindingRename<'_>) -> bool {
-    old == rename.old && new == rename.new
-}
-
-fn capture_alignment(left: &str, right: &str, rename: &BindingRename<'_>) -> bool {
+fn capture_alignment(left: &str, right: &str, pairs: &RenamePairs<'_>) -> Option<Vec<PairIndex>> {
     let original = captures(left);
     let edited = captures(right);
     if original.len() != edited.len() {
-        return false;
+        return None;
     }
-    let mut rebuilt = String::new();
+    let mut changes = Vec::new();
     let mut cursor = 0;
+    let mut target_cursor = 0;
     for (source, target) in original.into_iter().zip(edited) {
-        let x = &left[source.clone()];
-        let y = &right[target];
-        if x != y && (!same_pair(x, y, rename) || left.as_bytes()[source.start - 1] != b'{') {
-            return false;
+        if left[cursor..source.start] != right[target_cursor..target.start] {
+            return None;
         }
-        rebuilt.push_str(&left[cursor..source.start]);
-        rebuilt.push_str(y);
+        let old = &left[source.clone()];
+        let new = &right[target.clone()];
+        if old != new {
+            if left.as_bytes()[source.start - 1] != b'{' {
+                return None;
+            }
+            changes.push(pairs.index(old, new)?);
+        }
         cursor = source.end;
+        target_cursor = target.end;
     }
-    rebuilt.push_str(&left[cursor..]);
-    rebuilt == right
+    (left[cursor..] == right[target_cursor..]).then_some(changes)
 }
 
 static NAMED_WIDTH: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(NAMED_WIDTH_PATTERN).ok());
 
-fn captures(literal: &str) -> Vec<Range<usize>> {
+pub(super) fn captures(literal: &str) -> Vec<Range<usize>> {
     let mut result = Vec::new();
     let bytes = literal.as_bytes();
     let mut cursor = 0;
@@ -409,12 +435,13 @@ fn replacements(
     scope: &BindingScope,
     aligned: &ItemAlignment<'_>,
     rename: &BindingRename<'_>,
+    pair: PairIndex,
 ) -> Result<BTreeSet<(usize, usize)>, RefusalCause> {
     let mut replacements = BTreeSet::new();
     for edit in &aligned.alignment.edits {
         let before = aligned.old_start + edit.before;
         let after = aligned.start + edit.after;
-        if !scan::contains(&old_scope.ranges, before) {
+        if edit.pair != pair || !scan::contains(&old_scope.ranges, before) {
             continue;
         }
         if !scan::contains(&scope.ranges, after) {

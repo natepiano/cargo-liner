@@ -15,6 +15,7 @@ use crate::source_lines::SiteLine;
 use crate::source_lines::SourceLines;
 use crate::source_sites;
 use crate::tokenizer;
+use crate::tokenizer::CommentSpan;
 use crate::tokenizer::Token;
 use crate::tokenizer::TokenKind;
 use crate::unicode_tables::LINE_BOUNDARIES;
@@ -24,6 +25,7 @@ pub(crate) struct BindingScan {
     pub(super) source:      SourceLines,
     pub(super) chars:       Vec<char>,
     pub(super) tokens:      Vec<Token>,
+    pub(super) comments:    Vec<CommentSpan>,
     pub(super) words:       Vec<String>,
     pub(super) ends:        BTreeMap<usize, usize>,
     pub(super) parents:     BTreeMap<usize, usize>,
@@ -38,7 +40,8 @@ pub(crate) struct BindingScan {
 impl BindingScan {
     pub(crate) fn read(source: String) -> Result<Self, UnreadableItems> {
         let chars: Vec<_> = source.chars().collect();
-        let tokens = tokenizer::read_with_comments(&chars).tokens;
+        let reading = tokenizer::read_with_comments(&chars);
+        let tokens = reading.tokens;
         if tokens.iter().any(|token| token.kind == TokenKind::Unknown) {
             return Err(UnreadableItems::Tokens);
         }
@@ -51,6 +54,7 @@ impl BindingScan {
             source: source.into(),
             chars,
             tokens,
+            comments: reading.comments,
             words,
             ends,
             parents,
@@ -172,12 +176,8 @@ impl BindingScan {
     fn format_arguments(&self) -> BTreeSet<usize> {
         let mut result = BTreeSet::new();
         for &(bang, finish) in &self.macros {
-            let position = match self.lead(bang) {
-                "println" | "eprintln" | "print" | "eprint" | "format" | "format_args"
-                | "panic" | "unreachable" | "todo" | "unimplemented" => 0,
-                "write" | "writeln" | "assert" | "debug_assert" => 1,
-                "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => 2,
-                _ => continue,
+            let Some(position) = format_argument_position(self.lead(bang)) else {
+                continue;
             };
             let mut argument = 0;
             for index in self.level(bang + 2, finish - 1, false) {
@@ -196,6 +196,16 @@ impl BindingScan {
             }
         }
         result
+    }
+}
+
+pub(super) fn format_argument_position(name: &str) -> Option<usize> {
+    match name {
+        "println" | "eprintln" | "print" | "eprint" | "format" | "format_args" | "panic"
+        | "unreachable" | "todo" | "unimplemented" => Some(0),
+        "write" | "writeln" | "assert" | "debug_assert" => Some(1),
+        "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => Some(2),
+        _ => None,
     }
 }
 

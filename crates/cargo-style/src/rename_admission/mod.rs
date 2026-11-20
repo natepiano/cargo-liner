@@ -10,6 +10,7 @@ pub(crate) use self::admission::AdmissionError;
 pub(crate) use self::admission::admit;
 pub(crate) use self::outcome::BindingRename;
 pub(crate) use self::outcome::OuterBinding;
+pub(crate) use self::outcome::OwnedRename;
 pub(crate) use self::outcome::RefusalCause;
 pub(crate) use self::outcome::RefusalLocation;
 pub(crate) use self::outcome::RenameAdmission;

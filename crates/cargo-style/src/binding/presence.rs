@@ -195,7 +195,7 @@ impl BindingScan {
         })
     }
 
-    fn uncertain_macro_origins(&self) -> bool {
+    pub(super) fn uncertain_macro_origins(&self) -> bool {
         if self
             .words
             .iter()

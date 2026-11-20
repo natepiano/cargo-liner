@@ -156,7 +156,7 @@ impl AnchorFixture {
         );
         assert_eq!(output.stderr.as_slice(), b"");
         let mut reply: Value = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(reply["schema"], 3);
+        assert_eq!(reply["schema"], 4);
         assert_eq!(
             reply["observed"],
             json!({"synced_tip":self.oracle.synced_tip, "ledger_revision":ledger_revision})
@@ -222,10 +222,12 @@ impl AnchorCase {
 
     fn assert_anchor_fields(&self, actual: &mut Value) -> TestResult<()> {
         if self.answer["status"] != "unknown_finding" {
-            let _ = actual
-                .as_object_mut()
-                .and_then(|fields| fields.remove("rename_admission"))
-                .ok_or_else(|| format!("{}: missing rename_admission", self.case))?;
+            let fields = actual.as_object_mut().ok_or("expected a finding object")?;
+            for field in ["rename_admission", "rename_applied"] {
+                let _ = fields
+                    .remove(field)
+                    .ok_or_else(|| format!("{}: missing {field}", self.case))?;
+            }
         }
         assert_eq!(&*actual, &self.answer, "{}", self.case);
         Ok(())

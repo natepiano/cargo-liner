@@ -155,15 +155,21 @@ fn assert_reply(root: &Path, request: &AdmissionRequest, tip: &str) -> TestResul
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stderr.as_slice(), b"");
-    let reply: Value = serde_json::from_slice(&output.stdout)?;
+    let mut reply: Value = serde_json::from_slice(&output.stdout)?;
     let findings = reply["findings"]
-        .as_array()
+        .as_array_mut()
         .ok_or("missing finding replies")?;
     assert_eq!(findings.len(), request.cases.len());
-    for (actual, expected) in findings.iter().zip(&request.cases) {
-        assert_eq!(actual, &expected.answer, "{}", expected.name);
+    for (actual, expected) in findings.iter_mut().zip(&request.cases) {
+        if expected.answer["status"] != "unknown_finding" {
+            let _ = actual
+                .as_object_mut()
+                .and_then(|fields| fields.remove("rename_applied"))
+                .ok_or_else(|| format!("{}: missing rename_applied", expected.name))?;
+        }
+        assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
-    assert_eq!(reply["schema"], 3);
+    assert_eq!(reply["schema"], 4);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":tip, "ledger_revision":"absent"})

@@ -182,7 +182,18 @@ impl<'a> FindingSource<'a> {
                 };
                 Ok(TreeFile::Bytes(bytes))
             },
-            Some(entry) if entry.kind == EntryKind::Directory => Ok(TreeFile::Folder),
+            Some(entry) if entry.kind == EntryKind::Directory => {
+                let prefix = format!("{path}/");
+                let has_descendant = entries
+                    .range(prefix.clone()..)
+                    .take_while(|(name, _)| name.starts_with(&prefix))
+                    .any(|(_, entry)| entry.kind != EntryKind::Directory);
+                Ok(if has_descendant {
+                    TreeFile::Folder
+                } else {
+                    TreeFile::Missing
+                })
+            },
             _ => Ok(TreeFile::Missing),
         }
     }

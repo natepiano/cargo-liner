@@ -17,6 +17,7 @@ use crate::rename_admission::RefusalCause;
 use crate::tokenizer;
 use crate::tokenizer::TokenKind;
 use crate::word_syntax;
+use crate::word_syntax::MemberKind;
 
 pub(crate) enum Declaration {
     Local(BindingScope),
@@ -128,51 +129,22 @@ impl BindingScan {
     }
 
     fn field_sites(&self, start: usize, end: usize) -> Vec<usize> {
-        let mut cursor = start + 1;
-        let mut fields = Vec::new();
-        while cursor < end {
-            cursor = self.after_attributes(cursor);
-            if cursor < end && self.word(cursor) == "pub" {
-                cursor += 1;
-                if cursor < end && self.word(cursor) == "(" {
-                    cursor = word_syntax::closing(&self.words, cursor) + 1;
-                }
-            }
-            if cursor + 1 < end
-                && word_syntax::identifier(self.word(cursor))
-                && self.word(cursor + 1) == ":"
-            {
-                fields.push(cursor);
-            }
-            cursor = self.stop(cursor, end, &[","]) + 1;
-        }
-        fields
+        word_syntax::member_sites(&self.words, start, end, MemberKind::Field)
     }
 
     fn variant_sites(&self, start: usize, end: usize) -> Vec<usize> {
-        let mut cursor = start + 1;
-        let mut sites = Vec::new();
-        while cursor < end {
-            cursor = self.after_attributes(cursor);
-            if cursor < end && word_syntax::identifier(self.word(cursor)) {
-                sites.push(cursor);
-                let opening = cursor + 1;
-                if self.word(opening) == "{"
-                    && let Some(&close) = self.ends.get(&opening)
-                {
-                    sites.extend(self.field_sites(opening, close));
-                }
-            }
-            cursor = self.stop(cursor, end, &[","]) + 1;
-        }
-        sites
-    }
-
-    fn after_attributes(&self, mut cursor: usize) -> usize {
-        while let Some(&next) = self.attributes.get(&cursor) {
-            cursor = next;
-        }
-        cursor
+        word_syntax::member_sites(&self.words, start, end, MemberKind::Variant)
+            .into_iter()
+            .flat_map(|index| {
+                let opening = index + 1;
+                let fields = self
+                    .ends
+                    .get(&opening)
+                    .filter(|_| self.word(opening) == "{")
+                    .map_or_else(Vec::new, |&close| self.field_sites(opening, close));
+                std::iter::once(index).chain(fields)
+            })
+            .collect()
     }
 
     pub(super) fn name_word(&self, index: usize) -> bool {
