@@ -39,6 +39,10 @@ impl ResolvedEditAuthorization {
             | EditAuthorization::Marker {
                 coordination_run_id,
                 ..
+            }
+            | EditAuthorization::SoleActivePhase {
+                coordination_run_id,
+                ..
             } => coordination_run_id,
             EditAuthorization::Unidentified => CoordinationRunId::new(),
         };
@@ -95,6 +99,12 @@ pub(crate) enum EditAuthorization {
         /// The run named by the marker.
         coordination_run_id: CoordinationRunId,
         /// The opaque identity from the same administrative directory.
+        worktree_id:         WorktreeId,
+    },
+    /// The ledger names the only active phase in the worktree for this edit.
+    SoleActivePhase {
+        coordination_run_id: CoordinationRunId,
+        reservation_id:      ReservationId,
         worktree_id:         WorktreeId,
     },
     /// The caller has no run identity and receives no exemption from active race protection.

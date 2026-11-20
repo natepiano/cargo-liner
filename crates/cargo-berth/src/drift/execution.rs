@@ -77,6 +77,7 @@ use crate::verb::claim::FirstTouchClaimExecution;
 use crate::verb::claim::FirstTouchClaimRequest;
 use crate::verb::claim::FirstTouchConflictHandling;
 use crate::verb::claim::FirstTouchConflictOutcome;
+use crate::verb::claim::ReservationAcquisition;
 
 struct PostWritePathAttribution {
     outcome: DriftPathAttributionOutcome,
@@ -627,13 +628,13 @@ fn claim_post_write_paths(
             conflicts:
                 FirstTouchConflictOutcome::None | FirstTouchConflictOutcome::AnsweredByDefault { .. },
         }) => {
-            let reservation_id = acquisition.reservation_id;
+            let results = first_touch_results(&acquisition);
             Ok(PostWritePathAttribution {
                 outcome: DriftPathAttributionOutcome::FirstTouchReserved {
                     acquisition,
                     scopes,
                 },
-                results: vec![ReservationDriftResult::Unchanged { reservation_id }],
+                results,
             })
         },
         // `FirstTouchClaimExecution::Acquired` protects free paths either way. Accusing the
@@ -649,7 +650,7 @@ fn claim_post_write_paths(
                     conflicts,
                 },
         }) => {
-            let reservation_id = acquisition.reservation_id;
+            let results = first_touch_results(&acquisition);
             let outcome = match authorship {
                 PostWriteAuthorship::ThisCall => DriftPathAttributionOutcome::IncursionDetected {
                     paths: paths_from_scopes(&conflicting_scopes)?,
@@ -666,10 +667,7 @@ fn claim_post_write_paths(
                     }
                 },
             };
-            Ok(PostWritePathAttribution {
-                outcome,
-                results: vec![ReservationDriftResult::Unchanged { reservation_id }],
-            })
+            Ok(PostWritePathAttribution { outcome, results })
         },
         // `FirstTouchClaimExecution::Blocked` protects nothing, so
         // `PostWriteAuthorship::Indeterminate` has neither an acquisition to report nor standing
@@ -699,6 +697,18 @@ fn claim_post_write_paths(
             PostWriteClaimRejection::EnrollmentDisappeared(expected_configuration_path),
         )),
     }
+}
+
+fn first_touch_results(acquisition: &ReservationAcquisition) -> Vec<ReservationDriftResult> {
+    std::iter::once(acquisition.reservation_id)
+        .chain(
+            acquisition
+                .additional_acquisitions
+                .iter()
+                .map(|extra| extra.reservation_id),
+        )
+        .map(|reservation_id| ReservationDriftResult::Unchanged { reservation_id })
+        .collect()
 }
 
 fn paths_from_scopes(

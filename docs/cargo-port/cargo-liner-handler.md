@@ -925,34 +925,23 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - No cargo-mend test is at 1 s or more in the full Mac suite at normal load (under 12). A run at higher load is reported only.
 
-### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: todo
+### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a claim on a file with many holders never fails with `ordering_edge_limit_reached` on a board of normal size. Source: the showrunner, 2026-11-19, from a hana fault report. Current and urgent: it blocks hana.
-
-**Spec:**
-1. The fault: a hana claim on `crates/hana/tests/assembly_face/frame_time_assembly/mod.rs` (reservation 01a1ed71, worktree hana trunk) was refused with `ordering_edge_limit_reached`. The limit is 512 (`DEFAULT_MAXIMUM_ORDERING_EDGES`, `crates/cargo-berth/src/config.rs`). The file has 11 holders. The hana board has 184 waiting entries.
-2. Find why the edge count reaches 512 with 11 holders on one file. Name the function and the count it computes. Start at `bind_claim_authorization` in `crates/cargo-berth/src/verb/claim/authorization.rs` and `OrderingGraph::edge_count`.
-3. Fix the cause. The ordering graph must not need an edge for each holder pair: when order is transitive, one edge to the latest holder is enough. Edges of released or integrated reservations must not count against the limit, and must not stay live.
-4. Raising the limit is not the fix. `maximum_ordering_edges` stays a config value; do not change the code default.
-5. Add a regression test with the hana shape: one file, 11 or more holders, and many waiting entries. The claim succeeds and the edge count stays small.
+- A claim on a file with many holders binds to an existing ordering edge that covers its scopes and is reachable in claim order. It adds no edge for each holder pair, so the hana shape (one file, 11 holders, 184 waiting entries) stays far under the 512-edge limit.
+- Edges of released or integrated reservations do not count as live. Retention keeps an inherited hold alive while a nonterminal dependent still reaches it through ended reservations.
+- `maximum_ordering_edges` stays a config value with its 512 default.
 
 **Files:**
-- `crates/cargo-berth/src/verb/claim/authorization.rs`
-- `crates/cargo-berth/src/verb/claim/acquisition.rs`
-- the ordering graph source files the cause names
-- the cargo-berth claim test files
+- `crates/cargo-berth/src/edge/graph.rs` — live edge set, inherited edges, and claim-order reachability
+- `crates/cargo-berth/src/verb/claim/authorization.rs`, `crates/cargo-berth/src/verb/claim/acquisition.rs` — claim binding to an existing edge
+- `crates/cargo-berth/src/verb/sequence.rs` — `sequence` uses the same binding
+- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/support/edges_fixtures.rs` — the hana-shape regression test
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** replay accepts a binding to an anchor edge between other endpoints only when the anchor covers the scopes and is reachable; older ledgers always had matching endpoints and replay the same.
 
-**State:** the berth ledger's ordering edges. Edges already in a ledger stay readable.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The new regression test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** raising the edge limit.
 
 ### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: todo
 
