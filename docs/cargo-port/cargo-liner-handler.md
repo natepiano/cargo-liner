@@ -1001,27 +1001,15 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 ### Phase 47 — mend leaves a path when a block binding can bring in its first name  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo mend --fix` never writes an import that starts at a name another `use` in the same block brings in. Source: the showrunner, 2026-11-19, from a hana fault report. A mend bug always gets a phase.
-
-**Spec:**
-1. The fault: a test fn body in hana (`crates/hana/src/tool/rear_patch_panel/row_backing.rs`) had `use crate::tool::frame_time_info_panel::tests::pixels;` and then used `pixels::OutlineRendering::Disabled`. `cargo mend --fix` added `use pixels::OutlineRendering;` in the fn body. That import fails with E0432 (unresolved import `pixels`), so mend rolled back every rewrite.
-2. First build a fixture test that reproduces it: a fn body with a block `use` of a module and a qualified path through that module. The test fails before the fix.
-3. Fix the cause in the rule that wrote the import. When any block binding (a `use`, an item, a glob or a macro) can bind the first segment of the path, mend leaves the site and writes no import. Syntax cannot tell a module from a type or a fn there, so an expansion can make a wrong import that compiles. Source: the showrunner, 2026-11-19, after review found six failing expansion cases.
-4. Find which rule added the import from the fixture's diagnostic output. Name it in the reply.
-5. Keep the six review cases as fixture tests that prove mend leaves each site: a block `use` of a fn, a lowercase alias of a type, a macro that expands to a block `use`, a generic parameter or block fn with the shortened name, a block `use` the rewrite would leave unused, and a bare name in a block-local module.
+- The `inline_path_qualified_type` fix leaves a qualified path and writes no import when a binding in an enclosing block can bind the path's first segment. A block binding is a `use`, an item, a glob or a macro. Syntax cannot tell a module from a type or a fn there, so mend does not guess.
+- `BlockBindings::collect` returns `Named` with the names that a block binds, or `Unknown` when a statement macro, an item macro, a glob or an attribute that is not built in can add a name. `BlockBindings::lookup` returns `BlockBinding::MayBind` or `Absent` for a first segment across the enclosing block scopes. A `macro_rules` definition binds only a macro name, and an `extern` block binds its declared names.
+- `BUILT_IN_ATTRIBUTES` lists the attributes and derives that never add a name. An attribute that is not on the list counts as a possible macro.
 
 **Files:**
-- the cargo-mend fix source of the rule that wrote the import (start at `crates/cargo-mend/src/fixes/`)
-- the cargo-mend diagnostic test file of that rule (`crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` or `import_fixes.rs`)
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs` — `BlockBindings`, `BlockBinding`, `BUILT_IN_ATTRIBUTES` and the attribute and macro unit table
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/visitor.rs`, `scope.rs`, `process.rs`, `mod.rs` — block scopes and the leave-the-site check
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — the hana fixture and the six expansion cases, through `rewrite_inline_path_fixture`
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The new fixture test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Gotchas:** a fixture that builds a proc-macro crate takes over 1 s on the Mac; the attribute and derive macro cases live in the `BlockBindings` unit table instead.
