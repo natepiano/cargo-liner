@@ -8,6 +8,7 @@ use anyhow::Result;
 use proc_macro2::LineColumn;
 
 use super::scope;
+use super::scope::EnclosingModule;
 use super::scope::ScopeInfo;
 use super::visitor::InlinePathOccurrence;
 use crate::config::DiagnosticCode;
@@ -106,7 +107,7 @@ impl<'a> OccurrenceLocation<'a> {
 pub(super) struct ResolvedOccurrence<'a> {
     occurrence:             &'a InlinePathOccurrence,
     location:               OccurrenceLocation<'a>,
-    scope_id:               Option<usize>,
+    enclosing_module:       EnclosingModule,
     import_path:            String,
     conditional_attributes: ConditionalAttributes,
 }
@@ -144,7 +145,7 @@ pub(super) fn plan_import_attributes(
 ) -> ImportAttributePlan {
     let mut grouped: BTreeMap<ImportKey, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
     for occurrence in occurrences {
-        let Some(scope_id) = occurrence.scope_id else {
+        let EnclosingModule::Found(scope_id) = occurrence.enclosing_module else {
             continue;
         };
         grouped
@@ -181,8 +182,8 @@ pub(super) fn process_occurrence(
     }
 
     let import_path = &resolved.import_path;
-    let occurrence_scope = match resolved.scope_id {
-        Some(id) => {
+    let occurrence_scope = match resolved.enclosing_module {
+        EnclosingModule::Found(id) => {
             let Some(attributes) = import_attribute_plan.get(&(id, import_path.clone())) else {
                 return;
             };
@@ -192,7 +193,7 @@ pub(super) fn process_occurrence(
                 attributes,
             }
         },
-        None => OccurrenceScope::Unscoped,
+        EnclosingModule::Unscoped => OccurrenceScope::Unscoped,
     };
 
     match occurrence_scope {
@@ -290,43 +291,48 @@ pub(super) fn resolve_occurrence<'a>(
     source: &ImportSource<'a>,
 ) -> Result<ResolvedOccurrence<'a>> {
     let location = OccurrenceLocation::new(source, occurrence.span_start, occurrence.span_end)?;
-    let scope_id = scope::find_innermost_scope(ctx.scopes, location.byte_start);
-    let scope = scope_id.map(|id| &ctx.scopes[id]);
-
-    // `absolutize_import_path` resolves a partial path (`fmt::Display` written because `use
-    // std::fmt;` is in scope) to its absolute form (`std::fmt::Display`) so the inserted
-    // `use` does not depend on a sibling module import remaining in place.
-    // An absolute path names an external crate, regardless of local imports.
+    let enclosing_module = scope::find_innermost_scope(ctx.scopes, location.byte_start);
+    // A leading `::` names an external crate, regardless of local imports.
     let import_path = if occurrence.full_path.starts_with("::") {
         ImportResolution::Resolved {
             path:       format!("::{}", occurrence.import_path),
             attributes: ConditionalAttributes::default(),
         }
     } else {
-        scope.map_or_else(
-            || ImportResolution::Unresolved {
+        match enclosing_module {
+            EnclosingModule::Found(id) => {
+                resolve_module_path(ctx.scopes, id, &occurrence.import_path)
+            },
+            EnclosingModule::Unscoped => ImportResolution::Unresolved {
                 spelling: occurrence.import_path.clone(),
             },
-            |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
-        )
+        }
     };
-    // `absolutize_through_ancestors` handles a nested module seeing the leading segment only
-    // through a glob (`use super::*;`), so its own scope cannot absolutize. Resolve through
-    // ancestor imports before falling back to a `super::`-qualified path:
-    // every occurrence of `io::ErrorKind` then agrees on `std::io::ErrorKind`
-    // instead of the nested scope alone producing `super::io::ErrorKind` —
-    // a same-name/different-path group the combining layer would drop whole.
+    let (import_path, mut conditional_attributes) = import_path.into_parts();
+    conditional_attributes.extend(occurrence.conditional_attributes.clone());
+
+    Ok(ResolvedOccurrence {
+        occurrence,
+        location,
+        enclosing_module,
+        import_path,
+        conditional_attributes,
+    })
+}
+
+fn resolve_module_path(scopes: &[ScopeInfo], scope_id: usize, path: &str) -> ImportResolution {
+    let import_path = absolutize_import_path(path, &scopes[scope_id].existing_imports);
+    // `absolutize_through_ancestors` resolves `io::ErrorKind` through an ancestor's `use std::io;`.
+    // This gives `io::ErrorKind` the same target in modules that use `use super::*;`.
     let import_path = match import_path {
         ImportResolution::Unresolved { spelling } => {
-            absolutize_through_ancestors(ctx.scopes, scope_id, &spelling)
+            absolutize_through_ancestors(scopes, scope_id, &spelling)
         },
         resolved @ ImportResolution::Resolved { .. } => resolved,
     };
-    let import_path = match import_path {
+    match import_path {
         ImportResolution::Unresolved { spelling } => {
-            match scope_id
-                .and_then(|id| scope::qualify_through_parent_scope(ctx.scopes, id, &spelling))
-            {
+            match scope::qualify_through_parent_scope(scopes, scope_id, &spelling) {
                 Some(parent_import) => ImportResolution::Resolved {
                     path:       parent_import.path,
                     attributes: parent_import.conditional_attributes,
@@ -335,17 +341,7 @@ pub(super) fn resolve_occurrence<'a>(
             }
         },
         resolved @ ImportResolution::Resolved { .. } => resolved,
-    };
-    let (import_path, mut conditional_attributes) = import_path.into_parts();
-    conditional_attributes.extend(occurrence.conditional_attributes.clone());
-
-    Ok(ResolvedOccurrence {
-        occurrence,
-        location,
-        scope_id,
-        import_path,
-        conditional_attributes,
-    })
+    }
 }
 
 /// Names with prelude meaning. Importing any of these from a non-prelude
@@ -407,14 +403,9 @@ fn shadows_prelude(name: &str) -> PreludeShadowing {
 /// import staying in place.
 fn absolutize_through_ancestors(
     scopes: &[ScopeInfo],
-    scope_id: Option<usize>,
+    scope_id: usize,
     import_path: &str,
 ) -> ImportResolution {
-    let Some(scope_id) = scope_id else {
-        return ImportResolution::Unresolved {
-            spelling: import_path.to_string(),
-        };
-    };
     let current = &scopes[scope_id];
     let mut ancestors: Vec<&ScopeInfo> = scopes
         .iter()
