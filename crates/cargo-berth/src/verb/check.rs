@@ -380,6 +380,12 @@ fn decide(
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
+    let resolved_edit_authorization =
+        if matches!(reservation_selection, CheckReservationSelection::EditHook) {
+            claim::sole_phase_edit_authorization(&reservations, resolved_edit_authorization)
+        } else {
+            resolved_edit_authorization
+        };
     let repository = check_repository_observation(repository);
     let acting_head_containment = ActingHeadContainment::observe_for_edit(
         &reservations,

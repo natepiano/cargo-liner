@@ -1825,25 +1825,28 @@ Each native test fixture records its source identity, and each publication remov
 
 **Ruled out:** in-process Git reads for the Mac goal (removing every cargo-berth Git call saves about 0.15 s per slow test); six slots per test; the Mac Developer Tools exemption.
 
-### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: todo
+### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: done
 
-**Depends on:** none (showrunner, 2026-11-17: first in tile's remaining scope).
+#### As-built
 
-#### Work Order
+- The cause: after a checkpoint release, the plan shrink edit made an ordinary first-touch reservation. Its merge extent later took the next phase's files, so drift found two candidates. `a_plan_shrink_after_checkpoint_never_makes_the_next_phases_drift_ambiguous` (`tests/hooks.rs`) reproduced it.
+- In a worktree with one active phase reservation, the edit joins it (`sole_active_phase`), also when the session has no marker.
+- In a checkpoint gap (no active phase in the worktree), an edit takes one exact-path hold for each free path (`acquire_checkpoint_gap_holds`, `ExactPathAcquisition`, `verb/claim/acquisition.rs`). The foreign overlap checks run first. Drift never selects a hold as a phase candidate, and reconciliation releases it when Git shows the change is integrated, squash merges included.
+- A phase that later edits a held path widens its own reservation and releases the hold in one ledger transaction (`plan_hold_transfers`).
+- Each hook result reports its own `ReservationAcquisitionKind`; a new hold never shows as `already_held`. No CLI change. The generated output contract carries the new fields.
+- Gates: Mac lint passed; Mac 1396/1396 at start load 6.58 (12 CPUs). No separate natedev suite (user ruling 2026-11-18); the merge gate covers Linux. Landed by the live-count rule after 3 repair rounds.
 
-**Goal:** An edit to a plan doc in a worktree with an active reservation joins that reservation. It makes no second reservation that holds only the plan doc (showrunner, 2026-11-14 and 2026-11-17).
+**Files:**
+- `crates/cargo-berth/src/verb/claim/acquisition.rs`, `verb/claim/mod.rs`, `verb/claim/request.rs`, `verb/check.rs`, `hook/pre_tool_use.rs` — the hold and the join.
+- `crates/cargo-berth/src/drift/execution.rs`, `drift/identity.rs`, `drift/selection.rs` — drift skips holds.
+- `crates/cargo-berth/src/ledger/journal.rs`, `ledger/authorization.rs`, `ledger/record_size.rs`, `reconcile.rs`, `reservation/record.rs`, `reservation/retention.rs`, `session/mod.rs`, `coordination_identity.rs`, `output.rs` — the record, release and output.
+- `crates/cargo-berth/tests/hooks.rs`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/CHANGELOG.md`.
 
-**Spec:**
-1. The evidence: in the handler worktree, each plan shrink edit made a second reservation that held only the plan doc (01a1da82 in handler Phase 14, 01a1dabc in Phase 15). In the tile home worktree, the same happened (01a1e05c, 01a1e0df, 01a1e0e2, 01a1e3ce, 01a1e4ad, 01a1e6af, 01a1e82f, 01a1e297, 01a1e9c6, 01a1e9ca, 01a1ea5b).
-2. The result: drift puts the next phase's files in the extra reservation's merge extent, so every drift is ambiguous. Units retire each one by hand with `--retire-orphan`.
-3. Measure first. Reproduce the edit path in a cargo-berth test and name the code that makes the second reservation.
-4. Fix the cause in cargo-berth. The edit joins the active reservation of the worktree. Keep the overlap checks against other worktrees' reservations.
+**Left over:** six new `hooks.rs` regressions take 1.06-2.43 s on the Mac at load 6.58 (0.27-0.45 s on natedev). The cost is Mac process starts, as in the dropped Phase 68b scope.
 
-**Files:** `crates/cargo-berth/src/` where the measurement names the cause; `crates/cargo-berth/tests/`.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** a test reproduces the second reservation before the fix and passes after it; `verify.sh final cargo-berth` passes on natedev; the Mac cargo-berth suite passes; lint.
+**Ruled out:**
+- A guard against a phase claim between hook selection and mutation: one user does not cause that race.
+- Hold settlement inside the comparison budget: a phase makes one or two holds, settled once for each integration.
 
 
 ### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
@@ -3793,6 +3796,11 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 **Forward edits from Phase 68 (director, 2026-11-17):**
 - On macOS a `package(cargo-berth)` override sets `threads-required = 3` and no priority. The new priority-80 override sets `priority` alone, so both hold; the Mac before runs measure the suite with it.
+
+**Forward edits from Phase 70 (showrunner, 2026-11-19):**
+- Six new `cargo-berth` `tests/hooks.rs` tests take 1 s or more on the Mac at start load 6.58 on 12 CPUs. That load is normal, so each is a defect. Shorten each one to under 1 s on the Mac at normal load. This is a test rewrite in addition to the ordering work.
+- The six tests and their Mac times: `a_plan_shrink_after_checkpoint_never_makes_the_next_phases_drift_ambiguous` (2.427 s), `a_bash_write_after_checkpoint_creates_an_exact_path_hold` (2.068 s), `a_bash_write_after_checkpoint_creates_one_hold_per_free_path` (2.013 s), `a_plan_shrink_hold_releases_after_squash_integration` (1.761 s), `an_active_phase_edit_widens_the_phase_and_releases_the_checkpoint_gap_hold` (1.440 s), `the_next_phase_check_acquires_a_path_from_a_checkpoint_gap_hold` (1.064 s). On natedev they take 0.27-0.45 s.
+- Files: add `crates/cargo-berth/tests/hooks.rs` and the `crates/cargo-berth/tests/support/` files that set up these tests.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, after the config edit: green.

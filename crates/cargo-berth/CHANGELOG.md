@@ -94,6 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A plan doc edit no longer makes a second ordinary reservation that holds only the plan. In a worktree with an active phase reservation, the edit joins that reservation. With no active phase, the edit takes an exact-path plan hold. The hold keeps the overlap checks against other worktrees. Drift does not select it for a phase, and reconciliation releases it after Git shows the plan change is integrated. A later phase that edits the held plan widens its own reservation and releases the hold in one transaction.
+
 - Drift no longer widens a phase's reservation with paths introduced by a sibling phase's checkpoint commit while that sibling is outstanding.
 
 - `board --reservation <id> --json` includes every declared ordering edge and live overlap answer naming the reservation, matching the full board and retaining all scope answers bound to a reused edge. The rendered report lists both after lifecycle and extent details.
