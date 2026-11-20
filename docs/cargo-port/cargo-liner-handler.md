@@ -1025,7 +1025,7 @@ The copies are deleted. No source changes.
 - The new fixture test fails before the fix and passes after it.
 - No changed test takes one second or more.
 
-### Phase 48 — the handler installs its theme through tui_pane  · status: todo
+### Phase 48 — the handler installs its theme through tui_pane  · status: done
 
 #### Work Order
 
