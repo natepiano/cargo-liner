@@ -115,6 +115,22 @@ impl RepositoryTip {
             .map_or(".", String::as_str)
     }
 
+    pub(crate) fn has_rust_path(&self, path: &str) -> bool { self.rust_files.contains_key(path) }
+
+    pub(crate) fn crate_rust_paths<'a>(
+        &'a self,
+        crate_name: &'a str,
+    ) -> impl Iterator<Item = &'a str> {
+        self.entries
+            .iter()
+            .filter(move |(path, entry)| {
+                entry.kind == EntryKind::Blob
+                    && is_rust_path(path)
+                    && self.crate_of(path) == crate_name
+            })
+            .map(|(path, _)| path.as_str())
+    }
+
     pub(crate) fn inputs<'a>(
         &'a self,
         scope: InputScope,
@@ -444,21 +460,11 @@ fn glob_regex(pattern: &str) -> String {
     while let Some(&word) = words.get(cursor) {
         cursor += 1;
         match word {
+            '*' if cursor > 1 && words[cursor - 2] == '*' => {},
             '*' => regex.push_str(".*"),
             '?' => regex.push('.'),
             '[' if let Some(end) = class_end(&words, cursor) => {
-                regex.push('[');
-                if words[cursor] == '!' {
-                    regex.push('^');
-                    cursor += 1;
-                }
-                for &character in &words[cursor..end] {
-                    if matches!(character, '\\' | '[' | ']' | '^' | '&' | '~' | '|') {
-                        regex.push('\\');
-                    }
-                    regex.push(character);
-                }
-                regex.push(']');
+                write_class(&words[cursor..end], &mut regex);
                 cursor = end + 1;
             },
             _ => regex.push_str(&regex::escape(&word.to_string())),
@@ -476,4 +482,65 @@ fn class_end(chars: &[char], mut cursor: usize) -> Option<usize> {
         cursor += 1;
     }
     (cursor..chars.len()).find(|&index| chars[index] == ']')
+}
+
+fn write_class(chars: &[char], regex: &mut String) {
+    let chunks = class_chunks(chars);
+    let mut parts = chunks.iter();
+    let first = parts.next().map_or(&[][..], Vec::as_slice);
+    if first.is_empty() {
+        regex.push_str(r"[^\s\S]");
+        return;
+    }
+    if first == ['!'] && parts.as_slice().is_empty() {
+        regex.push('.');
+        return;
+    }
+    regex.push('[');
+    if let Some(members) = first.strip_prefix(&['!']) {
+        regex.push('^');
+        write_class_members(members, regex);
+    } else {
+        write_class_members(first, regex);
+    }
+    for members in parts {
+        regex.push('-');
+        write_class_members(members, regex);
+    }
+    regex.push(']');
+}
+
+fn class_chunks(chars: &[char]) -> Vec<Vec<char>> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut next = 1 + usize::from(chars.first() == Some(&'!'));
+    while let Some(range) = (next..chars.len()).find(|&index| chars[index] == '-') {
+        chunks.push(chars[start..range].to_vec());
+        start = range + 1;
+        next = range + 3;
+    }
+    if start < chars.len() {
+        chunks.push(chars[start..].to_vec());
+    } else if let Some(last) = chunks.last_mut() {
+        last.push('-');
+    }
+    // Python removes reversed ranges from right to left and joins the remaining members.
+    for index in (1..chunks.len()).rev() {
+        if chunks[index - 1].last() > chunks[index].first() {
+            let right = chunks.remove(index);
+            let left = &mut chunks[index - 1];
+            left.pop();
+            left.extend_from_slice(&right[1..]);
+        }
+    }
+    chunks
+}
+
+fn write_class_members(members: &[char], regex: &mut String) {
+    for &character in members {
+        if matches!(character, '\\' | '[' | ']' | '^' | '&' | '~' | '|' | '-') {
+            regex.push('\\');
+        }
+        regex.push(character);
+    }
 }

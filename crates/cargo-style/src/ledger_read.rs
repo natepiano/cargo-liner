@@ -15,6 +15,8 @@ use rusqlite::types::FromSql;
 use serde::Serialize;
 
 use crate::constants::LEDGER_SCHEMA_VERSION;
+use crate::relocation_ledger;
+use crate::relocation_ledger::RelocationEvidence;
 use crate::site_ledger::SiteEvidence;
 use crate::site_ledger::SiteRows;
 use crate::sqlite_read;
@@ -43,8 +45,9 @@ pub(crate) enum FindingLookup<T> {
 }
 
 pub(crate) struct HeldSite {
-    pub(crate) anchor: HeldAnchor,
-    pub(crate) site:   SiteEvidence,
+    pub(crate) anchor:     HeldAnchor,
+    pub(crate) site:       SiteEvidence,
+    pub(crate) relocation: RelocationEvidence,
 }
 
 pub(crate) struct HeldAnchor {
@@ -119,13 +122,23 @@ impl LedgerSnapshot<HeldSite> {
     pub(crate) fn read_sites(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
         Self::read(path, |connection| {
             let mut sites = SiteRows::prepare(connection)?;
-            read_findings(connection, ids, |row, id| {
-                let anchor = read_anchor(row, id)?;
-                let ticket: String = read_column(row, "held_findings", id, "ticket")?;
-                let original = read_original(row, id, &ticket, &anchor.evidence)?;
-                let site = sites.read(id, &ticket, &anchor.path, original)?;
-                Ok(HeldSite { anchor, site })
-            })
+            read_projected_findings(
+                connection,
+                ids,
+                relocation_ledger::WITH_ANCHOR,
+                |row, id| {
+                    let anchor = read_anchor(row, id)?;
+                    let ticket: String = read_column(row, "held_findings", id, "ticket")?;
+                    let original = read_original(row, id, &ticket, &anchor.evidence)?;
+                    let site = sites.read(id, &ticket, &anchor.path, original)?;
+                    let relocation = RelocationEvidence::read(row, id)?;
+                    Ok(HeldSite {
+                        anchor,
+                        site,
+                        relocation,
+                    })
+                },
+            )
         })
     }
 }
@@ -258,14 +271,26 @@ fn read_synced_tip(connection: &Connection) -> Result<String, LedgerReadFailure>
 fn read_findings<T>(
     connection: &Connection,
     ids: &[String],
-    mut read: impl FnMut(&Row<'_>, &str) -> Result<T, LedgerReadFailure>,
+    read: impl FnMut(&Row<'_>, &str) -> Result<T, LedgerReadFailure>,
 ) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure> {
-    let mut statement = connection.prepare(
+    read_projected_findings(
+        connection,
+        ids,
         "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, h.ticket, \
                 t.id AS judging_ticket, t.checkpoint, t.base \
          FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
          WHERE h.finding_id = ?1",
-    )?;
+        read,
+    )
+}
+
+fn read_projected_findings<T>(
+    connection: &Connection,
+    ids: &[String],
+    sql: &str,
+    mut read: impl FnMut(&Row<'_>, &str) -> Result<T, LedgerReadFailure>,
+) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure> {
+    let mut statement = connection.prepare(sql)?;
     ids.iter()
         .map(|id| {
             let mut rows = statement.query([id])?;

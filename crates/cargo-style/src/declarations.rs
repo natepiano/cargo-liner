@@ -17,7 +17,7 @@ use crate::word_syntax;
 /// The direct owner of a declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DeclarationOwner {
+pub(crate) enum DeclarationOwner {
     Module,
     ImplOrTrait(String),
 }
@@ -25,7 +25,7 @@ enum DeclarationOwner {
 /// The import scope of a declaration or its owning impl header.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ImportPosition {
+pub(crate) enum ImportPosition {
     FileLevel,
     BlockScoped(usize),
 }
@@ -33,23 +33,23 @@ enum ImportPosition {
 /// An impl has no target of this kind, or its target cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ImplementationState {
+pub(crate) enum ImplementationState {
     None,
     Unreadable,
 }
 
 /// A complete impl path and its generic arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-struct ImplementedPath {
-    path:      Vec<String>,
-    arguments: Vec<String>,
-    position:  ImportPosition,
+pub(crate) struct ImplementedPath {
+    pub(crate) path:      Vec<String>,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) position:  ImportPosition,
 }
 
 /// The trait or type relationship of a direct impl member.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
-enum ImplMembership {
+pub(crate) enum ImplMembership {
     State(ImplementationState),
     Path(ImplementedPath),
 }
@@ -82,6 +82,18 @@ pub(crate) struct DeclaredItem {
 }
 
 impl DeclaredItem {
+    pub(crate) const fn keyword(&self) -> &str { self.keyword.as_str() }
+
+    pub(crate) const fn keyword_line(&self) -> usize { self.keyword_line }
+
+    pub(crate) const fn owner(&self) -> &DeclarationOwner { &self.owner }
+
+    pub(crate) const fn is_module_item(&self) -> bool {
+        matches!(self.owner, DeclarationOwner::Module)
+    }
+
+    pub(crate) const fn implemented_trait(&self) -> &ImplMembership { &self.implemented_trait }
+
     pub(crate) fn same_declaration(&self, other: &Self) -> bool {
         self.keyword == other.keyword && self.name == other.name && self.owner == other.owner
     }
