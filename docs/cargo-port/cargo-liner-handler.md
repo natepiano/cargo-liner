@@ -891,7 +891,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 **Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).
 
-### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: todo
+### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: done
 
 #### Work Order
 
