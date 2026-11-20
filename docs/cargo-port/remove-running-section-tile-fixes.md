@@ -3110,6 +3110,8 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33
 
+**Scope (user, 2026-11-19):** the four slow `render.rs` tests from Phase 72's forward edit are dropped. This phase keeps the repeated-fade cost from Phase 32g and the pause.
+
 #### Work Order
 
 **Goal:** The space bar pauses and unpauses cargo-tile while it runs, and the status bar says `paused` the whole time it is paused. From the user (2026-10-16, relayed by the showrunner): "make it so the space bar pauses and unpauses cargo tile while it's running (and it should show paused in the statusbar while that's happening)". Pausing is the display freeze cargo-tile already has: the screen holds still, and cargo keeps running underneath. Today that freeze is on `f` and the status bar says `frozen`. This phase moves it to space and calls it pause everywhere. It runs after Phases 21 to 33: Phase 33 and this phase both change the render files, so one writer owns them at a time. Files and lines below are as of phase 20's checkpoint and may move; find each by name.
@@ -3171,7 +3173,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Packaging (director, 2026-11-19, on the showrunner's parallel order):** Phase 35's `overlay` writer (items 9, 35 and 38) touches no Phase 34 file, so it runs as its own phase beside Phase 34. Phase 35's item text, files (`crates/tui_pane/src/pane/frame.rs`, `pane/state.rs`, `app_settings/draw.rs`, a `tui_pane` palette file its diagnosis names) and acceptance gate for those items apply here. This phase writes its own `crates/tui_pane/CHANGELOG.md` Fixed lines for items 35 and 38. It builds on Phase 72's `app_settings/draw.rs`.
 
-### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
+### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: dropped (user, 2026-11-19: not wanted; Phase 35o keeps items 9, 35 and 38)
 
 **Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Item 2 was met. Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 stay (showrunner, 2026-11-06: the user's rule covers visible changes only). Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
 
@@ -3257,7 +3259,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Unit director's captures of the shot set Phase 20 used: every hidden-rows `…` stands at its row's right end, on settled and moving frames, and no value's last cell carries it; no `…` stands apart from the text it cuts; no profile label is cut without a mark.
 - A fresh helper's design check of those shots: pass.
 
-### Phase 36 — Every cell moves toward one target layout  · status: todo
+### Phase 36 — Every cell moves toward one target layout  · status: dropped (user, 2026-11-19: tile movement is good enough for now)
 
 **Depends on:** Phase 20, Phase 35
 
@@ -3739,13 +3741,13 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The map covers all 264 current grid and draw tests. Retain each visible assertion. Port only fixtures that depend on replaced geometry or motion state. Name every retirement and its retained behavioral coverage.
 - The unit director's notice lists each retired grid test with its current module path and its reason.
 
-### Phase 37a — Seven slow tests run under 1 s on the Mac  · status: todo
+### Phase 37a — Seven slow tests run under 1 s on the Mac  · status: dropped (user, 2026-11-19: not wanted; the full Mac suite ran the six hook tests under 1 s at load 53)
 
 **Depends on:** Phase 70
 
 **Packaging (director, 2026-11-19, on the showrunner's parallel order):** the test rewrites in Phase 37's forward edits run now, beside Phase 34. This phase shortens the six `cargo-berth` `tests/hooks.rs` tests from Phase 70's forward edit and `taking_two_resolved_roots_shares_one_removal_allowance` (`crates/cargo-tile/src/progress/capture.rs`) from Phase 72's forward edit, each to under 1 s on the Mac at load under 12 and on natedev. Phase 72's four `render.rs` tests go to Phase 34, which owns `render.rs`. Phase 37 keeps the priority override and its measurements, after Phase 36.
 
-### Phase 37 — Slow tests start first  · status: todo
+### Phase 37 — Slow tests start first  · status: dropped (user, 2026-11-19: cargo-liner test time blocks no work)
 
 **Depends on:** Phase 21, Phase 34, Phase 36, Phase 39, Phase 40, Phase 43b, Phase 43e, Phase 43f, Phase 49
 
