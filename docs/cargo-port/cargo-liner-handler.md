@@ -1048,3 +1048,43 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - The new row fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 51 — a release of merged work frees its board slot  · status: todo
+
+#### Work Order
+
+**Goal:** a reservation whose work is on its target frees its board slot when it is released, or when its protected tip reaches the target. A release never protects commits that are not the reservation's own work. Source: the showrunner, 2026-11-20, from a spacetime showrunner report.
+
+**Spec:**
+1. The fault, from the hana_catalyst worktrees on 2026-11-20 (`maximum_reservations = 128`):
+   - The board was full, and every claim got `reservation_limit_reached`.
+   - The fps reservation `01a1e826-4107-7e13-8d24-b9a8d4054d1d` held fps Phase 1. That work merged into spacetime as `6404721d79`.
+   - `cargo-berth release 01a1e826-4107-7e13-8d24-b9a8d4054d1d` printed "now retains protected tip c25d254610...; pending paths: ... (29 paths)". The status became outstanding and still counted as live.
+   - The release took a new snapshot at the branch tip `c25d254610`, which also holds unmerged Phase 2 work. The release extended the protection.
+   - The board now shows `01a1e826` as `released_after_checkpoint`, protected tip `c25d254610f9f7c5d145cd1503bdb423ff5d87df`, merge extent protected against target `9ba7507245bb5ee72c660ab8a882de34cd9d7ef0`.
+2. Second case: the spacetime-server reservation `01a1e968-c074-7d80-b520-9b9edd026988` (Phase 2, merged). A plain release took a snapshot of the unmerged tip `6eb35ba526`. After `release --keep-work`, it reads `released_after_checkpoint`, `kept_on_branch`.
+3. Today only `resolve <id> --integrated-as <sha>` frees a merged reservation. A holder does not release itself when its tip reaches the target. `01a1f522` released itself only after 24 h with no owner activity.
+4. First write a cargo-berth test that reproduces the `01a1e826` case and fails before the fix. Name the function and the value that pick the new tip. A lead: `checkpoint_operation` in `crates/cargo-berth/src/verb/release.rs` takes `protected_tip` from `git::reservation_checkpoint_commits`.
+5. The showrunner's ruling:
+   - A release of a reservation whose work is on its target frees the slot at once.
+   - A release never moves the protected tip onto commits that are not the reservation's own work.
+   - A reservation whose protected tip becomes an ancestor of its target releases itself at once, with no 24 h activity wait.
+6. Add the second case as a row of the same test.
+7. Background: `~/.claude/projects/-home-natepiano-rust-hana/memory/cargo-berth-coordination.md` records the same behavior. Read it only.
+
+**Files:**
+- `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
+- `crates/cargo-berth/src/git/` — `reservation_checkpoint_commits` and reachability
+- `crates/cargo-berth/src/reservation/` — the live count and the self-release on an integrated tip
+- `crates/cargo-berth/src/reconcile.rs` — when reconcile owns the self-release
+- `crates/cargo-berth/tests/lifecycle.rs` — the release test
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.
