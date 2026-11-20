@@ -1010,7 +1010,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 - The live edge count and the claim result, before and after the fix.
 - With the fix, the claim succeeds and the live edge count is well under 512.
 
-### Phase 47 — mend writes a full-path import when a block import brings in the path's first name  · status: todo
+### Phase 47 — mend leaves a path when a block binding can bring in its first name  · status: done
 
 #### Work Order
 
@@ -1019,8 +1019,9 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 **Spec:**
 1. The fault: a test fn body in hana (`crates/hana/src/tool/rear_patch_panel/row_backing.rs`) had `use crate::tool::frame_time_info_panel::tests::pixels;` and then used `pixels::OutlineRendering::Disabled`. `cargo mend --fix` added `use pixels::OutlineRendering;` in the fn body. That import fails with E0432 (unresolved import `pixels`), so mend rolled back every rewrite.
 2. First build a fixture test that reproduces it: a fn body with a block `use` of a module and a qualified path through that module. The test fails before the fix.
-3. Fix the cause in the rule that wrote the import. When the first segment of the new import is a name that a block `use` brings in, write the import from that `use`'s full path (`use crate::tool::frame_time_info_panel::tests::pixels::OutlineRendering;`). If mend cannot resolve the full path, leave the site.
+3. Fix the cause in the rule that wrote the import. When any block binding (a `use`, an item, a glob or a macro) can bind the first segment of the path, mend leaves the site and writes no import. Syntax cannot tell a module from a type or a fn there, so an expansion can make a wrong import that compiles. Source: the showrunner, 2026-11-19, after review found six failing expansion cases.
 4. Find which rule added the import from the fixture's diagnostic output. Name it in the reply.
+5. Keep the six review cases as fixture tests that prove mend leaves each site: a block `use` of a fn, a lowercase alias of a type, a macro that expands to a block `use`, a generic parameter or block fn with the shortened name, a block `use` the rewrite would leave unused, and a bare name in a block-local module.
 
 **Files:**
 - the cargo-mend fix source of the rule that wrote the import (start at `crates/cargo-mend/src/fixes/`)

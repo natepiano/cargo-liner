@@ -1,5 +1,195 @@
 use crate::support::*;
 
+const BLOCK_BINDINGS_SOURCE: &str = r#"#![deny(unused_imports)]
+
+#[cfg(test)]
+mod fixtures {
+    pub(crate) mod pixels {
+        pub(crate) enum OutlineRendering { Disabled }
+    }
+    pub(crate) enum ShadingMode { Flat }
+    pub(crate) struct OutlineRendering;
+    impl OutlineRendering {
+        pub(crate) const Disabled: Self = Self;
+    }
+    pub(crate) fn selected() {}
+    pub(crate) mod macros {
+        pub(crate) mod parens {
+            pub(crate) enum MacroMode { Ready }
+        }
+        pub(crate) mod braces {
+            pub(crate) enum BracedMode { Ready }
+        }
+    }
+    pub(crate) mod globe {
+        pub(crate) mod axes {
+            pub(crate) enum AxisMode { Fixed }
+        }
+    }
+    pub(crate) mod modes {
+        pub(crate) enum GenericMode { Ready }
+        pub(crate) struct Shape();
+        pub(crate) struct SharedMode;
+        pub(crate) struct NestedMode;
+        pub(crate) struct ForeignMarker();
+    }
+    pub(crate) mod exported {
+        pub(crate) struct SharedMode;
+    }
+    pub(crate) mod values {
+        pub(crate) const Size: usize = 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod selected {
+        pub(super) struct FunctionMarker;
+    }
+
+    macro_rules! import_module {
+        ($name:ident) => { use crate::fixtures::macros::$name; };
+    }
+
+    #[test]
+    fn outline() {
+        use crate::fixtures::pixels;
+        let _ = pixels::OutlineRendering::Disabled;
+    }
+
+    #[test]
+    fn aliases() {
+        use crate::fixtures::OutlineRendering as outline;
+        use crate::fixtures::{ShadingMode as r#shading, selected};
+        let _ = outline::Disabled;
+        let _ = shading::Flat;
+        selected();
+        let _ = selected::FunctionMarker;
+    }
+
+    #[test]
+    fn opaque_imports() {
+        {
+            import_module!(parens);
+            let _ = parens::MacroMode::Ready;
+        }
+        {
+            import_module! { braces }
+            let _ = braces::BracedMode::Ready;
+        }
+        {
+            use crate::fixtures::globe::*;
+            let _ = axes::AxisMode::Fixed;
+        }
+    }
+
+    fn generic<GenericMode>() {
+        let _ = crate::fixtures::modes::GenericMode::Ready;
+    }
+
+    #[test]
+    fn replacement_names() {
+        fn Shape() -> u8 { 0 }
+        let _ = crate::fixtures::modes::Shape();
+        generic::<()>();
+    }
+
+    #[test]
+    fn union_generic() {
+        union Buffer<const Size: usize> {
+            bytes: [u8; crate::fixtures::values::Size],
+        }
+        let _ = std::mem::size_of::<Buffer<2>>();
+    }
+
+    fn parent_helper() {}
+
+    #[test]
+    fn block_module() {
+        mod local {
+            use super::*;
+            use crate::fixtures::exported::*;
+
+            pub(crate) fn keep() {
+                parent_helper();
+                let _ = SharedMode;
+                let _ = crate::fixtures::modes::NestedMode;
+            }
+        }
+        local::keep();
+        let _ = crate::fixtures::modes::SharedMode;
+    }
+
+    #[test]
+    fn local_item() {
+        mod scope {
+            pub(crate) struct LocalMode;
+        }
+        let _ = scope::LocalMode;
+    }
+
+    #[test]
+    fn unbound_first_segment() {
+        macro_rules! Duration {
+            () => {};
+        }
+        unsafe extern "C" {
+            fn ForeignMarker();
+        }
+        #[cfg_attr(test, derive(Clone, Copy, Debug))]
+        #[repr(C)]
+        #[allow(dead_code)]
+        struct BuiltInAttributes { byte: u8 }
+
+        fn local_helper() {}
+        local_helper();
+        let _ = crate::fixtures::modes::ForeignMarker();
+        let _duration: std::time::Duration;
+    }
+}
+"#;
+
+#[test]
+fn inline_type_fix_leaves_paths_with_block_bindings() {
+    let mut batch = DiagnosticBatch::new("[diagnostics]\ninline_path_qualified_type = true\n");
+    let root = batch.add_member(
+        "block_module_import",
+        &[("src/lib.rs", BLOCK_BINDINGS_SOURCE)],
+    );
+    let output = super::rewrite_inline_path_fixture(&root.join("Cargo.toml"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed = fs::read_to_string(root.join("src/lib.rs")).expect("read fixed source");
+    assert!(fixed.contains("use std::time::Duration;"), "{fixed}");
+    assert!(fixed.contains("let _duration: Duration;"), "{fixed}");
+    assert_eq!(
+        fixed.matches("use ").count(),
+        BLOCK_BINDINGS_SOURCE.matches("use ").count() + 1
+    );
+    for unchanged in [
+        "let _ = pixels::OutlineRendering::Disabled;",
+        "let _ = outline::Disabled;",
+        "let _ = shading::Flat;",
+        "let _ = selected::FunctionMarker;",
+        "let _ = parens::MacroMode::Ready;",
+        "let _ = braces::BracedMode::Ready;",
+        "let _ = axes::AxisMode::Fixed;",
+        "let _ = crate::fixtures::modes::GenericMode::Ready;",
+        "let _ = crate::fixtures::modes::Shape();",
+        "bytes: [u8; crate::fixtures::values::Size],",
+        "let _ = SharedMode;",
+        "let _ = crate::fixtures::modes::NestedMode;",
+        "let _ = crate::fixtures::modes::SharedMode;",
+        "let _ = scope::LocalMode;",
+        "let _ = crate::fixtures::modes::ForeignMarker();",
+    ] {
+        assert!(fixed.contains(unchanged), "Missing {unchanged}\n{fixed}");
+    }
+}
+
 #[test]
 fn fix_keeps_tile_root_exports_and_self_module_imports() {
     let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
