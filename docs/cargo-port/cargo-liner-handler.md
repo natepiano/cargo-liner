@@ -956,32 +956,20 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 ### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-berth hook that runs on each git ref update finishes inside its 10-second limit under load, so git never refuses a merge commit or a push for a hook timeout. Source: the showrunner, 2026-11-19. Current, after Phase 44 (same crate).
-
-**Spec:**
-1. The fault: git refused a merge commit two times because the hook passed its 10-second limit:
-   - 2026-11-17 about 23:26 EST, load 60: the spacetime praxis phase 3 shrink merge.
-   - 2026-11-19 about 01:00 EST: item 1 of spacetime merge batch 1119a.
-   The same refusal can occur on a push.
-2. Measure first. Record the hook's git process count and its time, at normal load and under load. Name the work that grows with load or with ledger size. Start at `crates/cargo-berth/src/gate/reference_transaction.rs`.
-3. Fix the cause: the hook does less work. Cut the work that the measurement names.
-4. Do not add a retry in the merge tool. Do not change the 10-second limit.
-5. Add a regression test that holds the hook's git process count under the existing ceiling. Use the existing process budget (`crates/cargo-berth/tests/process_start_budget.json`) or the existing hook test of the same behavior. Add a new test only when no test covers it.
+- The reference-transaction hook does not run automatic journal compaction. `LedgerHandle::open_for_reference_transaction` opens the ledger with `AutomaticCompaction::Deferred`, so the next ordinary ledger mutation compacts a journal past the threshold. The hook still syncs each journal append. At the compaction threshold under load, the hook median is about 2.2 s against the 10 s limit.
+- A transaction with no proposed trunk commit reads the ledger without the lock. When no update needs a decision (`SelectedGateUpdate::StandAside`), the hook returns before identity resolution and `mutation.lock`. A gated non-trunk update still takes the locked decision path.
+- The native worktree reader resolves relative registrations, and keeps locked and detached worktrees as live.
 
 **Files:**
-- `crates/cargo-berth/src/gate/reference_transaction.rs`
-- the gate source files the measurement names
-- the cargo-berth hook and gate test files, and `tests/process_start_budget.json`
+- `crates/cargo-berth/src/gate/reference_transaction.rs` — `SelectedGateUpdate { Evaluate, StandAside }` and the early return
+- `crates/cargo-berth/src/gate/decision.rs` — history check against the integration constraint projection
+- `crates/cargo-berth/src/gate/audit.rs`, `crates/cargo-berth/src/gate/permit.rs` — open the ledger with the hook open
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/compaction.rs` — deferred compaction and its test
+- `crates/cargo-berth/src/git/worktree.rs` — native worktree reader and its parity tests
+- `crates/cargo-berth/tests/gate.rs` — trunk-deletion rows with `mutation.lock` held, and the multi-ref test with a separate trunk history
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** a test that proves the hook skips the lock holds `mutation.lock` with a 50 ms contention tolerance, so a hook that takes the lock fails the row.
 
-**State:** none. The hook reads the berth ledger. It must still make the same decisions.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The measurement before and after the fix, with the load at each run.
-- The regression test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** a retry in the merge tool, and a longer hook time limit.
