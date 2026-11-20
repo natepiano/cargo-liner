@@ -68,7 +68,7 @@ pub fn clear_all_hover<R: HitTestRegistry>(registry: &mut R) {
 
 /// First-hit-wins dispatch: walk `registry.z_order()` top-down and
 /// return the first pane's hit, or `None` if no pane claims `pos`.
-pub fn hit_test_at<R: HitTestRegistry>(registry: &R, pos: Position) -> Option<R::Target> {
+pub(super) fn hit_test_at<R: HitTestRegistry>(registry: &R, pos: Position) -> Option<R::Target> {
     for id in R::z_order() {
         if let Some(pane) = registry.pane(*id)
             && let Some(hit) = pane.hit_test_at(pos)

@@ -160,6 +160,16 @@ impl GlobalShortcutsPane {
     ) where
         Ctx: AppContext + 'static,
     {
+        self.render_popup(frame, area, keymap, mode);
+    }
+
+    fn render_popup<Ctx: AppContext + 'static>(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        keymap: &Keymap<Ctx>,
+        mode: crate::ColorMode,
+    ) -> Rect {
         let rows = keymap.global_shortcut_rows();
         self.viewport.set_len(rows.len());
         let mut inputs = render_inputs(&rows, &self.viewport, self.focus.pane_focus_state, mode);
@@ -217,6 +227,7 @@ impl GlobalShortcutsPane {
             ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
             Style::default().fg(label_color()),
         );
+        popup.outer
     }
 
     /// Current input mode for the overlay.
@@ -249,12 +260,20 @@ pub fn draw_global_shortcuts_overlay<Ctx>(
 ) where
     Ctx: AppContext + 'static,
 {
+    draw_global_shortcuts_popup(frame, ctx, keymap);
+}
+
+pub(super) fn draw_global_shortcuts_popup<Ctx: AppContext + 'static>(
+    frame: &mut Frame<'_>,
+    ctx: &mut Ctx,
+    keymap: &Keymap<Ctx>,
+) -> Rect {
     let mode = ctx.framework().color_mode;
     let pane = &mut ctx.framework_mut().global_shortcuts_pane;
     pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
-    pane.render(frame, frame.area(), keymap, mode);
+    pane.render_popup(frame, frame.area(), keymap, mode)
 }
 
 fn render_inputs(
