@@ -73,6 +73,7 @@ impl<'input> From<&'input JournalOperation> for CallerJournalInput<'input> {
                 source:
                     source @ (ClaimSource::Explicit
                     | ClaimSource::FirstTouch
+                    | ClaimSource::PlanShrink
                     | ClaimSource::WorkPlan { .. }),
                 purpose,
                 authorization,
