@@ -211,8 +211,9 @@ fn execute_sequence(
                     return TransactionValidation::Reject(SequenceRejection::Declaration(error));
                 },
             };
-            if count_reaches_limit(
-                ordering_graph.edge_count(),
+            if ordering_graph.sequence_exceeds_live_ordering_limit(
+                &edge,
+                reservations,
                 berth_config.maximum_ordering_edges,
             ) {
                 return TransactionValidation::Reject(SequenceRejection::EdgeLimitReached(
@@ -238,10 +239,6 @@ fn execute_sequence(
 enum PreparedEdgeState {
     NotPrepared,
     Prepared(PreparedOrderingEdge),
-}
-
-fn count_reaches_limit(count: usize, maximum: u32) -> bool {
-    u64::try_from(count).map_or(true, |count| count >= u64::from(maximum))
 }
 
 #[derive(Debug)]

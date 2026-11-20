@@ -548,6 +548,19 @@
               "type": "object"
             },
             {
+              "description": "An exact plan path held while a completed phase's plan is updated.",
+              "properties": {
+                "kind": {
+                  "const": "plan_shrink",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A direct caller-specified reservation.",
               "properties": {
                 "kind": {
@@ -3418,6 +3431,19 @@
               "type": "object"
             },
             {
+              "description": "An exact plan path held while a completed phase's plan is updated.",
+              "properties": {
+                "kind": {
+                  "const": "plan_shrink",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A direct caller-specified reservation.",
               "properties": {
                 "kind": {
@@ -3990,6 +4016,50 @@
           ],
           "type": "object"
         },
+        "ExactPathAcquisition": {
+          "description": "The outcome for one other path in a first-touch transaction.",
+          "properties": {
+            "kind": {
+              "description": "How the transaction protected the path.",
+              "oneOf": [
+                {
+                  "const": "appended",
+                  "description": "The transaction appended a new first-touch reservation.",
+                  "type": "string"
+                },
+                {
+                  "const": "widened",
+                  "description": "The transaction enlarged the acting run's existing first-touch reservation.",
+                  "type": "string"
+                },
+                {
+                  "const": "already_held",
+                  "description": "The acting run's reservations in this worktree already covered every claimable path.",
+                  "type": "string"
+                },
+                {
+                  "const": "answered",
+                  "description": "An explicit claim recorded an answer without acquiring paths.",
+                  "type": "string"
+                }
+              ]
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The reservation that protects this path."
+            },
+            "scope": {
+              "$ref": "#/$defs/ReservationScope",
+              "description": "The exact scope of the path."
+            }
+          },
+          "required": [
+            "kind",
+            "reservation_id",
+            "scope"
+          ],
+          "type": "object"
+        },
         "ExplicitSelectionPersistenceReason": {
           "description": "Why an explicit reservation selection cannot become reusable harness-session state.",
           "oneOf": [
@@ -4010,6 +4080,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -4061,6 +4138,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -4112,6 +4196,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -4163,6 +4254,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -11800,6 +11898,19 @@
               "type": "object"
             },
             {
+              "description": "An exact plan path held while a completed phase's plan is updated.",
+              "properties": {
+                "kind": {
+                  "const": "plan_shrink",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A direct caller-specified reservation.",
               "properties": {
                 "kind": {
@@ -12372,6 +12483,50 @@
           ],
           "type": "object"
         },
+        "ExactPathAcquisition": {
+          "description": "The outcome for one other path in a first-touch transaction.",
+          "properties": {
+            "kind": {
+              "description": "How the transaction protected the path.",
+              "oneOf": [
+                {
+                  "const": "appended",
+                  "description": "The transaction appended a new first-touch reservation.",
+                  "type": "string"
+                },
+                {
+                  "const": "widened",
+                  "description": "The transaction enlarged the acting run's existing first-touch reservation.",
+                  "type": "string"
+                },
+                {
+                  "const": "already_held",
+                  "description": "The acting run's reservations in this worktree already covered every claimable path.",
+                  "type": "string"
+                },
+                {
+                  "const": "answered",
+                  "description": "An explicit claim recorded an answer without acquiring paths.",
+                  "type": "string"
+                }
+              ]
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The reservation that protects this path."
+            },
+            "scope": {
+              "$ref": "#/$defs/ReservationScope",
+              "description": "The exact scope of the path."
+            }
+          },
+          "required": [
+            "kind",
+            "reservation_id",
+            "scope"
+          ],
+          "type": "object"
+        },
         "ExplicitSelectionPersistenceReason": {
           "description": "Why an explicit reservation selection cannot become reusable harness-session state.",
           "oneOf": [
@@ -12392,6 +12547,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -12443,6 +12605,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -12494,6 +12663,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
@@ -12545,6 +12721,13 @@
             {
               "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
+                "additional_acquisitions": {
+                  "description": "Other exact paths protected by the same transaction.",
+                  "items": {
+                    "$ref": "#/$defs/ExactPathAcquisition"
+                  },
+                  "type": "array"
+                },
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
                   "items": {
