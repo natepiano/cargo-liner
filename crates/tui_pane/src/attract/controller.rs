@@ -882,7 +882,7 @@ impl<P: FrameProbe> Attract<P> {
     /// whole screen for each one, so it asks about 30 times a second.
     ///
     /// Called from the app's [`PollWork`](crate::PollWork) while the
-    /// display is live; a frozen display asks for no frames of it.
+    /// display is live; a paused display requests no animation frames.
     pub fn frame_due(&mut self) -> Repaint {
         let interval_due = self.showing() && self.attracted.elapsed() >= ATTRACT_FRAME_INTERVAL;
         if interval_due {
@@ -1040,7 +1040,7 @@ impl<P: FrameProbe> Attract<P> {
         // the one before it that the strip does not owe: the display
         // stood still, so the strip stood still with it. The gap is not
         // a frame's worth either -- the loop asks for no frames at all
-        // while frozen, so the last draw before this one was the full
+        // while paused, so the last draw before this one was the full
         // repaint on its timer, seconds back. Travelling it would carry
         // the strip most of the way across the screen the instant the
         // reader let go, which is what a held display is least expected
@@ -1051,8 +1051,8 @@ impl<P: FrameProbe> Attract<P> {
             now.duration_since(self.advanced_at)
         };
         self.advanced_at = now;
-        self.held = updates == Updates::Frozen;
-        if updates == Updates::Frozen {
+        self.held = updates == Updates::Paused;
+        if updates == Updates::Paused {
             return self.grid();
         }
         // With `AttractVisibilityInstruction::Show`, the roster does not get a say: the strip comes
@@ -1760,14 +1760,14 @@ mod tests {
     }
 
     #[test]
-    fn frozen_frame_records_its_laid_out_area() {
+    fn paused_frame_records_its_laid_out_area() {
         let mut attract = Attract::new();
         let resized = Rect::new(0, 0, AREA.width.saturating_sub(7), AREA.height);
 
         attract.advance(
             resized,
             AttractWork::Running,
-            Updates::Frozen,
+            Updates::Paused,
             Instant::now(),
         );
 
@@ -1775,14 +1775,14 @@ mod tests {
     }
 
     #[test]
-    fn frozen_frame_does_not_change_band_glyphs() {
+    fn paused_frame_does_not_change_band_glyphs() {
         let mut attract = Attract::new();
         attract.mode = AttractMode::MovingBand;
         attract.record_terminal_resize(AREA);
         let _ = attract.current_settings();
         let band_before_frame = attract.band.clone();
 
-        attract.advance(AREA, AttractWork::Idle, Updates::Frozen, Instant::now());
+        attract.advance(AREA, AttractWork::Idle, Updates::Paused, Instant::now());
 
         assert_eq!(attract.band, band_before_frame);
     }

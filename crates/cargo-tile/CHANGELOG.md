@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Space pauses and resumes the display. The status bar shows `paused` while updates are paused.
 - Command cells use a plain border. The account and directory occupy body row 1. The optional progress reading follows.
 - A command cell names only its account and directory in its top border, as in `┌ [natepiano] ~/rust/hana ─`; its build or test progress is the first body row, above its process table.
 - Skip equal tile frames while preserving content fades and appearance changes.

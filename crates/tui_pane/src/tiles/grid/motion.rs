@@ -1,5 +1,4 @@
 use super::Duration;
-#[cfg(test)]
 use super::Instant;
 use super::PROGRESS_SCALE;
 use super::Rect;
@@ -27,7 +26,17 @@ pub(super) enum GridMotion<Id> {
 pub(super) enum MotionClock {
     #[default]
     Elapsed,
+    Sampled(Instant),
     HeldAtHalf,
+}
+
+impl MotionClock {
+    pub(super) fn time(self) -> Instant {
+        match self {
+            Self::Elapsed | Self::HeldAtHalf => Instant::now(),
+            Self::Sampled(time) => time,
+        }
+    }
 }
 
 /// Whether a step's depth has seen the widths its destination draws at.

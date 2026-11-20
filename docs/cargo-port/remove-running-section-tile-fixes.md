@@ -3106,7 +3106,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Ruled out:** `getrusage` (rustix 1.1.5 has none; an unsafe libc call adds an unsafe block); a reaper credit on Darwin (it holds the parent at 0%).
 
-### Phase 34 — Space pauses the display  · status: todo
+### Phase 34 — Space pauses the display  · status: done
 
 **Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33
 
