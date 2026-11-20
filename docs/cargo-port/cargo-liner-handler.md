@@ -890,3 +890,55 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 **Gotchas:** without the pass-one proof, a single pass that makes both edits also satisfies the rollback assertions.
 
 **Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).
+
+### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: todo
+
+#### Work Order
+
+**Goal:** no cargo-mend test takes 1 s or more in the full Mac suite at normal load. Source: the showrunner approved the Phase 42 add-on, 2026-11-19: "bring the five cargo-mend fix tests under 1 s in the full Mac suite."
+
+**Spec:**
+1. The full Mac suite at load 4.98 on 2026-11-18 had five diagnostic fix tests at 1 s or more:
+   - `fix_compiler_keeps_reexport_used_only_by_feature_gated_module` 1.279 s
+   - `reexport_of_another_owner_module_is_fixed_on_a_later_pass` 1.216 s
+   - `fix_all_converges_in_one_invocation` 1.193 s
+   - `sibling_function_reexport_moves_to_the_parent_and_callers_follow` 1.188 s
+   - `fix_pub_use_self_heals_unused_imports_left_behind` 1.186 s
+2. Phase 33 left no cargo-mend test at 1 s or more at Mac load 5.27, so this is a regression. Find the commit or change that added the time.
+3. Measure first. Record each mend and cargo process one slow test starts, with its time. Find the step that costs the most.
+4. Remove that cost at its cause: in mend, in the shared test support, or in the fixtures. Keep what each test proves.
+5. Do not give a test more nextest slots and do not raise a time limit.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
+- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs`
+- `crates/cargo-mend/tests/support/mod.rs`
+- mend source files the measurement names
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- No cargo-mend test is at 1 s or more in the full Mac suite at normal load (under 12). A run at higher load is reported only.
+
+### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: done
+
+#### As-built
+
+- A claim on a file with many holders binds to an existing ordering edge that covers its scopes and is reachable in claim order. It adds no edge for each holder pair, so the hana shape (one file, 11 holders, 184 waiting entries) stays far under the 512-edge limit.
+- Edges of released or integrated reservations do not count as live. Retention keeps an inherited hold alive while a nonterminal dependent still reaches it through ended reservations.
+- `maximum_ordering_edges` stays a config value with its 512 default.
+
+**Files:**
+- `crates/cargo-berth/src/edge/graph.rs` — live edge set, inherited edges, and claim-order reachability
+- `crates/cargo-berth/src/verb/claim/authorization.rs`, `crates/cargo-berth/src/verb/claim/acquisition.rs` — claim binding to an existing edge
+- `crates/cargo-berth/src/verb/sequence.rs` — `sequence` uses the same binding
+- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/support/edges_fixtures.rs` — the hana-shape regression test
+
+**Gotchas:** replay accepts a binding to an anchor edge between other endpoints only when the anchor covers the scopes and is reachable; older ledgers always had matching endpoints and replay the same.
+
+**Ruled out:** raising the edge limit.
