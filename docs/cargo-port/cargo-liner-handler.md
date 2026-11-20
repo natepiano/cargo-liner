@@ -989,3 +989,62 @@ The copies are deleted. No source changes.
 - `crates/tui_pane/src/app_config/theme_install.rs` — `install_theme_with_parser`, `install_from_source`, the install types and their tests
 - `crates/tui_pane/src/app_config/mod.rs`, `crates/tui_pane/src/lib.rs` — re-exports of the install function and types
 - `crates/cargo-handler/src/theme/files.rs` — the handler install call and its theme notes
+
+### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo-berth claim tree:<folder>` on a folder that does not exist yet puts that folder in the reservation's board scopes. A claim that adds no scope does not report success. The recovery command that a refused edit names binds the reservation it selects. Source: the showrunner, 2026-11-20, from a hana errors-unit fault.
+
+**Spec:**
+1. The fault: at phase start, the hana errors unit claimed `tree:crates/hana_saved` and `tree:crates/hana_saved_macros`. Neither folder existed yet. The claim exited 0, but the board scopes did not include the folders. The lint fix pass writes only paths in the board scopes, so it could not write three import fixes. The unit then widened the reservation with `cargo-berth check` on each new file.
+2. First write a cargo-berth test that reproduces the exact command from the errors unit (command, cwd and reservation id in `${SESSION_DIR}/phases/49/errors_unit_reply.md`). The test fails before the fix.
+3. Name the function and the value that drop the scope. A lead: `ReservationAcquisitionKind::AlreadyHeld` in `crates/cargo-berth/src/verb/claim/acquisition.rs` documents "already covered every claimable path".
+4. Fix the cause: a tree scope on an absent folder is a valid scope and is held as requested. The board then shows it.
+5. A claim whose requested scopes add nothing to the reservation, and that records no answer, returns a non-zero exit with a named reason. Use the existing exit and output contract types.
+6. Second fault, same phase: in the home worktree an Edit of `docs/cargo-port/cargo-liner-handler.md` was refused with "cargo-berth could not select one active reservation for this edit" (candidates `01a1f0ce-2c2b-7bf2-a480-6911c82d7780`, no session, and `01a1f522-b03c-71b1-a3fb-2f7704e219dc`, session `<harness session>.phase-47`). The refusal names `cargo-berth check --reservation <reservation-id> <path>...` as the recovery (`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND`, `crates/cargo-berth/src/output.rs:127`). `cargo-berth check --reservation 01a1f0ce… docs/cargo-port/cargo-liner-handler.md` answered "No foreign reservation overlaps the requested paths; the acting run already holds them." The next Edit was refused the same way. The selection must bind: after the recovery command, the next edit by the same session selects that reservation. Reproduce it in a test beside the claim test, and fix the cause.
+7. Second claim case, from hana (reservation `01a1f050`, the hana repo, the fastest unit): at 02:40 a `claim --reservation` with no overlap answer on `crates/hana_diegetic/src/render/panel_text` and `crates/hana_diegetic/src/render/analytic_paths` added nothing. Later, `cargo-berth check` on `panel_text/batching.rs` and `analytic_paths/batching.rs` printed "first-touch reservation was widened". A second check printed "the acting run already holds them". Add this shape as a second row of the claim test.
+8. Third case, from hana, the same fault as the `check --reservation` case above: the worktree `/home/natepiano/rust/hana_catalyst-lfo` holds reservation `01a1f14a`. Five uncommitted paths are outside its scopes (`crates/hana/src/annunciator/mod.rs`, `src/tool/fault_feed.rs`, `tests/annunciator_turned_panel/mod.rs`, `tests/control_tool_creation/first_frame_geometry.rs`, `tests/rear_jack_pixels/assembly_button_pixels.rs`). Reservation `01a1eee1`, of the same acting run, holds them. After `cargo-berth identity clear-session`, `check --reservation 01a1f14a` on the 5 paths (one argument each) still says "the acting run already holds them". The `01a1f14a` board lists none of them, and `01a1eee1` keeps them. The showrunner's finding: `check --reservation` counts a path that any reservation of the acting run holds as held. It does not move the path to the named reservation. The session mapping is not the cause. Reproduce this case and the home-worktree `01a1f0ce` case together in one test, then fix the cause: `check --reservation <id>` puts each path in reservation `<id>`. Read the hana worktree only; never write to it.
+9. First-touch attribution case, from hana: the errors unit's Codex P4 workers edit under the P4 reservation `01a1f925`. cargo-berth records each first touch under `01a1f4c5-cbc5-7700-819a-150881541608`, a stale style reservation keyed to the same worktree. The result is 12 false incursions (`fault.rs`, `records.rs`, `cables.rs`, `Cargo.lock` and more). The berth hint names `CARGO_BERTH_RUN`; the worker processes probably have no coordination run. Required result: first-touch attribution picks the reservation that claims the path, never another reservation of the same worktree. This is the same family as the lfo case: a reservation of the same worktree takes paths that the named or claiming reservation must hold. Reproduce it in the same test as the lfo case, with a worker process that has no `CARGO_BERTH_RUN`.
+10. Fourth claim case, from hana: the demo reservation `01a1cb9c` lacked 21 of its claimed paths. `cargo-berth check` on each file restored them. This is the same claim defect. Add it as a row of the claim test.
+11. Separate gap, showrunner ruling: one scope in `01a1cb9c` is a single string of 17 space-separated paths (`camera/editor_camera.rs` ... `glyph_cache.rs`). A claim got several paths in one quoted argument, because zsh does not word-split `$var`. It recorded one wrong path with no error. Fix: `claim` and `check` refuse a path that contains whitespace, with a named reason and a non-zero exit. Make the invalid path unrepresentable: parse each argument into the path type, and refuse at that parse. Do not refuse a path because it does not exist yet: a claim on a new file before it exists is valid. Add a test that a claim of several paths in one argument is refused.
+
+**Files:**
+- `crates/cargo-berth/src/verb/claim/` — the claim path and outcome that drop the scope
+- `crates/cargo-berth/src/scope/` — when the scope filter is the cause
+- `crates/cargo-berth/src/session/`, `crates/cargo-berth/src/hook/` — the session mapping and the edit-hook reservation selection
+- the cargo-berth claim test of the same behavior
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.
+
+### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
+
+#### Work Order
+
+**Goal:** a built-in attribute in a block, such as `#[link(name = "c")]` on an `extern` block, does not stop `cargo mend --fix` from shortening the paths in that block. Source: review finding F012 of the Phase 47 change, held for its own phase at the repair-round cap. A mend bug always gets a phase.
+
+**Spec:**
+1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
+2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
+3. Add `#[link(name = "c")]` on the `extern` block in the positive control of the `BlockBindings` unit table. That row fails before the fix.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new row fails before the fix and passes after it.
+- No changed test takes one second or more.
