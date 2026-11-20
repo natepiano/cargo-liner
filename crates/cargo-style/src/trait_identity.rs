@@ -32,7 +32,7 @@ pub(crate) enum TraitIdentity {
     Uncertain,
 }
 
-enum TraitPath {
+pub(crate) enum TraitPath {
     Resolved(Vec<String>),
     Unresolved,
 }
@@ -139,7 +139,7 @@ impl TraitReader {
         })
     }
 
-    fn import_path(
+    pub(crate) fn import_path(
         &mut self,
         source: &mut FindingSource<'_>,
         declarations: &mut DeclarationSource,

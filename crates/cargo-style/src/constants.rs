@@ -44,13 +44,17 @@ pub(crate) const LEDGER_SCHEMA_VERSION: i64 = 47;
 // lines
 /// The line end that Python reads as one boundary, though both characters are boundaries.
 pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
+/// The minimum sequence length for Python `SequenceMatcher` to omit popular lines.
+pub(crate) const AUTOJUNK_MIN_LINES: usize = 200;
+/// The divisor that Python `SequenceMatcher` uses to find popular lines.
+pub(crate) const AUTOJUNK_POPULARITY_DIVISOR: usize = 100;
 
 // module queries
 /// The output fact name of each module site query.
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
-pub(crate) const FINDING_PROOF_REPLY_SCHEMA: u32 = 3;
+pub(crate) const FINDING_PROOF_REPLY_SCHEMA: u32 = 4;
 pub(crate) const FINDING_REPLY_SCHEMA: u32 = 1;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;

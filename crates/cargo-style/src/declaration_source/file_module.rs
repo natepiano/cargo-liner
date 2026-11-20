@@ -64,7 +64,13 @@ impl DeclarationSource {
         let Some(manifest) = tip.blob(&manifest_path) else {
             return Ok(HashMap::new());
         };
-        let content = match source.source(manifest)? {
+        let text = source
+            .source(manifest)
+            .map_err(|source| FindingSourceFailure::AtPath {
+                path:   manifest_path.clone(),
+                source: Box::new(source),
+            })?;
+        let content = match text {
             SourceText::Utf8(source) => source.lines.text(),
             SourceText::NotUtf8(text) => text,
         };

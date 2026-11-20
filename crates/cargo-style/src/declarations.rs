@@ -15,7 +15,7 @@ use crate::tokenizer::Token;
 use crate::word_syntax;
 
 /// The direct owner of a declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeclarationOwner {
     Module,
@@ -23,7 +23,7 @@ pub(crate) enum DeclarationOwner {
 }
 
 /// The import scope of a declaration or its owning impl header.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImportPosition {
     FileLevel,
@@ -31,7 +31,7 @@ pub(crate) enum ImportPosition {
 }
 
 /// An impl has no target of this kind, or its target cannot be read.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImplementationState {
     None,
@@ -39,7 +39,7 @@ pub(crate) enum ImplementationState {
 }
 
 /// A complete impl path and its generic arguments.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub(crate) struct ImplementedPath {
     pub(crate) path:      Vec<String>,
     pub(crate) arguments: Vec<String>,
@@ -47,7 +47,7 @@ pub(crate) struct ImplementedPath {
 }
 
 /// The trait or type relationship of a direct impl member.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(crate) enum ImplMembership {
     State(ImplementationState),
@@ -68,7 +68,7 @@ impl ImplMembership {
 }
 
 /// One named declaration and its source lines.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub(crate) struct DeclaredItem {
     keyword:           String,
     pub(crate) name:   String,
@@ -82,6 +82,10 @@ pub(crate) struct DeclaredItem {
 }
 
 impl DeclaredItem {
+    pub(crate) const fn implemented_type(&self) -> &ImplMembership { &self.implemented_type }
+
+    pub(crate) const fn import_position(&self) -> &ImportPosition { &self.import_position }
+
     pub(crate) const fn keyword(&self) -> &str { self.keyword.as_str() }
 
     pub(crate) const fn keyword_line(&self) -> usize { self.keyword_line }
@@ -170,6 +174,10 @@ pub(crate) struct ItemSpan {
     keyword:         usize,
     end:             usize,
     pub(crate) body: ItemBody,
+}
+
+impl ItemSpan {
+    pub(crate) const fn keyword_word(&self) -> usize { self.keyword }
 }
 
 /// A file's declarations and their token indexes.

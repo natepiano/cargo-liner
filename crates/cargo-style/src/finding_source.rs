@@ -42,9 +42,14 @@ pub(crate) struct FindingSource<'a> {
     sources:     HashMap<String, SourceText>,
     tips:        HashMap<String, Rc<RepositoryTip>>,
     ancestors:   HashMap<(String, String), bool>,
-    patches:     HashMap<(String, String, String), PatchLineMap>,
+    patches:     HashMap<(String, String, String), MyersPatch>,
     changes:     HashMap<(String, String), Rc<HashSet<String>>>,
     names:       HashMap<(String, String), Rc<Vec<String>>>,
+}
+
+struct MyersPatch {
+    text:     String,
+    line_map: PatchLineMap,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +66,8 @@ pub(crate) enum FindingSourceFailure {
     UndecodableSyncedTree(String),
     #[error("cannot find source blob {0}")]
     MissingBlob(String),
+    #[error("cannot read source at {path}")]
+    AtPath { path: String, source: Box<Self> },
     #[error("cannot read repository tip {0}")]
     UnreadableTip(String),
     #[error("cannot read manifest at {path}")]
@@ -345,8 +352,26 @@ impl<'a> FindingSource<'a> {
         path: &str,
         line: usize,
     ) -> Result<LineMapping, FindingSourceFailure> {
+        Ok(self.myers_patch(base, tip, path)?.line_map.at(line))
+    }
+
+    pub(crate) fn myers_diff(
+        &mut self,
+        base: &str,
+        tip: &str,
+        path: &str,
+    ) -> Result<&str, FindingSourceFailure> {
+        Ok(&self.myers_patch(base, tip, path)?.text)
+    }
+
+    fn myers_patch(
+        &mut self,
+        base: &str,
+        tip: &str,
+        path: &str,
+    ) -> Result<&MyersPatch, FindingSourceFailure> {
         let key = (base.to_owned(), tip.to_owned(), path.to_owned());
-        let line_map = match self.patches.entry(key) {
+        Ok(match self.patches.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let diff = git(
@@ -367,10 +392,11 @@ impl<'a> FindingSource<'a> {
                     ],
                 )?;
                 let diff = successful("diff", diff)?;
-                entry.insert(PatchLineMap::from(git_text("diff", &diff)?))
+                let text = git_text("diff", &diff)?.to_owned();
+                let line_map = PatchLineMap::from(text.as_str());
+                entry.insert(MyersPatch { text, line_map })
             },
-        };
-        Ok(line_map.at(line))
+        })
     }
 }
 

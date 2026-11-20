@@ -13,7 +13,6 @@ use crate::source_sites;
 use crate::tokenizer;
 use crate::tokenizer::Token;
 use crate::tokenizer::TokenKind;
-use crate::unicode_tables::LINE_BOUNDARIES;
 
 #[derive(Serialize)]
 pub(crate) enum StatementRefusal {
@@ -47,10 +46,7 @@ impl DeclarationFile {
         if item.keyword() != "fn" {
             return StatementLines::NoProvedBody;
         }
-        let Some(index) = self.items().iter().position(|candidate| candidate == item) else {
-            return StatementLines::NoProvedBody;
-        };
-        let ItemBody::Braced(body) = &self.declared().spans[index].body else {
+        let ItemBody::Braced(body) = self.body(item) else {
             return StatementLines::NoProvedBody;
         };
         let start = self.word_lines[body.open]
@@ -143,31 +139,21 @@ impl DeclarationFile {
     fn statement_tokens(&self) -> &[Token] {
         let original = &self.source.syntax().tokens;
         let tokens = self.statements.get_or_init(|| {
-            let lines = self.source.lines();
-            let normalized = lines
-                .lines()
-                .map(|line| {
-                    line.trim_end_matches(|character| {
-                        tokenizer::in_table(LINE_BOUNDARIES, character)
-                    })
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let text = lines.text();
-            if text == normalized || text.strip_suffix('\n') == Some(normalized.as_str()) {
+            let normalized = self.normalized_text();
+            let text = self.lines().text();
+            if text == normalized || text.strip_suffix('\n') == Some(normalized) {
                 return StatementTokens::Original;
             }
             let crlf = text.replace("\r\n", "\n");
-            let tokens =
-                if crlf == normalized || crlf.strip_suffix('\n') == Some(normalized.as_str()) {
-                    tokenizer::normalized_tokens(
-                        &text.chars().collect::<Vec<_>>(),
-                        &normalized.chars().collect::<Vec<_>>(),
-                        original,
-                    )
-                } else {
-                    Self::read_tokens(&normalized)
-                };
+            let tokens = if crlf == normalized || crlf.strip_suffix('\n') == Some(normalized) {
+                tokenizer::normalized_tokens(
+                    &text.chars().collect::<Vec<_>>(),
+                    &normalized.chars().collect::<Vec<_>>(),
+                    original,
+                )
+            } else {
+                Self::read_tokens(normalized)
+            };
             StatementTokens::Normalized(tokens)
         });
         match tokens {
