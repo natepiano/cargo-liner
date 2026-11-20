@@ -12,6 +12,12 @@ const RESTRICTED_STALE_FACADE_SOURCES: &[(&str, &str)] = &[
 name = "restricted_stale_facade_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[test]]
+name = "restricted_stale_facade"
+path = "src/main.rs"
+harness = false
 "#,
     ),
     ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -90,37 +96,7 @@ fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {
         return;
     }
 
-    let temp = tempdir().expect("create temp fixture dir");
-
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_pub_use_import_cleanup_notice_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
@@ -1396,39 +1372,7 @@ fn fix_pub_use_self_heals_unused_imports_left_behind() {
     // warnings. The orchestrator must run `cargo fix` automatically so
     // `CompilerWarningFacts::UnusedImportWarnings` and every fixable category
     // are empty in a single invocation.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_pub_use_self_heal_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
-    // `Leftover` is imported but never referenced — a pre-existing unused
-    // import that should also be cleaned up by the chained `cargo fix`.
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
@@ -1472,37 +1416,7 @@ fn fix_all_converges_in_one_invocation() {
     // user never needs to re-run. Fixture: a pub-use rewrite cascade that
     // leaves an unused import (caught by chained cargo fix), with no further
     // mend findings expected on the second scan.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_all_converges_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-all")
         .output()
@@ -1530,6 +1444,49 @@ edition = "2024"
         report.summary.fixable_with_fix_pub_use, 0,
         "fixable_with_fix_pub_use should be zero after --fix-all converges"
     );
+}
+
+fn unused_import_cleanup_fixture() -> TempDir {
+    let temp = tempdir().expect("create unused import cleanup fixture");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    // Use one target for the analysis and for `cargo fix --tests`.
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "unused_import_cleanup_fixture"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[test]]
+name = "unused_import_cleanup"
+path = "src/main.rs"
+harness = false
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod outer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
+    // `Leftover` is imported but never referenced: an unused import that the
+    // chained `cargo fix` must remove.
+    fs::write(
+        temp.path().join("src/outer/parent.rs"),
+        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/outer/parent/child.rs"),
+        "pub struct SpawnStats;\npub struct Leftover;\n",
+    )
+    .expect("write child");
+    init_git_repo(temp.path());
+    temp
 }
 
 #[test]

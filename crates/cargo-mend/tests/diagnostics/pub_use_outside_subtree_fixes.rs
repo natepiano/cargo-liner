@@ -22,6 +22,11 @@ const SETTLED_CODES: [DiagnosticCode; 3] = [
     DiagnosticCode::ReplaceDeepSuperImport,
 ];
 
+/// `clippy.toml` text with a `too-many-lines-threshold` high enough that the
+/// short fixture functions stay under the bound in `needs_measurement`, so
+/// mend starts no rustfmt measurement.
+const FIXTURE_LINE_THRESHOLD_CONFIG: &str = "too-many-lines-threshold = 512\n";
+
 /// Every `.rs` file of the fixture outside `target/`, keyed by its path
 /// relative to `root`.
 fn rust_sources(root: &Path) -> BTreeMap<PathBuf, String> {
@@ -821,6 +826,7 @@ fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
     pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(root, "clippy.toml", FIXTURE_LINE_THRESHOLD_CONFIG);
     pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
