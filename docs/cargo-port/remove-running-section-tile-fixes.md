@@ -3183,9 +3183,14 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 ### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: done
 
-**Depends on:** Phase 72
+#### As-built
 
-**Packaging (director, 2026-11-19, on the showrunner's parallel order):** Phase 35's `overlay` writer (items 9, 35 and 38) touches no Phase 34 file, so it runs as its own phase beside Phase 34. Phase 35's item text, files (`crates/tui_pane/src/pane/frame.rs`, `pane/state.rs`, `app_settings/draw.rs`, a `tui_pane` palette file its diagnosis names) and acceptance gate for those items apply here. This phase writes its own `crates/tui_pane/CHANGELOG.md` Fixed lines for items 35 and 38. It builds on Phase 72's `app_settings/draw.rs`.
+- Item 9: `a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row` (`pane/frame.rs`) reads the drawn cells at the buffer's last row.
+- Item 35: the settings overlay draw (`app_settings/draw.rs`, `overlays/settings.rs`) picks a readable foreground for the selected row. Label and value meet 4.5:1 in every shipped theme. The shared check sits in `support/contrast.rs` under the `contrast-test` feature; `tui_pane` and the three apps' `settings_scroll_tests.rs` read the drawn cells.
+- Item 38: every settings value keeps one blank column before the right border, and the column stays clickable. Values wrap at a word or path-separator break; only one word longer than the row is cut with `…`. `settings_popup_fits_its_widest_row` (`cargo-tile/src/settings.rs`) counts the blank column.
+- Gates: Mac lint clean; Mac tui_pane 1,355, cargo-tile 1,343, cargo-handler 1,167, cargo-port 1,559 pass. Dark-mode shot of the overlay. Review: 3 rounds, 10 findings closed.
+
+**Files:** `crates/tui_pane/src/{pane/frame.rs, app_settings/{draw,constants}.rs, overlays/settings.rs, support/contrast.rs, wrap.rs}`, `crates/tui_pane/CHANGELOG.md`; `settings_scroll_tests.rs` in cargo-tile, cargo-handler and cargo-port; `Cargo.toml` in cargo-tile and cargo-handler; `crates/cargo-tile/src/settings.rs`.
 
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
 
