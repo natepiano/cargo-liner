@@ -893,37 +893,23 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 ### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** no cargo-mend test takes 1 s or more in the full Mac suite at normal load. Source: the showrunner approved the Phase 42 add-on, 2026-11-19: "bring the five cargo-mend fix tests under 1 s in the full Mac suite."
+The full Mac suite at load 3.73 runs 1,047 cargo-mend tests in 24.8 s, and the slowest test takes 0.949 s. Before, at load 4.45, it took 32.9 s with seven tests at 1 s or more. Source: the showrunner approved the Phase 42 add-on, 2026-11-19.
 
-**Spec:**
-1. The full Mac suite at load 4.98 on 2026-11-18 had five diagnostic fix tests at 1 s or more:
-   - `fix_compiler_keeps_reexport_used_only_by_feature_gated_module` 1.279 s
-   - `reexport_of_another_owner_module_is_fixed_on_a_later_pass` 1.216 s
-   - `fix_all_converges_in_one_invocation` 1.193 s
-   - `sibling_function_reexport_moves_to_the_parent_and_callers_follow` 1.188 s
-   - `fix_pub_use_self_heals_unused_imports_left_behind` 1.186 s
-2. Phase 33 left no cargo-mend test at 1 s or more at Mac load 5.27, so this is a regression. Find the commit or change that added the time.
-3. Measure first. Record each mend and cargo process one slow test starts, with its time. Find the step that costs the most.
-4. Remove that cost at its cause: in mend, in the shared test support, or in the fixtures. Keep what each test proves.
-5. Do not give a test more nextest slots and do not raise a time limit.
+- No later commit caused the cost. The Phase 33 checkpoint source, run again on the Mac at load 4.48, had 65 tests at 1 s or more, and each of the seven slow tests at HEAD was slow there too.
+- Five fix-test fixtures compiled the same source as a binary and as a test, so each first check compiled twice (433–451 ms at load 4.70). Each fixture now has one test target, with autobins and the test harness off. The feature-gated fixture still compiles with the hidden feature before and after the fix.
+- The three unused-import tests share one fixture.
+- The later-pass re-export fixture sets a line threshold that keeps mend from starting a rustfmt measurement (236 ms in two batches). The test still checks the exact rewritten files and compiles the result.
 
 **Files:**
-- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs`
-- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs`
-- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs`
-- `crates/cargo-mend/tests/support/mod.rs`
-- mend source files the measurement names
+- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs` — the feature-gated fixture with one test target
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs` — the single-target fixtures and the shared unused-import fixture
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs` — the line threshold of the later-pass fixture
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** a test run alone on the Mac pays first-launch costs for each new binary and a cold toolchain-query cache, so it does not compare with a suite run. About 250 ms of each cold mend launch comes before dyld starts to log; its cause is not known.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- No cargo-mend test is at 1 s or more in the full Mac suite at normal load (under 12). A run at higher load is reported only.
+**Ruled out:** more nextest slots or a higher time limit; a bisect of one test run alone.
 
 ### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: done
 
