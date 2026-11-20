@@ -61,6 +61,10 @@ fn original_site_matches_python_in_request_order() -> TestResult<()> {
         ],
     )?;
     let oracle = original_site_answers(&checkout, root)?;
+    std::fs::write(
+        root.join("rename_policy.toml"),
+        b"inert_attributes = []\nstd_macros = []\n",
+    )?;
     let ledger = root.join("ledger.sqlite");
     let before = std::fs::read(&ledger)?;
 
@@ -116,6 +120,8 @@ fn finding_in_ledger(root: &Path, ledger: &str, rules: &str, ids: &[&str]) -> Te
             .arg(root.join(ledger))
             .arg("--rules")
             .arg(root.join(rules))
+            .arg("--rename-policy")
+            .arg(root.join("rename_policy.toml"))
             .args(ids),
         &[],
     )
@@ -138,18 +144,24 @@ fn assert_site_reply(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stderr.as_slice(), b"");
-    let reply: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(reply["schema"], 2);
+    let mut reply: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(reply["schema"], 3);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})
     );
     let findings = reply["findings"]
-        .as_array()
+        .as_array_mut()
         .ok_or("missing finding replies")?;
     assert_eq!(findings.len(), ids.len());
-    for (actual, expected) in findings.iter().zip(&oracle.cases) {
-        assert_eq!(actual, &expected.answer, "{}", expected.name);
+    for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
+        if expected.answer["status"] != "unknown_finding" {
+            let _ = actual
+                .as_object_mut()
+                .and_then(|fields| fields.remove("rename_admission"))
+                .ok_or_else(|| format!("{}: missing rename_admission", expected.name))?;
+        }
+        assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
     Ok(())
 }

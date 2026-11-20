@@ -341,7 +341,10 @@ fn rust_code(
 
 /// Hash compact JSON with the same ASCII escapes as Python.
 pub(crate) fn python_json_digest(value: &impl Serialize) -> Result<String, Error> {
-    let serialized = serde_json::to_string(value)?;
+    python_serialized_json_digest(&serde_json::to_string(value)?)
+}
+
+pub(crate) fn python_serialized_json_digest(serialized: &str) -> Result<String, Error> {
     let mut ascii = String::with_capacity(serialized.len());
     for character in serialized.chars() {
         if character <= '~' {
@@ -355,8 +358,12 @@ pub(crate) fn python_json_digest(value: &impl Serialize) -> Result<String, Error
             }
         }
     }
+    source_digest(&ascii)
+}
+
+pub(crate) fn source_digest(text: &str) -> Result<String, Error> {
     let mut hexadecimal = String::new();
-    for byte in Sha256::digest(ascii.as_bytes()) {
+    for byte in Sha256::digest(text.as_bytes()) {
         write!(hexadecimal, "{byte:02x}")
             .map_err(std::io::Error::other)
             .map_err(Error::io)?;

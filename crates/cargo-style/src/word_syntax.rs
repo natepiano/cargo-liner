@@ -226,7 +226,7 @@ pub(crate) fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
 }
 
 /// Each macro tree, from its bang to the word after its closer.
-fn macro_spans(words: &[String], ends: &BTreeMap<usize, usize>) -> Vec<(usize, usize)> {
+pub(crate) fn macro_spans(words: &[String], ends: &BTreeMap<usize, usize>) -> Vec<(usize, usize)> {
     words
         .iter()
         .enumerate()

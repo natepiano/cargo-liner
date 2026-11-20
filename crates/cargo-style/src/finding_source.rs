@@ -33,6 +33,7 @@ pub(crate) struct FindingSource<'a> {
     commits:     HashMap<String, CommitResolution>,
     trees:       HashMap<String, TreeBlobs>,
     sources:     HashMap<String, SourceText>,
+    raw_blobs:   HashMap<String, Vec<u8>>,
     ancestors:   HashMap<(String, String), bool>,
     patches:     HashMap<(String, String, String), PatchLineMap>,
 }
@@ -109,6 +110,7 @@ impl<'a> FindingSource<'a> {
             commits: HashMap::new(),
             trees: HashMap::new(),
             sources: HashMap::new(),
+            raw_blobs: HashMap::new(),
             ancestors: HashMap::new(),
             patches: HashMap::new(),
         })
@@ -154,6 +156,35 @@ impl<'a> FindingSource<'a> {
                 .map(|entry| entry.object.as_str()),
             TreeBlobs::Undecodable => None,
         })
+    }
+
+    pub(crate) fn raw_file(
+        &mut self,
+        commit: &str,
+        path: &str,
+    ) -> Result<TreeFile<'_>, FindingSourceFailure> {
+        let TreeBlobs::Listed(entries) = self.tree(commit)? else {
+            return Err(FindingSourceFailure::UndecodableSyncedTree(
+                commit.to_owned(),
+            ));
+        };
+        match entries.get(path) {
+            Some(entry) if entry.kind == EntryKind::Blob => {
+                let blob = entry.object.clone();
+                let bytes = match self.raw_blobs.entry(blob) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let bytes = self.blob_reader.raw_bytes(entry.key())?.ok_or_else(|| {
+                            FindingSourceFailure::MissingBlob(entry.key().clone())
+                        })?;
+                        entry.insert(bytes)
+                    },
+                };
+                Ok(TreeFile::Bytes(bytes))
+            },
+            Some(entry) if entry.kind == EntryKind::Directory => Ok(TreeFile::Folder),
+            _ => Ok(TreeFile::Missing),
+        }
     }
 
     pub(crate) fn tree(&mut self, commit: &str) -> Result<&TreeBlobs, FindingSourceFailure> {
@@ -281,6 +312,12 @@ impl<'a> FindingSource<'a> {
         };
         Ok(line_map.at(line))
     }
+}
+
+pub(crate) enum TreeFile<'a> {
+    Bytes(&'a [u8]),
+    Folder,
+    Missing,
 }
 
 pub(crate) enum SourceText {

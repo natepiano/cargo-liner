@@ -43,8 +43,38 @@ pub(crate) enum FindingLookup<T> {
 }
 
 pub(crate) struct HeldSite {
-    pub(crate) anchor: HeldAnchor,
-    pub(crate) site:   SiteEvidence,
+    pub(crate) finding: HeldRename,
+    pub(crate) site:    SiteEvidence,
+}
+
+pub(crate) struct HeldRename {
+    pub(crate) anchor:    HeldAnchor,
+    pub(crate) before:    String,
+    pub(crate) after:     String,
+    pub(crate) kind:      String,
+    pub(crate) rule:      String,
+    pub(crate) rule_blob: String,
+    pub(crate) ticket:    String,
+    pub(crate) follow:    FindingFollow,
+    pub(crate) history:   FindingSourceHistory,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum FindingFollow {
+    NotFollowed {},
+    Followed {
+        commit:    String,
+        from_line: i64,
+        from_path: String,
+    },
+}
+
+#[derive(Serialize)]
+pub(crate) struct FindingSourceHistory {
+    anchor_commit:        String,
+    judging:              Vec<[String; 2]>,
+    previous_site_commit: String,
 }
 
 pub(crate) struct HeldAnchor {
@@ -107,10 +137,10 @@ impl From<io::Error> for LedgerReadFailure {
     fn from(error: io::Error) -> Self { Self::Database(Box::new(error)) }
 }
 
-impl LedgerSnapshot<HeldAnchor> {
-    pub(crate) fn read_anchors(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
+impl LedgerSnapshot<HeldRename> {
+    pub(crate) fn read_renames(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
         Self::read(path, |connection| {
-            read_findings(connection, ids, read_anchor)
+            read_findings(connection, ids, read_rename)
         })
     }
 }
@@ -120,11 +150,10 @@ impl LedgerSnapshot<HeldSite> {
         Self::read(path, |connection| {
             let mut sites = SiteRows::prepare(connection)?;
             read_findings(connection, ids, |row, id| {
-                let anchor = read_anchor(row, id)?;
-                let ticket: String = read_column(row, "held_findings", id, "ticket")?;
-                let original = read_original(row, id, &ticket, &anchor.evidence)?;
-                let site = sites.read(id, &ticket, &anchor.path, original)?;
-                Ok(HeldSite { anchor, site })
+                let finding = read_rename(row, id)?;
+                let original = read_original(row, id, &finding.ticket, &finding.anchor.evidence)?;
+                let site = sites.read(id, &finding.ticket, &finding.anchor.path, original)?;
+                Ok(HeldSite { finding, site })
             })
         })
     }
@@ -262,6 +291,8 @@ fn read_findings<T>(
 ) -> Result<Vec<FindingLookup<T>>, LedgerReadFailure> {
     let mut statement = connection.prepare(
         "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, h.ticket, \
+                h.rule, h.rule_blob, h.kind, h.before, h.after, h.followed_from, \
+                h.followed_from_line, h.followed_from_commit, \
                 t.id AS judging_ticket, t.checkpoint, t.base \
          FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
          WHERE h.finding_id = ?1",
@@ -274,6 +305,45 @@ fn read_findings<T>(
             })
         })
         .collect()
+}
+
+fn read_rename(row: &Row<'_>, id: &str) -> Result<HeldRename, LedgerReadFailure> {
+    let anchor = read_anchor(row, id)?;
+    let table = "held_findings";
+    let ticket: String = read_column(row, table, id, "ticket")?;
+    let followed = read_revision(row, table, id, "followed_at")?;
+    let follow = if followed.is_empty() {
+        FindingFollow::NotFollowed {}
+    } else {
+        FindingFollow::Followed {
+            commit:    followed,
+            from_line: read_column(row, table, id, "followed_from_line")?,
+            from_path: read_column(row, table, id, "followed_from")?,
+        }
+    };
+    let checkpoint: Option<String> = read_column(row, "tickets", &ticket, "checkpoint")?;
+    let base: Option<String> = read_column(row, "tickets", &ticket, "base")?;
+    let judging = [checkpoint.unwrap_or_default(), base.unwrap_or_default()];
+    let history = FindingSourceHistory {
+        anchor_commit:        read_revision(row, table, id, "anchor_commit")?,
+        judging:              if judging.iter().all(String::is_empty) {
+            Vec::new()
+        } else {
+            vec![judging]
+        },
+        previous_site_commit: read_revision(row, table, id, "followed_from_commit")?,
+    };
+    Ok(HeldRename {
+        anchor,
+        before: read_column(row, table, id, "before")?,
+        after: read_column(row, table, id, "after")?,
+        kind: read_column(row, table, id, "kind")?,
+        rule: read_column(row, table, id, "rule")?,
+        rule_blob: read_column(row, table, id, "rule_blob")?,
+        ticket,
+        follow,
+        history,
+    })
 }
 
 fn read_anchor(row: &Row<'_>, id: &str) -> Result<HeldAnchor, LedgerReadFailure> {

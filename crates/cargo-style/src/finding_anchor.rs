@@ -40,7 +40,7 @@ pub(crate) enum FindingAnchor {
 pub(crate) struct ResolvedAnchor {
     pub(crate) commit: String,
     pub(crate) path:   String,
-    line:              usize,
+    pub(crate) line:   usize,
 }
 
 impl FindingAnchor {

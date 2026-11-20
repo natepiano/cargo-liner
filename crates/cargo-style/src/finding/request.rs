@@ -11,20 +11,25 @@ use serde::Serialize;
 
 use super::constants::FINDING_LEDGER_FLAG;
 use super::constants::FINDING_REPO_FLAG;
+use crate::constants::FINDING_RENAME_POLICY_FLAG;
 use crate::constants::FINDING_REPLY_SCHEMA;
 use crate::constants::FINDING_RULES_FLAG;
-use crate::constants::SITE_REPLY_SCHEMA;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_anchor::NeedsJudgmentReason;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
 use crate::ledger_read::FindingLookup;
+use crate::ledger_read::HeldRename;
 use crate::ledger_read::LedgerReadFailure;
 use crate::ledger_read::LedgerRevision;
 use crate::ledger_read::LedgerSnapshot;
 use crate::original_site::OriginalSite;
 use crate::original_site::SiteProofError;
 use crate::original_site::SiteReader;
+use crate::rename_admission;
+use crate::rename_admission::AdmissionError;
+use crate::rename_admission::PolicyInput;
+use crate::rename_admission::RenameAdmission;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
 
@@ -34,6 +39,7 @@ pub(crate) struct FindingRequest {
     ledger: PathBuf,
     scope:  FindingScope,
     ids:    Vec<String>,
+    policy: PolicyInput,
 }
 
 enum FindingScope {
@@ -44,7 +50,7 @@ enum FindingScope {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FindingFailure {
     #[error(
-        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json>] <finding id>..."
+        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json>] [--rename-policy <rename_policy.toml>] <finding id>..."
     )]
     Usage,
     #[error(transparent)]
@@ -55,6 +61,13 @@ pub(crate) enum FindingFailure {
     Rules(#[from] RuleSnapshotFailure),
     #[error(transparent)]
     Site(#[from] SiteProofError),
+    #[error("cannot prove rename admission for finding {id} at {path} against {tip}")]
+    Rename {
+        id:     String,
+        path:   String,
+        tip:    String,
+        source: Box<AdmissionError>,
+    },
     #[error("cannot write the finding reply")]
     Reply(#[from] serde_json::Error),
     #[error("cannot finish the finding reply")]
@@ -68,6 +81,7 @@ impl FindingRequest {
         let mut repo = None;
         let mut ledger = None;
         let mut rules = None;
+        let mut policy = PolicyInput::NoFlag;
         let mut ids = Vec::new();
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
@@ -85,6 +99,13 @@ impl FindingRequest {
                             .ok_or(FindingFailure::Usage)?,
                     );
                 },
+                Some(FINDING_RENAME_POLICY_FLAG) if matches!(policy, PolicyInput::NoFlag) => {
+                    let path = arguments
+                        .next()
+                        .map(PathBuf::from)
+                        .ok_or(FindingFailure::Usage)?;
+                    policy = PolicyInput::from(path);
+                },
                 Some(id) if !id.is_empty() && !id.starts_with('-') => ids.push(id.to_owned()),
                 _ => return Err(FindingFailure::Usage),
             }
@@ -96,6 +117,7 @@ impl FindingRequest {
                 ledger,
                 scope,
                 ids,
+                policy,
             }),
             _ => Err(FindingFailure::Usage),
         }
@@ -108,7 +130,7 @@ impl FindingRequest {
                 FindingProof::WithSite(SiteReader::new(RuleSnapshot::read(&path)?))
             },
         };
-        let reply = proof.read(&self.repo, &self.ledger, self.ids)?;
+        let reply = proof.read(&self.repo, &self.ledger, self.ids, &self.policy)?;
         let mut stdout = io::stdout().lock();
         serde_json::to_writer(&mut stdout, &reply)?;
         writeln!(stdout)?;
@@ -127,24 +149,29 @@ impl FindingProof {
         repo: &Path,
         ledger: &Path,
         ids: Vec<String>,
+        policy: &PolicyInput,
     ) -> Result<FindingReply, FindingFailure> {
         match self {
             Self::Anchor => {
-                let snapshot = LedgerSnapshot::read_anchors(ledger, &ids)?;
+                let snapshot = LedgerSnapshot::read_renames(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
-                reply(FINDING_REPLY_SCHEMA, ids, snapshot, |id, finding, _| {
+                reply(ids, snapshot, |id, finding, tip| {
+                    let anchor = FindingAnchor::prove(&finding.anchor, &mut source)?;
+                    let rename_admission =
+                        prove_rename(&id, &finding, &anchor, tip, &mut source, policy)?;
                     Ok(FindingAnswer::Known {
                         id,
-                        anchor: FindingAnchor::prove(&finding, &mut source)?,
+                        anchor,
+                        rename_admission,
                     })
                 })
             },
             Self::WithSite(mut reader) => {
                 let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
-                reply(SITE_REPLY_SCHEMA, ids, snapshot, |id, finding, tip| {
+                reply(ids, snapshot, |id, finding, tip| {
                     let synced = reader.read_synced_tip(&mut source, tip)?;
-                    let anchor = match FindingAnchor::prove(&finding.anchor, &mut source) {
+                    let anchor = match FindingAnchor::prove(&finding.finding.anchor, &mut source) {
                         Err(FindingSourceFailure::GitText {
                             command: "diff", ..
                         }) => FindingAnchor::NeedsJudgment {
@@ -155,14 +182,17 @@ impl FindingProof {
                     let original_site = reader.prove(
                         &mut source,
                         &synced,
-                        &finding.anchor,
+                        &finding.finding.anchor,
                         &anchor,
                         &finding.site,
                     )?;
+                    let rename_admission =
+                        prove_rename(&id, &finding.finding, &anchor, tip, &mut source, policy)?;
                     Ok(FindingAnswer::WithSite {
                         id,
                         anchor,
                         original_site,
+                        rename_admission,
                     })
                 })
             },
@@ -170,8 +200,25 @@ impl FindingProof {
     }
 }
 
+fn prove_rename(
+    id: &str,
+    finding: &HeldRename,
+    anchor: &FindingAnchor,
+    tip: &str,
+    source: &mut FindingSource<'_>,
+    policy: &PolicyInput,
+) -> Result<RenameAdmission, FindingFailure> {
+    rename_admission::admit(id, finding, anchor, tip, source, policy).map_err(|source| {
+        FindingFailure::Rename {
+            id:     id.to_owned(),
+            path:   finding.anchor.path.clone(),
+            tip:    tip.to_owned(),
+            source: Box::new(source),
+        }
+    })
+}
+
 fn reply<T>(
-    schema: u32,
     ids: Vec<String>,
     snapshot: LedgerSnapshot<T>,
     mut prove: impl FnMut(String, T, &str) -> Result<FindingAnswer, FindingFailure>,
@@ -188,7 +235,7 @@ fn reply<T>(
         })
         .collect::<Result<_, _>>()?;
     Ok(FindingReply {
-        schema,
+        schema: FINDING_REPLY_SCHEMA,
         observed: ObservedLedger {
             synced_tip:      snapshot.synced_tip,
             ledger_revision: snapshot.ledger_revision,
@@ -214,15 +261,17 @@ struct ObservedLedger {
 #[serde(untagged)]
 enum FindingAnswer {
     Known {
-        id:     String,
+        id:               String,
         #[serde(flatten)]
-        anchor: FindingAnchor,
+        anchor:           FindingAnchor,
+        rename_admission: RenameAdmission,
     },
     WithSite {
-        id:            String,
+        id:               String,
         #[serde(flatten)]
-        anchor:        FindingAnchor,
-        original_site: OriginalSite,
+        anchor:           FindingAnchor,
+        original_site:    OriginalSite,
+        rename_admission: RenameAdmission,
     },
     Unknown {
         id:     String,

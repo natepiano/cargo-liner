@@ -615,6 +615,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml 1.1.6+spec-1.1.0",
+ "toml_parser",
  "url",
 ]
 
