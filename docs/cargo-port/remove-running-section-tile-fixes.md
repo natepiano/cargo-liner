@@ -3181,7 +3181,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Unit director's live capture: a running tile, space, and the status bar reads `paused` while the cells hold still with a build running; space again, the note leaves and the cells update.
 - Change-review line (production doc's change review file): space pauses and unpauses the display, and the status bar says `paused`.
 
-### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: todo
+### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: done
 
 **Depends on:** Phase 72
 
