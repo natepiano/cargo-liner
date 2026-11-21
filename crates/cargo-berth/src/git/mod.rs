@@ -27,6 +27,7 @@ mod snapshot;
 mod spawn_lock;
 mod trunk_merge_index;
 mod work;
+mod worktree;
 mod worktree_operation;
 
 #[cfg(test)]
@@ -73,6 +74,7 @@ pub(crate) use reachability::reachability;
 pub(crate) use reachability::reachability_to_target;
 pub(crate) use reachability::reachable_commits;
 pub(crate) use reachability::reservation_checkpoint_commits;
+pub(crate) use read::has_complete_history;
 pub(crate) use refs::HeadAttachment;
 pub(crate) use refs::IntegrationProofRef;
 pub(crate) use refs::LocalBranchRenameTargetResolution;

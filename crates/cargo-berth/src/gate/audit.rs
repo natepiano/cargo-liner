@@ -32,7 +32,7 @@ pub(super) fn commit_forced_permit_audits(
         issuing_directory: issuing_directory.to_path_buf(),
     };
     purpose.identity_validation()?;
-    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
+    let ledger = Ledger::open_for_reference_transaction(worktree_context)?;
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;

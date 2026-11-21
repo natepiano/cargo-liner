@@ -942,3 +942,35 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 **Gotchas:** replay accepts a binding to an anchor edge between other endpoints only when the anchor covers the scopes and is reachable; older ledgers always had matching endpoints and replay the same.
 
 **Ruled out:** raising the edge limit.
+
+### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: done
+
+#### Work Order
+
+**Goal:** the cargo-berth hook that runs on each git ref update finishes inside its 10-second limit under load, so git never refuses a merge commit or a push for a hook timeout. Source: the showrunner, 2026-11-19. Current, after Phase 44 (same crate).
+
+**Spec:**
+1. The fault: git refused a merge commit two times because the hook passed its 10-second limit:
+   - 2026-11-17 about 23:26 EST, load 60: the spacetime praxis phase 3 shrink merge.
+   - 2026-11-19 about 01:00 EST: item 1 of spacetime merge batch 1119a.
+   The same refusal can occur on a push.
+2. Measure first. Record the hook's git process count and its time, at normal load and under load. Name the work that grows with load or with ledger size. Start at `crates/cargo-berth/src/gate/reference_transaction.rs`.
+3. Fix the cause: the hook does less work. Cut the work that the measurement names.
+4. Do not add a retry in the merge tool. Do not change the 10-second limit.
+5. Add a regression test that holds the hook's git process count under the existing ceiling. Use the existing process budget (`crates/cargo-berth/tests/process_start_budget.json`) or the existing hook test of the same behavior. Add a new test only when no test covers it.
+
+**Files:**
+- `crates/cargo-berth/src/gate/reference_transaction.rs`
+- the gate source files the measurement names
+- the cargo-berth hook and gate test files, and `tests/process_start_budget.json`
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none. The hook reads the berth ledger. It must still make the same decisions.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The measurement before and after the fix, with the load at each run.
+- The regression test fails before the fix and passes after it.
+- No changed test takes one second or more.

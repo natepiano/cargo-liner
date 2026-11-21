@@ -1,5 +1,6 @@
 //! Git reference-transaction parsing and the hook's target-update evaluation.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
@@ -12,6 +13,7 @@ use std::str::FromStr;
 
 use super::audit;
 use super::decision;
+use super::decision::GatePreparationRejection;
 use super::decision::GatePurpose;
 use super::decision::GateResult;
 use super::error::GateError;
@@ -20,6 +22,7 @@ use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git;
 use crate::git::OperationObjectReader;
+use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ledger::FullRefName;
 use crate::ledger::GATE_TARGETS_FILE_NAME;
@@ -29,6 +32,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
 use crate::reservation::RecordedTarget;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
 pub(crate) const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -123,6 +127,7 @@ enum ReferenceMovement<'transaction> {
 }
 
 /// A reference update that changes its logical value rather than its storage.
+#[derive(Clone, Copy)]
 struct ReferenceMove<'transaction>(&'transaction ReferenceUpdate);
 
 impl<'transaction> ReferenceMovement<'transaction> {
@@ -144,11 +149,12 @@ impl<'transaction> ReferenceMovement<'transaction> {
     }
 }
 
-enum ReferenceUpdateGateSubject {
-    ProposedTargetMove(ProposedTargetMove),
-    NotTargetEntry,
-    UnsupportedTargetUpdate(IntegrationTarget),
+enum SelectedGateUpdate {
+    Evaluate(ProposedTargetMove),
+    StandAside(NoGatedUpdate),
 }
+
+struct NoGatedUpdate;
 
 #[derive(Clone)]
 pub(super) enum PreviousTargetTip {
@@ -358,61 +364,97 @@ pub(crate) fn evaluate_reference_transaction(
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
     };
-    let gated_updates = gated_updates(
-        &target_updates,
-        transaction.phase,
-        &worktree_context,
-        trunk_reference,
-    )?;
+    let repository = git::RepositorySnapshot::new(worktree_context);
+    let objects = repository.object_reader();
+    let movements = target_updates
+        .into_iter()
+        .filter_map(
+            |update| match ReferenceMovement::classify(update, &objects) {
+                ReferenceMovement::Move(movement) => Some(movement),
+                ReferenceMovement::NoMove => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    if transaction.phase == ReferenceTransactionPhase::Prepared {
+        return evaluate_prepared_updates(
+            &repository,
+            &berth_config,
+            &movements,
+            trunk_reference,
+            issuing_directory,
+        );
+    }
+
+    let worktree_context = repository.context();
+    let reservations = read_gate_reservations(worktree_context)?;
+    let gated_updates = gated_updates(&movements, &reservations, trunk_reference);
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
-    let repository_snapshot = git::RepositorySnapshot::new(worktree_context.clone());
-    let mut results = Vec::new();
-    for ReferenceMove(update) in gated_updates {
-        let integration_target = IntegrationTarget::from_branch_argument(update.reference.as_str())
-            .map_err(|reason| {
-                GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string()))
-            })?;
-        match update.gate_subject(integration_target) {
-            ReferenceUpdateGateSubject::ProposedTargetMove(update) => {
-                if update.materializes_existing_logical_target(&repository_snapshot.object_reader())
-                {
-                    continue;
-                }
-                match transaction.phase {
-                    ReferenceTransactionPhase::Prepared => {
-                        match decision::evaluate_locked(
-                            invocation_directory,
-                            &update,
-                            &GatePurpose::Hook {
-                                phase:             ReferenceTransactionPhase::Prepared,
-                                issuing_directory: issuing_directory.to_path_buf(),
-                            },
-                        )? {
-                            Enrollment::Enrolled(gate_result) => results.push(gate_result),
-                            Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
-                        }
-                    },
-                    ReferenceTransactionPhase::Committed => audit::commit_forced_permit_audits(
-                        &worktree_context,
-                        &berth_config,
-                        &update,
-                        issuing_directory,
-                    )?,
-                    ReferenceTransactionPhase::Preparing
-                    | ReferenceTransactionPhase::Aborted
-                    | ReferenceTransactionPhase::Unrecognized => {},
-                }
-            },
-            ReferenceUpdateGateSubject::NotTargetEntry => {},
-            ReferenceUpdateGateSubject::UnsupportedTargetUpdate(target) => {
-                return Err(GateError::UnsupportedSymbolicTargetUpdate(target));
-            },
+    for movement in gated_updates {
+        if let SelectedGateUpdate::Evaluate(update) = movement.select_target()? {
+            audit::commit_forced_permit_audits(
+                worktree_context,
+                &berth_config,
+                &update,
+                issuing_directory,
+            )?;
         }
     }
     if !rewrite_events.is_empty() {
-        rewrite::reanchor_rewritten_phases(&worktree_context, &rewrite_events)?;
+        rewrite::reanchor_rewritten_phases(worktree_context, &rewrite_events)?;
     }
-    Ok(results)
+    Ok(Vec::new())
+}
+
+fn evaluate_prepared_updates(
+    repository: &RepositorySnapshot,
+    berth_config: &BerthConfig,
+    movements: &[ReferenceMove<'_>],
+    trunk_reference: &FullRefName,
+    issuing_directory: &Path,
+) -> Result<Vec<GateResult>, GateError> {
+    // A proposed trunk commit always needs selection against the decision's replay.
+    // Other transactions can stand aside after a read-only replay, before identity and locking.
+    if !movements
+        .iter()
+        .any(|movement| movement.0.reference == *trunk_reference && movement.proposes_commit())
+    {
+        let reservations = read_gate_reservations(repository.context())?;
+        if let SelectedGateUpdate::StandAside(_) =
+            select_prepared_update(movements, &reservations, trunk_reference)?
+        {
+            return Ok(Vec::new());
+        }
+    }
+    let purpose = GatePurpose::Hook {
+        phase:             ReferenceTransactionPhase::Prepared,
+        issuing_directory: issuing_directory.to_path_buf(),
+    };
+    let result = decision::evaluate_updates(repository, berth_config, &purpose, |state, _| {
+        let reservations = state.reservations().map_err(|error| {
+            GatePreparationRejection::Failed(GateError::Ledger(LedgerError::ReservationReplay(
+                error,
+            )))
+        })?;
+        match select_prepared_update(movements, reservations, trunk_reference)
+            .map_err(GatePreparationRejection::Failed)?
+        {
+            SelectedGateUpdate::Evaluate(update) => Ok(update),
+            SelectedGateUpdate::StandAside(reason) => {
+                Err(GatePreparationRejection::NoGatedUpdate(reason))
+            },
+        }
+    })?;
+    match result {
+        Ok(result) => Ok(vec![result]),
+        Err(NoGatedUpdate) => Ok(Vec::new()),
+    }
+}
+
+fn read_gate_reservations(context: &WorktreeContext) -> Result<RetainedReservationSet, GateError> {
+    Ledger::open_from_discovered_worktree(context)?
+        .read_validated_journal()?
+        .into_reservations()
+        .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))
 }
 
 fn committed_target_candidates<'transaction>(
@@ -440,98 +482,92 @@ fn committed_target_candidates<'transaction>(
 }
 
 fn gated_updates<'transaction>(
-    updates: &[&'transaction ReferenceUpdate],
-    phase: ReferenceTransactionPhase,
-    worktree_context: &WorktreeContext,
+    movements: &[ReferenceMove<'transaction>],
+    reservations: &RetainedReservationSet,
     trunk_reference: &FullRefName,
-) -> Result<Vec<ReferenceMove<'transaction>>, GateError> {
-    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
-    let reservations = ledger
-        .read_validated_journal()?
-        .into_reservations()
-        .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))?;
-    let mut gated_references = vec![trunk_reference.clone()];
-    for reference in reservations.iter().filter_map(|reservation| {
-        if matches!(
-            reservation.lifecycle(),
-            ReservationLifecycle::Released { .. }
-        ) {
-            return None;
-        }
-        match reservation.target() {
-            RecordedTarget::Recorded { target, .. } => Some(target.reference().clone()),
+) -> Vec<ReferenceMove<'transaction>> {
+    let gated_references = reservations
+        .iter()
+        .filter(|reservation| {
+            !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+        })
+        .filter_map(|reservation| match reservation.target() {
+            RecordedTarget::Recorded { target, .. } => Some(target.reference()),
             RecordedTarget::Unrecorded => None,
-        }
-    }) {
-        if !gated_references.contains(&reference) {
-            gated_references.push(reference);
-        }
-    }
-    let repository = git::RepositorySnapshot::new(worktree_context.clone());
-    let objects = repository.object_reader();
-    let gated_updates = updates
+        })
+        .chain(std::iter::once(trunk_reference))
+        .collect::<HashSet<_>>();
+    movements
         .iter()
         .copied()
-        .filter(|update| gated_references.contains(&update.reference))
-        .filter_map(
-            |update| match ReferenceMovement::classify(update, &objects) {
-                ReferenceMovement::Move(movement) => Some(movement),
-                ReferenceMovement::NoMove => None,
-            },
-        )
-        .collect::<Vec<_>>();
-    if phase == ReferenceTransactionPhase::Prepared && gated_updates.len() > 1 {
-        return Err(GateError::MultipleGatedReferences(
-            gated_updates
-                .iter()
+        .filter(|ReferenceMove(update)| gated_references.contains(&update.reference))
+        .collect()
+}
+
+fn select_prepared_update(
+    movements: &[ReferenceMove<'_>],
+    reservations: &RetainedReservationSet,
+    trunk_reference: &FullRefName,
+) -> Result<SelectedGateUpdate, GateError> {
+    let gated = gated_updates(movements, reservations, trunk_reference);
+    match gated.as_slice() {
+        [] => Ok(SelectedGateUpdate::StandAside(NoGatedUpdate)),
+        [movement] => movement.select_target(),
+        _ => Err(GateError::MultipleGatedReferences(
+            gated
+                .into_iter()
                 .map(|ReferenceMove(update)| update.reference.clone())
                 .collect(),
-        ));
-    }
-    Ok(gated_updates)
-}
-
-impl ProposedTargetMove {
-    fn materializes_existing_logical_target(
-        &self,
-        operation_object_reader: &OperationObjectReader,
-    ) -> bool {
-        matches!(&self.previous, PreviousTargetTip::Absent)
-            && git::branch_object_id(operation_object_reader, self.target.short_name())
-                .is_ok_and(|current_git_object_id| current_git_object_id == self.proposed)
+        )),
     }
 }
 
-impl ReferenceUpdate {
-    fn gate_subject(&self, integration_target: IntegrationTarget) -> ReferenceUpdateGateSubject {
-        match (&self.previous, &self.proposed) {
+impl ReferenceMove<'_> {
+    const fn proposes_commit(self) -> bool {
+        matches!(
+            (&self.0.previous, &self.0.proposed),
+            (
+                ReferenceObject::Object(_) | ReferenceObject::Absent,
+                ReferenceObject::Object(_)
+            )
+        )
+    }
+
+    fn select_target(self) -> Result<SelectedGateUpdate, GateError> {
+        let Self(update) = self;
+        let target = IntegrationTarget::from_branch_argument(update.reference.as_str())
+            .map_err(|reason| LedgerError::InvalidRepositoryTrunk(reason.to_string()))?;
+        match (&update.previous, &update.proposed) {
             (ReferenceObject::Object(previous), ReferenceObject::Object(proposed))
                 if previous != proposed =>
             {
-                ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
-                    target:   integration_target,
+                Ok(SelectedGateUpdate::Evaluate(ProposedTargetMove {
+                    target,
                     previous: PreviousTargetTip::Existing(previous.clone()),
                     proposed: proposed.clone(),
-                })
+                }))
             },
             (ReferenceObject::Absent, ReferenceObject::Object(proposed)) => {
-                ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
-                    target:   integration_target,
+                Ok(SelectedGateUpdate::Evaluate(ProposedTargetMove {
+                    target,
                     previous: PreviousTargetTip::Absent,
                     proposed: proposed.clone(),
-                })
+                }))
             },
             (ReferenceObject::Object(_) | ReferenceObject::Absent, ReferenceObject::Absent)
             | (ReferenceObject::Object(_), ReferenceObject::Object(_)) => {
-                ReferenceUpdateGateSubject::NotTargetEntry
+                Ok(SelectedGateUpdate::StandAside(NoGatedUpdate))
             },
             (ReferenceObject::Symbolic(previous), ReferenceObject::Symbolic(proposed))
                 if previous == proposed =>
             {
-                ReferenceUpdateGateSubject::NotTargetEntry
+                Ok(SelectedGateUpdate::StandAside(NoGatedUpdate))
             },
             (ReferenceObject::Symbolic(_), _) | (_, ReferenceObject::Symbolic(_)) => {
-                ReferenceUpdateGateSubject::UnsupportedTargetUpdate(integration_target)
+                Err(GateError::UnsupportedSymbolicTargetUpdate(target))
             },
         }
     }
