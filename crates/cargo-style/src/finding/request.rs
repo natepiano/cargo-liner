@@ -11,9 +11,9 @@ use serde::Serialize;
 
 use super::constants::FINDING_LEDGER_FLAG;
 use super::constants::FINDING_REPO_FLAG;
+use crate::constants::FINDING_PROOF_REPLY_SCHEMA;
 use crate::constants::FINDING_REPLY_SCHEMA;
 use crate::constants::FINDING_RULES_FLAG;
-use crate::constants::SITE_REPLY_SCHEMA;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_anchor::NeedsJudgmentReason;
 use crate::finding_source::FindingSource;
@@ -27,6 +27,9 @@ use crate::original_site::SiteProofError;
 use crate::original_site::SiteReader;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
+use crate::same_declaration::RelocationFailure;
+use crate::same_declaration::RelocationReader;
+use crate::same_declaration::SameDeclaration;
 
 /// The repository, ledger, and ordered IDs requested by `cargo style finding`.
 pub(crate) struct FindingRequest {
@@ -55,6 +58,13 @@ pub(crate) enum FindingFailure {
     Rules(#[from] RuleSnapshotFailure),
     #[error(transparent)]
     Site(#[from] SiteProofError),
+    #[error("cannot prove declaration relocation for {path} from {commit} to {synced_tip}")]
+    Relocation {
+        path:       String,
+        commit:     String,
+        synced_tip: String,
+        source:     Box<RelocationFailure>,
+    },
     #[error("cannot write the finding reply")]
     Reply(#[from] serde_json::Error),
     #[error("cannot finish the finding reply")]
@@ -142,29 +152,53 @@ impl FindingProof {
             Self::WithSite(mut reader) => {
                 let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
-                reply(SITE_REPLY_SCHEMA, ids, snapshot, |id, finding, tip| {
-                    let synced = reader.read_synced_tip(&mut source, tip)?;
-                    let anchor = match FindingAnchor::prove(&finding.anchor, &mut source) {
-                        Err(FindingSourceFailure::GitText {
-                            command: "diff", ..
-                        }) => FindingAnchor::NeedsJudgment {
-                            reason: NeedsJudgmentReason::UnreadableProof,
-                        },
-                        result => result?,
-                    };
-                    let original_site = reader.prove(
-                        &mut source,
-                        &synced,
-                        &finding.anchor,
-                        &anchor,
-                        &finding.site,
-                    )?;
-                    Ok(FindingAnswer::WithSite {
-                        id,
-                        anchor,
-                        original_site,
-                    })
-                })
+                let mut relocation_reader = RelocationReader::default();
+                reply(
+                    FINDING_PROOF_REPLY_SCHEMA,
+                    ids,
+                    snapshot,
+                    |id, finding, tip| {
+                        let synced = SiteReader::read_synced_tip(&mut source, tip)?;
+                        let anchor = match FindingAnchor::prove(&finding.anchor, &mut source) {
+                            Err(FindingSourceFailure::GitText {
+                                command: "diff", ..
+                            }) => FindingAnchor::NeedsJudgment {
+                                reason: NeedsJudgmentReason::UnreadableProof,
+                            },
+                            result => result?,
+                        };
+                        let original_site = reader.prove(
+                            &mut source,
+                            &synced,
+                            &finding.anchor,
+                            &anchor,
+                            &finding.site,
+                        )?;
+                        let same_declaration = relocation_reader
+                            .prove(
+                                &mut source,
+                                tip,
+                                &finding.anchor,
+                                &anchor,
+                                &finding.relocation,
+                            )
+                            .map_err(|source| FindingFailure::Relocation {
+                                path:       finding.anchor.path.clone(),
+                                commit:     match &anchor {
+                                    FindingAnchor::Anchored(anchor) => anchor.commit.clone(),
+                                    FindingAnchor::NeedsJudgment { .. } => tip.to_owned(),
+                                },
+                                synced_tip: tip.to_owned(),
+                                source:     Box::new(source),
+                            })?;
+                        Ok(FindingAnswer::WithSite {
+                            id,
+                            anchor,
+                            original_site,
+                            same_declaration: Box::new(same_declaration),
+                        })
+                    },
+                )
             },
         }
     }
@@ -219,10 +253,11 @@ enum FindingAnswer {
         anchor: FindingAnchor,
     },
     WithSite {
-        id:            String,
+        id:               String,
         #[serde(flatten)]
-        anchor:        FindingAnchor,
-        original_site: OriginalSite,
+        anchor:           FindingAnchor,
+        original_site:    OriginalSite,
+        same_declaration: Box<SameDeclaration>,
     },
     Unknown {
         id:     String,

@@ -41,7 +41,6 @@ use crate::tip_view;
 use crate::tip_view::FingerprintSource;
 use crate::tip_view::MissingInput;
 use crate::tip_view::RepositoryTip;
-use crate::tip_view::TipReading;
 
 pub(crate) enum OriginalSite {
     Unchanged {
@@ -134,7 +133,6 @@ impl From<UnreadableItems> for SiteProofError {
 
 pub(crate) struct SiteReader {
     rules: RuleSnapshot,
-    tips:  HashMap<String, Rc<RepositoryTip>>,
     sites: HashMap<Option<String>, Result<Rc<SourceSites>, UnreadableItems>>,
 }
 
@@ -153,19 +151,17 @@ impl SiteReader {
     pub(crate) fn new(rules: RuleSnapshot) -> Self {
         Self {
             rules,
-            tips: HashMap::new(),
             sites: HashMap::new(),
         }
     }
 
     pub(crate) fn read_synced_tip<'a>(
-        &mut self,
         source: &mut FindingSource<'_>,
         commit: &'a str,
     ) -> Result<SyncedSiteTip<'a>, SiteProofError> {
         Ok(SyncedSiteTip {
             commit,
-            view: self.tip(source, commit, TipRole::Synced)?,
+            view: read_tip(source, commit, TipRole::Synced)?,
         })
     }
 
@@ -224,7 +220,7 @@ impl SiteReader {
         {
             return Err(SiteRefusal::AncestryOrRemoval.into());
         }
-        let before = self.tip(source, read, TipRole::Historical)?;
+        let before = read_tip(source, read, TipRole::Historical)?;
         let path = &finding.path;
         let family = match evidence.family {
             PinnedFamily::Known(family) => RuleFamily::Known(family),
@@ -272,27 +268,6 @@ impl SiteReader {
         ))
     }
 
-    fn tip(
-        &mut self,
-        source: &mut FindingSource<'_>,
-        commit: &str,
-        role: TipRole,
-    ) -> Result<Rc<RepositoryTip>, SiteProofError> {
-        let loaded = match self.tips.entry(commit.to_owned()) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => match RepositoryTip::read(source, commit)? {
-                TipReading::Read(tip) => entry.insert(Rc::new(tip)),
-                TipReading::Unreadable if role == TipRole::Synced => {
-                    return Err(
-                        FindingSourceFailure::UndecodableSyncedTree(commit.to_owned()).into(),
-                    );
-                },
-                TipReading::Unreadable => return Err(SiteRefusal::UnreadableProof.into()),
-            },
-        };
-        Ok(Rc::clone(loaded))
-    }
-
     fn source_sites(
         &mut self,
         source: &mut FindingSource<'_>,
@@ -306,10 +281,7 @@ impl SiteReader {
                         SourceText::Utf8(source) => Rc::clone(source),
                         SourceText::NotUtf8(_) => return Err(SiteRefusal::UnreadableProof.into()),
                     },
-                    None => Rc::new(Utf8Source {
-                        lines:  String::new().into(),
-                        syntax: BlobSyntax::Unparsed,
-                    }),
+                    None => Rc::new(Utf8Source::new(String::new(), BlobSyntax::Unparsed)),
                 };
                 entry.insert(SourceSites::read(text).map(Rc::new))
             },
@@ -321,7 +293,7 @@ impl SiteReader {
     }
 
     fn context_unchanged(
-        &mut self,
+        &self,
         source: &mut FindingSource<'_>,
         tip: &str,
         after: &RepositoryTip,
@@ -361,7 +333,7 @@ impl SiteReader {
         if family.is_line_local() && !whole {
             return Ok(true);
         }
-        let original = self.tip(source, &row.commit, TipRole::Historical)?;
+        let original = read_tip(source, &row.commit, TipRole::Historical)?;
         let scope = row.effective_scope();
         let Ok(mut old) = original.inputs(scope, &row.path, &row.reads) else {
             return Ok(false);
@@ -384,6 +356,21 @@ impl SiteReader {
             new.remove(anchor.path.as_str());
         }
         Ok(old == new && source.is_ancestor(&row.commit, &anchor.commit)?)
+    }
+}
+
+fn read_tip(
+    source: &mut FindingSource<'_>,
+    commit: &str,
+    role: TipRole,
+) -> Result<Rc<RepositoryTip>, SiteProofError> {
+    match source.tip(commit) {
+        Ok(tip) => Ok(tip),
+        Err(FindingSourceFailure::UnreadableTip(_)) if role == TipRole::Synced => {
+            Err(FindingSourceFailure::UndecodableSyncedTree(commit.to_owned()).into())
+        },
+        Err(FindingSourceFailure::UnreadableTip(_)) => Err(SiteRefusal::UnreadableProof.into()),
+        Err(error) => Err(error.into()),
     }
 }
 

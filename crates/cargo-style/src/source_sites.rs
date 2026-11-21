@@ -3,14 +3,12 @@
 use std::cell::OnceCell;
 use std::rc::Rc;
 
-use crate::declarations;
 use crate::declarations::DeclarationAt;
 use crate::declarations::DeclaredFile;
 use crate::enclosing_items;
 use crate::enclosing_items::EnclosingItem;
 use crate::enclosing_items::OwnerBody;
 use crate::enclosing_items::UnreadableItems;
-use crate::facts::BlobSyntax;
 use crate::finding_source::Utf8Source;
 use crate::source_lines;
 use crate::source_lines::SiteLine;
@@ -28,24 +26,10 @@ pub(crate) struct SourceSites {
 
 impl SourceSites {
     pub(crate) fn read(source: Rc<Utf8Source>) -> Result<Self, UnreadableItems> {
-        let lines = &source.lines;
-        let syntax = &source.syntax;
-        let (items, word_lines, declarations) = match syntax {
-            BlobSyntax::Stored(stored) => (
-                enclosing_items::read(lines, &stored.tokens)?,
-                stored.tokens.iter().map(|token| token.line).collect(),
-                Rc::clone(&stored.declarations),
-            ),
-            BlobSyntax::Unparsed => {
-                let reading =
-                    tokenizer::read_with_comments(&lines.text().chars().collect::<Vec<_>>());
-                (
-                    enclosing_items::read(lines, &reading.tokens)?,
-                    reading.tokens.iter().map(|token| token.line).collect(),
-                    Rc::new(declarations::read_tokens(&reading.tokens)),
-                )
-            },
-        };
+        let syntax = source.parsed_syntax();
+        let items = enclosing_items::read(&source.lines, &syntax.tokens)?;
+        let word_lines = syntax.tokens.iter().map(|token| token.line).collect();
+        let declarations = Rc::clone(&syntax.declarations);
         Ok(Self {
             source,
             items,

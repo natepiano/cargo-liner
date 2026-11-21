@@ -35,6 +35,9 @@ pub(crate) const ITEMS: &[&str] = &[
     "extern",
 ];
 
+// import resolution
+pub(crate) const IMPORT_EXPANSION_LIMIT: usize = 32;
+
 // ledger
 pub(crate) const LEDGER_SCHEMA_VERSION: i64 = 47;
 
@@ -47,10 +50,10 @@ pub(crate) const CARRIAGE_RETURN_LINE_FEED: [char; 2] = ['\r', '\n'];
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
+pub(crate) const FINDING_PROOF_REPLY_SCHEMA: u32 = 3;
 pub(crate) const FINDING_REPLY_SCHEMA: u32 = 1;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
-pub(crate) const SITE_REPLY_SCHEMA: u32 = 2;
 
 // python token reader
 /// The Python `PUNCTUATION` alternatives of two characters, in pattern order.

@@ -1,7 +1,9 @@
 //! Read the Git objects and line map for finding anchors.
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::io::Error;
 use std::path::Path;
@@ -15,15 +17,20 @@ use std::string::FromUtf8Error;
 use toml::de::Error as TomlError;
 
 use crate::blob_reader::BlobReader;
+use crate::declarations;
 use crate::error::ReaderError;
 use crate::fact_store::FactCache;
 use crate::facts::BlobSource;
 use crate::facts::BlobSyntax;
+use crate::facts::StoredSyntax;
 use crate::source_lines::LineContinuity;
 use crate::source_lines::LineMapping;
 use crate::source_lines::PatchLineMap;
 use crate::source_lines::SiteLine;
 use crate::source_lines::SourceLines;
+use crate::tip_view::RepositoryTip;
+use crate::tip_view::TipReading;
+use crate::tokenizer;
 
 /// Git reads shared by the finding anchors in one request.
 pub(crate) struct FindingSource<'a> {
@@ -33,8 +40,11 @@ pub(crate) struct FindingSource<'a> {
     commits:     HashMap<String, CommitResolution>,
     trees:       HashMap<String, TreeBlobs>,
     sources:     HashMap<String, SourceText>,
+    tips:        HashMap<String, Rc<RepositoryTip>>,
     ancestors:   HashMap<(String, String), bool>,
     patches:     HashMap<(String, String, String), PatchLineMap>,
+    changes:     HashMap<(String, String), Rc<HashSet<String>>>,
+    names:       HashMap<(String, String), Rc<Vec<String>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +61,14 @@ pub(crate) enum FindingSourceFailure {
     UndecodableSyncedTree(String),
     #[error("cannot find source blob {0}")]
     MissingBlob(String),
+    #[error("cannot read repository tip {0}")]
+    UnreadableTip(String),
+    #[error("cannot read manifest at {path}")]
+    InvalidManifest {
+        path:   String,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
     #[error("cannot run git {command}")]
     GitStart {
         command: &'static str,
@@ -109,8 +127,11 @@ impl<'a> FindingSource<'a> {
             commits: HashMap::new(),
             trees: HashMap::new(),
             sources: HashMap::new(),
+            tips: HashMap::new(),
             ancestors: HashMap::new(),
             patches: HashMap::new(),
+            changes: HashMap::new(),
+            names: HashMap::new(),
         })
     }
 
@@ -197,10 +218,9 @@ impl<'a> FindingSource<'a> {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let source = match self.blob_reader.source(blob, &mut self.fact_cache)? {
-                    BlobSource::Utf8 { text, syntax } => SourceText::Utf8(Rc::new(Utf8Source {
-                        lines: text.into(),
-                        syntax,
-                    })),
+                    BlobSource::Utf8 { text, syntax } => {
+                        SourceText::Utf8(Rc::new(Utf8Source::new(text, syntax)))
+                    },
                     BlobSource::NotUtf8(text) => SourceText::NotUtf8(text),
                     BlobSource::Missing => {
                         return Err(FindingSourceFailure::MissingBlob(blob.to_owned()));
@@ -209,6 +229,77 @@ impl<'a> FindingSource<'a> {
                 entry.insert(source)
             },
         })
+    }
+
+    pub(crate) fn tip(&mut self, commit: &str) -> Result<Rc<RepositoryTip>, FindingSourceFailure> {
+        if let Some(tip) = self.tips.get(commit) {
+            return Ok(Rc::clone(tip));
+        }
+        let TipReading::Read(tip) = RepositoryTip::read(self, commit)? else {
+            return Err(FindingSourceFailure::UnreadableTip(commit.to_owned()));
+        };
+        let tip = Rc::new(tip);
+        self.tips.insert(commit.to_owned(), Rc::clone(&tip));
+        Ok(tip)
+    }
+
+    pub(crate) fn changed_paths(
+        &mut self,
+        read: &str,
+        tip: &str,
+    ) -> Result<Rc<HashSet<String>>, FindingSourceFailure> {
+        let paths = match self.changes.entry((read.to_owned(), tip.to_owned())) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let output = git(
+                    self.repo,
+                    "diff",
+                    &["--no-renames", "--name-only", "-z", read, tip],
+                )?;
+                let bytes = successful("diff", output)?;
+                let paths = git_text("diff", &bytes)?
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                entry.insert(Rc::new(paths))
+            },
+        };
+        Ok(Rc::clone(paths))
+    }
+
+    pub(crate) fn files_naming(
+        &mut self,
+        commit: &str,
+        name: &str,
+    ) -> Result<Rc<Vec<String>>, FindingSourceFailure> {
+        let paths = match self.names.entry((commit.to_owned(), name.to_owned())) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let output = git(
+                    self.repo,
+                    "grep",
+                    &["-l", "-z", "-w", "-F", "-e", name, commit, "--", "*.rs"],
+                )?;
+                let bytes =
+                    if output.status.code() == Some(1) && !grep_unreadable_blob(&output.stderr) {
+                        output.stdout
+                    } else {
+                        successful("grep", output)?
+                    };
+                let prefix = format!("{commit}:");
+                let paths = bytes
+                    .split(|&byte| byte == 0)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| {
+                        let path = git_text("grep", path)?;
+                        Ok(path.strip_prefix(&prefix).unwrap_or(path).to_owned())
+                    })
+                    .collect::<Result<_, FindingSourceFailure>>()?;
+                entry.insert(Rc::new(paths))
+            },
+        };
+        Ok(Rc::clone(paths))
     }
 
     pub(crate) fn is_ancestor(
@@ -289,8 +380,48 @@ pub(crate) enum SourceText {
 }
 
 pub(crate) struct Utf8Source {
-    pub(crate) lines:  SourceLines,
-    pub(crate) syntax: BlobSyntax,
+    pub(crate) lines: SourceLines,
+    syntax:           BlobSyntax,
+    parsed:           OnceCell<StoredSyntax>,
+}
+
+impl Utf8Source {
+    pub(crate) fn new(text: String, syntax: BlobSyntax) -> Self {
+        Self {
+            lines: text.into(),
+            syntax,
+            parsed: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn parsed_syntax(&self) -> &StoredSyntax {
+        match &self.syntax {
+            BlobSyntax::Stored(syntax) => syntax,
+            BlobSyntax::Unparsed => self.parsed.get_or_init(|| {
+                let chars: Vec<_> = self.lines.text().chars().collect();
+                let tokens = tokenizer::read_with_comments(&chars).tokens;
+                let declarations = Rc::new(declarations::read_tokens(&tokens));
+                StoredSyntax {
+                    tokens,
+                    declarations,
+                }
+            }),
+        }
+    }
+}
+
+fn grep_unreadable_blob(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        line.strip_prefix("error: ")
+            .and_then(|message| message.rsplit_once(": unable to read "))
+            .is_some_and(|(path, oid)| {
+                !path.is_empty()
+                    && (40..=64).contains(&oid.len())
+                    && oid
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    })
 }
 
 fn git(
