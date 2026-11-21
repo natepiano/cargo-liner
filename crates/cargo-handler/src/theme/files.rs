@@ -1,21 +1,19 @@
 //! Handler theme files require their own five-entry session palette.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::de::Error;
+use tui_pane::ActiveThemeOutcome;
 use tui_pane::AppIdentity;
 use tui_pane::AppearanceConfig;
 use tui_pane::StyleSpec;
 use tui_pane::ThemeFamily;
-use tui_pane::ThemeId;
-use tui_pane::ThemeRegistry;
+pub(crate) use tui_pane::ThemeInstallation;
 use tui_pane::ThemeSource;
-use tui_pane::ThemeState;
 use tui_pane::ThemeVariant;
 use tui_pane::ThemeVariantFile;
 
@@ -103,28 +101,6 @@ pub(super) fn parse_family(contents: &str) -> Result<ThemeFamily, toml::de::Erro
     })
 }
 
-/// Whether the configured active theme was found at installation.
-#[derive(Debug, Default)]
-enum ActiveThemeOutcome {
-    #[default]
-    Found,
-    BuiltinForMissingName(ThemeId),
-}
-
-/// One file rejected by the handler schema or filesystem loader.
-#[derive(Debug)]
-struct RejectedThemeFile {
-    path:   PathBuf,
-    reason: String,
-}
-
-/// The active-theme outcome and the independent file-loading diagnostics.
-#[derive(Debug, Default)]
-pub(crate) struct ThemeInstallation {
-    active:   ActiveThemeOutcome,
-    rejected: Vec<RejectedThemeFile>,
-}
-
 /// The latest response from the framework appearance resolver.
 #[derive(Debug, Default)]
 pub(crate) enum AppearanceDiagnostic {
@@ -175,14 +151,14 @@ impl StartupThemeNotes {
                 format!(
                     "theme file `{}` rejected: {}",
                     file.path.display(),
-                    file.reason
+                    file.error
                 )
             })
             .collect();
         match &self.appearance {
             AppearanceDiagnostic::Notice(note) => messages.push(note.clone()),
             AppearanceDiagnostic::NotObserved => {
-                if let ActiveThemeOutcome::BuiltinForMissingName(name) = &self.installation.active {
+                if let ActiveThemeOutcome::MissingName(name) = &self.installation.active {
                     messages.push(format!("theme `{name}` not found — using a built-in"));
                 }
             },
@@ -198,30 +174,5 @@ pub(crate) fn install_theme<I: AppIdentity>(
     builtins: Vec<ThemeVariant>,
     source: ThemeSource<'_>,
 ) -> ThemeInstallation {
-    let registry = ThemeRegistry::from_dir_with_parser(source, builtins, parse_family);
-    let resolved = registry.resolve_active(
-        &appearance.mode,
-        &appearance.light_theme,
-        &appearance.dark_theme,
-        None,
-    );
-    let active = resolved.miss.map_or(
-        ActiveThemeOutcome::Found,
-        ActiveThemeOutcome::BuiltinForMissingName,
-    );
-    let rejected = registry
-        .status()
-        .failed_files
-        .iter()
-        .map(|(path, error)| RejectedThemeFile {
-            path:   path.clone(),
-            reason: error.message().to_owned(),
-        })
-        .collect();
-    tui_pane::install_theme_state(ThemeState::with_registry(
-        registry,
-        (*resolved.theme).clone(),
-    ));
-    tui_pane::set_transparent_background(appearance.transparent);
-    ThemeInstallation { active, rejected }
+    tui_pane::install_theme_with_parser(appearance, builtins, source, parse_family)
 }
