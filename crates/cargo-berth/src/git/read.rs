@@ -1239,9 +1239,26 @@ mod tests {
     #[test]
     fn filesystem_monitor_status_uses_git_and_keeps_dirty_paths() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
-        fixture.git(&["config", "core.fsmonitor", "true"])?;
+        let hook = ".git/fixture-fsmonitor";
+        fixture.write(
+            hook,
+            "#!/bin/sh\nprintf '%s\\000%s\\000' fixture-token src/primary.rs\n",
+        )?;
+        fixture.set_executable(hook)?;
+        fixture.git(&["config", "core.fsmonitor", hook])?;
         fixture.write(PRIMARY_PATH, "dirty\n")?;
-        assert_status_route(&fixture, GitReadRequirement::FileSystemMonitor)
+
+        assert!(matches!(
+            status(fixture.root())?,
+            RepositoryRead::GitRequired(GitReadRequirement::FileSystemMonitor)
+        ));
+        assert_eq!(
+            RepositorySnapshot::discover(fixture.root())?
+                .working_tree_status()?
+                .porcelain,
+            b" M src/primary.rs\0"
+        );
+        Ok(())
     }
 
     #[test]

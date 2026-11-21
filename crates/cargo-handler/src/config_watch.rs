@@ -85,10 +85,13 @@ impl WordHighlightUpdates {
     #[cfg(test)]
     pub(crate) fn receive_for_test(
         &self,
+        step: &str,
     ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
         match self {
-            Self::Disabled => Err("the configuration reader is disabled".into()),
-            Self::Watching { updates, .. } => Ok(updates.recv_timeout(TEST_CONFIG_UPDATE_TIMEOUT)?),
+            Self::Disabled => Err(format!("{step}: the configuration reader is disabled").into()),
+            Self::Watching { updates, .. } => updates
+                .recv_timeout(TEST_CONFIG_UPDATE_TIMEOUT)
+                .map_err(|error| format!("{step}: {error}").into()),
         }
     }
 }
@@ -144,6 +147,70 @@ impl ConfigFileReading {
         };
         let _ = sender.send(update);
     }
+
+    fn handle_event(
+        &mut self,
+        path: &Path,
+        event: notify::Result<Event>,
+        sender: &Sender<WordHighlightUpdate>,
+        refresh_watch: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        match event {
+            Ok(event) if event.kind.is_access() => {},
+            Ok(_) => {
+                refresh_watch()?;
+                self.publish(path, sender);
+            },
+            Err(error) => {
+                let _ = sender.send(WordHighlightUpdate::Invalid(error.to_string()));
+            },
+        }
+        Ok(())
+    }
+}
+
+/// Publish file contents with the same reader that serves the watcher.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ConfigFileReadFixture {
+    reading: ConfigFileReading,
+}
+
+#[cfg(test)]
+impl ConfigFileReadFixture {
+    pub(crate) fn read(
+        &mut self,
+        path: &Path,
+        step: &str,
+    ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
+        self.update(step, |reading, sender| {
+            reading.publish(path, sender);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn read_after_event(
+        &mut self,
+        path: &Path,
+        event: Event,
+        step: &str,
+    ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
+        self.update(step, |reading, sender| {
+            reading.handle_event(path, Ok(event), sender, || Ok(()))
+        })
+    }
+
+    fn update(
+        &mut self,
+        step: &str,
+        publish: impl FnOnce(&mut ConfigFileReading, &Sender<WordHighlightUpdate>) -> Result<(), String>,
+    ) -> Result<WordHighlightUpdate, Box<dyn std::error::Error>> {
+        let (sender, updates) = mpsc::channel();
+        publish(&mut self.reading, &sender).map_err(|error| format!("{step}: {error}"))?;
+        updates
+            .try_recv()
+            .map_err(|error| format!("{step}: {error}").into())
+    }
 }
 
 fn read_changes(
@@ -175,23 +242,17 @@ fn read_changes(
     let mut reading = ConfigFileReading::default();
     reading.publish(path, sender);
     while let Ok(ConfigFileEvent::Filesystem(event)) = events.recv() {
-        match event {
-            Ok(event) if event.kind.is_access() => {},
-            Ok(_) => {
-                let current = directory()?;
-                if current != source_directory {
-                    watcher
-                        .watch(&current, RecursiveMode::NonRecursive)
-                        .map_err(|error| error.to_string())?;
-                    let _ = watcher.unwatch(&source_directory);
-                    source_directory = current;
-                }
-                reading.publish(path, sender);
-            },
-            Err(error) => {
-                let _ = sender.send(WordHighlightUpdate::Invalid(error.to_string()));
-            },
-        }
+        reading.handle_event(path, event, sender, || {
+            let current = directory()?;
+            if current != source_directory {
+                watcher
+                    .watch(&current, RecursiveMode::NonRecursive)
+                    .map_err(|error| error.to_string())?;
+                let _ = watcher.unwatch(&source_directory);
+                source_directory = current;
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }
