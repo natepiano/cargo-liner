@@ -945,32 +945,70 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 ### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-berth hook that runs on each git ref update finishes inside its 10-second limit under load, so git never refuses a merge commit or a push for a hook timeout. Source: the showrunner, 2026-11-19. Current, after Phase 44 (same crate).
-
-**Spec:**
-1. The fault: git refused a merge commit two times because the hook passed its 10-second limit:
-   - 2026-11-17 about 23:26 EST, load 60: the spacetime praxis phase 3 shrink merge.
-   - 2026-11-19 about 01:00 EST: item 1 of spacetime merge batch 1119a.
-   The same refusal can occur on a push.
-2. Measure first. Record the hook's git process count and its time, at normal load and under load. Name the work that grows with load or with ledger size. Start at `crates/cargo-berth/src/gate/reference_transaction.rs`.
-3. Fix the cause: the hook does less work. Cut the work that the measurement names.
-4. Do not add a retry in the merge tool. Do not change the 10-second limit.
-5. Add a regression test that holds the hook's git process count under the existing ceiling. Use the existing process budget (`crates/cargo-berth/tests/process_start_budget.json`) or the existing hook test of the same behavior. Add a new test only when no test covers it.
+- The reference-transaction hook does not run automatic journal compaction. `LedgerHandle::open_for_reference_transaction` opens the ledger with `AutomaticCompaction::Deferred`, so the next ordinary ledger mutation compacts a journal past the threshold. The hook still syncs each journal append. At the compaction threshold under load, the hook median is about 2.2 s against the 10 s limit.
+- A transaction with no proposed trunk commit reads the ledger without the lock. When no update needs a decision (`SelectedGateUpdate::StandAside`), the hook returns before identity resolution and `mutation.lock`. A gated non-trunk update still takes the locked decision path.
+- The native worktree reader resolves relative registrations, and keeps locked and detached worktrees as live.
 
 **Files:**
-- `crates/cargo-berth/src/gate/reference_transaction.rs`
-- the gate source files the measurement names
-- the cargo-berth hook and gate test files, and `tests/process_start_budget.json`
+- `crates/cargo-berth/src/gate/reference_transaction.rs` — `SelectedGateUpdate { Evaluate, StandAside }` and the early return
+- `crates/cargo-berth/src/gate/decision.rs` — history check against the integration constraint projection
+- `crates/cargo-berth/src/gate/audit.rs`, `crates/cargo-berth/src/gate/permit.rs` — open the ledger with the hook open
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/compaction.rs` — deferred compaction and its test
+- `crates/cargo-berth/src/git/worktree.rs` — native worktree reader and its parity tests
+- `crates/cargo-berth/tests/gate.rs` — trunk-deletion rows with `mutation.lock` held, and the multi-ref test with a separate trunk history
+
+**Gotchas:** a test that proves the hook skips the lock holds `mutation.lock` with a 50 ms contention tolerance, so a hook that takes the lock fails the row.
+
+**Ruled out:** a retry in the merge tool, and a longer hook time limit.
+
+### Phase 46 — the Phase 44 claim fix holds on a copy of hana's real claim records  · status: done
+
+#### Work Order
+
+**Goal:** prove that the Phase 44 claim fix keeps hana's real cargo-berth records under the ordering edge limit, before the fix ships. Source: the user approved this check on the review page, 2026-11-19.
+
+**Spec:**
+1. The fault: a hana claim on `crates/hana/tests/assembly_face/frame_time_assembly/mod.rs` (reservation 01a1ed71, worktree hana trunk) was refused with `ordering_edge_limit_reached`. The limit is 512.
+2. Copy hana with its cargo-berth records (`.git/cargo-berth`, `.git/refs/cargo-berth`, `.git/cargo-berth-worktree-id`) into a scratch folder. Never write to `/home/natepiano/rust/hana`.
+3. With the installed `cargo-berth`, read the copy's board and try the claim from the fault. Record the live ordering edge count and the claim result.
+4. Build `cargo-berth` from the Phase 44 commit (`handler-phase-44`, 717b6c4e6) in a private copy. Repeat step 3 on a fresh copy with that binary.
+5. Delete the copies.
+
+**Files:** none. The phase reads records and changes no source.
+
+**Workers:** 1 tester.
+- `test`: the copy, the build and the runs.
+
+**State:** none. The copies are scratch and are deleted.
+
+**Verification:**
+- The live edge count and the claim result, before and after the fix.
+- With the fix, the claim succeeds and the live edge count is well under 512.
+
+### Phase 47 — mend writes a full-path import when a block import brings in the path's first name  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo mend --fix` never writes an import that starts at a name another `use` in the same block brings in. Source: the showrunner, 2026-11-19, from a hana fault report. A mend bug always gets a phase.
+
+**Spec:**
+1. The fault: a test fn body in hana (`crates/hana/src/tool/rear_patch_panel/row_backing.rs`) had `use crate::tool::frame_time_info_panel::tests::pixels;` and then used `pixels::OutlineRendering::Disabled`. `cargo mend --fix` added `use pixels::OutlineRendering;` in the fn body. That import fails with E0432 (unresolved import `pixels`), so mend rolled back every rewrite.
+2. First build a fixture test that reproduces it: a fn body with a block `use` of a module and a qualified path through that module. The test fails before the fix.
+3. Fix the cause in the rule that wrote the import. When the first segment of the new import is a name that a block `use` brings in, write the import from that `use`'s full path (`use crate::tool::frame_time_info_panel::tests::pixels::OutlineRendering;`). If mend cannot resolve the full path, leave the site.
+4. Find which rule added the import from the fixture's diagnostic output. Name it in the reply.
+
+**Files:**
+- the cargo-mend fix source of the rule that wrote the import (start at `crates/cargo-mend/src/fixes/`)
+- the cargo-mend diagnostic test file of that rule (`crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` or `import_fixes.rs`)
 
 **Workers:** 1 writer.
 - `impl`: all files.
 
-**State:** none. The hook reads the berth ledger. It must still make the same decisions.
+**State:** none.
 
 **Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The measurement before and after the fix, with the load at each run.
-- The regression test fails before the fix and passes after it.
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new fixture test fails before the fix and passes after it.
 - No changed test takes one second or more.
