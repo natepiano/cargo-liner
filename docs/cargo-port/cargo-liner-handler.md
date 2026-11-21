@@ -891,7 +891,7 @@ Every cargo-mend test that loops over stored findings reports fails when it find
 
 **Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).
 
-### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: todo
+### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: done
 
 #### Work Order
 
@@ -993,32 +993,13 @@ The copies are deleted. No source changes.
 
 ### Phase 48 — the handler installs its theme through tui_pane  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the theme install code lives in one place, `tui_pane`. The handler calls it and keeps no theme install code of its own. Source: the user approved style proposal P786 (rule `behavior-lives-in-its-most-cohesive-crate`, `crates/cargo-handler`) on 2026-11-19: "yes we should not have separate theme handling code so give that to handler".
-
-**Spec:**
-1. Today `crates/cargo-handler/src/theme/files.rs` `install_theme` builds a `ThemeRegistry` with the handler's parser (`ThemeRegistry::from_dir_with_parser(source, builtins, parse_family)`), resolves the active theme with no remembered system appearance, collects the rejected theme files, installs the `ThemeState`, and sets the transparent background. `crates/tui_pane/src/app_config/theme_install.rs` `install_theme` does the same work with the default parser and the remembered system appearance.
-2. Add `install_theme_with_parser` to `tui_pane`. It takes the appearance config, the built-in variants, a `ThemeSource`, a parser, and the remembered-appearance choice. It returns the active-theme outcome and the rejected-file list. Move `ActiveThemeOutcome`, `RejectedThemeFile` and `ThemeInstallation` into `tui_pane` with it.
-3. Pass the remembered-appearance choice as a named type, never `Option`. `tui_pane::theme::RememberedAppearance` already names `NotObserved`; expose it only as far as the handler needs.
-4. Make `tui_pane::install_theme` and the handler's install function one-line calls to the shared body. No copy of the registry build, resolve or install steps stays in either crate.
-5. Keep the handler's behavior: it passes the not-observed choice, as it passes `None` today. The handler shows the same theme and the same notes as before. Keep the handler's message text in `files.rs`.
+- `tui_pane::install_theme_with_parser(appearance, builtins, source, parser)` builds the `ThemeRegistry` with the caller's parser, resolves the active theme, installs the `ThemeState` and returns a `ThemeInstallation { active: ActiveThemeOutcome, rejected: Vec<RejectedThemeFile> }`. It takes no remembered-appearance argument: it uses the appearance that the registry load observed.
+- `tui_pane::install_theme` and `install_theme_with_parser` share the body `install_from_source`. The private `RememberedAppearancePolicy` enum selects `Use` for `install_theme` and `Ignore` for the parser install. The handler calls `install_theme_with_parser`. No copy of the registry build, resolve or install steps stays in either crate.
+- `ActiveThemeOutcome::MissingName` names a configured theme that the registry lacks. The handler shows the same theme and the same notes as before, and its message text stays in `files.rs`.
 
 **Files:**
-- `crates/tui_pane/src/app_config/theme_install.rs`
-- `crates/tui_pane/src/app_config/mod.rs`
-- `crates/tui_pane/src/lib.rs`
-- `crates/tui_pane/src/theme/state.rs`
-- `crates/cargo-handler/src/theme/files.rs`
-- `crates/cargo-handler/src/terminal.rs`
-
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none. The installed theme and its notes do not change.
-
-**Verification:**
-- `verify.sh check`, `verify.sh test` and `verify.sh lint` for `tui_pane` and `cargo-handler`; `verify.sh check` for `cargo-tile` and `cargo-port`.
-- The handler's existing theme tests (`theme/files_tests.rs`, `terminal/theme_note_tests.rs`) pass unchanged.
-- A `tui_pane` test covers `install_theme_with_parser` with a custom parser, a rejected file and a missing theme name.
-- No changed test takes one second or more.
+- `crates/tui_pane/src/app_config/theme_install.rs` — `install_theme_with_parser`, `install_from_source`, the install types and their tests
+- `crates/tui_pane/src/app_config/mod.rs`, `crates/tui_pane/src/lib.rs` — re-exports of the install function and types
+- `crates/cargo-handler/src/theme/files.rs` — the handler install call and its theme notes
