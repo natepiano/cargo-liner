@@ -84,22 +84,23 @@ pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResol
     )
 }
 
+#[cfg(test)]
 fn resolve_configuration_child_path(
-    test_path_override: Option<PathBuf>,
+    test_path_override: ConfigPathOverrideState,
     configuration_root_override: Option<OsString>,
     platform_configuration_directory: Option<PathBuf>,
     child_name: &str,
 ) -> CargoPortConfigurationPathResolution {
-    test_path_override.map_or_else(
-        || {
-            resolve_configuration_root(
-                configuration_root_override,
-                platform_configuration_directory,
-            )
-            .child(child_name)
+    match test_path_override {
+        ConfigPathOverrideState::Ambient => resolve_configuration_root(
+            configuration_root_override,
+            platform_configuration_directory,
+        )
+        .child(child_name),
+        ConfigPathOverrideState::Installed(path) => {
+            CargoPortConfigurationPathResolution::Resolved(path)
         },
-        CargoPortConfigurationPathResolution::Resolved,
-    )
+    }
 }
 
 fn resolve_configuration_root(
@@ -436,6 +437,11 @@ pub struct LintCommandConfig {
     pub command: String,
 }
 
+enum LintCommandResolution {
+    UnrecognizedBuiltin,
+    Command(LintCommandConfig),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
@@ -519,10 +525,10 @@ pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
     }
 }
 
-fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
+fn builtin_lint_command(name: &str) -> LintCommandResolution {
     match name.trim().to_ascii_lowercase().as_str() {
-        CLIPPY_LINT_COMMAND_NAME => Some(default_clippy_lint_command()),
-        _ => None,
+        CLIPPY_LINT_COMMAND_NAME => LintCommandResolution::Command(default_clippy_lint_command()),
+        _ => LintCommandResolution::UnrecognizedBuiltin,
     }
 }
 
@@ -548,7 +554,7 @@ fn infer_lint_command_name(command: &str) -> String {
         .to_string()
 }
 
-fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConfig> {
+fn normalize_lint_command(command: &LintCommandConfig) -> LintCommandResolution {
     let name = command.name.trim();
     let command_str = command.command.trim();
 
@@ -556,7 +562,7 @@ fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConf
         return builtin_lint_command(name);
     }
 
-    Some(LintCommandConfig {
+    LintCommandResolution::Command(LintCommandConfig {
         name:    if name.is_empty() {
             infer_lint_command_name(command_str)
         } else {
@@ -567,12 +573,26 @@ fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConf
 }
 
 pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
-    commands.iter().filter_map(normalize_lint_command).collect()
+    commands
+        .iter()
+        .filter_map(|command| match normalize_lint_command(command) {
+            LintCommandResolution::UnrecognizedBuiltin => None,
+            LintCommandResolution::Command(command) => Some(command),
+        })
+        .collect()
 }
 
 pub(crate) struct ParsedCacheSize {
     pub bytes:      Option<u64>,
     pub normalized: String,
+}
+
+enum CacheSizeUnitResolution {
+    Supported {
+        canonical_label: &'static str,
+        bytes_per_unit:  u64,
+    },
+    Unsupported,
 }
 
 fn normalize_cache_size_number(number: &str) -> Result<String, String> {
@@ -666,13 +686,25 @@ fn parse_cache_size_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, 
     }
 }
 
-fn canonical_cache_size_unit(unit: &str) -> Option<(&'static str, u64)> {
+fn canonical_cache_size_unit(unit: &str) -> CacheSizeUnitResolution {
     match unit.trim().to_ascii_lowercase().as_str() {
-        "b" | "byte" | "bytes" => Some(("B", 1)),
-        "kib" | "kb" => Some(("KiB", BYTES_PER_KIB)),
-        "mib" | "mb" => Some(("MiB", BYTES_PER_MIB)),
-        "gib" | "gb" => Some(("GiB", BYTES_PER_GIB)),
-        _ => None,
+        "b" | "byte" | "bytes" => CacheSizeUnitResolution::Supported {
+            canonical_label: "B",
+            bytes_per_unit:  1,
+        },
+        "kib" | "kb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "KiB",
+            bytes_per_unit:  BYTES_PER_KIB,
+        },
+        "mib" | "mb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "MiB",
+            bytes_per_unit:  BYTES_PER_MIB,
+        },
+        "gib" | "gb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "GiB",
+            bytes_per_unit:  BYTES_PER_GIB,
+        },
+        _ => CacheSizeUnitResolution::Unsupported,
     }
 }
 
@@ -706,16 +738,20 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
         );
     }
 
-    let Some((canonical_unit, multiplier)) = canonical_cache_size_unit(unit) else {
+    let CacheSizeUnitResolution::Supported {
+        canonical_label,
+        bytes_per_unit,
+    } = canonical_cache_size_unit(unit)
+    else {
         return Err(format!("Unsupported cache size unit `{unit}`"));
     };
     let normalized = format!(
         "{} {}",
         normalize_cache_size_number(number)?,
-        canonical_unit
+        canonical_label
     );
     Ok(ParsedCacheSize {
-        bytes: parse_cache_size_bytes(number, multiplier)?,
+        bytes: parse_cache_size_bytes(number, bytes_per_unit)?,
         normalized,
     })
 }
@@ -1266,42 +1302,52 @@ impl Default for MouseConfig {
 /// the normal per-user configuration directory.
 pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
     #[cfg(test)]
-    let test_path_override = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone());
+    {
+        let test_path_override = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone());
+        resolve_configuration_child_path(
+            test_path_override,
+            std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
+            dirs::config_dir(),
+            CONFIG_FILE,
+        )
+    }
     #[cfg(not(test))]
-    let test_path_override = None;
-    resolve_configuration_child_path(
-        test_path_override,
-        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
-        dirs::config_dir(),
-        CONFIG_FILE,
-    )
+    {
+        cargo_port_configuration_root().child(CONFIG_FILE)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum ConfigPathOverrideState {
+    Ambient,
+    Installed(PathBuf),
 }
 
 #[cfg(test)]
 thread_local! {
-    static CONFIG_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const {
-        RefCell::new(None)
+    static CONFIG_PATH_OVERRIDE: RefCell<ConfigPathOverrideState> = const {
+        RefCell::new(ConfigPathOverrideState::Ambient)
     };
 }
 
 #[cfg(test)]
 pub(crate) struct ConfigPathOverrideGuard {
-    previous: Option<PathBuf>,
+    previous: ConfigPathOverrideState,
 }
 
 #[cfg(test)]
 impl Drop for ConfigPathOverrideGuard {
     fn drop(&mut self) {
-        let previous = self.previous.take();
-        CONFIG_PATH_OVERRIDE.with(|slot| {
-            *slot.borrow_mut() = previous;
-        });
+        let previous = std::mem::replace(&mut self.previous, ConfigPathOverrideState::Ambient);
+        CONFIG_PATH_OVERRIDE.with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
 #[cfg(test)]
 pub(crate) fn override_config_path_for_test(path: PathBuf) -> ConfigPathOverrideGuard {
-    let previous = CONFIG_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
+    let previous =
+        CONFIG_PATH_OVERRIDE.with(|slot| slot.replace(ConfigPathOverrideState::Installed(path)));
     ConfigPathOverrideGuard { previous }
 }
 
@@ -1378,18 +1424,23 @@ mod tests {
         let explicit_root = Some(OsString::from("/disposable/cargo-port"));
         let platform_root = Some(PathBuf::from("/user/config"));
         let config = resolve_configuration_child_path(
-            None,
+            ConfigPathOverrideState::Ambient,
             explicit_root.clone(),
             platform_root.clone(),
             CONFIG_FILE,
         );
         let keymap = resolve_configuration_child_path(
-            None,
+            ConfigPathOverrideState::Ambient,
             explicit_root.clone(),
             platform_root.clone(),
             KEYMAP_FILE,
         );
-        let themes = resolve_configuration_child_path(None, explicit_root, platform_root, "themes");
+        let themes = resolve_configuration_child_path(
+            ConfigPathOverrideState::Ambient,
+            explicit_root,
+            platform_root,
+            "themes",
+        );
         assert_eq!(
             config,
             CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
@@ -1412,7 +1463,7 @@ mod tests {
         for child_name in [CONFIG_FILE, KEYMAP_FILE, "themes"] {
             assert_eq!(
                 resolve_configuration_child_path(
-                    None,
+                    ConfigPathOverrideState::Ambient,
                     Some(OsString::new()),
                     Some(PathBuf::from("/user/config")),
                     child_name,
@@ -1426,7 +1477,7 @@ mod tests {
     fn test_configuration_path_override_precedes_an_ambient_explicit_root() {
         assert_eq!(
             resolve_configuration_child_path(
-                Some(PathBuf::from("/test-fixture/config.toml")),
+                ConfigPathOverrideState::Installed(PathBuf::from("/test-fixture/config.toml")),
                 Some(OsString::from("/ambient/cargo-port")),
                 Some(PathBuf::from("/user/config")),
                 CONFIG_FILE,
@@ -1435,6 +1486,26 @@ mod tests {
                 "/test-fixture/config.toml"
             ))
         );
+    }
+
+    #[test]
+    fn nested_configuration_path_overrides_restore_previous_paths() {
+        let ambient_path = config_path();
+        let outer_path = PathBuf::from("/test-fixture/outer.toml");
+        let inner_path = PathBuf::from("/test-fixture/inner.toml");
+        let outer_override = override_config_path_for_test(outer_path.clone());
+        let inner_override = override_config_path_for_test(inner_path.clone());
+        assert_eq!(
+            config_path(),
+            CargoPortConfigurationPathResolution::Resolved(inner_path)
+        );
+        drop(inner_override);
+        assert_eq!(
+            config_path(),
+            CargoPortConfigurationPathResolution::Resolved(outer_path)
+        );
+        drop(outer_override);
+        assert_eq!(config_path(), ambient_path);
     }
 
     // Keep the historical assertions pinned to the checked-in public template,
