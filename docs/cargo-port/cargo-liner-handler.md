@@ -1088,3 +1088,33 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - The new test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
+
+#### Work Order
+
+**Goal:** on the Mac, cargo-handler applies a change to a watched config file within 500 ms at any load, and never misses one. Source: the showrunner, 2026-11-21: "A config change that arrives 2 s late or never is a wrong result."
+
+**Spec:**
+1. The fault, from phase ci1 (commit 47f4b125b): a raw FSEvents probe at Mac load 34.49 on 12 CPUs did 16 atomic renames. 6 reached the callback within 500 ms, 2 after about 2 s, and 8 not within 2.5 s. A notify trace in `config_watch.rs` showed the same gap before the reader channel. The fault is in OS delivery through FSEvents, not in the handler.
+2. First write a Mac reproduction that fails on main: a repeated atomic replacement of a watched config file under load, with the 500 ms limit. The ci1 opt-in native Mac watcher test is the start point.
+3. Fix it at the cause. A lead: notify's `macos_kqueue` feature, which watches the file descriptor and does not use FSEvents. The workspace `notify` entry is shared, so a feature change also reaches cargo-port: measure the cargo-port watchers too, or limit the change to cargo-handler. Name the choice and the reason.
+4. CPU cost ranks first. Measure the CPU of an idle Mac handler (and an idle Mac cargo-port, if it changes) before and after the change: 3 or more pairs, median change and spread.
+5. After the fix, make the native Mac watcher test a default test again, and keep it under 1 s.
+
+**Files:**
+- `Cargo.toml` and `crates/cargo-handler/Cargo.toml` — the notify features
+- `crates/cargo-handler/src/config_watch.rs` — the config watcher
+- `crates/cargo-handler/src/render/word_click_tests.rs` — the native watcher test
+- `crates/cargo-port/src/watcher/` and `crates/cargo-port/Cargo.toml` — only if the feature reaches cargo-port
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check`, `verify.sh test` and `verify.sh lint` for cargo-handler, and for cargo-port when it changes, on the Mac and on natedev.
+- The reproduction fails on main and passes after the fix.
+- The idle CPU pairs show no increase, or the reply names the cost.
+- No changed test takes one second or more.
