@@ -161,7 +161,7 @@ impl<Id, P> FullScreenView<Id, P> {
         }
     }
 
-    /// Read the app's poll clock. A moving view needs another frame.
+    /// Read the app's display clock. Supply the held time again to preserve progress.
     pub const fn advance(&mut self, now: Instant) -> Repaint {
         match self {
             Self::Opening { sampled, .. } => {

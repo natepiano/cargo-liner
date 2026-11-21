@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- Grid animations hold their position during pause and continue from that position on resume.
 - `FullScreenView` and `FullScreenCell` keep one tile's identity, motion clock and app policy state on its way to and from the full pane. `FullScreenStep` and `FullScreenSettle` tell the app what to draw. Clicks and pointer regions read the drawn full-screen tile first.
 - `FullScreenView::status_hint` gives the status slot for the view: the app's expand action in the grid, and `esc collapse` while a tile shows.
 - Add `contrast_ratio`, which measures the WCAG contrast of two explicit colours with the palette of `blend_color`.
@@ -42,6 +43,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Changed
 
+- Rename the display hold state to `Updates::Paused`.
 - **Breaking:** Rename `CellClick` to `CellPointer` for press and wheel input.
 - **Breaking:** `TileGrid::draw_cell_view` takes `&mut self`, so it can record the drawn tile for input.
 - **Breaking:** `ExpansionAction::key_bindings` takes no argument and binds row expand and collapse to plain Right and Left.

@@ -106,6 +106,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::app::ArgumentDetail;
 use crate::app::CellScroll;
+use crate::app::DisplayFrameTime;
 use crate::app::GridView;
 use crate::app::ProcessHierarchy;
 use crate::app::Updates;
@@ -215,7 +216,6 @@ use crate::constants::CONTENT_RIGHT_INSET;
 use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::ELISION;
-use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::MANAGED_COLUMN;
@@ -226,6 +226,7 @@ use crate::constants::MINIMUM_FADED_TEXT_CONTRAST;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PARENT_COLUMN;
 use crate::constants::PARTIAL_TOTAL_MARK;
+use crate::constants::PAUSED_NOTE_LABEL;
 use crate::constants::PID_COLUMN;
 use crate::constants::PROCESS_TREE_NOTE_LABEL;
 use crate::constants::PROFILE_LABEL_CLOSE;
@@ -389,7 +390,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    let prepared = prepare_panes(app, body.height);
+    let display_time = app.display_frame_time();
+    let prepared = prepare_panes(app, body.height, display_time);
     #[cfg(feature = "attract")]
     let work = if prepared.tables.roster.groups().is_empty()
         && prepared.tables.roster.memory_shares().unattributed == 0
@@ -441,11 +443,12 @@ fn draw_panes(
     area: Rect,
     contents: TileGridContents,
 ) -> DrawnSummaryFrames {
-    let prepared = prepare_panes(app, area.height);
+    let display_time = app.display_frame_time();
+    let prepared = prepare_panes(app, area.height, display_time);
     draw_visible_panes(frame, app, area, contents, prepared)
 }
 
-fn prepare_panes(app: &mut App, height: u16) -> PreparedPaneFrame {
+fn prepare_panes(app: &mut App, height: u16, display_time: DisplayFrameTime) -> PreparedPaneFrame {
     let timer = probe::paint_timer(PaintStage::Preparation);
     let view = CommandView::new(
         app.tree,
@@ -458,6 +461,7 @@ fn prepare_panes(app: &mut App, height: u16) -> PreparedPaneFrame {
         &view,
         height.saturating_sub(3),
         app.free_disk_space,
+        display_time,
     );
     drop(timer);
     prepared
@@ -470,6 +474,10 @@ fn draw_visible_panes(
     contents: TileGridContents,
     prepared: PreparedPaneFrame,
 ) -> DrawnSummaryFrames {
+    let display_time = prepared.display_time;
+    if let DisplayFrameTime::Paused(time) = display_time {
+        app.tiles.sample_motion(time);
+    }
     let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells::from_prepared(prepared, &app.sccache);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
@@ -487,7 +495,7 @@ fn draw_visible_panes(
         );
     }
     if contents == TileGridContents::Shown {
-        draw_cell_view(frame, app, area);
+        draw_cell_view(frame, app, area, display_time);
         match &app.grid_view {
             GridView::Expanded { cell } => {
                 return DrawnSummaryFrames(vec![cell.displayed()]);
@@ -504,9 +512,12 @@ fn draw_visible_panes(
 }
 
 /// Draw the selected cell through the grid's cell painter, over its unchanged grid.
-fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
+fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect, display_time: DisplayFrameTime) {
     if !app.grid_view.is_open() {
         return;
+    }
+    if let DisplayFrameTime::Paused(time) = display_time {
+        app.grid_view.advance(time);
     }
     let growth = app.loaded_config.config.tiles.growth();
     let placements = app.tiles.placements(area, growth);
@@ -516,7 +527,7 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
         FullScreenStep::Inactive => return,
         FullScreenStep::ContentLeft => {
             app.grid_view.close();
-            restore_grid_after_collapse(frame, app, area);
+            restore_grid_after_collapse(frame, app, area, display_time);
             return;
         },
         FullScreenStep::Travel { content, travel } => (content, travel),
@@ -531,6 +542,7 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
         &app.loaded_config.config.commands.hidden,
         &view,
         app.free_disk_space,
+        display_time,
     );
     let mut cells = Cells::from_prepared(prepared, &app.sccache);
     let command_remains = match &content {
@@ -539,7 +551,7 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     if !command_remains {
         app.grid_view.close();
-        restore_grid_after_collapse(frame, app, area);
+        restore_grid_after_collapse(frame, app, area, display_time);
         return;
     }
     cells.view = app.grid_view.clone();
@@ -565,18 +577,23 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
         };
     }
     if app.grid_view.settle(rect, repaint) == FullScreenSettle::Closed {
-        restore_grid_after_collapse(frame, app, area);
+        restore_grid_after_collapse(frame, app, area, display_time);
     }
 }
 
 /// Remove the expanded readout before the grid paints its shorter readout.
-fn restore_grid_after_collapse(frame: &mut Frame, app: &mut App, area: Rect) {
+fn restore_grid_after_collapse(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    display_time: DisplayFrameTime,
+) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             frame.buffer_mut()[(x, y)].reset();
         }
     }
-    let prepared = prepare_panes(app, area.height);
+    let prepared = prepare_panes(app, area.height, display_time);
     let cells = Cells::from_prepared(prepared, &app.sccache);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -1498,6 +1515,7 @@ impl<'a> Cells<'a> {
                 PreparedFrameTables::new(roster, view, height, Rc::default()),
                 free_disk_space,
                 &mut SummaryFootPreparation::default(),
+                DisplayFrameTime::Live,
             ),
             sccache,
         )
@@ -1508,6 +1526,7 @@ impl<'a> Cells<'a> {
         let PreparedPaneFrame {
             tables: prepared,
             summary_foot,
+            ..
         } = prepared;
         let setup = probe::paint_timer(PaintStage::FrameSetup);
         let grids = (*prepared.grids).clone();
@@ -4157,6 +4176,14 @@ impl FrameColumnGrids {
         let summary_progress = invocation_progress_rows(&summary, TableKind::Summary);
         let summary_groups = group_by_path(&summary, PinnedGroup::Unpinned);
         let summary = possible_frame_rows(&summary_groups, height);
+        let contributions = Rc::new(
+            roster
+                .groups()
+                .iter()
+                .flat_map(TrackedGroup::rows)
+                .map(InvocationContribution::from)
+                .collect(),
+        );
         let mut commands = FrameTableColumnGrid::with_parent_links(
             &command_rows,
             TableKind::Command,
@@ -4164,6 +4191,7 @@ impl FrameColumnGrids {
             parent_links,
             command_progress,
             Rc::clone(&command_cells),
+            Rc::clone(&contributions),
         );
         let mut summary = FrameTableColumnGrid::with_parent_links(
             &summary,
@@ -4172,15 +4200,9 @@ impl FrameColumnGrids {
             AncestryParentLinks::default(),
             summary_progress,
             command_cells,
+            contributions,
         );
-        let contributions: Rc<[_]> = roster
-            .groups()
-            .iter()
-            .flat_map(TrackedGroup::rows)
-            .map(InvocationContribution::from)
-            .collect();
         for grid in [&mut commands, &mut summary] {
-            grid.contributions = Rc::clone(&contributions);
             grid.intrinsic_widths[CPU_COLUMN] =
                 grid.intrinsic_widths[CPU_COLUMN].max(roster.column_widths().cpu);
             grid.intrinsic_widths[MEMORY_COLUMN] =
@@ -4311,6 +4333,52 @@ impl From<&TrackedRow> for InvocationContribution {
     }
 }
 
+/// Resource contributions share one parent lookup across the frame's tables.
+struct InvocationContributions {
+    entries: Vec<InvocationContribution>,
+    links:   Vec<ContributionAncestry>,
+}
+
+/// The first contribution supplies the parent when an identity occurs twice.
+struct ContributionAncestry {
+    source: usize,
+    parent: ContributionParent,
+}
+
+enum ContributionParent {
+    OutsideContributions,
+    Indexed(usize),
+}
+
+impl FromIterator<InvocationContribution> for InvocationContributions {
+    fn from_iter<T: IntoIterator<Item = InvocationContribution>>(entries: T) -> Self {
+        let entries: Vec<_> = entries.into_iter().collect();
+        let mut first = HashMap::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            first.entry((entry.pid, &entry.invocation)).or_insert(index);
+        }
+        let links = entries
+            .iter()
+            .map(|entry| {
+                let source = first[&(entry.pid, &entry.invocation)];
+                let parent = match &entries[source].parent {
+                    VisibleParent::Invocation { id, pid } => {
+                        first.get(&(*pid, id)).copied().map_or(
+                            ContributionParent::OutsideContributions,
+                            ContributionParent::Indexed,
+                        )
+                    },
+                    VisibleParent::Ancestor(_) | VisibleParent::None => {
+                        ContributionParent::OutsideContributions
+                    },
+                };
+                ContributionAncestry { source, parent }
+            })
+            .collect();
+        Self { entries, links }
+    }
+}
+
 /// Numeric use owned by one visible row after hidden descendants join it.
 #[derive(PartialEq)]
 struct RowResourceReading {
@@ -4322,20 +4390,18 @@ struct RowResourceReading {
 /// Assign each contribution to its nearest invocation with a drawn row.
 fn row_resource_readings(
     rows: &[&TrackedRow],
-    contributions: &[InvocationContribution],
+    contributions: &InvocationContributions,
 ) -> Vec<RowResourceReading> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let mut visible_rows = HashMap::with_capacity(rows.len());
     for (index, row) in rows.iter().enumerate() {
         visible_rows
             .entry((row.process.pid, &row.process.invocation_id))
             .or_insert(index);
     }
-    let mut parents = HashMap::with_capacity(contributions.len());
-    for contribution in contributions {
-        parents
-            .entry((contribution.pid, &contribution.invocation))
-            .or_insert(&contribution.parent);
-    }
+    let visible = |pid, invocation: &InvocationId| visible_rows.get(&(pid, invocation)).copied();
     let mut assigned: Vec<_> = rows
         .iter()
         .map(|row| {
@@ -4345,13 +4411,17 @@ fn row_resource_readings(
             )]
         })
         .collect();
-    for contribution in contributions {
-        let mut owner = (contribution.pid, &contribution.invocation);
-        if visible_rows.contains_key(&owner) {
+    for (index, contribution) in contributions.entries.iter().enumerate() {
+        if visible(contribution.pid, &contribution.invocation).is_some() {
             continue;
         }
-        for _ in 0..=contributions.len() {
-            if let Some(&index) = visible_rows.get(&owner) {
+        let mut link = &contributions.links[index];
+        for _ in 0..contributions.entries.len() {
+            let VisibleParent::Invocation { id, pid } = &contributions.entries[link.source].parent
+            else {
+                break;
+            };
+            if let Some(index) = visible(*pid, id) {
                 if contribution.ended == rows[index].is_ended() {
                     assigned[index].push((
                         sysinfo::Pid::from_u32(contribution.pid),
@@ -4360,10 +4430,10 @@ fn row_resource_readings(
                 }
                 break;
             }
-            let Some(VisibleParent::Invocation { id, pid }) = parents.get(&owner).copied() else {
+            let ContributionParent::Indexed(index) = link.parent else {
                 break;
             };
-            owner = (*pid, id);
+            link = &contributions.links[index];
         }
     }
     rows.iter()
@@ -4437,7 +4507,7 @@ struct FrameTableColumnGrid {
     theme:                    Arc<Theme>,
     prepared_plans:           Rc<RefCell<Vec<CachedTablePlan>>>,
     /// Disjoint resources stay available even when a height cut hides their row.
-    contributions:            Rc<[InvocationContribution]>,
+    contributions:            Rc<InvocationContributions>,
     /// The frame-wide presence of optional slots, independent of visible rows.
     slots:                    Vec<usize>,
     /// Whether this table can lend directory separators independently.
@@ -4512,6 +4582,12 @@ impl FrameTableColumnGrid {
             AncestryParentLinks::default(),
             invocation_progress_rows(rows, kind),
             Rc::default(),
+            Rc::new(
+                rows.iter()
+                    .copied()
+                    .map(InvocationContribution::from)
+                    .collect(),
+            ),
         )
     }
 
@@ -4522,6 +4598,7 @@ impl FrameTableColumnGrid {
         parent_links: AncestryParentLinks,
         row_progress: Vec<InvocationId>,
         commands: Rc<RefCell<PreparedCommandCells>>,
+        contributions: Rc<InvocationContributions>,
     ) -> Self {
         let command_widths: Vec<_> = {
             let mut commands = commands.borrow_mut();
@@ -4569,11 +4646,7 @@ impl FrameTableColumnGrid {
             commands,
             theme: tui_pane::theme(),
             prepared_plans: std::rc::Rc::new(RefCell::new(Vec::new())),
-            contributions: rows
-                .iter()
-                .copied()
-                .map(InvocationContribution::from)
-                .collect(),
+            contributions,
             row_progress,
             parent_links,
             slots,
@@ -5527,23 +5600,44 @@ fn planned_resource_readings(
     }
 }
 
+/// Finished rows and shared headings use one source layout during ink recording.
+struct TableInkLayouts<'a> {
+    display: &'a CellTableLayout,
+    source:  Cow<'a, CellTableLayout>,
+}
+
+impl<'a> TableInkLayouts<'a> {
+    fn new(display: &'a CellTableLayout) -> Self {
+        let ground = cell_paint::ink_ground(display.ground);
+        let source = if ground == display.ground {
+            Cow::Borrowed(display)
+        } else {
+            let mut source = display.clone();
+            source.ground = ground;
+            Cow::Owned(source)
+        };
+        Self { display, source }
+    }
+
+    fn for_row(&self, row: &TrackedRow) -> &CellTableLayout {
+        if row.is_ended() {
+            &self.source
+        } else {
+            self.display
+        }
+    }
+}
+
 /// Apply contributor totals and family ink after the table selects its rows.
 fn apply_planned_row_readings(
     drawn_groups: &mut [Vec<LaidOutProcessRow<'_>>],
     plan: &mut ProcessTablePlan<'_>,
-    layout: &CellTableLayout,
+    layouts: &TableInkLayouts<'_>,
     readings: &[RowResourceReading],
 ) {
     let family_links = AllocationFamilyLinks::from_plan(plan);
     for row in drawn_groups.iter_mut().flatten() {
-        let mut source_layout;
-        let layout = if cell_paint::records_ink() && row.source.is_ended() {
-            source_layout = layout.clone();
-            source_layout.ground = Color::Reset;
-            &source_layout
-        } else {
-            layout
-        };
+        let layout = layouts.for_row(row.source);
         // Live values draw over the painting on each frame; the painting never holds them.
         row.cells[CPU_COLUMN] = Text::default();
         row.cells[MEMORY_COLUMN] = Text::default();
@@ -5679,6 +5773,7 @@ fn frame_draw_grouped_process_table(
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
     let layout = CellTableLayout::for_table(grid, area, ground, rows, pinned);
+    let ink_layouts = TableInkLayouts::new(&layout);
     let header_area = Rect {
         height: TABLE_HEADER_HEIGHT.min(area.height),
         ..indented(area)
@@ -5689,11 +5784,11 @@ fn frame_draw_grouped_process_table(
         mut plan,
         hidden,
         count_row,
-    } = prepare_table_viewport(groups, available_height, &layout, grid);
+    } = prepare_table_viewport(groups, available_height, &ink_layouts, grid);
     let headings = TableAccountHeadings::for_table(groups, pinned, plan.visible_group_count, area);
     if layout.columns.is_empty() {
         drop(preparation);
-        paint_table_header(buffer, header_area, rows, &layout, &plan);
+        paint_table_header(buffer, header_area, rows, &ink_layouts, &plan);
         return CellPaintReach {
             rows:      header_area.height,
             commands:  Vec::new(),
@@ -5703,14 +5798,14 @@ fn frame_draw_grouped_process_table(
         };
     }
     let resources = planned_resource_readings(&plan, grid);
-    apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, &resources);
+    apply_planned_row_readings(&mut drawn_groups, &mut plan, &ink_layouts, &resources);
     let show_count = hidden > 0 && count_row == HiddenProcessCountRow::Reserved;
     let table_area = Rect {
         height: area.height.saturating_sub(u16::from(show_count)),
         ..area
     };
     drop(preparation);
-    paint_table_header(buffer, header_area, rows, &layout, &plan);
+    paint_table_header(buffer, header_area, rows, &ink_layouts, &plan);
     let drawn = draw_table_groups(
         buffer,
         table_area,
@@ -5756,31 +5851,26 @@ fn paint_table_header(
     buffer: &mut Buffer,
     area: Rect,
     rows: &[&TrackedRow],
-    layout: &CellTableLayout,
+    layouts: &TableInkLayouts<'_>,
     plan: &ProcessTablePlan<'_>,
 ) {
     let ink = heading_ink(rows);
-    let mut source_layout = layout.clone();
-    source_layout.ground = cell_paint::ink_ground(layout.ground);
+    let source = layouts.source.as_ref();
     cell_paint::paint_ink(
         buffer,
         area,
         cell_paint::InkSource::heading(rows),
         ink,
-        layout.ground,
+        layouts.display.ground,
         |buffer| {
-            if layout.columns.is_empty() {
+            if source.columns.is_empty() {
                 Paragraph::new(Line::from(Span::styled(
                     ELISION,
-                    column_header_style(&source_layout, ink),
+                    column_header_style(source, ink),
                 )))
                 .render(area, buffer);
             } else {
-                source_layout.draw_columns(
-                    buffer,
-                    area,
-                    column_header_cells(&source_layout, ink, plan),
-                );
+                source.draw_columns(buffer, area, column_header_cells(source, ink, plan));
             }
         },
     );
@@ -5805,10 +5895,10 @@ struct PreparedTableViewport<'row> {
 fn prepare_table_viewport<'row>(
     groups: &[PathGroup<'row>],
     available_height: u16,
-    layout: &CellTableLayout,
+    layouts: &TableInkLayouts<'_>,
     grid: &FrameTableColumnGrid,
 ) -> PreparedTableViewport<'row> {
-    let mut drawn_groups = prepared_table_groups(groups, layout);
+    let mut drawn_groups = prepared_table_groups(groups, layouts);
     let hidden =
         frame_preparation::reserve_command_rows(&mut drawn_groups, groups, available_height);
     let first_heading = groups.first().map_or(0, |group| group.heading.rows());
@@ -5820,7 +5910,7 @@ fn prepare_table_viewport<'row>(
         groups,
         planned_height,
         grid.separation,
-        layout,
+        layouts.display,
     );
     let process_count: usize = groups.iter().map(|group| group.rows.len()).sum();
     let hidden = match &plan.visible_rows {
@@ -5932,7 +6022,7 @@ fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: usize) {
 /// Prepare the shared table cells before assigning their row budgets.
 fn prepared_table_groups<'row>(
     groups: &[PathGroup<'row>],
-    layout: &CellTableLayout,
+    layouts: &TableInkLayouts<'_>,
 ) -> Vec<Vec<LaidOutProcessRow<'row>>> {
     groups
         .iter()
@@ -5941,14 +6031,7 @@ fn prepared_table_groups<'row>(
                 .rows
                 .iter()
                 .map(|row| {
-                    let mut source_layout;
-                    let layout = if cell_paint::records_ink() && row.is_ended() {
-                        source_layout = layout.clone();
-                        source_layout.ground = Color::Reset;
-                        &source_layout
-                    } else {
-                        layout
-                    };
+                    let layout = layouts.for_row(row);
                     let mut prepared = process_row(row, layout);
                     if layout.kind == TableKind::Summary {
                         let command = layout.commands.borrow_mut().for_summary_row(row, layout);
@@ -8354,8 +8437,8 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     }];
     // A held display looks exactly like an idle one, and the difference
     // between the two is whether anything is being missed. Say which.
-    if app.updates == Updates::Frozen {
-        notes.push(StatusLineNote::flag(FROZEN_NOTE_LABEL));
+    if app.updates == Updates::Paused {
+        notes.push(StatusLineNote::flag(PAUSED_NOTE_LABEL));
     }
     // And a grid drawn over looks exactly like an empty one, which is
     // the same problem: say that the work is behind the animation
@@ -8403,7 +8486,7 @@ pub(crate) fn summary_cpu_for_test(
     let roster = &visible;
     let summary = summary_rows(roster);
     let rows = summary;
-    let contributions: Vec<_> = roster
+    let contributions = roster
         .groups()
         .iter()
         .flat_map(TrackedGroup::rows)
@@ -9724,7 +9807,14 @@ mod tests {
                     _ => {},
                 }
                 let cells = Cells::from_prepared(
-                    tables.for_frame(&mut roster, &[], &view, height, FreeDiskSpace::Unavailable),
+                    tables.for_frame(
+                        &mut roster,
+                        &[],
+                        &view,
+                        height,
+                        FreeDiskSpace::Unavailable,
+                        DisplayFrameTime::Live,
+                    ),
                     &stats,
                 );
                 for content in [
@@ -9786,6 +9876,7 @@ mod tests {
                     CommandView::long(),
                     height,
                     FreeDiskSpace::Unavailable,
+                    DisplayFrameTime::Live,
                 ),
                 &stats,
             );
@@ -14410,6 +14501,36 @@ mod tests {
     }
 
     #[test]
+    fn resource_parents_keep_the_first_contribution_for_each_invocation() {
+        let [first_row, mut other_row, unused_row] =
+            [700, 701, 702].map(|pid| TrackedRow::from(invocation(pid, &["check"])));
+        other_row.process.pid = first_row.process.pid;
+        let parent = |row: &TrackedRow| VisibleParent::Invocation {
+            id:  row.process.invocation_id.clone(),
+            pid: row.process.pid,
+        };
+        let mut first = invocation(500, &["build"]);
+        first.parent = parent(&first_row);
+        let mut other = invocation(501, &["check"]);
+        other.pid = first.pid;
+        other.parent = parent(&other_row);
+        let mut duplicate = invocation(first.pid, &["build"]);
+        duplicate.parent = parent(&unused_row);
+        let contributions: InvocationContributions = [&other, &first, &duplicate]
+            .into_iter()
+            .map(InvocationContribution::from)
+            .collect();
+
+        let readings =
+            row_resource_readings(&[&first_row, &other_row, &unused_row], &contributions);
+        let cpu: Vec<_> = readings
+            .into_iter()
+            .map(|reading| reading.resources.cpu)
+            .collect();
+        assert_eq!(cpu, [24.0, 24.0, 12.0].map(Measurement::Reading));
+    }
+
+    #[test]
     fn an_unavailable_row_keeps_its_own_absence_reason() {
         let mut parent = invocation(500, &["build"]);
         parent.resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
@@ -14419,10 +14540,12 @@ mod tests {
             pid: parent.pid,
         };
         child.resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::FirstObservation);
-        let contributions = vec![
+        let contributions = [
             InvocationContribution::from(&child),
             InvocationContribution::from(&parent),
-        ];
+        ]
+        .into_iter()
+        .collect();
         let row = TrackedRow::from(parent);
         let readings = row_resource_readings(&[&row], &contributions);
         assert_eq!(
@@ -22694,7 +22817,7 @@ mod tests {
         ] {
             app.tree = hierarchy;
             app.arguments = arguments;
-            app.updates = Updates::Frozen;
+            app.updates = Updates::Paused;
             terminal
                 .draw(|frame| draw_status_line(frame, &app, &keymap, Rect::new(0, 39, 160, 1)))
                 .expect("the mode notes draw");
@@ -22706,7 +22829,7 @@ mod tests {
                 .map(|label| (label, palette.enabled_label_style))
                 .chain([
                     ("cargo-tile", palette.status_label_style),
-                    ("frozen", palette.status_label_style),
+                    ("paused", palette.status_label_style),
                 ])
             {
                 // Count columns, not bytes: the pending CPU reading `—` is one column.

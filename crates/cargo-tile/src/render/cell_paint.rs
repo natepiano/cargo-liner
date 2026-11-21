@@ -505,9 +505,10 @@ struct RetainedInkRole {
 
 /// A layer recolors foregrounds without repeating text layout or painting.
 struct RetainedInkLayer {
-    source: InkSource,
-    pixels: Vec<InkPixel>,
-    roles:  Vec<RetainedInkRole>,
+    source:   InkSource,
+    last_ink: RowPaintInk,
+    pixels:   Vec<InkPixel>,
+    roles:    Vec<RetainedInkRole>,
 }
 
 /// A capture records only the foregrounds that a paint operation writes.
@@ -649,9 +650,10 @@ pub(super) fn paint_ink<T>(
         }
     }
     INK_RECORDING.with_borrow_mut(|state| {
-        if let InkRecording::Recording { ink, .. } = state {
-            ink.layers.push(RetainedInkLayer {
+        if let InkRecording::Recording { ink: recorded, .. } = state {
+            recorded.layers.push(RetainedInkLayer {
                 source,
+                last_ink: ink,
                 pixels,
                 roles,
             });
@@ -742,6 +744,10 @@ impl PaintedCellContents {
     pub(super) fn recolor(&mut self, rows: &[&TrackedRow]) {
         for layer in &mut self.ink.layers {
             let ink = layer.source.ink(rows);
+            if ink == layer.last_ink {
+                continue;
+            }
+            layer.last_ink = ink;
             let mut changed = false;
             for role in &mut layer.roles {
                 let next = ink.color(role.source, self.inputs.ground);
@@ -936,6 +942,7 @@ mod cell_paint_tests {
 
     use ratatui::style::Style;
 
+    use crate::app::DisplayFrameTime;
     use crate::census::CargoGroup;
     use crate::census::CompilerObservation;
     use crate::census::Measurement;
@@ -1006,6 +1013,7 @@ mod cell_paint_tests {
             CommandView::long(),
             24,
             FreeDiskSpace::Unavailable,
+            DisplayFrameTime::Live,
         );
         Cells::from_prepared(prepared, &stats).draw(&mut original.clone(), &content, area, ground);
         roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -1018,6 +1026,7 @@ mod cell_paint_tests {
                 CommandView::long(),
                 24,
                 FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
             );
             let cells = Cells::from_prepared(prepared, &stats);
             let mut actual = original.clone();
@@ -1057,31 +1066,53 @@ mod cell_paint_tests {
                     "retained replay has the final colors for this fade amount"
                 );
             }
-            let command = (0..area.bottom())
-                .find_map(|y| {
-                    let line: String = (0..area.right()).map(|x| actual[(x, y)].symbol()).collect();
-                    line.find("cargo build").map(|start| (y, start, line))
-                })
-                .ok_or("the fading command stays visible")?;
-            let (y, start, line) = command;
-            let slot = line
-                .find(SLOT)
-                .ok_or("the command retains its slot label")?;
-            for start in [start, slot] {
-                let x = u16::try_from(line[..start].chars().count())
-                    .map_err(|_| "command column fits in u16")?;
-                let cell = &actual[(x, y)];
-                assert_eq!(cell.bg, ground);
-                let contrast = tui_pane::contrast_ratio(cell.fg, ground)
-                    .ok_or("the fixture has explicit colors")?;
+            if elapsed == 3050 {
+                let mut paintings = cells.paintings.borrow_mut();
+                let painting = paintings
+                    .get_mut(&render::CellRowIdentity::from(&content))
+                    .ok_or("the fading cell keeps its painting")?;
+                render::ROW_FADE_PALETTES.with_borrow_mut(std::collections::HashMap::clear);
+                super::with_painted_rows(&cells.roster, &content, |rows| painting.recolor(rows));
                 assert!(
-                    contrast >= MINIMUM_FADED_TEXT_CONTRAST,
-                    "{ground:?} at {elapsed} ms: {contrast:.2}:1"
+                    render::ROW_FADE_PALETTES.with_borrow(std::collections::HashMap::is_empty),
+                    "unchanged ink uses the retained colors"
                 );
             }
+            assert_command_and_slot_contrast(&actual, ground, elapsed)?;
         }
         roster.advance(now + Duration::from_millis(3101), lifetime);
         assert!(roster.groups().is_empty());
+        Ok(())
+    }
+
+    fn assert_command_and_slot_contrast(
+        buffer: &Buffer,
+        ground: Color,
+        elapsed: u64,
+    ) -> Result<(), &'static str> {
+        let (y, start, line) = (0..buffer.area.bottom())
+            .find_map(|y| {
+                let line: String = (0..buffer.area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                line.find("cargo build").map(|start| (y, start, line))
+            })
+            .ok_or("the fading command stays visible")?;
+        let slot = line
+            .find(SLOT)
+            .ok_or("the command retains its slot label")?;
+        for start in [start, slot] {
+            let x = u16::try_from(line[..start].chars().count())
+                .map_err(|_| "command column fits in u16")?;
+            let cell = &buffer[(x, y)];
+            assert_eq!(cell.bg, ground);
+            let contrast = tui_pane::contrast_ratio(cell.fg, ground)
+                .ok_or("the fixture has explicit colors")?;
+            assert!(
+                contrast >= MINIMUM_FADED_TEXT_CONTRAST,
+                "{ground:?} at {elapsed} ms: {contrast:.2}:1"
+            );
+        }
         Ok(())
     }
 
@@ -1097,8 +1128,14 @@ mod cell_paint_tests {
                 TileContent::Group(app.roster.visible(&[]).groups()[0].id.clone())
             };
             let view = CommandView::long();
-            let prepared =
-                tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable);
+            let prepared = tables.for_frame(
+                &mut app.roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            );
             let cells = Cells::from_prepared(prepared, &stats);
             let area = Rect::new(0, 0, 160, 80);
             let original = Buffer::empty(area);
@@ -1119,8 +1156,14 @@ mod cell_paint_tests {
                     unattributed:          0,
                 });
             }
-            let prepared =
-                tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable);
+            let prepared = tables.for_frame(
+                &mut app.roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            );
             let cells = Cells::from_prepared(prepared, &stats);
             let mut actual = original.clone();
             CELL_CONTENT_PAINTS.with(|count| count.set(0));
@@ -1351,14 +1394,28 @@ mod cell_paint_tests {
         let area = Rect::new(0, 0, 160, height);
         let original = Buffer::empty(area);
         let cells = Cells::from_prepared(
-            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            tables.for_frame(
+                &mut roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            ),
             &stats,
         );
         let mut first = original.clone();
         cells.draw(&mut first, &content, area, Color::Black);
         roster.observe(vec![after], now);
         let cells = Cells::from_prepared(
-            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            tables.for_frame(
+                &mut roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            ),
             &stats,
         );
         // Each frame starts from the grid the painting was recorded over.
@@ -1423,6 +1480,7 @@ mod cell_paint_tests {
                 CommandView::long(),
                 80,
                 FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
             ),
             &stats,
         );
@@ -1441,6 +1499,7 @@ mod cell_paint_tests {
                 CommandView::long(),
                 80,
                 FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
             ),
             &stats,
         );
@@ -1535,14 +1594,28 @@ mod cell_paint_tests {
         let area = Rect::new(3, 5, 160, 80);
         let original = Buffer::empty(Rect::new(0, 0, 180, 90));
         let cells = Cells::from_prepared(
-            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            tables.for_frame(
+                &mut roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            ),
             &stats,
         );
         let mut first = original.clone();
         cells.draw(&mut first, &content, area, ground);
         roster.observe(vec![after], now);
         let cells = Cells::from_prepared(
-            tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            tables.for_frame(
+                &mut roster,
+                &[],
+                view,
+                80,
+                FreeDiskSpace::Unavailable,
+                DisplayFrameTime::Live,
+            ),
             &stats,
         );
         let mut actual = original;
@@ -1589,7 +1662,14 @@ mod cell_paint_tests {
                 unattributed:          0,
             });
             Cells::from_prepared(
-                tables.for_frame(roster, &[], view, 80, FreeDiskSpace::Unavailable),
+                tables.for_frame(
+                    roster,
+                    &[],
+                    view,
+                    80,
+                    FreeDiskSpace::Unavailable,
+                    DisplayFrameTime::Live,
+                ),
                 &stats,
             )
         };

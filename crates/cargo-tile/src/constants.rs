@@ -285,7 +285,7 @@ pub(crate) const ANCESTRY_MIN_COMMAND_WIDTH: u16 = 8;
 pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// What the status line says while the attract screen is being shown
 /// because it was asked for. Stands alone for the same reason
-/// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
+/// [`PAUSED_NOTE_LABEL`] does, and says the same kind of thing: the
 /// grid is still there, it is being drawn over.
 #[cfg(feature = "attract")]
 pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
@@ -399,7 +399,7 @@ pub(crate) const FLAG_MARK: char = '-';
 /// What the status line says while the display is held still. It stands
 /// alone rather than labelling a value: there is nothing to report but
 /// that nothing is being reported.
-pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
+pub(crate) const PAUSED_NOTE_LABEL: &str = "paused";
 /// Blank rows between one working directory's table and the next.
 pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
 /// Rows the working-directory header above each group's table occupies.
@@ -440,7 +440,7 @@ pub(crate) const PROCESS_IDLE_POLL_MILLIS: u64 = 2_000;
 pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
 /// What the status line says while every cell is spelling out its
 /// command lines in full. Stands alone like [`ATTRACT_NOTE_LABEL`] and
-/// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
+/// [`PAUSED_NOTE_LABEL`], and says the thing the display cannot: a cell
 /// whose rows wrap three deep in manifest paths is doing it because it
 /// was asked to, not because the commands grew.
 pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "processes";
