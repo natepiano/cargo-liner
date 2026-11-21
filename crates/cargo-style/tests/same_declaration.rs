@@ -149,15 +149,23 @@ fn assert_relocation_reply(root: &Path, oracle: &OracleReplies) -> TestResult<()
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stderr.as_slice(), b"");
-    let reply: Value = serde_json::from_slice(&output.stdout)?;
+    let mut reply: Value = serde_json::from_slice(&output.stdout)?;
     let findings = reply["findings"]
-        .as_array()
+        .as_array_mut()
         .ok_or("missing finding replies")?;
     assert_eq!(findings.len(), ids.len());
-    for (actual, expected) in findings.iter().zip(&oracle.cases) {
-        assert_eq!(actual, &expected.answer, "{}", expected.name);
+    for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
+        if expected.answer.get("same_declaration").is_some() {
+            let entry = actual.as_object_mut().ok_or("expected a finding object")?;
+            assert!(
+                entry.remove("outside_rename").is_some(),
+                "{} is missing outside_rename",
+                expected.name
+            );
+        }
+        assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
-    assert_eq!(reply["schema"], 3);
+    assert_eq!(reply["schema"], 4);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})

@@ -139,7 +139,7 @@ fn assert_site_reply(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
     );
     assert_eq!(output.stderr.as_slice(), b"");
     let mut reply: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(reply["schema"], 3);
+    assert_eq!(reply["schema"], 4);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})
@@ -154,6 +154,11 @@ fn assert_site_reply(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
             assert!(
                 entry.remove("same_declaration").is_some(),
                 "{} is missing same_declaration",
+                expected.name
+            );
+            assert!(
+                entry.remove("outside_rename").is_some(),
+                "{} is missing outside_rename",
                 expected.name
             );
         }

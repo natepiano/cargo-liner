@@ -25,6 +25,9 @@ use crate::ledger_read::LedgerSnapshot;
 use crate::original_site::OriginalSite;
 use crate::original_site::SiteProofError;
 use crate::original_site::SiteReader;
+use crate::outside_rename::OutsideReader;
+use crate::outside_rename::OutsideRename;
+use crate::outside_rename::OutsideSourceFailure;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
 use crate::same_declaration::RelocationFailure;
@@ -64,6 +67,13 @@ pub(crate) enum FindingFailure {
         commit:     String,
         synced_tip: String,
         source:     Box<RelocationFailure>,
+    },
+    #[error("cannot prove outside rename for {path} from {commit} to {synced_tip}")]
+    OutsideRename {
+        path:       String,
+        commit:     String,
+        synced_tip: String,
+        source:     Box<OutsideSourceFailure>,
     },
     #[error("cannot write the finding reply")]
     Reply(#[from] serde_json::Error),
@@ -153,6 +163,7 @@ impl FindingProof {
                 let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
                 let mut source = FindingSource::open(repo)?;
                 let mut relocation_reader = RelocationReader::default();
+                let mut outside_reader = OutsideReader::default();
                 reply(
                     FINDING_PROOF_REPLY_SCHEMA,
                     ids,
@@ -174,6 +185,10 @@ impl FindingProof {
                             &anchor,
                             &finding.site,
                         )?;
+                        let read = match &anchor {
+                            FindingAnchor::Anchored(anchor) => anchor.commit.as_str(),
+                            FindingAnchor::NeedsJudgment { .. } => tip,
+                        };
                         let same_declaration = relocation_reader
                             .prove(
                                 &mut source,
@@ -184,10 +199,22 @@ impl FindingProof {
                             )
                             .map_err(|source| FindingFailure::Relocation {
                                 path:       finding.anchor.path.clone(),
-                                commit:     match &anchor {
-                                    FindingAnchor::Anchored(anchor) => anchor.commit.clone(),
-                                    FindingAnchor::NeedsJudgment { .. } => tip.to_owned(),
-                                },
+                                commit:     read.to_owned(),
+                                synced_tip: tip.to_owned(),
+                                source:     Box::new(source),
+                            })?;
+                        let outside_rename = outside_reader
+                            .prove(
+                                &mut source,
+                                &mut relocation_reader,
+                                tip,
+                                &finding.anchor,
+                                &anchor,
+                                &same_declaration,
+                            )
+                            .map_err(|source| FindingFailure::OutsideRename {
+                                path:       source.path.clone(),
+                                commit:     read.to_owned(),
                                 synced_tip: tip.to_owned(),
                                 source:     Box::new(source),
                             })?;
@@ -196,6 +223,7 @@ impl FindingProof {
                             anchor,
                             original_site,
                             same_declaration: Box::new(same_declaration),
+                            outside_rename: Box::new(outside_rename),
                         })
                     },
                 )
@@ -258,6 +286,7 @@ enum FindingAnswer {
         anchor:           FindingAnchor,
         original_site:    OriginalSite,
         same_declaration: Box<SameDeclaration>,
+        outside_rename:   Box<OutsideRename>,
     },
     Unknown {
         id:     String,

@@ -161,18 +161,45 @@ pub(crate) enum InPlaceBasis {
     MatchingItem,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 pub(crate) struct Declaration {
     keyword: String,
     name:    String,
     owner:   Owner,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Owner {
     ModuleItem,
     ImplOrTraitItem { name: String },
+}
+
+impl Declaration {
+    pub(crate) const fn keyword(&self) -> &str { self.keyword.as_str() }
+
+    pub(crate) const fn name(&self) -> &str { self.name.as_str() }
+
+    pub(crate) fn has_owner(&self, owner: &DeclarationOwner) -> bool {
+        match (&self.owner, owner) {
+            (Owner::ModuleItem, DeclarationOwner::Module) => true,
+            (Owner::ImplOrTraitItem { name }, DeclarationOwner::ImplOrTrait(other)) => {
+                name == other
+            },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn matches(&self, item: &DeclaredItem) -> bool {
+        self.keyword == item.keyword() && self.name == item.name && self.has_owner(item.owner())
+    }
+
+    pub(crate) fn under_owner(mut self, name: &str) -> Self {
+        self.owner = Owner::ImplOrTraitItem {
+            name: name.to_owned(),
+        };
+        self
+    }
 }
 
 impl From<&DeclaredItem> for Declaration {
@@ -225,6 +252,10 @@ enum GainedDestinations {
 }
 
 impl RelocationReader {
+    pub(crate) const fn source_readers(&mut self) -> (&mut DeclarationSource, &mut TraitReader) {
+        (&mut self.declarations, &mut self.trait_reader)
+    }
+
     pub(crate) fn prove(
         &mut self,
         source: &mut FindingSource<'_>,

@@ -147,14 +147,24 @@ struct Hunk {
     added:     usize,
 }
 
+pub(crate) struct PatchHeader {
+    pub(crate) old: PatchRange,
+    pub(crate) new: PatchRange,
+}
+
+pub(crate) struct PatchRange {
+    pub(crate) start: usize,
+    pub(crate) count: usize,
+}
+
 fn patch_hunks(diff: &str) -> Vec<Hunk> {
     let mut hunks = Vec::new();
     for line in split_lines(diff) {
-        if let Some((old_start, old_count)) = old_range(line) {
+        if let Some(header) = patch_header(line) {
             hunks.push(Hunk {
-                old_start,
-                old_count,
-                added: 0,
+                old_start: header.old.start,
+                old_count: header.old.count,
+                added:     0,
             });
         } else if let Some(hunk) = hunks.last_mut()
             && line.starts_with('+')
@@ -165,16 +175,21 @@ fn patch_hunks(diff: &str) -> Vec<Hunk> {
     hunks
 }
 
-fn old_range(line: &str) -> Option<(usize, usize)> {
+pub(crate) fn patch_header(line: &str) -> Option<PatchHeader> {
     let (old, new) = line.strip_prefix("@@ -")?.split_once(" +")?;
     let (new, _) = new.split_once(" @@")?;
-    let _ = diff_range(new)?;
-    diff_range(old)
+    Some(PatchHeader {
+        old: diff_range(old)?,
+        new: diff_range(new)?,
+    })
 }
 
-fn diff_range(range: &str) -> Option<(usize, usize)> {
+fn diff_range(range: &str) -> Option<PatchRange> {
     let (start, count) = range.split_once(',').unwrap_or((range, "1"));
-    Some((decimal(start)?, decimal(count)?))
+    Some(PatchRange {
+        start: decimal(start)?,
+        count: decimal(count)?,
+    })
 }
 
 fn decimal(text: &str) -> Option<usize> {
