@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::Write;
+use std::rc::Rc;
 
 use gix::ObjectId;
 #[cfg(test)]
@@ -116,9 +117,20 @@ pub(crate) enum FactReading {
 }
 
 pub(crate) enum BlobSource {
-    Utf8(String),
-    NotUtf8,
+    Utf8 { text: String, syntax: BlobSyntax },
+    NotUtf8(String),
     Missing,
+}
+
+/// Syntax for a source read. `Stored` uses the tokens and declarations from `FactCache`.
+pub(crate) enum BlobSyntax {
+    Stored(Box<StoredSyntax>),
+    Unparsed,
+}
+
+pub(crate) struct StoredSyntax {
+    pub(crate) tokens:       Vec<Token>,
+    pub(crate) declarations: Rc<DeclaredFile>,
 }
 
 /// The Rust code identity of a UTF-8 blob.
@@ -141,8 +153,14 @@ impl CodeIdentity {
 impl FactReading {
     pub(crate) fn into_source(self) -> BlobSource {
         match self {
-            Self::Read { bundle, .. } => BlobSource::Utf8(bundle.text),
-            Self::MalformedUtf8(_) => BlobSource::NotUtf8,
+            Self::Read { bundle, .. } => BlobSource::Utf8 {
+                text:   bundle.text,
+                syntax: BlobSyntax::Stored(Box::new(StoredSyntax {
+                    tokens:       bundle.tokens,
+                    declarations: Rc::new(bundle.declarations),
+                })),
+            },
+            Self::MalformedUtf8(bundle) => BlobSource::NotUtf8(bundle.text),
             Self::MissingBlob => BlobSource::Missing,
         }
     }
@@ -318,7 +336,12 @@ fn rust_code(
             )
         })
         .collect();
-    let serialized = serde_json::to_string(&(code, docs))?;
+    Ok(CodeIdentity::Digest(python_json_digest(&(code, docs))?))
+}
+
+/// Hash compact JSON with the same ASCII escapes as Python.
+pub(crate) fn python_json_digest(value: &impl Serialize) -> Result<String, Error> {
+    let serialized = serde_json::to_string(value)?;
     let mut ascii = String::with_capacity(serialized.len());
     for character in serialized.chars() {
         if character <= '~' {
@@ -338,7 +361,7 @@ fn rust_code(
             .map_err(std::io::Error::other)
             .map_err(Error::io)?;
     }
-    Ok(CodeIdentity::Digest(hexadecimal))
+    Ok(hexadecimal)
 }
 
 /// Python `len(text.replace("\r\n", "\n").replace("\r", "\n").splitlines())`.

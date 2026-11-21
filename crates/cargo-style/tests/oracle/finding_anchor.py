@@ -56,6 +56,13 @@ def source_commits(repo: Path) -> tuple[str, str]:
     (repo / "src/checkpoint.rs").write_text("// lead\n// absent\n", encoding="utf-8")
     patch_lines = f"// first\n// second\n{TARGET}\n// fourth\n// fifth\n// sixth\n// before\n"
     (repo / "src/patch.rs").write_text(patch_lines, encoding="utf-8")
+    retained = "\n".join("// same" if line in (2, 7, 10) else f"// retained {line}"
+                         for line in range(1, 12)) + "\n"
+    removed = ("/* Previous notes.\n"
+               + "note\v@@ -1,0 +1,2 @@\v+one\v+two\n"
+               + "More notes.\nLast note.\n*/\n")
+    comment_path = repo / "src/comment-removal.rs"
+    comment_path.write_text(removed + retained, encoding="utf-8")
     git(repo, "add", "src")
     git(repo, "commit", "-qm", "Write the judging base")
     base = git(repo, "rev-parse", "HEAD")
@@ -67,6 +74,7 @@ def source_commits(repo: Path) -> tuple[str, str]:
     (repo / "src/invalid.rs").write_bytes(original.encode() + b"// \xff\n")
     patch_text = patch_lines.replace("// before", "// after\v@@ -1,0 +1,1 @@\v+inserted")
     (repo / "src/patch.rs").write_text(patch_text, encoding="utf-8")
+    comment_path.write_text(retained, encoding="utf-8")
     git(repo, "add", "src")
     git(repo, "commit", "-qm", "Write the judging checkpoint")
     return base, git(repo, "rev-parse", "HEAD")
@@ -188,6 +196,7 @@ def main(root: Path) -> None:
         FindingCase("moved line", "src/moved.rs"),
         FindingCase("no source match", "src/stable.rs", text="absent at both commits"),
         FindingCase("skip undecodable checkpoint", "src/invalid.rs"),
+        FindingCase("deleted comment with a second hunk", "src/comment-removal.rs", text="// same", line=10),
         FindingCase("vertical tab in patch header", "src/patch.rs", line=3),
         FindingCase("skip undecodable tree", "src/stable.rs", ticket="undecodable"),
         FindingCase("judging ticket without revisions", "src/stable.rs", ticket="empty"),

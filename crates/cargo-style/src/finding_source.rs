@@ -1,5 +1,6 @@
 //! Read the Git objects and line map for finding anchors.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::Error;
@@ -7,15 +8,20 @@ use std::path::Path;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Output;
+use std::rc::Rc;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
+
+use toml::de::Error as TomlError;
 
 use crate::blob_reader::BlobReader;
 use crate::error::ReaderError;
 use crate::fact_store::FactCache;
 use crate::facts::BlobSource;
-use crate::source_lines;
+use crate::facts::BlobSyntax;
 use crate::source_lines::LineContinuity;
+use crate::source_lines::LineMapping;
+use crate::source_lines::PatchLineMap;
 use crate::source_lines::SiteLine;
 use crate::source_lines::SourceLines;
 
@@ -27,12 +33,22 @@ pub(crate) struct FindingSource<'a> {
     commits:     HashMap<String, CommitResolution>,
     trees:       HashMap<String, TreeBlobs>,
     sources:     HashMap<String, SourceText>,
+    ancestors:   HashMap<(String, String), bool>,
+    patches:     HashMap<(String, String, String), PatchLineMap>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FindingSourceFailure {
     #[error(transparent)]
     Read(#[from] ReaderError),
+    #[error("cannot parse committed TOML at {path}")]
+    InvalidTipToml {
+        path:   String,
+        #[source]
+        source: Box<TomlError>,
+    },
+    #[error("the synced tree at {0} contains a path that is not UTF-8")]
+    UndecodableSyncedTree(String),
     #[error("cannot find source blob {0}")]
     MissingBlob(String),
     #[error("cannot run git {command}")]
@@ -61,9 +77,25 @@ pub(crate) enum CommitResolution {
     Unresolved,
 }
 
-enum TreeBlobs {
-    Listed(HashMap<String, String>),
+pub(crate) enum TreeBlobs {
+    Listed(Rc<TreeEntries>),
     Undecodable,
+}
+
+pub(crate) type TreeEntries = BTreeMap<String, TreeEntry>;
+
+#[derive(PartialEq, Eq)]
+pub(crate) struct TreeEntry {
+    pub(crate) mode:   String,
+    pub(crate) object: String,
+    pub(crate) kind:   EntryKind,
+}
+
+#[derive(PartialEq, Eq)]
+pub(crate) enum EntryKind {
+    Blob,
+    Submodule,
+    Directory,
 }
 
 impl<'a> FindingSource<'a> {
@@ -77,6 +109,8 @@ impl<'a> FindingSource<'a> {
             commits: HashMap::new(),
             trees: HashMap::new(),
             sources: HashMap::new(),
+            ancestors: HashMap::new(),
+            patches: HashMap::new(),
         })
     }
 
@@ -113,27 +147,37 @@ impl<'a> FindingSource<'a> {
         commit: &str,
         path: &str,
     ) -> Result<Option<&str>, FindingSourceFailure> {
-        let blobs = match self.trees.entry(commit.to_owned()) {
+        Ok(match self.tree(commit)? {
+            TreeBlobs::Listed(entries) => entries
+                .get(path)
+                .filter(|entry| entry.kind == EntryKind::Blob)
+                .map(|entry| entry.object.as_str()),
+            TreeBlobs::Undecodable => None,
+        })
+    }
+
+    pub(crate) fn tree(&mut self, commit: &str) -> Result<&TreeBlobs, FindingSourceFailure> {
+        Ok(match self.trees.entry(commit.to_owned()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let trees = self.blob_reader.inventories(&[commit.to_owned()])?;
-                let blobs = trees
+                let entries = trees
                     .into_iter()
                     .flat_map(|tree| tree.entries)
-                    .try_fold(HashMap::new(), |mut blobs, (path, _, kind, blob)| {
-                        let path = String::from_utf8(path)?;
-                        if kind == "blob" {
-                            blobs.insert(path, blob);
-                        }
-                        Ok::<_, FromUtf8Error>(blobs)
+                    .map(|(path, mode, kind, object)| {
+                        let kind = match kind.as_str() {
+                            "tree" => EntryKind::Directory,
+                            "commit" => EntryKind::Submodule,
+                            _ => EntryKind::Blob,
+                        };
+                        Ok((String::from_utf8(path)?, TreeEntry { mode, object, kind }))
                     })
-                    .map_or(TreeBlobs::Undecodable, TreeBlobs::Listed);
-                entry.insert(blobs)
+                    .collect::<Result<TreeEntries, FromUtf8Error>>()
+                    .map_or(TreeBlobs::Undecodable, |entries| {
+                        TreeBlobs::Listed(Rc::new(entries))
+                    });
+                entry.insert(entries)
             },
-        };
-        Ok(match blobs {
-            TreeBlobs::Listed(blobs) => blobs.get(path).map(String::as_str),
-            TreeBlobs::Undecodable => None,
         })
     }
 
@@ -142,66 +186,111 @@ impl<'a> FindingSource<'a> {
         blob: &str,
         line: usize,
     ) -> Result<SiteLine<'_>, FindingSourceFailure> {
-        let source = match self.sources.entry(blob.to_owned()) {
+        Ok(match self.source(blob)? {
+            SourceText::Utf8(source) => source.lines.line(line),
+            SourceText::NotUtf8(_) => SiteLine::Unavailable,
+        })
+    }
+
+    pub(crate) fn source(&mut self, blob: &str) -> Result<&SourceText, FindingSourceFailure> {
+        Ok(match self.sources.entry(blob.to_owned()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let source = match self.blob_reader.source(blob, &mut self.fact_cache)? {
-                    BlobSource::Utf8(text) => SourceText::Utf8(text.into()),
-                    BlobSource::NotUtf8 => SourceText::NotUtf8,
+                    BlobSource::Utf8 { text, syntax } => SourceText::Utf8(Rc::new(Utf8Source {
+                        lines: text.into(),
+                        syntax,
+                    })),
+                    BlobSource::NotUtf8(text) => SourceText::NotUtf8(text),
                     BlobSource::Missing => {
                         return Err(FindingSourceFailure::MissingBlob(blob.to_owned()));
                     },
                 };
                 entry.insert(source)
             },
-        };
-        Ok(match source {
-            SourceText::Utf8(source) => source.line(line),
-            SourceText::NotUtf8 => SiteLine::Unavailable,
         })
     }
 
+    pub(crate) fn is_ancestor(
+        &mut self,
+        base: &str,
+        tip: &str,
+    ) -> Result<bool, FindingSourceFailure> {
+        let key = (base.to_owned(), tip.to_owned());
+        if let Some(&answer) = self.ancestors.get(&key) {
+            return Ok(answer);
+        }
+        let output = git(self.repo, "merge-base", &["--is-ancestor", base, tip])?;
+        let answer = if output.status.code() == Some(1) {
+            false
+        } else {
+            let _ = successful("merge-base", output)?;
+            true
+        };
+        self.ancestors.insert(key, answer);
+        Ok(answer)
+    }
+
     pub(crate) fn line_continuity(
-        &self,
+        &mut self,
         base: &str,
         checkpoint: &str,
         path: &str,
         line: usize,
     ) -> Result<LineContinuity, FindingSourceFailure> {
-        let ancestor = git(
-            self.repo,
-            "merge-base",
-            &["--is-ancestor", base, checkpoint],
-        )?;
-        if ancestor.status.code() == Some(1) {
+        if !self.is_ancestor(base, checkpoint)? {
             return Ok(LineContinuity::Unproved);
         }
-        let _ = successful("merge-base", ancestor)?;
-        let diff = git(
-            self.repo,
-            "diff",
-            &[
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--no-renames",
-                "--diff-algorithm=myers",
-                "--no-indent-heuristic",
-                "--unified=0",
-                base,
-                checkpoint,
-                "--",
-                path,
-            ],
-        )?;
-        let diff = successful("diff", diff)?;
-        Ok(source_lines::continuity(git_text("diff", &diff)?, line))
+        Ok(match self.mapped_line(base, checkpoint, path, line)? {
+            LineMapping::Mapped(mapped) if mapped == line => LineContinuity::Unchanged,
+            _ => LineContinuity::Unproved,
+        })
+    }
+
+    pub(crate) fn mapped_line(
+        &mut self,
+        base: &str,
+        tip: &str,
+        path: &str,
+        line: usize,
+    ) -> Result<LineMapping, FindingSourceFailure> {
+        let key = (base.to_owned(), tip.to_owned(), path.to_owned());
+        let line_map = match self.patches.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let diff = git(
+                    self.repo,
+                    "diff",
+                    &[
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-color",
+                        "--no-renames",
+                        "--diff-algorithm=myers",
+                        "--no-indent-heuristic",
+                        "--unified=0",
+                        base,
+                        tip,
+                        "--",
+                        path,
+                    ],
+                )?;
+                let diff = successful("diff", diff)?;
+                entry.insert(PatchLineMap::from(git_text("diff", &diff)?))
+            },
+        };
+        Ok(line_map.at(line))
     }
 }
 
-enum SourceText {
-    Utf8(SourceLines),
-    NotUtf8,
+pub(crate) enum SourceText {
+    Utf8(Rc<Utf8Source>),
+    NotUtf8(String),
+}
+
+pub(crate) struct Utf8Source {
+    pub(crate) lines:  SourceLines,
+    pub(crate) syntax: BlobSyntax,
 }
 
 fn git(

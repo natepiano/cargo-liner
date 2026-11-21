@@ -1,6 +1,8 @@
 //! The Python declaration reader, with the same word spans and ownership rules.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 
 use serde::Deserialize;
 use serde::Deserializer;
@@ -79,6 +81,32 @@ pub(crate) struct DeclaredItem {
     implemented_type:  ImplMembership,
 }
 
+impl DeclaredItem {
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.keyword == other.keyword && self.name == other.name && self.owner == other.owner
+    }
+
+    pub(crate) fn same_readable_membership(&self, other: &Self) -> bool {
+        !matches!(
+            self.implemented_type,
+            ImplMembership::State(ImplementationState::Unreadable)
+        ) && !matches!(
+            self.implemented_trait,
+            ImplMembership::State(ImplementationState::Unreadable)
+        ) && self.implemented_type == other.implemented_type
+            && self.implemented_trait == other.implemented_trait
+    }
+
+    pub(crate) fn has_proved_body(&self) -> bool {
+        matches!(
+            self.keyword.as_str(),
+            "fn" | "struct" | "enum" | "union" | "type" | "trait"
+        )
+    }
+
+    pub(crate) const fn lines(&self) -> RangeInclusive<usize> { self.first_line..=self.last_line }
+}
+
 /// The word indexes of a complete or incomplete braced body.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct BodyWords {
@@ -138,6 +166,50 @@ pub(crate) struct DeclaredFile {
     pub(crate) items: Vec<DeclaredItem>,
     pub(crate) spans: Vec<ItemSpan>,
     others:           Vec<ItemSpan>,
+}
+
+pub(crate) enum DeclarationAt<'a> {
+    Named(&'a DeclaredItem),
+    Unnamed,
+}
+
+impl DeclaredFile {
+    pub(crate) fn at(&self, word_lines: &[usize], line: usize) -> DeclarationAt<'_> {
+        let Some(&target) = word_lines.get(word_lines.partition_point(|&word| word < line)) else {
+            return DeclarationAt::Unnamed;
+        };
+        let readable = self
+            .items
+            .iter()
+            .zip(&self.spans)
+            .filter(|(item, _)| item.lines().contains(&target))
+            .map(|(item, span)| {
+                (
+                    (item.first_line, Reverse(item.last_line), span.keyword),
+                    DeclarationAt::Named(item),
+                )
+            });
+        let others = self.others.iter().filter_map(|span| {
+            let first = word_lines[span.keyword];
+            let last = word_lines[span.end];
+            (first..=last)
+                .contains(&target)
+                .then_some(((first, Reverse(last), span.keyword), DeclarationAt::Unnamed))
+        });
+        readable
+            .chain(others)
+            .max_by_key(|(key, _)| *key)
+            .map_or(DeclarationAt::Unnamed, |(_, item)| item)
+    }
+
+    pub(crate) fn unique(&self, item: &DeclaredItem) -> bool {
+        self.items
+            .iter()
+            .filter(|candidate| candidate.same_declaration(item))
+            .take(2)
+            .count()
+            == 1
+    }
 }
 
 /// A readable impl owner, or an owner whose members Python omits.

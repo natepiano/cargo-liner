@@ -1,5 +1,7 @@
 //! Read source coordinates and map equal lines across a patch.
 
+use std::ops::RangeInclusive;
+
 use crate::tokenizer;
 use crate::unicode_tables::DECIMAL;
 use crate::unicode_tables::LINE_BOUNDARIES;
@@ -34,54 +36,94 @@ impl From<String> for SourceLines {
 }
 
 impl SourceLines {
-    pub(crate) fn line(&self, line: usize) -> SiteLine<'_> {
-        let Some(index) = line.checked_sub(1) else {
-            return SiteLine::Unavailable;
-        };
-        let Some(&end) = self.ends.get(index) else {
-            return SiteLine::Unavailable;
-        };
-        let start = index
-            .checked_sub(1)
-            .map_or(0, |previous| self.ends[previous]);
-        SiteLine::Text(&self.text[start..end])
+    pub(crate) const fn text(&self) -> &str { self.text.as_str() }
+
+    pub(crate) const fn count(&self) -> usize { self.ends.len() }
+
+    pub(crate) fn lines(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut start = 0;
+        self.ends.iter().map(move |&end| {
+            let line = &self.text[start..end];
+            start = end;
+            line
+        })
     }
+
+    pub(crate) fn slice(&self, lines: RangeInclusive<usize>) -> &str {
+        let start = lines.start().saturating_sub(2);
+        let end = lines.end().saturating_sub(1);
+        let start = if *lines.start() <= 1 {
+            0
+        } else {
+            self.ends.get(start).copied().unwrap_or(self.text.len())
+        };
+        let end = self.ends.get(end).copied().unwrap_or(self.text.len());
+        &self.text[start..end]
+    }
+
+    pub(crate) fn line(&self, line: usize) -> SiteLine<'_> {
+        if line == 0 || line > self.ends.len() {
+            SiteLine::Unavailable
+        } else {
+            SiteLine::Text(self.slice(line..=line))
+        }
+    }
+}
+
+/// A position in the unchanged intervals of a Myers patch.
+#[derive(Clone, Copy)]
+pub(crate) enum LineMapping {
+    Mapped(usize),
+    Changed,
 }
 
 /// Read one coordinate from the same intervals as Python `unchanged_lines`.
-pub(crate) fn continuity(diff: &str, line: usize) -> LineContinuity {
-    let mut old_cursor = 1;
-    let mut removed = 0_usize;
-    let mut added = 0;
-    let mut result = LineContinuity::Unproved;
-    for hunk in patch_hunks(diff) {
-        let boundary = hunk
-            .old_start
-            .saturating_add(usize::from(hunk.old_count == 0));
-        if (old_cursor..boundary).contains(&line) {
-            result = line_continuity(removed, added);
-        }
-        old_cursor = boundary.saturating_add(hunk.old_count);
-        removed = removed.saturating_add(hunk.old_count);
-        added += hunk.added;
-    }
-    if line >= old_cursor {
-        line_continuity(removed, added)
-    } else {
-        result
+#[cfg(test)]
+fn continuity(diff: &str, line: usize) -> LineContinuity {
+    match PatchLineMap::from(diff).at(line) {
+        LineMapping::Mapped(mapped) if mapped == line => LineContinuity::Unchanged,
+        _ => LineContinuity::Unproved,
     }
 }
 
-const fn line_continuity(removed: usize, added: usize) -> LineContinuity {
-    if removed == added {
-        LineContinuity::Unchanged
-    } else {
-        LineContinuity::Unproved
+pub(crate) struct PatchLineMap(Vec<Hunk>);
+
+impl From<&str> for PatchLineMap {
+    fn from(diff: &str) -> Self { Self(patch_hunks(diff)) }
+}
+
+impl PatchLineMap {
+    pub(crate) fn at(&self, line: usize) -> LineMapping {
+        let mut old_cursor = 1;
+        let mut displacement = 0_i128;
+        let mut result = LineMapping::Changed;
+        for hunk in &self.0 {
+            let boundary = hunk
+                .old_start
+                .saturating_add(usize::from(hunk.old_count == 0));
+            if (old_cursor..boundary).contains(&line) {
+                result = translate_line(line, displacement);
+            }
+            displacement += hunk.added as i128 - hunk.old_count as i128;
+            old_cursor = boundary.saturating_add(hunk.old_count);
+        }
+        if line >= old_cursor {
+            translate_line(line, displacement)
+        } else {
+            result
+        }
     }
+}
+
+fn translate_line(line: usize, displacement: i128) -> LineMapping {
+    usize::try_from(line as i128 + displacement)
+        .ok()
+        .filter(|&mapped| mapped > 0)
+        .map_or(LineMapping::Changed, LineMapping::Mapped)
 }
 
 /// Split as Python `str.splitlines(keepends=True)` does.
-fn split_lines(mut text: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn split_lines(mut text: &str) -> impl Iterator<Item = &str> {
     std::iter::from_fn(move || {
         if text.is_empty() {
             return None;
