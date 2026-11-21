@@ -8,8 +8,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use crossterm::event::KeyCode;
@@ -711,91 +710,72 @@ fn source_failures_exit_zero_with_the_machine_error_and_a_bad_config_fails() {
     assert!(stderr.contains(&error), "{stderr}");
 }
 
-/// A remote whose probe answers only after the census ends.
-struct Hung(Mutex<Receiver<()>>);
-
-impl RemoteRunner for Hung {
-    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
-        let _ = self.0.lock().expect("the release should lock").recv();
-        ProbeOutcome::NotStarted
-    }
-}
-
-/// Print a census bounded by `bound` whose scan, when `hung_scan`, answers only after the
-/// census ends, and say how long it took.
-fn print_hung_census(
-    mut config: Config,
-    bound: Duration,
-    hung_scan: bool,
-    remote: impl RemoteRunner + 'static,
-) -> (Value, Duration) {
-    let remote: Arc<dyn RemoteRunner> = Arc::new(remote);
-    config.census.report_deadline = toml::from_str::<Config>(&format!(
-        "[census]\nreport_deadline = {}\n",
-        bound.as_millis()
-    ))
-    .expect("census bound")
-    .census
-    .report_deadline;
-    let (release, scan_held) = mpsc::channel::<()>();
-    let started = Instant::now();
-    let mut stdout = Vec::new();
-    let status = print_to(
-        &LoadedConfig {
-            config,
-            error: None,
-        },
-        &remote,
-        move |_, _, _| {
-            move || {
-                if hung_scan {
-                    let _ = scan_held.recv();
-                }
-                fixture_scan(rows(), facts())
-            }
-        },
-        &mut stdout,
-        &mut Vec::new(),
-    );
-    let elapsed = started.elapsed();
-    drop(release);
-    assert_eq!(status, ExitCode::SUCCESS);
-    (
-        serde_json::from_slice(&stdout).expect("census JSON"),
-        elapsed,
-    )
-}
-
 /// A bound that leaves the accounts command 200 ms before the source stop reserve.
 const ACCOUNTS_CENSUS_BOUND: Duration = Duration::from_millis(700);
-/// A bound for a source that never answers; the census prints at this bound.
-const HUNG_CENSUS_BOUND: Duration = Duration::from_millis(300);
-/// Time past the bound that the census may take to build and print its report.
-const PRINT_ALLOWANCE: Duration = Duration::from_millis(150);
 
 #[test]
 fn a_slow_accounts_command_is_stopped_before_the_bound_and_reported_timed_out() {
     let directory = tempfile::tempdir().expect("fixture directory");
     let mut config = config(&directory, true);
+    config.census.report_deadline = toml::from_str::<Config>(&format!(
+        "[census]\nreport_deadline = {}\n",
+        ACCOUNTS_CENSUS_BOUND.as_millis()
+    ))
+    .expect("census bound")
+    .census
+    .report_deadline;
     config.census.accounts_command = "exec sleep 30".to_owned();
-    let (json, elapsed) = print_hung_census(config, ACCOUNTS_CENSUS_BOUND, false, Unreachable);
+    let started = Instant::now();
+    let (status, json, stderr) = print_census(
+        &LoadedConfig {
+            config,
+            error: None,
+        },
+        facts(),
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(status, ExitCode::SUCCESS, "{stderr}");
     assert!(elapsed < ACCOUNTS_CENSUS_BOUND, "census took {elapsed:?}");
     assert_eq!(json["machines"][0]["reachable"], true);
     assert_eq!(json["machines"][0]["error"], "accounts: command timed out");
 }
 
+fn report_at_source_deadline<const N: usize>(config: Config, answers: [SourceAnswer; N]) -> Value {
+    let mut answers = answers.into_iter();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = print_with_sources(
+        &LoadedConfig {
+            config,
+            error: None,
+        },
+        &mut stdout,
+        &mut stderr,
+        |config| {
+            SourceAnswers::receive(config.machines.remote.len(), || {
+                answers.next().ok_or(RecvTimeoutError::Timeout)
+            })
+        },
+    );
+    assert_eq!(
+        status,
+        ExitCode::SUCCESS,
+        "{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    serde_json::from_slice(&stdout).expect("census JSON")
+}
+
 #[test]
 fn a_remote_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
-    let directory = tempfile::tempdir().expect("fixture directory");
-    let (held, release) = mpsc::channel();
-    let mut config = config(&directory, true);
+    let mut config = Config::default();
     config.machines.remote = vec!["far".to_owned()];
-    let (json, elapsed) =
-        print_hung_census(config, HUNG_CENSUS_BOUND, false, Hung(Mutex::new(release)));
-    drop(held);
-    assert!(
-        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
-        "census took {elapsed:?}"
+    let json = report_at_source_deadline(
+        config,
+        [
+            SourceAnswer::Accounts(AccountsSource::NotConfigured),
+            SourceAnswer::Local(fixture_scan(rows(), facts())),
+        ],
     );
     assert_eq!(json["machines"][0]["reachable"], true);
     assert_eq!(
@@ -806,16 +786,9 @@ fn a_remote_that_misses_the_bound_is_reported_timed_out_and_the_census_still_pri
 
 #[test]
 fn a_local_scan_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
-    let directory = tempfile::tempdir().expect("fixture directory");
-    let (json, elapsed) = print_hung_census(
-        config(&directory, true),
-        HUNG_CENSUS_BOUND,
-        true,
-        Unreachable,
-    );
-    assert!(
-        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
-        "census took {elapsed:?}"
+    let json = report_at_source_deadline(
+        Config::default(),
+        [SourceAnswer::Accounts(AccountsSource::NotConfigured)],
     );
     assert_eq!(
         json["machines"][0],

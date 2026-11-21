@@ -9,6 +9,7 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Instant;
 
@@ -523,15 +524,23 @@ impl SourceAnswers {
         thread::spawn(move || {
             let _ = sender.send(SourceAnswer::Local(scan()));
         });
+        Self::receive(config.machines.remote.len(), || {
+            receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        })
+    }
+
+    /// Collect the available answers until the receiver reports a deadline or closes.
+    fn receive(
+        remote_count: usize,
+        mut receive: impl FnMut() -> Result<SourceAnswer, RecvTimeoutError>,
+    ) -> Self {
         let mut answers = Self {
             local:    None,
             accounts: None,
-            remotes:  vec![None; config.machines.remote.len()],
+            remotes:  vec![None; remote_count],
         };
-        for _ in 0..answers.remotes.len() + 2 {
-            let Ok(answer) =
-                receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            else {
+        for _ in 0..remote_count + 2 {
+            let Ok(answer) = receive() else {
                 break;
             };
             match answer {
@@ -558,21 +567,31 @@ where
     Scan: FnOnce() -> CensusScan + Send + 'static,
 {
     let started = Instant::now();
+    print_with_sources(loaded, stdout, stderr, |config| {
+        let bound = config.census.report_deadline.duration();
+        let source_time = bound.saturating_sub(CENSUS_SOURCE_STOP_RESERVE);
+        let stop = started + source_time;
+        let scan = prepare_scan(
+            config,
+            config.census.herdr_probe_wait.at_most(source_time),
+            stop,
+        );
+        SourceAnswers::collect(config, runner, scan, stop, started + bound)
+    })
+}
+
+fn print_with_sources(
+    loaded: &LoadedConfig,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    collect: impl FnOnce(&Config) -> SourceAnswers,
+) -> ExitCode {
     if let Some(error) = &loaded.error {
         let _ = writeln!(stderr, "{BINARY_NAME}: {CENSUS_COMMAND}: {error}");
         return ExitCode::FAILURE;
     }
-    let config = &loaded.config;
-    let remotes = &config.machines.remote;
-    let bound = config.census.report_deadline.duration();
-    let source_time = bound.saturating_sub(CENSUS_SOURCE_STOP_RESERVE);
-    let stop = started + source_time;
-    let scan = prepare_scan(
-        config,
-        config.census.herdr_probe_wait.at_most(source_time),
-        stop,
-    );
-    let answers = SourceAnswers::collect(config, runner, scan, stop, started + bound);
+    let remotes = &loaded.config.machines.remote;
+    let answers = collect(&loaded.config);
     let accounts = answers.accounts.unwrap_or_else(AccountsSource::timed_out);
     let machine = local_machine_name();
     let mut census = Census::new(machine.clone());

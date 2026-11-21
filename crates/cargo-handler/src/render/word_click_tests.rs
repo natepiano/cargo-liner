@@ -5,6 +5,10 @@ use std::path::Path;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use notify::Event;
+use notify::EventKind;
+use notify::event::ModifyKind;
+use notify::event::RenameMode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
@@ -857,6 +861,28 @@ fn replace_emphasis(path: &Path, value: &str) -> TestResult {
 }
 
 #[test]
+fn config_reader_reports_an_atomic_replacement_after_a_rename_event() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("config.toml");
+    let mut reads = ConfigFileReadFixture::default();
+    replace_emphasis(&path, "subtle")?;
+    assert!(matches!(
+        reads.read(&path, "reader startup with subtle emphasis")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
+    ));
+
+    replace_emphasis(&path, "strong")?;
+    let event =
+        Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To))).add_path(path.clone());
+    assert!(matches!(
+        reads.read_after_event(&path, event, "reader replacement with strong emphasis")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Strong)
+    ));
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "FSEvents can exceed the test deadline")]
 fn config_watcher_reports_startup_and_atomic_replacement() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("config.toml");
