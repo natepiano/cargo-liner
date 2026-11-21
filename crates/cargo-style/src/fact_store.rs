@@ -23,11 +23,34 @@ use crate::cache_constants::FACT_DATABASE_NAME;
 use crate::constants::BUSY_TIMEOUT;
 use crate::constants::WAL_RETRY_INTERVAL;
 use crate::facts::FactReading;
+use crate::sqlite_read;
+use crate::sqlite_read::DatabaseFiles;
+use crate::sqlite_read::DatabaseReadMode;
 use crate::state_directory::STATE_DIRECTORY;
 
 pub(crate) struct FactStore {
     database:       Connection,
     reader_version: ReaderVersion,
+    access:         FactStoreAccess,
+}
+
+enum FactStoreAccess {
+    Writable,
+    QuietCache {
+        path:  PathBuf,
+        files: Box<DatabaseFiles>,
+    },
+}
+
+impl FactStoreAccess {
+    fn verify(&self) -> Result<(), CacheFailure> {
+        if let Self::QuietCache { path, files } = self
+            && DatabaseFiles::read(path)? != **files
+        {
+            return Err(CacheFailure::CacheChanged);
+        }
+        Ok(())
+    }
 }
 
 const CREATE_FACTS: &str = "CREATE TABLE IF NOT EXISTS blob_facts (
@@ -64,6 +87,8 @@ pub(crate) enum CacheFailure {
     Facts(#[from] serde_json::Error),
     #[error("SQLite returned journal mode {0} when WAL was requested")]
     JournalMode(String),
+    #[error("the fact cache has an active journal or changed during the read")]
+    CacheChanged,
 }
 
 /// The storage state of one requested blob at the current reader version.
@@ -91,6 +116,13 @@ impl NewFactRow {
 impl FactCache {
     pub(crate) fn open(common_dir: &Path) -> Self {
         match FactStore::open(common_dir) {
+            Ok(store) => Self::Open(store),
+            Err(reason) => Self::Unavailable(reason),
+        }
+    }
+
+    pub(crate) fn open_existing(common_dir: &Path) -> Self {
+        match FactStore::open_existing(common_dir) {
             Ok(store) => Self::Open(store),
             Err(reason) => Self::Unavailable(reason),
         }
@@ -133,6 +165,9 @@ impl FactCache {
 impl FactStore {
     fn open(common_dir: &Path) -> Result<Self, CacheFailure> {
         let path = database_path(common_dir)?;
+        if let Some(directory) = path.parent() {
+            fs::create_dir_all(directory)?;
+        }
         let database = Connection::open(path)?;
         database.busy_timeout(BUSY_TIMEOUT)?;
         enable_wal(&database)?;
@@ -140,16 +175,36 @@ impl FactStore {
         Ok(Self {
             database,
             reader_version: ReaderVersion::CURRENT,
+            access: FactStoreAccess::Writable,
+        })
+    }
+
+    fn open_existing(common_dir: &Path) -> Result<Self, CacheFailure> {
+        let path = database_path(common_dir)?.canonicalize()?;
+        let files = DatabaseFiles::read(&path)?;
+        if !files.is_quiet() {
+            return Err(CacheFailure::CacheChanged);
+        }
+        let database = sqlite_read::open_read_only(&path, DatabaseReadMode::Immutable)?;
+        Ok(Self {
+            database,
+            reader_version: ReaderVersion::CURRENT,
+            access: FactStoreAccess::QuietCache {
+                path,
+                files: Box::new(files),
+            },
         })
     }
 
     fn lookup(&self, blob: ObjectId) -> Result<CachedFact, CacheFailure> {
+        self.access.verify()?;
         let mut select = self.database.prepare_cached(SELECT_FACT)?;
         let reading = select
             .query_row(params![blob.to_string(), self.reader_version.0], |row| {
                 row.get::<_, String>(0)
             })
             .optional()?;
+        self.access.verify()?;
         Ok(reading.map_or(CachedFact::Missing, CachedFact::Found))
     }
 
@@ -185,7 +240,6 @@ fn database_path(common_dir: &Path) -> io::Result<PathBuf> {
         None => home_directory()?.join(".local/state/style"),
     };
     let directory = state.join(main_repository.file_name().unwrap_or_default());
-    fs::create_dir_all(&directory)?;
     Ok(directory.join(FACT_DATABASE_NAME))
 }
 
@@ -262,6 +316,7 @@ mod tests {
     use super::CacheFailure;
     use super::CachedFact;
     use super::FactStore;
+    use super::FactStoreAccess;
     use super::NewFactRow;
     use super::ReaderVersion;
     use super::enable_wal;
@@ -306,6 +361,7 @@ mod tests {
             Ok(FactStore {
                 database,
                 reader_version: ReaderVersion::CURRENT,
+                access: FactStoreAccess::Writable,
             })
         };
         let mut first = open()?;

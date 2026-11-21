@@ -6,6 +6,7 @@ use std::env;
 use std::io::Write;
 use std::path::Path;
 
+use gix::Blob;
 use gix::ObjectId;
 use gix::Repository;
 use gix::ThreadSafeRepository;
@@ -14,6 +15,7 @@ use gix::odb::pack::multi_index;
 use gix::odb::store::structure::IndexState;
 use gix::odb::store::structure::Record;
 use rayon::prelude::*;
+use serde_json::Error as JsonError;
 
 use crate::cache_constants::PARSE_COUNT_ENV;
 use crate::constants::BLOB_BATCH_SIZE;
@@ -22,6 +24,7 @@ use crate::fact_store::CacheFailure;
 use crate::fact_store::CachedFact;
 use crate::fact_store::FactCache;
 use crate::fact_store::NewFactRow;
+use crate::facts::BlobSource;
 use crate::facts::FactReading;
 use crate::module_sites::ModuleSitesQuery;
 use crate::request::FactKind;
@@ -54,6 +57,37 @@ impl BlobReader {
             .iter()
             .map(|commit| TreeInventory::read(&repository, commit))
             .collect()
+    }
+
+    pub(crate) fn existing_fact_cache(&self) -> FactCache {
+        FactCache::open_existing(self.repository.to_thread_local().common_dir())
+    }
+
+    pub(crate) fn source(
+        &self,
+        blob: &str,
+        cache: &mut FactCache,
+    ) -> Result<BlobSource, ReaderError> {
+        let id =
+            ObjectId::from_hex(blob.as_bytes()).map_err(|source| ReaderError::QueryBlobId {
+                blob: blob.to_owned(),
+                source,
+            })?;
+        let mut repository = self.repository.to_thread_local();
+        repository.objects.ignore_replacements = true;
+        if let CachedFact::Found(encoded) = cache.lookup(id) {
+            match validated_cached_blob(&repository, id, &encoded)? {
+                Ok(reading) => return Ok(reading.into_source()),
+                Err(error) => cache.disable(CacheFailure::from(error)),
+            }
+        }
+        Ok(
+            read_blob_object(&repository, id)?.map_or(BlobSource::Missing, |blob| {
+                std::str::from_utf8(&blob.data).map_or(BlobSource::NotUtf8, |text| {
+                    BlobSource::Utf8(text.to_owned())
+                })
+            }),
+        )
     }
 
     /// Write all facts and queries in bounded batches, including queried blobs outside the commits.
@@ -160,30 +194,16 @@ fn read_and_render(
 ) -> Result<BlobOutput, ReaderError> {
     let serialize_error = |source| ReaderError::Serialize { blob, source };
     let cache_validation = match cached {
-        CachedFact::Found(encoded) => {
-            let header = repository
-                .try_find_header(blob)
-                .map_err(|source| ReaderError::Blob {
-                    blob,
-                    source: Box::new(source),
-                })?;
-            let reading = if header.is_some() {
-                serde_json::from_str::<FactReading>(encoded)
-            } else {
-                check_unloaded_pack_indexes(repository, blob)?;
-                Ok(FactReading::MissingBlob)
-            };
-            match reading {
-                Ok(reading) => {
-                    return Ok(BlobOutput {
-                        json:    reading
-                            .render(blob, kinds, queries, word_class)
-                            .map_err(serialize_error)?,
-                        outcome: BlobReadOutcome::NotParsed,
-                    });
-                },
-                Err(error) => Err(CacheFailure::from(error)),
-            }
+        CachedFact::Found(encoded) => match validated_cached_blob(repository, blob, encoded)? {
+            Ok(reading) => {
+                return Ok(BlobOutput {
+                    json:    reading
+                        .render(blob, kinds, queries, word_class)
+                        .map_err(serialize_error)?,
+                    outcome: BlobReadOutcome::NotParsed,
+                });
+            },
+            Err(error) => Err(CacheFailure::from(error)),
         },
         CachedFact::Missing | CachedFact::Unavailable => Ok(()),
     };
@@ -209,7 +229,36 @@ fn read_and_render(
     })
 }
 
+fn validated_cached_blob(
+    repository: &Repository,
+    blob: ObjectId,
+    encoded: &str,
+) -> Result<Result<FactReading, JsonError>, ReaderError> {
+    let header = repository
+        .try_find_header(blob)
+        .map_err(|source| ReaderError::Blob {
+            blob,
+            source: Box::new(source),
+        })?;
+    if header.is_some() {
+        Ok(serde_json::from_str(encoded))
+    } else {
+        check_unloaded_pack_indexes(repository, blob)?;
+        Ok(Ok(FactReading::MissingBlob))
+    }
+}
+
 fn read_blob(repository: &Repository, blob: ObjectId) -> Result<FactReading, ReaderError> {
+    let Some(object) = read_blob_object(repository, blob)? else {
+        return Ok(FactReading::MissingBlob);
+    };
+    FactReading::parse(&object.data).map_err(|source| ReaderError::Serialize { blob, source })
+}
+
+fn read_blob_object(
+    repository: &Repository,
+    blob: ObjectId,
+) -> Result<Option<Blob<'_>>, ReaderError> {
     let object = repository
         .try_find_object(blob)
         .map_err(|source| ReaderError::Blob {
@@ -218,13 +267,15 @@ fn read_blob(repository: &Repository, blob: ObjectId) -> Result<FactReading, Rea
         })?;
     let Some(object) = object else {
         check_unloaded_pack_indexes(repository, blob)?;
-        return Ok(FactReading::MissingBlob);
+        return Ok(None);
     };
-    let object = object.try_into_blob().map_err(|source| ReaderError::Blob {
-        blob,
-        source: Box::new(source),
-    })?;
-    FactReading::parse(&object.data).map_err(|source| ReaderError::Serialize { blob, source })
+    object
+        .try_into_blob()
+        .map(Some)
+        .map_err(|source| ReaderError::Blob {
+            blob,
+            source: Box::new(source),
+        })
 }
 
 fn check_unloaded_pack_indexes(repository: &Repository, blob: ObjectId) -> Result<(), ReaderError> {
