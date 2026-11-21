@@ -3108,62 +3108,16 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 ### Phase 34 — Space pauses the display  · status: done
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33
+#### As-built
 
-#### Work Order
+- Space pauses and resumes the display; `f` is unbound. The action, the `Updates::Paused` state and the status note all use the name pause. The status bar reads `paused`.
+- Pause holds the grid motion clock, the `FullScreenView` clock and the row-fade clock. Motion and fades resume from the held position with no jump. The status line keeps uptime and CPU current.
+- Command durations include the paused time. Disk scans during a pause keep the foot unchanged until resume.
+- Repeated fades: the renderer shares parent lookups and text layouts across one frame, and retained layers keep their colors when their ink is unchanged. Paired gate vs main, median of 3 pairs: first fade peak -2.182 ms, repeated fade peak -0.030 ms.
+- The visible-row index uses the PID and the invocation ID.
+- Scope (user, 2026-11-19): the four slow `render.rs` tests were dropped.
 
-**Goal:** The space bar pauses and unpauses cargo-tile while it runs, and the status bar says `paused` the whole time it is paused. From the user (2026-10-16, relayed by the showrunner): "make it so the space bar pauses and unpauses cargo tile while it's running (and it should show paused in the statusbar while that's happening)". Pausing is the display freeze cargo-tile already has: the screen holds still, and cargo keeps running underneath. Today that freeze is on `f` and the status bar says `frozen`. This phase moves it to space and calls it pause everywhere. It runs after Phases 21 to 33: Phase 33 and this phase both change the render files, so one writer owns them at a time. Files and lines below are as of phase 20's checkpoint and may move; find each by name.
-
-**Spec:**
-
-1. **One key, one name.** The default binding moves from `f` to `space`, and `f` is left unbound. The action is renamed from freeze to pause throughout, with no alias for the old name. Neither machine's cargo-tile config names `global.freeze` (checked 2026-10-16). The renames:
-   - the action: `AppGlobalAction::Freeze` ("freeze", "Freeze the display") becomes pause, "Pause the display" (`crates/cargo-tile/src/app_global_action.rs` ~43, ~69, ~93);
-   - the default keymap line: `global.freeze = f` becomes `global.pause = space` (`crates/cargo-tile/src/keymap.rs` ~215);
-   - the state: `Updates::Frozen` becomes `Updates::Paused`. `Updates` is public `tui_pane` API (`crates/tui_pane/src/attract/updates.rs`, exported from `attract/mod.rs` and `lib.rs`), so the rename reaches every consumer: `toggled` and the doc comments in `updates.rs`; `Attract::advance` (`crates/tui_pane/src/attract/controller.rs` ~1031-1055, which holds the attract strip while paused) and its tests `frozen_frame_records_its_laid_out_area` and `frozen_frame_does_not_change_band_glyphs`; the favorites overlay test `an_adjusted_random_favorite_schedules_a_lowercase_warning_while_frozen` (`crates/tui_pane/src/favorites_overlay/globals.rs` ~403); and in cargo-tile `render.rs` ~5988, `app_global_action.rs` ~207, ~228 and ~244, and `terminal.rs` ~194. cargo-handler uses only `Updates::Live` (`render/mod.rs`, `render/accounts_grid_tests.rs`) and needs no edit. The three `tui_pane` tests take the `paused` name and keep their assertions unchanged, as the regression that the held attract strip and the favorites warning still behave the same;
-   - the status note: `FROZEN_NOTE_LABEL` (`"frozen"`, `crates/cargo-tile/src/constants.rs` ~364) becomes a `paused` note, drawn through `StatusLineNote::flag` as today (`crates/cargo-tile/src/render.rs` ~6060).
-2. **Behaviour unchanged.** While paused, what the freeze skips today stays skipped (`crates/cargo-tile/src/terminal.rs` ~188: scans are drained and discarded, fades and travel hold). The first frame after unpausing describes the world as it is then. Apart from item 6's held motion clock, only the key and the words change.
-3. **Where space already means something.** The settings overlay steps a setting on space (`crates/tui_pane/src/runner/keys.rs` ~148); an open overlay keeps its own keys, and pause applies when the grid has the keyboard, as the freeze does today. The attract screen's steering keys take no space (README ~628 says the grid's letters stay free there; keep that true for space and say so). The keymap overlay's capture, which binds the next key pressed, still captures space as a key.
-4. **Words.** Every user-facing mention of freeze or `f` for this action becomes pause and `space`: README (~628 and any other), the `?` overlay description, doc comments that name `f` (`crates/cargo-tile/src/app.rs` ~331, `terminal.rs` ~188 and ~262).
-5. **Tests, red first:**
-   - `space_pauses_and_unpauses_the_display`: a running app, space, and the drawn status line reads `paused`; space again, and the note is gone and scans apply again. It reads the rendered status line back.
-   - `the_default_keymap_binds_pause_to_space`: the generated default keymap file binds `global.pause = space` and nothing binds `f`.
-6. **Pause holds the motion clock, not only the updates.** Skipping scans does not hold travel: `TileGrid::progress` (`crates/tui_pane/src/tiles/grid/tile_grid.rs:2520`; `MotionClock` is in `grid/motion.rs:27`) reads `transition.started.elapsed()` on whatever frame draws, and Phase 33's once-a-second status-line frame draws while paused, so a paused grid would advance its motion and fades on every status tick. Rule: this phase owns freezing the clock that cells read. While paused, every frame draws each cell's geometry and its text inks exactly as on the frame pause began; the status line alone moves. On unpause, motion and fades continue from where they stood, as if the paused span had not passed, with no jump. The grid takes a paused state through an additive `tui_pane` method (for example `TileGrid::pause(at)` / `resume(at)`, or a clock the grid reads that pause stops) that shifts elapsed motion by the paused span; the row fades cargo-tile computes read the same held clock. Phase 36 replaces the step queue with `step(displayed, target, dt)`, and carries this as a paused `dt` of zero. Test, red first, with injected time: `a_paused_grid_draws_the_same_cells_across_status_ticks`: a grid mid-motion with a fading row, paused, then several status ticks; every frame's cell area matches the paused frame cell for cell; after unpause the next frame continues from the paused progress, not from wall time.
-
-**Files:**
-- `crates/cargo-tile/src/grid_view.rs` — the view clock that `Opening`, `Expanding` and `Collapsing` keep.
-- `crates/cargo-tile/src/app_global_action.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — items 1 to 3 and the renames.
-- `crates/cargo-tile/src/render.rs` — the note line, item 5's render test, and item 6's row fades on the held clock with its test.
-- `crates/cargo-tile/src/render/frame_preparation.rs` — preparation inputs, retained tables, allocation decisions and row measurements.
-- `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
-- `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
-- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `crates/tui_pane/src/tiles/grid/motion.rs`, `crates/tui_pane/src/tiles/grid/tests/motion.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — item 6's paused motion clock and any additive export it needs, and its grid test.
-- `crates/tui_pane/src/attract/updates.rs`, `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/favorites_overlay/globals.rs` — item 1's `Updates::Paused` rename, its consumers and their three tests.
-- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — item 4, and one Changed line; `crates/tui_pane/CHANGELOG.md` — one Added line for item 6 and one Changed line for the `Updates::Paused` rename.
-
-**Workers:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
-- `impl` — every file above, items 1 to 6, the whole rename and the pause path.
-
-**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates. Since "Reads/s stays beside CPU at 100 columns or more", the uptime group (uptime, CPU, `Reads/s`) outranks every status note, so on a narrow row the `paused` note drops before `Reads/s`. Draw `space_pauses_and_unpauses_the_display` at 80 columns or more, where a flag note such as cargo-handler's `attract` still shows.
-
-**Forward edits from Phase 32g (showrunner ruling, 2026-11-19):**
-- Do this first. Phase 32g's repeated fades cost more than main: max repaint 2.78 ms against 2.30 ms in the six-group perf profile. Bring it to main or below, and keep first fades at or below main.
-- Leads (Astra, `/tmp/claude/astra/20261119T184410Z-3214804/review.md`): (1) each palette cache hit still borrows a thread-local map and hashes (foreground, background, mode) per color role (`render.rs` `RowInk::color`, `cell_paint.rs` `PaintedCellContents::recolor`); (2) `row_resource_readings` builds two maps on each call; (3) the repeated-fade interval mixes fresh frames with retained frames.
-- Measure first: count palette hits and misses by paint stage, time the resource index apart from row preparation, and compare matching frames on main and the branch. Read unfiltered call chains.
-- A fix candidate: keep palette handles with the color roles and read each fade amount from an array. Keep the 4.5:1 floor and retained-versus-fresh equality.
-- Files: add `crates/cargo-tile/src/render/cell_paint.rs` if the fix needs it.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
-- `Opening` stays private to key routing and preparation. Keep `quit_after_enter_before_the_first_paint_quits_the_app` green; add no screen label.
-
-**Forward edits from Phase 49 (director, 2026-11-07):**
-- `drain_scans` (`terminal.rs:297`) stores the disk value. Extend `a_paused_grid_draws_the_same_cells_across_status_ticks` with available and unavailable disk scans during status ticks, in Grid and Expanded views. Assert an unchanged foot while paused, and the next accepted disk value after resume.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` and `... lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler` and `... test cargo-port` green; the three tests red before the change and green after; no test takes a second or more.
-- No `Updates::Frozen` remains (`rg 'Updates::Frozen' crates` is empty); the three renamed `tui_pane` tests of item 1 pass with their assertions unchanged.
-- Unit director's live capture: a running tile, space, and the status bar reads `paused` while the cells hold still with a build running; space again, the note leaves and the cells update.
-- Change-review line (production doc's change review file): space pauses and unpauses the display, and the status bar says `paused`.
+**Files:** `crates/cargo-tile/{CHANGELOG.md, README.md}`, `crates/cargo-tile/src/{app.rs, app_global_action.rs, constants.rs, grid_view.rs, keymap.rs, render.rs, roster.rs, terminal.rs}`, `crates/cargo-tile/src/render/{cell_paint.rs, frame_preparation.rs}`, `crates/tui_pane/CHANGELOG.md`, `crates/tui_pane/src/attract/{controller.rs, updates.rs}`, `crates/tui_pane/src/favorites_overlay/globals.rs`, `crates/tui_pane/src/tiles/full_screen.rs`, `crates/tui_pane/src/tiles/grid/{motion.rs, tile_grid.rs, tests/motion.rs}`.
 
 ### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: done
 
@@ -3176,7 +3130,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Files:** `crates/tui_pane/src/{pane/frame.rs, app_settings/{draw,constants}.rs, overlays/settings.rs, support/contrast.rs, wrap.rs}`, `crates/tui_pane/CHANGELOG.md`; `settings_scroll_tests.rs` in cargo-tile, cargo-handler and cargo-port; `Cargo.toml` in cargo-tile and cargo-handler; `crates/cargo-tile/src/settings.rs`.
 
-### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
+### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: dropped (user, 2026-11-19: not wanted; Phase 35o keeps items 9, 35 and 38)
 
 **Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Item 2 was met. Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 stay (showrunner, 2026-11-06: the user's rule covers visible changes only). Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
 
@@ -3262,7 +3216,7 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Unit director's captures of the shot set Phase 20 used: every hidden-rows `…` stands at its row's right end, on settled and moving frames, and no value's last cell carries it; no `…` stands apart from the text it cuts; no profile label is cut without a mark.
 - A fresh helper's design check of those shots: pass.
 
-### Phase 36 — Every cell moves toward one target layout  · status: todo
+### Phase 36 — Every cell moves toward one target layout  · status: dropped (user, 2026-11-19: tile movement is good enough for now)
 
 **Depends on:** Phase 20, Phase 35
 
@@ -3744,13 +3698,13 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The map covers all 264 current grid and draw tests. Retain each visible assertion. Port only fixtures that depend on replaced geometry or motion state. Name every retirement and its retained behavioral coverage.
 - The unit director's notice lists each retired grid test with its current module path and its reason.
 
-### Phase 37a — Seven slow tests run under 1 s on the Mac  · status: todo
+### Phase 37a — Seven slow tests run under 1 s on the Mac  · status: dropped (user, 2026-11-19: not wanted; the full Mac suite ran the six hook tests under 1 s at load 53)
 
 **Depends on:** Phase 70
 
 **Packaging (director, 2026-11-19, on the showrunner's parallel order):** the test rewrites in Phase 37's forward edits run now, beside Phase 34. This phase shortens the six `cargo-berth` `tests/hooks.rs` tests from Phase 70's forward edit and `taking_two_resolved_roots_shares_one_removal_allowance` (`crates/cargo-tile/src/progress/capture.rs`) from Phase 72's forward edit, each to under 1 s on the Mac at load under 12 and on natedev. Phase 72's four `render.rs` tests go to Phase 34, which owns `render.rs`. Phase 37 keeps the priority override and its measurements, after Phase 36.
 
-### Phase 37 — Slow tests start first  · status: todo
+### Phase 37 — Slow tests start first  · status: dropped (user, 2026-11-19: cargo-liner test time blocks no work)
 
 **Depends on:** Phase 21, Phase 34, Phase 36, Phase 39, Phase 40, Phase 43b, Phase 43e, Phase 43f, Phase 49
 
