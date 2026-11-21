@@ -77,7 +77,6 @@ use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellContentExtent;
 use tui_pane::CellFadeProgress;
-use tui_pane::CellReadoutFade;
 use tui_pane::Keymap;
 use tui_pane::PaneFrameLabel;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -90,7 +89,9 @@ use tui_pane::SummaryFoot;
 use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::accent_color;
+#[cfg(test)]
 use tui_pane::blend_color;
+use tui_pane::contrast_ratio;
 #[cfg(feature = "attract")]
 use tui_pane::draw_attract_layers;
 use tui_pane::label_color;
@@ -167,6 +168,7 @@ impl CommandView {
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
+use std::mem::Discriminant;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::sync::Arc;
@@ -217,8 +219,10 @@ use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::MANAGED_COLUMN;
+use crate::constants::MAX_CACHED_ROW_FADE_PALETTES;
 use crate::constants::MEMORY_COLUMN;
 use crate::constants::MEMORY_UNIT;
+use crate::constants::MINIMUM_FADED_TEXT_CONTRAST;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PARENT_COLUMN;
 use crate::constants::PARTIAL_TOTAL_MARK;
@@ -680,11 +684,8 @@ impl TileCells<InvocationId> for ExpandedCell<'_> {
         }
     }
 
-    fn readout_progress(&self, content: &TileContent) -> CellFadeProgress {
-        self.cells.readout_progress(content)
-    }
-    fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
-        self.cells.readout_fade(content)
+    fn readout_ink(&self, content: &TileContent) -> Option<(u8, ReadoutColor)> {
+        self.cells.readout_ink(content)
     }
     fn content_extent(&self, content: &TileContent) -> CellContentExtent {
         self.cells.content_extent(content)
@@ -1565,6 +1566,29 @@ impl<'a> Cells<'a> {
     }
 }
 
+impl Cells<'_> {
+    fn readout_row_ink(&self, content: &TileContent) -> RowPaintInk {
+        match content {
+            TileContent::Summary => heading_ink(&summary_rows(&self.roster)),
+            TileContent::Group(id) => self
+                .roster
+                .groups()
+                .iter()
+                .find(|group| &group.id == id)
+                .map_or(RowPaintInk::Live, |group| {
+                    RowPaintInk::minimum(group.rows().map(|row| {
+                        if row.is_ended() {
+                            RowPaintInk::Finished(row.painted_ink())
+                        } else {
+                            RowPaintInk::Live
+                        }
+                    }))
+                }),
+            TileContent::Empty(_) => RowPaintInk::Live,
+        }
+    }
+}
+
 impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
@@ -1698,33 +1722,17 @@ impl TileCells<InvocationId> for Cells<'_> {
         ))
     }
 
-    fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
-        match self.readout_progress(content).amount() {
-            0 => CellReadoutFade::Unfaded,
-            amount => CellReadoutFade::Fading(CellFadeProgress::new(amount)),
-        }
-    }
-
-    fn readout_progress(&self, content: &TileContent) -> CellFadeProgress {
-        match content {
-            TileContent::Summary => {
-                let rows = summary_rows(&self.roster);
-                CellFadeProgress::new(heading_fade(&rows))
-            },
-            TileContent::Group(id) => self
-                .roster
-                .groups()
-                .iter()
-                .find(|group| &group.id == id)
-                .and_then(|group| {
-                    group
-                        .rows()
-                        .map(TrackedRow::painted_ink)
-                        .min_by_key(|ink| ink.fade())
-                })
-                .map_or_else(|| CellFadeProgress::new(0), RowInk::progress),
-            TileContent::Empty(_) => CellFadeProgress::new(0),
-        }
+    fn readout_ink(&self, content: &TileContent) -> Option<(u8, ReadoutColor)> {
+        let (amount, color): (_, ReadoutColor) = match self.readout_row_ink(content) {
+            RowPaintInk::Live => return None,
+            RowPaintInk::Finished(RowInk::Ordinary(amount)) => (amount, |amount, color, ground| {
+                RowInk::Ordinary(amount).color(color, ground)
+            }),
+            RowPaintInk::Finished(RowInk::Brighten(amount)) => (amount, |amount, color, ground| {
+                RowInk::Brighten(amount).color(color, ground)
+            }),
+        };
+        Some((amount, color))
     }
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
@@ -2575,7 +2583,7 @@ fn frame_draw_group(
     let inner = paint_command_reading(buffer, inner, &groups, grid, ground);
     let ancestry = drawn_ancestry(group, &grid.view);
     // The chain and table fade together when their command finishes.
-    let faded = group_fade(group, &rows);
+    let ink = heading_ink(&rows);
     // The same measurement [`frame_group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
     // ask left it.
@@ -2590,7 +2598,7 @@ fn frame_draw_group(
         inner,
         AncestrySource::for_group(&ancestry, group, &grid.view),
         cell_paint::InkSource::heading(&rows),
-        faded,
+        ink,
         ground,
         table_rows,
     );
@@ -2619,12 +2627,12 @@ fn frame_draw_group(
             buffer,
             Rect::new(reading_origin.0, reading_origin.1, 1, 1),
             cell_paint::InkSource::heading(&rows),
-            RowInk::Ordinary(faded),
+            ink,
             ground,
             |buffer| {
                 buffer[reading_origin]
                     .set_symbol(ELISION)
-                    .set_style(cut_mark_style(cell_paint::ink_ground(ground), faded));
+                    .set_style(cut_mark_style(cell_paint::ink_ground(ground), ink));
             },
         );
     }
@@ -2737,12 +2745,12 @@ fn record_ancestry_source(
     area: Rect,
     source: AncestrySource<'_>,
     owner: InkSource,
-    faded: u8,
+    ink: RowPaintInk,
     ground: Color,
     table: usize,
 ) -> u16 {
     let area = cleared(area);
-    let painting = ancestry_painting(area, source, faded, cell_paint::ink_ground(ground), table);
+    let painting = ancestry_painting(area, source, ink, cell_paint::ink_ground(ground), table);
     if painting.lines.is_empty() {
         return 0;
     }
@@ -2751,7 +2759,7 @@ fn record_ancestry_source(
         buffer,
         Rect { height, ..area },
         owner,
-        RowInk::Ordinary(faded),
+        ink,
         ground,
         |buffer| Paragraph::new(painting.lines).render(Rect { height, ..area }, buffer),
     );
@@ -2774,7 +2782,12 @@ fn draw_ancestry_source(
     table: usize,
 ) -> u16 {
     let area = cleared(area);
-    let painting = ancestry_painting(area, source, faded, ground, table);
+    let ink = if faded == 0 {
+        RowPaintInk::Live
+    } else {
+        RowPaintInk::Finished(RowInk::Ordinary(faded))
+    };
+    let painting = ancestry_painting(area, source, ink, ground, table);
     let height = u16::try_from(painting.lines.len()).unwrap_or(area.height);
     Paragraph::new(painting.lines).render(Rect { height, ..area }, buffer);
     height.saturating_add(painting.gap)
@@ -2783,7 +2796,7 @@ fn draw_ancestry_source(
 fn ancestry_painting(
     area: Rect,
     source: AncestrySource<'_>,
-    faded: u8,
+    ink: RowPaintInk,
     ground: Color,
     table: usize,
 ) -> AncestryPainting {
@@ -2796,8 +2809,8 @@ fn ancestry_painting(
             gap:   0,
         };
     }
-    let pid = blend_color(text_default(), ground, faded);
-    let command = cut_mark_ink(ground, faded);
+    let pid = ink.color(text_default(), ground);
+    let command = ink.color(secondary_text_color(), ground);
     let indentation = AncestryIndentation::of(&levels);
     let mut blocks: Vec<Vec<Line<'static>>> = levels
         .iter()
@@ -2900,10 +2913,10 @@ fn mark_table_continuation(
     area: Rect,
     layout: &CellTableLayout,
     continuation: TableContinuation,
-    faded: u8,
+    ink: RowPaintInk,
 ) {
     if let ContinuationTarget::Row(target) = continuation_target(buffer, area, layout) {
-        draw_table_continuation(buffer, &target, layout, continuation, faded);
+        draw_table_continuation(buffer, &target, layout, continuation, ink);
     }
 }
 
@@ -2951,19 +2964,14 @@ fn draw_table_continuation(
     target: &ContinuationRow,
     layout: &CellTableLayout,
     continuation: TableContinuation,
-    faded: u8,
+    ink: RowPaintInk,
 ) {
     let command = target.command;
     let y = command.y;
     if matches!(continuation, TableContinuation::RowsWereOmitted) {
-        for x in command.left()..command.right() {
-            if buffer[(x, y)].symbol() == ELISION {
-                buffer[(x, y)].set_symbol(" ");
-            }
-        }
         buffer[(target.right, y)]
             .set_symbol(ELISION)
-            .set_style(cut_mark_style(layout.ground, faded));
+            .set_style(cut_mark_style(layout.ground, ink));
         return;
     }
     let TableContinuation::CommandWasCut { line } = continuation else {
@@ -2998,13 +3006,13 @@ fn paint_table_continuation(
     owner: ContinuationInk,
 ) {
     let last = rows.last().copied();
-    let faded = match owner {
-        ContinuationInk::Heading => heading_fade(rows),
-        ContinuationInk::LastRow => last.map_or(0, TrackedRow::faded),
+    let shared_ink = match owner {
+        ContinuationInk::Heading => heading_ink(rows),
+        ContinuationInk::LastRow => last.map_or(RowPaintInk::Live, RowPaintInk::ordinary),
     };
     let cut = matches!(continuation, TableContinuation::CommandWasCut { .. });
     if !cell_paint::records_ink() || (cut && last.is_none_or(|row| !row.is_ended())) {
-        mark_table_continuation(buffer, area, layout, continuation, faded);
+        mark_table_continuation(buffer, area, layout, continuation, shared_ink);
         return;
     }
     let ContinuationTarget::Row(target) = continuation_target(buffer, area, layout) else {
@@ -3024,16 +3032,16 @@ fn paint_table_continuation(
         ),
     };
     let ink = if cut {
-        last.map_or(RowInk::Ordinary(0), TrackedRow::ink)
+        last.map_or(RowPaintInk::Live, RowPaintInk::of)
     } else {
-        RowInk::Ordinary(faded)
+        shared_ink
     };
     let mut base = layout.clone();
     base.ground = Color::Reset;
-    let recording_area = Rect {
-        y: target.command.y,
-        height: 1,
-        ..area
+    let recording_area = if cut {
+        target.command
+    } else {
+        Rect::new(target.right, target.command.y, 1, 1)
     };
     cell_paint::paint_ink(
         buffer,
@@ -3042,7 +3050,7 @@ fn paint_table_continuation(
         ink,
         layout.ground,
         |buffer| {
-            draw_table_continuation(buffer, &target, &base, continuation, faded);
+            draw_table_continuation(buffer, &target, &base, continuation, shared_ink);
         },
     );
 }
@@ -3471,7 +3479,7 @@ fn ancestry_rows(
     wrapped_command(
         ancestor_command_words(ancestor, Style::default()),
         room,
-        cut_mark_style(Color::Reset, 0),
+        cut_mark_style(Color::Reset, RowPaintInk::Live),
     )
     .lines
     .len()
@@ -4316,6 +4324,18 @@ fn row_resource_readings(
     rows: &[&TrackedRow],
     contributions: &[InvocationContribution],
 ) -> Vec<RowResourceReading> {
+    let mut visible_rows = HashMap::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        visible_rows
+            .entry((row.process.pid, &row.process.invocation_id))
+            .or_insert(index);
+    }
+    let mut parents = HashMap::with_capacity(contributions.len());
+    for contribution in contributions {
+        parents
+            .entry((contribution.pid, &contribution.invocation))
+            .or_insert(&contribution.parent);
+    }
     let mut assigned: Vec<_> = rows
         .iter()
         .map(|row| {
@@ -4326,19 +4346,12 @@ fn row_resource_readings(
         })
         .collect();
     for contribution in contributions {
-        if rows.iter().any(|row| {
-            row.process.invocation_id == contribution.invocation
-                && row.process.pid == contribution.pid
-        }) {
+        let mut owner = (contribution.pid, &contribution.invocation);
+        if visible_rows.contains_key(&owner) {
             continue;
         }
-        let mut invocation = &contribution.invocation;
-        let mut pid = contribution.pid;
         for _ in 0..=contributions.len() {
-            if let Some(index) = rows
-                .iter()
-                .position(|row| &row.process.invocation_id == invocation && row.process.pid == pid)
-            {
+            if let Some(&index) = visible_rows.get(&owner) {
                 if contribution.ended == rows[index].is_ended() {
                     assigned[index].push((
                         sysinfo::Pid::from_u32(contribution.pid),
@@ -4347,22 +4360,10 @@ fn row_resource_readings(
                 }
                 break;
             }
-            let Some(ancestor) = contributions
-                .iter()
-                .find(|ancestor| &ancestor.invocation == invocation && ancestor.pid == pid)
-            else {
+            let Some(VisibleParent::Invocation { id, pid }) = parents.get(&owner).copied() else {
                 break;
             };
-            match &ancestor.parent {
-                VisibleParent::Invocation {
-                    id,
-                    pid: parent_pid,
-                } => {
-                    invocation = id;
-                    pid = *parent_pid;
-                },
-                VisibleParent::Ancestor(_) | VisibleParent::None => break,
-            }
+            owner = (*pid, id);
         }
     }
     rows.iter()
@@ -5326,12 +5327,6 @@ impl CellTableLayout {
             ..table
         }
     }
-
-    /// `color` as something `faded` of the way out draws it: carried
-    /// that far toward the ground the cell stands on, so a row on its
-    /// way off the display sinks into the cell rather than switching
-    /// off at the end of its spell.
-    fn ink(&self, color: Color, faded: u8) -> Color { blend_color(color, self.ground, faded) }
 }
 
 /// Draw prepared ASCII lines without applying empty styles across their unused cells.
@@ -5377,11 +5372,75 @@ fn draw_ascii_line(buffer: &mut Buffer, line: &Line<'_>, area: Rect) {
     }
 }
 
-/// How far the least-faded of `rows` has travelled, which is what
-/// anything standing over them fades with: a heading or a column label
-/// holds its colour while a single row under it is still running.
+/// The source colors and fade mode identify a row fade palette.
+type RowFadePaletteKey = (Color, Color, Discriminant<RowInk>);
+type ReadoutColor = fn(u8, Color, Color) -> Color;
+
+thread_local! {
+    static ROW_FADE_PALETTES: RefCell<HashMap<RowFadePaletteKey, RowFadePalette>> =
+        RefCell::new(HashMap::new());
+    #[cfg(test)]
+    static ROW_FADE_CONTRAST_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Final foreground colors through the readable limit for one fade mode.
+struct RowFadePalette(Box<[Color]>);
+
+impl RowFadePalette {
+    fn new(progress: fn(u8) -> CellFadeProgress, color: Color, ground: Color) -> Self {
+        let original = progress(0).color(color, ground);
+        if !Self::has_contrast(original, ground) {
+            let black = Color::Rgb(0, 0, 0);
+            let fallback = if Self::has_contrast(black, ground) {
+                black
+            } else {
+                Color::Rgb(255, 255, 255)
+            };
+            return Self(Box::new([fallback]));
+        }
+
+        let mut readable = 0;
+        let mut unreadable = u8::MAX;
+        let mut ink = original;
+        while unreadable - readable > 1 {
+            let amount = u8::midpoint(readable, unreadable);
+            let candidate = progress(amount).color(color, ground);
+            if Self::has_contrast(candidate, ground) {
+                readable = amount;
+                ink = candidate;
+            } else {
+                unreadable = amount;
+            }
+        }
+
+        let mut colors = Vec::with_capacity(usize::from(readable) + 1);
+        colors.push(original);
+        for amount in 1..readable {
+            let candidate = progress(amount).color(color, ground);
+            let final_ink = if Self::has_contrast(candidate, ground) {
+                candidate
+            } else {
+                ink
+            };
+            colors.push(final_ink);
+        }
+        if readable > 0 {
+            colors.push(ink);
+        }
+        Self(colors.into_boxed_slice())
+    }
+
+    fn color(&self, amount: u8) -> Color { self.0[usize::from(amount).min(self.0.len() - 1)] }
+
+    fn has_contrast(ink: Color, ground: Color) -> bool {
+        #[cfg(test)]
+        ROW_FADE_CONTRAST_CHECKS.with(|count| count.set(count.get() + 1));
+        contrast_ratio(ink, ground).is_some_and(|ratio| ratio >= MINIMUM_FADED_TEXT_CONTRAST)
+    }
+}
+
 impl RowInk {
-    /// Text and readouts carry one blend rule with their fade amount.
+    /// Select the blend scale for this row's fade.
     const fn progress(self) -> CellFadeProgress {
         match self {
             Self::Ordinary(amount) => CellFadeProgress::new(amount),
@@ -5389,16 +5448,72 @@ impl RowInk {
         }
     }
 
-    fn color(self, color: Color, ground: Color) -> Color { self.progress().color(color, ground) }
+    fn color(self, color: Color, ground: Color) -> Color {
+        let amount = self.fade();
+        if color == Color::Reset || ground == Color::Reset {
+            return self.progress().color(color, ground);
+        }
+        let key = (color, ground, std::mem::discriminant(&self));
+        ROW_FADE_PALETTES.with_borrow_mut(|palettes| {
+            if let Some(palette) = palettes.get(&key) {
+                return palette.color(amount);
+            }
+            let progress = match self {
+                Self::Ordinary(_) => CellFadeProgress::new,
+                Self::Brighten(_) => CellFadeProgress::brightening,
+            };
+            let palette = RowFadePalette::new(progress, color, ground);
+            let ink = palette.color(amount);
+            if palettes.len() == MAX_CACHED_ROW_FADE_PALETTES {
+                palettes.clear();
+            }
+            palettes.insert(key, palette);
+            ink
+        })
+    }
 }
 
-fn minimum_fade(fades: impl Iterator<Item = u8>) -> u8 { fades.min().unwrap_or_default() }
+/// A finished row applies the contrast floor at every fade amount.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowPaintInk {
+    Live,
+    Finished(RowInk),
+}
 
-fn heading_fade(rows: &[&TrackedRow]) -> u8 { minimum_fade(rows.iter().map(|row| row.faded())) }
+impl RowPaintInk {
+    fn of(row: &TrackedRow) -> Self {
+        if row.is_ended() {
+            Self::Finished(row.ink())
+        } else {
+            Self::Live
+        }
+    }
 
-/// The cell's shared ink follows its rows and the command owning it.
-fn group_fade(group: &TrackedGroup, rows: &[&TrackedRow]) -> u8 {
-    heading_fade(rows).min(group.lead.faded())
+    fn ordinary(row: &TrackedRow) -> Self {
+        match Self::of(row) {
+            Self::Live => Self::Live,
+            Self::Finished(ink) => Self::Finished(RowInk::Ordinary(ink.fade())),
+        }
+    }
+
+    fn minimum(inks: impl Iterator<Item = Self>) -> Self {
+        inks.min_by_key(|ink| match ink {
+            Self::Live => None,
+            Self::Finished(ink) => Some(ink.fade()),
+        })
+        .unwrap_or(Self::Live)
+    }
+
+    fn color(self, color: Color, ground: Color) -> Color {
+        match self {
+            Self::Live => CellFadeProgress::new(0).color(color, ground),
+            Self::Finished(ink) => ink.color(color, ground),
+        }
+    }
+}
+
+fn heading_ink(rows: &[&TrackedRow]) -> RowPaintInk {
+    RowPaintInk::minimum(rows.iter().copied().map(RowPaintInk::ordinary))
 }
 
 /// Keep numeric contributions until every selected row owns its full total.
@@ -5589,27 +5704,32 @@ fn frame_draw_grouped_process_table(
     }
     let resources = planned_resource_readings(&plan, grid);
     apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, &resources);
+    let show_count = hidden > 0 && count_row == HiddenProcessCountRow::Reserved;
+    let table_area = Rect {
+        height: area.height.saturating_sub(u16::from(show_count)),
+        ..area
+    };
     drop(preparation);
     paint_table_header(buffer, header_area, rows, &layout, &plan);
     let drawn = draw_table_groups(
         buffer,
-        area,
+        table_area,
         groups,
         drawn_groups,
         &layout,
         &headings,
         &plan,
     );
-    if hidden > 0 && count_row == HiddenProcessCountRow::Reserved {
+    if show_count {
         paint_table_continuation(
             buffer,
-            area,
+            table_area,
             &layout,
             TableContinuation::RowsWereOmitted,
             rows,
             ContinuationInk::Heading,
         );
-        draw_hidden_process_count(buffer, area, ground, hidden);
+        draw_hidden_process_count(buffer, area, hidden);
         return CellPaintReach {
             rows: area.height,
             commands: drawn.commands,
@@ -5639,27 +5759,27 @@ fn paint_table_header(
     layout: &CellTableLayout,
     plan: &ProcessTablePlan<'_>,
 ) {
-    let faded = heading_fade(rows);
+    let ink = heading_ink(rows);
     let mut source_layout = layout.clone();
     source_layout.ground = cell_paint::ink_ground(layout.ground);
     cell_paint::paint_ink(
         buffer,
         area,
         cell_paint::InkSource::heading(rows),
-        RowInk::Ordinary(faded),
+        ink,
         layout.ground,
         |buffer| {
             if layout.columns.is_empty() {
                 Paragraph::new(Line::from(Span::styled(
                     ELISION,
-                    column_header_style(&source_layout, faded),
+                    column_header_style(&source_layout, ink),
                 )))
                 .render(area, buffer);
             } else {
                 source_layout.draw_columns(
                     buffer,
                     area,
-                    column_header_cells(&source_layout, faded, plan),
+                    column_header_cells(&source_layout, ink, plan),
                 );
             }
         },
@@ -5778,22 +5898,35 @@ fn table_draw_reach(
 }
 
 /// A separate row names every process that cannot fit in the table.
-fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, ground: Color, hidden: usize) {
+fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: usize) {
+    let area = area.intersection(buffer.area);
+    if area.is_empty() {
+        return;
+    }
     let last = Rect {
-        y: area.bottom().saturating_sub(1),
+        y: area.bottom() - 1,
         height: 1,
         ..indented(area)
     };
-    buffer.set_style(last, Style::default().bg(ground));
+    if last.is_empty() {
+        return;
+    }
+    let width = usize::from(last.width);
+    let mut label = format!("+{hidden} more");
+    if label.len() > width {
+        label.truncate(width - 1);
+        label.push_str(ELISION);
+    }
     for x in last.left()..last.right() {
         buffer[(x, last.y)].set_symbol(" ");
     }
-    Paragraph::new(format!("+{hidden} more")).render(last, buffer);
-    let right = area
-        .right()
-        .saturating_sub(CONTENT_RIGHT_INSET)
-        .saturating_sub(1);
-    buffer[(right, last.y)].set_symbol(ELISION);
+    buffer.set_stringn(
+        last.x,
+        last.y,
+        label,
+        width,
+        Style::default().fg(text_default()),
+    );
 }
 
 /// Prepare the shared table cells before assigning their row budgets.
@@ -6341,11 +6474,7 @@ impl TableAccountHeadings {
             Span::raw(SECTION_HEADER_INDENT),
             Span::styled(
                 self.heading(group, room),
-                Style::default().fg(blend_color(
-                    accent_color(),
-                    ground,
-                    heading_fade(&group.rows),
-                )),
+                Style::default().fg(heading_ink(&group.rows).color(accent_color(), ground)),
             ),
         ])
     }
@@ -6445,7 +6574,7 @@ fn draw_path_group(
             buffer,
             heading_area,
             cell_paint::InkSource::heading(&group.rows),
-            RowInk::Ordinary(heading_fade(&group.rows)),
+            heading_ink(&group.rows),
             layout.ground,
             |buffer| {
                 Paragraph::new(heading).render(heading_area, buffer);
@@ -6570,7 +6699,7 @@ fn draw_solved_process_rows(
                 buffer,
                 Rect { height, ..area },
                 cell_paint::InkSource::row(row.source),
-                row.source.ink(),
+                RowPaintInk::of(row.source),
                 layout.ground,
                 draw,
             );
@@ -7136,12 +7265,13 @@ fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
 }
 
 /// The common neutral ink of cut marks, faded on the row's own ground.
-fn cut_mark_ink(ground: Color, faded: u8) -> Color { cut_ink(ground, RowInk::Ordinary(faded)) }
+#[cfg(test)]
+fn cut_mark_ink(ground: Color, faded: u8) -> Color {
+    RowInk::Ordinary(faded).color(secondary_text_color(), ground)
+}
 
-fn cut_ink(ground: Color, ink: RowInk) -> Color { ink.color(secondary_text_color(), ground) }
-
-fn cut_mark_style(ground: Color, faded: impl Into<RowInk>) -> Style {
-    Style::default().fg(cut_ink(ground, faded.into()))
+fn cut_mark_style(ground: Color, ink: RowPaintInk) -> Style {
+    Style::default().fg(ink.color(secondary_text_color(), ground))
 }
 
 /// Cells one displayed command takes before wrapping.
@@ -7172,10 +7302,10 @@ const fn numeric_column(column: usize) -> bool {
 
 fn column_header_cells(
     layout: &CellTableLayout,
-    faded: u8,
+    ink: RowPaintInk,
     plan: &ProcessTablePlan<'_>,
 ) -> Vec<Text<'static>> {
-    let style = column_header_style(layout, faded);
+    let style = column_header_style(layout, ink);
     TABLE_HEADERS
         .iter()
         .enumerate()
@@ -7206,8 +7336,8 @@ fn column_header_cells(
 }
 
 /// Style shared by the column labels and their no-room stand-in.
-fn column_header_style(layout: &CellTableLayout, faded: u8) -> Style {
-    Style::default().fg(layout.ink(label_color(), faded))
+fn column_header_style(layout: &CellTableLayout, ink: RowPaintInk) -> Style {
+    Style::default().fg(ink.color(label_color(), layout.ground))
 }
 
 /// A percentage header describes every nonempty state reading in this viewport.
@@ -7257,7 +7387,7 @@ impl LaidOutProcessRow<'_> {
         wrapped_process_command(
             words,
             self.command_width,
-            cut_mark_style(self.ground, self.source.ink()),
+            cut_mark_style(self.ground, RowPaintInk::of(self.source)),
             &self.view,
             self.kind,
         )
@@ -7274,7 +7404,7 @@ fn process_command_words(
     program: Style,
     arguments: Style,
     ground: Color,
-    faded: RowInk,
+    ink: RowPaintInk,
     form: CommandForm,
 ) -> Vec<StyledCommandWord> {
     let mut spans = Vec::new();
@@ -7282,7 +7412,7 @@ fn process_command_words(
     if !profile.is_empty() {
         spans.push(StyledCommandWord::Independent(Span::styled(
             profile,
-            cut_mark_style(ground, faded),
+            cut_mark_style(ground, ink),
         )));
     }
     let words: Vec<_> = match form {
@@ -7342,7 +7472,7 @@ fn summary_command_cell(
         line.spans.push(Span::raw(" "));
         line.spans.push(Span::styled(
             row.process.path.clone(),
-            Style::default().fg(row.ink().color(accent_color(), layout.ground)),
+            Style::default().fg(RowPaintInk::of(row).color(accent_color(), layout.ground)),
         ));
     }
     text
@@ -7372,7 +7502,7 @@ fn wrap_command_cell(
         wrapped_process_command(
             spans,
             command_width,
-            cut_mark_style(layout.ground, row.ink()),
+            cut_mark_style(layout.ground, RowPaintInk::of(row)),
             &layout.view,
             layout.kind,
         )
@@ -7387,9 +7517,9 @@ fn styled_process_command_words(
     ground: Color,
     form: CommandForm,
 ) -> Vec<StyledCommandWord> {
-    let muted = Style::default().fg(row.ink().color(label_color(), ground));
+    let ink = RowPaintInk::of(row);
+    let muted = Style::default().fg(ink.color(label_color(), ground));
     let process = &row.process;
-    let faded = row.ink();
     let program = if row.is_ended() {
         muted
     } else {
@@ -7406,7 +7536,7 @@ fn styled_process_command_words(
         program,
         arguments,
         ground,
-        faded,
+        ink,
         form,
     );
     if !matches!(process.slot, SlotObservation::Outside) {
@@ -7512,8 +7642,7 @@ fn styled_process_cells(
 ) -> PreparedRowCells {
     let values = ProcessMetadataValues::for_use(row, ProcessValueUse::SelectRows);
     let process = &values.source.process;
-    let faded = row.ink();
-    let muted = Style::default().fg(faded.color(label_color(), layout.ground));
+    let muted = Style::default().fg(RowPaintInk::of(row).color(label_color(), layout.ground));
     let pid = number_text_if_fits(
         values.cells[PID_COLUMN].clone(),
         layout.column_width(PID_COLUMN),
@@ -7598,7 +7727,7 @@ fn pid_style(row: &TrackedRow, layout: &CellTableLayout, links: &AllocationFamil
         FamilyHead::Heads(family) => theme::family_color(family),
         FamilyHead::NoChildren => text_default(),
     };
-    Style::default().fg(row.ink().color(color, layout.ground))
+    Style::default().fg(RowPaintInk::of(row).color(color, layout.ground))
 }
 
 /// The `parent` cell's style: the family colour of the cargo named,
@@ -7619,7 +7748,7 @@ fn parent_style(
         ParentFamily::Member(family) => theme::family_color(family),
         ParentFamily::NoFamily => text_default(),
     };
-    Style::default().fg(row.ink().color(color, layout.ground))
+    Style::default().fg(RowPaintInk::of(row).color(color, layout.ground))
 }
 
 /// Solved widths for every constraint, matching [`ratatui::widgets::Table`]'s layout.
@@ -7699,7 +7828,7 @@ fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
             } else {
                 percent_reading(progress)
             },
-            Style::default().fg(row.ink().color(
+            Style::default().fg(RowPaintInk::of(row).color(
                 if row.is_ended() {
                     label_color()
                 } else {
@@ -7719,7 +7848,7 @@ fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
     // getting somewhere.
     Line::from(Span::styled(
         STATE_BLOCKED,
-        Style::default().fg(row.ink().color(warning_color(), layout.ground)),
+        Style::default().fg(RowPaintInk::of(row).color(warning_color(), layout.ground)),
     ))
     .right_aligned()
 }
@@ -7890,7 +8019,7 @@ fn paint_command_heading(
         buffer,
         heading_area,
         cell_paint::InkSource::heading(&heading_rows),
-        RowInk::Ordinary(heading_fade(&heading_rows)),
+        heading_ink(&heading_rows),
         ground,
         |buffer| {
             CommandHeading::for_groups(groups, area.width, cell_paint::ink_ground(ground))
@@ -7930,7 +8059,7 @@ fn paint_command_reading(
                 ..area
             },
             cell_paint::InkSource::row(row),
-            row.ink(),
+            RowPaintInk::of(row),
             ground,
             |buffer| {
                 CommandReading::for_groups(groups, area.width, grid, cell_paint::ink_ground(ground))
@@ -7968,7 +8097,7 @@ fn paint_heading_gauge(
             buffer,
             area,
             cell_paint::InkSource::row(row),
-            row.ink(),
+            RowPaintInk::of(row),
             layout.ground,
             |buffer| {
                 Paragraph::new(Line::from(heading_gauge(group, width, &base))).render(area, buffer);
@@ -8101,8 +8230,9 @@ fn fitted_progress_gauge(
     } else {
         success_color()
     };
-    let style = Style::default().fg(row.ink().color(filled_color, ground));
-    let empty = Style::default().fg(row.ink().color(label_color(), ground));
+    let ink = RowPaintInk::of(row);
+    let style = Style::default().fg(ink.color(filled_color, ground));
+    let empty = Style::default().fg(ink.color(label_color(), ground));
     let mut spans = Vec::new();
     if let Some(label) = label {
         spans.push(Span::raw(" "));
@@ -8170,8 +8300,9 @@ fn compiler_reading(
     } else {
         success_color()
     };
-    let name = Style::default().fg(row.ink().color(driver, layout.ground));
-    let count = Style::default().fg(row.ink().color(label_color(), layout.ground));
+    let ink = RowPaintInk::of(row);
+    let name = Style::default().fg(ink.color(driver, layout.ground));
+    let count = Style::default().fg(ink.color(label_color(), layout.ground));
     match compiler {
         CompilerObservation::Unknown | CompilerObservation::None => Line::default(),
         CompilerObservation::Running(compiler) => Line::from(vec![
@@ -8341,11 +8472,29 @@ mod tests {
         );
     }
 
+    pub(super) struct TestTheme(Arc<Theme>);
+
+    impl TestTheme {
+        pub(super) fn install(theme: Theme) -> Self {
+            let previous = tui_pane::theme();
+            tui_pane::set_active_theme(Arc::new(theme));
+            Self(previous)
+        }
+    }
+
+    impl Drop for TestTheme {
+        fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.0)); }
+    }
+
     mod entry_ink_tests {
         use tui_pane::PaneFrame;
-        use tui_pane::Theme;
 
         use super::*;
+
+        const ENTRY_TEST_GROUND: Color = Color::Rgb(20, 40, 60);
+
+        // On ENTRY_TEST_GROUND, the last readable ordinary blend uses alpha 95.
+        const CLAMPED_ENTRY_RGB: Color = Color::Rgb(145, 140, 135);
 
         /// The process ink alone, or the command ink beside it, in this fixture.
         #[derive(Clone, Copy)]
@@ -8354,25 +8503,15 @@ mod tests {
             Command(Color),
         }
 
-        struct EntryTestTheme(Arc<Theme>);
-
-        impl EntryTestTheme {
-            fn install(ink: EntryTestInk) -> Self {
-                let previous = tui_pane::theme();
-                let mut theme = (*previous).clone();
-                theme.text.default.color = match ink {
-                    EntryTestInk::Process(color) | EntryTestInk::Command(color) => color,
-                };
-                if let EntryTestInk::Command(color) = ink {
-                    theme.semantic.label.color = color;
-                }
-                tui_pane::set_active_theme(Arc::new(theme));
-                Self(previous)
+        fn entry_theme(ink: EntryTestInk) -> TestTheme {
+            let mut theme = (*tui_pane::theme()).clone();
+            theme.text.default.color = match ink {
+                EntryTestInk::Process(color) | EntryTestInk::Command(color) => color,
+            };
+            if let EntryTestInk::Command(color) = ink {
+                theme.semantic.label.color = color;
             }
-        }
-
-        impl Drop for EntryTestTheme {
-            fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.0)); }
+            TestTheme::install(theme)
         }
 
         fn entry_roster(now: Instant) -> Roster {
@@ -8387,7 +8526,7 @@ mod tests {
                 roster,
                 &roster.groups()[0].id,
                 area,
-                Color::Rgb(20, 40, 60),
+                ENTRY_TEST_GROUND,
                 &[],
                 CommandView::long(),
             );
@@ -8421,9 +8560,60 @@ mod tests {
         }
 
         #[test]
+        fn phase_32g_late_entry_has_readable_text() -> Result<(), &'static str> {
+            let ground = Color::White;
+            let area = Rect::new(0, 0, 202, 8);
+            let lifetime = Duration::from_secs(3);
+            let draw = |roster: &Roster| {
+                let mut buffer = Buffer::empty(area);
+                draw_group(
+                    &mut buffer,
+                    roster,
+                    &roster.groups()[0].id,
+                    area,
+                    ground,
+                    &[],
+                    CommandView::long(),
+                );
+                command_ink(&buffer, "cargo check")
+            };
+            for (source, first, endpoint, last) in [
+                (
+                    Color::Rgb(60, 100, 90),
+                    Color::Rgb(91, 125, 117),
+                    Color::Rgb(60, 100, 90),
+                    Color::Rgb(92, 125, 117),
+                ),
+                (
+                    Color::Rgb(130, 130, 130),
+                    Color::Rgb(0, 0, 0),
+                    Color::Rgb(0, 0, 0),
+                    Color::Rgb(0, 0, 0),
+                ),
+            ] {
+                let _theme = entry_theme(EntryTestInk::Command(source));
+                let now = Instant::now();
+                let mut roster = entry_roster(now);
+                roster.observe(Vec::new(), now + Duration::from_millis(100));
+                roster.advance(now + Duration::from_millis(1650), lifetime);
+                assert_eq!(roster.groups()[0].lead.faded(), 68);
+                assert_eq!(roster.groups()[0].lead.painted_ink(), RowInk::Brighten(63));
+                assert_eq!(draw(&roster)?, first, "{source:?}: first visible frame");
+                roster.advance(now + Duration::from_millis(1900), lifetime);
+                assert_eq!(roster.groups()[0].lead.painted_ink(), RowInk::Brighten(0));
+                assert_eq!(draw(&roster)?, endpoint, "{source:?}: brighten endpoint");
+                roster.advance(now + Duration::from_millis(3099), lifetime);
+                assert_eq!(draw(&roster)?, last, "{source:?}: last visible frame");
+                roster.advance(now + Duration::from_millis(3100), lifetime);
+                assert!(roster.groups().is_empty());
+            }
+            Ok(())
+        }
+
+        #[test]
         fn a_header_only_entry_waits_for_its_first_visible_command_text() -> Result<(), &'static str>
         {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8447,8 +8637,6 @@ mod tests {
             for (millis, expected) in [
                 (1775, Color::Rgb(195, 180, 165)),
                 (1900, Color::Rgb(220, 200, 180)),
-                (2850, Color::Rgb(52, 65, 79)),
-                (3099, Color::Rgb(20, 40, 60)),
             ] {
                 roster.advance(now + Duration::from_millis(millis), Duration::from_secs(3));
                 assert_eq!(
@@ -8456,6 +8644,17 @@ mod tests {
                     expected
                 );
             }
+            roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                CLAMPED_ENTRY_RGB
+            );
+            roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                CLAMPED_ENTRY_RGB,
+                "the last visible frame stays at the readable limit"
+            );
             roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
             assert_eq!(roster.groups().len(), 0, "main's deadline stays unchanged");
             Ok(())
@@ -8463,7 +8662,7 @@ mod tests {
 
         #[test]
         fn cached_text_revealed_by_a_pane_shift_decides_entry() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8473,7 +8672,7 @@ mod tests {
             let content = TileContent::Group(cells.roster.groups()[0].id.clone());
             let rect = Rect::new(0, 0, 202, 8);
             let clip = Rect::new(0, 0, 202, 10);
-            let ground = Color::Rgb(20, 40, 60);
+            let ground = ENTRY_TEST_GROUND;
             let mut clipped = Buffer::empty(clip);
             tui_pane::draw_clipped(
                 &mut clipped,
@@ -8511,7 +8710,7 @@ mod tests {
 
         #[test]
         fn command_text_drawn_only_in_scratch_does_not_decide_entry() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8537,14 +8736,14 @@ mod tests {
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
             assert_eq!(
                 command_ink(&entry_frame(&roster, visible), "cargo check")?,
-                Color::Rgb(20, 40, 60)
+                CLAMPED_ENTRY_RGB
             );
             Ok(())
         }
 
         #[test]
         fn a_hidden_child_keeps_its_own_first_text_decision() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = Roster::new();
             let mut group = cargo_group(invocation(382_001, &["check"]));
@@ -8578,14 +8777,14 @@ mod tests {
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
             assert_eq!(
                 command_ink(&entry_frame(&roster, visible), "cargo build")?,
-                Color::Rgb(20, 40, 60)
+                CLAMPED_ENTRY_RGB
             );
             Ok(())
         }
 
         #[test]
         fn entry_ink_and_readout_queries_do_not_consume_first_text() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8593,16 +8792,16 @@ mod tests {
             let stats = SccacheStats::new();
             let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
             assert_eq!(
-                cells.readout_fade(&TileContent::Group(roster.groups()[0].id.clone())),
-                CellReadoutFade::Fading(CellFadeProgress::new(62))
+                cells.readout_row_ink(&TileContent::Group(roster.groups()[0].id.clone())),
+                RowPaintInk::Finished(RowInk::Ordinary(62))
             );
             assert_eq!(roster.groups()[0].for_painting().lead.faded(), 62);
             roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
             let content = TileContent::Group(roster.groups()[0].id.clone());
             let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
             assert_eq!(
-                cells.readout_fade(&content),
-                CellReadoutFade::Fading(CellFadeProgress::new(63))
+                cells.readout_row_ink(&content),
+                RowPaintInk::Finished(RowInk::Brighten(63))
             );
             assert_eq!(roster.groups()[0].for_painting().lead.faded(), 63);
             let visible = tui_pane::PaneFrame::new(Rect::new(0, 0, 202, 8));
@@ -8611,8 +8810,8 @@ mod tests {
                 Color::Rgb(170, 160, 150)
             );
             assert_eq!(
-                cells.readout_fade(&content),
-                CellReadoutFade::Fading(CellFadeProgress::new(63))
+                cells.readout_row_ink(&content),
+                RowPaintInk::Finished(RowInk::Brighten(63))
             );
             Ok(())
         }
@@ -8620,7 +8819,7 @@ mod tests {
         #[test]
         fn a_readout_captured_before_first_text_uses_the_same_entry_preview()
         -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8629,24 +8828,24 @@ mod tests {
             let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
             let content = TileContent::Group(roster.groups()[0].id.clone());
             // Production captures the readout before drawing the command cell.
-            let readout = cells.readout_fade(&content);
+            let readout = cells.readout_row_ink(&content);
             let preview = roster.groups()[0].for_painting().lead.faded();
             let frame = PaneFrame::new(Rect::new(0, 0, 202, 8));
             let drawn = entry_frame(&roster, frame);
             assert_eq!(preview, 63);
-            assert_eq!(readout, CellReadoutFade::Fading(CellFadeProgress::new(63)));
+            assert_eq!(readout, RowPaintInk::Finished(RowInk::Brighten(63)));
             assert_eq!(
                 command_ink(&drawn, "cargo check")?,
                 Color::Rgb(170, 160, 150)
             );
-            assert_eq!(cells.readout_fade(&content), readout);
+            assert_eq!(cells.readout_row_ink(&content), readout);
             Ok(())
         }
 
         #[test]
         fn text_clipped_by_an_enclosing_pane_keeps_its_first_text_pending()
         -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8680,7 +8879,7 @@ mod tests {
 
         #[test]
         fn first_text_below_the_entry_threshold_keeps_mains_fade() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8700,7 +8899,7 @@ mod tests {
 
         #[test]
         fn a_new_live_cell_starts_at_its_final_text_ink() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
@@ -8711,7 +8910,7 @@ mod tests {
 
         #[test]
         fn a_short_lived_cells_first_text_starts_readable() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             // The command ends while its cell is still waiting to be painted.
@@ -8723,7 +8922,7 @@ mod tests {
             roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(20, 40, 60));
+            assert_eq!(drawn_entry_ink(&roster)?, CLAMPED_ENTRY_RGB);
             roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
             assert_eq!(roster.groups().len(), 0, "main's deadline is unchanged");
             Ok(())
@@ -8732,7 +8931,7 @@ mod tests {
         #[test]
         fn a_delayed_cells_ink_meets_the_floor_on_fractional_channels() -> Result<(), &'static str>
         {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(219, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(219, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
@@ -8742,14 +8941,14 @@ mod tests {
             roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
             drawn_entry_ink(&roster)?;
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(20, 40, 60));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(145, 141, 135));
             Ok(())
         }
 
         #[test]
         fn a_brighten_paints_full_ink_when_a_poll_crosses_its_endpoint() -> Result<(), &'static str>
         {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             let fade = Duration::from_secs(100);
@@ -8768,15 +8967,9 @@ mod tests {
             Ok(())
         }
 
-        #[test]
-        fn a_brightening_readout_matches_fractional_text_channels() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(150, 190, 180)));
-            let now = Instant::now();
-            let mut roster = entry_roster(now);
-            roster.observe(Vec::new(), now + Duration::from_millis(100));
-            roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
+        fn pid_and_readout_ink(roster: &Roster) -> Result<(Color, Color), &'static str> {
             let stats = SccacheStats::new();
-            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let cells = Cells::new(roster, &[], CommandView::long(), &stats);
             let (grid, buffer) = settled_buffer_with_cells(&cells, Rect::new(0, 0, 200, 24));
             let placement = grid
                 .placements(
@@ -8797,25 +8990,65 @@ mod tests {
                     line.find("382001")
                         .map(|x| buffer[(cell_width(&line[..x]), y)].fg)
                 })
-                .ok_or("command text missing")?;
-            let mut readouts = Vec::new();
-            for y in inner.top()..inner.bottom() {
-                let line = buffer_line(&buffer, y);
-                if let Some(x) = line.find("r/c: ") {
-                    let x = cell_width(&line[..x + "r/c: ".len()]);
-                    readouts.push(buffer[(x, y)].fg);
-                }
+                .ok_or("PID text missing")?;
+            let y = inner.bottom() - 1;
+            let line = buffer_line(&buffer, y);
+            let digits = line.find("r/c: ").ok_or("readout digits missing")? + "r/c: ".len();
+            let readout = buffer[(cell_width(&line[..digits]), y)].fg;
+            Ok((text, readout))
+        }
+
+        #[test]
+        fn the_first_finished_frame_clamps_dim_pid_and_readout_ink() -> Result<(), &'static str> {
+            let dim = Color::Rgb(130, 130, 130);
+            let mut theme = (*tui_pane::theme()).clone();
+            theme.text.default.color = dim;
+            theme.text.bg_focus.color = Color::White;
+            let _theme = TestTheme::install(theme);
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            assert_eq!(pid_and_readout_ink(&roster)?, (dim, dim));
+
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            let row = &roster.groups()[0].lead;
+            assert!(row.is_ended());
+            assert_eq!(row.painted_ink(), RowInk::Ordinary(0));
+            let expected = Color::Rgb(0, 0, 0);
+            assert_eq!(pid_and_readout_ink(&roster)?, (expected, expected));
+            Ok(())
+        }
+
+        #[test]
+        fn the_readout_matches_pid_ink_during_brightening_and_fade() -> Result<(), &'static str> {
+            let now = Instant::now();
+            let lifetime = Duration::from_secs(3);
+            {
+                let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(150, 190, 180)));
+                let mut roster = entry_roster(now);
+                roster.observe(Vec::new(), now + Duration::from_millis(100));
+                roster.advance(now + Duration::from_millis(2600), lifetime);
+                let (pid, readout) = pid_and_readout_ink(&roster)?;
+                assert_eq!(readout, pid, "brightening preserves channel rounding");
             }
-            assert!(
-                readouts.contains(&text),
-                "a cell readout shares text's exact RGB: {text:?}, {readouts:?}"
-            );
+            let mut theme = (*tui_pane::theme()).clone();
+            theme.text.default.color = Color::Black;
+            theme.text.bg_focus.color = Color::White;
+            let _theme = TestTheme::install(theme);
+            let mut roster = entry_roster(now);
+            drawn_entry_ink(&roster)?;
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(2480), lifetime);
+            assert_eq!(roster.groups()[0].lead.painted_ink(), RowInk::Ordinary(160));
+            let (pid, readout) = pid_and_readout_ink(&roster)?;
+            let expected = Color::Rgb(118, 118, 118);
+            assert_eq!(pid, expected);
+            assert_eq!(readout, expected);
             Ok(())
         }
 
         #[test]
         fn a_brighten_requests_only_its_changed_frames() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             let fade = Duration::from_secs(100);
@@ -8839,13 +9072,15 @@ mod tests {
 
         #[test]
         fn an_already_drawn_cells_finished_ink_keeps_mains_fade() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let _theme = entry_theme(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
             roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(166, 157, 148));
             roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(81, 89, 97));
+            assert_eq!(drawn_entry_ink(&roster)?, CLAMPED_ENTRY_RGB);
             Ok(())
         }
     }
@@ -8881,6 +9116,7 @@ mod tests {
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
     use tui_pane::Globals;
+    use tui_pane::Theme;
     use tui_pane::TileFill;
     use tui_pane::TileGrid;
     use tui_pane::TileGrowth;
@@ -8983,7 +9219,13 @@ mod tests {
             &headings,
         );
         if !matches!(outcome.continuation, TableContinuation::FullyDrawn) {
-            mark_table_continuation(&mut drawn, area, &layout, outcome.continuation, row.faded());
+            mark_table_continuation(
+                &mut drawn,
+                area,
+                &layout,
+                outcome.continuation,
+                RowPaintInk::ordinary(&row),
+            );
         }
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
         for y in 0..height {
@@ -8993,6 +9235,114 @@ mod tests {
             }
         }
         buffer
+    }
+
+    #[test]
+    fn phase_32g_hidden_process_counts_fit() {
+        for (room, expected) in [
+            (8, ["+8 more", "+18 more"]),
+            (7, ["+8 more", "+18 mo…"]),
+            (1, ["…", "…"]),
+        ] {
+            let width = cell_width(SECTION_ITEM_INDENT) + room + CONTENT_RIGHT_INSET;
+            let area = Rect::new(0, 0, width, 24);
+            let drawn = [8, 18].map(|hidden| {
+                let mut buffer = Buffer::empty(area);
+                draw_hidden_process_count(&mut buffer, area, hidden);
+                buffer_line(&buffer, 23).trim().to_owned()
+            });
+            assert_eq!(drawn, expected);
+        }
+    }
+
+    #[test]
+    fn phase_32g_hidden_process_count_uses_the_cell_colors() {
+        let area = Rect::new(0, 0, 80, 24);
+        let x = indented(area).left();
+        for variant in theme::builtins::builtins().into_iter().take(2) {
+            let cell_background = variant.theme.text.bg_focus.color;
+            let foreground = variant.theme.text.default.color;
+            let _theme = TestTheme::install(variant.theme);
+            for background in [cell_background, Color::Reset] {
+                let mut buffer = Buffer::empty(area);
+                buffer.set_style(area, Style::default().bg(background));
+                draw_hidden_process_count(&mut buffer, area, 18);
+                assert_eq!(buffer[(x, 23)].bg, background);
+                assert_eq!(buffer[(x, 23)].fg, foreground);
+                assert_eq!(buffer[(indented(area).right() - 1, 23)].symbol(), " ");
+            }
+        }
+    }
+
+    #[test]
+    fn phase_32g_probe_path_follows_the_frontend_when_a_row_is_available() {
+        let path = "/home/natepiano/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc";
+        let arguments = ["/toolchain/bin/clippy-driver", path, "-vV"];
+        let width = cell_width(path);
+        let view = CommandView::long();
+        let one = argument_command_buffer(&arguments, view, width, 1);
+        let three = argument_command_buffer(&arguments, view, width, 3);
+        let short = buffer_line(&one, 0);
+        assert_eq!(
+            short.trim(),
+            elide_summary_end(&format!("clippy-driver {path}"), width)
+        );
+        assert_eq!(buffer_line(&three, 0).trim(), "clippy-driver");
+        assert_eq!(buffer_line(&three, 1).trim(), path);
+        assert_eq!(buffer_line(&three, 2).trim(), "-vV");
+    }
+
+    #[test]
+    fn phase_32g_rustc_options_wrap_with_their_values() {
+        let cfg = "cfg(feature, values())";
+        let source = "phase32_crate_03/src/lib.rs";
+        let width = cell_width(source) + cell_width(" --check-cfg");
+        let arguments = [
+            "/toolchain/bin/clippy-driver",
+            "/toolchain/bin/rustc",
+            "--crate-name",
+            "phase32_crate_03",
+            source,
+            "--check-cfg",
+            cfg,
+        ];
+        let buffer = argument_command_buffer(&arguments, CommandView::long(), width, 6);
+        let rows = buffer_rows(&buffer);
+        let expected = format!("--check-cfg {cfg}");
+        assert!(rows.iter().any(|line| line.trim() == expected), "{rows:?}");
+    }
+
+    #[test]
+    fn phase_32g_oversized_rustc_options_keep_their_value_prefixes() {
+        let path = concat!(
+            "/tmp/claude/session/da82452f-3640-4dec-b6c5-0c783d77e79f",
+            "/phase32c-live-76mqmxe0/target/debug/deps",
+        );
+        let dependency = format!("dependency={path}");
+        for (flag, value, prefix) in [
+            ("--check-cfg", "cfg(feature, values())", "cfg("),
+            ("--out-dir", path, "/tmp/"),
+            ("-L", dependency.as_str(), "dependency="),
+        ] {
+            let arguments = [
+                "/toolchain/bin/clippy-driver",
+                "/toolchain/bin/rustc",
+                "--crate-name",
+                "phase32_crate_03",
+                flag,
+                value,
+            ];
+            let width = cell_width(flag) + cell_width(prefix) + 4;
+            let buffer = argument_command_buffer(&arguments, CommandView::long(), width, 6);
+            let rows = buffer_rows(&buffer);
+            let expected = format!("{flag} {prefix}");
+            assert!(
+                rows.iter()
+                    .map(|line| line.trim())
+                    .any(|line| line.starts_with(&expected) && line.ends_with(ELISION)),
+                "{rows:?}"
+            );
+        }
     }
 
     #[test]
@@ -9479,7 +9829,22 @@ mod tests {
                 " ",
                 "height={height}: the continuation moves from its previous row"
             );
-            assert_eq!(actual[(right, area.bottom() - 1)].symbol(), ELISION);
+            let visible_processes = (area.top()..area.bottom() - 1)
+                .filter(|&y| {
+                    let row: String = (area.left()..area.right())
+                        .map(|x| actual[(x, y)].symbol())
+                        .collect();
+                    row.split_whitespace()
+                        .next()
+                        .is_some_and(|pid| pid.parse::<u32>().is_ok())
+                })
+                .count();
+            let hidden = usize::from(height - 1) - visible_processes;
+            assert!(hidden > 0);
+            let count: String = (area.left()..area.right())
+                .map(|x| actual[(x, area.bottom() - 1)].symbol())
+                .collect();
+            assert_eq!(count.trim(), format!("+{hidden} more"));
             assert_eq!(actual[(right, changed_y)].symbol(), ELISION);
         }
     }
@@ -9500,7 +9865,7 @@ mod tests {
                     visibility: AncestryVisibility::Whole,
                 },
                 cell_paint::InkSource::heading(&[]),
-                0,
+                RowPaintInk::Live,
                 Color::Black,
                 1,
             );
@@ -9515,7 +9880,7 @@ mod tests {
                     visibility: AncestryVisibility::Whole,
                 },
                 cell_paint::InkSource::heading(&[]),
-                0,
+                RowPaintInk::Live,
                 Color::Black,
                 1,
             );
@@ -9548,11 +9913,7 @@ mod tests {
                     ContinuationInk::Heading,
                 );
                 FOREGROUND_RECORDING_VISITS.with(|count| {
-                    assert_eq!(
-                        count.get(),
-                        2 * usize::from(area.width),
-                        "one continuation row"
-                    );
+                    assert_eq!(count.get(), 2, "only the margin cell records ink");
                 });
                 assert_eq!(
                     buffer[(area.right() - CONTENT_RIGHT_INSET - 1, y)].symbol(),
@@ -11295,11 +11656,14 @@ mod tests {
     }
 
     #[test]
-    fn a_long_cut_command_reaches_its_column_edge_with_one_mark() {
-        for arguments in [
-            &["build", "--release", "--locked", "--offline"][..],
-            &["nextest", "run", "--locked", "--offline"][..],
-            &["mend", "--all-targets", "--workspace", "--fix"][..],
+    fn a_long_cut_command_keeps_its_mark_beside_the_hidden_rows_mark() {
+        for (arguments, inline_cut) in [
+            (&["build", "--release", "--locked", "--offline"][..], true),
+            (&["nextest", "run", "--locked", "--offline"][..], false),
+            (
+                &["mend", "--all-targets", "--workspace", "--fix"][..],
+                false,
+            ),
         ] {
             let mut first = same_second("/work", 1_958_592);
             first.process.command = CommandText::of("cargo", arguments);
@@ -11323,9 +11687,18 @@ mod tests {
                 &grid,
             );
             let line = buffer_line(&buffer, 2);
-            assert_eq!(line.matches(ELISION).count(), 1, "{line}");
-            let edge = usize::from(area.width - CONTENT_RIGHT_INSET - 1);
-            assert_eq!(line.chars().nth(edge), Some('…'), "{line}");
+            let edge = area.right() - CONTENT_RIGHT_INSET - 1;
+            assert_eq!(buffer[(edge, 2)].symbol(), ELISION, "{line}");
+            assert_eq!(
+                buffer[(edge - 1, 2)].symbol() == ELISION,
+                inline_cut,
+                "{line}"
+            );
+            assert_eq!(
+                line.matches(ELISION).count(),
+                1 + usize::from(inline_cut),
+                "{line}"
+            );
         }
     }
 
@@ -12029,7 +12402,14 @@ mod tests {
             offsets.iter().all(|offset| *offset == offsets[0]),
             "{texts:#?}"
         );
-        let last_process_row = texts[0].lines().rev().nth(1).expect("row above foot");
+        let mut body_from_bottom = texts[0].lines().rev().skip(1);
+        let last_row = body_from_bottom.next().expect("row above foot");
+        let last_process_row = if view.arguments == ArgumentDetail::All {
+            assert_eq!(last_row.trim(), "+29 more");
+            body_from_bottom.next().expect("process row above count")
+        } else {
+            last_row
+        };
         assert_eq!(
             last_process_row.chars().rev().nth(1),
             ELISION.chars().next(),
@@ -14938,6 +15318,11 @@ mod tests {
 
     #[test]
     fn a_walk_cut_chain_reads_cut_in_its_foot() {
+        let mut theme = (*tui_pane::theme()).clone();
+        theme.text.bg_focus.color = Color::Black;
+        theme.semantic.error.color = Color::Rgb(255, 100, 100);
+        theme.semantic.success.color = Color::Rgb(100, 255, 100);
+        let _theme = TestTheme::install(theme);
         let now = Instant::now();
         let mut group = cargo_group(invocation(500, &["check"]));
         group.ancestry = AncestryWalk::LimitCut(vec![ancestor(100, "claude")]);
@@ -14979,8 +15364,7 @@ mod tests {
                         .collect();
                     let byte = line.find("content rows: ").unwrap() + "content rows: ".len();
                     let x = inner.left() + u16::try_from(line[..byte].chars().count()).unwrap();
-                    let CellReadoutFade::Fading(progress) = cells.readout_fade(&placement.content)
-                    else {
+                    let Some((amount, _)) = cells.readout_ink(&placement.content) else {
                         panic!("finished cell fades")
                     };
                     assert_eq!(
@@ -14993,7 +15377,7 @@ mod tests {
                                 },
                             },
                             pane_background(true),
-                            progress.amount()
+                            amount
                         )
                     );
                     if matches!(placement.content, TileContent::Group(_)) {
@@ -15334,7 +15718,7 @@ mod tests {
                     assert_eq!(drawn, name, "{view:?}/{kind:?}");
                     assert_eq!(
                         buffer[(x, 2)].fg,
-                        cut_mark_style(Color::Reset, 0_u8)
+                        cut_mark_style(Color::Reset, RowPaintInk::Live)
                             .fg
                             .expect("the mark has ink")
                     );
@@ -15547,16 +15931,16 @@ mod tests {
 
     #[test]
     fn the_ancestry_mark_takes_its_rows_faded_ink() {
+        let mut theme = (*tui_pane::theme()).clone();
+        theme.text.secondary.color = Color::Black;
+        let _theme = TestTheme::install(theme);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 2));
         let area = buffer.area;
-        draw_ancestry(&mut buffer, area, &chain(6), 160, pane_background(true), 1);
+        draw_ancestry(&mut buffer, area, &chain(6), 160, Color::White, 1);
         let marker = (0..area.width)
             .find(|&x| buffer[(x, 0)].symbol() == ELISION)
             .unwrap();
-        assert_eq!(
-            buffer[(marker, 0)].fg,
-            blend_color(secondary_text_color(), pane_background(true), 160)
-        );
+        assert_eq!(buffer[(marker, 0)].fg, Color::Rgb(118, 118, 118));
     }
 
     #[test]
@@ -20169,8 +20553,8 @@ mod tests {
         let group = &roster.groups()[0];
         assert!(group.rows().skip(1).any(|row| row.faded() > 0));
         assert_eq!(
-            cells.readout_fade(&TileContent::Group(group.id.clone())),
-            CellReadoutFade::Unfaded,
+            cells.readout_row_ink(&TileContent::Group(group.id.clone())),
+            RowPaintInk::Live,
             "a live lead holds the cell ink"
         );
         roster.observe(Vec::new(), now + Duration::from_secs(1));
@@ -20179,17 +20563,20 @@ mod tests {
             Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let group = &roster.groups()[0];
-        let rows: Vec<_> = group.rows().collect();
-        let fade = heading_fade(&rows).min(group.lead.faded());
+        let fade = group
+            .rows()
+            .map(TrackedRow::faded)
+            .min()
+            .unwrap_or_default();
         assert!(fade > 0);
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
-            cells.readout_fade(&TileContent::Group(group.id.clone())),
-            CellReadoutFade::Fading(CellFadeProgress::new(fade))
+            cells.readout_row_ink(&TileContent::Group(group.id.clone())),
+            RowPaintInk::Finished(RowInk::Ordinary(fade))
         );
         assert_eq!(
-            cells.readout_fade(&TileContent::Empty(3)),
-            CellReadoutFade::Unfaded
+            cells.readout_row_ink(&TileContent::Empty(3)),
+            RowPaintInk::Live
         );
     }
 
@@ -20216,13 +20603,13 @@ mod tests {
         let hidden = hidden_commands();
         let visible = roster.visible(&hidden);
         let rows = summary_rows(&visible);
-        let fade = heading_fade(&rows);
+        let fade = rows.iter().map(|row| row.faded()).min().unwrap_or_default();
         assert!(fade > 0, "finished summary rows fade");
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
-            cells.readout_fade(&TileContent::Summary),
-            CellReadoutFade::Fading(CellFadeProgress::new(fade))
+            cells.readout_row_ink(&TileContent::Summary),
+            RowPaintInk::Finished(RowInk::Ordinary(fade))
         );
         let area = Rect::new(0, 0, 200, 20);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
@@ -20256,8 +20643,8 @@ mod tests {
         );
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
-            cells.readout_fade(&TileContent::Summary),
-            CellReadoutFade::Unfaded
+            cells.readout_row_ink(&TileContent::Summary),
+            RowPaintInk::Live
         );
     }
 
@@ -21677,6 +22064,59 @@ mod tests {
     }
 
     #[test]
+    fn phase_32g_cut_crate_and_hidden_rows_keep_both_marks() {
+        let area = Rect::new(0, 0, 98, 5);
+        let mut buffer = Buffer::empty(area);
+        let mut lead = same_second("/workspace/project", 1_881_177);
+        lead.process.resource_use.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 15,
+        });
+        lead.process.slot = SlotObservation::Held {
+            slot:    "slot-32g".into(),
+            holder:  "held".into(),
+            purpose: "a · b".into(),
+        };
+        let child = same_second("/workspace/project", 1_881_284);
+        let mut later = same_second("/workspace/later", 1_881_300);
+        let crate_name = concat!(
+            "phase32_crate_00_with_a_name_that_is_wider_than_the_command_column",
+            "_even_when_the_view_hides_all_arguments",
+        );
+        later.process.command = CommandText::of(
+            "cargo",
+            &["/toolchain/bin/clippy-driver", "--crate-name", crate_name],
+        );
+        let hidden = same_second("/workspace/hidden", 1_881_400);
+        let rows = [&lead, &child, &later, &hidden];
+        let view = CommandView::short();
+        let pinned = PinnedGroup::Lead(&lead.process);
+        let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, view);
+        let layout = CellTableLayout::for_table(&grid, area, Color::Reset, &rows, pinned);
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            pinned,
+            view,
+        );
+        let command = table_column_text(&buffer, &layout, COMMAND_COLUMN, 4);
+        let width = layout.column_width(COMMAND_COLUMN);
+        let expected = elide_summary_end(&format!("clippy-driver {crate_name}"), width);
+        assert!(expected.ends_with(ELISION), "width {width}: {expected:?}");
+        assert_eq!(command.trim_end(), expected);
+        assert!(
+            buffer_line(&buffer, 1).contains("slot-32g · held · a · b"),
+            "{:?}",
+            buffer_rows(&buffer)
+        );
+        assert_eq!(buffer[(indented(area).right() - 1, 4)].symbol(), ELISION);
+        assert!(!buffer_rows(&buffer).join("\n").contains("1881400"));
+    }
+
+    #[test]
     fn a_whole_command_keeps_its_free_cells_before_a_table_continuation_mark() {
         let area = Rect::new(0, 0, 198, 5);
         let mut buffer = Buffer::empty(area);
@@ -21841,7 +22281,7 @@ mod tests {
     }
 
     #[test]
-    fn a_summary_with_hidden_rows_ends_in_the_mark() {
+    fn a_summary_with_hidden_rows_ends_with_the_whole_count() {
         let rows: Vec<TrackedRow> = (0..8)
             .map(|offset| {
                 let mut row = row(None);
@@ -21866,7 +22306,9 @@ mod tests {
             CommandView::long(),
         );
 
-        assert!(buffer_line(&buffer, 6).ends_with(ELISION));
+        assert_eq!(buffer_line(&buffer, 6).trim(), "+4 more");
+        let right = area.right() - CONTENT_RIGHT_INSET - 1;
+        assert_eq!(buffer[(right, 5)].symbol(), ELISION);
     }
 
     #[test]
@@ -23526,7 +23968,7 @@ mod tests {
         }
 
         #[test]
-        fn a_cell_that_cannot_hold_every_process_shows_how_many_more() {
+        fn phase_32g_the_hidden_process_count_has_its_own_row() {
             let long_rows = process_rows();
             let mut short_rows = long_rows.clone();
             for row in &mut short_rows {
@@ -23546,11 +23988,7 @@ mod tests {
                         PinnedGroup::Unpinned,
                         CommandView::long(),
                     );
-                    let lines = buffer_rows(&buffer);
-                    assert!(
-                        lines.iter().any(|line| line.contains("+2 more")),
-                        "{lines:?}"
-                    );
+                    assert_eq!(buffer_line(&buffer, area.bottom() - 1).trim(), "+2 more");
                 }
             }
         }

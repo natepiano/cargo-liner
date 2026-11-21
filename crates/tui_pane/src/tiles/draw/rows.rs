@@ -5,7 +5,6 @@ mod tests;
 use ratatui::widgets::Widget;
 
 use super::Buffer;
-use super::CellReadoutFade;
 use super::CellReadoutInk;
 use super::Color;
 use super::Display;
@@ -156,13 +155,14 @@ impl CellReadout {
     ) -> Self {
         Self {
             extent: cells.content_extent(content),
-            ink:    match cells.readout_fade(content) {
-                CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
-                CellReadoutFade::Fading(_) => CellReadoutInk::Fading {
-                    progress: cells.readout_progress(content),
+            ink:    cells.readout_ink(content).map_or(
+                CellReadoutInk::Unfaded,
+                |(amount, color)| CellReadoutInk::Fading {
+                    amount,
                     ground,
+                    color,
                 },
-            },
+            ),
         }
     }
 }

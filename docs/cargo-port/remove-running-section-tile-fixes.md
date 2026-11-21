@@ -3058,40 +3058,22 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Shots of a live tile with active crates on a light and a dark background; when `tui_pane` changes, shots of `cargo-port` with the same ink. A fresh helper's design check passes.
 - Change-review line: active crate labels read on a light background.
 
-### Phase 32g — The hidden-process row reads whole and matches its cell  · status: todo
+### Phase 32g — The hidden-process row reads whole and matches its cell  · status: done
 
-**Depends on:** Phase 32c, Phase 32e, Phase 32h (both edit the painting and retained replay in `render.rs` and `render/cell_paint.rs`; item 4's fade clamp must keep Phase 32h's draw time)
+#### As-built
 
-#### Work Order
+- `draw_hidden_process_count` (`render.rs`) draws `+N more` whole on its own row, on the cell background in the normal row ink. It has a cut mark only when the label is cut.
+- Fading text keeps 4.5:1 contrast against its resolved background until the row goes. `RowPaintInk` and `RowFadePalette` (`render.rs`) clamp each fade amount at the floor. `PaintedCellContents::recolor` uses the same ink, so fresh and retained painting stay equal. The pid and readout share the row ink, from the first finished frame. `tui_pane` `tiles/draw` (`contents.rs`, `fade.rs`, `rows.rs`) takes the readout ink from the row.
+- A cut crate name keeps its `…` directly after the name; the hidden-rows mark stands at the right margin. `mark_table_continuation` no longer deletes the name's mark.
+- `-L`, `--out-dir` and `--check-cfg` are in `COMMAND_VALUED_OPTIONS` and wrap with their values. `ValuedOptionScope::Rustc`, `ArgumentOwner::Rustc` and `RUSTC_ARGUMENT_OWNERS` replace the `RustcLint` names.
+- Item 3 needed no change (showrunner ruling). Item 5 found no defect: the path follows the frontend when a row is available.
+- `row_resource_readings` finds rows and parents by an index keyed by pid and invocation identity, not by a scan.
+- Gates: design check passed; Mac lint passed; Mac 1,312/1,312 cargo-tile tests. Five repair rounds; rounds 4 and 5 ran under showrunner rulings.
+- **Frame gate, not met:** the perf profile (six groups, no workload) decides (showrunner, 2026-11-19). First fades: max CPU 10.4 ms against main 13.8 ms. Repeated fades: max repaint 2.78 ms against main 2.30 ms. Paired captures, frames over 4 ms, main → 32g: 30 → 40, 21 → 42, 73 → 49 at 24/40/80 rows, mostly at load 62-78. The showrunner landed 32g by the pooled counts. The cause is not named; it goes first in Phase 34.
 
-**Goal:** Defects from the Phase 32c design check (2026-11-10) moved here under the hard landing. The row that counts hidden processes loses its last letter at 24 rows (`+18 mor`), and it draws as a full-width black bar with white text on a white cell. Items 4 to 7 name the other rows the check reported.
+**Ruled out:** the palette build on a cache miss (round 5: no `RowFadePalette::new` or `powf` samples in the slow frames).
 
-**Spec:**
-
-1. The label `+N more` is whole at every count and every cell width that shows the row. Quote the source line in `draw_hidden_process_count` that cuts the label, and fix the cause there. Test, red first: add rows that read the whole label from the buffer at the 24-row cell width, with one-digit and two-digit counts.
-2. The row draws on the background of its cell, in the normal row ink. It has no cut mark at its right end unless the label is cut. Test, red first: read the background and ink of the row from the buffer on a light and a dark background.
-
-3. A cargo probe row keeps its real crate name: `clippy-driver ___`. It is the real value, and it marks the probe (showrunner, 2026-11-10). Make no change for this item. Tell the design check that this is the ruling.
-4. A process row that fades after its process ends stays readable until the row goes. The Phase 32c design check measured a fading frontend name at 3.32:1 down to 1.60:1, on a terminal whose appearance was not recorded (Phase 32f item 7). Keep the existing removal time, and clamp the visible text contrast at 4.5:1 against its resolved background. Keep the retained ink handling of Phase 32e: `PaintedCellContents::recolor` reapplies `RowInk::color` from retained source colors, apart from fresh text drawing, so the clamp applies on both paths. Test, red first: read the drawn ink at intermediate fade samples on a light and a dark background. In the retained-versus-fresh fixture, the buffers are equal, the contrast is at least 4.5:1, and the replay does not repaint.
-5. Check whether the path placement of a compiler call with no `--crate-name` is a defect. In the Phase 32c shots at 80 rows with `h` on, the path sits on the second row. `WrappedCommand::into_rows` combines continuation units into the last row when height is limited, so a row budget can change the placement. Compare the same argv and command width with only the row budget changed. If argv order and the available-space rules hold, close this item with no change.
-6. With `h` off, a shortened crate name keeps its `…` directly after the name, at the solved command-column width. In the Phase 32c shot at 24 rows, the name `phase32_crate_00_with_a` stopped two cells early, and the only `…` was at the right margin. `mark_table_continuation` deletes existing ellipses when rows are omitted, then places one at the table margin. Keep both marks (showrunner, 2026-11-10): the name's own mark stays directly after the name, and the hidden-rows mark stands at the right margin. Stop the deletion for rows omitted. `reserve_command_rows` keeps returning 0 for single-line Default rows, so no process row is lost, and the Phase 35 rule stays. Test, red first: read a shortened final name and the margin mark from the buffer while more process rows stay hidden.
-7. A flag and its value stay together on argument rows. In the Phase 32c shot at 80 rows, `-L` and `--out-dir` sat alone on a row, and `--check-cfg` ended a row while its value started the next. `COMMAND_VALUED_OPTIONS` omits these three options. Add them to the table, and reuse the existing `BoundValue` wrapping and cut behavior. Do not add a second classification in the renderer. These options are not lint options, so rename `ValuedOptionScope::RustcLint` and `ArgumentOwner::RustcLint` to `Rustc`, and `RUSTC_LINT_OWNERS` to `RUSTC_ARGUMENT_OWNERS`. Keep the Cargo and nextest boundaries. Test, red first: parser cases, and the argument rows of a recorded argv, for fitting pairs and for oversized values.
-
-**Files:**
-- `crates/cargo-tile/src/render.rs` — items 1, 2 and 4 to 6.
-- `crates/cargo-tile/src/render/cell_paint.rs` — item 4's retained-versus-fresh fixture.
-- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/census/command_text.rs` — item 7 and its parser cases.
-- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
-
-**Workers:** 1 writer — `impl`, every file above.
-
-**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32c: `compiler_argument_layout` identifies forwarded compiler executables, and `wrapped_process_command` reserves the heading row. A capture that sets terminal colors and selects no appearance can draw the dark theme on a white terminal. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Phase 69: `DirectoryDisplay` (render.rs), `StyledCommandWord::Slot` and `slot_label_prefix` fit a slot label from typed parts, not from ` · ` text; a purpose can contain ` · `. The cut order is purpose first, holder next, slot last. Extend the fade and cut fixtures with slot labels; keep retained-versus-fresh equality and the repaint counts.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
-- Shots of a live tile with hidden processes at 24 and 40 rows on a light background, and at 80 rows with `h` on with matched light and dark appearances. Record the resolved theme and the terminal settings before judging missing text, placement or contrast. A fresh helper's design check passes.
-- Phase 32h's capture gate, repeated on the final release build with the fade clamp: no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows, under the same load rule.
-- Change-review line: the hidden-process row reads whole on the background of its cell.
+**Files:** `crates/cargo-tile/src/render.rs`, `render/cell_paint.rs`, `constants.rs`, `census/command_text.rs`, `CHANGELOG.md`; `crates/tui_pane/src/tiles/draw/{contents,fade,rows}.rs`.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: done
 
@@ -3162,6 +3144,13 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - `impl` — every file above, items 1 to 6, the whole rename and the pause path.
 
 **Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates. Since "Reads/s stays beside CPU at 100 columns or more", the uptime group (uptime, CPU, `Reads/s`) outranks every status note, so on a narrow row the `paused` note drops before `Reads/s`. Draw `space_pauses_and_unpauses_the_display` at 80 columns or more, where a flag note such as cargo-handler's `attract` still shows.
+
+**Forward edits from Phase 32g (showrunner ruling, 2026-11-19):**
+- Do this first. Phase 32g's repeated fades cost more than main: max repaint 2.78 ms against 2.30 ms in the six-group perf profile. Bring it to main or below, and keep first fades at or below main.
+- Leads (Astra, `/tmp/claude/astra/20261119T184410Z-3214804/review.md`): (1) each palette cache hit still borrows a thread-local map and hashes (foreground, background, mode) per color role (`render.rs` `RowInk::color`, `cell_paint.rs` `PaintedCellContents::recolor`); (2) `row_resource_readings` builds two maps on each call; (3) the repeated-fade interval mixes fresh frames with retained frames.
+- Measure first: count palette hits and misses by paint stage, time the resource index apart from row preparation, and compare matching frames on main and the branch. Read unfiltered call chains.
+- A fix candidate: keep palette handles with the color roles and read each fade amount from an array. Keep the 4.5:1 floor and retained-versus-fresh equality.
+- Files: add `crates/cargo-tile/src/render/cell_paint.rs` if the fix needs it.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
