@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
@@ -11,7 +13,7 @@ use crate::tokenizer::Token;
 use crate::word_syntax;
 
 /// The direct owner of a declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DeclarationOwner {
     Module,
@@ -19,7 +21,7 @@ enum DeclarationOwner {
 }
 
 /// The import scope of a declaration or its owning impl header.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ImportPosition {
     FileLevel,
@@ -27,7 +29,7 @@ enum ImportPosition {
 }
 
 /// An impl has no target of this kind, or its target cannot be read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ImplementationState {
     None,
@@ -35,7 +37,7 @@ enum ImplementationState {
 }
 
 /// A complete impl path and its generic arguments.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 struct ImplementedPath {
     path:      Vec<String>,
     arguments: Vec<String>,
@@ -43,7 +45,7 @@ struct ImplementedPath {
 }
 
 /// The trait or type relationship of a direct impl member.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 enum ImplMembership {
     State(ImplementationState),
@@ -64,7 +66,7 @@ impl ImplMembership {
 }
 
 /// One named declaration and its source lines.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct DeclaredItem {
     keyword:           String,
     pub(crate) name:   String,
@@ -78,7 +80,7 @@ pub(crate) struct DeclaredItem {
 }
 
 /// The word indexes of a complete or incomplete braced body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct BodyWords {
     pub(crate) open:  usize,
     pub(crate) close: usize,
@@ -100,22 +102,42 @@ impl Serialize for ItemBody {
     }
 }
 
+impl<'de> Deserialize<'de> for ItemBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum NoBody {
+            None,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BodyValue {
+            NoBody(NoBody),
+            Braced(BodyWords),
+        }
+
+        Ok(match BodyValue::deserialize(deserializer)? {
+            BodyValue::NoBody(NoBody::None) => Self::NoBody,
+            BodyValue::Braced(body) => Self::Braced(body),
+        })
+    }
+}
+
 /// The keyword, end, and body word indexes of one item.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ItemSpan {
     keyword:         usize,
     end:             usize,
     pub(crate) body: ItemBody,
 }
 
-/// A file's declarations and the tokens used to read their bodies.
-#[derive(Debug, Serialize)]
+/// A file's declarations and their token indexes.
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct DeclaredFile {
-    pub(crate) items:  Vec<DeclaredItem>,
-    pub(crate) spans:  Vec<ItemSpan>,
-    others:            Vec<ItemSpan>,
-    #[serde(skip)]
-    pub(crate) tokens: Vec<Token>,
+    pub(crate) items: Vec<DeclaredItem>,
+    pub(crate) spans: Vec<ItemSpan>,
+    others:           Vec<ItemSpan>,
 }
 
 /// A readable impl owner, or an owner whose members Python omits.
@@ -390,7 +412,7 @@ fn owning_bodies(
 }
 
 /// Read declarations from a request's shared token reading.
-pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
+pub(crate) fn read_tokens(tokens: &[Token]) -> DeclaredFile {
     let words: Vec<String> = tokens.iter().map(|token| token.value.clone()).collect();
     let mut first_attribute = BTreeMap::new();
     for (start, keyword) in word_syntax::attribute_owners(&words).into_iter().rev() {
@@ -410,7 +432,6 @@ pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
         items:  Vec::new(),
         spans:  Vec::new(),
         others: Vec::new(),
-        tokens: tokens.to_vec(),
     };
     for (index, span) in all_spans {
         let keyword = word_syntax::word(&words, index);
@@ -472,14 +493,12 @@ pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
         });
         file.spans.push(span);
     }
-    // Source offsets count characters; the body reader receives the original text separately.
-    debug_assert!(file.tokens.iter().all(|token| token.start <= text.len()));
     file
 }
 
 /// Read declarations for the tests without a request token reading.
 #[cfg(test)]
-pub(crate) fn read(text: &[char]) -> DeclaredFile { read_tokens(text, &tokenizer::tokenize(text)) }
+pub(crate) fn read(text: &[char]) -> DeclaredFile { read_tokens(&tokenizer::tokenize(text)) }
 
 #[cfg(test)]
 mod tests {

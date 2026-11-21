@@ -5,6 +5,7 @@
 //! order, so both readers give the same tokens. Offsets count code points, as Python string
 //! offsets do.
 
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::constants::PUNCTUATION_PAIRS;
@@ -15,7 +16,7 @@ use crate::unicode_tables::SPACE;
 use crate::unicode_tables::WORD;
 
 /// The Python token kinds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TokenKind {
     Identifier,
@@ -25,7 +26,7 @@ pub(crate) enum TokenKind {
 }
 
 /// One code token, with the line and the code-point offset where it starts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Token {
     pub(crate) value: String,
     pub(crate) kind:  TokenKind,
