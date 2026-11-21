@@ -1849,7 +1849,7 @@ Each native test fixture records its source identity, and each publication remov
 - Hold settlement inside the comparison budget: a phase makes one or two holds, settled once for each integration.
 
 
-### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+### Phase 71 — A capture shim lock that no install holds does not block  · status: done
 
 **Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
 

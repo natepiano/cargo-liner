@@ -34,6 +34,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::fs::TryLockError;
 use std::io;
 use std::io::Error;
 use std::io::ErrorKind;
@@ -103,7 +104,6 @@ use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
 use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_LOCK_NAME;
-use crate::constants::SHIM_LOCK_RECOVERY;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
 use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
@@ -1806,7 +1806,7 @@ impl Hook {
         let source = native_fixture::executable()?.to_owned();
         {
             let _inspection_lock =
-                HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
+                HookInstallationLock::acquire(&self.cargo.with_file_name(SHIM_LOCK_NAME))?;
             match self.state()? {
                 HookState::Orphaned => return Ok(HookOperationOutcome::Orphaned),
                 HookState::Installed => {
@@ -1833,7 +1833,7 @@ impl Hook {
         }
         let prepared = PreparedCaptureRunner::new(&self.cargo, &source)?;
         let _installation_lock =
-            HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
+            HookInstallationLock::acquire(&self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
             HookState::Installed => {
                 let contents = fs::read(&self.cargo)?;
@@ -1926,7 +1926,7 @@ impl Hook {
     /// Give the real cargo its name back.
     fn remove(&self) -> io::Result<HookOperationOutcome> {
         let _installation_lock =
-            HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
+            HookInstallationLock::acquire(&self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
             HookState::Absent => {
                 CaptureRunnerDestination::inspect(self.runner_path())?.remove_owned()?;
@@ -2090,54 +2090,54 @@ impl WritableCaptureRunner {
 }
 
 /// Exclusive access to one toolchain's install, repair, and removal operations.
-/// The lock file's presence owns access until this guard is dropped.
 struct HookInstallationLock {
-    /// Only the guard that created this path may remove it.
-    path: PathBuf,
+    /// Closing the file releases the lock. The directory entry stays in place.
+    _file: File,
 }
 
 impl HookInstallationLock {
-    /// Wait briefly for another installer, then fail without touching
-    /// cargo if exclusive creation remains unavailable.
-    fn acquire(path: PathBuf) -> io::Result<Self> {
+    /// Wait briefly for a held lock. An open file without a lock is available immediately.
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let with_path =
+            |error: Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(with_path)?;
+        if !file.metadata().map_err(with_path)?.is_file() {
+            return Err(with_path(io::Error::new(
+                ErrorKind::InvalidData,
+                "the capture shim lock must be a regular file",
+            )));
+        }
         let started = std::time::Instant::now();
         let wait_budget = SHIM_LOCK_RETRY_DELAY
             .saturating_mul(u32::try_from(SHIM_LOCK_RETRY_ATTEMPTS).map_err(io::Error::other)?);
         let mut retries_remaining = SHIM_LOCK_RETRY_ATTEMPTS;
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Self { path }),
-                Err(error)
-                    if error.kind() == ErrorKind::AlreadyExists
-                        && retries_remaining > 0
-                        && started.elapsed() < wait_budget
-                        && fs::symlink_metadata(&path)
-                            .map_or(true, |metadata| metadata.is_file()) =>
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(TryLockError::WouldBlock)
+                    if retries_remaining > 0 && started.elapsed() < wait_budget =>
                 {
                     retries_remaining -= 1;
                     thread::sleep(
                         SHIM_LOCK_RETRY_DELAY.min(wait_budget.saturating_sub(started.elapsed())),
                     );
                 },
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("{}: {error}; {SHIM_LOCK_RECOVERY}", path.display()),
-                    ));
+                Err(TryLockError::WouldBlock) => {
+                    return Err(with_path(io::Error::new(
+                        ErrorKind::WouldBlock,
+                        "another capture shim operation holds the lock",
+                    )));
                 },
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("{}: {error}", path.display()),
-                    ));
-                },
+                Err(TryLockError::Error(error)) => return Err(with_path(error)),
             }
         }
     }
-}
-
-impl Drop for HookInstallationLock {
-    fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
 }
 
 /// An executable copy accessible to account children until reporting ends.
@@ -2683,7 +2683,9 @@ mod tests {
                         assert_eq!(metadata.modified().unwrap(), *modified);
                     }
                     assert!(!hook.staging.exists());
-                    assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+                    assert_installation_lock_is_released(
+                        &hook.cargo.with_file_name(SHIM_LOCK_NAME),
+                    );
                 }
             }
         }
@@ -2855,7 +2857,7 @@ mod tests {
     fn mutations_acquire_the_lock_before_classifying_an_orphaned_shim() {
         let (_home, hook) = toolchain(SHIM_SOURCE);
         let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-        let _installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+        let _installation_lock = HookInstallationLock::acquire(&lock_path).unwrap();
 
         assert_eq!(
             hook.perform(HookOperation::Status),
@@ -2891,7 +2893,7 @@ mod tests {
         fs::remove_file(&hook.cargo).unwrap();
         fs::create_dir(&hook.cargo).unwrap();
         let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-        let _installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+        let _installation_lock = HookInstallationLock::acquire(&lock_path).unwrap();
 
         assert!(matches!(
             hook.perform(HookOperation::Status),
@@ -3361,35 +3363,36 @@ mod tests {
     fn installing_with_a_held_lock_leaves_the_toolchain_untouched() {
         let (_home, hook) = toolchain(CARGO_NAME);
         let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-        let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+        fs::write(&lock_path, CARGO_NAME).unwrap();
+        let installation_lock = File::open(&lock_path).unwrap();
+        installation_lock.try_lock().unwrap();
 
-        assert_eq!(hook.install().unwrap_err().kind(), ErrorKind::AlreadyExists);
+        let error = hook.install().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}: another capture shim operation holds the lock",
+                lock_path.display()
+            )
+        );
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
         assert!(!hook.real.exists());
         assert!(!hook.staging.exists());
-        assert!(lock_path.exists());
+        assert_eq!(fs::read_to_string(&lock_path).unwrap(), CARGO_NAME);
+        assert!(matches!(
+            File::open(&lock_path).unwrap().try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
 
         drop(installation_lock);
         assert_eq!(hook.install().unwrap(), HookOperationOutcome::Installed);
-        assert!(!lock_path.exists());
+        assert_installation_lock_is_released(&lock_path);
     }
 
-    /// A stranded lock must name its path and the operator's recovery
-    /// steps once the bounded wait finishes, without deleting the lock.
-    #[test]
-    fn an_exhausted_installation_lock_reports_how_to_recover() {
-        let (_home, hook) = toolchain(CARGO_NAME);
-        let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-        fs::write(&lock_path, CARGO_NAME).unwrap();
-
-        let error = hook.install().unwrap_err();
-        let message = error.to_string();
-
-        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
-        assert!(message.contains(&lock_path.display().to_string()));
-        assert!(message.contains(SHIM_LOCK_RECOVERY));
-        assert!(message.lines().eq([message.as_str()]));
-        assert_eq!(fs::read_to_string(&lock_path).unwrap(), CARGO_NAME);
+    /// Open the existing file to confirm that the operation released its lock.
+    fn assert_installation_lock_is_released(path: &Path) {
+        File::open(path).unwrap().try_lock().unwrap();
     }
 
     /// Independent installers starting together must agree which one
@@ -3434,7 +3437,7 @@ mod tests {
             CargoContents::Original
         ));
         assert!(!hook.staging.exists());
-        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+        assert_installation_lock_is_released(&hook.cargo.with_file_name(SHIM_LOCK_NAME));
     }
 
     #[test]
@@ -3584,7 +3587,7 @@ mod tests {
         fs::create_dir(&hook.staging).unwrap();
 
         assert!(hook.install().is_err());
-        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+        assert_installation_lock_is_released(&hook.cargo.with_file_name(SHIM_LOCK_NAME));
         assert!(!hook.cargo.exists());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
         let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
@@ -3614,7 +3617,7 @@ mod tests {
             fs::read_to_string(&hook.real).unwrap(),
             HOOK_TEST_REAL_CARGO
         );
-        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+        assert_installation_lock_is_released(&hook.cargo.with_file_name(SHIM_LOCK_NAME));
 
         fs::remove_dir(&hook.staging).unwrap();
         assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
@@ -3633,10 +3636,9 @@ mod tests {
                         hook.install().unwrap();
                     }
                     let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-                    let installation_lock =
-                        HookInstallationLock::acquire(lock_path.clone()).unwrap();
+                    let installation_lock = HookInstallationLock::acquire(&lock_path).unwrap();
 
-                    assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
+                    assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::WouldBlock);
                     assert_eq!(hook.state().unwrap(), state);
                     assert_eq!(
                         fs::read_to_string(&hook.real).unwrap(),
@@ -3660,7 +3662,7 @@ mod tests {
                         HOOK_TEST_REAL_CARGO
                     );
                     assert!(!hook.real.exists());
-                    assert!(!lock_path.exists());
+                    assert_installation_lock_is_released(&lock_path);
                 })
             });
             for case in cases {
@@ -3725,7 +3727,7 @@ mod tests {
         );
         assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(!hook.staging.exists());
-        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+        assert_installation_lock_is_released(&hook.cargo.with_file_name(SHIM_LOCK_NAME));
     }
 
     /// Uninstalling must also restore a cargo left under its saved name
@@ -3925,7 +3927,7 @@ mod tests {
             assert_eq!(startup.installed, [] as [String; 0]);
             assert_eq!(startup.refreshed, [] as [String; 0]);
             assert_eq!(snapshot(), before);
-            assert!(!hooks[0].cargo.with_file_name(SHIM_LOCK_NAME).exists());
+            assert_installation_lock_is_released(&hooks[0].cargo.with_file_name(SHIM_LOCK_NAME));
             assert!(!hooks[0].staging.exists());
             for hook in &hooks[1..] {
                 assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
