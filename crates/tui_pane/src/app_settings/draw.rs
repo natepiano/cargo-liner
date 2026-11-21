@@ -1,6 +1,7 @@
 //! [`draw_settings`]: the settings popup, sized to its widest row.
 
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use super::constants::SETTINGS_POPUP_WIDTH;
@@ -36,44 +37,55 @@ pub fn draw_settings<S: Copy>(
     rows: &SettingsRows<S>,
     mode: crate::ColorMode,
 ) {
-    let area = frame.area();
-    // `PopupFrame::render_with_areas` centers and clamps to the frame, so `rows` have
-    // to be laid out for the width that survives that clamp.
-    let width = fitted_width(rows.widest_row()).min(area.width);
-    let content_width = usize::from(width.saturating_sub(POPUP_BORDER_WIDTH));
-    let settings_render_options = SettingsRenderOptions {
-        focus: PaneFocusState::Active,
-        inline_error: None,
-        content_width,
-        section_header_indent: SECTION_HEADER_INDENT,
-        section_item_indent: SECTION_ITEM_INDENT,
-        title_style: Style::default().fg(title_color()),
-        label_style: Style::default().fg(label_color()),
-        muted_style: Style::default().fg(label_color()),
-        success_style: Style::default().fg(success_color()),
-        error_style: Style::default().fg(error_color()),
-        inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: selection_style(PaneFocusState::Active, mode),
-        remembered_style: selection_style(PaneFocusState::Remembered, mode),
-        hovered_style: Style::default().bg(hover_focus_color()),
-    };
-    let settings_render = settings_pane.render_rows(rows.rows(), settings_render_options);
-    let line_count = u16::try_from(settings_render.lines.len()).unwrap_or(u16::MAX);
-    let height = line_count
-        .saturating_add(POPUP_BORDER_HEIGHT)
-        .min(area.height);
-    let popup_areas = PopupFrame {
-        color_mode: mode,
-        title: Some(SETTINGS_TITLE.to_string()),
-        border_color: title_color(),
-        width,
-        height,
-    }
-    .render_with_areas(frame);
+    settings_pane.draw_popup(frame, rows, mode);
+}
 
-    settings_pane.set_content_area(popup_areas.inner);
-    settings_pane.update_scroll();
-    settings_pane.render_lines(frame, settings_render.lines);
+impl SettingsPane {
+    pub(crate) fn draw_popup<S: Copy>(
+        &mut self,
+        frame: &mut Frame,
+        rows: &SettingsRows<S>,
+        mode: crate::ColorMode,
+    ) -> Rect {
+        let area = frame.area();
+        // Lay out the rows at the width that fits in the frame.
+        let width = fitted_width(rows.widest_row()).min(area.width);
+        let content_width = usize::from(width.saturating_sub(POPUP_BORDER_WIDTH));
+        let settings_render_options = SettingsRenderOptions {
+            focus: PaneFocusState::Active,
+            inline_error: None,
+            content_width,
+            section_header_indent: SECTION_HEADER_INDENT,
+            section_item_indent: SECTION_ITEM_INDENT,
+            title_style: Style::default().fg(title_color()),
+            label_style: Style::default().fg(label_color()),
+            muted_style: Style::default().fg(label_color()),
+            success_style: Style::default().fg(success_color()),
+            error_style: Style::default().fg(error_color()),
+            inline_error_style: Style::default().fg(inline_error_color()),
+            active_style: selection_style(PaneFocusState::Active, mode),
+            remembered_style: selection_style(PaneFocusState::Remembered, mode),
+            hovered_style: Style::default().bg(hover_focus_color()),
+        };
+        let settings_render = self.render_rows(rows.rows(), settings_render_options);
+        let line_count = u16::try_from(settings_render.lines.len()).unwrap_or(u16::MAX);
+        let height = line_count
+            .saturating_add(POPUP_BORDER_HEIGHT)
+            .min(area.height);
+        let popup_areas = PopupFrame {
+            color_mode: mode,
+            title: Some(SETTINGS_TITLE.to_string()),
+            border_color: title_color(),
+            width,
+            height,
+        }
+        .render_with_areas(frame);
+
+        self.set_content_area(popup_areas.inner);
+        self.update_scroll();
+        self.render_lines(frame, settings_render.lines);
+        popup_areas.outer
+    }
 }
 
 /// Popup width that fits the widest row plus borders, never narrower

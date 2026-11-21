@@ -49,19 +49,18 @@ impl InputContext for App {
         self.framework.hit_test_at(pos)
     }
 
-    /// The favorites modal has no mouse selection yet, but still
-    /// absorbs every click so none reaches the grid underneath it.
-    #[cfg(feature = "attract")]
+    /// Keep clicks on Favorites and expanded cells away from the grid.
     fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> {
+        #[cfg(feature = "attract")]
         if self.favorites_overlay.is_open() {
+            return ModalHit::MissedRow;
+        }
+        if self.grid_view.is_open() {
             ModalHit::MissedRow
         } else {
             ModalHit::Closed
         }
     }
-
-    #[cfg(not(feature = "attract"))]
-    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> { ModalHit::Closed }
 
     fn map_framework_hit(&self, hit: FrameworkHit) -> Option<TilePick> {
         TilePick::from_framework_hit(hit)

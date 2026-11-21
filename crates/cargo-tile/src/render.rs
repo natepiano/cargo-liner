@@ -413,8 +413,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .area_avoiding_frames(tui_pane::frame_inner(body), &summary_frames.0);
     tui_pane::render_toasts(frame, &mut app.framework, toast_area);
     #[cfg(feature = "attract")]
-    app.favorites_overlay
-        .render(frame, app.framework.color_mode);
+    tui_pane::draw_favorites_overlay(frame, app);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 

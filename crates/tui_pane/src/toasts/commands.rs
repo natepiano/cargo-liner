@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::ColoredToastId;
@@ -262,6 +263,29 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             ToastFocus::PaneFocusedOn(id) => self.dismiss(id),
             ToastFocus::PaneUnfocused | ToastFocus::PaneFocusedWithoutToast => false,
         }
+    }
+
+    /// Close the focused visible toast or the newest visible toast.
+    pub(crate) fn dismiss_visible(
+        &mut self,
+        pane: crate::PaneFocusState,
+        card_is_visible: impl Fn(Rect) -> bool,
+    ) -> bool {
+        let focused = self.focused_toast_id(pane);
+        let now = Instant::now();
+        let id = self
+            .entries
+            .iter()
+            .filter(|toast| {
+                toast.is_live(now)
+                    && self
+                        .hits
+                        .iter()
+                        .any(|hit| hit.id == toast.id && card_is_visible(hit.card_rect))
+            })
+            .max_by_key(|toast| focused == ToastFocus::PaneFocusedOn(toast.id))
+            .map(|toast| toast.id);
+        id.is_some_and(|id| self.dismiss(id))
     }
 
     fn push_entry(&mut self, spec: ToastSpec<Ctx>, now: Instant) -> ToastId {

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -381,11 +382,7 @@ impl TerminalApp for App {
         cpu_observation::publish_frame();
     }
 
-    fn click(&mut self, position: Position) {
-        if matches!(self.grid_view, GridView::Grid) || self.framework.overlay().is_some() {
-            tui_pane::handle_tile_click(self, position);
-        }
-    }
+    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
         if self.framework.overlay().is_some() || matches!(self.grid_view, GridView::Grid) {
@@ -411,8 +408,15 @@ impl TerminalApp for App {
         self.favorites_overlay.visual_deadline(now, frame_period)
     }
 
-    /// Open overlays receive their keys before the expanded cell receives navigation keys.
+    /// Give a visible toast first use of Esc.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        if bind.code == KeyCode::Esc
+            && bind.mods.is_empty()
+            && self.framework.dismiss_visible_toast()
+        {
+            tui_pane::reconcile_focus_after_toast_change(self);
+            return KeyOutcome::Consumed;
+        }
         #[cfg(feature = "attract")]
         if tui_pane::dispatch_favorites_key(self, keymap, bind) == KeyOutcome::Consumed {
             return KeyOutcome::Consumed;
@@ -464,6 +468,7 @@ impl TileGridHost for App {
     type TileId = InvocationId;
 
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
+    const CLOSE_TOAST_ON_CLICK: bool = true;
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 }
