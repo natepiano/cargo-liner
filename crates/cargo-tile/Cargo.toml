@@ -50,3 +50,4 @@ libc = { workspace = true }
 
 [dev-dependencies]
 census-test-support = { workspace = true }
+tui_pane            = { workspace = true, features = ["contrast-test"] }

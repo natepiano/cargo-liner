@@ -57,6 +57,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Make the selected settings row readable in every shipped theme.
+- Wrap settings values at words or path separators and keep a space before the border.
 - Keep the first body character when indentation fills a toast row. Preserve oversized graphemes in `wrapped`.
 - Mark hard word breaks in toast bodies with `…`. Keep body measurement and fading text on the same lines.
 - Omit a toast title when its first readable word cannot fit beside the close button.
