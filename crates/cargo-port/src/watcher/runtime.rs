@@ -22,6 +22,7 @@ use super::events;
 use super::events::WatcherBackgroundSinks;
 use super::probe;
 use super::probe::FolderProbeOutcome;
+use super::probe::NewProjectProbeInputs;
 use super::refresh;
 use super::roots;
 use super::roots::CandidateProbeResult;
@@ -581,7 +582,7 @@ fn apply_probe_outcomes(
         &ctx.background_tx,
         &mut state.pending_new,
         &mut state.discovered,
-        probe::NewProjectProbeInputs {
+        NewProjectProbeInputs {
             watcher_config:      &ctx.watcher_config,
             source_measurements: &ctx.source_measurements,
             non_rust:            ctx.non_rust,
